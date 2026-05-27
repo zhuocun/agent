@@ -69,8 +69,8 @@ Every assistant message stores:
 | `substitution_reason` | when served differs | enum in §5 |
 | `routing_decision` | when Auto | heuristic signals + selected route |
 | `prompt_tokens` / `completion_tokens` / `total_tokens` | post-turn | reasoning tokens included as output |
-| `cost_usd` | post-turn when computable | effective per-message platform cost |
-| `cost_breakdown` | post-turn | structured details in §4.1 |
+| `cost_usd` | post-turn when computable | effective per-message platform cost (incl. any surcharge attributed to this turn, §4.2) |
+| `cost_breakdown` | post-turn | structured details in §4.1 (incl. `cost_scope`, `long_context`, `promo`) |
 | `cost_confidence` | post-turn | `exact` / `estimate` / `unavailable` |
 | `is_byok` | yes | platform meter vs user's provider key |
 
@@ -84,18 +84,53 @@ Every assistant message stores:
   "input_tokens": 0,
   "output_tokens": 0,
   "reasoning_tokens": 0,
+  "cost_scope": "message",
+  "long_context": {
+    "flat": false,
+    "tier_scope": "session",
+    "tokens_repriced": "all",
+    "applied_tier": {
+      "label": "",
+      "threshold_tokens": 0,
+      "price_in_per_m": 0,
+      "price_out_per_m": 0,
+      "cached_input_per_m": 0
+    },
+    "session_multiplier": { "input": 1, "output": 1 }
+  },
   "multipliers": {
     "cached_input": 1,
     "batch": 1,
-    "threshold_tier": 1,
     "promo": 1
   },
+  "promo": {
+    "applied": false,
+    "id": null,
+    "effective_until": null,
+    "date_valid_at_turn": null
+  },
   "subtotal_usd": 0,
+  "session_surcharge_usd": 0,
   "notes": []
 }
 ```
 
+**`long_context` represents all three real 2026 long-context pricing models as one self-consistent shape:**
+- **(a) Whole-session reprice (OpenAI style).** Crossing a token threshold reprices the *whole* request, and input and output reprice by *different* factors (e.g. ×2 input / ×1.5 output — **two multipliers, never one scalar**). Set `tier_scope: "session"`, `tokens_repriced: "all"`, and `session_multiplier: { "input": 2, "output": 1.5 }`. The request-scoped delta is carried in `session_surcharge_usd` (see §4.2).
+- **(b) Stepped per-band base rates (Gemini style).** A band above a threshold has its own resolved base rates from the registry tier table; the surcharge applies only to the overflow band, not the whole request. Set `tier_scope: "overage"`, `tokens_repriced: "above_threshold"`, and `applied_tier` carrying the resolved `price_in_per_m` / `price_out_per_m` / `cached_input_per_m` for that band, plus `threshold_tokens` (the band floor, e.g. 200000). Recording `threshold_tokens` lets the meter split tokens into the below-threshold band (priced at `list_price_*`) and the overflow band (priced at `applied_tier`) **from the stored breakdown alone** — so a turn is independently auditable/reconcilable without re-reading the registry. `cached_input_per_m` is the *stepped* cached rate (Gemini caches are also tiered), distinct from the prefix `multipliers.cached_input`.
+- **(c) Flat / no surcharge (Anthropic style).** Set `flat: true` with an empty/identity `applied_tier` and `session_multiplier` of 1/1. This is a **first-class positive fact** the picker surfaces as "no long-context penalty," not merely the absence of a tier.
+
+`session_multiplier` (whole-session reprice) and `applied_tier` (stepped band) are mutually exclusive: exactly one applies per turn, selected by `tier_scope`; `flat: true` means neither applies. The `list_price_*` fields remain the model's baseline (below-threshold) rates.
+
 Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible estimate label.
+
+### 4.2 Cost scope — per-message vs request/session surcharge **[P0]**
+
+`cost_usd` is the **effective cost attributed to this assistant message**. Long-context surcharges, however, can be **request- or session-scoped**: OpenAI's whole-session reprice (`tier_scope: "session"`) reprices the *entire request* once the threshold is crossed, not just the triggering message. To keep per-message cost and the session-wide surcharge reconcilable:
+
+- `cost_scope` is `"message"` (default, per-message cost only) or `"session"` (this message carries a request-scoped surcharge).
+- `session_surcharge_usd` records the request-scoped delta (the cost above what the same tokens would have cost at baseline rates). It is **always attributed to the triggering turn** — the assistant message whose request crossed the threshold — and is **not** amortized across the request's other messages. A `notes` entry records the trigger, e.g. `"session-repriced: 272K threshold crossed"`.
+- The §8 AC#5 meter reconciliation therefore sums `cost_usd` across messages (each already including any surcharge attributed to it); the documented tolerance need not cover surcharge re-allocation because attribution is single-turn and deterministic.
 
 ---
 
@@ -108,6 +143,8 @@ Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible 
 | `rate_limited` | Requested model unavailable | Provider/platform rate limit |
 | `provider_fallback` | Provider failed; fallback answered | Fallback route |
 | `deprecated_model` | Requested model retired | Registry status/fallback |
+| `capacity_reroute` | Requested model at capacity; rerouted | Provider/gateway capacity reroute (PRD 02 FR-11b) |
+| `gateway_route` | Gateway selected an alternate route | Gateway-level routing/policy reroute |
 | `budget_cap` | Account limit constrained routing | Free/Pro cap |
 | `policy_route` | Privacy policy route selected | no-train/default route |
 
@@ -154,17 +191,18 @@ The product must never:
 3. use scalar-only pricing for long-context/reasoning-aware cost display;
 4. decrement platform token budget for `is_byok = true` token charges;
 5. hardcode model display/pricing facts outside the registry;
-6. leak cost/tokens into public share links.
+6. leak cost/tokens into public share links;
+7. apply the `cached_input` discount to reasoning tokens. **Reasoning tokens are billed at the output rate and are never cache-eligible** — they are per-request and full-price every turn. The `multipliers.cached_input` (and any stepped `applied_tier.cached_input_per_m`) applies only to non-reasoning input/output; `reasoning_tokens` are billed at `list_price_out_per_m` (or the applicable `applied_tier.price_out_per_m`) with no cache discount.
 
 ---
 
 ## 8. Acceptance criteria
 
 1. 100% assistant messages have model attribution after reload.
-2. Forced `rate_limited` and `auto_downgrade` fixtures persist reason + render callout.
-3. Cost golden tests cover baseline, cached-input, and threshold-tier turns.
+2. Forced `rate_limited`, `auto_downgrade`, and `capacity_reroute` fixtures persist reason + render callout.
+3. Cost golden tests cover baseline, cached-input, **long-context pricing (three fixtures: OpenAI whole-session `session_multiplier` with separate ×in/×out, Gemini stepped `applied_tier`, Anthropic `flat:true`)**, **reasoning-token cache-exemption** (a reasoning-bearing turn computes reasoning at output rate with the cache discount NOT applied), and **promo-expiry boundary** (the same turn before vs after `effective_until` — DeepSeek 2026-05-31 reversion is the golden fixture — yields the promo'd vs reverted cost and sets `promo.date_valid_at_turn` accordingly).
 4. Missing pricing fields produce estimate labels.
-5. Platform usage meter matches sum of `message.cost_usd` within documented tolerance.
+5. Platform usage meter matches sum of `message.cost_usd` within documented tolerance, where any request-scoped `session_surcharge_usd` is attributed to its single triggering turn (§4.2) and already included in that turn's `cost_usd`.
 6. Public share leak test finds zero cost/token fields.
 7. BYOK turns set `is_byok = true` and do not decrement platform token-charge budget.
 8. Registry no-hardcoding grep catches model IDs/prices outside approved config.

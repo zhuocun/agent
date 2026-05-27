@@ -62,6 +62,11 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 - Streaming and reasoning shimmer allowed by default.
 - `prefers-reduced-motion`: static "Generating..." and no shimmer.
 
+### 3.5 Live-region announce model **[P0]**
+- A **single, separate polite status region** (`aria-live="polite"`, `role="status"`) owns generation-status announcements; the streamed **message body is NOT a live region** (wrapping it causes token-by-token re-reading on NVDA/JAWS — a known anti-pattern).
+- Status region announces **discrete transitions only**: "Generating", **"Response ready"** (success-path completion), "Stopped". The completed message body stays navigable but is not auto-announced.
+- Error/limit announcements follow PRD 08 §9 (`role="status"` for warnings, `role="alert"` only when immediate attention is required). Behavior owned by PRD 01 §5.7 / PRD 08 §9; this PRD specifies the region.
+
 ---
 
 ## 4. Layout primitives **[P0]**
@@ -153,6 +158,8 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 6. Mobile primary controls >=44px; composer safe-area verified on iOS Safari.
 7. Light/dark/system parity for all P0 components.
 8. Reduced-motion path verified for streaming/reasoning states.
+9. Keyboard-shortcuts dialog traps/receives focus, is screen-reader navigable, and restores focus on close (per PRD 01 §5.7).
+10. Sidebar/history exposes a named landmark region for direct screen-reader navigation (per PRD 01 §5.7).
 
 ---
 

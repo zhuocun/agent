@@ -47,18 +47,24 @@ Power users judge products by what happens when things go wrong. Multi-provider 
     "code": "PLATFORM_BUDGET_EXCEEDED",
     "severity": "blocking",
     "title": "Daily limit reached",
-    "body": "You've used 50/50 free messages today. Resets in 6h.",
+    "body": "You've reached your daily free-message limit.",
     "actions": [
       { "type": "upgrade", "label": "Upgrade to Pro" },
       { "type": "byok", "label": "Use your API key" }
     ],
-    "retry_after_ms": null,
-    "meta": {}
+    "retry_after_ms": 21600000,
+    "meta": {
+      "used": 50,
+      "limit": 50,
+      "reset_at": "2026-05-27T18:00:00Z"
+    }
   }
 }
 ```
 
 All user-visible errors expose `code`, `severity`, `title`, `body`, and `actions[]`. New action types must degrade gracefully.
+
+**Counts and reset time are structured data, not free text.** Limit counts and reset/retry information live in `meta` (`used`, `limit`, `reset_at`) and `retry_after_ms`, **not** baked into the `body` string — this keeps them localizable (i18n is a P0 baseline) and live. The client composes the displayed copy from these fields (e.g., "You've used {used}/{limit} free messages today. Resets in {countdown}."). `body` remains a **plain-text fallback** for when structured fields are absent or a client cannot compose copy.
 
 ---
 
@@ -112,7 +118,10 @@ P0 Continue is a new continuation request; it is **not** P1 resumable replay.
 | `PLATFORM_RATE_LIMIT` | Request/token window | Wait `retry_after`, Reduce usage |
 | `PLATFORM_BUDGET_EXCEEDED` | Rolling USD/message cap | Upgrade, Add credits, BYOK |
 | `PLATFORM_TIER_GATED` | Model/tier not available | Upgrade or pick available tier |
-| `PLATFORM_GUEST_LIMIT` | Anonymous cap | Sign up / sign in |
+| `PLATFORM_GUEST_DOWNGRADE` | Guest moved to a weaker model after good-model allotment | (transparency callout, not a block) Sign up to keep the better model |
+| `PLATFORM_GUEST_LIMIT` | Anonymous cap (hard sign-up wall) | Sign up / sign in |
+
+> **Guest model-downgrade transparency (distinct from the hard `PLATFORM_GUEST_LIMIT` block).** 2026 guest flows silently downgrade anonymous users to a weaker/mini model before the hard sign-up wall. For a transparency-first product, a **silent** downgrade is an own-goal. When a guest is moved to a weaker model, surface a **transparency callout reusing the substitution-callout** (PRD 06 §5.4 / PRD 07) — `severity: "info"`, not a block — naming the served model and the reason ("Now answering with Fast — sign up to keep the better model"). This is a transparency surface, **not** an error: `PLATFORM_GUEST_DOWNGRADE` continues generation; only `PLATFORM_GUEST_LIMIT` blocks send.
 
 ### 5.5 Auth / BYOK
 
@@ -140,11 +149,12 @@ Served-vs-requested model changes use PRD 07 substitution callouts, not red erro
 ## 6. Copy rules
 
 1. Lead with outcome: "Message couldn't finish" before technical cause.
-2. State the limit: "12 of 50 free messages today" not just "quota exceeded."
+2. State the limit: "12 of 50 free messages today" not just "quota exceeded." Compose the count from `meta.used`/`meta.limit` (structured, localizable), never from a hard-coded `body` string.
 3. Offer 2–3 actions max.
 4. Never blame the user for provider failures.
 5. Preserve partial content; never imply it is lost if it is persisted.
 6. Use substitution language for routing changes: "Answered with Fast because Pro was rate-limited."
+7. **Show a live countdown / reset time** when a reset is known: drive it from `retry_after_ms` (relative) or `meta.reset_at` (absolute), rendering a ticking "Resets in {h}h {m}m" / "Try again in {s}s" that updates live and localizes — do not freeze a "Resets in 6h" string into `body`. The countdown surfaces on `PLATFORM_RATE_LIMIT`, `PLATFORM_BUDGET_EXCEEDED`, and `PROVIDER_RATE_LIMIT` states. When the countdown reaches zero, the blocking/wait state clears its disabled affordance.
 
 ---
 
@@ -159,7 +169,7 @@ Served-vs-requested model changes use PRD 07 substitution callouts, not red erro
 
 Hard cap actions depend on account:
 
-- Guest: sign up to continue; preserve current thread.
+- Guest: a guest who exhausts the good-model allotment is **downgraded with a visible substitution callout** (`PLATFORM_GUEST_DOWNGRADE`, never silent) before the hard wall; at the hard wall (`PLATFORM_GUEST_LIMIT`), sign up to continue; preserve current thread.
 - Free: upgrade, BYOK, wait until reset.
 - Pro: add credits, BYOK, switch cheaper tier.
 - BYOK: fix key/provider quota; do not upsell platform credits for provider-billed failures.
@@ -184,6 +194,8 @@ Terminal events feed PRD 05 analytics.
 ## 9. Accessibility **[P0]**
 
 - Warnings use `role="status"`; blocking/errors use `role="alert"` only when immediate attention is required.
+- **Announce model:** the streamed answer body is **not** an `aria-live` region; a **separate polite status region** announces discrete transitions ("Generating", "Response ready", "Stopped"). The streamed text node is never wrapped in a live region (avoids token-by-token re-reading).
+- **Success-path completion announcement:** when generation completes normally, announce **once** ("Response ready") via the polite status region — the completed body is navigable but not auto-announced. (Implemented on the chat surface per PRD 01 §5.7; region defined in PRD 06 §3.5.)
 - Stream errors are announced once when generation ends.
 - Modals trap focus and return focus to the initiating control.
 - All recovery actions keyboard-operable.
@@ -213,6 +225,7 @@ Terminal events feed PRD 05 analytics.
 3. Hard cap blocks send before provider call.
 4. Guest limit -> sign up -> same chat/messages preserved.
 5. `auto_downgrade` renders substitution callout, not error banner.
+5a. `PLATFORM_GUEST_DOWNGRADE` renders a substitution callout (info) and continues generation; only `PLATFORM_GUEST_LIMIT` blocks send. A guest downgrade is never silent.
 6. Invalid BYOK key blocks send and leaves platform meter unchanged.
 7. Error banner/modal passes axe-class check with 0 critical issues.
 8. Offline send queues user message and reconciles on `online`/foreground.

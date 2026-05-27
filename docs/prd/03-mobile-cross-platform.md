@@ -5,7 +5,6 @@
 **Owner:** Product (Mobile & Cross-Platform)
 **Status:** Draft for build
 **Date:** 2026-05-27
-**Source research:** `docs/research/02-mobile-responsive.md`
 
 ---
 
@@ -23,7 +22,7 @@ Delivery is decided: **MVP = one responsive Next.js (App Router) web app + a PWA
 
 ### Goals
 - A single responsive codebase whose **layout shell** adapts at defined breakpoints (mobile single-pane + overlay drawer → tablet → desktop 2-pane → large desktop 3-pane with artifact panel).
-- A mobile composer that is rock-solid against on-screen-keyboard quirks (modern `dvh` + `interactive-widget=resizes-content` + safe-area insets).
+- A mobile composer that is rock-solid against on-screen-keyboard quirks via a two-track mechanism: **iOS = `visualViewport` JS positioning (primary)**; Android/Chromium = `dvh` + `interactive-widget=resizes-content`; plus `viewport-fit=cover` + all four safe-area insets (see §4.3; corrected).
 - Smooth, performant long-conversation scrolling during token streaming on mid-tier phones.
 - Resilient behavior on flaky / offline networks (optimistic send, draft persistence, retry queue, interrupted-stream recovery).
 - App-like installability on Android via PWA; best-effort app-like UX on iOS within Safari/PWA limits.
@@ -80,16 +79,19 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 
 ### 4.3 Mobile composer & keyboard
 
-- **[P0]** Composer pinned to the bottom; app shell uses **`dvh`** (e.g., `h-dvh` flex column), not raw `vh`, so the visible viewport adjusts when the keyboard shows — **no JS resize observer as the primary mechanism**.
-- **[P0]** Add viewport meta **`interactive-widget=resizes-content`** so Android/Chromium resizes content (not just the visual viewport) on keyboard show; works additively with `dvh`.
-- **[P0]** **Safe-area insets:** `padding-bottom: calc(env(safe-area-inset-bottom) + Xpx)` so the composer clears the iOS home indicator / notch.
-- **[P0]** **Legacy fallback:** feature-test and fall back to `100vh`; keep `visualViewport` measurement only as an edge-case fallback, not the default path.
-- **[P1]** Progressive enhancement: use VirtualKeyboard API `env(keyboard-inset-*)` (Chromium-only) to reserve precise space below the list/input; returns `0px` when hidden.
+> **Corrected (verified, blocking):** on iOS/iPadOS Safari the software keyboard resizes only the **visual** viewport, not the layout viewport — so `dvh`/`svh`/`lvh` do **not** shrink on keyboard show and a `dvh`-only sticky/fixed bottom composer **gets covered by the keyboard**. `interactive-widget` is **Android/Chromium-only** and does nothing on iOS. The composer mechanism is therefore **two-track**, with `visualViewport` JS as the **primary** path on iOS (not a fallback).
+
+- **[P0]** Composer pinned to the bottom. **iOS primary mechanism = `visualViewport`-driven positioning:** listen to `visualViewport` `resize`/`scroll` and position the composer (via a CSS var / `top` + transform) to track the shrinking visual viewport so it stays above the keyboard. This is the default path on iOS, **not** an edge-case fallback.
+- **[P0]** **Android/Chromium track:** app shell uses **`dvh`** (e.g., `h-dvh` flex column), not raw `vh`, plus viewport meta **`interactive-widget=resizes-content`** so Android/Chromium resizes content (not just the visual viewport) on keyboard show. (These do not help on iOS — see note above.)
+- **[P0]** **`viewport-fit=cover`** in the viewport meta — **required** for `env(safe-area-inset-*)` to be non-zero at all.
+- **[P0]** **All four safe-area insets:** apply `env(safe-area-inset-bottom/top/left/right)` to composer/header (e.g., `padding-bottom: calc(env(safe-area-inset-bottom) + Xpx)`), so the composer/header clear the home indicator, notch/Dynamic Island, and landscape-iPhone left/right insets — not bottom only.
+- **[P1]** **Progressive-enhancement layer** (demoted from the primary path): `dvh`/`svh`/`lvh` full-height sizing where supported, and the **VirtualKeyboard API** `env(keyboard-inset-*)` (Chromium-only) to reserve precise space below the list/input; returns `0px` when hidden. Treat as enhancement over the `visualViewport` baseline, not as the iOS keyboard fix.
 - **[P0]** **Explicit Send button** (large, thumb-reachable, meets tap-target min).
-- **[P0]** **Auto-grow textarea:** grows from 1 line to a max (~5–8 lines) then internal scroll.
+- **[P0]** **Auto-grow textarea:** grows from 1 line to a max (~5–8 lines) then internal scroll. Set `enterkeyhint="send"`, `inputmode`, and sensible `autocapitalize`/`autocorrect` on the textarea for clean mobile keyboard behavior.
 - **[P0]** **Mobile Enter = newline** (no Shift on touch keyboards); Send button sends. Desktop keeps `Enter`=send / `Shift+Enter`=newline (PRD 01 owns desktop key handling).
+- **[P0]** **IME composition handling:** Send must not fire while an IME composition is in progress — gate on `event.isComposing` (and `compositionstart`/`compositionend`) so CJK/autocorrect composition is not cut off mid-input. Relevant to the i18n posture in PRD 00.
 - **[P1]** Make Enter-behavior **configurable** in settings; A/B validate the default.
-- **[P0]** **iOS keyboard quirks** explicitly tracked as risk: `dvh` improves but does not fully guarantee fixed-bottom behavior on all iOS versions. **Real-device lab testing on multiple iPhone/iOS versions is required before launch** (§9).
+- **[P0]** **iOS keyboard quirks** explicitly tracked as risk: even with the `visualViewport` mechanism, fixed-bottom behavior varies across iOS versions. **Real-device lab testing on multiple iPhone/iOS versions is required before launch** (§9). Acceptance: the composer is **never covered by the keyboard regardless of composer length**, and **tapping the composer does not yank the scroll** (both are documented incumbent failures).
 - **[P0]** Attach affordance (+ / paperclip) opens a **bottom sheet**: Camera / Photo Library / Files. Mic/voice button adjacent (see §4.7). All meet tap-target minimums (§4.8).
 
 ### 4.4 Touch & gestures (every gesture has a tappable alternative)
@@ -99,13 +101,19 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 - **[P0]** **Scroll-to-bottom FAB** ("jump to latest") appears when the user has scrolled up; paired with smart auto-scroll.
 - **[P0]** **Smart auto-scroll (anchor-to-bottom):** if the user is within ~N px of the bottom when a new token/message arrives, auto-scroll to follow; if they have scrolled up to read, **suppress auto-scroll** and surface the FAB. Do not yank the view. (This is the single most common mobile-chat annoyance to get right — see spike §9.)
   - *Acceptance:* during a streaming response, scrolling up to read keeps the viewport stationary; tapping the FAB re-pins to bottom and resumes following.
-- **[P1]** **Haptics:** subtle vibration on long-press and on send (sub-100ms visual feedback regardless). Honor reduced-motion / system settings.
-- **[P1]** **Pull-to-refresh** on history/conversation (optional given streaming; low priority).
+- **[P0]** **`overscroll-behavior: contain`** on the message list and app root — prevents scroll-chaining **and** blocks browser pull-to-refresh, which would otherwise reload the page and **kill an in-flight stream + optimistic/queue state** (LibreChat filed exactly this bug). Hardening item that protects the §4.6 interrupted-stream goals.
+- **[P1]** **Haptics:** subtle vibration on long-press and on send (sub-100ms visual feedback regardless). Implement via the **Vibration API on Android**; on iOS use the **`<input type="checkbox switch">` + label-`click()` shim (iOS 18+)** since WebKit exposes no `navigator.vibrate`. Feature-detect and degrade silently elsewhere. Honor reduced-motion / system settings.
+- **~~[P1] Pull-to-refresh~~ — DROPPED**: native pull-to-refresh reloads the page and kills in-flight streams, contradicting interrupted-stream recovery (§4.6, user story #4). Superseded by `overscroll-behavior: contain` above. If ever wanted, scope to the **history drawer only**, never the conversation. *(Roadmap note for PRD 05.)*
 
 ### 4.5 Message-list performance (top technical spike — see §9)
 
-- **[P0]** **Virtualize** long conversations (only visible messages in the DOM). Library: **React Virtuoso** (purpose-built for dynamic heights, reverse/infinite scroll, sticky headers) as the leading candidate; **TanStack Virtual** as alternative. Decide in the spike.
-- **[P0]** Virtualization must coexist with **streaming + variable bubble heights + smart auto-scroll** without jumpiness. Measure-and-cache item heights.
+- **[P0]** **Virtualize** long conversations (only visible messages in the DOM). Candidates for the spike (§9), recommended direction:
+  - **`VirtuosoMessageList`** (React Virtuoso) — purpose-built for human/AI streaming chat (streaming, stick-to-bottom, imperative scroll-on-arrival API); **commercially licensed**.
+  - **Virtua** (~3 kB) — free, **built-in reverse scrolling**, reported far easier than TanStack for chat.
+  - **TanStack Virtual** — most flexible but **explicitly weak for bidirectional/chat** per its own maintainers; treat as fallback, not the default.
+  - **Default expectation = Virtua or `VirtuosoMessageList`** (decide in the spike on license cost vs effort), not TanStack.
+- **[P0]** Virtualization must coexist with **streaming + variable bubble heights + smart auto-scroll** without jumpiness. Measure-and-cache item heights. Pair with `overscroll-behavior: contain` (§4.4).
+- **[P1]** **`content-visibility: auto`** on off-screen message bubbles as a cheaper complement (or alternative on shorter threads) to full virtualization.
   - *Acceptance:* a 1,000+ message conversation scrolls at ~60fps on a mid-tier Android device; streaming a long answer does not cause scroll jitter or height-jump artifacts.
 
 ### 4.6 Offline & flaky-network
@@ -115,15 +123,21 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 - **[P0]** **Retry with exponential backoff;** queued operations carry metadata (type, payload, timestamp, status) and preserve **ordering for dependent changes**.
 - **[P0]** **Draft persistence:** interrupted/typed drafts survive reload/navigation (WhatsApp-style).
 - **[P0]** **Interrupted-stream recovery:** a network drop mid-stream marks the partial assistant message incomplete and offers one-tap **Continue / Regenerate**; partial tokens are persisted so a reconnect can resume or replace cleanly.
-- **[P0]** **Server is source of truth.** Treat the local cache as best-effort, especially on iOS (~50 MB cap, 7-day eviction). Re-fetch from server; never assume durable offline history on iOS.
+- **[P0]** **Storage quota & eviction (corrected, verified):** iOS PWA storage is **NOT ~50 MB** — since Safari 17 the per-origin quota is **disk-proportional (typically tens of GB)**, readable via `navigator.storage.estimate()`. The real iOS constraint is **7-day ITP eviction of non-persisted data**, not capacity. Implication: we **can** cache far more conversation history offline on iOS than previously assumed.
+- **[P0]** **Request `navigator.storage.persist()`** to exclude the local store from 7-day eviction (more likely granted for installed PWAs); read `navigator.storage.estimate()` for budgeting. *(Schema/sync internals owned by PRD 04.)*
+- **[P0]** **Server is source of truth.** Treat the local cache as best-effort; re-fetch from server on load. Even with disk-proportional quota, do not assume durable offline history on iOS unless `storage.persist()` was granted.
 - **[P1]** **Background Sync** to replay queued sends when back online on Android. **Also replay on `online`/foreground events** since Background Sync is unavailable on iOS.
+- **[P1]** **Sync-engine build-vs-buy** is a flagged **PRD 04 dependency**: MVP stays hand-rolled (Dexie + queue), but PRD 04 should consciously decide vs a batteries-included sync engine / CRDT path (Dexie Cloud, PowerSync, ElectricSQL, RxDB, Yjs/Automerge) before reinventing one — aligns with the privacy-first "local is real" story.
 
 ### 4.7 Mobile input (voice / camera / share)
 
-- **[P1]** **Voice / speech-to-text** via Web Speech API (`SpeechRecognition`) as **progressive enhancement** (prefer on-device for privacy). Caveats surfaced in UI: unsupported in Firefox; **does not work in an installed iOS PWA** (works in Safari tab). Hide/disable the mic where unsupported.
+- **[P1]** **Voice / speech-to-text** via Web Speech API (`SpeechRecognition`) as **progressive enhancement**.
+  - **Privacy correction (verified):** Web Speech recognition is **NOT on-device** — on iOS Safari it **sends audio to Apple** (explicit "send audio to Apple" permission modal) and Chrome is also typically server-side. For a privacy-first product (PRD 00 §7), this must be a **disclosed, optional** feature: surface an in-UI disclosure ("dictation sends audio to your browser vendor") before first use — treat the disclosure as **P0-for-the-feature**. Do **not** describe it as on-device/privacy-preserving.
+  - The **privacy-aligned path is a self-hosted / BYOK STT** option (see server-side STT below) — position it as the privacy-first answer, not a mere fallback.
+  - Caveats surfaced in UI: unsupported in Firefox; **does not work in an installed iOS PWA** (works in Safari tab). Hide/disable the mic where unsupported.
 - **[P0]** **Camera / photo attach** baseline: offer **two distinct affordances** — a camera input (`<input type="file" accept="image/*" capture="environment">`, opens the camera directly) **and** a separate library/files input (`<input type="file" accept="image/*">`, **no** `capture`, so the OS picker offers gallery/files). A single input *with* `capture` suppresses the library path, so do not rely on one input for both. (Robust native picker comes with Capacitor later.)
 - **[P2]** **Web Share Target** (installed app appears in OS share sheet to receive shared text/links/images). Android-supported; **iOS support weak/absent for PWAs — verify before committing** (§9). Treat full share-target as a Capacitor-era capability.
-- **[P1]** Server-side STT fallback considered if cross-platform voice becomes a priority.
+- **[P1]** **Self-hosted / BYOK server-side STT** as the **privacy-aligned** voice path (not merely a fallback) — the on-thesis option if cross-platform voice becomes a priority, and the way to avoid silently shipping user audio to Apple/Google.
 
 ### 4.8 Mobile accessibility
 
@@ -140,19 +154,23 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 - **[P0]** **Service worker** caching the **app shell** for instant load (Workbox or equivalent; details in PRD 04).
 - **[P0]** **Android install** via `beforeinstallprompt` (deferred, contextual prompt — not on first load).
 - **[P0]** **Custom iOS "Add to Home Screen" coachmark** (Safari has no auto-prompt). Shown contextually to Safari/iOS users; dismissible and not nagging.
-- **[P1]** **Web push on Android** (reliable re-engagement channel).
+- **[P1]** **Web push on Android** (reliable re-engagement channel). Use **Declarative Web Push** (Safari 18.4, Mar 2025; W3C Working Draft, now the preferred format) for the Android/iOS-installed push path; simpler/more reliable than the service-worker push flow.
+- **[P1]** **`Screen Wake Lock`** during long streaming answers so the screen doesn't dim mid-response (available for home-screen web apps since Safari 18.4). Honor battery/system constraints; release on stream end.
 - **[P0]** **Enumerate & design around iOS PWA limits** (see §6.4 table). Specifically:
-  - Web push only when **installed to home screen** AND **iOS 16.4+**; not from Safari tabs.
-  - **EU iOS 17.4+**: PWAs may open as Safari tabs → push restricted (verify current 2026 status — §9).
-  - ~**50 MB** storage cap; **7-day** cache eviction when unused; **no background sync/fetch**; **no auto-install prompt**; **Web Speech broken in installed iOS PWA**.
+  - Web push only when **installed to home screen** AND **iOS 16.4+**; not from Safari tabs. (Opt-in remains install-gated; *implementation* is improved by Declarative Web Push.)
+  - **EU iOS 17.4+:** Apple **reversed** the standalone-PWA removal after DMA feedback; EU PWA support reinstated (one 2026 source still lists it unresolved — **[Uncertain]** at the margin; revalidate — §9).
+  - Storage is **disk-proportional (tens of GB)**, **not ~50 MB** (corrected §4.6); real constraint is **7-day eviction unless `navigator.storage.persist()` is granted**; **no background sync/fetch**; **no auto-install prompt**; **Web Speech broken in installed iOS PWA**.
+  - **iOS 26** opens Home-Screen sites as web apps by default (even without a manifest) → lower install friction *after* install.
   - *Acceptance:* the iOS build degrades gracefully — no feature silently fails; unsupported features are hidden or clearly labeled.
 
 ### 4.10 Performance budgets
 
-- **[P0]** Core Web Vitals (mobile, field/RUM): **LCP ≤ 2.5s**, **INP ≤ 200ms**, **CLS ≤ 0.1**. Set internal budgets and monitor RUM (metrics ownership: PRD 05).
-- **[P0]** **CLS protection:** reserve space for streaming content, images (`srcset` + explicit dimensions), and the composer; use `dvh`/`svh` to avoid keyboard-driven shift.
-- **[P0]** **Code-split / lazy-load** routes and heavy panels: artifact/canvas panel, markdown + code-highlighting, heavy model-output renderers. Keep initial JS minimal.
-- **[P1]** **Streaming render coalescing:** batch token updates per animation frame (rAF) rather than re-rendering per token; throttle auto-scroll; avoid layout thrash.
+- **[P0]** Core Web Vitals (mobile, field/RUM): **LCP ≤ 2.5s**, **INP ≤ 200ms**, **CLS ≤ 0.1**. Set internal budgets and monitor RUM (metrics ownership: PRD 05). **INP is the most-failed 2026 vital (~43% of sites fail the 200ms threshold) and streaming chat is its worst case** — treat INP as the hardest budget and the techniques below as P0, not nice-to-haves.
+- **[P0]** **INP — yield to the main thread:** for expensive interaction handlers (send, model switch, markdown re-parse), break long tasks with **`scheduler.yield()`** (with a `setTimeout(0)` fallback) so input stays responsive during streaming. Named technique (reported ~60–65% p75-INP reduction).
+- **[P0]** **Streaming render coalescing:** batch token updates **per animation frame (rAF)** rather than re-rendering per token; throttle auto-scroll; avoid layout thrash. (Promoted P1→P0 — this is the primary INP mitigation for a token-streaming list.)
+- **[P0]** **Bundle / main-thread budget:** **initial route JS ≤ ~200 KB compressed**, enforced by a **CI bundle-size check**. JS parse/exec dominates LCP/INP on mid-tier phones (~50–80ms CPU per 100 KB compressed), so the CWV targets are not actionable without a KB budget.
+- **[P0]** **CLS protection:** reserve space for streaming content, images (`srcset` + explicit dimensions), and the composer; use `dvh`/`svh` for stable full-height sizing. (Note: iOS keyboard-driven shift is handled by the §4.3 `visualViewport` mechanism, **not** viewport units, which do not track the iOS keyboard.)
+- **[P0]** **Code-split / lazy-load** routes and heavy panels: artifact/canvas panel, markdown + code-highlighting, heavy model-output renderers. **KaTeX / Mermaid / syntax-highlighter (P0 per PRD 00) are heavy and must be lazy-loaded**, not in the initial bundle. Keep initial JS minimal (within the budget above).
 - **[P1]** **Images:** compress, lazy-load, responsive `srcset`/`sizes`, reserved dimensions.
 - **[P2]** **Battery:** coalesce DOM writes, pause non-visible work, avoid busy timers; monitor as future CWV signals (animation smoothness/battery) emerge.
 
@@ -166,7 +184,7 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 
 | Token | Range (px) | Surface class | Panes | Navigation / shell rules | Validation |
 |---|---|---|---|---|---|
-| `sm` (mobile) | `< 768` | Mobile | **Single pane** (chat only) | History = temporary **overlay drawer** (hamburger top-left). Tools/attach = **bottom sheet**. Artifact = **full-screen / bottom sheet**. Composer pinned bottom with safe-area + `dvh`. | **Validate px** |
+| `sm` (mobile) | `< 768` | Mobile | **Single pane** (chat only) | History = temporary **overlay drawer** (hamburger top-left). Tools/attach = **bottom sheet**. Artifact = **full-screen / bottom sheet**. Composer pinned bottom with all four safe-area insets + `viewport-fit=cover`; keyboard handled via the two-track mechanism (§4.3 — iOS `visualViewport` primary). | **Validate px** |
 | `md` (tablet) | `768–1023` | Tablet | Chat full-width + collapsible drawer | Drawer **dismissible/persistent**; **push-vs-overlay TBD by prototype**. Artifact = overlay or replaces chat. | **Validate px + push/overlay** |
 | `lg` (desktop) | `1024–1439` | Desktop S | **2-pane** | Permanent sidebar + chat. Artifact slides in as a **3rd column** (chat narrows) when invoked. | **Validate px** |
 | `xl` (large desktop) | `≥ 1440` | Desktop L | **3-pane** | Sidebar + chat + artifact panel coexist comfortably. Chat column capped for readability. | **Validate px** |
@@ -179,9 +197,9 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 
 ### 5.3 Cross-cutting layout rules
 
-- Use **`dvh` / `svh` / `lvh`** (not raw `vh`) for full-height surfaces; `100vh` only as a legacy iOS fallback.
+- Use **`dvh` / `svh` / `lvh`** (not raw `vh`) for full-height surfaces; **prefer `dvh` for the app shell** (sizing the shell to `lvh` shows a white strip on iOS until first scroll); `100vh` only as a legacy fallback. **Note:** these units do **not** track the iOS keyboard — the keyboard fix is the `visualViewport` mechanism in §4.3, not viewport units.
 - **Reserve space (anti-CLS)** for streaming content, images (dimensions + `srcset`), and the composer.
-- **One source of truth** for the shell (container queries or a breakpoint hook); panes/drawer derive from it.
+- **Single source of truth** for the shell — resolved: **viewport breakpoints / a breakpoint hook for the shell** (pane count, drawer mode = genuinely viewport-level), and **container (size) queries — Baseline-safe — for reusable panes** that adapt to their available column width (artifact panel, composer toolbar, message-bubble action row). Panes/drawer derive from the shell source.
 - **Chat reading column capped (~70–80ch)** on wide screens for legibility.
 - **Tap targets 44–48px;** primary actions in the thumb zone (bottom third; bottom-right favored for right-handers; ~49% of users browse one-handed).
 
@@ -198,9 +216,9 @@ Ship **one responsive Next.js (App Router) web app, progressively enhanced into 
 Add a **Capacitor** shell that wraps the existing web app in a WebView + native plugin bridge, reusing **~100% of the web/PWA codebase**. This unlocks App Store / Play presence, native push (APNs), reliable offline / larger storage, share extensions, and a robust native camera/file picker — with a flat learning curve for web devs.
 
 **Explicit triggers to start the Capacitor build:**
-1. **iOS push-driven re-engagement becomes a core KPI** (web push on iOS is too weak: ~16% opt-in — single-source figure, we instrument our own opt-in per §8 — install-gated, EU-restricted). *This is the primary trigger.*
+1. **iOS push-driven re-engagement becomes a core KPI** (web push on iOS remains install-gated, with low opt-in: ~16% — single-source figure, we instrument our own opt-in per §8). *This is the primary trigger.* Note: **Declarative Web Push (Safari 18.4) narrows the *implementation* gap** for installed-PWA push, but the *opt-in/install-gated* gap that drives this trigger remains.
 2. **App-store presence / discoverability** is required for the business.
-3. **Durable offline / large local storage** is needed beyond iOS PWA's ~50 MB / 7-day limits.
+3. **Eviction-proof durable storage and/or background sync** is needed — *not* raw capacity. **Corrected:** the old "~50 MB" cap is wrong (Safari 17+ quota is disk-proportional, tens of GB), so capacity is *not* the constraint. The genuine iOS PWA gaps are **7-day ITP eviction** of non-persisted data (only partly mitigated by `navigator.storage.persist()`, §4.6) and the **absence of background sync/fetch**. Go native when you need guaranteed durable local history or true background replay.
 4. **Native share-target, deeper camera/file integration, or device APIs** are needed.
 
 **Capacitor-era tradeoffs / obligations:**
@@ -219,10 +237,10 @@ Add a **Capacitor** shell that wraps the existing web app in a WebView + native 
 | Capability | Android (Chrome) | iOS (Safari) |
 |---|---|---|
 | Install / add-to-home | `beforeinstallprompt` auto-prompt | **Manual only** (Share → Add to Home Screen); no auto-prompt → custom coachmark |
-| Web push | Broad | **16.4+ AND installed-to-home only**; not from tabs; **EU 17.4+ restricted (verify current 2026 status — §9)** |
+| Web push | Broad | **16.4+ AND installed-to-home only**; not from tabs; EU PWA support **reinstated after Apple's DMA reversal** (one 2026 source still lists unresolved — **[Uncertain]**, revalidate — §9). Declarative Web Push (18.4) simplifies the installed path. |
 | Background sync / fetch | Supported | **None** — replay on foreground/`online` instead |
-| Storage quota | Hundreds of MB | **~50 MB cap** — server is source of truth |
-| Cache persistence | Persistent | **7-day eviction** if unused; cleared with Safari history |
+| Storage quota | Hundreds of MB | **Disk-proportional (tens of GB), NOT ~50 MB** (Safari 17+; read via `navigator.storage.estimate()`) — capacity is not the constraint; server stays source of truth |
+| Cache persistence | Persistent | **7-day ITP eviction** of non-persisted data; mitigate with **`navigator.storage.persist()`** (more likely granted for installed PWAs); cleared with Safari history |
 | Web Speech (recognition) | Supported (Chromium) | **Broken in installed PWA** (works in Safari tab) |
 | Hardware (BLE/NFC/USB) | Many | Not supported; camera/mic/geo permission-dependent |
 
@@ -245,7 +263,9 @@ Add a **Capacitor** shell that wraps the existing web app in a WebView + native 
 |---|---|---|
 | Mobile LCP (p75, field) | ≤ 2.5s | PRD 05 RUM |
 | Mobile INP (p75, field) | ≤ 200ms | PRD 05 RUM |
+| Mobile INP breakdown (input delay / processing / presentation) | Track the **processing-time** component — INP is the risk metric and streaming chat is its worst case | PRD 05 RUM |
 | Mobile CLS (p75, field) | ≤ 0.1 | PRD 05 RUM |
+| Initial route JS (compressed) | ≤ ~200 KB, CI-enforced (see §4.10) | CI / synthetic |
 | % mobile sessions passing all 3 CWV | Beat the ~48% web baseline; set internal floor | PRD 05 RUM |
 | Mobile TTFT (time-to-first-token) | Track + budget (coordinate w/ PRD 01/04) | PRD 05 |
 | Mobile D1 / D7 / D30 retention | Track; primary mobile-quality signal | PRD 05 |
@@ -259,8 +279,8 @@ Add a **Capacitor** shell that wraps the existing web app in a WebView + native 
 
 ## 9. Open questions & risks
 
-1. **TOP SPIKE — virtualization + streaming + variable heights + auto-scroll.** Highest technical risk in the message list. Prototype Virtuoso vs TanStack Virtual against real streaming + smart anchor-to-bottom; budget dedicated spike time before committing.
-2. **iOS keyboard edge cases.** `dvh` + `interactive-widget` improves but does not fully guarantee fixed-bottom composer behavior across iOS versions. **Requires a real-device lab** across multiple iPhone/iOS versions before launch.
+1. **TOP SPIKE — virtualization + streaming + variable heights + auto-scroll.** Highest technical risk in the message list. **Recommended direction:** prototype **Virtua** (free, built-in reverse scrolling) and **`VirtuosoMessageList`** (purpose-built for AI streaming chat; commercially licensed) against real streaming + smart anchor-to-bottom; **default away from TanStack Virtual** (its own maintainers flag it as weak for bidirectional/chat). Decide on license cost vs effort. Pair the winner with `overscroll-behavior: contain` (§4.4) and `content-visibility: auto` (§4.5).
+2. **iOS keyboard mechanism — RESOLVED direction:** the fix is **`visualViewport` JS as the primary composer path on iOS** (+ `viewport-fit=cover` + all four safe-area insets), **not** `dvh`/`interactive-widget` (Android-only; `dvh` does not shrink under the iOS keyboard) — see §4.3. Residual risk is version variance, not mechanism: **a real-device lab across multiple iPhone/iOS versions is still required** before launch, against the §4.3 acceptance tests (composer never covered regardless of length; tapping composer never yanks scroll).
 3. **Breakpoint validation.** Exact px values and the **tablet drawer push-vs-overlay** decision need prototype validation with real content.
 4. **Web Share Target on iOS.** Assumed weak/absent for PWAs; **verify current status** before committing to share-to-AI on mobile web (otherwise it's a Capacitor-era feature).
 5. **EU iOS 17.4+ push restriction.** Apple's EU PWA policy has been in flux; **revalidate 2026 status** before designing iOS push UX.
@@ -272,9 +292,7 @@ Add a **Capacitor** shell that wraps the existing web app in a WebView + native 
 
 ## 10. References
 
-**Primary research:** `docs/research/02-mobile-responsive.md`
-
-**Key source URLs (from research):**
+**Key source URLs (from research + review):**
 - Responsive build guide — https://www.weweb.io/blog/how-to-build-a-responsive-web-app-guide
 - MUI Drawer responsive sidebar — https://kombai.com/mui/drawer/
 - Responsive breakpoints 2025 (BrowserStack) — https://www.browserstack.com/guide/responsive-design-breakpoints

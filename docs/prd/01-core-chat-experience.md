@@ -22,7 +22,7 @@ Out of scope here (owned elsewhere): model internals/routing/cost accounting (PR
 ### Goals
 - Ship a conversational surface that **feels faster and more polished** than incumbents on the basics: first-token latency perception, smooth streaming, flawless markdown/code/math rendering.
 - Make **transparency a first-class UI value**: show which model answered each message; expose (but don't force) reasoning.
-- Deliver an **accessibility baseline that beats the leaders** (who have documented gaps) — labeled controls, ARIA live regions for streaming, full keyboard operability, announced status.
+- Deliver an **accessibility baseline that beats the leaders** (who have documented gaps) — labeled controls, a correct streaming announce model (status-only polite region; see §5.7), full keyboard operability, announced status.
 - Provide a **simple default mode** so casual users aren't excluded, while giving power users/developers shortcuts, a command palette, and dense controls.
 - Be **excellent on mobile-web**, not a shrunk-down desktop UI (detailed in PRD 03; this PRD sets responsive expectations).
 
@@ -101,7 +101,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 - **[P1]** **Interactive blocks as a rendering baseline (not "Artifacts").** The renderer **hosts typed interactive blocks** — e.g., a chart spec rendered client-side with sliders, an adjustable/rotatable diagram — delivered as an `interactive-block` part (§4.4 message model). Inline interactivity is now expected response-surface functionality across the majors, *distinct* from a full Canvas/Artifacts panel (§4.12). **P0 ships a static-chart renderer; P1 adds interactivity.** Do not build a 3D engine for MVP — the requirement is only that the renderer/schema can host these blocks additively. Full generative/MCP-returned UI components remain **P2** (§4.12).
 - **[P1]** **Answer-first / progressive-disclosure layout** (renderer/prompt experiment). Lead with key info / a TL;DR, then progressive detail below — distinct from the reasoning panel; an answer-*layout* convention our answer-hungry dev persona tends to prefer. Cheap, high-perceived-quality; validate with the persona.
 - **[P1]** Code block **download** button and optional line numbers.
-- **[P0 security]** Sanitize all rendered HTML/markdown; safe link handling (`rel="noopener noreferrer"`, no script injection). Treat model output as untrusted (cross-ref PRD 02 §9).
+- **[P0 security]** Sanitize all rendered HTML/markdown via **`rehype-harden`-class allowlist hardening** (the mechanism shipped in Streamdown — see §5.4); safe link handling (`rel="noopener noreferrer"`, no script injection). Treat model output as untrusted (cross-ref PRD 02 §9).
 
 ### 4.5 Conversation management
 - **[P0]** **New chat** button (sidebar top) + shortcut.
@@ -207,8 +207,9 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 - **Tables:** wrap in a horizontal-scroll container; sticky header optional; never overflow the viewport on mobile.
 - **Images:** lazy-load, constrained max-width, alt text required (use model-provided alt or a generic label).
 - **Links:** open in new tab, `rel="noopener noreferrer"`; show domain on hover.
-- **Sanitization:** strip scripts/iframes/event handlers; allowlist-based HTML; this is both a quality and security requirement.
-- **Performance target:** rendering keeps up with stream at 60fps on a mid-tier mobile device; virtualize very long threads.
+- **Sanitization:** strip scripts/iframes/event handlers; allowlist-based HTML; this is both a quality and security requirement. *Mechanism:* **`rehype-harden`-class allowlist hardening** (as shipped in Streamdown) is the satisfying implementation for the §4.4 [P0 security] requirement; adopt Streamdown's hardening rather than a hand-rolled sanitizer.
+- **Performance target:** rendering keeps up with stream at 60fps with no layout shift on a mid-tier mobile device; virtualize very long threads.
+  - *Mechanism (implementation note — the lever behind the 60fps/no-shift target):* **buffer streamed deltas in a mutable ref and flush once per `requestAnimationFrame`** (rAF token-batching) rather than `setState` per token (the naive per-token re-render is the known jank anti-pattern); use **`scheduler.yield()`** to keep the main thread responsive and protect INP (optionally `startTransition`); parse markdown **incrementally per chunk (O(n)), not a full re-parse (O(n²)) every frame**, paired with the renderer's memoization model. This is the same pattern mirrored in PRD 03 for mobile.
 
 ### 5.5 Keyboard shortcuts (global)
 | Action | Mac / Win-Linux |
@@ -233,9 +234,13 @@ Conventions follow established category norms (low learning cost). A visible, se
 
 ### 5.7 Accessibility baseline (deliberate differentiation lever)
 - **Labeled controls:** every icon button has a descriptive accessible name (Copy, Regenerate, Edit, Thumbs up/down, Attach, Send, Stop) — explicitly fixing the unlabeled-button gap measured in incumbents.
-- **ARIA live regions:** streaming answer is announced appropriately (e.g., `aria-live="polite"`); status lines and "generating…/done/stopped" transitions are announced (not silently visual-only).
+- **ARIA live regions (announce model — get this right; it is the a11y wedge):** the **streamed answer text node must NOT be wrapped in an `aria-live` region** — doing so makes NVDA/JAWS re-read the partial text token-by-token (a known anti-pattern). Instead, announce **discrete status transitions** ("Generating", "Response ready", "Stopped") via a **separate polite status region** (`aria-live="polite"`, distinct from the message body). The completed message body is **navigable but not auto-announced** (avoiding the inverse Claude bug where nothing is announced at all). The **success-path completion announcement** ("Response ready") is specified in PRD 08 §9 — this surface implements it. Status lines render their progress through the same status region.
 - **Full keyboard operability:** every action (send, stop, copy, regenerate, edit, navigate history, open palette, expand reasoning) reachable and operable by keyboard with visible focus states.
 - **Semantic structure:** messages as a navigable list with roles; reasoning panel exposes expanded/collapsed state via ARIA.
+- **Keyboard-shortcuts dialog accessibility (beats a measured leader gap):** the show-all-shortcuts dialog (§4.9, `Cmd/Ctrl+/`) **traps focus on open, receives focus**, is screen-reader navigable, and returns focus to the invoking control on close — directly fixing the inaccessible-shortcuts-dialog blocker documented in incumbents.
+  - *AC:* opening the shortcuts dialog moves focus into it; Tab cycles within it; Esc closes and restores focus; every shortcut row is reachable and announced by a screen reader.
+- **Sidebar/history landmarks (beats a measured leader gap):** the history sidebar (§4.5) exposes **landmark roles** (e.g., a labeled `navigation`/`complementary` region) so screen-reader users can jump to it directly instead of traversing from top of page.
+  - *AC:* the sidebar is reachable as a named landmark; history items are a navigable list with accessible names.
 - **Reduced motion:** honor `prefers-reduced-motion` (shimmer/typing animations degrade gracefully).
 - **Contrast & target size:** meet WCAG AA contrast; touch targets sized per PRD 03.
 - Treat a11y as acceptance-blocking for MVP, not a follow-up.

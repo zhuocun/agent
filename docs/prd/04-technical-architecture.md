@@ -36,7 +36,7 @@ Three product constraints drive the architecture and are non-negotiable across a
 - Meet baseline security/privacy NFRs (encryption, key handling, no-train default, export/delete, AI-interaction disclosure).
 
 ### Non-goals (MVP)
-- **[P2]** Native mobile apps — mobile is responsive web / PWA for MVP (see PRD 02).
+- **[P2]** Native mobile apps — mobile is responsive web / PWA for MVP (see PRD 03).
 - **[P2]** True live multi-device sync via WebSockets — defer; resumable streams + refetch first.
 - **[P2]** RAG / document chat ingestion pipeline — schema reserves space (pgvector) but it is not built day-1.
 - **[P2]** Voice (STT/TTS) — would pull WebSockets/Durable Objects forward; out of MVP scope.
@@ -146,6 +146,7 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 - **[P0/MVP] Stop / abort — semantics invert when resumable streams turn on:**
   - **MVP (no resumable replay):** `useChat` stop closes the client stream; an `AbortSignal` propagates into `streamText` so the upstream provider request is cancelled (stop billing). On abort, persist the partial assistant message and mark the run aborted. This is simple and correct *because there is no resumable layer*.
   - **The moment resumable replay lands (P1):** client-side aborts (`stop()`, refresh, tab close, network loss) are all treated as **disconnects by design and do NOT cancel generation** — the server keeps producing so the client can reconnect. Stop must therefore become a **dedicated server-side stop endpoint** (out-of-band cancel), *not* a client `AbortSignal`. This is a documented behavioral switch: **the abort behavior inverts between MVP and P1**, and building it naively will silently re-introduce bill-until-timeout for *every* stop once resumability ships. ([ai-sdk.dev resume-streams](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams), [vercel/ai #8390](https://github.com/vercel/ai/issues/8390).)
+- **[P0/MVP] Interrupted-stream UX (no resumable replay):** network drops, server errors, and user Stop all end with a **persisted partial assistant message** in `message.parts` and `stream.status = aborted` (or `error`). The client does **not** SSE-resume in P0. PRD 01/03 own the surface: inline **Continue** (re-submit continuation context as a new turn) and **Regenerate** (re-run last user message). *AC:* partial tokens survive reload; Continue/Regenerate never silently discard partial content.
 - **[P1] Resumable streams:** wrap the SSE stream with Vercel's `resumable-stream` library, backed by **Upstash Redis pub/sub** (validated: one `INCR` + `SUBSCRIBE` per stream; minimal Redis cost unless a resume happens). On reconnect (page refresh / network drop on the *same* device) the client replays buffered tokens from the last cursor — **best-effort, subject to Redis retention; not a guarantee of lossless replay across arbitrary outages.** Requires: persist the in-progress assistant message *and* track the active stream id per chat (the `Stream` table). Design the persistence for this in MVP even if resumable replay ships as P1. **Build-time watch items:** known resume bugs where a resumed stream starting with a `text-delta` for an existing part fails ([vercel/ai #13160](https://github.com/vercel/ai/issues/13160)) and tab-backgrounding resume issues ([#11865](https://github.com/vercel/ai/issues/11865)).
 - **[P0/MVP with resumable streams → PRIMARY stop path] Orphaned-run handling (not an edge case):** once resumable streams are on, **every** stop/refresh/close is a disconnect that does not reach the generating process — so out-of-band cancel is the **primary stop mechanism**, and it must exist the moment resumable streams ship. Mechanism:
   - A **dedicated stop endpoint** persists the partial message, cancels the producing work, clears `activeStreamId`, and writes `aborted` to the `Stream` row.
@@ -154,7 +155,7 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
   - A **reaper** (QStash scheduled job) backstops by marking `active` streams older than max-duration as `aborted` and reconciling their messages.
   - **Degraded-path UX:** on reconnect when the Redis buffer has been evicted, show the persisted partial + "generation interrupted, retry." On a concurrent send to a chat that already has an `active` stream (unique-active-stream index violation), return `409` + "a response is already generating in this chat."
 - **[P0/MVP] Long-stream-vs-timeout constraint:** functions cannot stream indefinitely. Layered mitigations: (1) resumable streams (resume after a drop/timeout), (2) Fluid Compute for longer single runs (Cloudflare 5-min CPU Workers as the portability escape hatch), (3) push heavy/long non-token work (file processing, embeddings, title generation) to **QStash background jobs**, never the request path. **[P1 horizon] Vercel Workflows / `DurableAgent`** is the strategic answer for the **P1 tool/agent loop and any multi-minute generation**: it checkpoints state at every `await`, survives timeouts/deploys/crashes, provides durable streams, and solves the orphaned-run problem structurally (steps are individually checkpointed/retried/cancelled), collapsing resumable-stream + reaper + background-job into one durable-step model. It is **Vercel-proprietary** — gate it behind the runtime adapter (Temporal/Restate + AI SDK are portable equivalents). Don't pull it forward for the text-core MVP.
-- **[P0/MVP] Error handling:** surface *stream* errors distinctly from *app* errors in the UI (the AI SDK scopes tool-execution errors to the tool and allows resubmission). Show partial output + a retry affordance on stream failure.
+- **[P0/MVP] Client error contract (`useChat`):** wire streaming failures through the AI SDK hook surface, not ad-hoc fetch parsing. Surface `error` from `useChat` in the assistant bubble footer; recovery actions are **`regenerate()`** for stream/provider failure and **`clearError()`** after dismiss/retry so the composer re-enables. Preserve partial `message.parts` on error. Emit one terminal analytics event per assistant turn from lifecycle finish handling: `completed` | `stopped` | `error` | `interrupted`, with `chat_id`, `message_id`, `model_id`, `served_model_id` (if substitution), and token/cost snapshot when available.
 
 ### 5.2 Provider abstraction & BYOK
 
@@ -169,6 +170,10 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
   - Scope keys per user; decrypt only in-process at call time; never return plaintext to the client.
   - Use a **fresh data-encryption key (DEK) per record (AES-256-GCM)** wrapped by the KMS master key; store unique `(user_id, provider)`, `last_used_at`/`updated_at`, and support **soft-delete/revocation/rotation** (§6 `api_key`).
 - **[P0/MVP] Guest + BYOK policy:** **BYOK requires a non-anonymous account.** A guest gets a real `user` row (FK works) but its identity is evictable and may never upgrade — storing a provider key against it is a key-security/abuse hazard. Gate key entry on a real account.
+- **[P0/MVP] BYOK UI gate:** hide key-entry controls and block `api_key` writes when `user.is_anonymous = true`; show upgrade-to-link-account CTA (PRD 01 §4.8).
+- **[P0/MVP] Grok registry gating:** registry seed may include xAI/Grok via gateway/OpenRouter breadth, but set `default_route_eligible = false` until `data_policy` review passes PR-1. Auto-routing and free-tier defaults MUST NOT select Grok.
+- **[P0/MVP] BYOK UI gate:** hide key-entry controls and block `api_key` writes when `user.is_anonymous = true`; show upgrade-to-link-account CTA (PRD 01 §4.8).
+- **[P0/MVP] Grok registry gating:** registry seed may include xAI/Grok via gateway/OpenRouter breadth, but set `default_route_eligible = false` until `data_policy` review passes PR-1. Auto-routing and free-tier defaults MUST NOT select Grok.
 - **[P0/MVP] Platform-keys vs BYOK policy:** platform keys = we pay, we meter and rate-limit (default for free/Pro tiers); BYOK = user pays, we proxy with no token markup. The Gateway makes the BYOK proxy path simple. Metering/limits apply to platform-key usage; BYOK usage is still rate-limited for abuse but not metered for billing.
 - **[P1] Provider drift handling:** model ids and capabilities (tools, vision, reasoning) move fast — keep a capability registry per model so the UI can gate features (e.g. vision-only models) and the adapter can fall back.
 
@@ -177,12 +182,14 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 - **[P0/MVP]** Postgres + Drizzle is the system of record. Client state (Zustand for UI, TanStack Query for server state) is a cache; the DB is authoritative.
 - **[P0/MVP]** Required tables for MVP: `user` (with `is_anonymous`), `chat` (with `visibility` + `model_id`), `message` (**typed multi-part `parts`** + attachments jsonb + per-message model + token + effective/tiered cost), `stream`, `vote`, **`api_key` (BYOK — P0 per the launch-BYOK decision)**.
 - **[P0/MVP] Typed multi-part message model (THIS PRD owns the data-model schema):** a `message` is an **ordered list of typed parts** — `text | reasoning | tool-call | tool-result | citation | interactive-block` — not a single markdown string. Modeling this in the P0 data layer (even if P0 only *renders* the text/reasoning/code subset) de-risks tools, structured citations, interactive viz, and generative UI in one move; skipping it guarantees a P1 refactor. **PRD 01 references this for rendering** (the rendering decision is really a data-model decision and is made here once).
+- **[P0/MVP] `tool-call` part shape (schema now, minimal renderer):** even before tools ship (P1), `message.parts` MUST accept persistable tool/status parts so PRD 01 status lines are not throwaway. Minimum fields: `type: 'tool-call'`, stable `id`, `toolName` or `displayLabel`, `status: 'pending' | 'running' | 'completed' | 'failed' | 'denied'`, nullable `input`/`output` jsonb, nullable `error`, optional `startedAt`/`completedAt`. P0 UI may render these as status lines only; expandable tool UI is P1.
 - **[P1]** `attachment` (file upload lands with vision/PDF understanding), `document` + `suggestion` (artifacts).
 - **[P2]** `embedding` (RAG, pgvector) — reserve the design, do not build.
 
 ### 5.4 Storage & file uploads
 
 > **Phase note:** file attachments are **P1** (they land with vision/PDF understanding — see PRD 02 §4.8). The lean text-core MVP ships no upload flow; this section is the **P1** design (build the adapter interface when attachments land, not before).
+> **P0 rule:** do not ship presigned upload, `attachment` writes, or mobile attach UI in P0. Attach affordances land with P1 vision/PDF.
 
 - **[P1] Presigned direct-to-storage upload:** client requests a presigned PUT URL from our API → browser uploads **directly** to object storage (keeps large files off function compute/timeout budget) → API writes the `attachment` row with object URL + metadata.
 - **[P1] Validation:** server issues presigned URLs only for allowed content-types and a max size; verify object existence + size after upload before marking `ready`.
@@ -236,8 +243,8 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 
 - **[P0/MVP]** Deploy on **Vercel (Fluid Compute)** for speed-to-MVP and native AI SDK/Gateway/streaming integration.
 - **[P0/MVP] Portability by adapter:** provider, storage, auth, cache/queue (Upstash over HTTP), and tracing (OTel) all behind thin interfaces. Drizzle keeps the DB portable. The escape hatches are explicit: Cloudflare (Workers 5-min CPU, Durable Objects for stateful/WebSocket, Containers for Node-heavy work; zero egress) or containers (Fly/Railway) for long-running/voice needs.
-- **[P0/MVP] Client storage is non-authoritative:** client-side PWA storage (IndexedDB / Cache API) — **especially on iOS, which is evictable (~50 MB cap, 7-day eviction)** — must never hold authoritative chat state. Postgres remains the system of record; the client cache is best-effort and re-hydrated from the server (offline UX owned by PRD 03).
-- **[P2] Realtime multi-device sync:** deferred. MVP relies on resumable streams (in-flight response survives refresh on the same device) + TanStack Query refetch on focus/navigation. True live multi-device push (SSE fan-out, Supabase Realtime, or Durable Objects) is added only when prioritized. Chat is mostly append-only, so last-write-wins on metadata + ordered inserts suffices; no CRDT for MVP.
+- **[P0/MVP] Client storage is non-authoritative:** client-side PWA storage (IndexedDB / Cache API) is a **best-effort cache** only; Postgres is the system of record (offline UX: PRD 03 §4.6). **iOS correction:** Safari 17+ per-origin quota is **disk-proportional** via `navigator.storage.estimate()` — not ~50 MB. The binding constraint is **7-day ITP eviction** of non-persisted data unless `navigator.storage.persist()` is granted (more likely for installed PWAs). Request `persist()` at install/first-save; still re-hydrate from server on load. Never treat IndexedDB as authoritative for message history, BYOK keys, or billing.
+- **[P2] Realtime multi-device sync:** deferred. **P0** uses server-persisted partials + Continue/Regenerate on interrupt (PRD 01/03). **P1** adds same-device resumable-stream replay (§5.1). True live multi-device push (SSE fan-out, Supabase Realtime, Durable Objects) is added only when prioritized. Chat is mostly append-only, so last-write-wins on metadata + ordered inserts suffices; no CRDT for MVP.
 
 ---
 
@@ -253,6 +260,8 @@ user (
   name          text null,
   is_anonymous  boolean not null default false,   -- guest sessions
   retention_days integer null,          -- per-user retention override
+  custom_instructions text null,         -- P0 custom instructions injected into chats
+  preferences   jsonb not null default '{}', -- theme, locale, a11y, future user prefs
   created_at    timestamptz not null,
   updated_at    timestamptz not null
 )
@@ -264,10 +273,22 @@ chat (
   title       text,
   visibility  text not null default 'private',   -- private | public | unlisted
   model_id    text not null,            -- default/selected model for the chat
+  is_temporary boolean not null default false, -- excludes future memory/personalization
+  expires_at  timestamptz null,         -- optional shorter retention for temporary chats
   created_at  timestamptz not null,
   updated_at  timestamptz not null
 )
 -- index: (user_id, updated_at desc)
+
+-- SHARE_LINK ---------------------------------------------------------- [P0]
+share_link (
+  id          uuid pk,
+  chat_id     uuid not null references chat(id) on delete cascade,
+  token_hash  text not null unique,     -- store hash only; raw token appears in URL
+  created_at  timestamptz not null,
+  revoked_at  timestamptz null
+)
+-- AC: revoked share links return 404; public share payload strips token/cost fields per PRD 07.
 
 -- MESSAGE ------------------------------------------------------------ [P0]
 -- "Message_v2" style: typed multi-part `parts` + attachments jsonb; per-message model + usage + effective cost
@@ -282,6 +303,11 @@ message (
   attachments   jsonb not null default '[]',
   model_id          text null,          -- resolved/served model for assistant msgs  *** transparency contract
   provider          text null,          -- openai | anthropic | google | ...
+  requested_model_id text null,         -- explicit model requested at send time, if any
+  requested_tier     text null,         -- Fast | Smart | Pro | Auto
+  served_model_id    text null,         -- explicit served model id; defaults to model_id
+  routing_decision   jsonb null,        -- Auto/router signals + chosen route
+  substitution_reason text null,        -- auto_downgrade|rate_limited|provider_fallback|deprecated_model|budget_cap|policy_route
   prompt_tokens     integer null,
   completion_tokens integer null,
   total_tokens      integer null,
@@ -295,6 +321,28 @@ message (
 )
 -- index: (chat_id, created_at)
 -- cost_usd doubles as the live budget-enforcement signal for §5.6 (not just a display value)
+
+-- USER_PLAN / USAGE --------------------------------------------------- [P0] (metered free + Pro + credits)
+user_plan (
+  user_id       uuid pk references user(id) on delete cascade,
+  tier          text not null,          -- free | pro | byok_only | team_later
+  period_start  timestamptz not null,
+  period_end    timestamptz not null,
+  message_cap   integer null,
+  token_cap     integer null,
+  usd_cap       numeric(14,8) null,
+  usd_credits_remaining numeric(14,8) not null default 0
+)
+
+usage_rollup (
+  user_id       uuid not null references user(id) on delete cascade,
+  period_start  timestamptz not null,
+  messages_used integer not null default 0,
+  tokens_used   integer not null default 0,
+  usd_spent_platform numeric(14,8) not null default 0, -- sums only message.is_byok = false
+  primary key (user_id, period_start)
+)
+-- AC: budget exhaustion returns PRD 08 PLATFORM_BUDGET_EXCEEDED; BYOK turns do not decrement usd_spent_platform.
 
 -- ATTACHMENT --------------------------------------------------------- [P1] (lands with vision/PDF)
 attachment (
@@ -396,7 +444,7 @@ audit_log (
 
 ## 7. Dependencies & cross-references
 
-- **PRD 01 — Core Chat Experience** (chat UI): the transparency UX (model used + token cost per message) consumes `message.model_id` / `provider` / `cost_usd` / `cost_breakdown`; **PRD 01 owns the display** of effective/tiered cost; the **typed multi-part `message.parts`** model (this PRD, §5.3/§6) is what PRD 01 renders (text/reasoning/code at P0); artifacts UX consumes `document`/`suggestion`; vote UX consumes `vote`; the streaming/stop UI sits on §5.1; conversation search reads the chat/message store.
+- **PRD 01 — Core Chat Experience** (chat UI): the transparency UX (model used + token cost per message) consumes `message.model_id` / `provider` / requested-vs-served fields / `cost_usd` / `cost_breakdown`; **PRD 01 owns the display** of effective/tiered cost; the **typed multi-part `message.parts`** model (this PRD, §5.3/§6) is what PRD 01 renders (text/reasoning/code at P0); artifacts UX consumes `document`/`suggestion`; vote UX consumes `vote`; the streaming/stop UI sits on §5.1; conversation search reads the chat/message store.
 - **PRD 02 — AI Capabilities** (model registry / AI contracts): defines the model catalog, capability flags (vision/tools/reasoning), routing policy, reasoning/usage semantics, and the cheap-default-model strategy that this PRD's provider adapter + capability registry (§5.2) implement. **PRD 02 owns the pricing schema** (tiered/threshold/cached/promo multipliers) that produces the effective cost; this PRD owns the **storage/capture** shape (`message.cost_usd` + `cost_breakdown`, §6) — the data-layer counterpart of PRD 02's transparency contract.
 - **PRD 03 — Mobile & Cross-Platform** (mobile/PWA UX): mobile is responsive web / PWA — no separate mobile framework. This PRD owns the service-worker / IndexedDB / sync internals, object storage, and the AI-data-disclosure consent plumbing that PRD 03's UX requirements depend on; streaming and a11y (live-region token announcements, touch targets) must hold on mobile web.
 - **PRD 05 — Roadmap / Monetization / Metrics**: §5.7 NFRs implement PRD 05's product-level privacy/compliance policy; the rate-limiting + BYOK design (§5.2/§5.6) implements PRD 05's metered-free-tier + model-routing economics. **Cross-PRD boundary:** **PRD 05 owns the metered-overage / credit (monetization) decision; this PRD owns the enforcement mechanism** — the token + cost-budget caps + circuit breakers (§5.6), with `message.cost_usd` (§6) as the live spend ledger and the metering hook PRD 05 reads. **Phase changes for the PRD 05 roadmap worker:** (a) EU AI Act content-marking may move **P1 → P0** pending legal sign-off (§5.7/§9 Q1) — flag, do not lock; (b) the resumable-stream **stop endpoint + orphaned-run handling is now the PRIMARY P0(-with-resumable)/P1 stop path** (§5.1), not an edge case; (c) **Vercel Workflows / DurableAgent** is the P1 agent-loop / long-run horizon. Observability (§5.6) emits the TTFT / cost-per-message signals PRD 05's KPIs consume.

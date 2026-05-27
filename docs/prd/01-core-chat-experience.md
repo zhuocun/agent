@@ -133,6 +133,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 - **[P0]** **Theme**: light / dark / **system** (default system).
 - **[P0]** **Custom instructions** entry point (stable user preferences injected per chat; content semantics in PRD 02). MVP = a simple text-entry dialog reachable from settings and a shortcut.
 - **[P0]** **Data controls** entry point: clear/delete history; training opt-out toggle if applicable (privacy-first posture). Detailed data handling in PRD 04.
+- **[P0]** **Temporary chat** entry point in the New Chat menu and thread header. Temporary chats are visibly marked, excluded from future memory/personalization, and use the retention fields defined in PRD 04. *AC:* starting a temporary chat sets `chat.is_temporary = true` and the UI shows a temporary-chat banner.
 - **[P1]** **Memory transparency UX (the differentiated spec; memory stays P1).** Memory is now a free baseline everywhere, so our wedge is the transparency layer, not the feature: (a) a **viewable/editable memory ledger** (see/add/edit/delete stored facts); (b) a per-message **"memory used here" indicator** showing which stored memory informed a response; (c) **cross-tool memory import** (from ChatGPT/Gemini/Grok) as a cheap acquisition lever. Generic memory management without the ledger/indicator is off-thesis.
 
 ### 4.9 Keyboard shortcuts & command palette
@@ -195,7 +196,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 >
 > **IME caveat (a11y/i18n):** if an IME composition is active (`event.isComposing` true, or `keyCode === 229`), `Esc` must be left to the IME (CJK input uses Esc to cancel a candidate) and must **not** stop the stream. Validate this with a usability/screen-reader check given the mobile-web + EU/multilingual persona.
 
-- Layout (desktop): `[+ attach] [ multiline textarea ] [ model tier control ] [ Send/Stop ]`. Attachment chips render in a row above the input. Model control is compact (label = current tier) and opens a tiered menu with brief metadata (relative speed/cost, modality) sourced from the registry.
+- Layout (desktop, P0): `[ multiline textarea ] [ model tier control ] [ Send/Stop ]`. **No attach control at P0**; P1 layout adds `[+ attach]` and attachment chips above the input when vision/PDF ships. Model control is compact (label = current tier) and opens a tiered menu with brief metadata (relative speed/cost, modality) sourced from the registry.
 - Composer is sticky to the bottom of the thread; remains anchored during streaming.
 - Mobile composer specifics (touch targets, keyboard avoidance, sticky Stop): **defer to PRD 03**.
 
@@ -286,7 +287,7 @@ Pulled from research open-questions and shared context:
 8. **Search scope (open).** Title-only vs full-text history search at MVP depends on the search index (PRD 04); target full-text if feasible, fall back to title + recent-content otherwise.
 9. **Sourcing caveat.** Research is partly secondary; re-verify any specific shortcut/limit against first-party docs before locking. Shortcut conventions here follow category norms and are safe; exact provider limits are not owned by this PRD.
 10. **Contested cross-PRD items this surface touches (FLAGGED, not decided here).** Per the product owner, these are not unilaterally decided in this PRD; integrated as open flags only:
-    - **Exact Pro price.** This PRD shows a **"Pro" capability-tier label** in the composer/model picker (§4.3, §5.3) and can include per-message cost metadata in copy/export (§4.10); none of those depend on the Pro *price*, which is owned by **PRD 05** (pricing model still contested — flat vs. metered-overage). The tier label is safe regardless; do not encode a price here.
+    - **Exact Pro price.** This PRD shows a **"Pro" capability-tier label** in the composer/model picker (§4.3, §5.3) and can include per-message cost metadata in copy/export (§4.10); none of those depend on the Pro *price*, which is owned by **PRD 05**. Metered Pro + P0 USD overage is resolved (PRD 00 D8, PRD 05 §9.4); only the price band remains contested. The tier label is safe regardless; do not encode a price here.
     - **EU AI Act content-marking date** (Aug 2 vs Dec 2 2026, plus a May-2026 provisional reshuffle) — owned by **PRD 00/04/05**, needs legal sign-off. Not surfaced on this chat surface today; if a content-marking/watermark badge ever lands in the renderer, gate it on that decision rather than assuming a date.
     - **Whether we serve minors / companion personas** — owned by **PRD 05** (policy/competitive). Not touched by this surface; flagged so onboarding/empty-state copy (§4.7) isn't designed around an unresolved audience decision.
 

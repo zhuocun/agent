@@ -23,6 +23,8 @@ The market gap (see PRD 05 §1, §3):
 
 We stack three defensible wedges — **model choice, transparency (which model answered + what it cost), and privacy/BYOK** — and win the core experience on **streaming/rendering fidelity, composer ergonomics, accessibility, and mobile-web polish** rather than feature breadth.
 
+**What we are not:** a generic AI work assistant, inbox/calendar agent, or "do everything for your job" productivity suite. We are a **chat product** whose wedge is **multi-model choice + per-message cost/model transparency + privacy/BYOK** — winning on the core chat loop and trust surfaces, not feature breadth.
+
 ---
 
 ## 2. Problem & opportunity
@@ -67,11 +69,11 @@ The MVP is a **lean, text-core, multi-model chat** that is polished, accessible,
 - **BYOK ships at launch (P0).** Bring-your-own-key is the power-user margin de-risk and a privacy/cost-control wedge; the architecture designs encrypted key handling from day one.
 
 ### In the MVP (P0)
-Streaming chat with stop-that-preserves-partial-output · streaming-safe markdown rendering (code+copy, KaTeX, tables, mermaid) · collapsible reasoning panel · robust **text** composer + model-tier picker · **multi-provider model picker + per-message transparency (model used + token/cost)** · **transparency cost-accounting schema rich enough for tiered/threshold/cached/promo pricing + reasoning tokens, with a served-vs-requested model surface** · **typed multi-part message model** (data layer is full; renderer ships the text/code/reasoning subset) · heuristic auto-routing to a cheap (non-DeepSeek-hosted Western no-train) default model · conversation management (history, rename, delete, search) · core message actions (copy, regenerate, edit-last, thumbs) · system prompt + custom instructions · context management + usage/cost meter · structured outputs + schema validation · baseline safety/moderation · onboarding empty state · settings (theme, custom instructions, data controls) · share link + copy-as-markdown · keyboard shortcuts + `Cmd/Ctrl+K` palette · **accessibility baseline** · **responsive web + PWA** · optimistic send + offline draft/queue + virtualized message list · **INP performance budget** (`scheduler.yield()` + rAF token-batching) · **no-train-by-default + retention controls + export/delete + AI-interaction disclosure** · **metered free tier + Pro (metered caps + transparent USD credit overage; price open — see §12) + BYOK** · **minimal metered-overage/credit primitive**.
+Streaming chat with stop-that-preserves-partial-output · interrupted-stream recovery (**partial + Continue/Regenerate**, not P1 replay) · streaming-safe markdown rendering (code+copy, KaTeX, GFM tables; **Mermaid diagrams → P1**) · collapsible reasoning panel · robust **text-only** composer + model-tier picker · **multi-provider model picker + per-message transparency (model used + token/cost)** · **transparency cost-accounting schema rich enough for tiered/threshold/cached/promo pricing + reasoning tokens, with a served-vs-requested model surface** · **typed multi-part message model** (data layer is full; renderer ships the text/code/reasoning/status subset) · heuristic auto-routing to a cheap (non-DeepSeek-hosted Western no-train) default model · xAI/Grok in the registry but excluded from Auto/default until data-policy review · conversation management (history, rename, delete, search) · core message actions (copy, regenerate, edit-last, thumbs) · system prompt + custom instructions · context management + usage/cost meter · structured outputs + schema validation · baseline safety/moderation · onboarding empty state · settings (theme, custom instructions, data controls; BYOK only for non-anonymous accounts) · share link + copy-as-markdown · keyboard shortcuts + `Cmd/Ctrl+K` palette · **accessibility baseline** · **P0 i18n baseline** (externalized strings, RTL/logical CSS, IME-safe composer) · **responsive web + PWA** · optimistic send + offline draft/queue + virtualized message list · **INP performance budget** (`scheduler.yield()` + rAF token-batching) · **no-train-by-default + retention controls + export/delete + AI-interaction disclosure** · **metered free tier + Pro (metered caps + transparent USD credit overage; price open — see §12) + BYOK** · **minimal metered-overage/credit primitive**.
 
 ### Deferred
-- **P1 (fast-follow):** vision/PDF understanding + file attachments, tool/function-calling + agentic loop, web-search + citations, deep parallel model comparison, Projects/Spaces, memory, TTS/dictation, **explicit copy-on-branch ("branch in new chat")**, **native slash commands / prompt library + customizable keyboard shortcuts**, multi-format export, richer usage-credit/prepaid-pack UX, resumable-stream replay.
-- **P2 (later):** artifacts/canvas, code execution, RAG, unified voice, image generation, custom assistants, MCP/connectors, trained routing, Capacitor native, teams/enterprise, ads (revisit at scale), in-thread alternate-response trees.
+- **P1 (fast-follow):** vision/PDF understanding + file attachments (including mobile attach/camera affordances), Mermaid diagram rendering, tool/function-calling + agentic loop, web-search + citations, Projects/Spaces, memory transparency, TTS/dictation, **explicit copy-on-branch ("branch in new chat")**, **native slash commands / prompt library + customizable keyboard shortcuts**, multi-format export, richer usage-credit/prepaid-pack UX, resumable-stream replay.
+- **P2 (later):** deep parallel model comparison, artifacts/canvas, code execution, RAG, unified voice, image generation, custom assistants, MCP/connectors, trained routing, Capacitor native, teams/enterprise, ads (revisit at scale), in-thread alternate-response trees.
 
 > **Dropped (not a phase):** native **pull-to-refresh** — it reloads the page and kills in-flight streams; superseded by `overscroll-behavior: contain` (PRD 03 §4.4).
 
@@ -89,6 +91,9 @@ Full reconciled phase table with dependencies: **PRD 05 §4.**
 | **[03 — Mobile & Cross-Platform](03-mobile-cross-platform.md)** | Responsive pane model, mobile composer/keyboard, gestures, offline, PWA, performance, delivery (PWA→Capacitor) |
 | **[04 — Technical Architecture](04-technical-architecture.md)** | Stack, streaming/resumable, data model, provider/BYOK, auth/guest, storage, security/privacy NFRs, deployment |
 | **[05 — Roadmap, Monetization, Metrics & NFRs](05-roadmap-monetization-metrics.md)** | Reconciled P0/P1/P2 roadmap, monetization, KPIs, accessibility/i18n/privacy/compliance NFRs, risks |
+| **[06 — Design System & Visual Spec](06-design-system-visual-spec.md)** | Tokens, layout primitives, chat components, transparency/privacy chrome, visual acceptance criteria |
+| **[07 — Transparency Contract](07-transparency-contract.md)** | End-to-end model + cost + served-vs-requested contract across registry, persistence, UI, metering, and share/export rules |
+| **[08 — Error & Limit States](08-error-and-limit-states.md)** | Unified taxonomy and UX for stream failures, provider/app errors, quota limits, guest gates, BYOK failures, and offline states |
 
 > **Numbering note:** PRD numbers ≠ research-file numbers (e.g. research-04 *AI capabilities* → PRD 02; research-02 *mobile* → PRD 03; research-03 *architecture* → PRD 04).
 
@@ -96,7 +101,7 @@ Full reconciled phase table with dependencies: **PRD 05 §4.**
 
 ## 7. Cross-cutting principles
 
-- **Transparency as product:** every assistant message shows which model answered and (where available) its token/cost. Never silently downgrade. This is a single **transparency contract** — a cost-accounting schema rich enough to be *true* (tiered/threshold/cached/promo pricing + reasoning tokens) plus a **served-vs-requested** model surface — cutting across PRD 01 (UX/display), PRD 02 (registry + pricing schema), and PRD 04 (data-model capture). It is a **P0 cross-cutting workstream with one named owner** spanning all three, not three loosely-coupled pieces.
+- **Transparency as product:** every assistant message shows which model answered and (where available) its token/cost. Never silently downgrade. This is a single **transparency contract** — a cost-accounting schema rich enough to be *true* (tiered/threshold/cached/promo pricing + reasoning tokens) plus a **served-vs-requested** model surface — cutting across PRD 01 (UX/display), PRD 02 (registry + pricing schema), PRD 04 (data-model capture), and PRD 07 (contract authority). It is a **P0 cross-cutting workstream with one named owner**, not three loosely-coupled pieces. **Public share exception:** unlisted read-only shares show model attribution but omit token/cost fields; in-app threads and private export retain full transparency.
 - **Privacy-first:** no training on user chats by default; short configurable retention; one-click export/delete; optional no-telemetry mode.
 - **Accessibility is a differentiation lever, not a follow-up:** labeled controls, ARIA live regions for streaming, full keyboard operability — incumbents have measured gaps (PRD 01 §5.7, PRD 05 §7.1).
 - **Mobile-web first:** the product is excellent on a phone browser, not a shrunk desktop UI (PRD 03).
@@ -113,7 +118,7 @@ Full reconciled phase table with dependencies: **PRD 05 §4.**
 
 ## 9. Success metrics (summary)
 
-Instrument from day one: activation / time-to-first-value · a first-week **"Day-1 success" activation funnel** (% completing a first-week success checklist — the strongest countermeasure to AI-tourist churn) · **time-to-first-token + per-model latency** · **AI-native retention (≈40% GRR / 48% NRR — model on AI-native, not SaaS-optimistic, benchmarks)** + D1/D7/D30 **plus task-recurrence** (AI usage is bursty) · DAU/MAU stickiness · messages/session · free→paid conversion / MRR / churn · **ARPU target bands (sub-led ~$30–100+; hybrid ~$3–15)** · **cost-per-message / gross margin / model-routing mix** · thumbs/regeneration/NPS. Definitions, benchmarks, and phase-2 metrics: **PRD 05 §6.**
+Instrument from day one: activation / time-to-first-value · a first-week **"Day-1 success" activation funnel** (% completing a first-week success checklist — the strongest countermeasure to AI-tourist churn) · **time-to-first-token + per-model latency** · **AI-native retention (≈40% GRR / 48% NRR — model on AI-native, not SaaS-optimistic, benchmarks)** + D1/D7/D30 **plus task-recurrence** (AI usage is bursty) · DAU/MAU stickiness · messages/session · free→paid conversion / MRR / churn · **ARPU target bands (sub-led ~$30–100+; hybrid ~$3–15)** · **cost-per-message / gross margin / model-routing mix** · stream terminal events (`completed` / `stopped` / `error` / `interrupted`) · thumbs/regeneration/NPS. Definitions, benchmarks, and phase-2 metrics: **PRD 05 §6.**
 
 ---
 
@@ -138,6 +143,9 @@ Commoditization vs incumbents · **aggregator price-compression** (T3 Chat @ $8/
 | D9 | **Foundation committed: AI SDK v6 (GA 2025-12-22; SSE, `Output.object()` for structured outputs) + Next.js 16 (Cache Components/PPR) + Better Auth.** Auth.js dropped (security-patch-only); `generateObject`/`streamObject` deprecated. | Resolves the open v5-vs-v6 and 3-way auth questions; avoids shipping the MVP against a deprecated API or a deprecated auth path (PRD 04 §4/§5.5/§9). |
 | D10 | **Explicit copy-on-branch ("branch in new chat") → P1** (was P2); in-thread alternate-response trees stay P2+. | Corrects a factual error (incumbents *shipped* explicit branching, didn't retreat); low-risk copy model that directly serves the dev/power-user beachhead (PRD 01 §4.6/§8). |
 | D11 | **Free-tier default = a non-DeepSeek-hosted, Western no-train route** (Gemini Flash / OpenAI-mini / Claude Haiku / Mistral-EU class; PRD 02 owns final pick). DeepSeek-hosted API dropped as a default; Western-hosted open weights remain a separate P2+ line. | DeepSeek-hosted API is a poor privacy-first default (government/enterprise bans + Italy consumer block + data-in-China); decision *narrowed*, not fully answered — final route depends on the `data_policy` no-train guarantee (PRD 02 §5.3). |
+| D12 | **Mermaid interactive rendering → P1; P0 ships code/math/tables only.** | Resolves cross-PRD scope drift and avoids P0 bundle bloat. Fenced Mermaid may render as code until P1. |
+| D13 | **Mobile attach/camera UI → P1 with vision/PDF; P0 mobile composer is text-only.** | Resolves mobile PRD attach affordance drift against the lean text-core MVP. |
+| D14 | **P0 interrupted-stream recovery ≠ P1 resumable replay.** | P0 preserves partial output and offers Continue/Regenerate; P1 replays buffered deltas from the same stream id. Keeping these separate avoids billing, persistence, and UX bugs. |
 
 ---
 
@@ -156,4 +164,5 @@ Each PRD carries its own open-questions section; the cross-cutting product/busin
 
 ## 13. References
 
-- Workstream PRDs: [01](01-core-chat-experience.md) · [02](02-ai-capabilities.md) · [03](03-mobile-cross-platform.md) · [04](04-technical-architecture.md) · [05](05-roadmap-monetization-metrics.md)
+- Workstream PRDs: [01](01-core-chat-experience.md) · [02](02-ai-capabilities.md) · [03](03-mobile-cross-platform.md) · [04](04-technical-architecture.md) · [05](05-roadmap-monetization-metrics.md) · [06](06-design-system-visual-spec.md) · [07](07-transparency-contract.md) · [08](08-error-and-limit-states.md)
+- **Traceability:** competitive/research findings are summarized and mapped in PRD 05 §10.1. Original `research-*.md` files are not checked into this repo; PRD file + section references are authoritative for build/review.

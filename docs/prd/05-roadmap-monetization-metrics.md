@@ -11,7 +11,7 @@
 
 ## 1. Summary & Purpose
 
-This PRD consolidates the four product workstreams (features/UX, mobile, architecture, AI capabilities) plus the competitive/monetization research into **one coherent execution plan**: a phased roadmap (P0/P1/P2), a monetization recommendation with cost economics, the day-one metrics program, and product-level non-functional requirements (accessibility, i18n, privacy, security/trust, compliance).
+This PRD consolidates the workstream PRDs into **one coherent execution plan**: a phased roadmap (P0/P1/P2), a monetization recommendation with cost economics, the day-one metrics program, and product-level non-functional requirements (accessibility, i18n, privacy, security/trust, compliance). Competitive/monetization findings are inlined here; legacy `research-*.md` files are **not in the repo** — see §10.1 for mapping.
 
 It is the canonical reference for **scope sequencing, pricing, KPIs, and NFRs**. Where individual workstream PRDs go deep on their domain, this PRD resolves cross-cutting tensions — most notably that **the multi-provider model picker plus transparency (model used + token cost) is IN the MVP**, not a later phase, because it is the core wedge and is cheap to deliver via the provider-abstraction layer the architecture already requires.
 
@@ -50,6 +50,8 @@ Purpose:
 
 The open market gap is **multi-model + transparency + privacy + cost control**. Incumbents are single-model (ChatGPT/Claude/Gemini), trust-damaged on transparency (Perplexity's silent model downgrades), or bare aggregators without a privacy/transparency story (Poe). We stack three defensible wedges (model choice, transparency, BYOK/privacy) rather than fight at the commoditized $20 all-rounder tier.
 
+**What we are not:** a generic AI work assistant, inbox/calendar agent, or broad productivity suite. This is a **chat product** whose primary wedge is **multi-model choice + per-message cost/model transparency + privacy/BYOK**; workflow breadth follows only after the core chat loop is trusted and polished.
+
 ### 3.2 Personas
 
 | Priority | Persona | Core needs | Willingness to pay | Cost to serve |
@@ -75,69 +77,57 @@ The open market gap is **multi-model + transparency + privacy + cost control**. 
 - **Deep *parallel* comparison (same prompt → N models side by side) → P1.** The picker is P0; running and diffing multiple models in one view is a heavier, later layer.
 - **Artifacts/canvas, web-search/RAG, memory, voice, image-gen, MCP, Capacitor native, enterprise → P1/P2** (high infra cost, mobile-web complexity, or long sales cycle).
 
-### 4.3 Feature → phase table (reconciled across all five research files)
+### 4.3 Feature → phase table (reconciled)
 
-Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2** = later/differentiator/heavier infra. The **Source** column cites *research files* whose numbering differs from the PRD numbering — e.g. research-04 (AI capabilities) → **PRD 02**, research-02 (mobile) → **PRD 03**, research-03 (architecture) → **PRD 04**. The owning workstream PRD's tag governs; this table reflects the **reconciled scope after the lean-text-core MVP decision** (vision/PDF, tool-calling, and web-search are P1; BYOK is P0) **and the cross-PRD review reconciliation**.
+Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2** = later/differentiator/heavier infra. **Source** cites authoritative workstream PRD sections. Legacy `research-*.md` files are not in this repo; see §10.1 for mapping.
 
 | Feature / capability | Phase | Source | Notes / dependencies |
 |---|---|---|---|
-| Token streaming with Stop/Abort (preserves partial output) | **P0** | 01 §15, 04 §12 | Non-negotiable. SSE + Stop/abort + `Stream`-table schema = **P0**; resumable-stream *replay* = **P1** (PRD 04 §5.1). |
-| Streaming-safe markdown renderer (code+copy, KaTeX, GFM tables, Mermaid) | **P0** | 01 §15 | Biggest perceived-quality lever; adopt Streamdown-style renderer. |
-| Robust composer (multiline, send/stop, text paste, model picker) | **P0** | 01 §15 | Highest-leverage surface. Mobile: `dvh`, safe-area, auto-grow. **Image/file attach + drag-drop = P1** (lands with vision/PDF). |
-| **Multi-provider model picker (capability tiers: Fast/Smart/Pro)** | **P0** | 04 §12, 05 §8 | **Core wedge.** Provider abstraction + Gateway/OpenRouter. |
-| **Transparency surface: model used + per-message token cost** | **P0** | 05 §4/§8 | Core wedge + trust. Avoid "silent downgrade." |
-| **Transparency cost-accounting schema + served-vs-requested model surface** | **P0** | 00 §3.1/§4.1, 02 G1 | **The wedge.** Schema must represent tiered/threshold/cached/promo pricing (a single scalar is *wrong on long-context turns*); surface per-message served-vs-requested model + reason-for-substitution. Cross-PRD transparency contract (PRD 01 UX / PRD 02 registry / PRD 04 data model) — assign one owner. |
-| **Typed multi-part message model** (text/reasoning/tool-call/tool-result/citation/ui-block parts) | **P0** | 00 §3.2/§4.3 | **P0 data layer; render only text/code/reasoning subset at P0.** De-risks tools/citations/viz/generative-UI (all P1) in one decision; skipping it guarantees a P1 refactor. |
-| **AI SDK v6 / Next.js 16 / Better Auth (committed foundation)** | **P0** | 00 §5, 04 | Resolved: build target is AI SDK v6 (GA 2025-12-22; `Output.object()` for structured outputs), Next.js 16, Better Auth (Auth.js dropped, security-patch-only). |
-| Basic auto model-routing (heuristic; cheap default model) | **P0** | 04 §12, 05 §3 | Margin lever; route easy queries to cheap models. |
-| Conversation management (new chat, time-grouped history, rename, delete, search) | **P0** | 01 §15 | Full-text search across history. |
-| Core message actions (copy, regenerate, edit-last + re-run, thumbs up/down) | **P0** | 01 §15 | Note ChatGPT's 2026 retreat from deep editing — design conservatively. |
-| Collapsible reasoning/status panel (auto-open, "Thought for Xs", auto-collapse) | **P0** | 01 §15, 04 §12 | Correct token/cost accounting for thinking tokens. |
-| System prompt + user custom instructions | **P0** | 04 §12 | Persona/tone/preferences. |
-| Onboarding empty state (greeting + 3–4 suggested-prompt cards) | **P0** | 01 §15, 04 §11 | Cheap, high activation impact. |
-| Settings basics (light/dark/system theme, custom instructions, data controls) | **P0** | 01 §15 | Includes training opt-out / clear history. |
-| Share link (unlisted) + copy-as-markdown export | **P0** | 01 §15 | Lightweight; richer export later. |
-| Keyboard shortcuts + `Cmd/Ctrl+K` command palette | **P0** | 01 §15 | Most power-user value cheaply. **Customizable** shortcuts = **P1**. |
-| Native slash commands / prompt library | **P1** | 01 §15, 00 §2 | Power-user composer ergonomics; cheap fast-follow over the P0 composer + command palette. |
-| Customizable keyboard shortcuts | **P1** | 02 §4 | Rebindable shortcuts layer over the P0 default set. |
-| Accessibility baseline (labeled buttons, ARIA live regions, keyboard, announced status) | **P0** | 01 §13/§15, 02 §12 | Differentiation lever — incumbents have measured gaps. |
-| Responsive mobile-web layout + PWA layer (manifest, SW, app-shell cache) | **P0** | 02 §13 | Fluid panes + adaptive shell; Android web push; iOS A2HS coachmark. **Pull-to-refresh dropped** (`overscroll-behavior: contain`) — it reloads and kills in-flight streams. |
-| Optimistic send + IndexedDB drafts/queue + retry w/ backoff | **P0** | 02 §13 | Resilience on mobile networks. |
-| Virtualized message list + smart auto-scroll + scroll-to-bottom | **P0** | 02 §13 | Top technical risk (virtualization × streaming) — needs spike. |
-| **INP performance budget + `scheduler.yield()` / rAF token-batching** | **P0** | 02 §4.5, 00 §2 | **Was P1.** INP is the most-failed 2026 Web Vital and streaming chat is a worst case — set a budget and batch token renders from launch. |
-| Context management (token counting + visible usage/cost meter) | **P0** | 04 §12 | Underpins transparency + routing. |
-| Structured outputs / JSON mode + schema validation | **P0** | 04 §12 | Needed for reliable tool args + future structured features. |
-| Baseline safety (input/output moderation, prompt-injection-aware design) | **P0** | 04 §12, 05 §6, 00 §2 | Least-privilege; abuse-reporting path. **Gateway-level guardrails** (PII redaction, jailbreak detection) can satisfy P0 safety with less custom code. |
-| **AI-interaction disclosure** ("you're talking to an AI") | **P0** | 05 §6 | **Live US launch-gate, not just EU.** Satisfies the core EU AI Act transparency req (~Aug 2026 `[VERIFY]`) **and** CA SB 243 / CO SB 205 disclosure (live now); build in from start. |
-| **No-train-by-default + short retention + one-click export/delete** | **P0** | 05 §6 | Privacy acquisition hook; in-product retention disclosure. |
-| Metered free tier + Pro subscription + BYOK | **P0** | 05 §8 | See §5. Billing/metering/key-encryption infra. Pro = explicit metered caps, not flat "generous limits." |
-| **Minimal metered-overage / transparent USD credit primitive** | **P0** | 05 §1.1/§3.4, 00 §2/§4.5 | **Was P1.** 2026 market reprices to usage/credits (Copilot 6/1/26, Anthropic, Cursor). The P0 cost meter is the spine — add metering enforcement + a simple USD credit top-up so Pro's caps have transparent overage. Resolves the §5.1-vs-§5.2 flat-Pro-vs-hard-metering inconsistency. (Enforcement mechanism owned by PRD 04.) |
-| Vision (image input) + PDF/document understanding | **P1** | 04 §12 | Low marginal effort on multimodal models; meter usage. |
-| Tool/function calling + basic agentic loop (max-iteration caps) | **P1** | 04 §12 | Foundation for search, analysis, MCP. |
-| Web search/grounding + inline citations + source cards + follow-ups | **P1** | 01 §15, 04 §12, 00 §2 | Perplexity-style trust layer. **Stays P1 but now cheaper to build** via Vercel AI Gateway native web search (`perplexitySearch`/`parallelSearch`, any model). |
-| **Deep parallel model comparison** (same prompt → N models) | **P1** | 05 §4 | Heavy-comparison layer over the P0 picker. |
-| Projects/Spaces (named container + pinned instructions + files + grouped chats) | **P1** | 01 §15 | Table-stakes for serious users; post-MVP layer over history. |
-| Persistent cross-chat memory (transparent, editable, consent/deletion) | **P1** | 04 §12 | High retention value; privacy complexity → fast-follow. |
-| Pin/archive, tagging/folders | **P1** | 01 §15 | Organization layer. |
-| Read-aloud (TTS) + voice input (dictation) | **P1** | 01 §15, 04 §12 | Accessibility/mobile dictation; Web Speech API as enhancement. |
-| Multi-format export (PDF/.docx/Markdown) | **P1** | 01 §15 | Richer than P0 copy-as-markdown. |
-| Branching / alternate responses (explicit **copy-on-branch**, "branch in new chat") | **P1** | 01 §15, 00 §2 | **Confirmed P1 (corrects a prior P2 read).** Low-risk copy-on-branch model; serves the dev/power-user beachhead. |
-| Richer usage-credit UX (prepaid credit packs, top-up flows) | **P1** | 05 §8 | For occasional heavy users who won't subscribe; the *minimal* metered-overage/credit primitive is now **P0** (above). Adds cognitive load — gate behind defaults. |
-| Artifacts/Canvas (side panel, live preview, versioning, copy/download) | **P2** | 01 §15 | High wow, high cost; awkward on mobile-web (full-screen fallback). |
-| Sandboxed code execution / data analysis | **P2** | 01 §15, 04 §12 | Builds on artifacts + agentic loop. |
-| RAG over user documents (pgvector → Pinecone at scale) | **P2** | 03 §13, 04 §12 | Large-context can substitute early; build when corpora/auditability needed. |
-| Unified voice mode (speech-to-speech) | **P2** | 01 §15, 04 §12 | Latency/infra; pulls WebSockets/Durable Objects forward. |
-| Image / media generation | **P2** | 01 §15, 04 §12 | Separate models/cost; not core to chat. |
-| Custom assistants (Gems/GPT-style) + template gallery | **P2** | 01 §15 | Prompt library is a cheap fast-follow; full assistants later. |
-| MCP / connectors / plugins | **P2** | 04 §12 | Powerful but big security surface (injection risk). |
-| Advanced auto-routing (trained classifier) | **P2** | 04 §12 | Heuristic routing suffices until scale/cost pressure. |
-| Capacitor native wrapper (iOS/Android apps) | **P2** | 02 §13 | Trigger: iOS push re-engagement KPI, app-store presence, durable offline. |
-| Team/enterprise seats, SSO/SAML, SOC 2, DPA, no-train contracts | **P2** | 05 §3/§9 | High ACV, long cycle, compliance burden. |
-| Ads on free tier | **P2 (revisit)** | 05 §2 | Needs massive scale; trust risk; revisit only at scale. |
+| Token streaming with Stop/Abort (preserves partial output) | **P0** | 01 §4.1, 04 §5.1 | SSE + Stop/abort + partial persistence. |
+| Interrupted-stream recovery (partial + Continue/Regenerate) | **P0** | 01 §4.1, 03 §4.6, 04 §5.1 | Distinct from resumable replay; no SSE replay at MVP. |
+| Resumable-stream replay (same-device) | **P1** | 04 §5.1, 01 §4.1 | Requires Redis + `Stream` table; Stop semantics invert. |
+| Streaming-safe markdown renderer (code+copy, KaTeX, GFM tables) | **P0** | 01 §4.4, 03 §4.10 | Mermaid renders as code/source at P0. |
+| Mermaid diagram rendering | **P1** | 01 §4.4, 03 §4.10 | Interactive/fullscreen; lazy-loaded engine. |
+| Robust text composer (multiline, send/stop, text paste, model picker) | **P0** | 01 §4.3, 03 §4.3 | P0 text-only; no attach affordance. |
+| Mobile camera/library/file attach UI | **P1** | 03 §4.7, 01 §4.3, 02 §4.8 | Lands with vision/PDF; no +/paperclip at P0. |
+| Multi-provider model picker (Fast/Smart/Pro tiers) | **P0** | 02 §4.2, 04 §5.2 | Core wedge; direct primaries + breadth layer. |
+| xAI/Grok registry entry, gated from default/Auto | **P0** | 02 §5.3, 04 §5.2 | Not free-tier/Auto default until data-policy approval. |
+| Transparency surface: model used + per-message token/cost | **P0** | 01 §4.6, 02 §4.1, 04 §6, 07 | Core wedge; no silent downgrade. |
+| Transparency cost schema + served-vs-requested surface | **P0** | 00 §11 D6, 02 FR-2b, 04 §6, 07 | One contract; no scalar-only pricing. |
+| Public share: model attribution, no per-message cost | **P0** | 01 §4.10, 07 §6.4 | Public-by-link exception. |
+| Typed multi-part message model | **P0** | 00 §11 D7, 01 §4.4, 04 §6 | P0 data layer; render text/code/reasoning/status subset. |
+| Tool-call/status parts in message schema | **P0** | 01 §4.1, 04 §5.3/§6 | Renderer = status lines; full tool UI P1. |
+| AI SDK v6 / Next.js 16 / Better Auth | **P0** | 00 §8, 04 §4 | Committed foundation. |
+| Auto-routing (heuristic; cheap default) | **P0** | 02 §4.2, 05 §5.4 | Excludes `default_route_eligible=false`. |
+| Conversation management, message actions, onboarding, settings, share, shortcuts | **P0** | 01 §4.5–§4.10 | Core chat shell and power-user controls. |
+| Reasoning/status panel | **P0** | 01 §4.2, 02 §4.4 | Include reasoning-token cost. |
+| BYOK restricted to non-anonymous accounts | **P0** | 02 FR-6, 04 §5.2, 05 §5.1 | Guests must link/upgrade before key storage. |
+| P0 i18n baseline (externalized strings, RTL, IME-safe send) | **P0** | 05 §7.2, 01 §5.3, 03 §4.3 | Full locale packs later. |
+| Accessibility baseline | **P0** | 01 §5.7, 03 §4.8, 05 §7.1 | Differentiation lever. |
+| Responsive mobile-web layout + PWA layer | **P0** | 03 §4.1–§4.10 | Pull-to-refresh dropped. |
+| Optimistic send + IndexedDB drafts/queue + retry | **P0** | 03 §4.6, 04 §5.8 | Server remains source of truth. |
+| Virtualized message list + smart auto-scroll | **P0** | 03 §4.5 | Top technical spike. |
+| INP budget + `scheduler.yield()` / rAF token batching | **P0** | 03 §4.10, 05 §6.1 | Streaming chat worst-case for INP. |
+| Context management + usage/cost meter | **P0** | 02 §4.9, 04 §6, 07 | Underpins transparency + routing. |
+| Structured outputs / schema validation | **P0** | 02 §4.10, 04 §5.2 | Build on AI SDK v6. |
+| Safety + AI-interaction disclosure | **P0** | 02 §6, 04 §5.7, 05 §7.5 | US + EU launch gate. |
+| No-train-by-default + retention/export/delete | **P0** | 04 §5.7, 05 §7.3 | Privacy acquisition hook. |
+| Metered free + metered Pro + BYOK | **P0** | 05 §5, 04 §5.6, 02 FR-6 | Pro = explicit caps + USD overage. |
+| Minimal metered-overage / USD credit primitive | **P0** | 05 §5.1, 00 §11 D8, 04 §5.6 | Enforcement reads `message.cost_usd`. |
+| Vision + PDF/document understanding | **P1** | 02 §4.8, 04 §5.4 | Includes uploads/attach UI. |
+| Tool/function calling + basic agent loop | **P1** | 02 §4.6, 04 §5.2 | HITL approval for sensitive tools. |
+| Web search/grounding + citations/source cards | **P1** | 01 §4.11, 02 §4.7 | Structured citation parts. |
+| Deep parallel model comparison | **P2** | 00 §5, 02 FR-12 | Heavy-comparison layer over picker; P1 keeps per-turn switching and branch/retry workflows. |
+| Projects/Spaces, memory transparency, copy-on-branch | **P1** | 01 §4.6, 01 §4.8, 05 §4.4 | Continuity and retention layer. |
+| Slash commands / prompt library + customizable shortcuts | **P1** | 01 §4.3, 01 §4.9 | Power-user ergonomics. |
+| Richer usage-credit UX / prepaid packs | **P1** | 05 §5.1 | P0 has minimal overage primitive. |
+| Artifacts/Canvas, code execution, RAG, voice, image generation, MCP, native, teams/enterprise | **P2** | 01 §4.12, 02 §4.7/§4.12, 03 §6, 04 §8 | Later differentiators/heavier infra. |
+| Ads on free tier | **P2 (revisit)** | 05 §2.2, 05 §9.10 | Trust risk; revisit only at scale. |
 
 ### 4.4 Dependency notes
 - **Provider-abstraction layer** (P0) is the spine: model picker, routing, transparency meter, BYOK, and later parallel comparison all sit on it. Build it thin so OpenRouter/LiteLLM can swap in without app changes.
-- **Streaming spine:** SSE token streaming + Stop/abort + the `Stream`-table schema are **P0**; **resumable-stream replay is P1** (PRD 04 §5.1, PRD 01 §4.1). The orphaned-run reconciliation (Stream row + Redis abort channel + reaper) is designed in P0 so long responses don't break on serverless timeouts.
+- **Interrupted-stream spine (P0):** partial persistence + Continue/Regenerate + terminal stream analytics flags — no Redis replay required for launch.
+- **Resumable-stream spine (P1):** Redis replay + dedicated stop endpoint + orphan reaper. Design the `Stream` table in P0; ship same-device replay in P1.
 - **Tool/function-calling loop** (P1) is a prerequisite for **web search** (P1), **data analysis** (P2), and **MCP** (P2).
 - **Agentic loop + artifacts** precede **sandboxed code execution** (P2).
 - **Vision/file understanding** (P1) precedes **RAG** (P2) — start with large-context "attach a doc" before full retrieval.
@@ -208,12 +198,16 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 
 > **AI usage is bursty/task-driven** — a user may run 50 queries then vanish for weeks. Classic 7/30-day windows are weaker signals here, so instrument **task-recurrence** alongside standard retention. Critically, **AI-native retention runs roughly half of classic SaaS** (≈40% GRR / 48% NRR vs ~82% SaaS NRR) and "AI tourist" churn is severe — model the financials on **AI-native, not SaaS, benchmarks** and instrument the first-week activation funnel hard. `[VERIFY]` benchmarks.
 
+### 6.0 Primary KPI set (canonical for the PRD set)
+
+Instrument **first** for AI-native economics and retention: (1) Day-1 success / first-week activation funnel, (2) **GRR / NRR** (AI-native benchmarks), (3) **task-recurrence interval**, (4) cost-per-message / gross margin / routing mix, (5) free→paid conversion, and (6) terminal stream events (`completed`, `stopped`, `error`, `interrupted`). **D1/D7/D30** and DAU/MAU are secondary habit proxies for a bursty category.
+
 ### 6.1 Day-one must-haves (instrument from launch)
 
 | Category | Metric | Rough benchmark / target | Why |
 |---|---|---|---|
 | **Activation** | % new users reaching first successful response / first "valued" task; **time-to-first-value** | Track + improve | Leading indicator of everything downstream. |
-| **First-week activation** | **"Day-1 success" funnel** — % completing a first-week success checklist (first valued task in week 1) | Highest retention lever in the data ("Day-1 success checklist" → ~52.7% trial conversion) `[VERIFY]` | The single biggest countermeasure to AI-tourist churn (§6, AI-native retention). |
+| **First-week activation** | **"Day-1 success" funnel** — % completing a first-week success checklist (first valued task in week 1) | Highest retention lever in the data ("Day-1 success checklist" → ~52.7% trial conversion) `[VERIFY]` | Checklist for this wedge: first successful streamed reply, viewed model/cost attribution, opened usage meter, and either changed tier/Auto route or used privacy/BYOK/temporary-chat control. |
 | **Latency (UX quality)** | **TTFT (time-to-first-token)** + full-response latency, **per model** | Lower is better; per-model SLAs | Core chat UX quality; informs routing. |
 | **Retention (AI-native)** | **GRR / NRR** + **30/60/90-day "AI-tourist" churn cohort** + D1/D7/D30 **+ task-recurrence interval** | **AI-native ≈ 40% GRR / 48% NRR** (vs ~82% SaaS NRR); ~30% of annual subs cancel in month 1; ~44% of cancels in first 90 days `[VERIFY]` | Use AI-native benchmarks, not SaaS-optimistic numbers; bursty-usage correction. |
 | **Engagement** | DAU, MAU, **DAU/MAU stickiness** | 20%+ = high; **~21% NA AI norm** `[VERIFY]` | Habit signal. |
@@ -233,6 +227,7 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 ### 6.3 Instrumentation notes
 - Capture **model used + token cost per message** server-side from day one (also powers the user-facing transparency surface).
 - Tie every cost metric to the **routing decision** so margin regressions are attributable to model mix.
+- Emit terminal stream events from AI SDK lifecycle handling: `completed`, `stopped`, `error`, `interrupted` — required day-one for regeneration-quality and mobile recovery KPIs (PRD 04 §5.1).
 - Observability via Langfuse + OpenTelemetry (per PRD 04) — keep KPI definitions in one source of truth.
 
 ---
@@ -256,6 +251,7 @@ A **stated differentiation lever**: leaders have measured gaps (unlabeled icon b
 - **[MVP]** Pseudo-localization testing to catch overflow (text expands ~20–30%).
 - **[MVP]** **RTL/BiDi** support via `direction: rtl` + logical CSS (`text-align: start`), not hard-coded positions; handle mixed LTR/RTL in one line (Arabic + English code/brand). Incumbents have had RTL bugs — an opportunity.
 - **[MVP]** **Language ≠ model-language:** the chat model must be prompted/configured for the user's language; a localized UI does not imply localized responses.
+- **[MVP]** **IME-safe input:** do not submit on Enter or Send while `event.isComposing`; Esc must not Stop during composition (PRD 01 §5.3, PRD 03 §4.3). Required for CJK and mobile autocorrect.
 - **[Later]** Full translated UI locales beyond launch set; locale-specific content/formatting; localized onboarding.
 
 ### 7.3 Privacy & data handling (acquisition hook)
@@ -271,6 +267,7 @@ A **stated differentiation lever**: leaders have measured gaps (unlabeled icon b
 ### 7.4 Security & trust
 - **[MVP]** Encryption in transit and at rest.
 - **[MVP]** **BYOK secret handling**: keys encrypted, never logged.
+- **[MVP]** **BYOK guest gate:** key storage only for **non-anonymous** accounts; guests must complete account link before keys are accepted (PRD 04).
 - **[MVP]** **Surface model used + token cost** on every response; **never silently downgrade** the model (Perplexity's mistake) — the trust surface is a product feature, not just a setting.
 - **[MVP]** Baseline abuse monitoring + an abuse-reporting path.
 - **[Later]** SSO/SAML, audit logs, SOC 2 path, DPA (Team/Enterprise, P2).
@@ -328,6 +325,18 @@ A **stated differentiation lever**: leaders have measured gaps (unlabeled icon b
 ---
 
 ## 10. References
+
+### 10.1 Internal PRD index & research mapping
+
+| Legacy research file (external) | Maps to PRD | In repo? |
+|---|---|---|
+| research-01 (features/UX) | **PRD 01** | No — use PRD 01 §4–§5 |
+| research-02 (mobile) | **PRD 03** | No — use PRD 03 §4–§6 |
+| research-03 (architecture) | **PRD 04** | No — use PRD 04 §4–§6 |
+| research-04 (AI capabilities) | **PRD 02** | No — use PRD 02 §4–§6 |
+| research-05 (roadmap/monetization) | **PRD 05** | No — use this document |
+
+**PRD numbering ≠ research numbering** (see PRD 00 §6). For build and reviews, cite **PRD file + section** only. Re-verify `[VERIFY]` facts at lock via §10.3, not stale research copies.
 
 ### 10.2 Key source URLs (re-verify before quoting — see §10.3)
 - Pricing: https://chatgpt.com/pricing/ · https://claude.com/pricing · https://one.google.com/about/google-ai-plans/ · https://gemini.google/subscriptions/ · https://www.finout.io/blog/perplexity-pricing-in-2026 · https://www.eesel.ai/blog/copilot-pricing · https://mistral.ai/pricing · https://api-docs.deepseek.com/quick_start/pricing · https://costbench.com/software/ai-chatbots/poe/ · T3 Chat: https://x.com/theo/status/1887000229922353524

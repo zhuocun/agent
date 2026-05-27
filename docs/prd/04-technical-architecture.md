@@ -182,7 +182,6 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 - **[P0/MVP]** Postgres + Drizzle is the system of record. Client state (Zustand for UI, TanStack Query for server state) is a cache; the DB is authoritative.
 - **[P0/MVP]** Required tables for MVP: `user` (with `is_anonymous`), `chat` (with `visibility` + `model_id`), `message` (**typed multi-part `parts`** + attachments jsonb + per-message model + token + effective/tiered cost), `stream`, `vote`, **`api_key` (BYOK — P0 per the launch-BYOK decision)**.
 - **[P0/MVP] Typed multi-part message model (THIS PRD owns the data-model schema):** a `message` is an **ordered list of typed parts** — `text | reasoning | tool-call | tool-result | citation | interactive-block` — not a single markdown string. Modeling this in the P0 data layer (even if P0 only *renders* the text/reasoning/code subset) de-risks tools, structured citations, interactive viz, and generative UI in one move; skipping it guarantees a P1 refactor. **PRD 01 references this for rendering** (the rendering decision is really a data-model decision and is made here once).
-- **[P0/MVP] `tool-call` part shape (schema now, minimal renderer):** even before tools ship (P1), `message.parts` MUST accept persistable tool/status parts so PRD 01 status lines are not throwaway. Minimum fields: `type: tool-call`, stable `id`, `toolName` or `displayLabel`, `status: pending | running | completed | failed | denied`, nullable `input`/`output` jsonb, nullable `error`, optional `startedAt`/`completedAt`. P0 UI may render these as status lines only; expandable tool UI is P1.
 - **[P0/MVP] `tool-call` part shape (schema now, minimal renderer):** even before tools ship (P1), `message.parts` MUST accept persistable tool/status parts so PRD 01 status lines are not throwaway. Minimum fields: `type: 'tool-call'`, stable `id`, `toolName` or `displayLabel`, `status: 'pending' | 'running' | 'completed' | 'failed' | 'denied'`, nullable `input`/`output` jsonb, nullable `error`, optional `startedAt`/`completedAt`. P0 UI may render these as status lines only; expandable tool UI is P1.
 - **[P1]** `attachment` (file upload lands with vision/PDF understanding), `document` + `suggestion` (artifacts).
 - **[P2]** `embedding` (RAG, pgvector) — reserve the design, do not build.
@@ -190,7 +189,6 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 ### 5.4 Storage & file uploads
 
 > **Phase note:** file attachments are **P1** (they land with vision/PDF understanding — see PRD 02 §4.8). The lean text-core MVP ships no upload flow; this section is the **P1** design (build the adapter interface when attachments land, not before).
-> **P0 rule:** do not ship presigned upload, `attachment` writes, or mobile attach UI in P0. Attach affordances land with P1 vision/PDF.
 > **P0 rule:** do not ship presigned upload, `attachment` writes, or mobile attach UI in P0. Attach affordances land with P1 vision/PDF.
 
 - **[P1] Presigned direct-to-storage upload:** client requests a presigned PUT URL from our API → browser uploads **directly** to object storage (keeps large files off function compute/timeout budget) → API writes the `attachment` row with object URL + metadata.
@@ -262,6 +260,8 @@ user (
   name          text null,
   is_anonymous  boolean not null default false,   -- guest sessions
   retention_days integer null,          -- per-user retention override
+  custom_instructions text null,         -- P0 custom instructions injected into chats
+  preferences   jsonb not null default '{}', -- theme, locale, a11y, future user prefs
   created_at    timestamptz not null,
   updated_at    timestamptz not null
 )
@@ -273,10 +273,22 @@ chat (
   title       text,
   visibility  text not null default 'private',   -- private | public | unlisted
   model_id    text not null,            -- default/selected model for the chat
+  is_temporary boolean not null default false, -- excludes future memory/personalization
+  expires_at  timestamptz null,         -- optional shorter retention for temporary chats
   created_at  timestamptz not null,
   updated_at  timestamptz not null
 )
 -- index: (user_id, updated_at desc)
+
+-- SHARE_LINK ---------------------------------------------------------- [P0]
+share_link (
+  id          uuid pk,
+  chat_id     uuid not null references chat(id) on delete cascade,
+  token_hash  text not null unique,     -- store hash only; raw token appears in URL
+  created_at  timestamptz not null,
+  revoked_at  timestamptz null
+)
+-- AC: revoked share links return 404; public share payload strips token/cost fields per PRD 07.
 
 -- MESSAGE ------------------------------------------------------------ [P0]
 -- "Message_v2" style: typed multi-part `parts` + attachments jsonb; per-message model + usage + effective cost
@@ -291,6 +303,11 @@ message (
   attachments   jsonb not null default '[]',
   model_id          text null,          -- resolved/served model for assistant msgs  *** transparency contract
   provider          text null,          -- openai | anthropic | google | ...
+  requested_model_id text null,         -- explicit model requested at send time, if any
+  requested_tier     text null,         -- Fast | Smart | Pro | Auto
+  served_model_id    text null,         -- explicit served model id; defaults to model_id
+  routing_decision   jsonb null,        -- Auto/router signals + chosen route
+  substitution_reason text null,        -- auto_downgrade|rate_limited|provider_fallback|deprecated_model|budget_cap|policy_route
   prompt_tokens     integer null,
   completion_tokens integer null,
   total_tokens      integer null,
@@ -304,6 +321,28 @@ message (
 )
 -- index: (chat_id, created_at)
 -- cost_usd doubles as the live budget-enforcement signal for §5.6 (not just a display value)
+
+-- USER_PLAN / USAGE --------------------------------------------------- [P0] (metered free + Pro + credits)
+user_plan (
+  user_id       uuid pk references user(id) on delete cascade,
+  tier          text not null,          -- free | pro | byok_only | team_later
+  period_start  timestamptz not null,
+  period_end    timestamptz not null,
+  message_cap   integer null,
+  token_cap     integer null,
+  usd_cap       numeric(14,8) null,
+  usd_credits_remaining numeric(14,8) not null default 0
+)
+
+usage_rollup (
+  user_id       uuid not null references user(id) on delete cascade,
+  period_start  timestamptz not null,
+  messages_used integer not null default 0,
+  tokens_used   integer not null default 0,
+  usd_spent_platform numeric(14,8) not null default 0, -- sums only message.is_byok = false
+  primary key (user_id, period_start)
+)
+-- AC: budget exhaustion returns PRD 08 PLATFORM_BUDGET_EXCEEDED; BYOK turns do not decrement usd_spent_platform.
 
 -- ATTACHMENT --------------------------------------------------------- [P1] (lands with vision/PDF)
 attachment (
@@ -405,7 +444,7 @@ audit_log (
 
 ## 7. Dependencies & cross-references
 
-- **PRD 01 — Core Chat Experience** (chat UI): the transparency UX (model used + token cost per message) consumes `message.model_id` / `provider` / `cost_usd` / `cost_breakdown`; **PRD 01 owns the display** of effective/tiered cost; the **typed multi-part `message.parts`** model (this PRD, §5.3/§6) is what PRD 01 renders (text/reasoning/code at P0); artifacts UX consumes `document`/`suggestion`; vote UX consumes `vote`; the streaming/stop UI sits on §5.1; conversation search reads the chat/message store.
+- **PRD 01 — Core Chat Experience** (chat UI): the transparency UX (model used + token cost per message) consumes `message.model_id` / `provider` / requested-vs-served fields / `cost_usd` / `cost_breakdown`; **PRD 01 owns the display** of effective/tiered cost; the **typed multi-part `message.parts`** model (this PRD, §5.3/§6) is what PRD 01 renders (text/reasoning/code at P0); artifacts UX consumes `document`/`suggestion`; vote UX consumes `vote`; the streaming/stop UI sits on §5.1; conversation search reads the chat/message store.
 - **PRD 02 — AI Capabilities** (model registry / AI contracts): defines the model catalog, capability flags (vision/tools/reasoning), routing policy, reasoning/usage semantics, and the cheap-default-model strategy that this PRD's provider adapter + capability registry (§5.2) implement. **PRD 02 owns the pricing schema** (tiered/threshold/cached/promo multipliers) that produces the effective cost; this PRD owns the **storage/capture** shape (`message.cost_usd` + `cost_breakdown`, §6) — the data-layer counterpart of PRD 02's transparency contract.
 - **PRD 03 — Mobile & Cross-Platform** (mobile/PWA UX): mobile is responsive web / PWA — no separate mobile framework. This PRD owns the service-worker / IndexedDB / sync internals, object storage, and the AI-data-disclosure consent plumbing that PRD 03's UX requirements depend on; streaming and a11y (live-region token announcements, touch targets) must hold on mobile web.
 - **PRD 05 — Roadmap / Monetization / Metrics**: §5.7 NFRs implement PRD 05's product-level privacy/compliance policy; the rate-limiting + BYOK design (§5.2/§5.6) implements PRD 05's metered-free-tier + model-routing economics. **Cross-PRD boundary:** **PRD 05 owns the metered-overage / credit (monetization) decision; this PRD owns the enforcement mechanism** — the token + cost-budget caps + circuit breakers (§5.6), with `message.cost_usd` (§6) as the live spend ledger and the metering hook PRD 05 reads. **Phase changes for the PRD 05 roadmap worker:** (a) EU AI Act content-marking may move **P1 → P0** pending legal sign-off (§5.7/§9 Q1) — flag, do not lock; (b) the resumable-stream **stop endpoint + orphaned-run handling is now the PRIMARY P0(-with-resumable)/P1 stop path** (§5.1), not an edge case; (c) **Vercel Workflows / DurableAgent** is the P1 agent-loop / long-run horizon. Observability (§5.6) emits the TTFT / cost-per-message signals PRD 05's KPIs consume.

@@ -133,6 +133,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 - **[P0]** **Theme**: light / dark / **system** (default system).
 - **[P0]** **Custom instructions** entry point (stable user preferences injected per chat; content semantics in PRD 02). MVP = a simple text-entry dialog reachable from settings and a shortcut.
 - **[P0]** **Data controls** entry point: clear/delete history; training opt-out toggle if applicable (privacy-first posture). Detailed data handling in PRD 04.
+- **[P0]** **Temporary chat** entry point in the New Chat menu and thread header. Temporary chats are visibly marked, excluded from future memory/personalization, and use the retention fields defined in PRD 04. *AC:* starting a temporary chat sets `chat.is_temporary = true` and the UI shows a temporary-chat banner.
 - **[P1]** **Memory transparency UX (the differentiated spec; memory stays P1).** Memory is now a free baseline everywhere, so our wedge is the transparency layer, not the feature: (a) a **viewable/editable memory ledger** (see/add/edit/delete stored facts); (b) a per-message **"memory used here" indicator** showing which stored memory informed a response; (c) **cross-tool memory import** (from ChatGPT/Gemini/Grok) as a cheap acquisition lever. Generic memory management without the ledger/indicator is off-thesis.
 
 ### 4.9 Keyboard shortcuts & command palette
@@ -195,7 +196,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 >
 > **IME caveat (a11y/i18n):** if an IME composition is active (`event.isComposing` true, or `keyCode === 229`), `Esc` must be left to the IME (CJK input uses Esc to cancel a candidate) and must **not** stop the stream. Validate this with a usability/screen-reader check given the mobile-web + EU/multilingual persona.
 
-- Layout (desktop): `[+ attach] [ multiline textarea ] [ model tier control ] [ Send/Stop ]`. Attachment chips render in a row above the input. Model control is compact (label = current tier) and opens a tiered menu with brief metadata (relative speed/cost, modality) sourced from the registry.
+- Layout (desktop, P0): `[ multiline textarea ] [ model tier control ] [ Send/Stop ]`. **No attach control at P0**; P1 layout adds `[+ attach]` and attachment chips above the input when vision/PDF ships. Model control is compact (label = current tier) and opens a tiered menu with brief metadata (relative speed/cost, modality) sourced from the registry.
 - Composer is sticky to the bottom of the thread; remains anchored during streaming.
 - Mobile composer specifics (touch targets, keyboard avoidance, sticky Stop): **defer to PRD 03**.
 

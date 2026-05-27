@@ -117,7 +117,7 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 | Vision + PDF/document understanding | **P1** | 02 §4.8, 04 §5.4 | Includes uploads/attach UI. |
 | Tool/function calling + basic agent loop | **P1** | 02 §4.6, 04 §5.2 | HITL approval for sensitive tools. |
 | Web search/grounding + citations/source cards | **P1** | 01 §4.11, 02 §4.7 | Structured citation parts. |
-| Deep parallel model comparison | **P1** | 00 §5, 02 §4.2 | Heavy-comparison layer over picker. |
+| Deep parallel model comparison | **P2** | 00 §5, 02 FR-12 | Heavy-comparison layer over picker; P1 keeps per-turn switching and branch/retry workflows. |
 | Projects/Spaces, memory transparency, copy-on-branch | **P1** | 01 §4.6, 01 §4.8, 05 §4.4 | Continuity and retention layer. |
 | Slash commands / prompt library + customizable shortcuts | **P1** | 01 §4.3, 01 §4.9 | Power-user ergonomics. |
 | Richer usage-credit UX / prepaid packs | **P1** | 05 §5.1 | P0 has minimal overage primitive. |
@@ -207,7 +207,7 @@ Instrument **first** for AI-native economics and retention: (1) Day-1 success / 
 | Category | Metric | Rough benchmark / target | Why |
 |---|---|---|---|
 | **Activation** | % new users reaching first successful response / first "valued" task; **time-to-first-value** | Track + improve | Leading indicator of everything downstream. |
-| **First-week activation** | **"Day-1 success" funnel** — % completing a first-week success checklist (first valued task in week 1) | Highest retention lever in the data ("Day-1 success checklist" → ~52.7% trial conversion) `[VERIFY]` | The single biggest countermeasure to AI-tourist churn (§6, AI-native retention). |
+| **First-week activation** | **"Day-1 success" funnel** — % completing a first-week success checklist (first valued task in week 1) | Highest retention lever in the data ("Day-1 success checklist" → ~52.7% trial conversion) `[VERIFY]` | Checklist for this wedge: first successful streamed reply, viewed model/cost attribution, opened usage meter, and either changed tier/Auto route or used privacy/BYOK/temporary-chat control. |
 | **Latency (UX quality)** | **TTFT (time-to-first-token)** + full-response latency, **per model** | Lower is better; per-model SLAs | Core chat UX quality; informs routing. |
 | **Retention (AI-native)** | **GRR / NRR** + **30/60/90-day "AI-tourist" churn cohort** + D1/D7/D30 **+ task-recurrence interval** | **AI-native ≈ 40% GRR / 48% NRR** (vs ~82% SaaS NRR); ~30% of annual subs cancel in month 1; ~44% of cancels in first 90 days `[VERIFY]` | Use AI-native benchmarks, not SaaS-optimistic numbers; bursty-usage correction. |
 | **Engagement** | DAU, MAU, **DAU/MAU stickiness** | 20%+ = high; **~21% NA AI norm** `[VERIFY]` | Habit signal. |

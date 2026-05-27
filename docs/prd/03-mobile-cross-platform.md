@@ -50,7 +50,7 @@ Delivery is decided: **MVP = one responsive Next.js (App Router) web app + a PWA
 7. **Installer (iOS):** "Safari won't auto-prompt, so the app shows me a clear 'Add to Home Screen' coachmark; I understand what I do and don't get on iOS."
 8. **Accessibility user:** "Every swipe action also has a visible button; VoiceOver/TalkBack reads the composer and message actions; streaming doesn't spam my screen reader."
 9. **Voice input:** "I dictate a prompt with the mic button when my browser supports it, and the feature degrades gracefully when it doesn't (e.g., installed iOS PWA)."
-10. **Attach from phone:** "I attach a photo from camera or library via the + button to ask about it."
+10. **Attach from phone (P1):** "When vision/PDF ships, I attach a photo from camera or library via the + button to ask about it." *(Out of P0 — text-only MVP.)*
 
 ---
 
@@ -92,7 +92,7 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 - **[P0]** **IME composition handling:** Send must not fire while an IME composition is in progress — gate on `event.isComposing` (and `compositionstart`/`compositionend`) so CJK/autocorrect composition is not cut off mid-input. Relevant to the i18n posture in PRD 00.
 - **[P1]** Make Enter-behavior **configurable** in settings; A/B validate the default.
 - **[P0]** **iOS keyboard quirks** explicitly tracked as risk: even with the `visualViewport` mechanism, fixed-bottom behavior varies across iOS versions. **Real-device lab testing on multiple iPhone/iOS versions is required before launch** (§9). Acceptance: the composer is **never covered by the keyboard regardless of composer length**, and **tapping the composer does not yank the scroll** (both are documented incumbent failures).
-- **[P0]** Attach affordance (+ / paperclip) opens a **bottom sheet**: Camera / Photo Library / Files. Mic/voice button adjacent (see §4.7). All meet tap-target minimums (§4.8).
+- **[P1]** Attach affordance (+ / paperclip) opens a **bottom sheet**: Camera / Photo Library / Files. Mic/voice button adjacent (see §4.7). All meet tap-target minimums (§4.8). **P0: omit +/paperclip**; composer is text-only (PRD 01 §4.3).
 
 ### 4.4 Touch & gestures (every gesture has a tappable alternative)
 
@@ -122,7 +122,8 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 - **[P0]** **IndexedDB** (e.g., Dexie) stores messages, chat metadata, **per-conversation composer drafts**, and an **unsent-actions queue** (separate tables). Schema/sync internals owned by PRD 04.
 - **[P0]** **Retry with exponential backoff;** queued operations carry metadata (type, payload, timestamp, status) and preserve **ordering for dependent changes**.
 - **[P0]** **Draft persistence:** interrupted/typed drafts survive reload/navigation (WhatsApp-style).
-- **[P0]** **Interrupted-stream recovery:** a network drop mid-stream marks the partial assistant message incomplete and offers one-tap **Continue / Regenerate**; partial tokens are persisted so a reconnect can resume or replace cleanly.
+- **[P0]** **Interrupted-stream recovery (partial persist, no SSE replay):** a network drop, server error, or failed stream marks the assistant message **incomplete** in UI and persists all partial tokens server-side. Offer one-tap **Continue** (send continuation as a new request) and **Regenerate** (re-run last user turn). *AC:* no empty/broken bubble; actions work after reload. This is **not** resumable-stream replay.
+- **[P1]** **Resumable-stream replay** (PRD 04 §5.1): same-device reconnect replays buffered SSE from `stream.id`. When replay is unavailable (Redis evicted), fall back to the P0 partial + Continue/Regenerate UX. Do not label P0 Continue as "resume stream."
 - **[P0]** **Storage quota & eviction (corrected, verified):** iOS PWA storage is **NOT ~50 MB** — since Safari 17 the per-origin quota is **disk-proportional (typically tens of GB)**, readable via `navigator.storage.estimate()`. The real iOS constraint is **7-day ITP eviction of non-persisted data**, not capacity. Implication: we **can** cache far more conversation history offline on iOS than previously assumed.
 - **[P0]** **Request `navigator.storage.persist()`** to exclude the local store from 7-day eviction (more likely granted for installed PWAs); read `navigator.storage.estimate()` for budgeting. *(Schema/sync internals owned by PRD 04.)*
 - **[P0]** **Server is source of truth.** Treat the local cache as best-effort; re-fetch from server on load. Even with disk-proportional quota, do not assume durable offline history on iOS unless `storage.persist()` was granted.
@@ -135,7 +136,7 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
   - **Privacy correction (verified):** Web Speech recognition is **NOT on-device** — on iOS Safari it **sends audio to Apple** (explicit "send audio to Apple" permission modal) and Chrome is also typically server-side. For a privacy-first product (PRD 00 §7), this must be a **disclosed, optional** feature: surface an in-UI disclosure ("dictation sends audio to your browser vendor") before first use — treat the disclosure as **P0-for-the-feature**. Do **not** describe it as on-device/privacy-preserving.
   - The **privacy-aligned path is a self-hosted / BYOK STT** option (see server-side STT below) — position it as the privacy-first answer, not a mere fallback.
   - Caveats surfaced in UI: unsupported in Firefox; **does not work in an installed iOS PWA** (works in Safari tab). Hide/disable the mic where unsupported.
-- **[P0]** **Camera / photo attach** baseline: offer **two distinct affordances** — a camera input (`<input type="file" accept="image/*" capture="environment">`, opens the camera directly) **and** a separate library/files input (`<input type="file" accept="image/*">`, **no** `capture`, so the OS picker offers gallery/files). A single input *with* `capture` suppresses the library path, so do not rely on one input for both. (Robust native picker comes with Capacitor later.)
+- **[P1]** **Camera / photo attach** baseline: offer **two distinct affordances** — a camera input (`<input type="file" accept="image/*" capture="environment">`, opens the camera directly) **and** a separate library/files input (`<input type="file" accept="image/*">`, **no** `capture`, so the OS picker offers gallery/files). Depends on PRD 01 §4.3 attachments + PRD 02 FR-30/31. **P0 does not expose camera/library inputs.** (Robust native picker comes with Capacitor later.)
 - **[P2]** **Web Share Target** (installed app appears in OS share sheet to receive shared text/links/images). Android-supported; **iOS support weak/absent for PWAs — verify before committing** (§9). Treat full share-target as a Capacitor-era capability.
 - **[P1]** **Self-hosted / BYOK server-side STT** as the **privacy-aligned** voice path (not merely a fallback) — the on-thesis option if cross-platform voice becomes a priority, and the way to avoid silently shipping user audio to Apple/Google.
 
@@ -170,7 +171,7 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 - **[P0]** **Streaming render coalescing:** batch token updates **per animation frame (rAF)** rather than re-rendering per token; throttle auto-scroll; avoid layout thrash. (Promoted P1→P0 — this is the primary INP mitigation for a token-streaming list.)
 - **[P0]** **Bundle / main-thread budget:** **initial route JS ≤ ~200 KB compressed**, enforced by a **CI bundle-size check**. JS parse/exec dominates LCP/INP on mid-tier phones (~50–80ms CPU per 100 KB compressed), so the CWV targets are not actionable without a KB budget.
 - **[P0]** **CLS protection:** reserve space for streaming content, images (`srcset` + explicit dimensions), and the composer; use `dvh`/`svh` for stable full-height sizing. (Note: iOS keyboard-driven shift is handled by the §4.3 `visualViewport` mechanism, **not** viewport units, which do not track the iOS keyboard.)
-- **[P0]** **Code-split / lazy-load** routes and heavy panels: artifact/canvas panel, markdown + code-highlighting, heavy model-output renderers. **KaTeX / Mermaid / syntax-highlighter (P0 per PRD 00) are heavy and must be lazy-loaded**, not in the initial bundle. Keep initial JS minimal (within the budget above).
+- **[P0]** **Code-split / lazy-load** routes and heavy panels: artifact/canvas panel, markdown + code-highlighting, heavy model-output renderers. **KaTeX + syntax highlighter** must be lazy-loaded, not in the initial bundle. **Mermaid engine is P1** (PRD 01 §4.4); P0 may ship zero Mermaid JS. Keep initial JS minimal (within the budget above).
 - **[P1]** **Images:** compress, lazy-load, responsive `srcset`/`sizes`, reserved dimensions.
 - **[P2]** **Battery:** coalesce DOM writes, pause non-visible work, avoid busy timers; monitor as future CWV signals (animation smoothness/battery) emerge.
 
@@ -184,7 +185,7 @@ Tags: **[P0/MVP]** ship for launch · **[P1]** fast-follow · **[P2]** later / C
 
 | Token | Range (px) | Surface class | Panes | Navigation / shell rules | Validation |
 |---|---|---|---|---|---|
-| `sm` (mobile) | `< 768` | Mobile | **Single pane** (chat only) | History = temporary **overlay drawer** (hamburger top-left). Tools/attach = **bottom sheet**. Artifact = **full-screen / bottom sheet**. Composer pinned bottom with all four safe-area insets + `viewport-fit=cover`; keyboard handled via the two-track mechanism (§4.3 — iOS `visualViewport` primary). | **Validate px** |
+| `sm` (mobile) | `< 768` | Mobile | **Single pane** (chat only) | History = temporary **overlay drawer** (hamburger top-left). Tools/attach = **bottom sheet in P1; P0 text-only composer**. Artifact = **full-screen / bottom sheet**. Composer pinned bottom with all four safe-area insets + `viewport-fit=cover`; keyboard handled via the two-track mechanism (§4.3 — iOS `visualViewport` primary). | **Validate px** |
 | `md` (tablet) | `768–1023` | Tablet | Chat full-width + collapsible drawer | Drawer **dismissible/persistent**; **push-vs-overlay TBD by prototype**. Artifact = overlay or replaces chat. | **Validate px + push/overlay** |
 | `lg` (desktop) | `1024–1439` | Desktop S | **2-pane** | Permanent sidebar + chat. Artifact slides in as a **3rd column** (chat narrows) when invoked. | **Validate px** |
 | `xl` (large desktop) | `≥ 1440` | Desktop L | **3-pane** | Sidebar + chat + artifact panel coexist comfortably. Chat column capped for readability. | **Validate px** |
@@ -268,7 +269,8 @@ Add a **Capacitor** shell that wraps the existing web app in a WebView + native 
 | Initial route JS (compressed) | ≤ ~200 KB, CI-enforced (see §4.10) | CI / synthetic |
 | % mobile sessions passing all 3 CWV | Beat the ~48% web baseline; set internal floor | PRD 05 RUM |
 | Mobile TTFT (time-to-first-token) | Track + budget (coordinate w/ PRD 01/04) | PRD 05 |
-| Mobile D1 / D7 / D30 retention | Track; primary mobile-quality signal | PRD 05 |
+| Mobile quality (TTFT, INP, stream recovery) | Track p75 field data + interrupted recovery success | PRD 05 §6.1 |
+| Mobile D1 / D7 / D30 retention | Track as secondary mobile cohort signal; primary product retention = GRR/NRR + task-recurrence + Day-1 success | PRD 05 §6.1 |
 | PWA install rate (Android) | Track install-prompt accept rate | PRD 05 |
 | iOS Add-to-Home-Screen coachmark conversion | Track (expect low; informs Capacitor trigger #2) | PRD 05 |
 | Web-push opt-in (Android) | Track (iOS expected ~16% — informs Capacitor trigger #1) | PRD 05 |

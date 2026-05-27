@@ -35,7 +35,6 @@ export function AttributionRow({
   const isEstimate = attribution.costConfidence === "estimate";
   const { substitution, isByok } = attribution;
 
-  const detailsId = React.useId();
   const costLabel = `${isByok ? "Cost billed to your key" : "Cost"}: ${
     isEstimate ? "estimated " : ""
   }${formatCostSummary(attribution.costUsd)}`;
@@ -83,8 +82,6 @@ export function AttributionRow({
 
         {/* Expand/collapse details. Real <button> via base-ui; touch target >=40px. */}
         <CollapsibleTrigger
-          aria-expanded={open}
-          aria-controls={detailsId}
           aria-label={open ? "Hide cost details" : "Show cost details"}
           className={cn(
             "ml-auto inline-flex min-h-10 items-center gap-1 rounded-md px-2 py-1",
@@ -118,7 +115,7 @@ export function AttributionRow({
         </div>
       ) : null}
 
-      <CollapsibleContent id={detailsId} className="mt-2">
+      <CollapsibleContent className="mt-2">
         <CostBreakdownDetails attribution={attribution} />
       </CollapsibleContent>
     </Collapsible>

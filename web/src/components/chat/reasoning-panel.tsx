@@ -47,7 +47,9 @@ export function ReasoningPanel({
 
   const label = isStreaming
     ? "Thinking…"
-    : `Thought for ${formatDuration(durationSec)}`;
+    : durationSec && durationSec > 0
+      ? `Thought for ${formatDuration(durationSec)}`
+      : "Reasoning";
 
   return (
     <Collapsible
@@ -117,13 +119,6 @@ export function ReasoningPanel({
           {text}
         </p>
       </CollapsibleContent>
-
-      {/* Status-only polite region: the shimmer is decorative, so the textual
-          status transition is announced here without re-reading the body
-          (PRD 01 §5.7 announce model). */}
-      <span className="sr-only" role="status" aria-live="polite">
-        {isStreaming ? "Reasoning" : label}
-      </span>
     </Collapsible>
   );
 }

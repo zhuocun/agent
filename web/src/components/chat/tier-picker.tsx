@@ -69,6 +69,7 @@ function HintChip({
     <Badge
       variant="secondary"
       title={title}
+      aria-label={title}
       className="gap-1 px-1.5 text-muted-foreground"
     >
       <Icon aria-hidden className="text-muted-foreground" />

@@ -11,6 +11,14 @@ export interface MockStreamState {
   answer: string;
 }
 
+// The final, authoritative content delivered once the stream terminates.
+export interface MockStreamResult {
+  status: "done" | "stopped";
+  reasoning: string;
+  reasoningDurationSec: number;
+  answer: string;
+}
+
 const INITIAL: MockStreamState = {
   status: "idle",
   reasoning: "",
@@ -23,7 +31,11 @@ const INITIAL: MockStreamState = {
 // (PRD 01 §5.4): tokens are buffered in a ref and flushed once per
 // requestAnimationFrame rather than on every token, so the UI batches paints
 // instead of thrashing setState. Reasoning streams first, then the answer.
-export function useMockStream() {
+//
+// `onTerminal` fires exactly once per turn when it ends (done/stopped),
+// carrying the final content from refs — so the consumer commits the message
+// in a callback rather than watching status in an effect.
+export function useMockStream(onTerminal?: (result: MockStreamResult) => void) {
   const [state, setState] = useState<MockStreamState>(INITIAL);
 
   const rafRef = useRef<number | null>(null);
@@ -32,6 +44,17 @@ export function useMockStream() {
   const pendingRef = useRef("");
   const targetRef = useRef<"reasoning" | "answer">("reasoning");
   const stoppedRef = useRef(false);
+
+  // Authoritative accumulators (refs so terminal handlers never read stale state).
+  const reasoningRef = useRef("");
+  const answerRef = useRef("");
+  const durationRef = useRef(0);
+
+  // Keep the latest callback without making start/stop depend on it.
+  const onTerminalRef = useRef(onTerminal);
+  useEffect(() => {
+    onTerminalRef.current = onTerminal;
+  }, [onTerminal]);
 
   const clearAll = useCallback(() => {
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
@@ -45,16 +68,29 @@ export function useMockStream() {
 
   useEffect(() => () => clearAll(), [clearAll]);
 
-  // rAF flush loop — drains the buffer into state at most once per frame.
+  const emitTerminal = useCallback((status: "done" | "stopped") => {
+    onTerminalRef.current?.({
+      status,
+      reasoning: reasoningRef.current,
+      reasoningDurationSec: durationRef.current,
+      answer: answerRef.current,
+    });
+  }, []);
+
+  // rAF flush loop — drains the buffer into the accumulator + state once per frame.
   const flushLoop = useCallback(() => {
     if (pendingRef.current) {
       const chunk = pendingRef.current;
       pendingRef.current = "";
-      setState((s) =>
-        targetRef.current === "reasoning"
-          ? { ...s, reasoning: s.reasoning + chunk }
-          : { ...s, answer: s.answer + chunk },
-      );
+      if (targetRef.current === "reasoning") {
+        reasoningRef.current += chunk;
+        const next = reasoningRef.current;
+        setState((s) => ({ ...s, reasoning: next }));
+      } else {
+        answerRef.current += chunk;
+        const next = answerRef.current;
+        setState((s) => ({ ...s, answer: next }));
+      }
     }
     rafRef.current = requestAnimationFrame(flushLoop);
   }, []);
@@ -80,6 +116,9 @@ export function useMockStream() {
     ({ reasoning, answer }: { reasoning: string; answer: string }) => {
       clearAll();
       stoppedRef.current = false;
+      reasoningRef.current = "";
+      answerRef.current = "";
+      durationRef.current = 0;
       setState({ ...INITIAL, status: "submitted" });
 
       // Pre-first-token delay, then begin streaming reasoning.
@@ -93,13 +132,10 @@ export function useMockStream() {
           const startedAt = Date.now();
           streamText(reasoning, () => {
             if (stoppedRef.current) return;
-            const dur = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+            durationRef.current = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+            const dur = durationRef.current;
             targetRef.current = "answer";
-            setState((s) => ({
-              ...s,
-              reasoningStreaming: false,
-              reasoningDurationSec: dur,
-            }));
+            setState((s) => ({ ...s, reasoningStreaming: false, reasoningDurationSec: dur }));
 
             streamText(answer, () => {
               if (stoppedRef.current) return;
@@ -108,6 +144,7 @@ export function useMockStream() {
                   if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
                   rafRef.current = null;
                   setState((s) => ({ ...s, status: "done" }));
+                  emitTerminal("done");
                 }, 50),
               );
             });
@@ -115,26 +152,37 @@ export function useMockStream() {
         }, 650),
       );
     },
-    [clearAll, flushLoop, streamText],
+    [clearAll, emitTerminal, flushLoop, streamText],
   );
 
   // Stop preserves partial output (PRD 01 §4.1): flush the buffer, freeze, mark stopped.
   const stop = useCallback(() => {
+    if (stoppedRef.current) return;
     stoppedRef.current = true;
     const chunk = pendingRef.current;
+    if (chunk) {
+      if (targetRef.current === "reasoning") reasoningRef.current += chunk;
+      else answerRef.current += chunk;
+    }
     clearAll();
-    setState((s) => {
-      const merged =
-        targetRef.current === "reasoning"
-          ? { ...s, reasoning: s.reasoning + chunk }
-          : { ...s, answer: s.answer + chunk };
-      return { ...merged, status: "stopped", reasoningStreaming: false };
-    });
-  }, [clearAll]);
+    const reasoning = reasoningRef.current;
+    const answer = answerRef.current;
+    setState((s) => ({
+      ...s,
+      reasoning,
+      answer,
+      status: "stopped",
+      reasoningStreaming: false,
+    }));
+    emitTerminal("stopped");
+  }, [clearAll, emitTerminal]);
 
   const reset = useCallback(() => {
     stoppedRef.current = true;
     clearAll();
+    reasoningRef.current = "";
+    answerRef.current = "";
+    durationRef.current = 0;
     setState(INITIAL);
   }, [clearAll]);
 

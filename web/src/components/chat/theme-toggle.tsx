@@ -11,7 +11,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
 
 const OPTIONS = [
   { value: "light", label: "Light", Icon: Sun },
@@ -24,6 +23,9 @@ const OPTIONS = [
 export function ThemeToggle() {
   const { theme, setTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  // One-time mount gate to avoid a theme hydration mismatch (server can't know
+  // the resolved theme). This is the intended use of a mount flag.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
   const Active = !mounted

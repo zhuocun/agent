@@ -54,26 +54,28 @@ export function UsageMeter({ usage }: UsageMeterProps) {
       )}
       title={accessibleLabel}
     >
-      <div
-        role="progressbar"
-        aria-label={accessibleLabel}
-        aria-valuenow={used}
-        aria-valuemin={0}
-        aria-valuemax={limit}
-        aria-valuetext={`${valueText} ${usage.periodLabel}`}
-        className={cn(
-          "h-1.5 w-16 shrink-0 overflow-hidden rounded-full",
-          isWarning ? "bg-warning/20" : "bg-muted",
-        )}
-      >
+      {limit > 0 ? (
         <div
+          role="progressbar"
+          aria-label={accessibleLabel}
+          aria-valuenow={used}
+          aria-valuemin={0}
+          aria-valuemax={limit}
+          aria-valuetext={`${valueText} ${usage.periodLabel}`}
           className={cn(
-            "h-full rounded-full transition-[width] duration-300 ease-out",
-            isWarning ? "bg-warning" : "bg-brand",
+            "h-1.5 w-16 shrink-0 overflow-hidden rounded-full",
+            isWarning ? "bg-warning/20" : "bg-muted",
           )}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+        >
+          <div
+            className={cn(
+              "h-full rounded-full transition-[width] duration-300 ease-out",
+              isWarning ? "bg-warning" : "bg-brand",
+            )}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      ) : null}
 
       <span className="min-w-0 truncate">
         <span className="font-mono tabular-nums">{valueText}</span>{" "}

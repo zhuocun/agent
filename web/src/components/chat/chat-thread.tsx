@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { AppHeader } from "@/components/chat/app-header";
 import { MessageList } from "@/components/chat/message-list";
@@ -8,7 +8,7 @@ import { UserMessage } from "@/components/chat/user-message";
 import { AssistantMessage } from "@/components/chat/assistant-message";
 import { Composer } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
-import { useMockStream } from "@/lib/use-mock-stream";
+import { useMockStream, type MockStreamResult } from "@/lib/use-mock-stream";
 import {
   MOCK_CONVERSATION,
   MOCK_MESSAGES,
@@ -61,8 +61,42 @@ export function ChatThread() {
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
+  const assistantIdRef = useRef<string | null>(null);
 
-  const { state, start, stop, reset } = useMockStream();
+  // Commit the finished assistant turn when the stream terminates — event-driven
+  // (the hook hands us the final flushed content), not a status-watching effect.
+  const handleTerminal = useCallback((result: MockStreamResult) => {
+    const id = assistantIdRef.current;
+    if (!id) return;
+
+    const parts: MessagePart[] = [];
+    if (result.reasoning) {
+      parts.push({
+        type: "reasoning",
+        text: result.reasoning,
+        durationSec: result.reasoningDurationSec,
+      });
+    }
+    if (result.answer) parts.push({ type: "text", text: result.answer });
+
+    const finalized: ChatMessage = {
+      id,
+      role: "assistant",
+      createdAt: new Date().toISOString(),
+      status: result.status,
+      feedback: null,
+      attribution:
+        result.status === "done" ? freshAttribution(tierAtSendRef.current) : undefined,
+      parts,
+    };
+
+    setMessages((prev) => [...prev, finalized]);
+    setLiveMessage(result.status === "done" ? "Response ready" : "Generation stopped");
+    setPendingId(null);
+    assistantIdRef.current = null;
+  }, []);
+
+  const { state, start, stop, reset } = useMockStream(handleTerminal);
 
   const isStreaming =
     pendingId !== null && (state.status === "submitted" || state.status === "streaming");
@@ -71,6 +105,7 @@ export function ChatThread() {
     const userId = uid();
     const assistantId = uid();
     tierAtSendRef.current = selectedTierId;
+    assistantIdRef.current = assistantId;
     setMessages((prev) => [
       ...prev,
       {
@@ -84,39 +119,6 @@ export function ChatThread() {
     setLiveMessage("Generating response");
     start({ reasoning: MOCK_STREAM_REASONING, answer: MOCK_STREAM_ANSWER });
   };
-
-  // Commit the in-flight assistant message once the stream terminates.
-  useEffect(() => {
-    if (!pendingId) return;
-    if (state.status !== "done" && state.status !== "stopped") return;
-
-    const parts: MessagePart[] = [];
-    if (state.reasoning) {
-      parts.push({
-        type: "reasoning",
-        text: state.reasoning,
-        durationSec: state.reasoningDurationSec,
-      });
-    }
-    if (state.answer) parts.push({ type: "text", text: state.answer });
-
-    const finalized: ChatMessage = {
-      id: pendingId,
-      role: "assistant",
-      createdAt: new Date().toISOString(),
-      status: state.status,
-      feedback: null,
-      attribution:
-        state.status === "done" ? freshAttribution(tierAtSendRef.current) : undefined,
-      parts,
-    };
-
-    setLiveMessage(state.status === "done" ? "Response ready" : "Generation stopped");
-    setMessages((prev) => [...prev, finalized]);
-    setPendingId(null);
-    reset();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.status]);
 
   const pendingMessage: ChatMessage | null = useMemo(() => {
     if (!pendingId) return null;
@@ -159,7 +161,9 @@ export function ChatThread() {
       while (next.length && next[next.length - 1].role === "assistant") next.pop();
       return next;
     });
-    setPendingId(uid());
+    const regenId = uid();
+    assistantIdRef.current = regenId;
+    setPendingId(regenId);
     setLiveMessage("Regenerating response");
     start({ reasoning: MOCK_STREAM_REASONING, answer: MOCK_STREAM_ANSWER });
   };
@@ -168,6 +172,7 @@ export function ChatThread() {
     if (isStreaming) stop();
     setMessages([]);
     setPendingId(null);
+    assistantIdRef.current = null;
     setLiveMessage("");
     reset();
   };

@@ -78,8 +78,9 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 ### 4.3 Message composer
 - **[P0]** Multiline textarea: **Enter sends, Shift+Enter inserts newline** (desktop). Auto-grows to a max height then scrolls. (Mobile send/keyboard behavior: PRD 03.)
 - **[P0]** **Send button morphs into Stop** during generation; same position.
-- **[P0]** **Attachments**: paperclip/"+" menu to attach images and files; **paste image from clipboard**; **drag-and-drop** files onto the composer with a drop overlay. (Accepted types/limits and what the model does with them: PRD 02.)
-  - *AC:* Pasting an image inserts a thumbnail chip; drag-drop shows a highlighted drop zone; each attachment chip is removable and labeled.
+- **[P1]** **Attachments**: paperclip/"+" menu to attach images and files; **paste image from clipboard**; **drag-and-drop** files onto the composer with a drop overlay. (Accepted types/limits and what the model does with them: PRD 02.) **Deferred to P1 with vision/PDF understanding** — the lean text-core MVP is text-only, so there is no attach affordance at launch.
+  - *AC (P1):* Pasting an image inserts a thumbnail chip; drag-drop shows a highlighted drop zone; each attachment chip is removable and labeled.
+- **[P0]** Plain-text **paste** into the composer works at MVP (e.g., pasting a long error log); only *image/file* attachment is deferred.
 - **[P0]** **Model picker** lives in the composer (compact control adjacent to send) **and** is reflected in the thread header. Presents **capability tiers** (e.g., Fast / Smart / Pro), not raw model IDs, driven by the model registry (PRD 02 owns tiers/registry). Selection can change mid-thread.
 - **[P1]** **Slash commands** (`/`) popover for quick actions/prompt templates.
 - **[P1]** Inline **mode toggles** in composer (e.g., web search on/off) once those capabilities land (PRD 02).
@@ -90,7 +91,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 - **[P0]** **Code blocks**: syntax highlighting (Shiki/Prism-class), language label, **copy button**. *AC:* copy puts exact source on clipboard; highlighting applies progressively during stream without re-flicker.
 - **[P0]** **Math** via **KaTeX**: inline `$…$` and block `$$…$$`.
 - **[P0]** **GFM tables**, horizontally scrollable on narrow viewports.
-- **[P0]** **Images** rendered inline (model output and user attachments) with alt text.
+- **[P0]** **Images**: the renderer supports inline images with alt text (cheap markdown capability). User-attached and model-generated images are **exercised at P1** when attachments/vision land (§4.3).
 - **[P0]** **Collapsible long content**: very long code blocks / responses get a "show more" / collapse affordance to keep the thread scannable.
 - **[P1]** **Mermaid diagrams** with a fullscreen view.
 - **[P1]** Code block **download** button and optional line numbers.
@@ -101,7 +102,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 - **[P0]** **History sidebar**, reverse-chronological, **grouped by time** ("Today / Yesterday / Previous 7 days / older").
 - **[P0]** **Rename** and **delete** a conversation via hover/overflow (`···`) menu; delete asks for confirmation.
 - **[P0]** **Search** across conversation titles and content, surfaced via the command palette (§4.9) and a sidebar search field.
-  - *AC:* Search returns matching chats with a snippet; selecting one opens it scrolled to context.
+  - *AC:* Search returns matching chats with a title match and, where the index supports it, a content snippet; selecting one opens it scrolled to context. (Title-only vs full-text depends on PRD 04's index — see §8.)
 - **[P0]** Auto-title a new conversation from its first exchange; user can override via rename.
 - **[P1]** Pin / archive.
 - **[P2]** Folders / tagging / Projects (separate org-layer spec).
@@ -144,7 +145,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 - *Note:* In-chat rendering of citations/cards is owned here; retrieval, citation metadata shape, and freshness are owned by **PRD 02**. Spec'd lightly in §5.6.
 
 ### 4.12 Artifacts / Canvas side panel
-- **[P2 — MVP-lite first]** **MVP-lite (target this phase if capacity allows, else P2):** an **"open in side panel"** affordance on long code/document outputs — opens a read-only side panel (desktop) / full-screen toggle (mobile-web) with **copy** and **download**. No live execution, no versioning.
+- **[P1 stretch]** **MVP-lite read-only side panel:** an **"open in side panel"** affordance on long code/document outputs — opens a read-only side panel (desktop) / full-screen toggle (mobile-web) with **copy** and **download**. No live execution, no versioning. (Stretch for the MVP window; drops to P2 if capacity is constrained — see §8.)
 - **[P2 — full]** Full Artifacts/Canvas: editable surface, live preview/execution, version history, publish/embed. Deferred (sandboxing/versioning cost; awkward on mobile-web).
 
 ---
@@ -179,6 +180,8 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 | `Shift+Esc` (global) | Focus composer |
 | `/` at line start | Open slash-command popover (P1) |
 
+> **`Esc` precedence:** When the composer is focused and a stream is active, `Esc` stops generation (it does **not** blur the composer); a second `Esc` is a no-op. When no stream is active, `Esc` follows default browser/textarea behavior.
+
 - Layout (desktop): `[+ attach] [ multiline textarea ] [ model tier control ] [ Send/Stop ]`. Attachment chips render in a row above the input. Model control is compact (label = current tier) and opens a tiered menu with brief metadata (relative speed/cost, modality) sourced from the registry.
 - Composer is sticky to the bottom of the thread; remains anchored during streaming.
 - Mobile composer specifics (touch targets, keyboard avoidance, sticky Stop): **defer to PRD 03**.
@@ -201,6 +204,7 @@ Priority tags: **[P0/MVP]** must ship to be credible · **[P1]** fast-follow · 
 | Focus composer | `Shift+Esc` |
 | Stop generation | `Esc` (while streaming) |
 | Copy last response | `Cmd+Shift+C` / `Ctrl+Shift+C` |
+| Copy last code block | `Cmd+Shift+;` / `Ctrl+Shift+;` |
 | Toggle sidebar | `Cmd+Shift+S` / `Ctrl+Shift+S` |
 | Open custom instructions | `Cmd+Shift+I` / `Ctrl+Shift+I` |
 | Delete current chat | `Cmd+Shift+Backspace` / `Ctrl+Shift+Backspace` |

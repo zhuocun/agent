@@ -88,8 +88,8 @@ GPT-5.5 prices prompts with **>272K input tokens at 2× input / 1.5× output for
 | GPT-5.5 | OpenAI | 1M (~1.05M); >272K = 2×in/1.5×out | 5.00 | 30.00 | Yes (effort) | Yes | [Verified] developers.openai.com/api/docs/pricing |
 | GPT-5.5 Pro | OpenAI | ~1.05M | 30.00 | 180.00 | Yes | Yes | [Verified] same |
 | GPT-5.4 | OpenAI | ~1.05M (Recall) | 2.50 | 15.00 | Yes | Yes | [Verified] price; [Recall] ctx |
-| GPT-5.4-Mini | OpenAI | ~1.05M (Recall) | 0.75 | 4.50 | Yes | Yes | [Verified] price |
-| GPT-5.4-Nano | OpenAI | ~1.05M (Recall) | 0.20 | 1.25 | Yes | Yes | [Verified] price |
+| GPT-5.4-Mini | OpenAI | 400K | 0.75 | 4.50 | Yes | Yes | [Verified] price + ctx |
+| GPT-5.4-Nano | OpenAI | 400K | 0.20 | 1.25 | Yes | Yes | [Verified] price + ctx |
 | Claude Opus 4.7 | Anthropic | 1M (new tokenizer) | 5.00 | 25.00 | Adaptive only | Yes | [Verified] platform.claude.com models overview |
 | Claude Sonnet 4.6 | Anthropic | 1M | 3.00 | 15.00 | Adaptive + extended | Yes | [Verified] same |
 | Claude Haiku 4.5 | Anthropic | 200K | 1.00 | 5.00 | Extended (no adaptive) | Yes | [Verified] same |
@@ -103,11 +103,11 @@ GPT-5.5 prices prompts with **>272K input tokens at 2× input / 1.5× output for
 | Mistral Medium 3 | Mistral | 128K | 0.40 | 2.00 | No | Yes | [Verified] price |
 | Mistral Small 3.1 | Mistral | 128K | 0.20 | 0.60 | No | Yes | [Verified] price |
 | DeepSeek V4-Flash | DeepSeek | 1M | 0.14 | 0.28 | Yes (think/non-think) | Limited (Recall) | [Verified] api-docs.deepseek.com/quick_start/pricing |
-| DeepSeek V4-Pro | DeepSeek | 1M | 0.435* | 0.87* | Yes | Limited | [Verified] *75% promo to 2026-05-31; then 1/4 of original |
+| DeepSeek V4-Pro | DeepSeek | 1M | 0.435* | 0.87* | Yes | Limited | [Verified] *75%-off promo to 2026-05-31; reverts to $1.74/$3.48 |
 | Llama 4 Scout | Meta (open) | 10M | self-host / ~0.08–0.15 via providers | — | No (Recall) | Yes (native) | [Verified] ctx; [Recall] hosted price |
 | Llama 4 Maverick | Meta (open) | 1M | self-host / provider | — | No | Yes (native) | [Verified] ctx |
 
-**DeepSeek V4-Pro footnote:** the *75%-off* promo ($0.435/$0.87) **expires 2026-05-31 15:59 UTC**, then settles to "1/4 of original price." This is exactly the kind of promo window the docs warn about — do not hardcode. [Verified] https://api-docs.deepseek.com/quick_start/pricing
+**DeepSeek V4-Pro footnote:** the *75%-off* promo ($0.435/$0.87) **expires 2026-05-31 15:59 UTC**, then reverts to standard pricing of **$1.74/$3.48** (the promo is 25% of standard). This is exactly the kind of promo window the docs warn about — do not hardcode. [Verified] https://api-docs.deepseek.com/quick_start/pricing
 
 ### 3.2 Validated (existing docs are correct)
 - **No-hardcoding / data-driven registry mandate (research §0, PRD §5):** strongly validated. Multiple facts below already drifted in <6 weeks; the discipline is correct. **[Verified]**

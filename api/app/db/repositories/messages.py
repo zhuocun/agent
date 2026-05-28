@@ -6,18 +6,39 @@ M1 needs:
   on disconnect (with `status="stopped"`).
 - `get_by_client_message_id` — drives idempotency replay.
 - `load_history` — feeds the provider with the prior turns.
+
+M2 adds:
+- `truncate_from` — delete the message at a given id AND every message
+  created at/after it (drives edit-and-rerun).
+- `delete_trailing_assistants` — drop the trailing assistant turn(s) for
+  a conversation (drives regenerate). Returns the count deleted.
+- `count_assistant_messages` — gate "first terminal" for title autogen.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Message
+from app.db.models import Message, Vote
 from app.providers.protocol import ChatMessage as ProviderChatMessage
+
+
+def _now() -> datetime:
+    """UTC-aware microsecond-precision Python timestamp.
+
+    Used as an explicit `created_at` value on inserts. The model's
+    `server_default=func.now()` is second-precision on SQLite (test DB) and
+    same-second inserts then collapse to identical timestamps. Setting the
+    column explicitly with a Python-side `datetime.now(UTC)` gives us
+    microsecond precision on both SQLite and Postgres, which makes
+    `(created_at, id)` ordering robust across regenerate / edit truncation.
+    """
+    return datetime.now(UTC)
 
 
 async def get_by_id(db: AsyncSession, message_id: UUID) -> Message | None:
@@ -50,7 +71,14 @@ async def create_user_message(
     client_message_id: UUID,
     text: str,
 ) -> Message:
-    """Persist a user turn. Returns the row with `id` and `created_at` set."""
+    """Persist a user turn. Returns the row with `id` and `created_at` set.
+
+    `created_at` is set explicitly to a microsecond-precision Python now()
+    rather than relying on the column's `server_default=func.now()`. See
+    `_now()` docstring — SQLite's CURRENT_TIMESTAMP is second-precision,
+    which makes within-turn ties and regen/edit truncation order
+    unreliable.
+    """
     msg = Message(
         conversation_id=conversation_id,
         client_message_id=client_message_id,
@@ -58,6 +86,7 @@ async def create_user_message(
         parts=[{"type": "text", "text": text}],
         status=None,
         attribution=None,
+        created_at=_now(),
     )
     db.add(msg)
     await db.flush()
@@ -73,7 +102,11 @@ async def create_assistant_message(
     status: str,
     attribution: dict[str, Any],
 ) -> Message:
-    """Persist an assistant turn. `status` is `"done"` or `"stopped"`."""
+    """Persist an assistant turn. `status` is `"done"` or `"stopped"`.
+
+    See `create_user_message` docstring — `created_at` is set Python-side
+    for microsecond precision (SQLite quirk).
+    """
     msg = Message(
         conversation_id=conversation_id,
         client_message_id=None,
@@ -81,6 +114,7 @@ async def create_assistant_message(
         parts=parts,
         status=status,
         attribution=attribution,
+        created_at=_now(),
     )
     db.add(msg)
     await db.flush()
@@ -126,3 +160,179 @@ async def load_history(
         role = cast(Any, row.role)  # narrowed by the role check above
         history.append(ProviderChatMessage(role=role, text="".join(text_chunks)))
     return history
+
+
+async def truncate_from(
+    db: AsyncSession,
+    *,
+    conversation_id: UUID,
+    message_id: UUID,
+) -> int:
+    """Delete the message at `message_id` AND every message after it.
+
+    "After" is by `created_at` order with the anchor's row always included.
+    Returns the count of rows removed. Returns 0 if `message_id` does not
+    belong to the conversation.
+
+    SQLite tie tolerance: same-second timestamps may collapse to equal
+    values on storage (`CURRENT_TIMESTAMP` is second-precision text). For
+    rows tying with the anchor by timestamp:
+    - The anchor itself is always deleted (matched by id).
+    - Other tied rows that are LATER turns (e.g. the assistant response
+      that was just persisted same-second as the user) are also deleted.
+    - Tied rows from EARLIER turns are not — but a same-second insert
+      across turns is improbable: between turns are ~150ms of streaming
+      and a `db.commit()` round trip. In practice production runs on
+      Postgres (microsecond precision) and the tie case is a SQLite-only
+      test artifact.
+
+    We collect rows by Python-side comparison to avoid the SQLite
+    datetime parameter formatting quirk (see `delete_trailing_assistants`
+    docstring).
+
+    Used by the edit-and-rerun path: truncate at the user message, then
+    insert the replacement with the new text + clientMessageId.
+    """
+    anchor_stmt = select(Message).where(
+        Message.id == message_id,
+        Message.conversation_id == conversation_id,
+    )
+    anchor = (await db.execute(anchor_stmt)).scalar_one_or_none()
+    if anchor is None:
+        return 0
+    # Load all rows in this conversation; filter in Python to dodge the
+    # SQLite datetime serialization tie. We include the anchor explicitly
+    # (matched by id) plus every row whose `created_at` is STRICTLY GREATER
+    # than the anchor's. Same-second rows from the same turn (the assistant
+    # response, just persisted) are caught via the strict-greater test
+    # against the IMMEDIATELY-PRIOR turn — but for tied same-second rows
+    # belonging to the same turn as the anchor (e.g. the anchor user's own
+    # assistant from the prior persist), we additionally include rows that
+    # tie AND have an id sorted lexicographically AFTER the anchor's. The
+    # latter still has theoretical false negatives but works for our test
+    # scenarios; production on Postgres won't see ties.
+    all_stmt = (
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+    )
+    rows = (await db.execute(all_stmt)).scalars().all()
+    anchor_ts = anchor.created_at
+    anchor_id = anchor.id
+    to_delete: list[Message] = []
+    for r in rows:
+        if r.id == anchor_id:
+            to_delete.append(r)
+            continue
+        if r.created_at > anchor_ts:
+            to_delete.append(r)
+            continue
+        if r.created_at == anchor_ts and r.id > anchor_id:
+            to_delete.append(r)
+    # Cross-dialect cascade: SQLite (tests) doesn't enforce FK CASCADE by
+    # default, so explicitly drop any Vote rows for the targeted messages
+    # before deleting the messages themselves. Postgres FK ON DELETE CASCADE
+    # also handles this; the explicit delete is idempotent there. Matches
+    # the pattern in `conversations_repo.delete_for_user`.
+    if to_delete:
+        target_ids = [r.id for r in to_delete]
+        await db.execute(delete(Vote).where(Vote.message_id.in_(target_ids)))
+    for row in to_delete:
+        await db.delete(row)
+    await db.flush()
+    return len(to_delete)
+
+
+async def delete_trailing_assistants(
+    db: AsyncSession,
+    *,
+    conversation_id: UUID,
+) -> int:
+    """Drop the assistant turn(s) responding to the most recent user message.
+
+    Returns the count removed. Returns 0 if the conversation has no user
+    messages.
+
+    Semantics: "trailing assistant" = any assistant row whose `created_at`
+    is `>=` the latest user message's `created_at`. We rely on the
+    wall-clock invariant that the user message is INSERT'd and committed
+    BEFORE the assistant turn starts streaming, so on second-precision
+    storage they may tie but the assistant never has a STRICTLY EARLIER
+    timestamp.
+
+    Implementation note: a SQL `WHERE created_at >= :user_created_at`
+    filter is unreliable here. SQLite's `CURRENT_TIMESTAMP` default stores
+    text WITHOUT microseconds, but SQLAlchemy serializes the bound Python
+    datetime WITH `.000000`. The string compare then puts the stored row
+    BELOW the filter and misses tied rows. Postgres (production) does not
+    have this issue, but to keep tests honest we pull all assistant rows
+    and filter in Python — costs O(n) per regenerate, n = conversation
+    length, which is fine at MVP scale.
+
+    Used by the regenerate path: the user message stays put (FE reuses its
+    existing bubble id); the trailing assistant(s) are deleted before the
+    new stream starts.
+    """
+    last_user = await get_last_user_message(db, conversation_id)
+    if last_user is None:
+        return 0
+    stmt = select(Message).where(
+        Message.conversation_id == conversation_id,
+        Message.role == "assistant",
+    )
+    all_assistants = (await db.execute(stmt)).scalars().all()
+    # Filter in Python: any assistant whose timestamp is >= the user's
+    # (tolerating SQLite's second-precision tie).
+    user_ts = last_user.created_at
+    targets = [a for a in all_assistants if a.created_at >= user_ts]
+    # Cross-dialect cascade: SQLite (tests) doesn't enforce FK CASCADE by
+    # default, so explicitly drop any Vote rows for the targeted assistants
+    # before deleting the messages themselves. Postgres FK ON DELETE CASCADE
+    # also handles this; the explicit delete is idempotent there. Matches
+    # the pattern in `conversations_repo.delete_for_user`.
+    if targets:
+        target_ids = [a.id for a in targets]
+        await db.execute(delete(Vote).where(Vote.message_id.in_(target_ids)))
+    for row in targets:
+        await db.delete(row)
+    await db.flush()
+    return len(targets)
+
+
+async def get_last_user_message(
+    db: AsyncSession,
+    conversation_id: UUID,
+) -> Message | None:
+    """Return the latest user message in the conversation, or None.
+
+    Used by the regenerate path to reuse the existing trailing user message
+    (its id is emitted in `submitted` and its text is replayed to the
+    provider unchanged).
+    """
+    stmt = (
+        select(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.role == "user",
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def count_assistant_messages(
+    db: AsyncSession,
+    conversation_id: UUID,
+) -> int:
+    """Return the count of assistant messages for the conversation.
+
+    Used to gate title autogen: only fire on the FIRST terminal (when the
+    count is zero immediately before persisting the assistant row).
+    """
+    stmt = select(func.count(Message.id)).where(
+        Message.conversation_id == conversation_id,
+        Message.role == "assistant",
+    )
+    result = (await db.execute(stmt)).scalar_one()
+    return int(result or 0)

@@ -5,20 +5,25 @@ M0 needs:
 - get a single conversation by id, scoped to the user
 - get messages of a conversation (ordered by created_at)
 
-CRUD / mutations land in M1+ and are skeletoned out so the route layer can
-import a stable surface.
+M2 adds:
+- `update_for_user` — patch title and/or pinned on an owned conversation.
+- `delete_for_user` — delete an owned conversation. Cascades to messages/votes
+  via the FK chain.
+- `update_title` — single-field title write used by the title-autogen task
+  (no user_id available at call site; the task already trusts that the
+  conversation existed when the first terminal fired).
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Message
+from app.db.models import Conversation, Message, Vote
 from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.conversation import ConversationSummary
@@ -134,3 +139,82 @@ async def get_for_user(
         selected_tier_id=_coerce_tier(row.selected_tier_id),
         is_temporary=False,
     )
+
+
+async def update_for_user(
+    db: AsyncSession,
+    conversation_id: UUID,
+    user_id: UUID,
+    *,
+    title: str | None = None,
+    pinned: bool | None = None,
+) -> Conversation | None:
+    """Update the owned conversation's title/pinned. None args mean "don't touch."
+
+    Returns the refreshed ORM row, or None if the row isn't owned/doesn't exist.
+    Bumps `updated_at` so the sidebar's pinned/updated ordering reflects the
+    rename or pin/unpin.
+    """
+    row = await owned_by(db, conversation_id, user_id)
+    if row is None:
+        return None
+    if title is not None:
+        row.title = title
+    if pinned is not None:
+        row.pinned = pinned
+    # Touch updated_at — the column has a server_default but no onupdate hook,
+    # so we set it explicitly. Naive datetime is fine for SQLite tests; Postgres
+    # accepts tz-aware values via TIMESTAMP(timezone=True).
+    row.updated_at = datetime.now(UTC)
+    await db.flush()
+    await db.refresh(row)
+    return row
+
+
+async def update_title(
+    db: AsyncSession,
+    *,
+    conversation_id: UUID,
+    title: str,
+) -> None:
+    """Set `conversation.title`. Silent no-op if the row is gone.
+
+    Used by the title-autogen detached task on the first terminal. The
+    caller owns its own session and commit; we only mutate. Does not bump
+    `updated_at` — title autogen is an implicit side effect of the same
+    turn that already updated the row's children, so keeping the sidebar
+    ordering stable is preferable.
+    """
+    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        return
+    row.title = title
+    await db.flush()
+
+
+async def delete_for_user(
+    db: AsyncSession, conversation_id: UUID, user_id: UUID
+) -> bool:
+    """Delete the owned conversation. Returns True if a row was deleted.
+
+    Cascades to `message`; `vote` cascades transitively via the FK chain on
+    Postgres. SQLite (test) doesn't enforce FK cascades by default (no
+    `PRAGMA foreign_keys=ON`), so we issue explicit deletes for `vote` and
+    `message` first. The Postgres path is unchanged in semantics — the
+    explicit deletes are idempotent there too.
+    """
+    row = await owned_by(db, conversation_id, user_id)
+    if row is None:
+        return False
+    # Manual cascade for cross-dialect safety. On Postgres the FK ON DELETE
+    # CASCADE also fires; the explicit deletes here are idempotent.
+    # vote -> message -> conversation deletion order matches the FK chain.
+    msg_id_stmt = select(Message.id).where(Message.conversation_id == conversation_id)
+    msg_ids = (await db.execute(msg_id_stmt)).scalars().all()
+    if msg_ids:
+        await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
+    await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+    await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
+    await db.flush()
+    return True

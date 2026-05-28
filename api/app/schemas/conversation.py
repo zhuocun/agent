@@ -29,6 +29,17 @@ class CreateConversationRequest(CamelModel):
     is_temporary: bool = False
 
 
+class PatchConversationRequest(CamelModel):
+    """Body for PATCH /api/conversations/:id.
+
+    Both fields optional; the handler rejects an empty patch with INVALID_INPUT
+    (no point in PATCHing nothing). Sentinel-less: unset fields are left alone.
+    """
+
+    title: str | None = None
+    pinned: bool | None = None
+
+
 class SendMessageRequest(CamelModel):
     """Body for POST /api/conversations/:id/messages.
 

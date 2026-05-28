@@ -355,13 +355,94 @@ async def test_unknown_tier_returns_400(
     assert body["error"]["code"] in ("INVALID_INPUT", "INVALID_TIER")
 
 
-# 501 on M2 fields -------------------------------------------------------------
+# M2: regenerate path ---------------------------------------------------------
 
 
-async def test_regenerate_returns_501(
+async def test_regenerate_drops_trailing_assistant_and_re_streams(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """A regen drops the prior assistant, keeps the user message id, re-streams."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Turn 1.
+    first = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "hello",
+        },
+    )
+    first_submitted = next(p for n, p in first if n == "submitted")
+    first_terminal = next(p for n, p in first if n == "terminal")
+    user_msg_id_1 = first_submitted["messageId"]
+    assistant_msg_id_1 = first_terminal["messageId"]
+
+    # Snapshot DB.
+    from uuid import UUID
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == UUID(conv_id))
+                .order_by(Message.created_at.asc(), Message.id.asc())
+            )
+        ).scalars().all()
+        # SQLite same-second timestamps may sort assistant before user when
+        # `created_at` ties. Assert role membership, not order.
+        assert len(rows) == 2
+        roles = {r.role for r in rows}
+        assert roles == {"user", "assistant"}
+
+    # Regen (fresh clientMessageId — FE mints one).
+    regen = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "ignored on regen",  # body.text ignored; original is reused
+            "regenerate": True,
+        },
+    )
+    regen_submitted = next(p for n, p in regen if n == "submitted")
+    regen_terminal = next(p for n, p in regen if n == "terminal")
+
+    # User message id reused; assistant id is fresh.
+    assert regen_submitted["messageId"] == user_msg_id_1
+    assert regen_terminal["messageId"] != assistant_msg_id_1
+    # Event ordering same as a fresh send.
+    event_names = [n for n, _ in regen]
+    assert event_names[0] == "submitted"
+    assert event_names[-1] == "terminal"
+
+    # DB: original assistant gone, new assistant present, user unchanged.
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == UUID(conv_id))
+                .order_by(Message.created_at.asc(), Message.id.asc())
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+        user_row = next(r for r in rows if r.role == "user")
+        asst_row = next(r for r in rows if r.role == "assistant")
+        assert str(user_row.id) == user_msg_id_1
+        assert str(asst_row.id) != assistant_msg_id_1
+        assert str(asst_row.id) == regen_terminal["messageId"]
+
+
+async def test_regenerate_with_no_trailing_assistant_errors(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Regen on a fresh (no user message) conversation -> 400 INVALID_INPUT."""
     await client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
@@ -375,15 +456,109 @@ async def test_regenerate_returns_501(
             "regenerate": True,
         },
     )
-    assert response.status_code == 501
+    assert response.status_code == 400
     body = response.json()
-    assert body["error"]["code"] == "NOT_IMPLEMENTED"
+    assert body["error"]["code"] == "INVALID_INPUT"
 
 
-async def test_edit_message_id_returns_501(
+# M2: edit path ---------------------------------------------------------------
+
+
+async def test_edit_truncates_and_re_streams(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """Edit truncates from the target inclusive, inserts new user, re-streams."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Turn 1.
+    t1 = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "turn 1"},
+    )
+    t1_user_id = next(p for n, p in t1 if n == "submitted")["messageId"]
+    # Turn 2.
+    t2 = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "turn 2"},
+    )
+    t2_user_id = next(p for n, p in t2 if n == "submitted")["messageId"]
+    # Turn 3.
+    t3 = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "turn 3"},
+    )
+    t3_user_id = next(p for n, p in t3 if n == "submitted")["messageId"]
+    t3_assistant_id = next(p for n, p in t3 if n == "terminal")["messageId"]
+
+    from uuid import UUID
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == UUID(conv_id))
+                .order_by(Message.created_at.asc(), Message.id.asc())
+            )
+        ).scalars().all()
+        assert len(rows) == 6  # 3 user + 3 assistant
+
+    # Edit turn-2 user message: truncate it + everything after.
+    edit_resp = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "edited turn 2",
+            "editMessageId": t2_user_id,
+        },
+    )
+    edit_user_id = next(p for n, p in edit_resp if n == "submitted")["messageId"]
+    edit_assistant_id = next(p for n, p in edit_resp if n == "terminal")["messageId"]
+
+    # submitted carries a NEW user message id (not the edited one).
+    assert edit_user_id != t2_user_id
+    # Event ordering same as a fresh send.
+    event_names = [n for n, _ in edit_resp]
+    assert event_names[0] == "submitted"
+    assert event_names[-1] == "terminal"
+
+    # DB shape: turn 1 (user + assistant) preserved; turn 2 user gone; turn 3
+    # gone; new user + assistant inserted at the truncation point.
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == UUID(conv_id))
+                .order_by(Message.created_at.asc(), Message.id.asc())
+            )
+        ).scalars().all()
+        ids = {str(r.id) for r in rows}
+        # Turn 1 preserved.
+        assert t1_user_id in ids
+        # Old turn-2 user, turn-3 user + assistant all gone.
+        assert t2_user_id not in ids
+        assert t3_user_id not in ids
+        assert t3_assistant_id not in ids
+        # New rows present.
+        assert edit_user_id in ids
+        assert edit_assistant_id in ids
+        # Confirm the new user message has the edited text.
+        new_user = next(r for r in rows if str(r.id) == edit_user_id)
+        assert new_user.parts[0]["text"] == "edited turn 2"
+
+
+async def test_edit_with_unknown_message_id_errors(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """editMessageId pointing to a uuid not in this conversation -> 400."""
     await client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
@@ -397,9 +572,227 @@ async def test_edit_message_id_returns_501(
             "editMessageId": str(uuid4()),
         },
     )
-    assert response.status_code == 501
+    assert response.status_code == 400
     body = response.json()
-    assert body["error"]["code"] == "NOT_IMPLEMENTED"
+    assert body["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_edit_with_assistant_message_id_errors(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """editMessageId pointing to an assistant row -> 400."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Build turn 1 to get an assistant message id.
+    t1 = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "hi"},
+    )
+    assistant_id = next(p for n, p in t1 if n == "terminal")["messageId"]
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "bad edit",
+            "editMessageId": assistant_id,
+        },
+    )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "INVALID_INPUT"
+
+
+# M2: title autogen -----------------------------------------------------------
+
+
+async def test_title_autogen_updates_title_on_first_terminal(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """First terminal -> detached task updates conversation.title.
+
+    Timing: the fake provider's `complete()` returns synchronously (no
+    sleeps). The detached task runs against a fresh session and should
+    finish within a few hundred ms. Poll with a 2s ceiling.
+    """
+    import asyncio
+    from uuid import UUID
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "ping"},
+    )
+
+    # Poll until the title flips off "New chat" or we hit the timeout.
+    deadline = 2.0
+    interval = 0.05
+    elapsed = 0.0
+    final_title: str = "New chat"
+    while elapsed < deadline:
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(Conversation).where(Conversation.id == UUID(conv_id))
+                )
+            ).scalar_one()
+            final_title = row.title
+        if final_title and final_title != "New chat":
+            break
+        await asyncio.sleep(interval)
+        elapsed += interval
+
+    assert final_title != "New chat"
+    assert final_title.strip() != ""
+
+
+async def test_title_autogen_does_not_re_fire_on_second_terminal(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Second turn must NOT overwrite the title (first-terminal gate)."""
+    import asyncio
+    from uuid import UUID
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Turn 1 fires autogen.
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "first"},
+    )
+    # Wait for the title to flip.
+    deadline = 2.0
+    interval = 0.05
+    elapsed = 0.0
+    first_title = "New chat"
+    while elapsed < deadline:
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(Conversation).where(Conversation.id == UUID(conv_id))
+                )
+            ).scalar_one()
+            first_title = row.title
+        if first_title and first_title != "New chat":
+            break
+        await asyncio.sleep(interval)
+        elapsed += interval
+    assert first_title != "New chat"
+
+    # Manually rename to a sentinel so we can detect any overwrite.
+    sentinel = "Manually renamed title"
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Conversation).where(Conversation.id == UUID(conv_id))
+            )
+        ).scalar_one()
+        row.title = sentinel
+        await session.commit()
+
+    # Turn 2 must NOT overwrite the sentinel.
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "second"},
+    )
+    # Give any rogue autogen task a chance to overwrite.
+    await asyncio.sleep(0.4)
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Conversation).where(Conversation.id == UUID(conv_id))
+            )
+        ).scalar_one()
+        assert row.title == sentinel
+
+
+async def test_regenerate_does_not_re_fire_title_autogen(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Regen of the first turn deletes the prior assistant, leaving the
+    assistant-count at 0 immediately before the new assistant persists. Without
+    the `is_initial` gate, this would re-fire title autogen and clobber a
+    user-renamed title. Confirm the gate keeps the user-set title intact.
+    """
+    import asyncio
+    from uuid import UUID
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Turn 1 fires autogen; wait for the title to flip off "New chat".
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "first"},
+    )
+    deadline = 2.0
+    interval = 0.05
+    elapsed = 0.0
+    first_title = "New chat"
+    while elapsed < deadline:
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(Conversation).where(Conversation.id == UUID(conv_id))
+                )
+            ).scalar_one()
+            first_title = row.title
+        if first_title and first_title != "New chat":
+            break
+        await asyncio.sleep(interval)
+        elapsed += interval
+    assert first_title != "New chat"
+
+    # User manually renames the conversation.
+    sentinel = "User picked this title"
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Conversation).where(Conversation.id == UUID(conv_id))
+            )
+        ).scalar_one()
+        row.title = sentinel
+        await session.commit()
+
+    # Regen the (now sole) turn. This drops the trailing assistant, so the
+    # assistant-count is 0 before the new assistant persists. The `is_initial`
+    # gate must prevent autogen from overwriting the user's title.
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "ignored on regen",
+            "regenerate": True,
+        },
+    )
+    await asyncio.sleep(0.4)
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Conversation).where(Conversation.id == UUID(conv_id))
+            )
+        ).scalar_one()
+        assert row.title == sentinel
 
 
 # POST /api/conversations creation --------------------------------------------

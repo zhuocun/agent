@@ -131,3 +131,43 @@ class AnthropicProvider:
         )
         yield usage_update
         yield Complete(usage=usage_update)
+
+    async def complete(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+    ) -> str:
+        """Non-streaming variant. One `messages.create` call, collected text.
+
+        Used by title autogen — small/fast tier, short max_tokens. Concatenates
+        any `text` blocks in the SDK response and returns the joined string.
+        Returns empty string on a response without a text block (defensive —
+        the caller will swallow empty titles).
+        """
+        # Title-autogen calls are short; cap output tokens aggressively so a
+        # runaway model can't burn a full max_tokens budget on a 5-word title.
+        # The number is intentionally generous (5 words ~ a couple dozen
+        # tokens) to leave headroom for unusual tokenizers.
+        messages: list[dict[str, Any]] = [
+            {"role": m.role, "content": m.text} for m in history
+        ]
+        messages.append({"role": "user", "content": user_text})
+
+        response = await self._client.messages.create(
+            model=model_id,
+            max_tokens=64,
+            messages=cast(Any, messages),
+        )
+        # `response.content` is a list of content blocks; we concatenate text
+        # blocks (skip thinking / tool_use etc.). SDK shapes vary by version
+        # so we duck-type defensively.
+        texts: list[str] = []
+        for block in getattr(response, "content", []) or []:
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                text_val = getattr(block, "text", "")
+                if isinstance(text_val, str):
+                    texts.append(text_val)
+        return "".join(texts).strip()

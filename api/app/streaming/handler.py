@@ -17,23 +17,33 @@ Per plan §"Streaming" invariant: exactly one `reasoning_done` precedes any
 to enforce this — if the provider yields an `AnswerDelta` before
 `ReasoningDone` but after at least one `ReasoningDelta`, we emit
 `ReasoningDone` first (defensive).
+
+Title autogen: on the FIRST terminal of a conversation (count(role=assistant)
+== 0 immediately before persistence), schedule a detached `asyncio.Task`
+that calls `provider.complete(...)` on the small/fast tier and writes
+`conversation.title`. Fire-and-forget — does NOT block the streaming
+response. If the worker dies before the task completes, title stays "New
+chat" until next turn fires the check again (plan §"Explicit non-features").
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import Request
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
 
+from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
 from app.db.session import get_session_factory
 from app.errors import ErrorEnvelope
+from app.providers.factory import build_provider
 from app.providers.pricing import build_attribution, compute_cost_breakdown
 from app.providers.protocol import (
     AnswerDelta,
@@ -45,7 +55,7 @@ from app.providers.protocol import (
     ReasoningDone,
     UsageUpdate,
 )
-from app.providers.tiers import TierBinding
+from app.providers.tiers import TierBinding, get_binding
 from app.schemas.common import ModelTierId
 from app.schemas.message import ModelAttribution
 from app.schemas.stream_events import (
@@ -64,6 +74,96 @@ from app.streaming.sse import (
     encode_terminal,
 )
 
+log = logging.getLogger(__name__)
+
+# Detached background tasks (title autogen). `asyncio.create_task` only holds
+# a weak reference to the returned Task; without a strong ref the task can
+# be garbage-collected mid-flight under some event-loop policies. Keep a
+# module-level strong-ref set and discard each entry in the done callback.
+_BG_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _derive_session_factory(
+    db: AsyncSession,
+) -> async_sessionmaker[AsyncSession]:
+    """Build a sessionmaker pointing at the same engine as `db`.
+
+    The detached title-autogen task needs a fresh session — the request
+    scope is closing. We can't use `get_session_factory()` because in tests
+    that's the process-wide factory bound to env DATABASE_URL, NOT the
+    per-test SQLite file the request session was bound to.
+
+    Falls back to `get_session_factory()` if the bind can't be extracted
+    (defensive — should not happen in practice; `AsyncSession.bind`
+    is an `AsyncEngine` once the session has executed anything).
+    """
+    bind = db.bind
+    if bind is None:
+        return get_session_factory()
+    return async_sessionmaker(
+        bind=bind,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+
+# Prompt used for title autogen. Kept short — the small/fast tier sees the
+# user's first turn plus this instruction and returns a 4-6 word title.
+# Phrased as the user side of a single turn (no system prompt seam in our
+# Protocol) so the provider treats it as a normal completion.
+_TITLE_AUTOGEN_PROMPT = (
+    "Summarize the following user message as a concise 4-6 word title. "
+    "Return ONLY the title — no quotes, no punctuation at the end, no "
+    "explanation.\n\nMessage: "
+)
+
+
+async def _autogen_title(
+    *,
+    conversation_id: UUID,
+    user_text: str,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Detached task: call the fast tier, write `conversation.title`.
+
+    Owns its own session (the request scope is already closed by the time
+    this runs). The session factory is passed in by the caller so tests can
+    point the task at the per-test SQLite file rather than the process-wide
+    factory (which is built lazily from env DATABASE_URL — wrong in tests).
+
+    Swallows all exceptions — title autogen is best-effort and must never
+    propagate into the streaming response or leak as an unhandled task
+    exception.
+    """
+    try:
+        binding = get_binding("fast")
+        if binding is None:
+            # Registry misconfigured — log and bail. Title stays "New chat".
+            log.warning("autogen_title.no_fast_binding")
+            return
+        provider = build_provider()
+        title = await provider.complete(
+            model_id=binding.model_id,
+            history=[],
+            user_text=_TITLE_AUTOGEN_PROMPT + user_text,
+        )
+        # Strip surrounding whitespace/quotes/trailing period defensively —
+        # providers sometimes ignore "no quotes" instructions.
+        cleaned = title.strip().strip('"').strip("'").rstrip(".")
+        if not cleaned:
+            log.warning("autogen_title.empty_response")
+            return
+        # Cap at a sane length so a runaway model can't blow out the column.
+        cleaned = cleaned[:120]
+        async with session_factory() as session:
+            await conversations_repo.update_title(
+                session,
+                conversation_id=conversation_id,
+                title=cleaned,
+            )
+            await session.commit()
+    except Exception as exc:
+        log.warning("autogen_title.failed", exc_info=exc)
+
 
 async def stream_and_persist(
     *,
@@ -77,12 +177,20 @@ async def stream_and_persist(
     user_text: str,
     history: list[ChatMessage],
     is_temporary: bool,
+    is_initial: bool = True,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
     `conversation_id` is None for temporary chats — persistence is skipped.
     The caller MUST have already persisted the user message (or generated a
     synthetic id for temporary chats) before invoking this.
+
+    `is_initial=True` means this is a fresh user send (not a regen, not an
+    edit). Title autogen requires BOTH `is_initial` AND `count_assistant_messages
+    == 0` so a regen/edit-of-first-turn (which truncates assistants → count
+    returns 0) does NOT re-fire autogen and overwrite a user-renamed title.
+    Defaults to True so single-call sites without explicit passing keep
+    behaving as fresh sends.
     """
     # Emit `submitted` immediately.
     yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
@@ -224,10 +332,19 @@ async def stream_and_persist(
         )
 
         # Persist the assistant message (skipped for temporary).
-        # TODO(M2): fire `asyncio.create_task(autogen_title(...))` here on
-        # first terminal — plan §"Behavior" + §"Title autogen".
+        # First-terminal check happens BEFORE the create so we don't count
+        # the row we're about to insert. Plan §"Behavior" + §"Title autogen":
+        # only fire on the FIRST assistant message for the conversation.
         assistant_id: UUID | None = None
+        is_first_terminal = False
         if not is_temporary and conversation_id is not None:
+            # Title autogen gate: BOTH "no prior assistant rows" AND "this is a
+            # fresh send" (not regen, not edit). Regen / edit-of-first-turn
+            # delete the prior assistant(s) → count returns 0, which would
+            # otherwise re-fire autogen and clobber a user-renamed title.
+            is_first_terminal = is_initial and (
+                await messages_repo.count_assistant_messages(db, conversation_id) == 0
+            )
             parts: list[dict[str, Any]] = []
             if reasoning_buf:
                 parts.append({"type": "reasoning", "text": "".join(reasoning_buf)})
@@ -241,6 +358,28 @@ async def stream_and_persist(
             )
             await db.commit()
             assistant_id = row.id
+
+            if is_first_terminal:
+                # Fire-and-forget. The task owns its own session; if the
+                # worker dies before completion, title stays "New chat" until
+                # the next turn re-fires the check (acceptable per plan).
+                # Note: we don't `await` here — the streaming response must
+                # close immediately after `terminal`. We do hold a reference
+                # via a module-level set to keep the task alive against GC
+                # in case the asyncio event-loop policy drops weakrefs.
+                # The session factory is derived from the request-scoped
+                # session's bind so tests can point at the per-test SQLite
+                # file. In prod the bind is the process engine; either way
+                # the factory targets the right DB.
+                task = asyncio.create_task(
+                    _autogen_title(
+                        conversation_id=conversation_id,
+                        user_text=user_text,
+                        session_factory=_derive_session_factory(db),
+                    )
+                )
+                _BG_TASKS.add(task)
+                task.add_done_callback(_BG_TASKS.discard)
 
         # Terminal frame. For temporary chats the message is never persisted,
         # so we mint a fresh uuid4 per turn — using a constant placeholder

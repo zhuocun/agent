@@ -58,6 +58,33 @@ class Session(Base):
     )
 
 
+class Preferences(Base):
+    """Per-user preferences. PK == user_id (one row per user)."""
+
+    __tablename__ = "preferences"
+
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    default_tier_id: Mapped[str] = mapped_column(String, nullable=False, default="auto")
+    temporary_by_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    training_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    send_on_enter: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    auto_expand_reasoning: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class Conversation(Base):
     __tablename__ = "conversation"
 

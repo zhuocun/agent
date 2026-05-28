@@ -82,6 +82,11 @@ class Provider(Protocol):
     Implementations MUST yield at most one `ReasoningDone` and only when at
     least one `ReasoningDelta` preceded it. The caller relies on this to
     emit the wire `reasoning_done` exactly once before any `answer_delta`.
+
+    `complete(...)` is a non-streaming variant used for short, fire-and-forget
+    calls (e.g. title autogen). Returns the assistant text as a single string;
+    the implementation may use the streaming API internally but must not yield
+    intermediate events to any caller.
     """
 
     def stream(
@@ -91,3 +96,11 @@ class Provider(Protocol):
         history: list[ChatMessage],
         user_text: str,
     ) -> AsyncIterator[ProviderEvent]: ...
+
+    async def complete(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+    ) -> str: ...

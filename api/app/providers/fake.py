@@ -5,6 +5,10 @@ final usage update. The answer text varies by `user_text` hash so distinct
 inputs produce distinct outputs (idempotency tests need this).
 
 Sleeps ~20ms between deltas so streaming is observable but tests stay fast.
+
+`complete()` is the non-streaming variant — used by title autogen. It returns
+a deterministic ~5-word title derived from the input hash; no sleeps so tests
+can poll cheaply.
 """
 
 from __future__ import annotations
@@ -36,11 +40,33 @@ _RESPONSE_TEMPLATES: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+# Small bank of 5-word title templates. Hash-pick a stem and append a
+# stable noun derived from the input length so different inputs produce
+# different titles deterministically (title-autogen tests need this).
+_TITLE_STEMS: tuple[tuple[str, str, str, str, str], ...] = (
+    ("Quick", "chat", "about", "the", "topic"),
+    ("Friendly", "exchange", "covering", "your", "question"),
+    ("Brief", "thread", "on", "your", "request"),
+    ("Conversation", "exploring", "the", "given", "input"),
+    ("Casual", "discussion", "around", "your", "prompt"),
+    ("Helpful", "back-and-forth", "on", "your", "ask"),
+    ("Short", "session", "answering", "your", "query"),
+    ("Talk", "covering", "the", "user", "message"),
+)
+
+
 def _pick_template(user_text: str) -> tuple[str, str, str, str]:
     """Pick a template deterministically from the user text."""
     h = hashlib.sha256(user_text.encode("utf-8")).digest()
     idx = h[0] % len(_RESPONSE_TEMPLATES)
     return _RESPONSE_TEMPLATES[idx]
+
+
+def _pick_title(user_text: str) -> str:
+    """Pick a 5-word title deterministically from the user text."""
+    h = hashlib.sha256(user_text.encode("utf-8")).digest()
+    idx = h[1] % len(_TITLE_STEMS)
+    return " ".join(_TITLE_STEMS[idx])
 
 
 class FakeProvider:
@@ -80,3 +106,17 @@ class FakeProvider:
         )
         yield usage
         yield Complete(usage=usage)
+
+    async def complete(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+    ) -> str:
+        """Non-streaming variant. Deterministic ~5-word title from `user_text`.
+
+        Used by title autogen — must return fast (no sleeps) so the detached
+        `asyncio.create_task(...)` resolves within a polling window in tests.
+        """
+        return _pick_title(user_text)

@@ -49,7 +49,7 @@ export function ModelModePicker({
           <button
             type="button"
             aria-label={`Model ${tier?.label}, reasoning ${effort?.label}. Change.`}
-            className="inline-flex h-11 min-w-0 items-center gap-1.5 rounded-full px-3 text-sm outline-none transition-colors hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/5"
+            className="inline-flex h-11 min-w-0 items-center gap-1.5 rounded-full px-3 text-base outline-none transition-colors hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/5"
           >
             <span className="truncate font-medium text-foreground">{tier?.label}</span>
             <span className="text-muted-foreground">{effort?.label}</span>

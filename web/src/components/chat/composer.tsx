@@ -91,7 +91,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-1 mb-3 sm:mb-0">
-      <div className="rounded-3xl border border-foreground/10 bg-muted/40 focus-within:border-foreground/20 focus-within:shadow-[var(--focus-ring)]">
+      <div className="rounded-[28px] border border-foreground/10 bg-card p-3 focus-within:border-foreground/20 focus-within:shadow-[var(--focus-ring)]">
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>
@@ -106,9 +106,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           }}
           onKeyDown={onKeyDown}
           placeholder="Message Olune…"
-          className="block max-h-[200px] w-full resize-none bg-transparent px-4 pt-3.5 text-[15px] leading-7 text-foreground outline-none placeholder:text-muted-foreground"
+          className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 pt-2 text-base leading-7 text-foreground outline-none placeholder:text-muted-foreground"
         />
-        <div className="flex items-end justify-between gap-2 px-2.5 pb-2.5 pt-1">
+        <div className="mt-1 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
             <TierPicker
               tiers={MODEL_TIERS}
@@ -125,7 +125,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               type="button"
               onClick={onStop}
               aria-label="Stop generating"
-              className="size-9 shrink-0 rounded-full p-0"
+              className="size-10 shrink-0 rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90"
             >
               <Square className="size-3.5 fill-current" />
             </Button>
@@ -135,7 +135,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               onClick={submit}
               disabled={!value.trim()}
               aria-label="Send message"
-              className="size-9 shrink-0 rounded-full bg-brand p-0 text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
+              className="size-10 shrink-0 rounded-full bg-brand p-0 text-brand-foreground shadow-pill hover:bg-brand/90 disabled:opacity-40 disabled:shadow-none"
             >
               <ArrowUp className="size-4" />
             </Button>

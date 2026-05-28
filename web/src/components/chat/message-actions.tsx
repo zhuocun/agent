@@ -42,10 +42,8 @@ export function MessageActions({
   return (
     <div
       className={cn(
-        "group/actions inline-flex items-center gap-0.5 rounded-full p-0.5",
-        "transition-colors duration-200",
-        "hover:bg-muted/60",
-        "focus-within:bg-muted/60",
+        "group/actions inline-flex items-center gap-0.5 rounded-full bg-card p-1",
+        "shadow-float",
       )}
     >
       <IconAction label={copied ? "Copied" : "Copy"} onClick={handleCopy}>

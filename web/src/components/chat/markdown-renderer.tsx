@@ -13,6 +13,7 @@ export function MarkdownRenderer({
   return (
     <Streamdown
       parseIncompleteMarkdown
+      controls={{ code: { download: false } }}
       className={cn("chat-md", className)}
     >
       {children}

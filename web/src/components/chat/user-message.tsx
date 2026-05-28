@@ -8,7 +8,7 @@ export function UserMessage({ message }: { message: ChatMessage }) {
 
   return (
     <div className="flex justify-end" role="article" aria-label="You">
-      <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-message-user px-5 py-3 text-[15px] leading-7 text-message-user-foreground shadow-float">
+      <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-message-user px-5 py-3 text-[15px] leading-7 text-message-user-foreground">
         {text}
       </div>
     </div>

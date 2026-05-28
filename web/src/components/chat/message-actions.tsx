@@ -40,12 +40,7 @@ export function MessageActions({
   };
 
   return (
-    <div
-      className={cn(
-        "group/actions inline-flex items-center gap-0.5 rounded-full bg-card p-1",
-        "shadow-float",
-      )}
-    >
+    <div className="group/actions inline-flex items-center gap-0.5 rounded-full p-0.5">
       <IconAction label={copied ? "Copied" : "Copy"} onClick={handleCopy}>
         {copied ? (
           <Check className="size-4 text-success" />

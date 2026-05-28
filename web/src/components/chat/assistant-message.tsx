@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { Loader2, Square } from "lucide-react";
+import { Loader2, Sparkles, Square } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
@@ -45,50 +45,67 @@ export function AssistantMessage({
   const isFinal = status === "done" || status === "stopped";
 
   return (
-    <div className="group/msg space-y-3 text-foreground" role="article" aria-label="Assistant">
-      {showTyping ? <TypingIndicator /> : null}
+    <div className="group/msg flex gap-3" role="article" aria-label="Assistant">
+      <div
+        className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-muted text-brand"
+        aria-hidden
+      >
+        <Sparkles className="size-4" />
+      </div>
 
-      {message.parts.map((part, idx) => {
-        if (part.type === "reasoning") {
-          return (
-            <ReasoningPanel
-              key={idx}
-              text={part.text}
-              durationSec={part.durationSec}
-              isStreaming={!!reasoningStreaming}
-              defaultOpen={defaultReasoningOpen}
-            />
-          );
-        }
-        if (part.type === "text") {
-          return part.text ? (
-            <MarkdownRenderer key={idx}>{part.text}</MarkdownRenderer>
-          ) : null;
-        }
-        if (part.type === "status") {
-          return <StatusLine key={idx} label={part.label} state={part.state} />;
-        }
-        return null;
-      })}
+      <div
+        className="glass-regular min-w-0 flex-1 space-y-3 rounded-2xl rounded-tl-md px-4 py-3 text-foreground"
+        style={{
+          backdropFilter:
+            "blur(var(--glass-blur-sm)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+          WebkitBackdropFilter:
+            "blur(var(--glass-blur-sm)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+        }}
+      >
+        {showTyping ? <TypingIndicator /> : null}
 
-      {status === "stopped" ? <StoppedChip /> : null}
+        {message.parts.map((part, idx) => {
+          if (part.type === "reasoning") {
+            return (
+              <ReasoningPanel
+                key={idx}
+                text={part.text}
+                durationSec={part.durationSec}
+                isStreaming={!!reasoningStreaming}
+                defaultOpen={defaultReasoningOpen}
+              />
+            );
+          }
+          if (part.type === "text") {
+            return part.text ? (
+              <MarkdownRenderer key={idx}>{part.text}</MarkdownRenderer>
+            ) : null;
+          }
+          if (part.type === "status") {
+            return <StatusLine key={idx} label={part.label} state={part.state} />;
+          }
+          return null;
+        })}
 
-      {isFinal ? (
-        <div className="space-y-2 pt-1">
-          {message.attribution ? (
-            <AttributionRow attribution={message.attribution} />
-          ) : null}
-          <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100">
-            <MessageActions
-              text={answerText}
-              feedback={message.feedback ?? null}
-              canRegenerate={canRegenerate}
-              onRegenerate={onRegenerate}
-              onFeedback={onFeedback}
-            />
+        {status === "stopped" ? <StoppedChip /> : null}
+
+        {isFinal ? (
+          <div className="space-y-2 pt-0.5">
+            {message.attribution ? (
+              <AttributionRow attribution={message.attribution} />
+            ) : null}
+            <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100">
+              <MessageActions
+                text={answerText}
+                feedback={message.feedback ?? null}
+                canRegenerate={canRegenerate}
+                onRegenerate={onRegenerate}
+                onFeedback={onFeedback}
+              />
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   );
 }

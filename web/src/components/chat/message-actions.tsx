@@ -44,8 +44,8 @@ export function MessageActions({
       className={cn(
         "group/actions inline-flex items-center gap-0.5 rounded-full p-0.5",
         "transition-colors duration-200",
-        "hover:[background-color:var(--glass-regular-bg)] hover:shadow-glass-ambient",
-        "focus-within:[background-color:var(--glass-regular-bg)] focus-within:shadow-glass-ambient",
+        "hover:bg-muted/60",
+        "focus-within:bg-muted/60",
       )}
     >
       <IconAction label={copied ? "Copied" : "Copy"} onClick={handleCopy}>

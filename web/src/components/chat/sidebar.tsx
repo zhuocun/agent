@@ -154,7 +154,7 @@ export function Sidebar({
     <nav
       aria-label="Conversation history"
       className={cn(
-        "glass-regular flex h-full flex-col text-sidebar-foreground",
+        "flex h-full flex-col bg-sidebar text-sidebar-foreground",
         className
       )}
     >
@@ -172,6 +172,7 @@ export function Sidebar({
             size="icon-sm"
             aria-label="Collapse sidebar"
             onClick={onCollapse}
+            className="text-muted-foreground hover:bg-muted/60 hover:text-foreground"
           >
             <PanelLeftClose className="size-4" aria-hidden />
           </Button>
@@ -219,7 +220,7 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      <div className="border-t border-foreground/10 p-2">
+      <div className="mt-3 p-2 pt-3">
         <button
           type="button"
           onClick={onOpenSettings}

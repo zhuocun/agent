@@ -4,16 +4,13 @@ import type { ComponentType, JSX } from "react";
 import {
   Check,
   ChevronDown,
-  CircleDollarSign,
   Gauge,
-  Maximize2,
   Sparkles,
   Wand2,
   Zap,
   type LucideProps,
 } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -37,44 +34,6 @@ const TIER_ICON: Record<ModelTierId, ComponentType<LucideProps>> = {
   smart: Gauge,
   pro: Sparkles,
 };
-
-const SPEED_LABEL: Record<ModelTier["speedHint"], string> = {
-  fastest: "Fastest",
-  fast: "Fast",
-  balanced: "Balanced",
-  slow: "Deliberate",
-};
-
-const COST_LABEL: Record<ModelTier["costHint"], string> = {
-  lowest: "Lowest cost",
-  low: "Low cost",
-  medium: "Medium cost",
-  high: "Highest cost",
-};
-
-function HintChip({
-  icon: Icon,
-  label,
-  title,
-  mono,
-}: {
-  icon: ComponentType<LucideProps>;
-  label: string;
-  title: string;
-  mono?: boolean;
-}) {
-  return (
-    <Badge
-      variant="secondary"
-      title={title}
-      aria-label={title}
-      className="gap-1 px-1.5 text-muted-foreground"
-    >
-      <Icon aria-hidden className="text-muted-foreground" />
-      <span className={cn(mono && "font-mono")}>{label}</span>
-    </Badge>
-  );
-}
 
 export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPickerProps): JSX.Element {
   const selected = tiers.find((t) => t.id === selectedId) ?? tiers[0];
@@ -110,7 +69,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
       <DropdownMenuContent
         align="start"
         sideOffset={8}
-        className="glass-strong w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl"
+        className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl"
       >
         {tiers.map((tier) => {
           const Icon = TIER_ICON[tier.id];
@@ -155,31 +114,6 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                 <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
                   {tier.description}
                 </p>
-
-                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <HintChip
-                    icon={Zap}
-                    label={SPEED_LABEL[tier.speedHint]}
-                    title={`Speed: ${SPEED_LABEL[tier.speedHint]}`}
-                  />
-                  <HintChip
-                    icon={CircleDollarSign}
-                    label={COST_LABEL[tier.costHint]}
-                    title={`Relative cost: ${COST_LABEL[tier.costHint]}`}
-                  />
-                  <HintChip
-                    icon={Maximize2}
-                    label={tier.contextHint}
-                    title={`Context window: ${tier.contextHint}`}
-                    mono
-                  />
-                </div>
-
-                {isAuto ? (
-                  <p className="mt-1.5 text-xs font-medium text-brand">
-                    Routes each message for you.
-                  </p>
-                ) : null}
               </div>
             </DropdownMenuItem>
           );

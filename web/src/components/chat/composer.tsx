@@ -91,7 +91,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-1 mb-3 sm:mb-0">
-      <div className="glass-capsule rounded-[28px] transition-shadow duration-300 focus-within:shadow-[var(--focus-ring),var(--glass-shadow-key)]">
+      <div className="rounded-3xl border border-foreground/10 bg-muted/40 focus-within:border-foreground/20 focus-within:shadow-[var(--focus-ring)]">
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>

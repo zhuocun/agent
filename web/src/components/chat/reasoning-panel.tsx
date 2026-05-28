@@ -52,7 +52,7 @@ export function ReasoningPanel({
       open={open}
       onOpenChange={handleOpenChange}
       className={cn(
-        "glass-clear overflow-hidden rounded-xl border-l-2 border-brand/30",
+        "overflow-hidden rounded-xl border-l-2 border-brand/30",
         "text-reasoning-muted-foreground",
       )}
     >
@@ -61,7 +61,7 @@ export function ReasoningPanel({
         className={cn(
           "group/reasoning flex min-h-10 w-full items-center gap-2 px-3 py-2",
           "text-left text-sm font-medium text-reasoning-muted-foreground",
-          "transition-colors hover:[background-color:var(--glass-regular-bg)]",
+          "transition-colors hover:bg-muted/40",
           "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
         )}
       >

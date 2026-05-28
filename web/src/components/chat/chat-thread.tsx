@@ -13,7 +13,6 @@ import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
-import { MODEL_TIERS_BY_ID } from "@/lib/model-tiers";
 import { useMockStream, type MockStreamResult } from "@/lib/use-mock-stream";
 import {
   MOCK_ACCOUNT,
@@ -93,10 +92,6 @@ export function ChatThread() {
   >(MOCK_CONVERSATION.id);
 
   const firstName = MOCK_ACCOUNT.name.split(" ")[0];
-  const headerTitle = isTemporary
-    ? "Temporary chat"
-    : (MOCK_CONVERSATIONS.find((c) => c.id === activeConversationId)?.title ??
-      "New chat");
 
   // Commit the finished assistant turn when the stream terminates — event-driven
   // (the hook hands us the final flushed content), not a status-watching effect.
@@ -292,15 +287,14 @@ export function ChatThread() {
             the top and bottom, with the floating header buttons and composer
             capsule sitting fully opaque on top. iOS Claude / Codex chrome. */}
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-          {/* Top chrome strip — opaque at the top edge, fades to transparent
-              where it meets the scroll area. `pointer-events-none` on the
-              outer strip + `pointer-events-auto` on the inner block lets
-              clicks fall through the fade zone to messages beneath. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-2 md:pb-6">
+          {/* Top chrome strip — positions the floating buttons (and the
+              temporary-chat banner when on) at the top with safe-area
+              reservation. No background fade — the buttons carry their own
+              glass-regular treatment, so messages scrolling underneath
+              stay visible. */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 pt-[env(safe-area-inset-top)]">
             <div className="pointer-events-auto">
               <AppHeader
-                title={headerTitle}
-                subtitle={MODEL_TIERS_BY_ID[selectedTierId].label}
                 sidebarOpen={sidebarOpen}
                 onOpenMobileNav={() => setMobileNavOpen(true)}
                 onOpenSidebar={() => setSidebarOpen(true)}

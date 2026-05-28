@@ -401,6 +401,51 @@ export function ChatThread() {
     start({ reasoning: MOCK_STREAM_REASONING, answer: MOCK_STREAM_ANSWER });
   };
 
+  // Explicit copy-on-branch (PRD 01 §4.6, P1). We COPY the slice of the thread
+  // up-to-and-including the chosen assistant turn into a brand-new conversation;
+  // the source thread is left untouched (no in-thread tree). Streaming turns are
+  // not branchable — the affordance is gated in the UI and we defensively bail
+  // here too.
+  const handleBranchFromMessage = (messageId: string) => {
+    if (isStreaming) return;
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return;
+
+    const branchSlice = messages.slice(0, idx + 1);
+
+    // Stop any in-flight stream and clear pending refs, mirroring the reset
+    // pattern in handleSelectConversation / handleNewChat.
+    stop();
+    reset();
+
+    // Derive a title from the first user turn in the slice. Trim, collapse
+    // internal whitespace, cap at 60 chars. No ellipsis — just truncate.
+    const firstUserText = branchSlice
+      .find((m) => m.role === "user")
+      ?.parts.find((p): p is Extract<MessagePart, { type: "text" }> => p.type === "text")
+      ?.text;
+    const normalized = firstUserText?.replace(/\s+/g, " ").trim() ?? "";
+    const title = normalized.length > 0 ? normalized.slice(0, 60) : "Branched chat";
+
+    const newId = uid();
+    const newConversation: ConversationSummary = {
+      id: newId,
+      title,
+      updatedAt: new Date().toISOString(),
+      pinned: false,
+    };
+
+    setConversations((prev) => [newConversation, ...prev]);
+    setMessages(branchSlice);
+    setActiveConversationId(newId);
+    setPendingId(null);
+    assistantIdRef.current = null;
+    setDemoEmptyConversation(false);
+    setIsTemporary(false);
+    setMobileNavOpen(false);
+    setLiveMessage("Branched into new chat");
+  };
+
   const handleNewChat = () => {
     if (isStreaming) stop();
     setMessages([]);
@@ -760,6 +805,8 @@ export function ChatThread() {
                     canRegenerate={!isStreaming && m.id === lastAssistantId}
                     onRegenerate={handleRegenerate}
                     onFeedback={(f) => setFeedback(m.id, f)}
+                    canBranch={!isStreaming && m.id !== pendingId}
+                    onBranch={() => handleBranchFromMessage(m.id)}
                     defaultReasoningOpen={preferences.autoExpandReasoning}
                   />
                 ),

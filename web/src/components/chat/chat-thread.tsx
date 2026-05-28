@@ -13,6 +13,7 @@ import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
+import { MODEL_TIERS_BY_ID } from "@/lib/model-tiers";
 import { useMockStream, type MockStreamResult } from "@/lib/use-mock-stream";
 import {
   MOCK_ACCOUNT,
@@ -92,6 +93,10 @@ export function ChatThread() {
   >(MOCK_CONVERSATION.id);
 
   const firstName = MOCK_ACCOUNT.name.split(" ")[0];
+  const headerTitle = isTemporary
+    ? "Temporary chat"
+    : (MOCK_CONVERSATIONS.find((c) => c.id === activeConversationId)?.title ??
+      "New chat");
 
   // Commit the finished assistant turn when the stream terminates — event-driven
   // (the hook hands us the final flushed content), not a status-watching effect.
@@ -295,6 +300,8 @@ export function ChatThread() {
           <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-2 md:pb-6">
             <div className="pointer-events-auto">
               <AppHeader
+                title={headerTitle}
+                subtitle={MODEL_TIERS_BY_ID[selectedTierId].label}
                 sidebarOpen={sidebarOpen}
                 onOpenMobileNav={() => setMobileNavOpen(true)}
                 onOpenSidebar={() => setSidebarOpen(true)}

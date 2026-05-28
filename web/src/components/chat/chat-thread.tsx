@@ -751,6 +751,9 @@ export function ChatThread() {
                 onOpenMobileNav={() => setMobileNavOpen(true)}
                 onOpenSidebar={() => setSidebarOpen(true)}
                 onNewChat={handleNewChat}
+                onOpenSettings={() => setSettingsOpen(true)}
+                isTemporary={isTemporary}
+                onToggleTemporary={handleToggleTemporary}
               />
               {isTemporary ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />

@@ -1,14 +1,23 @@
 "use client";
 
-import { PanelLeft, Plus } from "lucide-react";
+import { Check, Menu, MoreHorizontal, SquarePen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 interface AppHeaderProps {
   onNewChat?: () => void;
   onOpenMobileNav?: () => void;
   onOpenSidebar?: () => void;
+  onOpenSettings?: () => void;
+  onToggleTemporary?: () => void;
+  isTemporary?: boolean;
   sidebarOpen?: boolean;
 }
 
@@ -18,10 +27,16 @@ const FLOAT_BUTTON =
 const FLOAT_BUTTON_TOUCH =
   "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
+const PILL_HALF =
+  "inline-flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring";
+
 export function AppHeader({
   onNewChat,
   onOpenMobileNav,
   onOpenSidebar,
+  onOpenSettings,
+  onToggleTemporary,
+  isTemporary,
   sidebarOpen,
 }: AppHeaderProps) {
   return (
@@ -34,7 +49,7 @@ export function AppHeader({
           onClick={onOpenMobileNav}
           className={cn(FLOAT_BUTTON_TOUCH)}
         >
-          <PanelLeft className="size-4" />
+          <Menu className="size-4" />
         </Button>
         {!sidebarOpen ? (
           <Button
@@ -44,21 +59,47 @@ export function AppHeader({
             onClick={onOpenSidebar}
             className={cn("hidden md:inline-flex", FLOAT_BUTTON)}
           >
-            <PanelLeft className="size-4" />
+            <Menu className="size-4" />
           </Button>
         ) : null}
       </div>
 
-      <div className="flex flex-1 items-center justify-end gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          aria-label="New chat"
-          onClick={onNewChat}
-          className={cn(FLOAT_BUTTON)}
-        >
-          <Plus className="size-4" />
-        </Button>
+      <div className="flex flex-1 items-center justify-end">
+        <div className="glass-regular inline-flex h-9 items-center rounded-full">
+          <button
+            type="button"
+            aria-label="New chat"
+            onClick={onNewChat}
+            className={cn(PILL_HALF)}
+          >
+            <SquarePen className="size-4" />
+          </button>
+          <span aria-hidden className="h-4 w-px bg-foreground/10" />
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label="More"
+                  className={cn(PILL_HALF)}
+                >
+                  <MoreHorizontal className="size-4" />
+                </button>
+              }
+            />
+            <DropdownMenuContent align="end" sideOffset={8} className="min-w-56">
+              <DropdownMenuItem onClick={onToggleTemporary}>
+                <span className="flex-1">
+                  {isTemporary ? "Temporary chat is on" : "Temporary chat"}
+                </span>
+                {isTemporary ? <Check className="size-4" /> : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onOpenSettings}>
+                Settings
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </header>
   );

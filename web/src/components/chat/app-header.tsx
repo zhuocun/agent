@@ -34,7 +34,7 @@ export function AppHeader({
   onToggleTemporary,
 }: AppHeaderProps) {
   return (
-    <header className="glass-regular sticky top-0 z-30 flex h-14 shrink-0 items-center justify-between gap-3 px-3 pt-[env(safe-area-inset-top)] pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:px-4 sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]">
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center justify-between gap-3 bg-background px-3 pt-[env(safe-area-inset-top)] pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:px-4 sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]">
       <div className="flex min-w-0 items-center gap-2">
         {/* Mobile: open the navigation drawer. 44px touch target on mobile. */}
         <Button
@@ -42,7 +42,7 @@ export function AppHeader({
           variant="ghost"
           aria-label="Open navigation"
           onClick={onOpenMobileNav}
-          className="size-11 p-0 text-muted-foreground hover:text-foreground md:hidden"
+          className="size-11 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:hidden"
         >
           <PanelLeft className="size-4" />
         </Button>
@@ -53,7 +53,7 @@ export function AppHeader({
             variant="ghost"
             aria-label="Open sidebar"
             onClick={onOpenSidebar}
-            className="hidden size-9 p-0 text-muted-foreground hover:text-foreground md:inline-flex"
+            className="hidden size-9 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:inline-flex"
           >
             <PanelLeft className="size-4" />
           </Button>
@@ -84,7 +84,7 @@ export function AppHeader({
           aria-pressed={isTemporary}
           onClick={onToggleTemporary}
           className={cn(
-            "hidden size-9 p-0 text-muted-foreground hover:text-foreground md:inline-flex",
+            "hidden size-9 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:inline-flex",
             isTemporary && "text-foreground",
           )}
         >
@@ -94,7 +94,7 @@ export function AppHeader({
           type="button"
           variant="ghost"
           onClick={onNewChat}
-          className="size-11 p-0 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5 sm:text-sm"
+          className="size-11 p-0 hover:bg-muted/60 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5 sm:text-sm"
         >
           <Plus className="size-4" />
           <span className="hidden sm:inline">New chat</span>
@@ -105,7 +105,7 @@ export function AppHeader({
           variant="ghost"
           aria-label="Open settings"
           onClick={onOpenSettings}
-          className="hidden size-9 p-0 text-muted-foreground hover:text-foreground md:inline-flex"
+          className="hidden size-9 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:inline-flex"
         >
           <Settings className="size-4" />
         </Button>
@@ -120,7 +120,7 @@ export function AppHeader({
                 type="button"
                 variant="ghost"
                 aria-label="More options"
-                className="size-11 p-0 text-muted-foreground hover:text-foreground md:hidden"
+                className="size-11 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:hidden"
               >
                 <MoreVertical className="size-4" />
               </Button>

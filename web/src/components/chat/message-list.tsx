@@ -48,7 +48,7 @@ export function MessageList({ children }: { children: React.ReactNode }) {
         <ol
           ref={contentRef}
           aria-label="Messages"
-          className="mx-auto flex w-full max-w-3xl list-none flex-col gap-7 px-4 py-6"
+          className="mx-auto flex w-full max-w-3xl list-none flex-col gap-5 px-4 py-6"
         >
           {Children.map(children, (child) => (
             <li className="list-none">{child}</li>
@@ -63,7 +63,7 @@ export function MessageList({ children }: { children: React.ReactNode }) {
             variant="secondary"
             onClick={() => scrollToBottom(true)}
             aria-label="Jump to latest"
-            className="pointer-events-auto h-9 gap-1.5 rounded-full border border-border px-3 shadow-md"
+            className="pointer-events-auto h-9 gap-1.5 rounded-full border border-border px-3 shadow-sm"
           >
             <ArrowDown className="size-4" />
             Latest

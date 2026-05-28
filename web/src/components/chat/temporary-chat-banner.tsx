@@ -24,7 +24,7 @@ export function TemporaryChatBanner({
     <div
       role="note"
       className={cn(
-        "glass-capsule mx-auto mt-2 flex max-w-fit items-center gap-2 bg-temporary-chat-banner/40 px-3 py-1.5 text-sm text-temporary-chat-banner-foreground",
+        "mx-auto mt-2 flex max-w-fit items-center gap-2 rounded-full bg-muted/60 px-3 py-1 text-xs text-muted-foreground",
         className,
       )}
     >

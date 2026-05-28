@@ -37,7 +37,7 @@ export function WelcomeScreen({
   return (
     <div className="flex h-full flex-col items-center justify-center px-4">
       <div className="flex flex-col items-center text-center">
-        <div className="flex size-12 items-center justify-center rounded-xl bg-brand text-xl font-bold text-brand-foreground shadow-[0_20px_60px_-20px_var(--brand)]">
+        <div className="flex size-12 items-center justify-center rounded-xl bg-brand text-xl font-bold text-brand-foreground shadow-[0_10px_30px_-15px_var(--brand)]">
           O
         </div>
         <h1 className="mt-5 text-2xl font-semibold tracking-tight sm:text-3xl">
@@ -57,10 +57,9 @@ export function WelcomeScreen({
               type="button"
               onClick={() => onPickSuggestion(suggestion.prompt)}
               className={cn(
-                "glass-clear flex items-start gap-3 rounded-2xl p-3 text-left",
-                "transition-[transform,box-shadow] duration-200 ease-out",
-                "hover:-translate-y-px hover:shadow-glass-key hover:[background-color:var(--glass-regular-bg)]",
-                "focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+                "flex items-start gap-3 rounded-2xl border border-foreground/10 bg-transparent p-3 text-left",
+                "transition-colors hover:bg-muted/40",
+                "focus-visible:outline-none focus-visible:shadow-[var(--focus-ring)]",
               )}
             >
               <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">

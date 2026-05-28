@@ -59,3 +59,68 @@ def test_assert_prod_safe_no_op_for_fake_in_development() -> None:
     """The fake backend stays valid in dev — assert_prod_safe is a no-op there."""
     dev = Settings(provider_backend="fake", env="dev")
     dev.assert_prod_safe()  # must not raise
+
+
+def test_assert_prod_safe_rejects_wildcard_cors_in_production() -> None:
+    """A credentialed `*` origin must be refused in production."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        CORS_ALLOWED_ORIGINS="*",
+    )
+    with pytest.raises(RuntimeError, match=re.escape("must not contain '*'")):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_rejects_wildcard_cors_among_others() -> None:
+    """A `*` mixed in with real origins is still rejected."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        CORS_ALLOWED_ORIGINS="https://example.com,*",
+    )
+    with pytest.raises(RuntimeError, match=re.escape("must not contain '*'")):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_rejects_empty_session_secret() -> None:
+    """An empty SESSION_SECRET must be refused in production."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        session_secret="",
+    )
+    with pytest.raises(RuntimeError, match=re.escape("SESSION_SECRET")):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_rejects_short_session_secret() -> None:
+    """A <32-char SESSION_SECRET must be refused in production."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        session_secret="too-short",
+    )
+    with pytest.raises(
+        RuntimeError, match=re.escape("at least 32 characters")
+    ):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_rejects_anthropic_without_key() -> None:
+    """PROVIDER_BACKEND=anthropic with no key must fail fast at boot."""
+    bad = _prod_settings(provider_backend="anthropic", anthropic_api_key=None)
+    with pytest.raises(
+        RuntimeError, match=re.escape("ANTHROPIC_API_KEY required")
+    ):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_accepts_well_formed_prod_env() -> None:
+    """A fully-formed prod env (secure cookies, samesite=none, long secret,
+    valid KEK, non-wildcard origin, anthropic backend + key) must not raise."""
+    good = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+    )
+    good.assert_prod_safe()  # must not raise

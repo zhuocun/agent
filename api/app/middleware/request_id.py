@@ -28,6 +28,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app.errors import fatal_response
+
 _HEADER = "X-Request-ID"
 _log = structlog.get_logger("request")
 
@@ -65,7 +67,16 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         started_at = time.monotonic()
         status_code = 500
         try:
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception as exc:
+                # Genuinely-unhandled exception. FastAPI binds its Exception/500
+                # handler to ServerErrorMiddleware, which sits OUTSIDE this
+                # middleware — so without catching here the 500 would render
+                # without `X-Request-ID` and log via stdlib. Render the FATAL
+                # envelope here while `request_id` is still bound to contextvars.
+                _log.error("unhandled_exception", request_id=request_id, exc_info=exc)
+                response = fatal_response()
             status_code = response.status_code
             response.headers[_HEADER] = request_id
             return response

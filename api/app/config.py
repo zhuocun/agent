@@ -88,6 +88,8 @@ class Settings(BaseSettings):
             return
         if self.session_secret == _DEV_SESSION_SECRET:
             raise RuntimeError("SESSION_SECRET must be overridden in production")
+        if len(self.session_secret) < 32:
+            raise RuntimeError("SESSION_SECRET must be at least 32 characters in production")
         if self.byok_encryption_kek == _DEV_BYOK_KEK_B64:
             raise RuntimeError("BYOK_ENCRYPTION_KEK must be overridden in production")
         if not self.cookie_secure:
@@ -96,8 +98,14 @@ class Settings(BaseSettings):
             raise RuntimeError("COOKIE_SAMESITE must be 'none' in production")
         if not self.cors_allowed_origins:
             raise RuntimeError("CORS_ALLOWED_ORIGINS must be set in production")
+        if any(o == "*" for o in self.cors_allowed_origins):
+            raise RuntimeError(
+                "CORS_ALLOWED_ORIGINS must not contain '*' in production (credentialed CORS)"
+            )
         if self.provider_backend == "fake":
             raise RuntimeError("PROVIDER_BACKEND must not be 'fake' in production.")
+        if self.provider_backend == "anthropic" and not self.anthropic_api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY required when PROVIDER_BACKEND=anthropic")
 
 
 @lru_cache(maxsize=1)

@@ -95,9 +95,31 @@ def test_validation_error_returns_invalid_input_400() -> None:
     err = resp.json()["error"]
     assert err["code"] == "INVALID_INPUT"
     assert err["severity"] == "error"
-    # The validator stashes the raw errors under `meta.errors` for debug.
+    # The validator stashes the safe error fields under `meta.errors` for debug.
     assert "meta" in err
     assert "errors" in err["meta"]
+
+
+def test_validation_error_does_not_leak_submitted_body() -> None:
+    """A malformed body must not be reflected back — no secret, no `input` key.
+
+    Pydantic v2's `errors()` includes an `input` field that, on a missing-field
+    error, is the ENTIRE submitted body. A BYOK write with a wrong shape would
+    otherwise echo the secret `apiKey` straight back to the caller.
+    """
+    client = TestClient(_build_handlers_app(), raise_server_exceptions=False)
+    secret = "sk-supersecret-1234"
+    resp = client.post("/validate", json={"apiKey": secret})
+    assert resp.status_code == 400
+    raw = resp.text
+    assert secret not in raw
+    meta_errors = resp.json()["error"]["meta"]["errors"]
+    assert meta_errors  # the missing-field error is still reported
+    for entry in meta_errors:
+        assert set(entry.keys()) == {"loc", "msg", "type"}
+        assert "input" not in entry
+        assert "ctx" not in entry
+        assert "url" not in entry
 
 
 def test_sse_error_frame_carries_parseable_envelope() -> None:

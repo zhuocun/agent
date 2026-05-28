@@ -15,6 +15,8 @@ Wires:
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -38,10 +40,16 @@ def create_app() -> FastAPI:
     # (tests build many; the configure call replaces the global config).
     configure_logging()
 
+    # Swagger / redoc / OpenAPI on in dev/test; disabled in production so the
+    # schema and interactive docs aren't exposed publicly.
+    docs_kwargs: dict[str, Any] = {}
+    if settings.env == "production":
+        docs_kwargs = {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
     app = FastAPI(
         title="API",
         version="0.1.0",
-        # Swagger / redoc default on; harmless in M0.
+        **docs_kwargs,
     )
 
     # CORS — auth is cookie-only, so `Authorization` is NOT in allow_headers.

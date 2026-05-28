@@ -18,7 +18,8 @@ from uuid import UUID, uuid4
 
 import pytest
 import structlog
-from httpx import AsyncClient
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -110,6 +111,36 @@ async def test_streaming_turn_emits_structured_log(
     assert turn["completion_tokens"] > 0
     assert turn["cost_confidence"] == "exact"
     assert turn["is_byok"] is False
+
+
+async def test_unhandled_exception_carries_request_id_and_logs(app: FastAPI) -> None:
+    """A genuinely-unhandled exception renders the FATAL envelope INSIDE the
+    request-id middleware: the 500 carries `X-Request-ID` and the FATAL log
+    line carries the bound `request_id`.
+    """
+
+    @app.get("/boom")
+    async def _boom() -> dict[str, str]:
+        raise RuntimeError("kaboom")
+
+    transport = ASGITransport(app=app)
+    with structlog.testing.capture_logs() as captured:
+        async with AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as boom_client:
+            resp = await boom_client.get("/boom")
+
+    assert resp.status_code == 500
+    err = resp.json()["error"]
+    assert err["code"] == "FATAL"
+    assert err["severity"] == "fatal"
+    rid = resp.headers.get("X-Request-ID")
+    assert rid is not None
+    assert _is_uuid(rid)
+
+    fatal_logs = [e for e in captured if e.get("event") == "unhandled_exception"]
+    assert fatal_logs, f"no unhandled_exception log; events: {[e.get('event') for e in captured]}"
+    assert fatal_logs[-1]["request_id"] == rid
 
 
 async def test_access_log_emits_with_status_and_path(

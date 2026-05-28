@@ -9,10 +9,10 @@ the platform key rather than failing the user's turn.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from uuid import UUID
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,7 @@ from app.config import get_settings
 from app.db.models import ApiKey
 from app.security.crypto import DecryptionError, decrypt, encrypt
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 
 def _mask_key(raw_api_key: str) -> str:
@@ -126,7 +126,8 @@ async def get_decrypted_for_user(
     except DecryptionError as exc:
         log.warning(
             "byok.decrypt_failed",
-            extra={"api_key_id": str(row.id), "provider": provider},
+            api_key_id=str(row.id),
+            provider=provider,
             exc_info=exc,
         )
         return None

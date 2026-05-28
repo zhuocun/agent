@@ -7,9 +7,9 @@ envelope. Handlers serialize with `by_alias=True` so `retry_after_ms` ->
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Literal
 
+import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -17,7 +17,7 @@ from pydantic import Field
 
 from app.schemas.common import CamelModel
 
-log = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 
 Severity = Literal["info", "warning", "error", "fatal"]
@@ -62,18 +62,22 @@ async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
 async def validation_error_handler(
     _request: Request, exc: RequestValidationError
 ) -> JSONResponse:
+    safe_errors = [
+        {"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]}
+        for e in exc.errors()
+    ]
     envelope = ErrorEnvelope(
         code="INVALID_INPUT",
         severity="error",
         title="Invalid request",
         body="The request body or query failed validation.",
-        meta={"errors": exc.errors()},
+        meta={"errors": safe_errors},
     )
     return _envelope_response(envelope, status.HTTP_400_BAD_REQUEST)
 
 
-async def unhandled_error_handler(_request: Request, exc: Exception) -> JSONResponse:
-    log.exception("unhandled_exception", exc_info=exc)
+def fatal_response() -> JSONResponse:
+    """Build the FATAL 500 `ErrorEnvelope` response (no logging side effect)."""
     envelope = ErrorEnvelope(
         code="FATAL",
         severity="fatal",
@@ -81,6 +85,11 @@ async def unhandled_error_handler(_request: Request, exc: Exception) -> JSONResp
         body="The server hit an unexpected error. Please try again.",
     )
     return _envelope_response(envelope, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+async def unhandled_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+    log.error("unhandled_exception", exc_info=exc)
+    return fatal_response()
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -102,16 +111,4 @@ def not_found(what: str) -> AppError:
             body=f"The requested {what} was not found.",
         ),
         status.HTTP_404_NOT_FOUND,
-    )
-
-
-def not_implemented(what: str) -> AppError:
-    return AppError(
-        ErrorEnvelope(
-            code="NOT_IMPLEMENTED",
-            severity="error",
-            title="Not implemented",
-            body=f"{what} is not implemented yet.",
-        ),
-        status.HTTP_501_NOT_IMPLEMENTED,
     )

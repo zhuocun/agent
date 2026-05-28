@@ -63,8 +63,8 @@ async def _collect_sse(
         # Verify required headers.
         assert resp.headers.get("content-type", "").startswith("text/event-stream")
         assert resp.headers.get("cache-control") == "no-store"
-        # X-Accel-Buffering may or may not be exposed depending on starlette
-        # version — assert it's set on the underlying ASGI response.
+        # Defeats nginx/CDN buffering (set in routes/conversations.py).
+        assert resp.headers.get("x-accel-buffering") == "no"
         chunks: list[str] = []
         async for chunk in resp.aiter_text():
             chunks.append(chunk)
@@ -917,3 +917,159 @@ async def test_stop_path_persists_with_status_stopped(
 
     # Intentionally fail — see xfail reason above.
     assert False, "stop-path test requires real HTTP transport"
+
+
+# Deterministic stop path (no real server) -------------------------------------
+
+
+async def test_stop_path_atomic_persist_and_usage(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Drive `stream_and_persist` with a Request stub that reports connected
+    for the first poll then disconnected, against the controlled fake
+    provider. The now-atomic stop path must:
+
+    - persist the assistant row with status="stopped" and an estimate
+      attribution, and
+    - increment the usage meter in the SAME commit,
+    - WITHOUT emitting a `terminal` frame (socket already closed).
+
+    Complements the route-level xfail above by exercising the disconnect
+    branch directly (httpx ASGITransport can't surface mid-stream disconnect).
+    """
+    from app.db.models import UsageRollup
+    from app.providers.fake import FakeProvider
+    from app.providers.tiers import get_binding
+    from app.streaming.handler import stream_and_persist
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="New chat",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    class _DisconnectAfterFirstPoll:
+        """is_disconnected(): connected for the first poll, then disconnected.
+
+        Letting one poll return False allows `submitted` to be yielded and the
+        provider to start streaming before the disconnect is detected, so the
+        accumulators carry partial parts on the stopped row.
+        """
+
+        def __init__(self) -> None:
+            self._polls = 0
+
+        async def is_disconnected(self) -> bool:
+            self._polls += 1
+            return self._polls > 1
+
+    event_names: list[str] = []
+    async with session_factory() as session:
+        # delay_ms=0 keeps the fake fast; the disconnect fires on poll #2.
+        provider = FakeProvider(delay_ms=0)
+        gen = stream_and_persist(
+            request=_DisconnectAfterFirstPoll(),  # type: ignore[arg-type]
+            db=session,
+            provider=provider,
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="hello",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+        )
+        async for ev in gen:
+            event_names.append(ev.event or "")
+
+    # No terminal on disconnect; submitted is allowed (sent before the loop).
+    assert "terminal" not in event_names
+    assert event_names[0] == "submitted"
+
+    # Assistant row persisted as stopped with an estimate attribution.
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message).where(Message.role == "assistant")
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        asst = rows[0]
+        assert asst.status == "stopped"
+        assert asst.attribution is not None
+        assert asst.attribution["costConfidence"] == "estimate"
+
+        # Atomic: the usage meter incremented in the same commit.
+        rollup = (await session.execute(select(UsageRollup))).scalar_one()
+        assert rollup.used == 1
+
+
+# Mid-stream provider error ----------------------------------------------------
+
+
+async def test_mid_stream_error_emits_error_frame_and_persists_nothing(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`FORCE_ERROR:` makes the fake provider raise mid-stream. The client
+    must receive an SSE `error` frame (an ErrorEnvelope) and NO `terminal`,
+    and NO assistant row may be persisted/committed for the turn (the
+    provider error is not a successful turn).
+    """
+    from app.streaming.handler import _BG_TASKS
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "FORCE_ERROR: blow up mid-stream",
+        },
+    )
+    event_names = [name for name, _ in frames]
+    # An `error` frame terminates the stream; no `terminal` on failure.
+    assert event_names[-1] == "error"
+    assert "terminal" not in event_names
+
+    # The error frame is a well-formed ErrorEnvelope.
+    error_payload = frames[-1][1]
+    assert error_payload["code"] == "PROVIDER_UPSTREAM"
+    assert error_payload["severity"] == "error"
+    assert isinstance(error_payload["title"], str)
+    assert isinstance(error_payload["body"], str)
+
+    # Some answer text streamed before the raise (a couple of deltas).
+    assert "answer_delta" in event_names
+
+    # No assistant row persisted; the user row may exist (persisted on submit).
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(
+                select(Message).where(Message.role == "assistant")
+            )
+        ).scalars().all()
+        assert assistants == []
+
+    # No leaked background task: title autogen only fires on a successful
+    # terminal, so the error turn must not have scheduled one.
+    assert all(t.done() for t in _BG_TASKS)

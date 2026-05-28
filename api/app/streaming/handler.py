@@ -33,6 +33,7 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -85,6 +86,20 @@ _struct_log = structlog.get_logger(__name__)
 # be garbage-collected mid-flight under some event-loop policies. Keep a
 # module-level strong-ref set and discard each entry in the done callback.
 _BG_TASKS: set[asyncio.Task[None]] = set()
+
+
+@dataclass(frozen=True)
+class _PumpError:
+    """Carries a provider exception from the pump task to the consumer.
+
+    The pump drains the provider iterator on its own task; if the iterator
+    raises mid-stream we must surface that to the consumer loop rather than
+    swallow it. Enqueuing this sentinel lets the consumer re-raise the
+    original exception so the top-level handler emits an `error` frame and
+    skips persistence (plan §"Persistence": `error` does not persist).
+    """
+
+    exc: BaseException
 
 
 def _derive_session_factory(
@@ -231,13 +246,24 @@ async def stream_and_persist(
         api_key=api_key,
     )
 
-    queue: asyncio.Queue[ProviderEvent | None] = asyncio.Queue()
+    queue: asyncio.Queue[ProviderEvent | _PumpError | None] = asyncio.Queue()
 
     async def _pump() -> None:
-        """Drain the provider iterator into the queue."""
+        """Drain the provider iterator into the queue.
+
+        A provider exception is forwarded to the consumer as a `_PumpError`
+        sentinel so the consumer can re-raise it (→ `error` frame, no
+        persistence). `CancelledError` (disconnect/cleanup cancel) is NOT
+        forwarded — it just ends the pump. The terminal `None` always closes
+        the queue so the consumer never blocks.
+        """
         try:
             async for ev in provider_iter:
                 await queue.put(ev)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await queue.put(_PumpError(exc))
         finally:
             await queue.put(None)
 
@@ -248,6 +274,7 @@ async def stream_and_persist(
         status: str,
         attribution: ModelAttribution,
         session: AsyncSession | None = None,
+        commit: bool = True,
     ) -> None:
         if is_temporary or conversation_id is None:
             return
@@ -267,7 +294,14 @@ async def stream_and_persist(
             status=status,
             attribution=attribution.model_dump(by_alias=True, exclude_none=True),
         )
-        await target_session.commit()
+        # When the caller owns the session (stop/fresh-session case, commit=False)
+        # we only flush here and let the caller commit AFTER bumping usage, so the
+        # assistant row and the meter increment land in ONE commit. The
+        # terminal-success path passes no session and commits here as before.
+        if commit:
+            await target_session.commit()
+        else:
+            await target_session.flush()
 
     def _apply_event(ev: ProviderEvent) -> None:
         """Fold a queue event into accumulators (no yields).
@@ -295,14 +329,20 @@ async def stream_and_persist(
             # Disconnect-detect between yields (per plan §"Streaming" rule 6).
             if await request.is_disconnected():
                 pump_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                # Suppress ONLY the CancelledError from the cancel we just
+                # issued; the pump forwards real provider exceptions through
+                # the queue (drained below), so nothing genuine is hidden.
+                with contextlib.suppress(asyncio.CancelledError):
                     await pump_task
                 # Drain any events the pump already enqueued before cancel —
                 # the pump may have pushed a final UsageUpdate / Complete that
                 # we'd otherwise lose, leaving `final_usage` empty on stopped.
                 while not queue.empty():
                     drained = queue.get_nowait()
-                    if drained is None:
+                    if drained is None or isinstance(drained, _PumpError):
+                        # Disconnect takes precedence over a late provider
+                        # error: we're persisting `stopped`, not erroring, so
+                        # a forwarded `_PumpError` is dropped here.
                         continue
                     _apply_event(drained)
                 # Flush accumulators, persist with status=stopped + estimate.
@@ -319,13 +359,17 @@ async def stream_and_persist(
                     substituted_display_label=sub_label,
                 )
                 # Use a fresh session for stop-path persist (see helper docstring).
-                # The same session is reused for the usage_rollup increment so
-                # the assistant row and the meter bump commit together.
+                # The assistant row and the usage_rollup bump land in ONE commit:
+                # the persist flushes (commit=False), the meter bumps, then a
+                # single fresh_db.commit() makes both durable atomically. Mirrors
+                # the happy path (bump BEFORE its single commit) so a crash
+                # between writes can never persist a stopped row without usage.
                 async with _derive_session_factory(db)() as fresh_db:
                     await _persist_assistant(
                         status="stopped",
                         attribution=attribution,
                         session=fresh_db,
+                        commit=False,
                     )
                     # Stopped turn still cost partial tokens -- bump the meter.
                     # `is_temporary` already gates persistence; only increment
@@ -340,7 +384,7 @@ async def stream_and_persist(
                             user_id=user_id,
                             is_byok=is_byok_turn,
                         )
-                        await fresh_db.commit()
+                    await fresh_db.commit()
                 # M4: stop-path turn log at warn level with cost_confidence=estimate.
                 _struct_log.warning(
                     "turn.stopped",
@@ -363,6 +407,11 @@ async def stream_and_persist(
                 continue
             if ev is None:
                 break  # Provider exhausted.
+            if isinstance(ev, _PumpError):
+                # Provider raised mid-stream. Re-raise into the top-level
+                # `except Exception` so we emit an `error` frame and persist
+                # nothing (the assistant row was never committed).
+                raise ev.exc
 
             if isinstance(ev, ReasoningDelta):
                 reasoning_buf.append(ev.text)
@@ -497,7 +546,10 @@ async def stream_and_persist(
         raise
     except Exception as exc:
         pump_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
+        # Suppress ONLY CancelledError from this cleanup cancel. The provider
+        # error is already captured in `exc`; the pump forwards via the queue
+        # and never re-raises on await, so no real exception is hidden here.
+        with contextlib.suppress(asyncio.CancelledError):
             await pump_task
         envelope = ErrorEnvelope(
             code="PROVIDER_UPSTREAM",
@@ -511,5 +563,7 @@ async def stream_and_persist(
     finally:
         if not pump_task.done():
             pump_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
+            # Suppress ONLY CancelledError from this final cleanup cancel; a
+            # genuine provider exception would have surfaced via the queue.
+            with contextlib.suppress(asyncio.CancelledError):
                 await pump_task

@@ -8,6 +8,9 @@ Covers:
   points at it). This is the verification spike from the plan.
 - Missing email -> 400 from Pydantic.
 - Optional password is hashed via bcrypt and not stored plaintext.
+- Password >72 bytes upgrades and verifies (bcrypt's 72-byte cap).
+- Multi-byte char straddling the 72-byte cut truncates safely and verifies.
+- Passwords equal in their first 72 bytes are treated as equivalent.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.routes import _truncate_for_bcrypt
 from app.db.models import Conversation, User
 
 pytestmark = pytest.mark.asyncio
@@ -176,3 +180,81 @@ async def test_upgrade_without_password_leaves_password_hash_null(
     row = await _current_user(session_factory)
     assert row.password_hash is None
     assert row.is_anonymous is False
+
+
+async def test_upgrade_with_password_longer_than_72_bytes(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A >72-byte password upgrades and the stored hash verifies with it."""
+    long_password = "a" * 100  # 100 ASCII bytes, well past the 72-byte cap.
+    await client.get("/api/bootstrap")
+    response = await client.post(
+        "/api/auth/upgrade",
+        json={"email": "long@example.com", "password": long_password},
+    )
+    assert response.status_code == 200, response.text
+    row = await _current_user(session_factory)
+    assert row.password_hash is not None
+    # bcrypt rejects raw >72-byte input, so verify with the same truncation the
+    # route applied; the password the user typed maps to this digest.
+    assert bcrypt.checkpw(
+        _truncate_for_bcrypt(long_password), row.password_hash.encode("ascii")
+    )
+
+
+async def test_upgrade_with_multibyte_char_at_byte_boundary(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A multi-byte char straddling the 72-byte cut must not raise and verifies.
+
+    "é" is 2 bytes (0xc3 0xa9); placed at byte offset 71 it straddles the cut,
+    so a naive byte slice would leave a dangling 0xc3 and bcrypt would reject
+    the malformed input. The boundary-safe truncation drops the partial char.
+    """
+    password = "a" * 71 + "é" + "z" * 10
+    await client.get("/api/bootstrap")
+    response = await client.post(
+        "/api/auth/upgrade",
+        json={"email": "mb@example.com", "password": password},
+    )
+    assert response.status_code == 200, response.text
+    row = await _current_user(session_factory)
+    assert row.password_hash is not None
+    # The boundary-safe cut lands at byte 71: the partial "é" (0xc3 0xa9 would
+    # straddle byte 72) is dropped whole, leaving a clean 71-byte value with no
+    # dangling 0xc3 that bcrypt would reject.
+    truncated = _truncate_for_bcrypt(password)
+    assert truncated == b"a" * 71
+    # A valid bcrypt hash is produced and the truncated input verifies.
+    assert row.password_hash.startswith("$2")
+    assert bcrypt.checkpw(truncated, row.password_hash.encode("ascii"))
+
+
+async def test_passwords_equal_in_first_72_bytes_are_equivalent(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Two passwords sharing their first 72 bytes hash-verify interchangeably.
+
+    bcrypt ignores input past 72 bytes, so the truncation contract means a
+    password differing only after byte 72 verifies against the stored hash.
+    """
+    stored = "a" * 72 + "DIFFERS-AFTER-72"
+    other = "a" * 72 + "completely-different-suffix"
+    await client.get("/api/bootstrap")
+    response = await client.post(
+        "/api/auth/upgrade",
+        json={"email": "trunc@example.com", "password": stored},
+    )
+    assert response.status_code == 200, response.text
+    row = await _current_user(session_factory)
+    assert row.password_hash is not None
+    assert row.password_hash.startswith("$2")
+    # Both inputs collapse to the same first-72-bytes value, so both verify
+    # against the one stored digest -- the truncation contract in action.
+    assert _truncate_for_bcrypt(stored) == _truncate_for_bcrypt(other) == b"a" * 72
+    digest = row.password_hash.encode("ascii")
+    assert bcrypt.checkpw(_truncate_for_bcrypt(stored), digest)
+    assert bcrypt.checkpw(_truncate_for_bcrypt(other), digest)

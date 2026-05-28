@@ -38,8 +38,9 @@ from app.schemas.common import CamelModel
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-# bcrypt has a hard 72-byte input limit; we cap on encode so longer passwords
-# don't surface as a 500 from the underlying library. Documented behavior.
+# bcrypt has a hard 72-byte input limit; we cap the input on a UTF-8 character
+# boundary so longer passwords don't surface as a 500 from the underlying
+# library. Documented behavior.
 _BCRYPT_MAX_BYTES = 72
 
 
@@ -80,13 +81,30 @@ def _email_taken() -> AppError:
     )
 
 
+def _truncate_for_bcrypt(password: str) -> bytes:
+    """Encode `password` to at most 72 UTF-8 bytes on a character boundary.
+
+    bcrypt only honors the first 72 bytes of its input, so we cap there. We
+    slice the UTF-8 *bytes* (not codepoints) and then drop any trailing partial
+    codepoint left by the cut, so a multi-byte UTF-8 sequence is never split.
+    Any input beyond 72 bytes is ignored (by both this cap and bcrypt itself).
+    """
+    truncated = password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+    # Round down to the last complete codepoint: decoding with "ignore" drops a
+    # dangling partial sequence, and re-encoding gives clean <=72-byte bytes.
+    return truncated.decode("utf-8", "ignore").encode("utf-8")
+
+
 def _hash_password(password: str) -> str:
-    """Return a bcrypt digest. Caps input at 72 bytes (bcrypt limit)."""
-    # Bcrypt has a 72-byte limit on the password input. Truncate at the codepoint
-    # level first (so we never split a multi-byte UTF-8 sequence), then enforce
-    # the byte cap as a final safety net for strings of mostly-multi-byte chars.
-    truncated = password[:_BCRYPT_MAX_BYTES].encode("utf-8")[:_BCRYPT_MAX_BYTES]
-    digest = bcrypt.hashpw(truncated, bcrypt.gensalt())
+    """Return a bcrypt digest of `password`.
+
+    The input is truncated to at most 72 UTF-8 bytes without splitting a
+    multi-byte character (see `_truncate_for_bcrypt`); bytes beyond 72 are
+    ignored by bcrypt regardless. The cost factor is pinned explicitly so it
+    does not drift with the bcrypt library's default rounds.
+    """
+    truncated = _truncate_for_bcrypt(password)
+    digest = bcrypt.hashpw(truncated, bcrypt.gensalt(rounds=12))
     return digest.decode("ascii")
 
 

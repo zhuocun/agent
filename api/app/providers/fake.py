@@ -14,6 +14,11 @@ M4: forced fallback path. When `user_text` starts with `FORCE_FALLBACK:`, the
 provider streams normally but the terminal `Complete` event carries
 `substitution="provider_fallback"` plus a stubbed served (provider, model,
 label) triple. Exercises the substitution emission seam end-to-end.
+
+Forced mid-stream error: when `user_text` starts with `FORCE_ERROR:`, the
+provider emits the reasoning block and a couple of answer deltas, then raises
+mid-stream (before usage / Complete). Exercises the handler's provider-error
+path: the client receives an `error` frame and no assistant row is persisted.
 """
 
 from __future__ import annotations
@@ -98,9 +103,14 @@ class FakeProvider:
 
         # Four answer deltas varying by input.
         chunks = _pick_template(user_text)
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             await asyncio.sleep(self._delay)
             yield AnswerDelta(text=chunk)
+            # Forced mid-stream error: raise after a couple of answer deltas,
+            # before usage / Complete. The handler surfaces this as an `error`
+            # frame and persists nothing for the turn.
+            if user_text.startswith("FORCE_ERROR:") and i >= 1:
+                raise RuntimeError("forced provider error")
 
         # Synthetic usage. Reasoning tokens stay nonzero so pricing tests
         # exercise the PRD 07 §7 rule 7 path.

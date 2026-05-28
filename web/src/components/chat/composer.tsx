@@ -1,13 +1,27 @@
 "use client";
 
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import {
+  forwardRef,
+  useId,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ArrowUp, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { TierPicker } from "@/components/chat/tier-picker";
 import { UsageMeter } from "@/components/chat/usage-meter";
+import {
+  SlashCommandsPopover,
+  filterCommands,
+} from "@/components/chat/slash-commands-popover";
 import { MODEL_TIERS } from "@/lib/model-tiers";
-import type { ModelTierId, UsageBudget } from "@/lib/types";
+import { MOCK_COMMANDS } from "@/lib/mock-data";
+import type { ModelTierId, SlashCommand, UsageBudget } from "@/lib/types";
+
+const SLASH_PATTERN = /^\/(\w*)$/;
 
 interface ComposerProps {
   isStreaming: boolean;
@@ -39,13 +53,67 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   forwardedRef,
 ) {
   const [value, setValue] = useState("");
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
+  // When the user explicitly dismisses with Escape, suppress the popover until
+  // the slash token disappears (e.g. user backspaces out or types past it),
+  // then arm again on the next fresh "/…" token.
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const slashListboxId = useId();
+  const slashOptionPrefix = useId();
+
+  const slashMatch = value.match(SLASH_PATTERN);
+  const slashQuery = slashMatch ? slashMatch[1] : "";
+  const slashActive = slashMatch !== null && !slashDismissed;
+  const filteredCommands = useMemo(
+    () => (slashActive ? filterCommands(MOCK_COMMANDS, slashQuery) : []),
+    [slashActive, slashQuery],
+  );
+  const slashOpen = slashActive;
+  const slashHighlightIndex =
+    filteredCommands.length === 0
+      ? -1
+      : Math.min(Math.max(slashSelectedIndex, 0), filteredCommands.length - 1);
+  const slashActiveOptionId =
+    slashOpen && slashHighlightIndex >= 0
+      ? `${slashOptionPrefix}-${slashHighlightIndex}`
+      : undefined;
 
   const autoGrow = () => {
     const ta = ref.current;
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, MAX_HEIGHT)}px`;
+  };
+
+  const updateValue = (next: string) => {
+    setValue(next);
+    if (next.match(SLASH_PATTERN)) {
+      // Reset highlight on every filter change so the first row stays selected.
+      setSlashSelectedIndex(0);
+    } else {
+      // Token no longer present → re-arm the popover for the next "/…".
+      if (slashDismissed) setSlashDismissed(false);
+      setSlashSelectedIndex(0);
+    }
+  };
+
+  const pickCommand = (command: SlashCommand) => {
+    const next = command.prompt;
+    setValue(next);
+    setSlashDismissed(false);
+    setSlashSelectedIndex(0);
+    const ta = ref.current;
+    if (ta) {
+      ta.focus();
+      requestAnimationFrame(() => {
+        const ta2 = ref.current;
+        if (!ta2) return;
+        const end = next.length;
+        ta2.setSelectionRange(end, end);
+        autoGrow();
+      });
+    }
   };
 
   useImperativeHandle(forwardedRef, () => ({
@@ -75,6 +143,51 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // IME-safe: leave Esc/Enter to the composition layer (CJK).
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    // Slash-command layer runs first so Escape closes the popover (not the
+    // stream) and Enter/Tab can pick a highlighted command before falling
+    // through to the send path.
+    if (slashOpen) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashDismissed(true);
+        setSlashSelectedIndex(0);
+        return;
+      }
+      if (filteredCommands.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSlashSelectedIndex(
+            (slashHighlightIndex + 1) % filteredCommands.length,
+          );
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSlashSelectedIndex(
+            (slashHighlightIndex - 1 + filteredCommands.length) %
+              filteredCommands.length,
+          );
+          return;
+        }
+        if (e.key === "Tab" && !e.shiftKey && slashHighlightIndex >= 0) {
+          e.preventDefault();
+          const picked = filteredCommands[slashHighlightIndex];
+          if (picked) pickCommand(picked);
+          return;
+        }
+        if (
+          e.key === "Enter" &&
+          !e.shiftKey &&
+          sendOnEnter &&
+          slashHighlightIndex >= 0
+        ) {
+          e.preventDefault();
+          const picked = filteredCommands[slashHighlightIndex];
+          if (picked) pickCommand(picked);
+          return;
+        }
+      }
+    }
     if (e.key === "Escape" && isStreaming) {
       e.preventDefault();
       onStop();
@@ -94,7 +207,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pt-1">
+    <div className="relative mx-auto w-full max-w-3xl px-4 pt-1">
+      <SlashCommandsPopover
+        open={slashOpen}
+        commands={MOCK_COMMANDS}
+        query={slashQuery}
+        selectedIndex={slashHighlightIndex}
+        onSelectedIndexChange={setSlashSelectedIndex}
+        onPick={pickCommand}
+        onClose={() => setSlashDismissed(true)}
+        listboxId={slashListboxId}
+        optionIdPrefix={slashOptionPrefix}
+      />
       <div className="glass-capsule rounded-[28px] p-3 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]">
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
@@ -105,11 +229,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           rows={1}
           value={value}
           onChange={(e) => {
-            setValue(e.target.value);
+            updateValue(e.target.value);
             autoGrow();
           }}
           onKeyDown={onKeyDown}
           placeholder="Message Olune…"
+          {...(slashOpen
+            ? {
+                role: "combobox" as const,
+                "aria-haspopup": "listbox" as const,
+                "aria-expanded": true,
+                "aria-controls": slashListboxId,
+                "aria-autocomplete": "list" as const,
+                "aria-activedescendant": slashActiveOptionId,
+              }
+            : {})}
           className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 pt-2 text-[17px] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-base"
         />
         <div className="mt-1 flex items-center justify-between gap-2">

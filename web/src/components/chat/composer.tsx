@@ -12,6 +12,11 @@ import { ArrowUp, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   SlashCommandsPopover,
   filterCommands,
 } from "@/components/chat/slash-commands-popover";
@@ -237,7 +242,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       />
       <div
         ref={capsuleRef}
-        className="glass-capsule flex items-end gap-2 rounded-[28px] px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+        className="glass-capsule flex items-end gap-2 rounded-3xl px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
       >
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
@@ -253,35 +258,38 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           }}
           onKeyDown={onKeyDown}
           placeholder="Message Olune…"
-          {...(slashOpen
-            ? {
-                role: "combobox" as const,
-                "aria-haspopup": "listbox" as const,
-                "aria-expanded": true,
-                "aria-controls": slashListboxId,
-                "aria-autocomplete": "list" as const,
-                "aria-activedescendant": slashActiveOptionId,
-              }
-            : {})}
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-autocomplete="list"
+          aria-expanded={slashOpen}
+          aria-controls={slashOpen ? slashListboxId : undefined}
+          aria-activedescendant={slashActiveOptionId}
           className="block max-h-[200px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2 text-[17px] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-base"
         />
         <div className="flex h-11 shrink-0 items-center">
           {isStreaming ? (
-            <Button
-              type="button"
-              onClick={onStop}
-              aria-label="Stop generating"
-              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90"
-            >
-              <Square className="size-3.5 fill-current" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    onClick={onStop}
+                    aria-label="Stop generating"
+                    className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90"
+                  >
+                    <Square className="size-4 fill-current" />
+                  </Button>
+                }
+              />
+              <TooltipContent>Stop</TooltipContent>
+            </Tooltip>
           ) : (
             <Button
               type="button"
               onClick={submit}
               disabled={!value.trim()}
               aria-label="Send message"
-              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
+              className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
             >
               <ArrowUp className="size-4" />
             </Button>

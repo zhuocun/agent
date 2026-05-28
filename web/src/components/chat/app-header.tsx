@@ -1,10 +1,11 @@
 "use client";
 
-import { Check, Menu, MoreHorizontal, SquarePen } from "lucide-react";
+import { Menu, MoreHorizontal, SquarePen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
@@ -35,10 +36,10 @@ interface AppHeaderProps {
 }
 
 const FLOAT_BUTTON =
-  "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent";
+  "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent";
 
 const FLOAT_BUTTON_TOUCH =
-  "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
+  "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 const PILL_HALF =
   "inline-flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring";
@@ -64,7 +65,7 @@ export function AppHeader({
         <Button
           type="button"
           variant="ghost"
-          aria-label="Open navigation"
+          aria-label="Open sidebar"
           onClick={onOpenMobileNav}
           className={cn(FLOAT_BUTTON_TOUCH)}
         >
@@ -107,7 +108,7 @@ export function AppHeader({
               render={
                 <button
                   type="button"
-                  aria-label="More"
+                  aria-label="Chat menu"
                   className={cn(PILL_HALF)}
                 >
                   <MoreHorizontal className="size-4" />
@@ -115,12 +116,12 @@ export function AppHeader({
               }
             />
             <DropdownMenuContent align="end" sideOffset={8} className="min-w-56">
-              <DropdownMenuItem onClick={onToggleTemporary}>
-                <span className="flex-1">
-                  {isTemporary ? "Temporary chat is on" : "Temporary chat"}
-                </span>
-                {isTemporary ? <Check className="size-4" /> : null}
-              </DropdownMenuItem>
+              <DropdownMenuCheckboxItem
+                checked={isTemporary}
+                onCheckedChange={onToggleTemporary}
+              >
+                Temporary chat
+              </DropdownMenuCheckboxItem>
               <DropdownMenuItem onClick={onOpenSettings}>
                 Settings
               </DropdownMenuItem>

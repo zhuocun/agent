@@ -239,6 +239,8 @@ function ConversationRow({
     e.stopPropagation();
   };
 
+  const pinAction = conversation.pinned ? "Unpin" : "Pin";
+
   return (
     <div
       ref={active ? activeRowRef : undefined}
@@ -257,7 +259,7 @@ function ConversationRow({
         // edit pattern in user-message.tsx.
         <div className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2">
           {conversation.pinned ? (
-            <Pin className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+            <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
           <input
             ref={inputRef}
@@ -276,11 +278,11 @@ function ConversationRow({
           type="button"
           onClick={handleRowClick}
           aria-label={`${conversation.title}${conversation.pinned ? ", pinned" : ""}`}
-          aria-current={active ? "true" : undefined}
+          aria-current={active ? "page" : undefined}
           className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2 text-left outline-none focus-visible:shadow-[var(--focus-ring)]"
         >
           {conversation.pinned ? (
-            <Pin className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+            <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
           <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
         </button>
@@ -295,7 +297,7 @@ function ConversationRow({
               aria-label="Conversation actions"
               onClick={stopBubble}
               className={cn(
-                "size-7 shrink-0 rounded-full p-0 text-muted-foreground transition-opacity hover:text-foreground",
+                "size-11 md:size-7 shrink-0 rounded-full p-0 text-muted-foreground transition-opacity hover:text-foreground",
                 // Always visible on touch; reveal on hover/focus on desktop.
                 "opacity-100 md:opacity-0 md:group-hover/conv:opacity-100 md:focus-within:opacity-100 md:aria-expanded:opacity-100",
               )}
@@ -314,7 +316,7 @@ function ConversationRow({
             <span>Rename</span>
           </DropdownMenuItem>
           <DropdownMenuItem
-            label={conversation.pinned ? "Unpin" : "Pin"}
+            label={pinAction}
             onClick={() => onTogglePin(conversation.id)}
             className="gap-2"
           >
@@ -323,7 +325,7 @@ function ConversationRow({
             ) : (
               <Pin className="size-4" aria-hidden />
             )}
-            <span>{conversation.pinned ? "Unpin" : "Pin"}</span>
+            <span>{pinAction}</span>
           </DropdownMenuItem>
           <DropdownMenuItem
             label="Delete"
@@ -401,7 +403,7 @@ export function Sidebar({
 
   return (
     <nav
-      aria-label="Conversation history"
+      aria-label="Sidebar"
       className={cn(
         "flex h-full flex-col bg-sidebar text-sidebar-foreground",
         className
@@ -448,7 +450,7 @@ export function Sidebar({
             type="search"
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search"
+            placeholder="Search conversations"
             aria-label="Search conversations"
             className="block w-full rounded-full bg-muted/50 py-1.5 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)]"
           />
@@ -492,7 +494,6 @@ export function Sidebar({
         <button
           type="button"
           onClick={onOpenSettings}
-          aria-label="Open settings"
           className="flex w-full items-center gap-2 rounded-2xl p-2 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]"
         >
           <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
@@ -503,7 +504,7 @@ export function Sidebar({
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
               <span className="truncate">{account.planLabel}</span>
               {account.byokEnabled ? (
-                <Key className="size-3 shrink-0" aria-hidden />
+                <Key className="size-3.5 shrink-0" aria-hidden />
               ) : null}
             </div>
           </div>

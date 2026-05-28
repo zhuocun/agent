@@ -107,7 +107,7 @@ export function SettingsDialog({
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Manage your account, appearance, and privacy.
+            Account, appearance, and privacy preferences.
           </DialogDescription>
         </DialogHeader>
 
@@ -192,7 +192,7 @@ export function SettingsDialog({
             />
             <SettingRow
               label="Send on Enter"
-              helper="Off uses ⌘/Ctrl+Enter to send"
+              helper="When off, press ⌘/Ctrl+Enter to send."
               htmlFor={sendOnEnterId}
               control={
                 <Switch
@@ -206,7 +206,7 @@ export function SettingsDialog({
             />
             <SettingRow
               label="Auto-expand reasoning"
-              helper="Show the model's thinking by default"
+              helper="Show the model's thinking by default."
               htmlFor={autoExpandId}
               control={
                 <Switch
@@ -230,7 +230,7 @@ export function SettingsDialog({
             <SectionHeading>Privacy &amp; data</SectionHeading>
             <SettingRow
               label="Temporary chats by default"
-              helper="New chats won't be saved to history"
+              helper="New chats won't be saved to history."
               htmlFor={temporaryId}
               control={
                 <Switch
@@ -246,8 +246,8 @@ export function SettingsDialog({
               }
             />
             <SettingRow
-              label="Improve the model for everyone"
-              helper="Off by default. Your conversations are never used to train models unless you turn this on."
+              label="Help improve Olune"
+              helper="Your conversations are never used to train models unless this is on."
               htmlFor={trainingId}
               control={
                 <Switch

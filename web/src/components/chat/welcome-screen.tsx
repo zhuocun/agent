@@ -11,7 +11,7 @@ function buildGreeting(userName?: string): string {
   if (hour >= 5 && hour <= 11) return `Good morning${suffix}`;
   if (hour >= 12 && hour <= 16) return `Good afternoon${suffix}`;
   if (hour >= 17 && hour <= 21) return `Good evening${suffix}`;
-  return userName ? `Working late, ${userName}?` : "Working late?";
+  return userName ? `Hello, ${userName}` : "Hello";
 }
 
 export function WelcomeScreen({ userName }: WelcomeScreenProps) {

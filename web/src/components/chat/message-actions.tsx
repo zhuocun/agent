@@ -46,7 +46,7 @@ export function MessageActions({
   };
 
   return (
-    <div className="group/actions inline-flex items-center gap-0.5 rounded-full p-0.5">
+    <div role="toolbar" aria-label="Message actions" className="group/actions inline-flex items-center gap-0.5 rounded-full p-0.5">
       <IconAction label={copied ? "Copied" : "Copy"} onClick={handleCopy}>
         {copied ? (
           <Check className="size-4 text-success" />
@@ -62,13 +62,13 @@ export function MessageActions({
       ) : null}
 
       {canBranch && onBranch ? (
-        <IconAction label="Branch in new chat" onClick={onBranch}>
+        <IconAction label="Branch into new chat" onClick={onBranch}>
           <GitFork className="size-4" />
         </IconAction>
       ) : null}
 
       <IconAction
-        label="Good response"
+        label="Helpful"
         pressed={feedback === "up"}
         onClick={() => onFeedback?.(feedback === "up" ? null : "up")}
       >
@@ -76,7 +76,7 @@ export function MessageActions({
       </IconAction>
 
       <IconAction
-        label="Bad response"
+        label="Not helpful"
         pressed={feedback === "down"}
         onClick={() => onFeedback?.(feedback === "down" ? null : "down")}
       >
@@ -106,9 +106,9 @@ function IconAction({
             variant="ghost"
             onClick={onClick}
             aria-label={label}
-            aria-pressed={pressed}
+            aria-pressed={typeof pressed === "boolean" ? pressed : undefined}
             className={cn(
-              "size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8",
+              "size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9",
               pressed && "text-brand",
             )}
           >

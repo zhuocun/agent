@@ -37,14 +37,14 @@ export function AttributionRow({
     <Collapsible open={open} onOpenChange={setOpen} className="w-full">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
         <span
-          className="inline-flex h-5 items-center rounded-md bg-trust-badge px-2 font-medium text-trust-badge-foreground shadow-float"
+          className="inline-flex h-5 items-center rounded-md bg-trust-badge px-2 font-medium text-trust-badge-foreground"
           title={`Answered by ${attribution.servedModelLabel}`}
         >
           {attribution.servedModelLabel}
         </span>
 
         {isByok ? (
-          <span className="inline-flex h-5 items-center gap-1 rounded-md bg-byok-indicator px-2 font-medium text-byok-indicator-foreground shadow-float">
+          <span className="inline-flex h-5 items-center gap-1 rounded-md bg-byok-indicator px-2 font-medium text-byok-indicator-foreground">
             <KeyRound aria-hidden className="size-3" />
             Your API key
           </span>

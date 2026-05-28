@@ -9,7 +9,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { cn } from "@/lib/utils";
 
 interface AppHeaderProps {
@@ -33,12 +32,12 @@ interface AppHeaderProps {
 // "floating" button that sits on the page background rather than inside a bar.
 // Mirrors the Claude / Codex iOS chrome: chrome floats, content shows through.
 const FLOAT_BUTTON =
-  "size-9 rounded-full border-0 bg-card p-0 text-muted-foreground shadow-float transition-colors hover:bg-card hover:text-foreground";
+  "glass-regular size-9 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent";
 
 // Mobile drawer / menu kebab use a 44px target for thumb reach; on desktop
 // they collapse so the 36px chrome controls take over.
 const FLOAT_BUTTON_TOUCH =
-  "size-11 rounded-full border-0 bg-card p-0 text-muted-foreground shadow-float transition-colors hover:bg-card hover:text-foreground md:hidden";
+  "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 export function AppHeader({
   title,
@@ -54,7 +53,7 @@ export function AppHeader({
   return (
     <header
       // No sticky, no border, no bar background — the header sits ON the page
-      // background and the floating buttons read as chrome via `shadow-float`.
+      // background and the floating buttons read as chrome via `glass-regular`.
       // Generous h-16 matches iOS nav-bar proportions.
       className="relative z-30 flex h-16 shrink-0 items-center gap-2 bg-background px-3 pt-[env(safe-area-inset-top)] pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:px-4 sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]"
     >
@@ -139,8 +138,6 @@ export function AppHeader({
         >
           <Settings className="size-4" />
         </Button>
-        <ThemeToggle />
-
         {/* Mobile overflow: collapses temporary-chat + settings into a single
             44px kebab so each touch target stays ≥44px without overflow. */}
         <DropdownMenu>

@@ -174,9 +174,7 @@ export function Sidebar({
             variant="ghost"
             aria-label="Collapse sidebar"
             onClick={onCollapse}
-            // Matches the floating chrome vocabulary used in app-header so the
-            // sidebar feels like part of the same iOS-style surface.
-            className="size-9 rounded-full border-0 bg-card p-0 text-muted-foreground shadow-float transition-colors hover:bg-card hover:text-foreground"
+            className="size-9 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
           >
             <PanelLeftClose className="size-4" aria-hidden />
           </Button>

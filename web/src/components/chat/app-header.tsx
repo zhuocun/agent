@@ -60,7 +60,7 @@ export function AppHeader({
   onSelectEffort,
 }: AppHeaderProps) {
   return (
-    <header className="relative flex h-11 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)] md:h-16">
+    <header className="relative flex h-11 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1rem)] pr-[max(env(safe-area-inset-right),1rem)] sm:pl-[max(env(safe-area-inset-left),1.25rem)] sm:pr-[max(env(safe-area-inset-right),1.25rem)] md:h-16">
       <div className="flex flex-1 items-center justify-start gap-2">
         <Button
           type="button"

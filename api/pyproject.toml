@@ -1,0 +1,73 @@
+[project]
+name = "api"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "alembic>=1.18.4",
+    "anthropic>=0.104.1",
+    "asyncpg>=0.31.0",
+    "bcrypt>=5.0.0",
+    "cryptography>=48.0.0",
+    "email-validator>=2.3.0",
+    "fastapi>=0.136.3",
+    "itsdangerous>=2.2.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.1",
+    "sqlalchemy[asyncio]>=2.0.50",
+    "sse-starlette>=3.4.4",
+    "structlog>=25.5.0",
+    "uvicorn[standard]>=0.48.0",
+]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+    "httpx>=0.28.1",
+    "mypy>=2.1.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",
+    "ruff>=0.15.14",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF"]
+ignore = [
+    "B008",  # FastAPI uses Depends() in argument defaults intentionally.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B"]
+
+[tool.mypy]
+strict = true
+# Spec calls for `disallow_any_explicit = true`. Disabled because the
+# pydantic.mypy plugin synthesizes Any-typed members on every model class
+# definition, producing false positives at every `class Foo(CamelModel):`
+# line. We rely on `strict = true` + `disallow_any_generics` for coverage and
+# justify each remaining explicit `Any` at the use site.
+disallow_any_explicit = false
+disallow_any_generics = true
+disallow_any_unimported = true
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+exclude = ["alembic/versions"]
+
+[[tool.mypy.overrides]]
+module = ["sse_starlette.*", "respx.*", "anthropic.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

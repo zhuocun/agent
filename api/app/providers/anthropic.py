@@ -1,0 +1,254 @@
+"""Anthropic SDK adapter.
+
+Maps `client.messages.stream(...)` events to our internal `ProviderEvent`s:
+
+- `thinking` block → `ReasoningDelta` + a single `ReasoningDone` at block end.
+- `text` block → `AnswerDelta`.
+- Token usage is read from the merged final message after the stream closes.
+  Anthropic reports `input_tokens` and the cache fields on `message_start` and
+  the running cumulative `output_tokens` on each `message_delta`;
+  `get_final_message().usage` reconciles both into one `Usage`, from which we
+  emit a single final `UsageUpdate` + `Complete`.
+
+Per PRD 07 §7 rule 7 (enforced in `pricing.py`), reasoning tokens bill at the
+output rate. Extended thinking is not enabled on the real provider, so
+`reasoning_tokens` stays 0 here; reasoning attribution is exercised by the
+FakeProvider only. Cache token counts map cleanly.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from typing import Any, cast
+
+import anthropic
+from anthropic import AsyncAnthropic
+
+from app.errors import AppError, ErrorEnvelope
+from app.providers.protocol import (
+    AnswerDelta,
+    ChatMessage,
+    Complete,
+    ProviderEvent,
+    ReasoningDelta,
+    ReasoningDone,
+    UsageUpdate,
+)
+
+
+def _safe_int(value: Any) -> int:
+    """Coerce SDK usage fields (often `int | None`) to int."""
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _retry_after_ms(exc: anthropic.APIStatusError) -> int | None:
+    """Best-effort `retryAfterMs` from a rate-limit response's headers.
+
+    Mirrors the SDK's own precedence: the non-standard millisecond header
+    `retry-after-ms` wins, else integer/float `retry-after` seconds. Returns
+    None when neither header is present or parseable.
+    """
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    ms_header = headers.get("retry-after-ms")
+    if ms_header is not None:
+        try:
+            return int(float(ms_header))
+        except (TypeError, ValueError):
+            pass
+    sec_header = headers.get("retry-after")
+    if sec_header is not None:
+        try:
+            return int(float(sec_header) * 1000)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _map_sdk_error(exc: anthropic.APIError) -> AppError:
+    """Translate an Anthropic SDK error into a typed `AppError`.
+
+    Rate limits become `RATE_LIMITED` (429) with `retryAfterMs` when the
+    upstream response carries a retry-after header; everything else becomes
+    `PROVIDER_UPSTREAM` (502, or 503 for explicit unavailability). The raw SDK
+    message is never placed in the user-facing `body` — only a clean generic
+    string. The original exception is left for the caller to log.
+    """
+    if isinstance(exc, anthropic.RateLimitError):
+        return AppError(
+            ErrorEnvelope(
+                code="RATE_LIMITED",
+                severity="error",
+                title="Rate limited",
+                body="The model provider is rate-limiting requests. Please retry shortly.",
+                retry_after_ms=_retry_after_ms(exc),
+            ),
+            status_code=429,
+        )
+    # 503/529 mean the upstream is unavailable/overloaded; surface as 503 so the
+    # client can treat it as transient. All other upstream failures are 502.
+    status_code = 502
+    if isinstance(exc, anthropic.APIStatusError) and exc.status_code in (503, 529):
+        status_code = 503
+    return AppError(
+        ErrorEnvelope(
+            code="PROVIDER_UPSTREAM",
+            severity="error",
+            title="Provider error",
+            body="The model provider returned an error. Please try again.",
+        ),
+        status_code=status_code,
+    )
+
+
+class AnthropicProvider:
+    """Adapter over `anthropic.AsyncAnthropic.messages.stream(...)`.
+
+    Holds a default client built from the platform key. Per-request BYOK
+    overrides build a fresh `AsyncAnthropic(api_key=...)` on the spot (the
+    SDK is cheap to construct -- HTTP session is lazy). This keeps the
+    default fast path identical to M1 while making BYOK opt-in per call.
+    """
+
+    def __init__(self, api_key: str, max_tokens: int = 16000):
+        self._default_api_key = api_key
+        self._client = AsyncAnthropic(api_key=api_key)
+        self._max_tokens = max_tokens
+
+    def _client_for(self, api_key: str | None) -> AsyncAnthropic:
+        """Return the default client, or a fresh one bound to `api_key`.
+
+        The default client is reused across requests for connection pooling;
+        BYOK clients are throwaway and rely on the SDK's own connection
+        management for that single call.
+        """
+        if api_key is None or api_key == self._default_api_key:
+            return self._client
+        return AsyncAnthropic(api_key=api_key)
+
+    async def stream(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+        api_key: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        # Build messages: history + the current user turn.
+        messages: list[dict[str, Any]] = [
+            {"role": m.role, "content": m.text} for m in history
+        ]
+        messages.append({"role": "user", "content": user_text})
+
+        # Track whether we're currently inside a thinking block so we can
+        # emit exactly one ReasoningDone at block end.
+        in_thinking = False
+
+        client = self._client_for(api_key)
+        try:
+            async with client.messages.stream(
+                model=model_id,
+                max_tokens=self._max_tokens,
+                messages=cast(Any, messages),
+            ) as stream:
+                async for event in stream:
+                    etype = getattr(event, "type", None)
+
+                    if etype == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        block_type = getattr(block, "type", None)
+                        if block_type == "thinking":
+                            in_thinking = True
+
+                    elif etype == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        dtype = getattr(delta, "type", None)
+                        if dtype == "thinking_delta":
+                            yield ReasoningDelta(text=getattr(delta, "thinking", ""))
+                        elif dtype == "text_delta":
+                            yield AnswerDelta(text=getattr(delta, "text", ""))
+
+                    elif etype == "content_block_stop":
+                        if in_thinking:
+                            yield ReasoningDone()
+                            in_thinking = False
+
+                # Read the merged usage once the stream is fully consumed.
+                # Anthropic reports input + cache counts on `message_start` and
+                # the cumulative `output_tokens` on `message_delta`; the SDK
+                # reconciles both into `get_final_message().usage`, so reading
+                # it here gets every bucket (reading only `message_delta` would
+                # drop input/cache counts).
+                final_usage = (await stream.get_final_message()).usage
+        except anthropic.APIError as exc:
+            raise _map_sdk_error(exc) from exc
+
+        input_tokens = _safe_int(getattr(final_usage, "input_tokens", None))
+        output_tokens = _safe_int(getattr(final_usage, "output_tokens", None))
+        # Only the cache-READ bucket maps to our cache-priced slot. Cache
+        # creation/write pricing is out of scope until prompt caching is
+        # enabled (no `cache_control` is sent today, so both are 0).
+        cached_input_tokens = _safe_int(
+            getattr(final_usage, "cache_read_input_tokens", None)
+        )
+        # Extended thinking isn't enabled here, so reasoning stays 0 on the real
+        # provider (reasoning attribution is exercised by the FakeProvider only).
+        reasoning_tokens = 0
+
+        usage_update = UsageUpdate(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cached_input_tokens=cached_input_tokens,
+        )
+        yield usage_update
+        yield Complete(usage=usage_update)
+
+    async def complete(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+        api_key: str | None = None,
+    ) -> str:
+        """Non-streaming variant. One `messages.create` call, collected text.
+
+        Used by title autogen — small/fast tier, short max_tokens. Concatenates
+        any `text` blocks in the SDK response and returns the joined string.
+        Returns empty string on a response without a text block (defensive —
+        the caller will swallow empty titles).
+        """
+        # Title-autogen calls are short; cap output tokens tightly at 64 so a
+        # runaway model can't burn a full max_tokens budget on a 5-word title.
+        messages: list[dict[str, Any]] = [
+            {"role": m.role, "content": m.text} for m in history
+        ]
+        messages.append({"role": "user", "content": user_text})
+
+        client = self._client_for(api_key)
+        try:
+            response = await client.messages.create(
+                model=model_id,
+                max_tokens=64,
+                messages=cast(Any, messages),
+            )
+        except anthropic.APIError as exc:
+            raise _map_sdk_error(exc) from exc
+        # `response.content` is a list of content blocks; we concatenate text
+        # blocks (skip thinking / tool_use etc.). SDK shapes vary by version
+        # so we duck-type defensively.
+        texts: list[str] = []
+        for block in getattr(response, "content", []) or []:
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                text_val = getattr(block, "text", "")
+                if isinstance(text_val, str):
+                    texts.append(text_val)
+        return "".join(texts).strip()

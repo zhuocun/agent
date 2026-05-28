@@ -57,6 +57,7 @@ async def list_summaries_for_user(
             id=str(row.id),
             title=row.title,
             updated_at=_iso(row.updated_at),
+            is_temporary=False,
             pinned=row.pinned,
         )
         for row in rows
@@ -169,6 +170,30 @@ async def update_for_user(
     await db.flush()
     await db.refresh(row)
     return row
+
+
+async def touch_updated_at(
+    db: AsyncSession,
+    conversation_id: UUID,
+) -> None:
+    """Bump `updated_at` to now so the conversation rises in the sidebar.
+
+    Called when a NEW turn is accepted (normal send, regenerate, edit) so the
+    sidebar's `pinned desc, updated_at desc` ordering reflects activity, not
+    just creation order. The column has a `server_default` but no `onupdate`
+    hook, so we set it explicitly. Flush only — the caller commits in the same
+    transaction that persists the turn's user message (atomic with the turn).
+
+    Silent no-op if the row is gone (mirrors `update_title`). Distinct from
+    `update_title`, which deliberately does NOT bump so title autogen alone
+    can't reorder the sidebar.
+    """
+    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        return
+    row.updated_at = datetime.now(UTC)
+    await db.flush()
 
 
 async def update_title(

@@ -265,6 +265,12 @@ async def _maybe_replay(
     # perspective this is a regular replay; the FE does not currently render
     # the done/stopped distinction.
     if assistant_row is not None and assistant_row.status in ("done", "stopped"):
+        # Defensive: `attribution` is a nullable column. A done/stopped row with
+        # `attribution IS NULL` (manually-seeded or partially-migrated) would
+        # raise inside `_replay_response`'s `ModelAttribution.model_validate(...)`
+        # → generic 500. Fall through to a fresh insert instead of replaying.
+        if assistant_row.attribution is None:
+            return None
         # Replay path. Reconstruct prior answer text from parts.
         texts: list[str] = []
         for part in cast(list[dict[str, object]], assistant_row.parts or []):
@@ -392,6 +398,11 @@ async def send_message(
                 client_message_id=client_uuid,
                 text=body.text,
             )
+            # A new turn was accepted — bump the conversation so it rises in
+            # the sidebar. Same session/transaction as the user message, so it
+            # commits atomically with the turn below (not on idempotent replay,
+            # which returns earlier without reaching this insert).
+            await conversations_repo.touch_updated_at(db, conversation_id)
             # Commit so the user message is durable before we stream — the
             # EventSourceResponse will reuse this session, so flush+commit now.
             await db.commit()
@@ -477,6 +488,10 @@ async def _prepare_regenerate(
     await messages_repo.delete_trailing_assistants(
         db, conversation_id=conversation_id
     )
+    # Regenerate accepts a new turn (reusing the existing user message), so
+    # bump the conversation to the top of the sidebar. Same session as the
+    # trailing-assistant delete; commits atomically with the turn below.
+    await conversations_repo.touch_updated_at(db, conversation_id)
     await db.commit()
     # Load history with the trailing assistant(s) gone, then strip the
     # trailing user message — the provider receives prior turns only, plus
@@ -552,6 +567,10 @@ async def _prepare_edit(
             client_message_id=client_uuid,
             text=new_text,
         )
+        # Edit-and-rerun accepts a new turn, so bump the conversation to the
+        # top of the sidebar. Same session as the replacement user message;
+        # commits atomically with the turn below.
+        await conversations_repo.touch_updated_at(db, conversation_id)
         await db.commit()
     except IntegrityError as exc:
         # An edit submission with a clientMessageId that collides with an

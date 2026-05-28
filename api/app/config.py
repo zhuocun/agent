@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     # Anthropic (optional in M0).
     anthropic_api_key: str | None = Field(default=None)
 
+    # Provider backend selection (M1). `fake` for dev/tests, `anthropic` for prod.
+    provider_backend: Literal["anthropic", "fake"] = Field(default="fake")
+
     # BYOK key encryption KEK (base64-encoded 32 bytes). Optional in M0.
     byok_kek_base64: str | None = Field(default=None)
 

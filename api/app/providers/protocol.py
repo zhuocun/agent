@@ -1,0 +1,93 @@
+"""Provider abstraction: a swappable backend that streams model output.
+
+Both `AnthropicProvider` and `FakeProvider` implement `Provider`. The streaming
+handler consumes `ProviderEvent`s and maps them to wire SSE events.
+
+`ProviderEvent` is an internal union — keep it tight to what the handler
+needs. The wire schema (`schemas/stream_events.py`) stays the source of truth
+for what the FE sees.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Literal, Protocol
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    """Minimal chat message shape passed into the provider.
+
+    Distinct from the wire `ChatMessage` (which carries parts, attribution,
+    etc.) — the provider only needs role + text.
+    """
+
+    role: Literal["user", "assistant"]
+    text: str
+
+
+@dataclass(frozen=True)
+class ReasoningDelta:
+    type: Literal["reasoning_delta"] = "reasoning_delta"
+    text: str = ""
+
+
+@dataclass(frozen=True)
+class ReasoningDone:
+    type: Literal["reasoning_done"] = "reasoning_done"
+
+
+@dataclass(frozen=True)
+class AnswerDelta:
+    type: Literal["answer_delta"] = "answer_delta"
+    text: str = ""
+
+
+@dataclass(frozen=True)
+class UsageUpdate:
+    """Final accumulated usage from the provider.
+
+    Field names match the canonical wire shape (see pricing.py for the
+    Anthropic→canonical mapping). Reasoning tokens are billed at the output
+    rate; cached input tokens are never cache-eligible for reasoning.
+    """
+
+    type: Literal["usage_update"] = "usage_update"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_input_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class Complete:
+    """End-of-stream marker. Provider has yielded everything."""
+
+    type: Literal["complete"] = "complete"
+    usage: UsageUpdate = field(default_factory=UsageUpdate)
+
+
+ProviderEvent = ReasoningDelta | ReasoningDone | AnswerDelta | UsageUpdate | Complete
+
+
+class Provider(Protocol):
+    """Swappable streaming backend.
+
+    `stream(...)` returns an async iterator of ProviderEvents directly (no
+    `await` on the call). Implementations may use `async def` + `yield` (the
+    result is then an async generator, which is an AsyncIterator) or a class
+    with `__aiter__`.
+
+    Implementations MUST yield at most one `ReasoningDone` and only when at
+    least one `ReasoningDelta` preceded it. The caller relies on this to
+    emit the wire `reasoning_done` exactly once before any `answer_delta`.
+    """
+
+    def stream(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+    ) -> AsyncIterator[ProviderEvent]: ...

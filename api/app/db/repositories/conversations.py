@@ -58,6 +58,40 @@ async def list_summaries_for_user(
     ]
 
 
+async def create_for_user(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    selected_tier_id: ModelTierId,
+) -> Conversation:
+    """Persist a new conversation. Returns the row with id/timestamps set."""
+    convo = Conversation(
+        user_id=user_id,
+        title="New chat",
+        selected_tier_id=selected_tier_id,
+        pinned=False,
+    )
+    db.add(convo)
+    await db.flush()
+    await db.refresh(convo)
+    return convo
+
+
+async def owned_by(
+    db: AsyncSession, conversation_id: UUID, user_id: UUID
+) -> Conversation | None:
+    """Return the ORM row if owned by the user, else None.
+
+    Lighter than `get_for_user` (no messages fetch). Used by routes that just
+    need to assert ownership.
+    """
+    stmt = select(Conversation).where(Conversation.id == conversation_id)
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None or row.user_id != user_id:
+        return None
+    return row
+
+
 async def get_for_user(
     db: AsyncSession, conversation_id: UUID, user_id: UUID
 ) -> ConversationSchema | None:

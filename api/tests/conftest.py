@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
@@ -70,11 +70,16 @@ async def session_factory(
 
 
 @pytest.fixture
-def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
+def app(session_factory: async_sessionmaker[AsyncSession]) -> Iterator[FastAPI]:
     """Build a fresh FastAPI app with our test session factory wired in."""
     # Reset settings cache so any env tweaks land.
     get_settings.cache_clear()
     from app.main import create_app
+    from app.routes.conversations import _TEMP_IDS
+
+    # Module-level state is shared across tests; clear it before AND after
+    # yield so a flaky prior test cannot leak temp ids into this one.
+    _TEMP_IDS.clear()
 
     app_ = create_app()
 
@@ -88,7 +93,10 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
                 raise
 
     app_.dependency_overrides[get_db] = _get_db_override
-    return app_
+    try:
+        yield app_
+    finally:
+        _TEMP_IDS.clear()
 
 
 @pytest.fixture

@@ -43,7 +43,7 @@ export function MessageList({ children }: { children: React.ReactNode }) {
       <div
         ref={scrollRef}
         onScroll={recompute}
-        className="h-full overflow-y-auto overscroll-contain"
+        className="chat-scroll h-full overflow-y-auto overscroll-contain"
       >
         <ol
           ref={contentRef}

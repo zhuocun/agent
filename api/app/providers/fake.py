@@ -9,6 +9,11 @@ Sleeps ~20ms between deltas so streaming is observable but tests stay fast.
 `complete()` is the non-streaming variant — used by title autogen. It returns
 a deterministic ~5-word title derived from the input hash; no sleeps so tests
 can poll cheaply.
+
+M4: forced fallback path. When `user_text` starts with `FORCE_FALLBACK:`, the
+provider streams normally but the terminal `Complete` event carries
+`substitution="provider_fallback"` plus a stubbed served (provider, model,
+label) triple. Exercises the substitution emission seam end-to-end.
 """
 
 from __future__ import annotations
@@ -106,7 +111,22 @@ class FakeProvider:
             cached_input_tokens=0,
         )
         yield usage
-        yield Complete(usage=usage)
+        # M4 forced-fallback path. Marker prefix in user_text flips the
+        # terminal Complete event into the substitution shape. Stubbed served
+        # (provider, model, label) triple — what the handler would have got
+        # back from a real provider-fallback router. The wire still only
+        # carries `reasonCode` + `reasonText` (per FE shape); the served
+        # triple is bookkeeping for future use.
+        if user_text.startswith("FORCE_FALLBACK:"):
+            yield Complete(
+                usage=usage,
+                substitution="provider_fallback",
+                substituted_provider="fallback-provider",
+                substituted_model="fallback-model",
+                substituted_display_label="Fallback Model",
+            )
+        else:
+            yield Complete(usage=usage)
 
     async def complete(
         self,

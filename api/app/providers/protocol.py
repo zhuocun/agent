@@ -14,6 +14,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+from app.schemas.common import SubstitutionReasonCode
+
 
 @dataclass(frozen=True)
 class ChatMessage:
@@ -62,10 +64,22 @@ class UsageUpdate:
 
 @dataclass(frozen=True)
 class Complete:
-    """End-of-stream marker. Provider has yielded everything."""
+    """End-of-stream marker. Provider has yielded everything.
+
+    Optional substitution metadata (M4): when the provider had to swap to a
+    fallback served (provider, model, display_label) for this turn, it sets
+    `substitution` to one of the wire-allowed SubstitutionReasonCode values
+    (string) and populates the `substituted_*` triple. The streaming handler
+    threads these through to `build_attribution(...)`. For non-fallback turns
+    these stay None and the wire attribution emits no `substitution` field.
+    """
 
     type: Literal["complete"] = "complete"
     usage: UsageUpdate = field(default_factory=UsageUpdate)
+    substitution: SubstitutionReasonCode | None = None
+    substituted_provider: str | None = None
+    substituted_model: str | None = None
+    substituted_display_label: str | None = None
 
 
 ProviderEvent = ReasoningDelta | ReasoningDone | AnswerDelta | UsageUpdate | Complete

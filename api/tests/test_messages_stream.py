@@ -831,6 +831,69 @@ async def test_post_conversation_with_unknown_tier_returns_400(
     assert response.status_code == 400
 
 
+# M4: forced provider fallback ------------------------------------------------
+
+
+async def test_forced_fallback_emits_substitution(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`FORCE_FALLBACK:` user_text marker → fake provider emits Complete with
+    `substitution="provider_fallback"`; the terminal frame's attribution
+    carries `substitution.reasonCode="provider_fallback"`.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "FORCE_FALLBACK: please answer",
+        },
+    )
+    terminal_payload = next(p for n, p in frames if n == "terminal")
+    attribution = terminal_payload["attribution"]
+    assert isinstance(attribution, dict)
+    sub = attribution.get("substitution")
+    assert sub is not None, "expected substitution on forced-fallback turn"
+    assert isinstance(sub, dict)
+    assert sub["reasonCode"] == "provider_fallback"
+    # reason_text is canonical-from-builder; assert it's non-empty.
+    assert isinstance(sub["reasonText"], str)
+    assert len(sub["reasonText"]) > 0
+    # Sanity: requested vs served tier ids round-trip unchanged.
+    assert attribution["requestedTierId"] == "smart"
+    assert attribution["servedTierId"] == "smart"
+
+
+async def test_happy_path_substitution_is_none(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Without the FORCE_FALLBACK marker, attribution.substitution is absent."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "ordinary turn",
+        },
+    )
+    terminal_payload = next(p for n, p in frames if n == "terminal")
+    attribution = terminal_payload["attribution"]
+    # `exclude_none=True` on the JSON dump means absence on the wire.
+    assert attribution.get("substitution") is None
+
+
 # Stop path --------------------------------------------------------------------
 
 

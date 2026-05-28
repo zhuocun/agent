@@ -5,9 +5,9 @@ cache-eligible. Enforced in `compute_cost_breakdown` — every call uses
 output_per_m for reasoning_tokens, and cached_input_tokens never includes the
 reasoning slice. A unit test asserts the delta.
 
-For M1, cached input tokens are modeled at the input rate (no separate
-`cache_read_per_m` in the tier registry yet). Documented as M1-only — M2 can
-add a `cache_read_per_m` field on TierBinding when the FE renders it.
+Cache-read pricing (M4): when `TierBinding.cache_read_per_m` is set, cached
+input tokens bill at that rate (Anthropic ~10% of input price). When None,
+fall back to billing at the input rate (the M1 behavior).
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from app.schemas.message import (
     CostBreakdown,
     LongContext,
     ModelAttribution,
+    Substitution,
 )
 
 
@@ -30,18 +31,21 @@ def compute_cost_breakdown(
     """Compute a CostBreakdown from accumulated usage + tier pricing.
 
     PRD 07 §7 rule 7: reasoning tokens x output_per_m / 1e6. Cached input
-    tokens are modeled at input_per_m for M1 (no cache-read price column on
-    TierBinding yet).
+    tokens bill at `cache_read_per_m` when the binding sets it (M4); otherwise
+    they fall back to `input_per_m` (the M1 behavior).
     """
     in_per_m = binding.list_price_in_per_m
     out_per_m = binding.list_price_out_per_m
+    cache_per_m = (
+        binding.cache_read_per_m if binding.cache_read_per_m is not None else in_per_m
+    )
 
     input_cost = usage.input_tokens * in_per_m / 1_000_000
     output_cost = usage.output_tokens * out_per_m / 1_000_000
     # PRD 07 §7 rule 7: reasoning bills at OUTPUT rate.
     reasoning_cost = usage.reasoning_tokens * out_per_m / 1_000_000
-    # M1: model cached input at input rate. M2 can split out a cache_read price.
-    cached_cost = usage.cached_input_tokens * in_per_m / 1_000_000
+    # M4: cache reads at their own per-million rate when set on the binding.
+    cached_cost = usage.cached_input_tokens * cache_per_m / 1_000_000
 
     subtotal = input_cost + output_cost + reasoning_cost + cached_cost
 
@@ -70,6 +74,16 @@ def compute_cost_breakdown(
     )
 
 
+_SUBSTITUTION_REASON_TEXT = {
+    "auto_downgrade": "Downgraded by router for cost/latency.",
+    "provider_fallback": "Provider unavailable; routed to a fallback model.",
+    "rate_limited": "Primary provider was rate-limited; rerouted.",
+    "capacity_reroute": "Capacity exceeded; rerouted to an available model.",
+    "deprecated_model": "Requested model deprecated; substituted.",
+    "gateway_route": "Gateway selected a different model.",
+}
+
+
 def build_attribution(
     *,
     requested_tier_id: ModelTierId,
@@ -77,9 +91,32 @@ def build_attribution(
     breakdown: CostBreakdown,
     cost_confidence: CostConfidence,
     is_byok: bool = False,
+    substitution: str | None = None,
+    substituted_provider: str | None = None,
+    substituted_model: str | None = None,
+    substituted_display_label: str | None = None,
 ) -> ModelAttribution:
-    """Assemble a ModelAttribution. M1 never sets `substitution` — there is no
-    fallback logic yet (M4)."""
+    """Assemble a ModelAttribution.
+
+    M4: when `substitution` is set (one of the six wire-allowed
+    `SubstitutionReasonCode` values), attach a `Substitution` object with a
+    short canonical reason text. `substituted_*` args carry the served
+    provider/model/label that replaced the registry default; they are not
+    fields on the FE's `Substitution` shape today (the wire only carries
+    `reasonCode` + `reasonText`) but are accepted so the call site can read
+    them out of the same plumbing if needed later.
+    """
+    sub_obj: Substitution | None = None
+    if substitution is not None:
+        # Cast to the schema's literal at construction time — the schema's
+        # SubstitutionReasonCode is the canonical guardrail.
+        reason_text = _SUBSTITUTION_REASON_TEXT.get(substitution, "Substituted.")
+        sub_obj = Substitution.model_validate(
+            {"reasonCode": substitution, "reasonText": reason_text}
+        )
+    # Reference substituted_* args so unused-warning tooling stays quiet —
+    # they're documented call-site sugar even when not wire-serialized.
+    _ = (substituted_provider, substituted_model, substituted_display_label)
     return ModelAttribution(
         requested_tier_id=requested_tier_id,
         served_tier_id=binding.tier.id,
@@ -88,5 +125,5 @@ def build_attribution(
         cost_usd=breakdown.subtotal_usd + breakdown.session_surcharge_usd,
         cost_confidence=cost_confidence,
         breakdown=breakdown,
-        substitution=None,
+        substitution=sub_obj,
     )

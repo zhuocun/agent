@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import structlog
 from fastapi import Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -95,14 +96,22 @@ async def current_user(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> User:
-    """Return the current user, creating an anonymous one on first hit."""
+    """Return the current user, creating an anonymous one on first hit.
+
+    M4: binds `user_id` into structlog contextvars so every subsequent log
+    line in this request (access log, turn log, repository logs) inherits
+    it. The `RequestIDMiddleware` clears contextvars at request end.
+    """
     cookie_name = settings.cookie_name or COOKIE_NAME_DEFAULT
     raw = request.cookies.get(cookie_name)
     if raw:
         existing = await _try_load_existing_user(db, settings, raw)
         if existing is not None:
+            structlog.contextvars.bind_contextvars(user_id=str(existing.id))
             return existing
-    return await _create_anonymous(db, settings, response)
+    new_user = await _create_anonymous(db, settings, response)
+    structlog.contextvars.bind_contextvars(user_id=str(new_user.id))
+    return new_user
 
 
 async def current_session(

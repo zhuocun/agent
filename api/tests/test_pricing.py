@@ -109,15 +109,73 @@ def test_compute_cost_breakdown_includes_all_token_buckets() -> None:
     )
     bd = compute_cost_breakdown(usage=usage, binding=binding)
 
-    # Hand-computed: 2000 * 3 / 1e6 + 1000 * 15 / 1e6 + 100 * 15 / 1e6 + 500 * 3 / 1e6
+    # Hand-computed: input + output + reasoning(@output) + cache(@cache_read).
+    cache_per_m = binding.cache_read_per_m
+    assert cache_per_m is not None  # M4: smart tier sets cache_read_per_m.
     expected = (
         2000 * 3.0 / 1_000_000
         + 1000 * 15.0 / 1_000_000
         + 100 * 15.0 / 1_000_000
-        + 500 * 3.0 / 1_000_000
+        + 500 * cache_per_m / 1_000_000
     )
     assert bd.subtotal_usd == pytest.approx(expected, rel=1e-9)
     assert bd.long_context.flat is True
+
+
+def test_cache_read_uses_cache_read_per_m_when_set() -> None:
+    """M4: cached input tokens bill at `cache_read_per_m`, not input_per_m.
+
+    Per the M4 plan, when a binding sets `cache_read_per_m` the pricing math
+    uses it. Expected cost is
+    `(input * input_per_m + cached * cache_read_per_m) / 1_000_000` — never
+    `(input + cached) * input_per_m / 1_000_000`.
+    """
+    binding = get_binding("smart")
+    assert binding is not None
+    cache_per_m = binding.cache_read_per_m
+    assert cache_per_m is not None
+    assert cache_per_m != binding.list_price_in_per_m
+
+    usage = UsageUpdate(input_tokens=1000, cached_input_tokens=500)
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+
+    expected = (
+        1000 * binding.list_price_in_per_m + 500 * cache_per_m
+    ) / 1_000_000
+    naive_wrong = 1500 * binding.list_price_in_per_m / 1_000_000
+
+    assert bd.subtotal_usd == pytest.approx(expected, rel=1e-9)
+    # Sanity: the M1 "model both at input rate" path would have produced
+    # `naive_wrong`. Confirm we're not silently regressing.
+    assert bd.subtotal_usd != pytest.approx(naive_wrong, rel=1e-9)
+
+
+def test_cache_read_falls_back_to_input_rate_when_unset() -> None:
+    """When `cache_read_per_m` is None, fall back to input_per_m (M1 behavior)."""
+    from app.providers.tiers import TierBinding
+    from app.schemas.tier import ModelTier
+
+    tier = ModelTier(
+        id="smart",
+        label="Smart",
+        description="x",
+        speed_hint="balanced",
+        cost_hint="medium",
+        context_hint="x",
+    )
+    legacy = TierBinding(
+        tier=tier,
+        provider_id="anthropic",
+        model_id="x",
+        list_price_in_per_m=3.0,
+        list_price_out_per_m=15.0,
+        long_context_flat=True,
+        # cache_read_per_m omitted → None.
+    )
+    usage = UsageUpdate(input_tokens=1000, cached_input_tokens=500)
+    bd = compute_cost_breakdown(usage=usage, binding=legacy)
+    expected = 1500 * 3.0 / 1_000_000  # fallback: both buckets at input rate.
+    assert bd.subtotal_usd == pytest.approx(expected, rel=1e-9)
 
 
 def test_build_attribution_done_path() -> None:

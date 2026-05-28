@@ -19,7 +19,14 @@ from app.schemas.tier import ModelTier
 
 @dataclass(frozen=True)
 class TierBinding:
-    """BE-internal binding from tier id to concrete provider/model + pricing."""
+    """BE-internal binding from tier id to concrete provider/model + pricing.
+
+    `cache_read_per_m` (M4): optional per-million price for cache-read tokens.
+    When set, `compute_cost_breakdown` bills `cached_input_tokens` at this rate
+    instead of `list_price_in_per_m`. Anthropic cache reads are 10% of input
+    price; populate accordingly. `None` falls back to the input rate (the M1
+    behavior).
+    """
 
     tier: ModelTier
     provider_id: str
@@ -27,6 +34,7 @@ class TierBinding:
     list_price_in_per_m: float
     list_price_out_per_m: float
     long_context_flat: bool
+    cache_read_per_m: float | None = None
 
 
 def _tier(
@@ -48,6 +56,9 @@ def _tier(
 
 
 # Order matters: the FE keeps the same order in its picker.
+# Prices align with current Anthropic public per-million-token pricing
+# (input / output). `cache_read_per_m` is 10% of input rate per Anthropic's
+# cache-read pricing convention.
 TIER_BINDINGS: tuple[TierBinding, ...] = (
     TierBinding(
         tier=_tier(
@@ -63,6 +74,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         list_price_in_per_m=3.0,
         list_price_out_per_m=15.0,
         long_context_flat=True,
+        cache_read_per_m=0.30,
     ),
     TierBinding(
         tier=_tier(
@@ -74,10 +86,11 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "128K",
         ),
         provider_id="anthropic",
-        model_id="claude-haiku-4-5",
+        model_id="claude-haiku-4-5-20251001",
         list_price_in_per_m=1.0,
         list_price_out_per_m=5.0,
         long_context_flat=True,
+        cache_read_per_m=0.10,
     ),
     TierBinding(
         tier=_tier(
@@ -93,6 +106,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         list_price_in_per_m=3.0,
         list_price_out_per_m=15.0,
         long_context_flat=True,
+        cache_read_per_m=0.30,
     ),
     TierBinding(
         tier=_tier(
@@ -104,10 +118,11 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "1M",
         ),
         provider_id="anthropic",
-        model_id="claude-opus-4-1",
+        model_id="claude-opus-4-7",
         list_price_in_per_m=15.0,
         list_price_out_per_m=75.0,
         long_context_flat=True,
+        cache_read_per_m=1.50,
     ),
 )
 

@@ -96,6 +96,8 @@ class Settings(BaseSettings):
             raise RuntimeError("COOKIE_SAMESITE must be 'none' in production")
         if not self.cors_allowed_origins:
             raise RuntimeError("CORS_ALLOWED_ORIGINS must be set in production")
+        if self.provider_backend == "fake":
+            raise RuntimeError("PROVIDER_BACKEND must not be 'fake' in production.")
 
 
 @lru_cache(maxsize=1)

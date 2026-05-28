@@ -31,10 +31,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
 
+import structlog
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
@@ -76,6 +78,7 @@ from app.streaming.sse import (
 )
 
 log = logging.getLogger(__name__)
+_struct_log = structlog.get_logger(__name__)
 
 # Detached background tasks (title autogen). `asyncio.create_task` only holds
 # a weak reference to the returned Task; without a strong ref the task can
@@ -204,6 +207,7 @@ async def stream_and_persist(
     """
     # Emit `submitted` immediately.
     yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
+    turn_started_at = time.monotonic()
 
     # Accumulators for parts + usage.
     reasoning_buf: list[str] = []
@@ -211,6 +215,13 @@ async def stream_and_persist(
     final_usage = UsageUpdate()
     emitted_reasoning_done = False
     is_byok_turn = api_key is not None
+    # M4: substitution metadata threads from the provider's Complete event
+    # through to build_attribution(...). When the provider didn't substitute
+    # this stays None and the wire emits no `substitution` field.
+    sub_code: str | None = None
+    sub_provider: str | None = None
+    sub_model: str | None = None
+    sub_label: str | None = None
 
     # Wrap the provider iteration in a Task so we can cancel on disconnect.
     provider_iter = provider.stream(
@@ -265,7 +276,7 @@ async def stream_and_persist(
         cancelling the pump on disconnect, so `final_usage` reflects the
         latest cumulative usage even on stopped turns.
         """
-        nonlocal final_usage
+        nonlocal final_usage, sub_code, sub_provider, sub_model, sub_label
         if isinstance(ev, ReasoningDelta):
             reasoning_buf.append(ev.text)
         elif isinstance(ev, AnswerDelta):
@@ -274,6 +285,10 @@ async def stream_and_persist(
             final_usage = ev
         elif isinstance(ev, Complete):
             final_usage = ev.usage
+            sub_code = ev.substitution
+            sub_provider = ev.substituted_provider
+            sub_model = ev.substituted_model
+            sub_label = ev.substituted_display_label
 
     try:
         while True:
@@ -297,6 +312,11 @@ async def stream_and_persist(
                     binding=binding,
                     breakdown=breakdown,
                     cost_confidence="estimate",
+                    is_byok=is_byok_turn,
+                    substitution=sub_code,
+                    substituted_provider=sub_provider,
+                    substituted_model=sub_model,
+                    substituted_display_label=sub_label,
                 )
                 # Use a fresh session for stop-path persist (see helper docstring).
                 # The same session is reused for the usage_rollup increment so
@@ -321,6 +341,20 @@ async def stream_and_persist(
                             is_byok=is_byok_turn,
                         )
                         await fresh_db.commit()
+                # M4: stop-path turn log at warn level with cost_confidence=estimate.
+                _struct_log.warning(
+                    "turn.stopped",
+                    status="stopped",
+                    conversation_id=str(conversation_id) if conversation_id else None,
+                    turn_ms=int((time.monotonic() - turn_started_at) * 1000),
+                    prompt_tokens=final_usage.input_tokens,
+                    completion_tokens=final_usage.output_tokens,
+                    reasoning_tokens=final_usage.reasoning_tokens,
+                    cost_usd=breakdown.subtotal_usd,
+                    cost_confidence="estimate",
+                    is_byok=is_byok_turn,
+                    tier_id=binding.tier.id,
+                )
                 return  # No terminal on disconnect (socket closed).
 
             try:
@@ -349,6 +383,10 @@ async def stream_and_persist(
                 final_usage = ev
             elif isinstance(ev, Complete):
                 final_usage = ev.usage
+                sub_code = ev.substitution
+                sub_provider = ev.substituted_provider
+                sub_model = ev.substituted_model
+                sub_label = ev.substituted_display_label
 
         # Provider finished cleanly. Compute attribution and emit terminal.
         breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
@@ -357,6 +395,11 @@ async def stream_and_persist(
             binding=binding,
             breakdown=breakdown,
             cost_confidence="exact",
+            is_byok=is_byok_turn,
+            substitution=sub_code,
+            substituted_provider=sub_provider,
+            substituted_model=sub_model,
+            substituted_display_label=sub_label,
         )
 
         # Persist the assistant message (skipped for temporary).
@@ -426,6 +469,22 @@ async def stream_and_persist(
         # FE-side vote/copy actions that key off `messageId`.
         terminal_message_id = (
             str(assistant_id) if assistant_id is not None else str(uuid4())
+        )
+        # M4: terminal-success turn log. Bound contextvars (request_id,
+        # user_id) are merged in automatically; here we add per-turn keys.
+        _struct_log.info(
+            "turn.done",
+            status="done",
+            conversation_id=str(conversation_id) if conversation_id else None,
+            turn_ms=int((time.monotonic() - turn_started_at) * 1000),
+            prompt_tokens=final_usage.input_tokens,
+            completion_tokens=final_usage.output_tokens,
+            reasoning_tokens=final_usage.reasoning_tokens,
+            cost_usd=breakdown.subtotal_usd,
+            cost_confidence="exact",
+            is_byok=is_byok_turn,
+            tier_id=binding.tier.id,
+            message_id=terminal_message_id,
         )
         yield encode_terminal(
             TerminalEvent(message_id=terminal_message_id, attribution=attribution)

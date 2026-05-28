@@ -75,8 +75,10 @@ export function ChatThread() {
   const composerRef = useRef<ComposerHandle>(null);
 
   // True when a history entry without loaded content is selected (only "c1" has
-  // real messages in the demo). Distinct from the new-chat welcome hero.
-  const [demoEmptyConversation, setDemoEmptyConversation] = useState(false);
+  // real messages in the demo). Tracked for future use (e.g. an empty-state
+  // affordance specific to picked-but-unloaded history); the UI currently shows
+  // the same WelcomeScreen for both fresh-new-chat and demo-empty.
+  const [, setDemoEmptyConversation] = useState(false);
 
   // Chrome state: sidebar (desktop rail + mobile drawer), settings, prefs,
   // temporary mode, and which history entry is active.
@@ -326,8 +328,7 @@ export function ChatThread() {
     composerRef.current?.setDraft(prompt);
   };
 
-  const showWelcome =
-    messages.length === 0 && !pendingMessage && !demoEmptyConversation;
+  const showWelcome = messages.length === 0 && !pendingMessage;
 
   return (
     <>
@@ -382,10 +383,10 @@ export function ChatThread() {
             </div>
           </div>
 
-          {/* Message area — for WelcomeScreen / demo-empty we put a single
-              scroll wrapper that clears both strips. For MessageList we let
-              it own its scroll (its internal `<ol>` already has matching
-              pt/pb that clears the chrome). */}
+          {/* Message area — for WelcomeScreen (including demo-empty history
+              picks) we put a single scroll wrapper that clears both strips.
+              For MessageList we let it own its scroll (its internal `<ol>`
+              already has matching pt/pb that clears the chrome). */}
           {showWelcome ? (
             <div
               className={
@@ -398,18 +399,6 @@ export function ChatThread() {
                 onPickSuggestion={handlePickSuggestion}
                 userName={firstName}
               />
-            </div>
-          ) : demoEmptyConversation ? (
-            <div
-              className={
-                isTemporary
-                  ? "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
-                  : "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+3.5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
-              }
-            >
-              <p className="max-w-sm text-center text-sm text-muted-foreground">
-                This is a demo — only the pinned conversation has saved messages.
-              </p>
             </div>
           ) : (
             <MessageList>

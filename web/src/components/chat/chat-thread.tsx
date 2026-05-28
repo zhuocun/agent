@@ -296,7 +296,7 @@ export function ChatThread() {
               where it meets the scroll area. `pointer-events-none` on the
               outer strip + `pointer-events-auto` on the inner block lets
               clicks fall through the fade zone to messages beneath. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-2 md:pb-6">
+          <div className="chrome-fade-bottom pointer-events-none absolute inset-x-0 top-0 z-30 pt-[env(safe-area-inset-top)] pb-2 md:pb-6">
             <div className="pointer-events-auto">
               <AppHeader
                 title={headerTitle}
@@ -373,7 +373,7 @@ export function ChatThread() {
           )}
 
           {/* Bottom chrome strip — opaque at the bottom edge, fades upward. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-background via-background/85 to-background/0 pt-6 pb-[var(--bottom-inset)]">
+          <div className="chrome-fade-top pointer-events-none absolute inset-x-0 bottom-0 z-30 pt-6 pb-[var(--bottom-inset)]">
             <div className="pointer-events-auto">
               <Composer
                 ref={composerRef}

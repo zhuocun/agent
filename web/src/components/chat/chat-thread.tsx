@@ -204,6 +204,29 @@ export function ChatThread() {
     start({ reasoning: MOCK_STREAM_REASONING, answer: MOCK_STREAM_ANSWER });
   };
 
+  const handleEditUserMessage = (messageId: string, newText: string) => {
+    if (isStreaming) return;
+    const idx = messages.findIndex((m) => m.id === messageId);
+    if (idx === -1) return;
+    const userId = uid();
+    const assistantId = uid();
+    tierAtSendRef.current = selectedTierId;
+    assistantIdRef.current = assistantId;
+    setDemoEmptyConversation(false);
+    setMessages((prev) => [
+      ...prev.slice(0, idx),
+      {
+        id: userId,
+        role: "user",
+        createdAt: new Date().toISOString(),
+        parts: [{ type: "text", text: newText }],
+      },
+    ]);
+    setPendingId(assistantId);
+    setLiveMessage("Generating response");
+    start({ reasoning: MOCK_STREAM_REASONING, answer: MOCK_STREAM_ANSWER });
+  };
+
   const handleNewChat = () => {
     if (isStreaming) stop();
     setMessages([]);
@@ -349,7 +372,12 @@ export function ChatThread() {
             <MessageList>
               {messages.map((m) =>
                 m.role === "user" ? (
-                  <UserMessage key={m.id} message={m} />
+                  <UserMessage
+                    key={m.id}
+                    message={m}
+                    canEdit={!isStreaming}
+                    onEdit={(newText) => handleEditUserMessage(m.id, newText)}
+                  />
                 ) : (
                   <AssistantMessage
                     key={m.id}

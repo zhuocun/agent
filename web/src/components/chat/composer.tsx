@@ -11,8 +11,7 @@ import {
 import { ArrowUp, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { TierPicker } from "@/components/chat/tier-picker";
-import { ReasoningEffortToggle } from "@/components/chat/reasoning-effort-toggle";
+import { ModelModePicker } from "@/components/chat/model-mode-picker";
 import { UsageMeter } from "@/components/chat/usage-meter";
 import {
   SlashCommandsPopover,
@@ -288,15 +287,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         />
         <div className="mt-1 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
-            <TierPicker
+            <ModelModePicker
               tiers={MODEL_TIERS}
-              selectedId={selectedTierId}
-              onSelect={onSelectTier}
-            />
-            <ReasoningEffortToggle
+              selectedTierId={selectedTierId}
+              onSelectTier={onSelectTier}
               efforts={REASONING_EFFORTS}
-              selectedId={selectedReasoningEffortId}
-              onSelect={onSelectReasoningEffort}
+              selectedEffortId={selectedReasoningEffortId}
+              onSelectEffort={onSelectReasoningEffort}
             />
             <span className="hidden sm:block">
               <UsageMeter usage={usage} />

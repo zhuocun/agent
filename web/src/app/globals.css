@@ -402,17 +402,6 @@
     var(--glass-shadow-key);
 }
 
-/* Chrome-strip background gradients — solid for the bulk of the strip with
-   a tight 1rem fade only at the message-facing edge. Replaces the prior
-   `bg-gradient-to-b from-background via-background/85 to-background/0`
-   which obscured messages too aggressively in the upper half. */
-@utility chrome-fade-bottom {
-  background: linear-gradient(to bottom, var(--background) calc(100% - 1rem), transparent 100%);
-}
-@utility chrome-fade-top {
-  background: linear-gradient(to top, var(--background) calc(100% - 1rem), transparent 100%);
-}
-
 /* Streamed-markdown spacing/typography (PRD 01 §5.4). Zero-specificity :where()
    rules so Streamdown's own element classes always win when present. */
 @layer components {

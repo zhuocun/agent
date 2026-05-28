@@ -17,13 +17,8 @@ import {
   filterCommands,
 } from "@/components/chat/slash-commands-popover";
 import { MODEL_TIERS } from "@/lib/model-tiers";
-import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
-import type {
-  ModelTierId,
-  ReasoningEffortId,
-  SlashCommand,
-} from "@/lib/types";
+import type { ModelTierId, SlashCommand } from "@/lib/types";
 
 const SLASH_PATTERN = /^\/(\w*)$/;
 
@@ -31,8 +26,6 @@ interface ComposerProps {
   isStreaming: boolean;
   selectedTierId: ModelTierId;
   onSelectTier: (id: ModelTierId) => void;
-  selectedReasoningEffortId: ReasoningEffortId;
-  onSelectReasoningEffort: (id: ReasoningEffortId) => void;
   onSend: (text: string) => void;
   onStop: () => void;
   sendOnEnter?: boolean;
@@ -50,8 +43,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     isStreaming,
     selectedTierId,
     onSelectTier,
-    selectedReasoningEffortId,
-    onSelectReasoningEffort,
     onSend,
     onStop,
     sendOnEnter = true,
@@ -258,14 +249,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>
-        <div className="flex h-9 shrink-0 items-center">
+        <div className="flex h-11 shrink-0 items-center">
           <ModelModePicker
             tiers={MODEL_TIERS}
             selectedTierId={selectedTierId}
             onSelectTier={onSelectTier}
-            efforts={REASONING_EFFORTS}
-            selectedEffortId={selectedReasoningEffortId}
-            onSelectEffort={onSelectReasoningEffort}
           />
         </div>
         <textarea
@@ -291,26 +279,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             : {})}
           className="block max-h-[200px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2 text-[17px] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-base"
         />
-        {isStreaming ? (
-          <Button
-            type="button"
-            onClick={onStop}
-            aria-label="Stop generating"
-            className="size-9 shrink-0 rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90"
-          >
-            <Square className="size-3.5 fill-current" />
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            onClick={submit}
-            disabled={!value.trim()}
-            aria-label="Send message"
-            className="size-9 shrink-0 rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
-          >
-            <ArrowUp className="size-4" />
-          </Button>
-        )}
+        <div className="flex h-11 shrink-0 items-center">
+          {isStreaming ? (
+            <Button
+              type="button"
+              onClick={onStop}
+              aria-label="Stop generating"
+              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90"
+            >
+              <Square className="size-3.5 fill-current" />
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              onClick={submit}
+              disabled={!value.trim()}
+              aria-label="Send message"
+              className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
+            >
+              <ArrowUp className="size-4" />
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   );

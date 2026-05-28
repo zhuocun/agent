@@ -443,6 +443,19 @@
   .chat-md :where(blockquote) {
     @apply border-l-2 border-border pl-4 text-muted-foreground;
   }
+  /* Streamdown's CodeBlockHeader (copy + download buttons) sticks at top-2
+     of the scroll container, but our scroll container's top sits *behind*
+     the gradient/header chrome — so the sticky position hides the buttons.
+     Bump the offset so they pin to the visible top edge instead. Matches
+     the MessageList's own pt that clears the same chrome. */
+  .chat-md .sticky.top-2 {
+    top: calc(env(safe-area-inset-top) + 4rem);
+  }
+  @media (min-width: 768px) {
+    .chat-md .sticky.top-2 {
+      top: calc(env(safe-area-inset-top) + 5.5rem);
+    }
+  }
 }
 
 /* ===== Glass fallbacks ===== */

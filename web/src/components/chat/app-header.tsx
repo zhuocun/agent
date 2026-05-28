@@ -12,13 +12,6 @@ import {
 import { cn } from "@/lib/utils";
 
 interface AppHeaderProps {
-  title: string;
-  /**
-   * Optional second line under the title (model/agent context). When omitted
-   * the header renders a single centered line — per design, "if subtitle data
-   * isn't trivially available, just render line 1".
-   */
-  subtitle?: string;
   onNewChat?: () => void;
   onOpenMobileNav?: () => void;
   onOpenSidebar?: () => void;
@@ -44,8 +37,6 @@ const FLOAT_BUTTON_TOUCH =
   "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 export function AppHeader({
-  title,
-  subtitle,
   onNewChat,
   onOpenMobileNav,
   onOpenSidebar,
@@ -56,11 +47,8 @@ export function AppHeader({
 }: AppHeaderProps) {
   return (
     <header
-      // No sticky, no border, no bar background — the header sits ON the page
-      // background and the floating buttons read as chrome via `glass-regular`.
-      // Generous h-16 matches iOS nav-bar proportions. The parent chrome strip
-      // owns the safe-area-top padding, the gradient bg, and the z-index; we
-      // only handle the horizontal safe-area insets that the strip can't.
+      // The parent chrome strip owns the safe-area-top padding and the z-index;
+      // we handle the horizontal safe-area insets that the strip can't.
       className="relative flex h-11 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)] md:h-16"
     >
       {/* LEFT cluster — drawer (mobile) and sidebar reopen (desktop, when collapsed). */}
@@ -84,26 +72,6 @@ export function AppHeader({
           >
             <PanelLeft className="size-4" />
           </Button>
-        ) : null}
-      </div>
-
-      {/* CENTER — two-line title block, absolutely centered to the viewport so the
-          number of side buttons never shifts the title off-axis. `pointer-events-none`
-          on the outer wrapper lets clicks fall through to nothing (title is not
-          a control); the inner text remains selectable for accessibility tools.
-
-          Per the iOS chrome spec: when no chat is selected the caller still passes
-          a functional title ("New chat"), but the header should read as the app
-          shell ("Olune") rather than restating the empty state. We do that
-          translation here so callers stay untouched. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex h-11 flex-col items-center justify-center px-24 text-center md:h-16 md:px-44">
-        <span className="block max-w-full truncate text-sm font-semibold leading-tight text-foreground">
-          {title === "New chat" ? "Olune" : title}
-        </span>
-        {subtitle ? (
-          <span className="block max-w-full truncate text-xs leading-tight text-muted-foreground">
-            {subtitle}
-          </span>
         ) : null}
       </div>
 

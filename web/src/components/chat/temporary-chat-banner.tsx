@@ -21,29 +21,30 @@ export function TemporaryChatBanner({
   className,
 }: TemporaryChatBannerProps): JSX.Element {
   return (
-    <div
-      role="note"
-      className={cn(
-        "mx-auto mt-2 flex max-w-fit items-center gap-2 rounded-full bg-muted/60 px-3 py-1 text-xs text-muted-foreground",
-        className,
-      )}
-    >
-      <Ghost aria-hidden className="size-4 shrink-0" />
-      <p className="min-w-0 truncate">
-        <span className="font-medium">Temporary chat</span>{" "}
-        <span>
-          — won&apos;t be saved or used to train models.
-        </span>
-      </p>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={onTurnOff}
-        className="ml-1 shrink-0"
+    <div className={cn("flex justify-center px-3 pt-1", className)}>
+      <div
+        role="note"
+        // Tiny iOS-style pill: inline-flex, rounded-full, muted surface, no
+        // border, no shadow — reads as a quiet status chip rather than a bar.
+        className="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground"
       >
-        Turn off
-      </Button>
+        <Ghost aria-hidden className="size-3.5 shrink-0" />
+        <span className="truncate">
+          <span className="font-medium text-foreground">Temporary chat</span>
+          <span> — won&apos;t be saved.</span>
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={onTurnOff}
+          // Ghost xs Button already gives us a quiet inline affordance; the
+          // negative margin pulls the pill right edge tight against the label.
+          className="-mr-1 ml-0.5 h-5 px-1.5 text-xs"
+        >
+          Turn off
+        </Button>
+      </div>
     </div>
   );
 }

@@ -92,6 +92,12 @@
   --shadow-glass-key: var(--glass-shadow-key);
   --shadow-glass-highlight: var(--glass-highlight);
 
+  /* iOS-style elevation tokens — exposed as `shadow-float` and `shadow-pill`.
+     float = soft halo for circular nav / action buttons.
+     pill  = slightly heavier halo for the filled circular send button. */
+  --shadow-float: var(--float-shadow);
+  --shadow-pill: var(--pill-shadow);
+
   /* Tracking polish for Geist Sans */
   --tracking-tight: -0.012em;
 }
@@ -192,6 +198,10 @@
   --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.04);
   --glass-shadow-key: 0 12px 32px rgba(0, 0, 0, 0.10);
 
+  /* iOS-style halos — soft, no inner bevel. */
+  --float-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 12px -2px rgba(0, 0, 0, 0.08);
+  --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 10px 24px -8px rgba(0, 0, 0, 0.20);
+
   /* Focus ring — aligned to brand hue 270. */
   --focus-ring: 0 0 0 3px oklch(0.62 0.12 255 / 0.35);
 }
@@ -280,6 +290,10 @@
 
   --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.20);
   --glass-shadow-key: 0 18px 40px rgba(0, 0, 0, 0.38);
+
+  /* iOS-style halos — soft, no inner bevel. */
+  --float-shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.32);
+  --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 24px -8px rgba(0, 0, 0, 0.55);
 
   --focus-ring: 0 0 0 3px oklch(0.72 0.11 255 / 0.42);
 }

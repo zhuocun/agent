@@ -47,8 +47,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
           <Button
             type="button"
             variant="ghost"
-            size="sm"
-            className="min-h-10 gap-1.5 px-2.5 text-muted-foreground hover:text-foreground aria-expanded:text-foreground"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-muted/60 px-2.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground [&_svg:not([class*='size-'])]:size-3.5"
             aria-label={
               selected
                 ? `Model: ${selected.label}. Change model tier.`

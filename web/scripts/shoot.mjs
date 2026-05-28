@@ -23,7 +23,7 @@ async function open(browser, { theme = "light", viewport = DESKTOP } = {}) {
   }, theme);
   const page = await ctx.newPage();
   await page.goto(URL, { waitUntil: "networkidle" });
-  await page.getByPlaceholder("Message Aperture…").waitFor({ timeout: 15000 });
+  await page.getByPlaceholder("Message Olune…").waitFor({ timeout: 15000 });
   await page.waitForTimeout(500);
   return { ctx, page };
 }
@@ -64,7 +64,7 @@ const browser = await chromium.launch();
 }
 {
   const { ctx, page } = await open(browser, { theme: "light" });
-  const box = page.getByPlaceholder("Message Aperture…");
+  const box = page.getByPlaceholder("Message Olune…");
   await box.click();
   await box.fill("How do I avoid the loading spinner flashing on fast responses?");
   await page.keyboard.press("Enter");

@@ -100,7 +100,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-1">
       <div className="rounded-2xl border border-border bg-card shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/60">
         <label htmlFor="composer-input" className="sr-only">
-          Message Aperture
+          Message Olune
         </label>
         <textarea
           id="composer-input"
@@ -112,7 +112,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             autoGrow();
           }}
           onKeyDown={onKeyDown}
-          placeholder="Message Aperture…"
+          placeholder="Message Olune…"
           className="block max-h-[200px] w-full resize-none bg-transparent px-4 pt-3.5 text-[15px] leading-7 text-foreground outline-none placeholder:text-muted-foreground"
         />
         <div className="flex items-end justify-between gap-2 px-2.5 pb-2.5 pt-1">
@@ -150,7 +150,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         </div>
       </div>
       <p className="mt-2 text-center text-xs text-muted-foreground">
-        Aperture shows which model answered and what it cost. Verify important
+        Olune shows which model answered and what it cost. Verify important
         information.
       </p>
     </div>

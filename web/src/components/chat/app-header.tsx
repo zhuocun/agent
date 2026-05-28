@@ -62,9 +62,9 @@ export function AppHeader({
             (the open sidebar already shows the wordmark). */}
         <div className={cn("flex items-center gap-2", sidebarOpen && "md:hidden")}>
           <div className="flex size-7 items-center justify-center rounded-lg bg-brand text-sm font-bold text-brand-foreground">
-            A
+            O
           </div>
-          <span className="text-sm font-semibold">Aperture</span>
+          <span className="text-sm font-semibold">Olune</span>
         </div>
       </div>
 

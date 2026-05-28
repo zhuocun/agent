@@ -143,8 +143,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         </div>
       </div>
       <p className="mt-2 text-center text-xs text-muted-foreground">
-        Olune shows which model answered and what it cost. Verify important
-        information.
+        Verify important information.
       </p>
     </div>
   );

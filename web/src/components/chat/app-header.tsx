@@ -32,12 +32,12 @@ interface AppHeaderProps {
 // "floating" button that sits on the page background rather than inside a bar.
 // Mirrors the Claude / Codex iOS chrome: chrome floats, content shows through.
 const FLOAT_BUTTON =
-  "glass-regular size-9 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent";
+  "glass-regular inline-flex size-9 items-center justify-center rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent";
 
 // Mobile drawer / menu kebab use a 44px target for thumb reach; on desktop
 // they collapse so the 36px chrome controls take over.
 const FLOAT_BUTTON_TOUCH =
-  "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
+  "glass-regular inline-flex size-11 items-center justify-center rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 export function AppHeader({
   title,

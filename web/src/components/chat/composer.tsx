@@ -12,14 +12,21 @@ import { ArrowUp, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { TierPicker } from "@/components/chat/tier-picker";
+import { ReasoningEffortToggle } from "@/components/chat/reasoning-effort-toggle";
 import { UsageMeter } from "@/components/chat/usage-meter";
 import {
   SlashCommandsPopover,
   filterCommands,
 } from "@/components/chat/slash-commands-popover";
 import { MODEL_TIERS } from "@/lib/model-tiers";
+import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
-import type { ModelTierId, SlashCommand, UsageBudget } from "@/lib/types";
+import type {
+  ModelTierId,
+  ReasoningEffortId,
+  SlashCommand,
+  UsageBudget,
+} from "@/lib/types";
 
 const SLASH_PATTERN = /^\/(\w*)$/;
 
@@ -27,6 +34,8 @@ interface ComposerProps {
   isStreaming: boolean;
   selectedTierId: ModelTierId;
   onSelectTier: (id: ModelTierId) => void;
+  selectedReasoningEffortId: ReasoningEffortId;
+  onSelectReasoningEffort: (id: ReasoningEffortId) => void;
   usage: UsageBudget;
   onSend: (text: string) => void;
   onStop: () => void;
@@ -45,6 +54,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     isStreaming,
     selectedTierId,
     onSelectTier,
+    selectedReasoningEffortId,
+    onSelectReasoningEffort,
     usage,
     onSend,
     onStop,
@@ -281,6 +292,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               tiers={MODEL_TIERS}
               selectedId={selectedTierId}
               onSelect={onSelectTier}
+            />
+            <ReasoningEffortToggle
+              efforts={REASONING_EFFORTS}
+              selectedId={selectedReasoningEffortId}
+              onSelect={onSelectReasoningEffort}
             />
             <span className="hidden sm:block">
               <UsageMeter usage={usage} />

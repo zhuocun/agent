@@ -64,6 +64,7 @@ import type {
   MessagePart,
   ModelAttribution,
   ModelTierId,
+  ReasoningEffortId,
   UserPreferences,
 } from "@/lib/types";
 
@@ -229,6 +230,10 @@ export function ChatThread() {
   const [selectedTierId, setSelectedTierId] = useState<ModelTierId>(
     MOCK_CONVERSATION.selectedTierId,
   );
+  // Per-conversation reasoning-effort selection (PRD 01 §4.2 / §4.3). Default
+  // is "auto" — hardcoded here rather than persisted in preferences for MVP.
+  const [selectedReasoningEffortId, setSelectedReasoningEffortId] =
+    useState<ReasoningEffortId>("auto");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
@@ -456,6 +461,9 @@ export function ChatThread() {
     setActiveConversationId(null);
     setDemoEmptyConversation(false);
     setSelectedTierId(preferences.defaultTierId);
+    // Reasoning-effort default is hardcoded to "auto" — not persisted in
+    // UserPreferences for MVP (PRD 01 §4.2 / §4.3).
+    setSelectedReasoningEffortId("auto");
     setIsTemporary(preferences.temporaryByDefault);
     setMobileNavOpen(false);
   };
@@ -477,6 +485,7 @@ export function ChatThread() {
     setActiveConversationId(null);
     setDemoEmptyConversation(false);
     setSelectedTierId(preferences.defaultTierId);
+    setSelectedReasoningEffortId("auto");
     setIsTemporary(true);
     setMobileNavOpen(false);
   };
@@ -830,6 +839,8 @@ export function ChatThread() {
                 isStreaming={isStreaming}
                 selectedTierId={selectedTierId}
                 onSelectTier={setSelectedTierId}
+                selectedReasoningEffortId={selectedReasoningEffortId}
+                onSelectReasoningEffort={setSelectedReasoningEffortId}
                 usage={MOCK_USAGE}
                 onSend={handleSend}
                 onStop={stop}

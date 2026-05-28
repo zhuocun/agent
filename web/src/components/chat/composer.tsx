@@ -21,6 +21,7 @@ interface ComposerProps {
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
+  focus: () => void;
 }
 
 const MAX_HEIGHT = 200;
@@ -55,6 +56,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         ta.focus();
         requestAnimationFrame(autoGrow);
       }
+    },
+    focus: () => {
+      ref.current?.focus();
     },
   }));
 

@@ -1,7 +1,28 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
+import { useTheme } from "next-themes";
+import {
+  ClipboardCopy,
+  Code2,
+  KeyRound,
+  MessageSquarePlus,
+  PanelLeft,
+  Settings as SettingsIcon,
+  Sparkles,
+  TextCursorInput,
+  Trash2,
+} from "lucide-react";
 
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { AppShell } from "@/components/chat/app-shell";
 import { Sidebar } from "@/components/chat/sidebar";
 import { AppHeader } from "@/components/chat/app-header";
@@ -13,6 +34,18 @@ import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
+import {
+  CommandPalette,
+  type CommandAction,
+} from "@/components/chat/command-palette";
+import {
+  ShortcutsDialog,
+  type ShortcutSection,
+} from "@/components/chat/shortcuts-dialog";
+import {
+  useKeyboardShortcuts,
+  type Shortcut,
+} from "@/lib/use-keyboard-shortcuts";
 import { useMockStream, type MockStreamResult } from "@/lib/use-mock-stream";
 import {
   MOCK_ACCOUNT,
@@ -36,6 +69,134 @@ import type {
 
 let idCounter = 0;
 const uid = () => `local-${Date.now()}-${idCounter++}`;
+
+// `KEY_BINDINGS` carries the static keystroke metadata; `runAction(id)` owns
+// the live handler. The split keeps the descriptor array free of state
+// closures, which the React Compiler would otherwise flag as ref-tainted.
+type ShortcutId =
+  | "palette"
+  | "new-chat"
+  | "focus-composer"
+  | "copy-last-response"
+  | "copy-last-code"
+  | "toggle-sidebar"
+  | "custom-instructions"
+  | "delete-chat"
+  | "shortcuts"
+  | "open-settings"
+  | "toggle-theme";
+
+type KeyBinding = Omit<Shortcut, "handler"> & {
+  id: ShortcutId;
+  label: string;
+};
+const KEY_BINDINGS: KeyBinding[] = [
+  {
+    id: "palette",
+    label: "Command palette",
+    key: "k",
+    mod: true,
+    allowInInput: true,
+  },
+  {
+    id: "new-chat",
+    label: "New chat",
+    key: "O",
+    mod: true,
+    shift: true,
+    allowInInput: true,
+  },
+  {
+    id: "focus-composer",
+    label: "Focus composer",
+    key: "Escape",
+    shift: true,
+    allowInInput: true,
+  },
+  {
+    id: "copy-last-response",
+    label: "Copy last response",
+    key: "C",
+    mod: true,
+    shift: true,
+    allowInInput: true,
+  },
+  {
+    id: "copy-last-code",
+    label: "Copy last code block",
+    key: ";",
+    mod: true,
+    shift: true,
+    allowInInput: true,
+  },
+  {
+    id: "toggle-sidebar",
+    label: "Toggle sidebar",
+    key: "S",
+    mod: true,
+    shift: true,
+    allowInInput: true,
+  },
+  {
+    id: "custom-instructions",
+    label: "Open custom instructions",
+    key: "I",
+    mod: true,
+    shift: true,
+    allowInInput: true,
+  },
+  {
+    id: "delete-chat",
+    label: "Delete current chat",
+    key: "Backspace",
+    mod: true,
+    shift: true,
+    allowInInput: true,
+  },
+  {
+    id: "shortcuts",
+    label: "Show all shortcuts",
+    key: "/",
+    mod: true,
+    allowInInput: true,
+  },
+];
+
+// Lookup helper for grouping the palette / dialog views.
+const BINDING_BY_ID = (id: ShortcutId): KeyBinding => {
+  const found = KEY_BINDINGS.find((b) => b.id === id);
+  if (!found) throw new Error(`Missing binding for shortcut ${id}`);
+  return found;
+};
+
+// Palette rows. "Hidden" entries (the palette itself) are omitted; settings/
+// theme entries are palette-only (no global shortcut).
+const PALETTE_ACTION_META: Array<{
+  id: ShortcutId;
+  label: string;
+  icon: CommandAction["icon"];
+  section: "Actions" | "Settings";
+  binding?: KeyBinding;
+}> = [
+  { id: "new-chat", label: "New chat", icon: MessageSquarePlus, section: "Actions", binding: BINDING_BY_ID("new-chat") },
+  { id: "focus-composer", label: "Focus composer", icon: TextCursorInput, section: "Actions", binding: BINDING_BY_ID("focus-composer") },
+  { id: "copy-last-response", label: "Copy last response", icon: ClipboardCopy, section: "Actions", binding: BINDING_BY_ID("copy-last-response") },
+  { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", binding: BINDING_BY_ID("copy-last-code") },
+  { id: "toggle-sidebar", label: "Toggle sidebar", icon: PanelLeft, section: "Actions", binding: BINDING_BY_ID("toggle-sidebar") },
+  { id: "delete-chat", label: "Delete current chat", icon: Trash2, section: "Actions", binding: BINDING_BY_ID("delete-chat") },
+  { id: "custom-instructions", label: "Open custom instructions", icon: Sparkles, section: "Settings", binding: BINDING_BY_ID("custom-instructions") },
+  { id: "shortcuts", label: "Show all shortcuts", icon: KeyRound, section: "Settings", binding: BINDING_BY_ID("shortcuts") },
+  { id: "open-settings", label: "Open settings", icon: SettingsIcon, section: "Settings" },
+  { id: "toggle-theme", label: "Toggle light / dark theme", icon: SettingsIcon, section: "Settings" },
+];
+
+// Shortcuts dialog grouping. Ordered to match the PRD §5.5 table loosely:
+// general (palette/shortcuts/custom-instructions) → navigation → editing.
+const SHORTCUT_DIALOG_SECTIONS: { heading: string; ids: ShortcutId[] }[] = [
+  { heading: "General", ids: ["palette", "shortcuts", "custom-instructions"] },
+  { heading: "Navigation", ids: ["new-chat", "focus-composer", "toggle-sidebar"] },
+  { heading: "Editing", ids: ["copy-last-response", "copy-last-code", "delete-chat"] },
+];
 
 // Attribution for a freshly streamed turn (mock). Served on the requested tier,
 // flat (no long-context surcharge) — the calm, "nothing to see here" case.
@@ -97,6 +258,13 @@ export function ChatThread() {
     MOCK_CONVERSATIONS,
   );
   const [conversationSearch, setConversationSearch] = useState("");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
+  // Both the shortcut and the palette's "Delete current chat" route through
+  // this confirm — never delete without it (data-loss guard).
+  const [pendingDeleteConversationId, setPendingDeleteConversationId] =
+    useState<string | null>(null);
+  const { theme, setTheme, resolvedTheme } = useTheme();
 
   const firstName = MOCK_ACCOUNT.name.split(" ")[0];
   const headerTitle = isTemporary
@@ -330,6 +498,180 @@ export function ChatThread() {
 
   const showWelcome = messages.length === 0 && !pendingMessage;
 
+  const lastAssistantText = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const texts: string[] = [];
+      for (const p of m.parts) {
+        if (p.type === "text") texts.push(p.text);
+      }
+      return texts.join("\n\n");
+    }
+    return "";
+  }, [messages]);
+
+  // Last fenced code block in the most recent assistant message. Tolerant
+  // regex: optional language tag, optional trailing whitespace before fence.
+  const lastCodeBlock = useMemo(() => {
+    if (!lastAssistantText) return "";
+    const re = /```[^\n]*\n([\s\S]*?)\n?```/g;
+    let result = "";
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(lastAssistantText)) !== null) {
+      result = match[1] ?? "";
+    }
+    return result;
+  }, [lastAssistantText]);
+
+  const handleCopyLastResponse = () => {
+    if (!lastAssistantText) {
+      setLiveMessage("No response to copy");
+      return;
+    }
+    void navigator.clipboard?.writeText(lastAssistantText).then(
+      () => setLiveMessage("Copied last response"),
+      () => setLiveMessage("Copy failed"),
+    );
+  };
+
+  const handleCopyLastCodeBlock = () => {
+    if (!lastCodeBlock) {
+      setLiveMessage("No code block to copy");
+      return;
+    }
+    void navigator.clipboard?.writeText(lastCodeBlock).then(
+      () => setLiveMessage("Copied last code block"),
+      () => setLiveMessage("Copy failed"),
+    );
+  };
+
+  const handleFocusComposer = () => {
+    composerRef.current?.focus();
+  };
+
+  // matchMedia gates which surface gets toggled so the desktop and mobile
+  // states never silently desync after a viewport resize. md = Tailwind 768px.
+  const handleToggleSidebar = () => {
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(min-width: 768px)").matches
+    ) {
+      setSidebarOpen((v) => !v);
+    } else {
+      setMobileNavOpen((v) => !v);
+    }
+  };
+
+  // Cycle theme: explicit light <-> dark, falling through System. next-themes
+  // returns the active theme on the client so no hydration-mismatch dance.
+  const handleToggleTheme = () => {
+    const current = theme === "system" ? resolvedTheme : theme;
+    setTheme(current === "dark" ? "light" : "dark");
+  };
+
+  const handleOpenSettings = () => {
+    setSettingsOpen(true);
+  };
+
+  // Custom instructions live inside the settings dialog in MVP; wiring the
+  // shortcut now so muscle memory transfers when a dedicated panel ships.
+  const handleOpenCustomInstructions = () => {
+    setSettingsOpen(true);
+  };
+
+  // Routes through the same confirmation dialog the sidebar uses — never
+  // wipe an active conversation on a single keystroke.
+  const handleRequestDeleteCurrentChat = () => {
+    if (!activeConversationId) return;
+    setPendingDeleteConversationId(activeConversationId);
+  };
+
+  const confirmPendingDelete = () => {
+    if (!pendingDeleteConversationId) return;
+    handleDeleteConversation(pendingDeleteConversationId);
+    setPendingDeleteConversationId(null);
+  };
+
+  const pendingDeleteConversation = pendingDeleteConversationId
+    ? conversations.find((c) => c.id === pendingDeleteConversationId) ?? null
+    : null;
+
+  // The hook syncs `boundShortcuts` to a ref each render, so we can build a
+  // fresh array (and a fresh `runAction`) every render without re-binding the
+  // keydown listener or capturing stale state.
+  const runAction = (id: ShortcutId): void => {
+    switch (id) {
+      case "palette":
+        setPaletteOpen((v) => !v);
+        return;
+      case "new-chat":
+        handleNewChat();
+        return;
+      case "focus-composer":
+        handleFocusComposer();
+        return;
+      case "copy-last-response":
+        handleCopyLastResponse();
+        return;
+      case "copy-last-code":
+        handleCopyLastCodeBlock();
+        return;
+      case "toggle-sidebar":
+        handleToggleSidebar();
+        return;
+      case "custom-instructions":
+        handleOpenCustomInstructions();
+        return;
+      case "delete-chat":
+        handleRequestDeleteCurrentChat();
+        return;
+      case "shortcuts":
+        setShortcutsDialogOpen((v) => !v);
+        return;
+      case "open-settings":
+        handleOpenSettings();
+        return;
+      case "toggle-theme":
+        handleToggleTheme();
+        return;
+    }
+  };
+
+  const boundShortcuts = KEY_BINDINGS.map((b) => ({
+    ...b,
+    handler: () => runAction(b.id),
+  }));
+  useKeyboardShortcuts(boundShortcuts);
+
+  // Palette actions: every keyboard-bound entry that isn't "Hidden", plus
+  // the palette-only Settings/Theme entries. Icon set is hand-picked to stay
+  // visually quiet (no emoji, all stroke icons).
+  const paletteActions: CommandAction[] = PALETTE_ACTION_META.map((meta) => ({
+    id: meta.id,
+    label: meta.label,
+    icon: meta.icon,
+    shortcut: meta.binding,
+    section: meta.section,
+    run: () => runAction(meta.id),
+  }));
+
+  // Sections rendered by the shortcuts dialog (Hidden entries surface here
+  // too so power users see Cmd+K listed). Ordered to match the PRD §5.5 table.
+  const shortcutSections: ShortcutSection[] = SHORTCUT_DIALOG_SECTIONS.map(
+    (section) => ({
+      heading: section.heading,
+      items: section.ids.map((id) => {
+        const binding = KEY_BINDINGS.find((b) => b.id === id);
+        if (!binding) throw new Error(`Missing binding for shortcut ${id}`);
+        return {
+          label: binding.label,
+          shortcut: binding,
+        };
+      }),
+    }),
+  );
+
   return (
     <>
       <AppShell
@@ -459,6 +801,57 @@ export function ChatThread() {
         account={MOCK_ACCOUNT}
         usage={MOCK_USAGE}
       />
+
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        actions={paletteActions}
+        conversations={conversations}
+        activeId={activeConversationId}
+        onSelectConversation={handleSelectConversation}
+      />
+
+      <ShortcutsDialog
+        open={shortcutsDialogOpen}
+        onOpenChange={setShortcutsDialogOpen}
+        shortcuts={shortcutSections}
+      />
+
+      <Dialog
+        open={pendingDeleteConversationId !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDeleteConversationId(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete conversation?</DialogTitle>
+            <DialogDescription>
+              {pendingDeleteConversation
+                ? `This will delete "${pendingDeleteConversation.title}" permanently. This can't be undone.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setPendingDeleteConversationId(null)}
+              className="rounded-full"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={confirmPendingDelete}
+              className="rounded-full"
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <LiveRegion message={liveMessage} />
     </>

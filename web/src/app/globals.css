@@ -485,26 +485,36 @@
   }
 }
 
-/* Message-list scrollbar — thinner thumb, themed via --muted-foreground,
-   shortened with top/bottom margin so the track doesn't run behind the
-   chrome gradient strips (header overlay ~5.5rem; composer overlay ~11rem). */
-.chat-scroll {
+/* Thin themed scrollbars everywhere — modern OS look. Applied globally so
+   dialogs, dropdowns, code blocks, and the chat all share one treatment.
+   `.chat-scroll` below extends with chrome-clearing track margins. */
+html {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in oklch, var(--muted-foreground), transparent 65%) transparent;
 }
-.chat-scroll::-webkit-scrollbar {
+::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
-.chat-scroll::-webkit-scrollbar-track {
+::-webkit-scrollbar-track {
   background: transparent;
-  margin: calc(env(safe-area-inset-top) + 5.5rem) 0 calc(env(safe-area-inset-bottom) + 11rem) 0;
 }
-.chat-scroll::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-thumb {
   background-color: color-mix(in oklch, var(--muted-foreground), transparent 65%);
   border-radius: 999px;
 }
-.chat-scroll::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in oklch, var(--muted-foreground), transparent 45%);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Message-list scroll — same thin look, with top/bottom track margin so it
+   doesn't run behind the chrome gradient strips (header overlay ~5.5rem on
+   desktop / ~4.5rem mobile; composer overlay ~9rem). */
+.chat-scroll::-webkit-scrollbar-track {
+  margin: calc(env(safe-area-inset-top) + 5.5rem) 0 calc(env(safe-area-inset-bottom) + 9rem) 0;
 }
 
 /* Reduced motion (PRD 06 §3.4) — degrade shimmer/typing to static.

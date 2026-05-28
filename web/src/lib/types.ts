@@ -148,3 +148,26 @@ export interface PromptSuggestion {
   title: string; // short card label
   prompt: string; // full text inserted into the composer on pick
 }
+
+// Native slash command (PRD 01 §4.3 / §5.3). The composer popover renders these
+// when the user types "/" at line start. `name` is the bare slug (no leading
+// slash); the UI prefixes it. `prompt` is the template inserted verbatim into
+// the textarea on pick. `icon` follows the same stable-key pattern as
+// PromptSuggestion to keep the data layer React-free.
+export type SlashCommandIconKey =
+  | "summarize"
+  | "explain"
+  | "translate"
+  | "rewrite"
+  | "debug"
+  | "code-review"
+  | "draft-email"
+  | "brainstorm";
+
+export interface SlashCommand {
+  id: string;
+  name: string; // e.g. "summarize" — NO leading slash; UI prefixes it
+  description: string;
+  prompt: string;
+  icon: SlashCommandIconKey;
+}

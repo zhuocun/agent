@@ -20,8 +20,6 @@ interface MessageActionsProps {
   onFeedback?: (next: Feedback) => void;
 }
 
-// Footer actions under an assistant message (PRD 01 §4.6). Every icon-only
-// control has an accessible name + tooltip (PRD 01 §5.7).
 export function MessageActions({
   text,
   feedback,
@@ -37,12 +35,19 @@ export function MessageActions({
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Clipboard may be unavailable (insecure context); fail silently.
+      // Clipboard unavailable in insecure contexts.
     }
   };
 
   return (
-    <div className="flex items-center gap-1">
+    <div
+      className={cn(
+        "group/actions inline-flex items-center gap-0.5 rounded-full p-0.5",
+        "transition-colors duration-200",
+        "hover:[background-color:var(--glass-regular-bg)] hover:shadow-glass-ambient",
+        "focus-within:[background-color:var(--glass-regular-bg)] focus-within:shadow-glass-ambient",
+      )}
+    >
       <IconAction label={copied ? "Copied" : "Copy"} onClick={handleCopy}>
         {copied ? (
           <Check className="size-4 text-success" />
@@ -98,7 +103,7 @@ function IconAction({
             aria-label={label}
             aria-pressed={pressed}
             className={cn(
-              "size-11 p-0 text-muted-foreground hover:text-foreground md:size-8",
+              "size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8",
               pressed && "text-brand",
             )}
           >

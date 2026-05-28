@@ -17,7 +17,6 @@ interface AssistantMessageProps {
   canRegenerate?: boolean;
   onRegenerate?: () => void;
   onFeedback?: (next: Feedback) => void;
-  // When true, a completed message's reasoning panel starts expanded.
   defaultReasoningOpen?: boolean;
 }
 
@@ -54,7 +53,15 @@ export function AssistantMessage({
         <Sparkles className="size-4" />
       </div>
 
-      <div className="min-w-0 flex-1 space-y-3">
+      <div
+        className="glass-regular min-w-0 flex-1 space-y-3 rounded-2xl rounded-tl-md px-4 py-3 text-foreground"
+        style={{
+          backdropFilter:
+            "blur(var(--glass-blur-sm)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+          WebkitBackdropFilter:
+            "blur(var(--glass-blur-sm)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+        }}
+      >
         {showTyping ? <TypingIndicator /> : null}
 
         {message.parts.map((part, idx) => {

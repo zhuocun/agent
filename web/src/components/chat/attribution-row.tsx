@@ -12,16 +12,10 @@ import {
 } from "@/components/ui/collapsible";
 import { CostBreakdownDetails } from "@/components/chat/cost-breakdown";
 
-// Per-message model attribution — always visible under each assistant message,
-// no hover (PRD 01 §4.6, PRD 06 §5.4, PRD 07 §6.1). This is the product's
-// highest-value transparency moment: served model, cost, and any served-vs-
-// requested substitution are surfaced inline and expandable.
 export interface AttributionRowProps {
   attribution: ModelAttribution;
 }
 
-// Compact, always-visible cost. Sub-cent turns keep enough precision to not
-// read as "$0.00"; larger amounts stay tidy.
 function formatCostSummary(n: number): string {
   if (n === 0) return "$0.00";
   const decimals = n < 0.01 ? 4 : n < 1 ? 3 : 2;
@@ -42,17 +36,15 @@ export function AttributionRow({
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="w-full">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        {/* Served model — subtle trust chip (PRD 06 §5.4). */}
         <span
-          className="inline-flex h-5 items-center rounded-md bg-trust-badge px-2 font-medium text-trust-badge-foreground"
+          className="inline-flex h-5 items-center rounded-md bg-trust-badge px-2 font-medium text-trust-badge-foreground shadow-glass-ambient"
           title={`Answered by ${attribution.servedModelLabel}`}
         >
           {attribution.servedModelLabel}
         </span>
 
-        {/* BYOK — billed to the user's own key; no platform-markup framing (PRD 07 §6.3). */}
         {isByok ? (
-          <span className="inline-flex h-5 items-center gap-1 rounded-md bg-byok-indicator px-2 font-medium text-byok-indicator-foreground">
+          <span className="inline-flex h-5 items-center gap-1 rounded-md bg-byok-indicator px-2 font-medium text-byok-indicator-foreground shadow-glass-ambient">
             <KeyRound aria-hidden className="size-3" />
             Your API key
           </span>
@@ -62,7 +54,6 @@ export function AttributionRow({
           ·
         </span>
 
-        {/* Compact cost summary, monospace numerals. */}
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <span className="font-mono tabular-nums" aria-label={costLabel}>
             {formatCostSummary(attribution.costUsd)}
@@ -80,7 +71,6 @@ export function AttributionRow({
           ) : null}
         </span>
 
-        {/* Expand/collapse details. Real <button> via base-ui; touch target >=40px. */}
         <CollapsibleTrigger
           aria-label={open ? "Hide cost details" : "Show cost details"}
           className={cn(
@@ -100,8 +90,6 @@ export function AttributionRow({
         </CollapsibleTrigger>
       </div>
 
-      {/* Served-vs-requested substitution — visually distinct, NEVER destructive red
-          (PRD 01 §4.6, PRD 06 §5.4, PRD 07 §5). Icon + text, not color alone. */}
       {substitution ? (
         <div
           role="note"

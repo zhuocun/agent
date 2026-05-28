@@ -24,17 +24,15 @@ export function TemporaryChatBanner({
     <div
       role="note"
       className={cn(
-        "flex items-center gap-2 border-b border-temporary-chat-banner-border px-4 py-2 text-sm",
-        "bg-temporary-chat-banner text-temporary-chat-banner-foreground",
+        "glass-capsule mx-auto mt-2 flex max-w-fit items-center gap-2 bg-temporary-chat-banner/40 px-3 py-1.5 text-sm text-temporary-chat-banner-foreground",
         className,
       )}
     >
       <Ghost aria-hidden className="size-4 shrink-0" />
       <p className="min-w-0 truncate">
-        <span className="font-semibold">Temporary chat</span>{" "}
-        <span className="text-temporary-chat-banner-foreground">
-          — this conversation won&apos;t be saved to your history or used to
-          train models.
+        <span className="font-medium">Temporary chat</span>{" "}
+        <span>
+          — won&apos;t be saved or used to train models.
         </span>
       </p>
       <Button
@@ -42,7 +40,7 @@ export function TemporaryChatBanner({
         variant="ghost"
         size="sm"
         onClick={onTurnOff}
-        className="ml-auto shrink-0"
+        className="ml-1 shrink-0"
       >
         Turn off
       </Button>

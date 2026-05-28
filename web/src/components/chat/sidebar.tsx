@@ -124,7 +124,7 @@ function ConversationButton({
       onClick={() => onSelect(conversation.id)}
       aria-label={`${conversation.title}${conversation.pinned ? ", pinned" : ""}`}
       className={cn(
-        "flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
+        "flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm outline-none transition-colors focus-visible:shadow-[var(--focus-ring)]",
         active
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : "hover:bg-sidebar-accent/50"
@@ -154,7 +154,7 @@ export function Sidebar({
     <nav
       aria-label="Conversation history"
       className={cn(
-        "flex h-full flex-col bg-sidebar text-sidebar-foreground",
+        "glass-regular flex h-full flex-col text-sidebar-foreground",
         className
       )}
     >
@@ -219,12 +219,12 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      <div className="border-t border-sidebar-border p-2">
+      <div className="border-t border-foreground/10 p-2">
         <button
           type="button"
           onClick={onOpenSettings}
           aria-label="Open settings"
-          className="flex w-full items-center gap-2 rounded-md p-2 text-left outline-none transition-colors hover:bg-sidebar-accent/50 focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="flex w-full items-center gap-2 rounded-md p-2 text-left outline-none transition-colors hover:bg-sidebar-accent/50 focus-visible:shadow-[var(--focus-ring)]"
         >
           <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
             {initials(account.name)}

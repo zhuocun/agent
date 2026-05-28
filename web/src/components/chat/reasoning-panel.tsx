@@ -10,13 +10,10 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
-// Reasoning / "thinking" panel (PRD 01 §4.2, §5.2).
-// A collapsible, visually subordinate panel rendered above an assistant answer.
 export interface ReasoningPanelProps {
   text: string;
   durationSec?: number;
-  isStreaming: boolean; // true while reasoning tokens are still arriving
-  // When true, a completed panel stays expanded by default (user preference).
+  isStreaming: boolean;
   defaultOpen?: boolean;
 }
 
@@ -26,10 +23,6 @@ export function ReasoningPanel({
   isStreaming,
   defaultOpen = false,
 }: ReasoningPanelProps) {
-  // Open is seeded from isStreaming (Thinking auto-expands) OR defaultOpen, so a
-  // completed message starts expanded when the user prefers it. Once the user
-  // toggles manually, we respect their choice for the session and stop
-  // auto-syncing (§5.2: "remembered for the session").
   const [open, setOpen] = useState(isStreaming || defaultOpen);
   const userToggled = useRef(false);
   const prevStreaming = useRef(isStreaming);
@@ -38,8 +31,6 @@ export function ReasoningPanel({
     if (prevStreaming.current !== isStreaming) {
       prevStreaming.current = isStreaming;
       if (!userToggled.current) {
-        // Auto: expand while thinking; on completion stay open if defaultOpen,
-        // otherwise collapse.
         setOpen(isStreaming || defaultOpen);
       }
     }
@@ -61,8 +52,8 @@ export function ReasoningPanel({
       open={open}
       onOpenChange={handleOpenChange}
       className={cn(
-        "overflow-hidden rounded-lg border border-border",
-        "bg-reasoning-muted text-reasoning-muted-foreground",
+        "glass-clear overflow-hidden rounded-xl border-l-2 border-brand/30",
+        "text-reasoning-muted-foreground",
       )}
     >
       <CollapsibleTrigger
@@ -70,7 +61,7 @@ export function ReasoningPanel({
         className={cn(
           "group/reasoning flex min-h-10 w-full items-center gap-2 px-3 py-2",
           "text-left text-sm font-medium text-reasoning-muted-foreground",
-          "transition-colors hover:bg-accent/40",
+          "transition-colors hover:[background-color:var(--glass-regular-bg)]",
           "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
         )}
       >
@@ -105,8 +96,7 @@ export function ReasoningPanel({
         />
       </CollapsibleTrigger>
 
-      {/* keepMounted preserves the streamed text node so live updates and the
-          height transition stay smooth even while collapsed. */}
+      {/* keepMounted preserves streamed text so live updates stay smooth while collapsed. */}
       <CollapsibleContent
         keepMounted
         className={cn(

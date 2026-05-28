@@ -1,30 +1,144 @@
-"""Auth route stubs.
+"""Auth routes.
 
-M0 only needs the routes mounted:
-- `POST /api/auth/upgrade` returns 501 NotImplemented (M3 ships the real flow).
-- `POST /api/auth/signout` clears the cookie and revokes the session row.
+- `POST /api/auth/upgrade` (M3) -- promote an anonymous user to email/password.
+  Mutates the CURRENT user row in place (`is_anonymous=False`, sets `email`,
+  optionally hashes `password`). The row id is unchanged, so every FK from
+  `conversation.user_id` / `api_key.user_id` / `preferences.user_id` continues
+  to point at the same user without any data migration. This is the whole
+  reason the anonymous-first seam is shaped this way (plan §"Auth seam").
+
+- `POST /api/auth/signout` -- clears the cookie and revokes the session row.
+
+Passkey / magic-link / email-verification ceremonies are deferred. The MVP
+contract is just "give me an email, I'll optionally take a password, I'll
+return the upgraded AccountInfo." Cookie does not need to be re-signed -- the
+session cookie holds a session id, NOT user identity, and the session row
+already references the same user id we just mutated.
 """
 
 from __future__ import annotations
 
+import bcrypt
 from fastapi import APIRouter, Depends, Response, status
-from sqlalchemy import delete
+from pydantic import EmailStr
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.cookies import COOKIE_NAME_DEFAULT, cookie_kwargs
-from app.auth.dependency import current_session
+from app.auth.dependency import current_session, current_user
 from app.config import Settings, get_settings
 from app.db.models import Session as DbSession
+from app.db.models import User
+from app.db.repositories import api_keys, users
 from app.db.session import get_db
-from app.errors import not_implemented
+from app.errors import AppError, ErrorEnvelope
+from app.schemas.account import AccountInfo
+from app.schemas.common import CamelModel
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-@router.post("/upgrade")
-async def upgrade() -> None:
-    """Promote anonymous user to email/passkey. Stubbed until M3."""
-    raise not_implemented("Auth upgrade")
+# bcrypt has a hard 72-byte input limit; we cap on encode so longer passwords
+# don't surface as a 500 from the underlying library. Documented behavior.
+_BCRYPT_MAX_BYTES = 72
+
+
+class UpgradeRequest(CamelModel):
+    """Body for POST /api/auth/upgrade.
+
+    Email is required. Password is optional for MVP -- without it the user can
+    only sign back in via the (M4+) passwordless flow. Pydantic's `EmailStr`
+    enforces basic validity at validation time; the wider envelope (existing
+    anon, already taken, etc.) is checked in the route.
+    """
+
+    email: EmailStr
+    password: str | None = None
+
+
+def _already_upgraded() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="ALREADY_UPGRADED",
+            severity="error",
+            title="Already signed in",
+            body="This session is already attached to a non-anonymous account.",
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _email_taken() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="EMAIL_TAKEN",
+            severity="error",
+            title="Email already in use",
+            body="An account with that email already exists.",
+        ),
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def _hash_password(password: str) -> str:
+    """Return a bcrypt digest. Caps input at 72 bytes (bcrypt limit)."""
+    # Bcrypt has a 72-byte limit on the password input. Truncate at the codepoint
+    # level first (so we never split a multi-byte UTF-8 sequence), then enforce
+    # the byte cap as a final safety net for strings of mostly-multi-byte chars.
+    truncated = password[:_BCRYPT_MAX_BYTES].encode("utf-8")[:_BCRYPT_MAX_BYTES]
+    digest = bcrypt.hashpw(truncated, bcrypt.gensalt())
+    return digest.decode("ascii")
+
+
+@router.post("/upgrade", response_model=AccountInfo)
+async def upgrade(
+    body: UpgradeRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AccountInfo:
+    """Promote anonymous user to email/password.
+
+    In-place row mutation preserves the FK from `conversation.user_id` (and
+    friends) -- the user id is unchanged. Verified by `test_auth_upgrade.py`.
+
+    The session cookie is NOT re-signed here: the cookie holds a session id,
+    not the user id, and the session row already references the user we
+    just upgraded. No cookie work needed.
+    """
+    if not user.is_anonymous:
+        raise _already_upgraded()
+
+    normalized_email = body.email.strip().lower()
+
+    # Uniqueness check: another user with this email already exists -> 409.
+    # MVP: SELECT-then-mutate; two concurrent upgrades could both succeed with the
+    # same email. TODO(m4): add a partial UNIQUE INDEX on users.email WHERE
+    # email IS NOT NULL, plus retry on IntegrityError -> EMAIL_TAKEN.
+    stmt = select(User).where(User.email == normalized_email, User.id != user.id)
+    existing = (await db.execute(stmt)).scalar_one_or_none()
+    if existing is not None:
+        raise _email_taken()
+
+    # In-place mutation. Keep `name` if it's already custom; otherwise derive
+    # from the email's local part. The FE renders `account.name` so a
+    # placeholder "Guest" right after upgrade is jarring.
+    user.email = normalized_email
+    user.is_anonymous = False
+    if user.name in ("", "Guest"):
+        user.name = normalized_email.split("@", 1)[0]
+    if body.password:
+        user.password_hash = _hash_password(body.password)
+
+    await db.flush()
+    await db.refresh(user)
+
+    # Synthesize the updated AccountInfo from the post-upgrade row.
+    byok_rows = await api_keys.list_for_user(db, user.id)
+    has_byok = len(byok_rows) > 0
+    masked = byok_rows[0].masked_key if has_byok else None
+    return users.to_account_info(
+        user, byok_enabled=has_byok, byok_masked_key=masked
+    )
 
 
 @router.post("/signout", status_code=status.HTTP_204_NO_CONTENT)

@@ -81,6 +81,7 @@ class FakeProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        api_key: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         # Two short reasoning deltas, then done.
         await asyncio.sleep(self._delay)
@@ -113,6 +114,7 @@ class FakeProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        api_key: str | None = None,
     ) -> str:
         """Non-streaming variant. Deterministic ~5-word title from `user_text`.
 

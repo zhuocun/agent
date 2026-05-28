@@ -27,6 +27,7 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.auth.dependency import current_user
 from app.db.models import Message, User
+from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
 from app.db.session import get_db
@@ -410,6 +411,16 @@ async def send_message(
 
     provider = build_provider()
 
+    # BYOK resolution: pull the user's encrypted key for the bound provider
+    # (one provider name today -- "anthropic"). Anonymous users never have
+    # keys; decryption failure inside the repo returns None (logged), so this
+    # is silently safe and the call falls back to the platform key.
+    resolved_api_key: str | None = None
+    if not user.is_anonymous:
+        resolved_api_key = await api_keys_repo.get_decrypted_for_user(
+            db, user_id=user.id, provider="anthropic"
+        )
+
     # Title autogen must not re-fire when a regen / edit-of-first-turn deletes
     # the prior assistant(s) and leaves count_assistant_messages at 0. Gate it
     # explicitly on "this is a fresh send" so the handler can require BOTH
@@ -429,6 +440,8 @@ async def send_message(
             history=history,
             is_temporary=is_temp,
             is_initial=is_initial,
+            user_id=user.id,
+            api_key=resolved_api_key,
         ):
             yield sse_event
 

@@ -87,6 +87,11 @@ class Provider(Protocol):
     calls (e.g. title autogen). Returns the assistant text as a single string;
     the implementation may use the streaming API internally but must not yield
     intermediate events to any caller.
+
+    `api_key` is an optional per-call override for BYOK (M3). When provided,
+    the implementation MUST use that key for the underlying provider call
+    instead of its default credentials. Implementations that don't talk to a
+    real provider (e.g. the fake) may ignore this argument.
     """
 
     def stream(
@@ -95,6 +100,7 @@ class Provider(Protocol):
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        api_key: str | None = None,
     ) -> AsyncIterator[ProviderEvent]: ...
 
     async def complete(
@@ -103,4 +109,5 @@ class Provider(Protocol):
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        api_key: str | None = None,
     ) -> str: ...

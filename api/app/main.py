@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.auth.routes import router as auth_router
 from app.config import get_settings
 from app.errors import register_exception_handlers
+from app.routes.account import router as account_router
 from app.routes.bootstrap import router as bootstrap_router
 from app.routes.conversations import router as conversations_router
 from app.routes.feedback import router as feedback_router
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(conversations_router)
     app.include_router(feedback_router)
     app.include_router(preferences_router)
+    app.include_router(account_router)
     app.include_router(auth_router)
 
     @app.get("/healthz", tags=["meta"])

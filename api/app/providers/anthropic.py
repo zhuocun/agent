@@ -42,11 +42,29 @@ def _safe_int(value: Any) -> int:
 
 
 class AnthropicProvider:
-    """Adapter over `anthropic.AsyncAnthropic.messages.stream(...)`."""
+    """Adapter over `anthropic.AsyncAnthropic.messages.stream(...)`.
+
+    Holds a default client built from the platform key. Per-request BYOK
+    overrides build a fresh `AsyncAnthropic(api_key=...)` on the spot (the
+    SDK is cheap to construct -- HTTP session is lazy). This keeps the
+    default fast path identical to M1 while making BYOK opt-in per call.
+    """
 
     def __init__(self, api_key: str, max_tokens: int = 16000):
+        self._default_api_key = api_key
         self._client = AsyncAnthropic(api_key=api_key)
         self._max_tokens = max_tokens
+
+    def _client_for(self, api_key: str | None) -> AsyncAnthropic:
+        """Return the default client, or a fresh one bound to `api_key`.
+
+        The default client is reused across requests for connection pooling;
+        BYOK clients are throwaway and rely on the SDK's own connection
+        management for that single call.
+        """
+        if api_key is None or api_key == self._default_api_key:
+            return self._client
+        return AsyncAnthropic(api_key=api_key)
 
     async def stream(
         self,
@@ -54,6 +72,7 @@ class AnthropicProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        api_key: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         # Build messages: history + the current user turn.
         messages: list[dict[str, Any]] = [
@@ -73,7 +92,8 @@ class AnthropicProvider:
         # emit exactly one ReasoningDone at block end.
         in_thinking = False
 
-        async with self._client.messages.stream(
+        client = self._client_for(api_key)
+        async with client.messages.stream(
             model=model_id,
             max_tokens=self._max_tokens,
             messages=cast(Any, messages),
@@ -138,6 +158,7 @@ class AnthropicProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        api_key: str | None = None,
     ) -> str:
         """Non-streaming variant. One `messages.create` call, collected text.
 
@@ -155,7 +176,8 @@ class AnthropicProvider:
         ]
         messages.append({"role": "user", "content": user_text})
 
-        response = await self._client.messages.create(
+        client = self._client_for(api_key)
+        response = await client.messages.create(
             model=model_id,
             max_tokens=64,
             messages=cast(Any, messages),

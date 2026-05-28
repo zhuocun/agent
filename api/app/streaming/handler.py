@@ -41,6 +41,7 @@ from sse_starlette import ServerSentEvent
 
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
+from app.db.repositories import usage as usage_repo
 from app.db.session import get_session_factory
 from app.errors import ErrorEnvelope
 from app.providers.factory import build_provider
@@ -178,6 +179,8 @@ async def stream_and_persist(
     history: list[ChatMessage],
     is_temporary: bool,
     is_initial: bool = True,
+    user_id: UUID | None = None,
+    api_key: str | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -191,6 +194,13 @@ async def stream_and_persist(
     returns 0) does NOT re-fire autogen and overwrite a user-renamed title.
     Defaults to True so single-call sites without explicit passing keep
     behaving as fresh sends.
+
+    `user_id` + `api_key` (both M3):
+    - `user_id` is the caller; required for usage_rollup increments. None is
+      accepted only for temporary chats (no persistence, no rollup).
+    - `api_key` is the resolved BYOK key for this turn (None means platform
+      default). Passed through to `provider.stream(...)`. The `is_byok` flag
+      on the rollup row is derived from `api_key is not None`.
     """
     # Emit `submitted` immediately.
     yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
@@ -200,12 +210,14 @@ async def stream_and_persist(
     answer_buf: list[str] = []
     final_usage = UsageUpdate()
     emitted_reasoning_done = False
+    is_byok_turn = api_key is not None
 
     # Wrap the provider iteration in a Task so we can cancel on disconnect.
     provider_iter = provider.stream(
         model_id=binding.model_id,
         history=history,
         user_text=user_text,
+        api_key=api_key,
     )
 
     queue: asyncio.Queue[ProviderEvent | None] = asyncio.Queue()
@@ -287,12 +299,28 @@ async def stream_and_persist(
                     cost_confidence="estimate",
                 )
                 # Use a fresh session for stop-path persist (see helper docstring).
-                async with get_session_factory()() as fresh_db:
+                # The same session is reused for the usage_rollup increment so
+                # the assistant row and the meter bump commit together.
+                async with _derive_session_factory(db)() as fresh_db:
                     await _persist_assistant(
                         status="stopped",
                         attribution=attribution,
                         session=fresh_db,
                     )
+                    # Stopped turn still cost partial tokens -- bump the meter.
+                    # `is_temporary` already gates persistence; only increment
+                    # if we actually have a real user / conversation.
+                    if (
+                        not is_temporary
+                        and conversation_id is not None
+                        and user_id is not None
+                    ):
+                        await usage_repo.increment_for_period(
+                            fresh_db,
+                            user_id=user_id,
+                            is_byok=is_byok_turn,
+                        )
+                        await fresh_db.commit()
                 return  # No terminal on disconnect (socket closed).
 
             try:
@@ -356,6 +384,17 @@ async def stream_and_persist(
                 status="done",
                 attribution=attribution.model_dump(by_alias=True, exclude_none=True),
             )
+            # Bump usage_rollup before the commit so both writes land
+            # atomically. `user_id` is set on every non-temporary path (the
+            # route always passes it for owned conversations). If callers
+            # forget to pass it we skip the increment rather than 500 -- the
+            # FE meter just stays cold.
+            if user_id is not None:
+                await usage_repo.increment_for_period(
+                    db,
+                    user_id=user_id,
+                    is_byok=is_byok_turn,
+                )
             await db.commit()
             assistant_id = row.id
 

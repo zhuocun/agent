@@ -15,6 +15,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Loud, fixed dev default so missing-env in prod is obvious in logs.
 _DEV_SESSION_SECRET = "dev-only-insecure-session-secret-change-me"
+# Loud, fixed dev KEK so BYOK roundtrips work locally without setting up real
+# key material. Base64-encoded 32 zero bytes -- `assert_prod_safe()` refuses
+# this value in production. NEVER reuse this value outside dev/test.
+_DEV_BYOK_KEK_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 
 class Settings(BaseSettings):
@@ -51,8 +55,12 @@ class Settings(BaseSettings):
     # Provider backend selection (M1). `fake` for dev/tests, `anthropic` for prod.
     provider_backend: Literal["anthropic", "fake"] = Field(default="fake")
 
-    # BYOK key encryption KEK (base64-encoded 32 bytes). Optional in M0.
-    byok_kek_base64: str | None = Field(default=None)
+    # BYOK key encryption KEK (base64-encoded 32 bytes). Required in M3 — the
+    # default value is a known-bad dev sentinel that `assert_prod_safe()`
+    # rejects so production deploys fail fast.
+    byok_encryption_kek: str = Field(
+        default=_DEV_BYOK_KEK_B64, alias="BYOK_ENCRYPTION_KEK"
+    )
 
     @cached_property
     def cors_allowed_origins(self) -> list[str]:
@@ -61,11 +69,27 @@ class Settings(BaseSettings):
         return [s.strip() for s in raw.split(",") if s.strip()]
 
     def assert_prod_safe(self) -> None:
-        """Raise if production is configured with an insecure default."""
+        """Raise if production is configured with an insecure default.
+
+        Validates the BYOK KEK at every env: it must decode to exactly 32 bytes,
+        regardless of `env`, because the encryption path assumes the cipher is
+        constructable. In production we additionally refuse the known-bad dev
+        sentinel.
+        """
+        # Always validate the KEK shape — boot fails fast if it can't build the
+        # cipher. `decode_kek` raises `RuntimeError` on missing / malformed /
+        # wrong-length input, which is exactly the failure mode we want at
+        # startup rather than at the first BYOK write.
+        from app.security.crypto import decode_kek
+
+        decode_kek(self.byok_encryption_kek)
+
         if self.env != "production":
             return
         if self.session_secret == _DEV_SESSION_SECRET:
             raise RuntimeError("SESSION_SECRET must be overridden in production")
+        if self.byok_encryption_kek == _DEV_BYOK_KEK_B64:
+            raise RuntimeError("BYOK_ENCRYPTION_KEK must be overridden in production")
         if not self.cookie_secure:
             raise RuntimeError("COOKIE_SECURE must be true in production")
         if self.cookie_samesite != "none":

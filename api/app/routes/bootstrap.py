@@ -30,8 +30,15 @@ async def bootstrap(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> BootstrapResponse:
-    has_byok_key = await api_keys.user_has_any_key(db, user.id)
-    account = users.to_account_info(user, byok_enabled=has_byok_key)
+    # Pull all BYOK rows so we can surface masked_key for the first one (the
+    # FE's settings-dialog shows a single key today). Anonymous users always
+    # render `byokEnabled=false` per plan §"BYOK gating" -- enforced below.
+    byok_rows = await api_keys.list_for_user(db, user.id)
+    has_byok_key = (not user.is_anonymous) and len(byok_rows) > 0
+    masked = byok_rows[0].masked_key if has_byok_key else None
+    account = users.to_account_info(
+        user, byok_enabled=has_byok_key, byok_masked_key=masked
+    )
     budget = await usage.get_current_budget(db, user.id, is_byok=has_byok_key)
     summaries = await conversations.list_summaries_for_user(db, user.id)
     prefs = await preferences.get_or_default(db, user.id)

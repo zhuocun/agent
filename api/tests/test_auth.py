@@ -125,12 +125,13 @@ async def test_signout_revokes_session_and_clears_cookie(
     assert "max-age=0" in set_cookie or 'sid=""' in set_cookie or "sid=;" in set_cookie
 
 
-async def test_upgrade_returns_501(client: AsyncClient) -> None:
+async def test_upgrade_with_empty_body_returns_400(client: AsyncClient) -> None:
+    """M3 ships the real upgrade flow; empty body fails Pydantic validation."""
     await client.get("/api/bootstrap")
     response = await client.post("/api/auth/upgrade", json={})
-    assert response.status_code == 501
+    assert response.status_code == 400
     body = response.json()
-    assert body["error"]["code"] == "NOT_IMPLEMENTED"
+    assert body["error"]["code"] == "INVALID_INPUT"
 
 
 # Helpers ----------------------------------------------------------------------

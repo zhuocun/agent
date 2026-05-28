@@ -36,6 +36,11 @@ class User(Base):
     name: Mapped[str] = mapped_column(String, nullable=False, default="Guest")
     is_anonymous: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     plan_label: Mapped[str] = mapped_column(String, nullable=False, default="Free")
+    # bcrypt digest set during /api/auth/upgrade. NULL for anonymous users and
+    # for upgraded users who chose magic-link / passkey (both M4+); the column
+    # exists today so the auth-upgrade route can land without a follow-up
+    # migration when passwords ship.
+    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

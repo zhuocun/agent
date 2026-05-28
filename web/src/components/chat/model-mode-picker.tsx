@@ -1,21 +1,31 @@
 "use client";
 
 import type { JSX } from "react";
-import { Check, Sparkles } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { ModelTier, ModelTierId } from "@/lib/types";
+import type {
+  ModelTier,
+  ModelTierId,
+  ReasoningEffort,
+  ReasoningEffortId,
+} from "@/lib/types";
 
 export interface ModelModePickerProps {
   tiers: ModelTier[];
   selectedTierId: ModelTierId;
   onSelectTier: (id: ModelTierId) => void;
+  efforts: ReasoningEffort[];
+  selectedEffortId: ReasoningEffortId;
+  onSelectEffort: (id: ReasoningEffortId) => void;
   disabled?: boolean;
 }
 
@@ -23,23 +33,28 @@ export function ModelModePicker({
   tiers,
   selectedTierId,
   onSelectTier,
+  efforts,
+  selectedEffortId,
+  onSelectEffort,
   disabled,
 }: ModelModePickerProps): JSX.Element {
   const tier = tiers.find((t) => t.id === selectedTierId) ?? tiers[0];
+  const effort = efforts.find((e) => e.id === selectedEffortId) ?? efforts[0];
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         disabled={disabled}
         render={
-          <Button
+          <button
             type="button"
-            variant="ghost"
-            aria-label={`Model: ${tier?.label}. Open picker.`}
-            className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-muted/60 p-0 text-muted-foreground hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground"
+            aria-label={`Model: ${tier?.label}, reasoning effort ${effort?.label}. Open picker.`}
+            className="inline-flex h-9 items-center gap-1.5 rounded-full px-2.5 text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted/60"
           >
-            <Sparkles aria-hidden className="size-4" />
-          </Button>
+            <span className="font-medium text-foreground">{tier?.label}</span>
+            <span className="text-muted-foreground">{effort?.label}</span>
+            <ChevronDown aria-hidden className="size-3.5 text-muted-foreground" />
+          </button>
         }
       />
       <DropdownMenuContent
@@ -47,15 +62,35 @@ export function ModelModePicker({
         sideOffset={8}
         className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl"
       >
-        {tiers.map((t) => (
-          <Row
-            key={t.id}
-            label={t.label}
-            description={t.description}
-            selected={t.id === selectedTierId}
-            onSelect={() => onSelectTier(t.id)}
-          />
-        ))}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="text-[10px] tracking-wider uppercase">
+            Model
+          </DropdownMenuLabel>
+          {tiers.map((t) => (
+            <Row
+              key={t.id}
+              label={t.label}
+              description={t.description}
+              selected={t.id === selectedTierId}
+              onSelect={() => onSelectTier(t.id)}
+            />
+          ))}
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="text-[10px] tracking-wider uppercase">
+            Reasoning effort
+          </DropdownMenuLabel>
+          {efforts.map((e) => (
+            <Row
+              key={e.id}
+              label={e.label}
+              description={e.description}
+              selected={e.id === selectedEffortId}
+              onSelect={() => onSelectEffort(e.id)}
+            />
+          ))}
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );

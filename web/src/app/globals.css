@@ -106,6 +106,10 @@
 
   /* Tracking polish for Geist Sans */
   --tracking-tight: -0.012em;
+
+  /* Bottom-inset: iOS notch safe-area when present, 1.5rem floor on desktop
+     so the composer chrome strip never sits flush against the viewport edge. */
+  --bottom-inset: max(env(safe-area-inset-bottom), 1.5rem);
 }
 
 /* ===== Light theme ===== */
@@ -402,7 +406,7 @@
    rules so Streamdown's own element classes always win when present. */
 @layer components {
   .chat-md {
-    @apply text-[15px] leading-7 text-foreground;
+    @apply text-[17px] leading-7 text-foreground md:text-[15px];
   }
   .chat-md :where(p, ul, ol, pre, blockquote, table, h1, h2, h3, h4):not(:first-child) {
     @apply mt-4;
@@ -514,7 +518,7 @@ html {
    doesn't run behind the chrome gradient strips (header overlay ~5.5rem on
    desktop / ~4.5rem mobile; composer overlay ~9rem). */
 .chat-scroll::-webkit-scrollbar-track {
-  margin: calc(env(safe-area-inset-top) + 5.5rem) 0 calc(env(safe-area-inset-bottom) + 9rem) 0;
+  margin: calc(env(safe-area-inset-top) + 5.5rem) 0 calc(var(--bottom-inset) + 9rem) 0;
 }
 
 /* Reduced motion (PRD 06 §3.4) — degrade shimmer/typing to static.

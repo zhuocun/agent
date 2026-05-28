@@ -106,7 +106,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           }}
           onKeyDown={onKeyDown}
           placeholder="Message Olune…"
-          className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 pt-2 text-base leading-7 text-foreground outline-none placeholder:text-muted-foreground"
+          className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 pt-2 text-[17px] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-base"
         />
         <div className="mt-1 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">

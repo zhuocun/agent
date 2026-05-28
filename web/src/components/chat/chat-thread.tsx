@@ -323,8 +323,8 @@ export function ChatThread() {
             <div
               className={
                 isTemporary
-                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(env(safe-area-inset-bottom)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
-                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(env(safe-area-inset-bottom)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
+                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
+                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
               }
             >
               <WelcomeScreen
@@ -336,8 +336,8 @@ export function ChatThread() {
             <div
               className={
                 isTemporary
-                  ? "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(env(safe-area-inset-bottom)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
-                  : "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(env(safe-area-inset-bottom)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
+                  ? "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
+                  : "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
               }
             >
               <p className="max-w-sm text-center text-sm text-muted-foreground">
@@ -373,7 +373,7 @@ export function ChatThread() {
           )}
 
           {/* Bottom chrome strip — opaque at the bottom edge, fades upward. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-background via-background/85 to-background/0 pt-6 pb-[env(safe-area-inset-bottom)]">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-background via-background/85 to-background/0 pt-6 pb-[var(--bottom-inset)]">
             <div className="pointer-events-auto">
               <Composer
                 ref={composerRef}

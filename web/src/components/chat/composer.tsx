@@ -11,21 +11,17 @@ import {
 import { ArrowUp, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { ModelModePicker } from "@/components/chat/model-mode-picker";
 import {
   SlashCommandsPopover,
   filterCommands,
 } from "@/components/chat/slash-commands-popover";
-import { MODEL_TIERS } from "@/lib/model-tiers";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
-import type { ModelTierId, SlashCommand } from "@/lib/types";
+import type { SlashCommand } from "@/lib/types";
 
 const SLASH_PATTERN = /^\/(\w*)$/;
 
 interface ComposerProps {
   isStreaming: boolean;
-  selectedTierId: ModelTierId;
-  onSelectTier: (id: ModelTierId) => void;
   onSend: (text: string) => void;
   onStop: () => void;
   sendOnEnter?: boolean;
@@ -41,8 +37,6 @@ const MAX_HEIGHT = 200;
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
   {
     isStreaming,
-    selectedTierId,
-    onSelectTier,
     onSend,
     onStop,
     sendOnEnter = true,
@@ -57,8 +51,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [slashDismissed, setSlashDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   // Anchor for the popover's outside-click guard — clicks anywhere on the
-  // composer surface (textarea, tier picker, send button) must NOT dismiss
-  // the popover.
+  // composer surface (textarea, send button) must NOT dismiss the popover.
   const capsuleRef = useRef<HTMLDivElement>(null);
   // Tracks the previous value so updateValue can detect transitions — namely a
   // "fresh slash" (prev didn't start with "/", new does) which re-arms the
@@ -249,13 +242,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>
-        <div className="flex h-11 shrink-0 items-center">
-          <ModelModePicker
-            tiers={MODEL_TIERS}
-            selectedTierId={selectedTierId}
-            onSelectTier={onSelectTier}
-          />
-        </div>
         <textarea
           id="composer-input"
           ref={ref}

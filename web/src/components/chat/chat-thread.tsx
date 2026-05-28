@@ -57,6 +57,8 @@ import {
   MOCK_STREAM_REASONING,
   MOCK_USAGE,
 } from "@/lib/mock-data";
+import { MODEL_TIERS } from "@/lib/model-tiers";
+import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
 import type {
   ChatMessage,
   ConversationSummary,
@@ -64,6 +66,7 @@ import type {
   MessagePart,
   ModelAttribution,
   ModelTierId,
+  ReasoningEffortId,
   UserPreferences,
 } from "@/lib/types";
 
@@ -229,6 +232,8 @@ export function ChatThread() {
   const [selectedTierId, setSelectedTierId] = useState<ModelTierId>(
     MOCK_CONVERSATION.selectedTierId,
   );
+  const [selectedReasoningEffortId, setSelectedReasoningEffortId] =
+    useState<ReasoningEffortId>("auto");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
@@ -452,6 +457,7 @@ export function ChatThread() {
     setActiveConversationId(null);
     setDemoEmptyConversation(false);
     setSelectedTierId(preferences.defaultTierId);
+    setSelectedReasoningEffortId("auto");
     setIsTemporary(preferences.temporaryByDefault);
     setMobileNavOpen(false);
   };
@@ -473,6 +479,7 @@ export function ChatThread() {
     setActiveConversationId(null);
     setDemoEmptyConversation(false);
     setSelectedTierId(preferences.defaultTierId);
+    setSelectedReasoningEffortId("auto");
     setIsTemporary(true);
     setMobileNavOpen(false);
   };
@@ -754,6 +761,12 @@ export function ChatThread() {
                 onOpenSettings={() => setSettingsOpen(true)}
                 isTemporary={isTemporary}
                 onToggleTemporary={handleToggleTemporary}
+                tiers={MODEL_TIERS}
+                selectedTierId={selectedTierId}
+                onSelectTier={setSelectedTierId}
+                efforts={REASONING_EFFORTS}
+                selectedEffortId={selectedReasoningEffortId}
+                onSelectEffort={setSelectedReasoningEffortId}
               />
               {isTemporary ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
@@ -816,8 +829,6 @@ export function ChatThread() {
               <Composer
                 ref={composerRef}
                 isStreaming={isStreaming}
-                selectedTierId={selectedTierId}
-                onSelectTier={setSelectedTierId}
                 onSend={handleSend}
                 onStop={stop}
                 sendOnEnter={preferences.sendOnEnter}

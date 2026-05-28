@@ -9,7 +9,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ModelModePicker } from "@/components/chat/model-mode-picker";
 import { cn } from "@/lib/utils";
+import type {
+  ModelTier,
+  ModelTierId,
+  ReasoningEffort,
+  ReasoningEffortId,
+} from "@/lib/types";
 
 interface AppHeaderProps {
   onNewChat?: () => void;
@@ -19,6 +26,12 @@ interface AppHeaderProps {
   onToggleTemporary?: () => void;
   isTemporary?: boolean;
   sidebarOpen?: boolean;
+  tiers: ModelTier[];
+  selectedTierId: ModelTierId;
+  onSelectTier: (id: ModelTierId) => void;
+  efforts: ReasoningEffort[];
+  selectedEffortId: ReasoningEffortId;
+  onSelectEffort: (id: ReasoningEffortId) => void;
 }
 
 const FLOAT_BUTTON =
@@ -38,6 +51,12 @@ export function AppHeader({
   onToggleTemporary,
   isTemporary,
   sidebarOpen,
+  tiers,
+  selectedTierId,
+  onSelectTier,
+  efforts,
+  selectedEffortId,
+  onSelectEffort,
 }: AppHeaderProps) {
   return (
     <header className="relative flex h-11 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)] md:h-16">
@@ -62,6 +81,14 @@ export function AppHeader({
             <Menu className="size-4" />
           </Button>
         ) : null}
+        <ModelModePicker
+          tiers={tiers}
+          selectedTierId={selectedTierId}
+          onSelectTier={onSelectTier}
+          efforts={efforts}
+          selectedEffortId={selectedEffortId}
+          onSelectEffort={onSelectEffort}
+        />
       </div>
 
       <div className="flex flex-1 items-center justify-end">

@@ -9,6 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { KeyCaps } from "@/components/chat/key-caps";
 import { formatShortcut, usePlatform } from "@/lib/shortcut-format";
 import type { ShortcutKeys } from "@/lib/use-keyboard-shortcuts";
 
@@ -28,33 +29,19 @@ export interface ShortcutsDialogProps {
   shortcuts: ShortcutSection[];
 }
 
-// One row inside the shortcuts dialog: action label on the left, key caps on
-// the right. The row is tabbable (tabIndex=0) so screen-reader users hit
-// each entry and hear both the label and the key-cap text (PRD §5.7 a11y
-// acceptance: "every shortcut row is reachable and announced").
 function Row({ row, isMac }: { row: ShortcutRow; isMac: boolean }): JSX.Element {
   const segments = formatShortcut(row.shortcut, isMac);
   const spoken = segments.join(" plus ");
+  // `role="listitem"` is non-interactive — leaving tabIndex unset keeps it
+  // reachable to the AT virtual cursor without making it a Tab stop.
   return (
     <div
-      tabIndex={0}
       role="listitem"
       aria-label={`${row.label}: ${spoken}`}
-      className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5 outline-none focus-visible:shadow-[var(--focus-ring)]"
+      className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5"
     >
       <span className="text-sm text-foreground">{row.label}</span>
-      <span aria-hidden className="flex shrink-0 items-center gap-1">
-        {segments.map((s, i) => (
-          <span key={i} className="flex items-center gap-1">
-            <kbd className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-xs leading-none text-foreground">
-              {s}
-            </kbd>
-            {i < segments.length - 1 ? (
-              <span className="text-xs text-muted-foreground">+</span>
-            ) : null}
-          </span>
-        ))}
-      </span>
+      <KeyCaps shortcut={row.shortcut} variant="row" />
     </div>
   );
 }

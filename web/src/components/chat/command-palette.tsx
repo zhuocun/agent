@@ -5,15 +5,13 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { MessageSquare, Search, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { formatShortcut, usePlatform } from "@/lib/shortcut-format";
+import { KeyCaps } from "@/components/chat/key-caps";
 import type { ShortcutKeys } from "@/lib/use-keyboard-shortcuts";
 import type { ConversationSummary } from "@/lib/types";
 
 // A palette action — one of the global handlers exposed to the keyboard layer
 // AND surfaced as a row inside the palette. `shortcut` is the descriptor used
-// to render the right-aligned key-cap hint; it doesn't have to be the same
-// object passed to useKeyboardShortcuts (the palette doesn't dispatch from
-// it), but in practice callers reuse the same descriptors.
+// to render the right-aligned key-cap hint.
 export interface CommandAction {
   id: string;
   label: string;
@@ -36,12 +34,13 @@ export interface CommandPaletteProps {
 // as a single ARIA listbox; the section labels are visual headings (not
 // listbox children) and are skipped when computing keyboard indices.
 type Item =
-  | { kind: "action"; section: "Actions" | "Settings"; action: CommandAction }
-  | { kind: "conversation"; conversation: ConversationSummary; isActive: boolean };
+  | { kind: "action"; section: "Actions" | "Settings"; action: CommandAction; flatIndex: number }
+  | { kind: "conversation"; conversation: ConversationSummary; isActive: boolean; flatIndex: number };
 
-// Build the flat-but-grouped item list from the current query. Empty query
-// shows everything; non-empty filters by case-insensitive substring on
-// labels/titles.
+// Cap for the "Recent" section when there's no query. Searching a non-empty
+// query spans all conversations per PRD §4.9.
+const RECENT_CAP = 5;
+
 function buildItems(
   query: string,
   actions: CommandAction[],
@@ -52,16 +51,43 @@ function buildItems(
   const match = (s: string): boolean => (q ? s.toLowerCase().includes(q) : true);
 
   const actionItems = actions.filter((a) => match(a.label));
+
+  // Newest first. Sort a copy so the parent's array stays untouched.
+  const sortedConversations = [...conversations].sort((a, b) =>
+    a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0,
+  );
+  const filteredConversations = sortedConversations.filter((c) =>
+    match(c.title),
+  );
+  const visibleConversations = q
+    ? filteredConversations
+    : filteredConversations.slice(0, RECENT_CAP);
+
+  // Assign a stable flatIndex while building so render-time iteration never
+  // has to mutate a running counter (concurrent React can restart a render).
+  let cursor = 0;
   const actionsSection = actionItems
     .filter((a) => a.section === "Actions")
-    .map<Item>((action) => ({ kind: "action", section: "Actions", action }));
+    .map<Item>((action) => ({
+      kind: "action",
+      section: "Actions",
+      action,
+      flatIndex: cursor++,
+    }));
   const settingsSection = actionItems
     .filter((a) => a.section === "Settings")
-    .map<Item>((action) => ({ kind: "action", section: "Settings", action }));
-
-  const recentSection = conversations
-    .filter((c) => match(c.title))
-    .map<Item>((c) => ({ kind: "conversation", conversation: c, isActive: c.id === activeId }));
+    .map<Item>((action) => ({
+      kind: "action",
+      section: "Settings",
+      action,
+      flatIndex: cursor++,
+    }));
+  const recentSection = visibleConversations.map<Item>((c) => ({
+    kind: "conversation",
+    conversation: c,
+    isActive: c.id === activeId,
+    flatIndex: cursor++,
+  }));
 
   const sections: { heading: string; items: Item[] }[] = [];
   if (actionsSection.length > 0) sections.push({ heading: "Actions", items: actionsSection });
@@ -70,25 +96,6 @@ function buildItems(
 
   const flat = sections.flatMap((s) => s.items);
   return { sections, flat };
-}
-
-// Single key-cap hint row, used on the right side of each action row. Mirrors
-// the shortcuts dialog's visual treatment so the two surfaces are consistent.
-function ShortcutHint({ shortcut }: { shortcut: ShortcutKeys }): JSX.Element {
-  const { isMac } = usePlatform();
-  const segments = formatShortcut(shortcut, isMac);
-  return (
-    <span className="ml-3 flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-      {segments.map((s, i) => (
-        <kbd
-          key={i}
-          className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] leading-none text-foreground"
-        >
-          {s}
-        </kbd>
-      ))}
-    </span>
-  );
 }
 
 export function CommandPalette({
@@ -110,21 +117,14 @@ export function CommandPalette({
     [query, actions, conversations, activeId],
   );
 
-  // Clamp the selected index against the current result list so a filter that
-  // narrows results doesn't leave selection pointing past the end. Derived
-  // (not state) — no effect needed, no cascading render.
   const clampedIndex =
     flat.length === 0 ? 0 : Math.min(selectedIndex, flat.length - 1);
 
-  // ID of the currently selected option, used for aria-activedescendant. The
-  // combobox pattern: the input keeps DOM focus, the listbox highlights move
-  // via activedescendant rather than tabindex/roving focus.
   const activeOptionId =
     flat.length > 0 ? `${optionIdPrefix}-${clampedIndex}` : undefined;
 
-  // Wrap onOpenChange so closing the palette also clears the search query and
-  // resets selection. Doing this here (event-driven) rather than in an effect
-  // avoids the cascading-render lint while preserving the same UX.
+  // Closing the palette clears search + selection — done here (event-driven)
+  // rather than in an effect to avoid the cascading-render lint.
   const handleOpenChange = (next: boolean): void => {
     if (!next) {
       setQuery("");
@@ -163,9 +163,6 @@ export function CommandPalette({
     }
   };
 
-  // Running index across sections so each row knows its position in `flat`.
-  let runningIndex = 0;
-
   return (
     <DialogPrimitive.Root open={open} onOpenChange={handleOpenChange}>
       <DialogPrimitive.Portal>
@@ -182,7 +179,7 @@ export function CommandPalette({
             WebkitBackdropFilter:
               "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
           }}
-          className="glass-strong fixed top-[20vh] left-1/2 z-50 flex max-h-[60vh] w-full max-w-xl -translate-x-1/2 flex-col gap-0 overflow-hidden rounded-3xl p-0 text-foreground transition-all duration-200 data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0"
+          className="glass-strong fixed top-[20dvh] left-1/2 z-50 flex max-h-[60dvh] w-full max-w-xl -translate-x-1/2 flex-col gap-0 overflow-hidden rounded-3xl p-0 text-foreground transition-all duration-200 data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0"
         >
           <DialogPrimitive.Title className="sr-only">
             Command palette
@@ -192,8 +189,6 @@ export function CommandPalette({
             to select, Escape to close.
           </DialogPrimitive.Description>
 
-          {/* Search input — wears the combobox role so the listbox+
-              activedescendant pattern is announced to AT correctly. */}
           <div className="relative flex shrink-0 items-center border-b border-foreground/10 px-5">
             <Search
               aria-hidden
@@ -203,6 +198,7 @@ export function CommandPalette({
               ref={inputRef}
               type="text"
               role="combobox"
+              aria-haspopup="listbox"
               aria-expanded={open}
               aria-controls={listboxId}
               aria-activedescendant={activeOptionId}
@@ -219,7 +215,6 @@ export function CommandPalette({
             />
           </div>
 
-          {/* Results listbox. */}
           <div className="min-h-0 flex-1 overflow-y-auto py-2">
             {flat.length === 0 ? (
               <div className="px-5 py-8 text-center text-sm text-muted-foreground">
@@ -237,9 +232,8 @@ export function CommandPalette({
                     </div>
                     <ul role="presentation">
                       {section.items.map((item) => {
-                        const indexInFlat = runningIndex++;
-                        const isSelected = indexInFlat === clampedIndex;
-                        const id = `${optionIdPrefix}-${indexInFlat}`;
+                        const isSelected = item.flatIndex === clampedIndex;
+                        const id = `${optionIdPrefix}-${item.flatIndex}`;
                         if (item.kind === "action") {
                           const Icon = item.action.icon;
                           return (
@@ -248,7 +242,7 @@ export function CommandPalette({
                               id={id}
                               role="option"
                               aria-selected={isSelected}
-                              onMouseEnter={() => setSelectedIndex(indexInFlat)}
+                              onMouseEnter={() => setSelectedIndex(item.flatIndex)}
                               onMouseDown={(e) => {
                                 // mousedown to beat the input's blur, which
                                 // would otherwise unmount the row before the
@@ -275,7 +269,11 @@ export function CommandPalette({
                                 {item.action.label}
                               </span>
                               {item.action.shortcut ? (
-                                <ShortcutHint shortcut={item.action.shortcut} />
+                                <KeyCaps
+                                  shortcut={item.action.shortcut}
+                                  variant="compact"
+                                  className="ml-3"
+                                />
                               ) : null}
                             </li>
                           );
@@ -286,7 +284,7 @@ export function CommandPalette({
                             id={id}
                             role="option"
                             aria-selected={isSelected}
-                            onMouseEnter={() => setSelectedIndex(indexInFlat)}
+                            onMouseEnter={() => setSelectedIndex(item.flatIndex)}
                             onMouseDown={(e) => {
                               e.preventDefault();
                               runItem(item);
@@ -320,7 +318,6 @@ export function CommandPalette({
             )}
           </div>
 
-          {/* Hint row — keyboard discoverability inside the palette itself. */}
           <div className="shrink-0 border-t border-foreground/10 px-5 py-2 text-[11px] text-muted-foreground">
             <span className="font-mono">↑↓</span> to navigate ·{" "}
             <span className="font-mono">↵</span> to select ·{" "}

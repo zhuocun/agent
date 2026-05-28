@@ -14,6 +14,15 @@ import {
   Trash2,
 } from "lucide-react";
 
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import { AppShell } from "@/components/chat/app-shell";
 import { Sidebar } from "@/components/chat/sidebar";
 import { AppHeader } from "@/components/chat/app-header";
@@ -61,11 +70,9 @@ import type {
 let idCounter = 0;
 const uid = () => `local-${Date.now()}-${idCounter++}`;
 
-// Stable identity for every keyboard-driven action surfaced in this thread.
-// `KEY_BINDINGS` carries the keystroke metadata (consumed by the hook and the
-// palette/dialog renderers); `runAction(id)` in the component owns the actual
-// handler logic. Splitting the two keeps the descriptor array free of state
-// closures, which the React Compiler (correctly) flags as ref-tainted.
+// `KEY_BINDINGS` carries the static keystroke metadata; `runAction(id)` owns
+// the live handler. The split keeps the descriptor array free of state
+// closures, which the React Compiler would otherwise flag as ref-tainted.
 type ShortcutId =
   | "palette"
   | "new-chat"
@@ -79,9 +86,6 @@ type ShortcutId =
   | "open-settings"
   | "toggle-theme";
 
-// Pure descriptors — no handlers, no captured component state. The hook
-// caller binds a handler at render time; this constant just declares the
-// keystrokes and human-readable metadata.
 type KeyBinding = Omit<Shortcut, "handler"> & {
   id: ShortcutId;
   label: string;
@@ -256,6 +260,10 @@ export function ChatThread() {
   const [conversationSearch, setConversationSearch] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
+  // Both the shortcut and the palette's "Delete current chat" route through
+  // this confirm — never delete without it (data-loss guard).
+  const [pendingDeleteConversationId, setPendingDeleteConversationId] =
+    useState<string | null>(null);
   const { theme, setTheme, resolvedTheme } = useTheme();
 
   const firstName = MOCK_ACCOUNT.name.split(" ")[0];
@@ -490,32 +498,31 @@ export function ChatThread() {
 
   const showWelcome = messages.length === 0 && !pendingMessage;
 
-  // Concatenated text of the most recent assistant message (all `text` parts).
-  // Used by the "Copy last response" shortcut. Empty string when no assistant
-  // message exists yet (the shortcut becomes a no-op). The React Compiler
-  // auto-memoizes this derived value — no useMemo needed.
-  let lastAssistantText = "";
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role !== "assistant") continue;
-    lastAssistantText = m.parts
-      .filter((p): p is { type: "text"; text: string } => p.type === "text")
-      .map((p) => p.text)
-      .join("\n\n");
-    break;
-  }
+  const lastAssistantText = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role !== "assistant") continue;
+      const texts: string[] = [];
+      for (const p of m.parts) {
+        if (p.type === "text") texts.push(p.text);
+      }
+      return texts.join("\n\n");
+    }
+    return "";
+  }, [messages]);
 
-  // Inner source of the LAST fenced code block in the most recent assistant
-  // message. Tolerant regex: optional language tag, any amount of trailing
-  // newline/whitespace before the closing fence. Empty when no code block.
-  let lastCodeBlock = "";
-  if (lastAssistantText) {
+  // Last fenced code block in the most recent assistant message. Tolerant
+  // regex: optional language tag, optional trailing whitespace before fence.
+  const lastCodeBlock = useMemo(() => {
+    if (!lastAssistantText) return "";
     const re = /```[^\n]*\n([\s\S]*?)\n?```/g;
+    let result = "";
     let match: RegExpExecArray | null;
     while ((match = re.exec(lastAssistantText)) !== null) {
-      lastCodeBlock = match[1] ?? "";
+      result = match[1] ?? "";
     }
-  }
+    return result;
+  }, [lastAssistantText]);
 
   const handleCopyLastResponse = () => {
     if (!lastAssistantText) {
@@ -543,17 +550,21 @@ export function ChatThread() {
     composerRef.current?.focus();
   };
 
-  // Toggle the desktop rail AND the mobile drawer — using both keeps the
-  // shortcut meaningful on any viewport without consulting matchMedia (the
-  // drawer no-ops on desktop and the rail no-ops on mobile by layout).
+  // matchMedia gates which surface gets toggled so the desktop and mobile
+  // states never silently desync after a viewport resize. md = Tailwind 768px.
   const handleToggleSidebar = () => {
-    setSidebarOpen((v) => !v);
-    setMobileNavOpen((v) => !v);
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(min-width: 768px)").matches
+    ) {
+      setSidebarOpen((v) => !v);
+    } else {
+      setMobileNavOpen((v) => !v);
+    }
   };
 
-  // Cycle theme: explicit light <-> dark, falling through System. Resolved
-  // theme reads "system" correctly without a hydration-mismatch dance because
-  // next-themes returns the active theme on the client.
+  // Cycle theme: explicit light <-> dark, falling through System. next-themes
+  // returns the active theme on the client so no hydration-mismatch dance.
   const handleToggleTheme = () => {
     const current = theme === "system" ? resolvedTheme : theme;
     setTheme(current === "dark" ? "light" : "dark");
@@ -563,23 +574,32 @@ export function ChatThread() {
     setSettingsOpen(true);
   };
 
-  // Custom instructions live inside the settings dialog in MVP; the shortcut
-  // is wired now so the muscle memory transfers when a dedicated panel ships.
+  // Custom instructions live inside the settings dialog in MVP; wiring the
+  // shortcut now so muscle memory transfers when a dedicated panel ships.
   const handleOpenCustomInstructions = () => {
     setSettingsOpen(true);
   };
 
-  const handleDeleteCurrentChat = () => {
+  // Routes through the same confirmation dialog the sidebar uses — never
+  // wipe an active conversation on a single keystroke.
+  const handleRequestDeleteCurrentChat = () => {
     if (!activeConversationId) return;
-    handleDeleteConversation(activeConversationId);
+    setPendingDeleteConversationId(activeConversationId);
   };
 
-  // Single dispatch table for every keyboard-driven action. The hook reads
-  // `KEY_BINDINGS` (static metadata — no closures over component state) to
-  // know what to listen for, and calls `runAction(id)` to actually execute
-  // the latest handler. Keeping the descriptors free of handlers is what
-  // lets us pass them to the palette/dialog from one place without tainting
-  // the array as a "ref carrier" in the React Compiler's view.
+  const confirmPendingDelete = () => {
+    if (!pendingDeleteConversationId) return;
+    handleDeleteConversation(pendingDeleteConversationId);
+    setPendingDeleteConversationId(null);
+  };
+
+  const pendingDeleteConversation = pendingDeleteConversationId
+    ? conversations.find((c) => c.id === pendingDeleteConversationId) ?? null
+    : null;
+
+  // The hook syncs `boundShortcuts` to a ref each render, so we can build a
+  // fresh array (and a fresh `runAction`) every render without re-binding the
+  // keydown listener or capturing stale state.
   const runAction = (id: ShortcutId): void => {
     switch (id) {
       case "palette":
@@ -604,7 +624,7 @@ export function ChatThread() {
         handleOpenCustomInstructions();
         return;
       case "delete-chat":
-        handleDeleteCurrentChat();
+        handleRequestDeleteCurrentChat();
         return;
       case "shortcuts":
         setShortcutsDialogOpen((v) => !v);
@@ -618,12 +638,11 @@ export function ChatThread() {
     }
   };
 
-  // The hook attaches a window-level keydown listener once; we feed it a
-  // bound shortcut list whose handlers route through runAction so the latest
-  // state is always seen.
-  useKeyboardShortcuts(
-    KEY_BINDINGS.map((b) => ({ ...b, handler: () => runAction(b.id) })),
-  );
+  const boundShortcuts = KEY_BINDINGS.map((b) => ({
+    ...b,
+    handler: () => runAction(b.id),
+  }));
+  useKeyboardShortcuts(boundShortcuts);
 
   // Palette actions: every keyboard-bound entry that isn't "Hidden", plus
   // the palette-only Settings/Theme entries. Icon set is hand-picked to stay
@@ -797,6 +816,42 @@ export function ChatThread() {
         onOpenChange={setShortcutsDialogOpen}
         shortcuts={shortcutSections}
       />
+
+      <Dialog
+        open={pendingDeleteConversationId !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDeleteConversationId(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete conversation?</DialogTitle>
+            <DialogDescription>
+              {pendingDeleteConversation
+                ? `This will delete "${pendingDeleteConversation.title}" permanently. This can't be undone.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setPendingDeleteConversationId(null)}
+              className="rounded-full"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={confirmPendingDelete}
+              className="rounded-full"
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <LiveRegion message={liveMessage} />
     </>

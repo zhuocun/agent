@@ -145,7 +145,7 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
       <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-muted px-5 py-3 text-[17px] leading-7 text-foreground md:text-[15px]">
         {text}
       </div>
-      <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100">
+      <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 [@media(hover:none)]:opacity-100">
         <Tooltip>
           <TooltipTrigger
             render={
@@ -154,7 +154,7 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
                 variant="ghost"
                 onClick={handleCopy}
                 aria-label={copied ? "Copied" : "Copy"}
-                className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
+                className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
               >
                 {copied ? (
                   <Check className="size-4 text-success" />
@@ -176,7 +176,7 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
                   variant="ghost"
                   onClick={enterEdit}
                   aria-label="Edit"
-                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
+                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
                 >
                   <Pencil className="size-4" />
                 </Button>

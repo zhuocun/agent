@@ -7,14 +7,14 @@ export const REASONING_EFFORTS: ReasoningEffort[] = [
   {
     id: "auto",
     label: "Auto",
-    description: "App picks based on the prompt",
+    description: "Olune picks for you",
     costHint: "auto",
     latencyHint: "auto",
   },
   {
     id: "minimal",
     label: "Minimal",
-    description: "Fastest, no extended thinking",
+    description: "Fastest, skips reasoning",
     costHint: "lowest",
     latencyHint: "fastest",
   },

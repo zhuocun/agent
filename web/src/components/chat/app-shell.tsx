@@ -85,7 +85,11 @@ export function AppShell({
       </aside>
 
       <Drawer open={mobileNavOpen} onOpenChange={onMobileNavOpenChange}>
-        <DrawerContent side="left" showClose={false} className="w-72">
+        <DrawerContent
+          side="left"
+          showClose={false}
+          className="w-72 pl-[env(safe-area-inset-left)]"
+        >
           {sidebar}
         </DrawerContent>
       </Drawer>

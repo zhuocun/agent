@@ -26,7 +26,7 @@ export function TemporaryChatBanner({
         role="note"
         // Tiny iOS-style pill: inline-flex, rounded-full, muted surface, no
         // border, no shadow — reads as a quiet status chip rather than a bar.
-        className="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground"
+        className="inline-flex items-center gap-1.5 rounded-full bg-temporary-chat-banner px-3 py-1 text-xs text-temporary-chat-banner-foreground"
       >
         <Ghost aria-hidden className="size-3.5 shrink-0" />
         <span className="truncate">
@@ -40,7 +40,7 @@ export function TemporaryChatBanner({
           onClick={onTurnOff}
           // Ghost xs Button already gives us a quiet inline affordance; the
           // negative margin pulls the pill right edge tight against the label.
-          className="-mr-1 ml-0.5 h-5 px-1.5 text-xs"
+          className="-mr-1 ml-0.5 h-7 px-2 text-xs"
         >
           Turn off
         </Button>

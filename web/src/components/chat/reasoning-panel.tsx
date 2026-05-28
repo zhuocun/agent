@@ -53,7 +53,6 @@ export function ReasoningPanel({
       className="text-muted-foreground"
     >
       <CollapsibleTrigger
-        aria-label={open ? "Hide reasoning" : "Show reasoning"}
         className={cn(
           "inline-flex items-center text-left text-xs text-muted-foreground/70",
           "bg-transparent p-0 hover:underline underline-offset-2",

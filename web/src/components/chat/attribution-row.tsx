@@ -26,28 +26,18 @@ export function AttributionRow({
 
   const costText = `${isEstimate ? "~" : ""}${formatCostSummary(attribution.costUsd)}`;
 
-  const ariaLabel = [
-    `Answered by ${servedModelLabel}`,
-    `cost ${isEstimate ? "estimated " : ""}${formatCostSummary(attribution.costUsd)}`,
-    isByok ? "billed to your key" : null,
-    substitution ? `substitution: ${substitution.reasonText}` : null,
-    "open cost details",
-  ]
-    .filter(Boolean)
-    .join(", ");
-
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <Popover.Root>
         <Popover.Trigger
-          aria-label={ariaLabel}
+          aria-label="Cost details"
           className={cn(
             "inline-flex h-6 items-center gap-1.5 rounded-full bg-muted/60 px-2.5",
             "text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
             "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
           )}
         >
-          <span className="font-medium">{servedModelLabel}</span>
+          <span className="font-semibold">{servedModelLabel}</span>
           <span aria-hidden className="text-muted-foreground/60">
             ·
           </span>

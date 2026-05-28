@@ -10,6 +10,7 @@ import {
   PanelLeft,
   Settings as SettingsIcon,
   Sparkles,
+  Sun,
   TextCursorInput,
   Trash2,
 } from "lucide-react";
@@ -190,7 +191,7 @@ const PALETTE_ACTION_META: Array<{
   { id: "custom-instructions", label: "Open custom instructions", icon: Sparkles, section: "Settings", binding: BINDING_BY_ID("custom-instructions") },
   { id: "shortcuts", label: "Show all shortcuts", icon: KeyRound, section: "Settings", binding: BINDING_BY_ID("shortcuts") },
   { id: "open-settings", label: "Open settings", icon: SettingsIcon, section: "Settings" },
-  { id: "toggle-theme", label: "Toggle light / dark theme", icon: SettingsIcon, section: "Settings" },
+  { id: "toggle-theme", label: "Toggle theme", icon: Sun, section: "Settings" },
 ];
 
 // Shortcuts dialog grouping. Ordered to match the PRD §5.5 table loosely:
@@ -751,7 +752,7 @@ export function ChatThread() {
               reservation. Gradient bg keeps the iOS status bar text
               readable as messages scroll up under the notch; fades to
               transparent below so messages emerge cleanly. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-6 md:pb-12">
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-6 pl-[env(safe-area-inset-left)] md:pb-12">
             <div className="pointer-events-auto">
               <AppHeader
                 sidebarOpen={sidebarOpen}
@@ -782,8 +783,8 @@ export function ChatThread() {
             <div
               className={
                 isTemporary
-                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
-                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+3.5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
+                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
+                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+3.5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
               }
             >
               <WelcomeScreen userName={firstName} />
@@ -824,7 +825,7 @@ export function ChatThread() {
           )}
 
           {/* Bottom chrome strip — opaque at the bottom edge, fades upward. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-background via-background/85 to-background/0 pt-6 pb-[var(--bottom-inset)]">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-background via-background/85 to-background/0 pt-6 pr-[env(safe-area-inset-right)] pb-[var(--bottom-inset)] pl-[env(safe-area-inset-left)]">
             <div className="pointer-events-auto">
               <Composer
                 ref={composerRef}
@@ -883,6 +884,7 @@ export function ChatThread() {
               variant="ghost"
               onClick={() => setPendingDeleteConversationId(null)}
               className="rounded-full"
+              autoFocus
             >
               Cancel
             </Button>

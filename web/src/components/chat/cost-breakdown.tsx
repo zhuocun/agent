@@ -178,8 +178,8 @@ export function CostBreakdownDetails({
         <p className="flex items-start gap-1.5 text-muted-foreground">
           <Info aria-hidden className="mt-0.5 size-3 shrink-0" />
           <span>
-            Reasoning tokens are billed at the output rate every turn and are
-            never cache-discounted.
+            Reasoning tokens bill at the output rate and aren&apos;t
+            cache-discounted.
           </span>
         </p>
       ) : null}

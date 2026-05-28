@@ -51,7 +51,12 @@ export function AssistantMessage({
   const isFinal = status === "done" || status === "stopped";
 
   return (
-    <div className="group/msg space-y-3 text-foreground" role="article" aria-label="Assistant">
+    <div
+      className="group/msg space-y-3 break-words text-foreground"
+      role="article"
+      aria-label="Assistant"
+      aria-busy={!isFinal}
+    >
       {showTyping ? <TypingIndicator /> : null}
 
       {message.parts.map((part, idx) => {
@@ -84,7 +89,7 @@ export function AssistantMessage({
           {message.attribution ? (
             <AttributionRow attribution={message.attribution} />
           ) : null}
-          <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100">
+          <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 [@media(hover:none)]:opacity-100">
             <MessageActions
               text={answerText}
               feedback={message.feedback ?? null}

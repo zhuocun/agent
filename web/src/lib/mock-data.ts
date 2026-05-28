@@ -1,8 +1,12 @@
 import type {
+  AccountInfo,
   ChatMessage,
   Conversation,
+  ConversationSummary,
   ModelAttribution,
+  PromptSuggestion,
   UsageBudget,
+  UserPreferences,
 } from "@/lib/types";
 
 // A served-on-Smart turn: requested Smart, flat (Anthropic-style) pricing.
@@ -147,3 +151,64 @@ export const MOCK_CONVERSATION: Conversation = {
   selectedTierId: "smart",
   isTemporary: false,
 };
+
+// Sidebar history (PRD 01 §4.2). Timestamps are relative to "today" = 2026-05-28
+// so the sidebar can bucket them into Today / Yesterday / Previous 7 days / Older.
+// The first entry mirrors MOCK_CONVERSATION so the open thread highlights correctly.
+export const MOCK_CONVERSATIONS: ConversationSummary[] = [
+  { id: "c1", title: "Fixing a React map() crash", updatedAt: "2026-05-28T16:11:00Z", pinned: true },
+  { id: "c2", title: "Postgres index strategy for a feed query", updatedAt: "2026-05-28T11:02:00Z" },
+  { id: "c3", title: "Rewrite onboarding email, warmer tone", updatedAt: "2026-05-28T08:47:00Z" },
+  { id: "c4", title: "Explain CAP theorem with examples", updatedAt: "2026-05-27T19:30:00Z" },
+  { id: "c5", title: "Tailwind v4 @theme migration notes", updatedAt: "2026-05-27T09:15:00Z" },
+  { id: "c6", title: "Debugging a flaky Playwright test", updatedAt: "2026-05-25T14:20:00Z" },
+  { id: "c7", title: "Compare vector DBs for RAG", updatedAt: "2026-05-23T10:05:00Z" },
+  { id: "c8", title: "Draft Q3 planning doc outline", updatedAt: "2026-05-22T17:40:00Z" },
+  { id: "c9", title: "Regex for parsing ISO durations", updatedAt: "2026-05-14T13:12:00Z" },
+  { id: "c10", title: "Kubernetes liveness vs readiness", updatedAt: "2026-05-09T08:30:00Z" },
+  { id: "c11", title: "Brainstorm names for a CLI tool", updatedAt: "2026-04-30T15:55:00Z" },
+];
+
+// Privacy-first defaults (PRD 05 / PRD 06 §5.7).
+export const MOCK_PREFERENCES: UserPreferences = {
+  defaultTierId: "auto",
+  temporaryByDefault: false,
+  trainingOptIn: false,
+  sendOnEnter: true,
+  autoExpandReasoning: false,
+};
+
+export const MOCK_ACCOUNT: AccountInfo = {
+  name: "Alex Rivera",
+  email: "alex@example.com",
+  planLabel: "Pro",
+  byokEnabled: false,
+};
+
+// Empty-state prompt starters (PRD 01 §4.3).
+export const MOCK_SUGGESTIONS: PromptSuggestion[] = [
+  {
+    id: "s1",
+    icon: "debug",
+    title: "Debug a stack trace",
+    prompt: "I'm getting a TypeError in this function — here's the stack trace. Walk me through finding the root cause.",
+  },
+  {
+    id: "s2",
+    icon: "explain",
+    title: "Explain a concept",
+    prompt: "Explain the difference between optimistic and pessimistic locking, with a concrete example of when each is the right choice.",
+  },
+  {
+    id: "s3",
+    icon: "write",
+    title: "Draft a message",
+    prompt: "Help me write a clear, friendly message letting my team know a deadline is slipping by a few days and why.",
+  },
+  {
+    id: "s4",
+    icon: "analyze",
+    title: "Compare options",
+    prompt: "Compare REST, GraphQL, and gRPC for a mobile app backend. Give me a short table of trade-offs and a recommendation.",
+  },
+];

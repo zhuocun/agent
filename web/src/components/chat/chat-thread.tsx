@@ -2,16 +2,24 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 
+import { AppShell } from "@/components/chat/app-shell";
+import { Sidebar } from "@/components/chat/sidebar";
 import { AppHeader } from "@/components/chat/app-header";
 import { MessageList } from "@/components/chat/message-list";
 import { UserMessage } from "@/components/chat/user-message";
 import { AssistantMessage } from "@/components/chat/assistant-message";
+import { WelcomeScreen } from "@/components/chat/welcome-screen";
+import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
+import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { Composer } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
 import { useMockStream, type MockStreamResult } from "@/lib/use-mock-stream";
 import {
+  MOCK_ACCOUNT,
   MOCK_CONVERSATION,
+  MOCK_CONVERSATIONS,
   MOCK_MESSAGES,
+  MOCK_PREFERENCES,
   MOCK_STREAM_ANSWER,
   MOCK_STREAM_REASONING,
   MOCK_USAGE,
@@ -22,6 +30,7 @@ import type {
   MessagePart,
   ModelAttribution,
   ModelTierId,
+  UserPreferences,
 } from "@/lib/types";
 
 let idCounter = 0;
@@ -62,6 +71,26 @@ export function ChatThread() {
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
   const assistantIdRef = useRef<string | null>(null);
+
+  // Chrome state: sidebar (desktop rail + mobile drawer), settings, prefs,
+  // temporary mode, and which history entry is active.
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [preferences, setPreferences] =
+    useState<UserPreferences>(MOCK_PREFERENCES);
+  const [isTemporary, setIsTemporary] = useState(
+    MOCK_PREFERENCES.temporaryByDefault,
+  );
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(MOCK_CONVERSATION.id);
+
+  const firstName = MOCK_ACCOUNT.name.split(" ")[0];
+  const headerTitle = isTemporary
+    ? "Temporary chat"
+    : (MOCK_CONVERSATIONS.find((c) => c.id === activeConversationId)?.title ??
+      "");
 
   // Commit the finished assistant turn when the stream terminates — event-driven
   // (the hook hands us the final flushed content), not a status-watching effect.
@@ -175,49 +204,110 @@ export function ChatThread() {
     assistantIdRef.current = null;
     setLiveMessage("");
     reset();
+    setActiveConversationId(null);
+    setIsTemporary(preferences.temporaryByDefault);
+    setMobileNavOpen(false);
   };
 
-  return (
-    <div className="flex h-dvh flex-col bg-background">
-      <AppHeader title={MOCK_CONVERSATION.title} onNewChat={handleNewChat} />
+  // Mock selection: highlight the chosen entry and exit temporary mode. The
+  // demo keeps the current thread body (only one conversation has real content).
+  const handleSelectConversation = (id: string) => {
+    setActiveConversationId(id);
+    setIsTemporary(false);
+    setMobileNavOpen(false);
+  };
 
-      <MessageList>
-        {messages.map((m) =>
-          m.role === "user" ? (
-            <UserMessage key={m.id} message={m} />
-          ) : (
-            <AssistantMessage
-              key={m.id}
-              message={m}
-              status={m.status ?? "done"}
-              canRegenerate={!isStreaming && m.id === lastAssistantId}
-              onRegenerate={handleRegenerate}
-              onFeedback={(f) => setFeedback(m.id, f)}
-            />
-          ),
+  const showWelcome = messages.length === 0 && !pendingMessage;
+
+  return (
+    <>
+      <AppShell
+        sidebar={
+          <Sidebar
+            conversations={MOCK_CONVERSATIONS}
+            activeId={activeConversationId}
+            account={MOCK_ACCOUNT}
+            onSelect={handleSelectConversation}
+            onNewChat={handleNewChat}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onCollapse={() => {
+              setSidebarOpen(false);
+              setMobileNavOpen(false);
+            }}
+          />
+        }
+        sidebarOpen={sidebarOpen}
+        mobileNavOpen={mobileNavOpen}
+        onMobileNavOpenChange={setMobileNavOpen}
+      >
+        <AppHeader
+          title={headerTitle}
+          sidebarOpen={sidebarOpen}
+          onOpenMobileNav={() => setMobileNavOpen(true)}
+          onOpenSidebar={() => setSidebarOpen(true)}
+          onNewChat={handleNewChat}
+          onOpenSettings={() => setSettingsOpen(true)}
+          isTemporary={isTemporary}
+          onToggleTemporary={() => setIsTemporary((v) => !v)}
+        />
+
+        {isTemporary ? (
+          <TemporaryChatBanner onTurnOff={() => setIsTemporary(false)} />
+        ) : null}
+
+        {showWelcome ? (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <WelcomeScreen onPickSuggestion={handleSend} userName={firstName} />
+          </div>
+        ) : (
+          <MessageList>
+            {messages.map((m) =>
+              m.role === "user" ? (
+                <UserMessage key={m.id} message={m} />
+              ) : (
+                <AssistantMessage
+                  key={m.id}
+                  message={m}
+                  status={m.status ?? "done"}
+                  canRegenerate={!isStreaming && m.id === lastAssistantId}
+                  onRegenerate={handleRegenerate}
+                  onFeedback={(f) => setFeedback(m.id, f)}
+                />
+              ),
+            )}
+
+            {pendingMessage ? (
+              <AssistantMessage
+                message={pendingMessage}
+                status={state.status}
+                reasoningStreaming={state.reasoningStreaming}
+              />
+            ) : null}
+          </MessageList>
         )}
 
-        {pendingMessage ? (
-          <AssistantMessage
-            message={pendingMessage}
-            status={state.status}
-            reasoningStreaming={state.reasoningStreaming}
+        <div className="shrink-0">
+          <Composer
+            isStreaming={isStreaming}
+            selectedTierId={selectedTierId}
+            onSelectTier={setSelectedTierId}
+            usage={MOCK_USAGE}
+            onSend={handleSend}
+            onStop={stop}
           />
-        ) : null}
-      </MessageList>
+        </div>
+      </AppShell>
 
-      <div className="shrink-0">
-        <Composer
-          isStreaming={isStreaming}
-          selectedTierId={selectedTierId}
-          onSelectTier={setSelectedTierId}
-          usage={MOCK_USAGE}
-          onSend={handleSend}
-          onStop={stop}
-        />
-      </div>
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        preferences={preferences}
+        onPreferencesChange={setPreferences}
+        account={MOCK_ACCOUNT}
+        usage={MOCK_USAGE}
+      />
 
       <LiveRegion message={liveMessage} />
-    </div>
+    </>
   );
 }

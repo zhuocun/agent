@@ -108,3 +108,43 @@ export interface Conversation {
   selectedTierId: ModelTierId;
   isTemporary: boolean;
 }
+
+// A lightweight history-list entry for the sidebar (PRD 01 §4.2 / PRD 03).
+// The full message body is loaded on demand; the list only needs identity,
+// a title, recency for grouping, and a couple of display flags.
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: string; // ISO — used to bucket into Today / Yesterday / Previous 7 days …
+  isTemporary?: boolean;
+  pinned?: boolean;
+}
+
+// User-editable preferences surfaced in the settings panel (PRD 06 §5.7 / PRD 05).
+// Privacy-first defaults: temporary off, training opt-in OFF.
+export interface UserPreferences {
+  defaultTierId: ModelTierId;
+  temporaryByDefault: boolean;
+  trainingOptIn: boolean; // default false — conversations are not used for training
+  sendOnEnter: boolean;
+  autoExpandReasoning: boolean;
+}
+
+// Account / billing identity for the sidebar footer + settings (PRD 05 / PRD 07 §5.8).
+export interface AccountInfo {
+  name: string;
+  email: string;
+  planLabel: string; // e.g. "Pro" — never a raw SKU
+  byokEnabled: boolean;
+  byokMaskedKey?: string; // e.g. "sk-…4f2a", shown only when byokEnabled
+}
+
+// Onboarding / empty-state prompt starters (PRD 01 §4.3).
+// `icon` is a stable key the welcome screen maps to a lucide glyph — keeps the
+// data layer free of React/component imports.
+export interface PromptSuggestion {
+  id: string;
+  icon: "code" | "explain" | "write" | "analyze" | "brainstorm" | "debug";
+  title: string; // short card label
+  prompt: string; // full text inserted into the composer on pick
+}

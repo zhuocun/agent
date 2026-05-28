@@ -761,7 +761,7 @@ export function ChatThread() {
               reservation. Gradient bg keeps the iOS status bar text
               readable as messages scroll up under the notch; fades to
               transparent below so messages emerge cleanly. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-2 md:pb-6">
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-6 md:pb-12">
             <div className="pointer-events-auto">
               <AppHeader
                 title={headerTitle}

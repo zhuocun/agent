@@ -48,7 +48,10 @@ export function MessageList({ children }: { children: React.ReactNode }) {
         <ol
           ref={contentRef}
           aria-label="Messages"
-          className="mx-auto flex w-full max-w-3xl list-none flex-col gap-5 px-4 py-6"
+          // pt/pb clear the chat-thread chrome strips (header + safe-area-top
+          // above; composer + safe-area-bottom below) so message content scrolls
+          // *under* the gradient strips rather than colliding with them.
+          className="mx-auto flex w-full max-w-3xl list-none flex-col gap-5 px-4 pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
         >
           {Children.map(children, (child) => (
             <li className="list-none">{child}</li>

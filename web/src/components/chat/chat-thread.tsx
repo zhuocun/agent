@@ -288,74 +288,105 @@ export function ChatThread() {
         mobileNavOpen={mobileNavOpen}
         onMobileNavOpenChange={setMobileNavOpen}
       >
-        <AppHeader
-          title={headerTitle}
-          subtitle={MODEL_TIERS_BY_ID[selectedTierId].label}
-          sidebarOpen={sidebarOpen}
-          onOpenMobileNav={() => setMobileNavOpen(true)}
-          onOpenSidebar={() => setSidebarOpen(true)}
-          onNewChat={handleNewChat}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isTemporary={isTemporary}
-          onToggleTemporary={handleToggleTemporary}
-        />
-
-        {isTemporary ? (
-          <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
-        ) : null}
-
-        {showWelcome ? (
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <WelcomeScreen
-              onPickSuggestion={handlePickSuggestion}
-              userName={firstName}
-            />
-          </div>
-        ) : demoEmptyConversation ? (
-          <div className="flex min-h-0 flex-1 items-center justify-center px-4">
-            <p className="max-w-sm text-center text-sm text-muted-foreground">
-              This is a demo — only the pinned conversation has saved messages.
-            </p>
-          </div>
-        ) : (
-          <MessageList>
-            {messages.map((m) =>
-              m.role === "user" ? (
-                <UserMessage key={m.id} message={m} />
-              ) : (
-                <AssistantMessage
-                  key={m.id}
-                  message={m}
-                  status={m.status ?? "done"}
-                  canRegenerate={!isStreaming && m.id === lastAssistantId}
-                  onRegenerate={handleRegenerate}
-                  onFeedback={(f) => setFeedback(m.id, f)}
-                  defaultReasoningOpen={preferences.autoExpandReasoning}
-                />
-              ),
-            )}
-
-            {pendingMessage ? (
-              <AssistantMessage
-                message={pendingMessage}
-                status={state.status}
-                reasoningStreaming={state.reasoningStreaming}
+        {/* Three-layer chrome stack: messages scroll *under* gradient strips at
+            the top and bottom, with the floating header buttons and composer
+            capsule sitting fully opaque on top. iOS Claude / Codex chrome. */}
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          {/* Top chrome strip — opaque at the top edge, fades to transparent
+              where it meets the scroll area. `pointer-events-none` on the
+              outer strip + `pointer-events-auto` on the inner block lets
+              clicks fall through the fade zone to messages beneath. */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-6">
+            <div className="pointer-events-auto">
+              <AppHeader
+                title={headerTitle}
+                subtitle={MODEL_TIERS_BY_ID[selectedTierId].label}
+                sidebarOpen={sidebarOpen}
+                onOpenMobileNav={() => setMobileNavOpen(true)}
+                onOpenSidebar={() => setSidebarOpen(true)}
+                onNewChat={handleNewChat}
+                onOpenSettings={() => setSettingsOpen(true)}
+                isTemporary={isTemporary}
+                onToggleTemporary={handleToggleTemporary}
               />
-            ) : null}
-          </MessageList>
-        )}
+              {isTemporary ? (
+                <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
+              ) : null}
+            </div>
+          </div>
 
-        <div className="shrink-0">
-          <Composer
-            ref={composerRef}
-            isStreaming={isStreaming}
-            selectedTierId={selectedTierId}
-            onSelectTier={setSelectedTierId}
-            usage={MOCK_USAGE}
-            onSend={handleSend}
-            onStop={stop}
-            sendOnEnter={preferences.sendOnEnter}
-          />
+          {/* Message area — for WelcomeScreen / demo-empty we put a single
+              scroll wrapper that clears both strips. For MessageList we let
+              it own its scroll (its internal `<ol>` already has matching
+              pt/pb that clears the chrome). */}
+          {showWelcome ? (
+            <div
+              className={
+                isTemporary
+                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+7rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
+                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
+              }
+            >
+              <WelcomeScreen
+                onPickSuggestion={handlePickSuggestion}
+                userName={firstName}
+              />
+            </div>
+          ) : demoEmptyConversation ? (
+            <div
+              className={
+                isTemporary
+                  ? "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+7rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
+                  : "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+5rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
+              }
+            >
+              <p className="max-w-sm text-center text-sm text-muted-foreground">
+                This is a demo — only the pinned conversation has saved messages.
+              </p>
+            </div>
+          ) : (
+            <MessageList>
+              {messages.map((m) =>
+                m.role === "user" ? (
+                  <UserMessage key={m.id} message={m} />
+                ) : (
+                  <AssistantMessage
+                    key={m.id}
+                    message={m}
+                    status={m.status ?? "done"}
+                    canRegenerate={!isStreaming && m.id === lastAssistantId}
+                    onRegenerate={handleRegenerate}
+                    onFeedback={(f) => setFeedback(m.id, f)}
+                    defaultReasoningOpen={preferences.autoExpandReasoning}
+                  />
+                ),
+              )}
+
+              {pendingMessage ? (
+                <AssistantMessage
+                  message={pendingMessage}
+                  status={state.status}
+                  reasoningStreaming={state.reasoningStreaming}
+                />
+              ) : null}
+            </MessageList>
+          )}
+
+          {/* Bottom chrome strip — opaque at the bottom edge, fades upward. */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-background via-background/85 to-background/0 pt-6 pb-[env(safe-area-inset-bottom)]">
+            <div className="pointer-events-auto">
+              <Composer
+                ref={composerRef}
+                isStreaming={isStreaming}
+                selectedTierId={selectedTierId}
+                onSelectTier={setSelectedTierId}
+                usage={MOCK_USAGE}
+                onSend={handleSend}
+                onStop={stop}
+                sendOnEnter={preferences.sendOnEnter}
+              />
+            </div>
+          </div>
         </div>
       </AppShell>
 

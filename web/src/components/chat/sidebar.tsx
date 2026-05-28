@@ -162,10 +162,7 @@ export function Sidebar({
       )}
     >
       <div className="flex items-center justify-between p-3">
-        <div className="flex items-center gap-2">
-          <div className="flex size-7 items-center justify-center rounded-lg bg-brand text-sm font-bold text-brand-foreground">
-            O
-          </div>
+        <div className="flex items-center">
           <span className="text-sm font-semibold">Olune</span>
         </div>
         {onCollapse ? (

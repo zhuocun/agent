@@ -18,13 +18,9 @@ const OPTIONS = [
   { value: "system", label: "System", Icon: Monitor },
 ] as const;
 
-// Theme switch: light / dark / system (PRD 01 §4.8). Renders a stable icon
-// until mounted to avoid a hydration mismatch with the resolved theme.
 export function ThemeToggle() {
   const { theme, setTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
-  // One-time mount gate to avoid a theme hydration mismatch (server can't know
-  // the resolved theme). This is the intended use of a mount flag.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
@@ -42,7 +38,7 @@ export function ThemeToggle() {
             type="button"
             variant="ghost"
             aria-label="Change theme"
-            className="size-9 p-0 text-muted-foreground hover:text-foreground"
+            className="size-9 rounded-full bg-transparent p-0 text-muted-foreground transition-colors hover:[background-color:var(--glass-regular-bg)] hover:text-foreground"
           >
             <Active className="size-4" />
           </Button>

@@ -5,10 +5,6 @@ import { ArrowDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
-// Scroll region for the thread (PRD 01 §5.1): follows the stream only while the
-// user is at/near the bottom; otherwise shows a "Jump to latest" pill.
-// `overscroll-contain` prevents pull-to-refresh from killing in-flight streams
-// (PRD 03 §4.4).
 export function MessageList({ children }: { children: React.ReactNode }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLOListElement>(null);
@@ -34,7 +30,7 @@ export function MessageList({ children }: { children: React.ReactNode }) {
     scrollToBottom(false);
     const content = contentRef.current;
     if (!content) return;
-    // Auto-follow growth only when the user is already pinned to the bottom.
+    // Auto-follow growth only while user is pinned at bottom.
     const ro = new ResizeObserver(() => {
       if (atBottomRef.current) scrollToBottom(false);
     });

@@ -31,7 +31,6 @@ export interface TierPickerProps {
   disabled?: boolean;
 }
 
-// Per-tier glyph (PRD 06 §5.6 — capability tiers, never raw model IDs).
 const TIER_ICON: Record<ModelTierId, ComponentType<LucideProps>> = {
   auto: Wand2,
   fast: Zap,
@@ -39,7 +38,6 @@ const TIER_ICON: Record<ModelTierId, ComponentType<LucideProps>> = {
   pro: Sparkles,
 };
 
-// Human-readable mappings for the registry hint enums (PRD 02 sources the values).
 const SPEED_LABEL: Record<ModelTier["speedHint"], string> = {
   fastest: "Fastest",
   fast: "Fast",
@@ -91,9 +89,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
             type="button"
             variant="ghost"
             size="sm"
-            // >=40px touch target (PRD 03 / PRD 06 §3.3) while staying compact in the composer.
             className="min-h-10 gap-1.5 px-2.5 text-muted-foreground hover:text-foreground aria-expanded:text-foreground"
-            // Conveys the current selection + the action to screen readers (PRD 01 §5.7).
             aria-label={
               selected
                 ? `Model: ${selected.label}. Change model tier.`
@@ -114,7 +110,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
       <DropdownMenuContent
         align="start"
         sideOffset={8}
-        className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))]"
+        className="glass-strong w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl"
       >
         {tiers.map((tier) => {
           const Icon = TIER_ICON[tier.id];
@@ -124,7 +120,6 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
           return (
             <DropdownMenuItem
               key={tier.id}
-              // Native text-nav uses the label, not the rich body (PRD 06 §5.6).
               label={tier.label}
               onClick={() => onSelect(tier.id)}
               className="items-start gap-2.5 py-2"

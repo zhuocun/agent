@@ -19,17 +19,12 @@ interface ComposerProps {
   sendOnEnter?: boolean;
 }
 
-// Imperative surface so callers can prefill the draft (e.g. welcome-screen
-// suggestions) without lifting the composer's value state.
 export interface ComposerHandle {
   setDraft: (text: string) => void;
 }
 
 const MAX_HEIGHT = 200;
 
-// Composer (PRD 01 §4.3, §5.3): Enter sends, Shift+Enter newlines, Esc stops
-// while streaming (IME-safe). Send morphs into Stop in the same slot.
-// With sendOnEnter off, Enter inserts a newline and Cmd/Ctrl+Enter sends.
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
   {
     isStreaming,
@@ -74,7 +69,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Leave Esc and Enter to the IME while composing (CJK), per PRD 01 §5.3.
+    // IME-safe: leave Esc/Enter to the composition layer (CJK).
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape" && isStreaming) {
       e.preventDefault();
@@ -82,13 +77,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       return;
     }
     if (sendOnEnter) {
-      // Enter sends, Shift+Enter newlines.
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         submit();
       }
     } else {
-      // Enter newlines, Cmd/Ctrl+Enter sends.
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
         submit();
@@ -97,8 +90,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-1">
-      <div className="rounded-2xl border border-border bg-card shadow-sm transition-shadow focus-within:ring-2 focus-within:ring-ring/60">
+    <div className="mx-auto w-full max-w-3xl px-4 pb-4 pt-1 mb-3 sm:mb-0">
+      <div className="glass-capsule rounded-[28px] transition-shadow duration-300 focus-within:shadow-[var(--focus-ring),var(--glass-shadow-key)]">
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>

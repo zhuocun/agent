@@ -85,145 +85,203 @@
 
   --animate-shimmer: shimmer 2s linear infinite;
   --animate-caret: caret 1s steps(1) infinite;
+
+  /* Liquid Glass shadow tokens — exposed as Tailwind utilities
+     (shadow-glass-ambient, shadow-glass-key, shadow-glass-highlight). */
+  --shadow-glass-ambient: var(--glass-shadow-ambient);
+  --shadow-glass-key: var(--glass-shadow-key);
+  --shadow-glass-highlight: var(--glass-highlight);
+
+  /* Tracking polish for Geist Sans */
+  --tracking-tight: -0.012em;
 }
 
 /* ===== Light theme ===== */
 :root {
   --radius: 0.625rem;
 
-  --background: oklch(0.995 0 0);
-  --foreground: oklch(0.18 0.005 285);
+  /* Calm, low-chroma surfaces — hue 250 (cooler than the prior 285). */
+  --background: oklch(0.985 0.003 250);
+  --foreground: oklch(0.18 0.005 250);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.18 0.005 285);
+  --card-foreground: oklch(0.18 0.005 250);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.18 0.005 285);
+  --popover-foreground: oklch(0.18 0.005 250);
 
-  --primary: oklch(0.21 0.006 285);
+  --primary: oklch(0.21 0.006 250);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0.002 285);
-  --secondary-foreground: oklch(0.24 0.006 285);
-  --muted: oklch(0.968 0.002 285);
-  --muted-foreground: oklch(0.46 0.008 285);
-  --accent: oklch(0.96 0.004 285);
-  --accent-foreground: oklch(0.24 0.006 285);
+  --secondary: oklch(0.97 0.004 250);
+  --secondary-foreground: oklch(0.24 0.006 250);
+  --muted: oklch(0.968 0.004 250);
+  --muted-foreground: oklch(0.46 0.008 250);
+  --accent: oklch(0.96 0.005 250);
+  --accent-foreground: oklch(0.24 0.006 250);
 
-  --destructive: oklch(0.577 0.245 27.325);
+  /* Semantic warning/success/info/destructive — hues preserved, chroma trimmed ~10%. */
+  --destructive: oklch(0.577 0.220 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.62 0.14 152);
+  --success: oklch(0.62 0.126 152);
   --success-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.72 0.15 75);
+  --warning: oklch(0.72 0.135 75);
   --warning-foreground: oklch(0.27 0.05 75);
-  --info: oklch(0.58 0.13 245);
+  --info: oklch(0.58 0.117 245);
   --info-foreground: oklch(0.985 0 0);
 
-  --border: oklch(0.916 0.003 285);
-  --input: oklch(0.916 0.003 285);
-  --ring: oklch(0.58 0.16 280);
+  --border: oklch(0.916 0.004 250);
+  --input: oklch(0.916 0.004 250);
+  --ring: oklch(0.58 0.13 270);
 
-  /* Brand: a confident iris/indigo — distinct from incumbents (green/orange/teal). */
-  --brand: oklch(0.55 0.18 280);
+  /* Brand: cobalt-indigo, lower chroma so it sits with glass instead of fighting it. */
+  --brand: oklch(0.55 0.13 270);
   --brand-foreground: oklch(0.99 0 0);
-  --brand-muted: oklch(0.95 0.03 280);
+  --brand-muted: oklch(0.95 0.025 270);
 
   /* Chat surfaces */
-  --message-user: oklch(0.955 0.004 285);
-  --message-user-foreground: oklch(0.2 0.006 285);
+  --message-user: oklch(0.955 0.005 250);
+  --message-user-foreground: oklch(0.2 0.006 250);
   --message-assistant: transparent;
-  --message-assistant-foreground: oklch(0.18 0.005 285);
-  --reasoning-muted: oklch(0.972 0.002 285);
-  --reasoning-muted-foreground: oklch(0.5 0.008 285);
-  --code-block: oklch(0.205 0.006 285);
-  --code-block-foreground: oklch(0.92 0.004 285);
-  --status-line: oklch(0.52 0.008 285);
-  --substitution-callout: oklch(0.97 0.04 75);
-  --substitution-callout-foreground: oklch(0.42 0.07 65);
-  --substitution-callout-border: oklch(0.85 0.08 75);
+  --message-assistant-foreground: oklch(0.18 0.005 250);
+  --reasoning-muted: oklch(0.972 0.004 250);
+  --reasoning-muted-foreground: oklch(0.5 0.008 250);
+  --code-block: oklch(0.205 0.006 250);
+  --code-block-foreground: oklch(0.92 0.004 250);
+  --status-line: oklch(0.52 0.008 250);
+  --substitution-callout: oklch(0.97 0.036 75);
+  --substitution-callout-foreground: oklch(0.42 0.063 65);
+  --substitution-callout-border: oklch(0.85 0.072 75);
 
-  /* Trust */
+  /* Trust — hue identities preserved, surface chroma capped at 0.012. */
   --trust-badge: oklch(0.96 0.012 245);
   --trust-badge-foreground: oklch(0.45 0.05 245);
-  --byok-indicator: oklch(0.95 0.04 280);
-  --byok-indicator-foreground: oklch(0.45 0.12 280);
+  --byok-indicator: oklch(0.95 0.012 280);
+  --byok-indicator-foreground: oklch(0.45 0.11 280);
   /* "Off the record" — a calm, cool slate (low chroma, distinct from amber). */
-  --temporary-chat-banner: oklch(0.95 0.012 285);
-  --temporary-chat-banner-foreground: oklch(0.4 0.015 285);
-  --temporary-chat-banner-border: oklch(0.88 0.012 285);
+  --temporary-chat-banner: oklch(0.95 0.012 250);
+  --temporary-chat-banner-foreground: oklch(0.4 0.015 250);
+  --temporary-chat-banner-border: oklch(0.88 0.012 250);
 
-  --sidebar: oklch(0.985 0.001 285);
-  --sidebar-foreground: oklch(0.21 0.006 285);
-  --sidebar-primary: oklch(0.21 0.006 285);
+  --sidebar: oklch(0.985 0.003 250);
+  --sidebar-foreground: oklch(0.21 0.006 250);
+  --sidebar-primary: oklch(0.21 0.006 250);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.96 0.004 285);
-  --sidebar-accent-foreground: oklch(0.24 0.006 285);
-  --sidebar-border: oklch(0.916 0.003 285);
-  --sidebar-ring: oklch(0.58 0.16 280);
+  --sidebar-accent: oklch(0.96 0.005 250);
+  --sidebar-accent-foreground: oklch(0.24 0.006 250);
+  --sidebar-border: oklch(0.916 0.004 250);
+  --sidebar-ring: oklch(0.58 0.13 270);
+
+  /* ===== Liquid Glass material tokens (Apple Liquid Glass — iOS 26 / macOS 26) =====
+     Locked names; consumed by `@utility glass-*` and by component workers. */
+  --glass-blur: 20px;
+  --glass-blur-sm: 14px;          /* assistant bubble */
+  --glass-blur-capsule: 18px;     /* composer */
+  --glass-blur-lg: 28px;          /* drawer */
+  --glass-blur-xl: 32px;          /* dialog */
+  --glass-saturate: 1.7;
+  --glass-contrast: 1.05;
+
+  --glass-regular-bg: rgba(255, 255, 255, 0.72);
+  --glass-strong-bg:  rgba(255, 255, 255, 0.90);
+  --glass-clear-bg:   rgba(255, 255, 255, 0.32);
+
+  /* Top-edge specular highlight (inset). */
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  /* Hairline contour via inner shadow (NOT a solid border). */
+  --glass-border: rgba(255, 255, 255, 0.18);
+
+  /* Bottom-heavy ambient + key shadow stack. */
+  --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --glass-shadow-key: 0 12px 32px rgba(0, 0, 0, 0.10);
+
+  /* Focus ring — aligned to brand hue 270. */
+  --focus-ring: 0 0 0 3px oklch(0.62 0.12 255 / 0.35);
 }
 
 /* ===== Dark theme ===== */
 .dark {
-  --background: oklch(0.165 0.004 285);
-  --foreground: oklch(0.96 0.002 285);
-  --card: oklch(0.205 0.005 285);
-  --card-foreground: oklch(0.96 0.002 285);
-  --popover: oklch(0.205 0.005 285);
-  --popover-foreground: oklch(0.96 0.002 285);
+  --background: oklch(0.165 0.008 250);
+  --foreground: oklch(0.96 0.003 250);
+  --card: oklch(0.205 0.006 250);
+  --card-foreground: oklch(0.96 0.003 250);
+  --popover: oklch(0.205 0.006 250);
+  --popover-foreground: oklch(0.96 0.003 250);
 
-  --primary: oklch(0.92 0.002 285);
-  --primary-foreground: oklch(0.2 0.006 285);
-  --secondary: oklch(0.27 0.006 285);
-  --secondary-foreground: oklch(0.96 0.002 285);
-  --muted: oklch(0.27 0.006 285);
-  --muted-foreground: oklch(0.7 0.008 285);
-  --accent: oklch(0.28 0.006 285);
-  --accent-foreground: oklch(0.96 0.002 285);
+  --primary: oklch(0.92 0.003 250);
+  --primary-foreground: oklch(0.2 0.006 250);
+  --secondary: oklch(0.27 0.006 250);
+  --secondary-foreground: oklch(0.96 0.003 250);
+  --muted: oklch(0.27 0.006 250);
+  --muted-foreground: oklch(0.7 0.008 250);
+  --accent: oklch(0.28 0.006 250);
+  --accent-foreground: oklch(0.96 0.003 250);
 
-  --destructive: oklch(0.704 0.191 22.216);
+  --destructive: oklch(0.704 0.172 22.216);
   --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.7 0.14 152);
+  --success: oklch(0.7 0.126 152);
   --success-foreground: oklch(0.18 0.02 152);
-  --warning: oklch(0.8 0.14 80);
+  --warning: oklch(0.8 0.126 80);
   --warning-foreground: oklch(0.25 0.04 80);
-  --info: oklch(0.68 0.12 245);
+  --info: oklch(0.68 0.108 245);
   --info-foreground: oklch(0.16 0.02 245);
 
   --border: oklch(1 0 0 / 11%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.68 0.16 280);
+  --ring: oklch(0.68 0.13 270);
 
-  --brand: oklch(0.68 0.16 280);
-  --brand-foreground: oklch(0.16 0.01 285);
-  --brand-muted: oklch(0.3 0.08 280);
+  --brand: oklch(0.68 0.13 270);
+  --brand-foreground: oklch(0.16 0.01 250);
+  --brand-muted: oklch(0.3 0.07 270);
 
-  --message-user: oklch(0.27 0.006 285);
-  --message-user-foreground: oklch(0.96 0.002 285);
+  --message-user: oklch(0.27 0.006 250);
+  --message-user-foreground: oklch(0.96 0.003 250);
   --message-assistant: transparent;
-  --message-assistant-foreground: oklch(0.96 0.002 285);
-  --reasoning-muted: oklch(0.225 0.005 285);
-  --reasoning-muted-foreground: oklch(0.68 0.008 285);
-  --code-block: oklch(0.235 0.006 285);
-  --code-block-foreground: oklch(0.92 0.004 285);
-  --status-line: oklch(0.7 0.008 285);
-  --substitution-callout: oklch(0.3 0.06 75);
-  --substitution-callout-foreground: oklch(0.88 0.08 80);
-  --substitution-callout-border: oklch(0.45 0.08 75);
+  --message-assistant-foreground: oklch(0.96 0.003 250);
+  --reasoning-muted: oklch(0.225 0.005 250);
+  --reasoning-muted-foreground: oklch(0.68 0.008 250);
+  --code-block: oklch(0.235 0.006 250);
+  --code-block-foreground: oklch(0.92 0.004 250);
+  --status-line: oklch(0.7 0.008 250);
+  --substitution-callout: oklch(0.3 0.054 75);
+  --substitution-callout-foreground: oklch(0.88 0.072 80);
+  --substitution-callout-border: oklch(0.45 0.072 75);
 
-  --trust-badge: oklch(0.3 0.04 245);
-  --trust-badge-foreground: oklch(0.82 0.07 245);
-  --byok-indicator: oklch(0.3 0.07 280);
-  --byok-indicator-foreground: oklch(0.85 0.09 280);
+  --trust-badge: oklch(0.3 0.012 245);
+  --trust-badge-foreground: oklch(0.82 0.063 245);
+  --byok-indicator: oklch(0.3 0.012 280);
+  --byok-indicator-foreground: oklch(0.85 0.081 280);
   /* "Off the record" — a calm, cool slate (low chroma, distinct from amber). */
-  --temporary-chat-banner: oklch(0.28 0.012 285);
-  --temporary-chat-banner-foreground: oklch(0.85 0.012 285);
-  --temporary-chat-banner-border: oklch(0.4 0.012 285);
+  --temporary-chat-banner: oklch(0.28 0.012 250);
+  --temporary-chat-banner-foreground: oklch(0.85 0.012 250);
+  --temporary-chat-banner-border: oklch(0.4 0.012 250);
 
-  --sidebar: oklch(0.185 0.004 285);
-  --sidebar-foreground: oklch(0.96 0.002 285);
-  --sidebar-primary: oklch(0.68 0.16 280);
+  --sidebar: oklch(0.185 0.008 250);
+  --sidebar-foreground: oklch(0.96 0.003 250);
+  --sidebar-primary: oklch(0.68 0.13 270);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.27 0.006 285);
-  --sidebar-accent-foreground: oklch(0.96 0.002 285);
+  --sidebar-accent: oklch(0.27 0.006 250);
+  --sidebar-accent-foreground: oklch(0.96 0.003 250);
   --sidebar-border: oklch(1 0 0 / 11%);
-  --sidebar-ring: oklch(0.68 0.16 280);
+  --sidebar-ring: oklch(0.68 0.13 270);
+
+  /* ===== Liquid Glass material tokens — dark theme ===== */
+  --glass-blur: 20px;
+  --glass-blur-sm: 14px;
+  --glass-blur-capsule: 18px;
+  --glass-blur-lg: 28px;
+  --glass-blur-xl: 32px;
+  --glass-saturate: 1.6;
+  --glass-contrast: 1.05;
+
+  --glass-regular-bg: rgba(24, 24, 28, 0.74);
+  --glass-strong-bg:  rgba(24, 24, 28, 0.92);
+  --glass-clear-bg:   rgba(24, 24, 28, 0.38);
+
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  --glass-border: rgba(255, 255, 255, 0.08);
+
+  --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.20);
+  --glass-shadow-key: 0 18px 40px rgba(0, 0, 0, 0.38);
+
+  --focus-ring: 0 0 0 3px oklch(0.72 0.11 255 / 0.42);
 }
 
 @layer base {
@@ -260,6 +318,58 @@
   }
 }
 
+/* ===== Liquid Glass utilities (Tailwind v4 @utility — top-level, NOT in @layer) =====
+   Each composes:
+     - background fill (tier token)
+     - backdrop-filter: blur(<tier>) saturate(...) contrast(...)  (+ -webkit- prefix)
+     - box-shadow stack in order: highlight, hairline inner border, ambient, key
+*/
+
+@utility glass-regular {
+  background-color: var(--glass-regular-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  box-shadow:
+    var(--glass-highlight),
+    inset 0 0 0 1px var(--glass-border),
+    var(--glass-shadow-ambient),
+    var(--glass-shadow-key);
+}
+
+@utility glass-strong {
+  background-color: var(--glass-strong-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  box-shadow:
+    var(--glass-highlight),
+    inset 0 0 0 1px var(--glass-border),
+    var(--glass-shadow-ambient),
+    var(--glass-shadow-key);
+}
+
+@utility glass-clear {
+  background-color: var(--glass-clear-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  box-shadow:
+    var(--glass-highlight),
+    inset 0 0 0 1px var(--glass-border),
+    var(--glass-shadow-ambient),
+    var(--glass-shadow-key);
+}
+
+@utility glass-capsule {
+  background-color: var(--glass-regular-bg);
+  border-radius: 9999px;
+  -webkit-backdrop-filter: blur(var(--glass-blur-capsule)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  backdrop-filter: blur(var(--glass-blur-capsule)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  box-shadow:
+    var(--glass-highlight),
+    inset 0 0 0 1px var(--glass-border),
+    var(--glass-shadow-ambient),
+    var(--glass-shadow-key);
+}
+
 /* Streamed-markdown spacing/typography (PRD 01 §5.4). Zero-specificity :where()
    rules so Streamdown's own element classes always win when present. */
 @layer components {
@@ -291,7 +401,64 @@
   }
 }
 
-/* Reduced motion (PRD 06 §3.4) — degrade shimmer/typing to static. */
+/* ===== Glass fallbacks ===== */
+
+/* No backdrop-filter support → swap to opaque elevated surface; keep highlight + shadow stack. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-regular,
+  .glass-strong,
+  .glass-capsule {
+    background-color: var(--card);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .glass-clear {
+    background-color: var(--popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Reduced transparency → solid fills, no blur, no highlight; keep hairline + key for depth. */
+@media (prefers-reduced-transparency: reduce) {
+  .glass-regular,
+  .glass-strong,
+  .glass-capsule {
+    background-color: var(--card);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow:
+      inset 0 0 0 1px var(--border),
+      var(--glass-shadow-key);
+  }
+  .glass-clear {
+    background-color: var(--popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow:
+      inset 0 0 0 1px var(--border),
+      var(--glass-shadow-key);
+  }
+}
+
+/* Increased contrast → denser fill + more visible hairline. */
+@media (prefers-contrast: more) {
+  :root {
+    --glass-regular-bg: rgba(255, 255, 255, 0.75);
+    --glass-strong-bg:  rgba(255, 255, 255, 0.92);
+    --glass-clear-bg:   rgba(255, 255, 255, 0.38);
+    --glass-border:     rgba(0, 0, 0, 0.38);
+  }
+  .dark {
+    --glass-regular-bg: rgba(24, 24, 28, 0.78);
+    --glass-strong-bg:  rgba(24, 24, 28, 0.94);
+    --glass-clear-bg:   rgba(24, 24, 28, 0.42);
+    --glass-border:     rgba(255, 255, 255, 0.28);
+  }
+}
+
+/* Reduced motion (PRD 06 §3.4) — degrade shimmer/typing to static.
+   Extended: also flatten glass transitions where present. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

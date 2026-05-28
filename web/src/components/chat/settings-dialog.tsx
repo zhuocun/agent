@@ -96,9 +96,14 @@ export function SettingsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* Mobile: bottom-anchored sheet (full width, pinned bottom, rounded top,
-          capped at 85dvh). Reverts to the shared centered modal at sm: by
-          restoring DialogContent's default top/left + translate + radius. */}
-      <DialogContent className="top-auto bottom-0 left-0 max-h-[85dvh] max-w-full translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg">
+          capped at 80dvh to let the glass surface breathe). Reverts to the
+          shared centered modal at sm: by restoring DialogContent's default
+          top/left + translate + radius. */}
+      <DialogContent className="top-auto bottom-0 left-0 max-h-[80dvh] max-w-full translate-x-0 translate-y-0 rounded-t-3xl rounded-b-none sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-3xl">
+        <div
+          aria-hidden
+          className="mx-auto -mt-2 h-1 w-10 rounded-full bg-foreground/15 sm:hidden"
+        />
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>

@@ -9,8 +9,7 @@ function Switch({ className, ...props }: SwitchPrimitive.Root.Props) {
     <SwitchPrimitive.Root
       data-slot="switch"
       className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-transparent bg-input transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[checked]:bg-brand",
-        // Invisible ≥44px tall hit area so the visually-small track stays touch-friendly.
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-transparent bg-muted/60 transition-colors outline-none focus-visible:shadow-[var(--focus-ring)] disabled:cursor-not-allowed disabled:opacity-50 data-[checked]:bg-brand",
         "before:absolute before:inset-x-0 before:top-1/2 before:h-11 before:-translate-y-1/2 before:content-['']",
         className
       )}
@@ -18,7 +17,7 @@ function Switch({ className, ...props }: SwitchPrimitive.Root.Props) {
     >
       <SwitchPrimitive.Thumb
         data-slot="switch-thumb"
-        className="pointer-events-none block size-4 translate-x-0.5 rounded-full bg-background shadow transition-transform data-[checked]:translate-x-4"
+        className="pointer-events-none block size-4 translate-x-0.5 rounded-full bg-card shadow-glass-ambient transition-transform data-[checked]:translate-x-4"
       />
     </SwitchPrimitive.Root>
   )

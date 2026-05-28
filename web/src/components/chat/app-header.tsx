@@ -34,7 +34,7 @@ export function AppHeader({
   onToggleTemporary,
 }: AppHeaderProps) {
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-3 pt-[env(safe-area-inset-top)] pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:px-4 sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]">
+    <header className="glass-regular sticky top-0 z-30 flex h-14 shrink-0 items-center justify-between gap-3 px-3 pt-[env(safe-area-inset-top)] pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:px-4 sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]">
       <div className="flex min-w-0 items-center gap-2">
         {/* Mobile: open the navigation drawer. 44px touch target on mobile. */}
         <Button

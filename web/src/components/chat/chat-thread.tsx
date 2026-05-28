@@ -27,6 +27,7 @@ import {
 } from "@/lib/mock-data";
 import type {
   ChatMessage,
+  ConversationSummary,
   Feedback,
   MessagePart,
   ModelAttribution,
@@ -91,11 +92,15 @@ export function ChatThread() {
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
   >(MOCK_CONVERSATION.id);
+  const [conversations, setConversations] = useState<ConversationSummary[]>(
+    MOCK_CONVERSATIONS,
+  );
+  const [conversationSearch, setConversationSearch] = useState("");
 
   const firstName = MOCK_ACCOUNT.name.split(" ")[0];
   const headerTitle = isTemporary
     ? "Temporary chat"
-    : (MOCK_CONVERSATIONS.find((c) => c.id === activeConversationId)?.title ??
+    : (conversations.find((c) => c.id === activeConversationId)?.title ??
       "New chat");
 
   // Commit the finished assistant turn when the stream terminates — event-driven
@@ -283,6 +288,41 @@ export function ChatThread() {
     setMobileNavOpen(false);
   };
 
+  const handleRenameConversation = (id: string, newTitle: string) => {
+    const trimmed = newTitle.trim();
+    if (!trimmed) return;
+    setConversations((prev) => {
+      const target = prev.find((c) => c.id === id);
+      if (!target || target.title === trimmed) return prev;
+      const nowIso = new Date().toISOString();
+      return prev.map((c) =>
+        c.id === id ? { ...c, title: trimmed, updatedAt: nowIso } : c,
+      );
+    });
+  };
+
+  const handleDeleteConversation = (id: string) => {
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    if (id === activeConversationId) {
+      // Mirror handleNewChat: drop the open thread back to a fresh New chat
+      // since the conversation it represented no longer exists.
+      if (isStreaming) stop();
+      setMessages([]);
+      setPendingId(null);
+      assistantIdRef.current = null;
+      setLiveMessage("");
+      reset();
+      setActiveConversationId(null);
+      setDemoEmptyConversation(false);
+    }
+  };
+
+  const handleTogglePinConversation = (id: string) => {
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c)),
+    );
+  };
+
   const handlePickSuggestion = (prompt: string) => {
     composerRef.current?.setDraft(prompt);
   };
@@ -295,11 +335,16 @@ export function ChatThread() {
       <AppShell
         sidebar={
           <Sidebar
-            conversations={MOCK_CONVERSATIONS}
+            conversations={conversations}
             activeId={activeConversationId}
             account={MOCK_ACCOUNT}
+            search={conversationSearch}
+            onSearchChange={setConversationSearch}
             onSelect={handleSelectConversation}
             onNewChat={handleNewChat}
+            onRenameConversation={handleRenameConversation}
+            onDeleteConversation={handleDeleteConversation}
+            onTogglePinConversation={handleTogglePinConversation}
             onOpenSettings={() => setSettingsOpen(true)}
             onCollapse={() => {
               setSidebarOpen(false);

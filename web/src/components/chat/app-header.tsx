@@ -35,13 +35,13 @@ interface AppHeaderProps {
 }
 
 const FLOAT_BUTTON =
-  "glass-regular size-9 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent";
+  "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent";
 
 const FLOAT_BUTTON_TOUCH =
   "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 const PILL_HALF =
-  "inline-flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring";
 
 export function AppHeader({
   onNewChat,
@@ -92,7 +92,7 @@ export function AppHeader({
       </div>
 
       <div className="flex flex-1 items-center justify-end">
-        <div className="glass-regular inline-flex h-9 items-center rounded-full">
+        <div className="glass-regular inline-flex h-11 items-center rounded-full">
           <button
             type="button"
             aria-label="New chat"

@@ -12,6 +12,12 @@ import {
 import { cn } from "@/lib/utils";
 
 interface AppHeaderProps {
+  title: string;
+  /**
+   * Optional second line under the title (model/agent context). When omitted
+   * the header renders a single centered line.
+   */
+  subtitle?: string;
   onNewChat?: () => void;
   onOpenMobileNav?: () => void;
   onOpenSidebar?: () => void;
@@ -37,6 +43,8 @@ const FLOAT_BUTTON_TOUCH =
   "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 export function AppHeader({
+  title,
+  subtitle,
   onNewChat,
   onOpenMobileNav,
   onOpenSidebar,
@@ -72,6 +80,23 @@ export function AppHeader({
           >
             <PanelLeft className="size-4" />
           </Button>
+        ) : null}
+      </div>
+
+      {/* CENTER — two-line title block, absolutely centered to the viewport so
+          the number of side buttons never shifts the title off-axis.
+          `pointer-events-none` lets clicks fall through to nothing (the title
+          is not a control); inner text remains selectable for a11y tools.
+          When the caller passes "New chat" we render "Olune" so the chrome
+          reads as the app shell rather than restating the empty state. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex h-11 flex-col items-center justify-center px-24 text-center md:h-16 md:px-44">
+        <span className="block max-w-full truncate text-sm font-semibold leading-tight text-foreground">
+          {title === "New chat" ? "Olune" : title}
+        </span>
+        {subtitle ? (
+          <span className="block max-w-full truncate text-xs leading-tight text-muted-foreground">
+            {subtitle}
+          </span>
         ) : null}
       </div>
 

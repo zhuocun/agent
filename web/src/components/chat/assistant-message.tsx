@@ -17,6 +17,8 @@ interface AssistantMessageProps {
   canRegenerate?: boolean;
   onRegenerate?: () => void;
   onFeedback?: (next: Feedback) => void;
+  // When true, a completed message's reasoning panel starts expanded.
+  defaultReasoningOpen?: boolean;
 }
 
 export function AssistantMessage({
@@ -26,6 +28,7 @@ export function AssistantMessage({
   canRegenerate,
   onRegenerate,
   onFeedback,
+  defaultReasoningOpen = false,
 }: AssistantMessageProps) {
   const answerText = useMemo(
     () =>
@@ -43,7 +46,7 @@ export function AssistantMessage({
   const isFinal = status === "done" || status === "stopped";
 
   return (
-    <div className="group/msg flex gap-3">
+    <div className="group/msg flex gap-3" role="article" aria-label="Assistant">
       <div
         className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-muted text-brand"
         aria-hidden
@@ -62,6 +65,7 @@ export function AssistantMessage({
                 text={part.text}
                 durationSec={part.durationSec}
                 isStreaming={!!reasoningStreaming}
+                defaultOpen={defaultReasoningOpen}
               />
             );
           }
@@ -83,7 +87,7 @@ export function AssistantMessage({
             {message.attribution ? (
               <AttributionRow attribution={message.attribution} />
             ) : null}
-            <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover/msg:opacity-100">
+            <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100">
               <MessageActions
                 text={answerText}
                 feedback={message.feedback ?? null}

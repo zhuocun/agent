@@ -69,7 +69,7 @@ export function AttributionRow({
           </span>
           {isEstimate ? (
             <span
-              className="inline-flex h-4 items-center rounded-md bg-warning/15 px-1 text-[0.65rem] font-medium text-warning"
+              className="inline-flex h-4 items-center rounded-md bg-warning/15 px-1 text-xs font-medium text-warning"
               title="Estimated cost — final charge may differ"
             >
               est.

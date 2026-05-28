@@ -40,10 +40,17 @@ function DrawerContent({
   children,
   side = "left",
   showClose = true,
+  title = "Navigation",
   ...props
 }: DialogPrimitive.Popup.Props & {
   side?: "left" | "right"
   showClose?: boolean
+  /**
+   * Accessible name for the drawer dialog. Rendered as a visually-hidden
+   * `<Title>` so Base UI can wire up `aria-labelledby`; without it the dialog
+   * announces as unnamed. Defaults to "Navigation".
+   */
+  title?: string
 }) {
   return (
     <DrawerPortal>
@@ -61,6 +68,9 @@ function DrawerContent({
         )}
         {...props}
       >
+        <DialogPrimitive.Title className="sr-only">
+          {title}
+        </DialogPrimitive.Title>
         {children}
         {showClose ? (
           <DialogPrimitive.Close

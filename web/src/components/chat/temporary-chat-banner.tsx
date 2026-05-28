@@ -24,7 +24,7 @@ export function TemporaryChatBanner({
     <div
       role="note"
       className={cn(
-        "flex items-center gap-2 border-b border-border px-4 py-2 text-sm",
+        "flex items-center gap-2 border-b border-temporary-chat-banner-border px-4 py-2 text-sm",
         "bg-temporary-chat-banner text-temporary-chat-banner-foreground",
         className,
       )}
@@ -32,7 +32,7 @@ export function TemporaryChatBanner({
       <Ghost aria-hidden className="size-4 shrink-0" />
       <p className="min-w-0 truncate">
         <span className="font-semibold">Temporary chat</span>{" "}
-        <span className="text-temporary-chat-banner-foreground/80">
+        <span className="text-temporary-chat-banner-foreground">
           — this conversation won&apos;t be saved to your history or used to
           train models.
         </span>

@@ -95,7 +95,10 @@ export function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      {/* Mobile: bottom-anchored sheet (full width, pinned bottom, rounded top,
+          capped at 85dvh). Reverts to the shared centered modal at sm: by
+          restoring DialogContent's default top/left + translate + radius. */}
+      <DialogContent className="top-auto bottom-0 left-0 max-h-[85dvh] max-w-full translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-lg">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
@@ -103,7 +106,7 @@ export function SettingsDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="-mr-2 max-h-[70vh] space-y-6 overflow-y-auto pr-2">
+        <div className="-mr-2 max-h-[60dvh] space-y-6 overflow-y-auto pr-2 sm:max-h-[70dvh]">
           {/* Account */}
           <section className="space-y-3">
             <SectionHeading>Account</SectionHeading>

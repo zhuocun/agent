@@ -65,6 +65,7 @@
   --color-byok-indicator-foreground: var(--byok-indicator-foreground);
   --color-temporary-chat-banner: var(--temporary-chat-banner);
   --color-temporary-chat-banner-foreground: var(--temporary-chat-banner-foreground);
+  --color-temporary-chat-banner-border: var(--temporary-chat-banner-border);
 
   /* Sidebar */
   --color-sidebar: var(--sidebar);
@@ -102,7 +103,7 @@
   --secondary: oklch(0.97 0.002 285);
   --secondary-foreground: oklch(0.24 0.006 285);
   --muted: oklch(0.968 0.002 285);
-  --muted-foreground: oklch(0.52 0.008 285);
+  --muted-foreground: oklch(0.46 0.008 285);
   --accent: oklch(0.96 0.004 285);
   --accent-foreground: oklch(0.24 0.006 285);
 
@@ -143,8 +144,10 @@
   --trust-badge-foreground: oklch(0.45 0.05 245);
   --byok-indicator: oklch(0.95 0.04 280);
   --byok-indicator-foreground: oklch(0.45 0.12 280);
-  --temporary-chat-banner: oklch(0.96 0.035 75);
-  --temporary-chat-banner-foreground: oklch(0.43 0.07 65);
+  /* "Off the record" — a calm, cool slate (low chroma, distinct from amber). */
+  --temporary-chat-banner: oklch(0.95 0.012 285);
+  --temporary-chat-banner-foreground: oklch(0.4 0.015 285);
+  --temporary-chat-banner-border: oklch(0.88 0.012 285);
 
   --sidebar: oklch(0.985 0.001 285);
   --sidebar-foreground: oklch(0.21 0.006 285);
@@ -208,8 +211,10 @@
   --trust-badge-foreground: oklch(0.82 0.07 245);
   --byok-indicator: oklch(0.3 0.07 280);
   --byok-indicator-foreground: oklch(0.85 0.09 280);
-  --temporary-chat-banner: oklch(0.3 0.05 75);
-  --temporary-chat-banner-foreground: oklch(0.86 0.08 80);
+  /* "Off the record" — a calm, cool slate (low chroma, distinct from amber). */
+  --temporary-chat-banner: oklch(0.28 0.012 285);
+  --temporary-chat-banner-foreground: oklch(0.85 0.012 285);
+  --temporary-chat-banner-border: oklch(0.4 0.012 285);
 
   --sidebar: oklch(0.185 0.004 285);
   --sidebar-foreground: oklch(0.96 0.002 285);
@@ -270,6 +275,7 @@
   .chat-md :where(h1) { @apply text-xl; }
   .chat-md :where(h2) { @apply text-lg; }
   .chat-md :where(h3) { @apply text-base; }
+  .chat-md :where(pre) { @apply max-w-full overflow-x-auto; }
   .chat-md :where(ul) { @apply list-disc pl-6; }
   .chat-md :where(ol) { @apply list-decimal pl-6; }
   .chat-md :where(li):not(:first-child) { @apply mt-1; }

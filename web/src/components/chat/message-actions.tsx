@@ -42,7 +42,7 @@ export function MessageActions({
   };
 
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="flex items-center gap-1">
       <IconAction label={copied ? "Copied" : "Copy"} onClick={handleCopy}>
         {copied ? (
           <Check className="size-4 text-success" />
@@ -98,7 +98,7 @@ function IconAction({
             aria-label={label}
             aria-pressed={pressed}
             className={cn(
-              "size-8 p-0 text-muted-foreground hover:text-foreground",
+              "size-11 p-0 text-muted-foreground hover:text-foreground md:size-8",
               pressed && "text-brand",
             )}
           >

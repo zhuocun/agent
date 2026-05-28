@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 import { ArrowUp, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -16,20 +16,32 @@ interface ComposerProps {
   usage: UsageBudget;
   onSend: (text: string) => void;
   onStop: () => void;
+  sendOnEnter?: boolean;
+}
+
+// Imperative surface so callers can prefill the draft (e.g. welcome-screen
+// suggestions) without lifting the composer's value state.
+export interface ComposerHandle {
+  setDraft: (text: string) => void;
 }
 
 const MAX_HEIGHT = 200;
 
 // Composer (PRD 01 §4.3, §5.3): Enter sends, Shift+Enter newlines, Esc stops
 // while streaming (IME-safe). Send morphs into Stop in the same slot.
-export function Composer({
-  isStreaming,
-  selectedTierId,
-  onSelectTier,
-  usage,
-  onSend,
-  onStop,
-}: ComposerProps) {
+// With sendOnEnter off, Enter inserts a newline and Cmd/Ctrl+Enter sends.
+export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
+  {
+    isStreaming,
+    selectedTierId,
+    onSelectTier,
+    usage,
+    onSend,
+    onStop,
+    sendOnEnter = true,
+  },
+  forwardedRef,
+) {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
 
@@ -39,6 +51,17 @@ export function Composer({
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, MAX_HEIGHT)}px`;
   };
+
+  useImperativeHandle(forwardedRef, () => ({
+    setDraft: (text: string) => {
+      setValue(text);
+      const ta = ref.current;
+      if (ta) {
+        ta.focus();
+        requestAnimationFrame(autoGrow);
+      }
+    },
+  }));
 
   const submit = () => {
     const text = value.trim();
@@ -53,12 +76,23 @@ export function Composer({
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Leave Esc and Enter to the IME while composing (CJK), per PRD 01 §5.3.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submit();
-    } else if (e.key === "Escape" && isStreaming) {
+    if (e.key === "Escape" && isStreaming) {
       e.preventDefault();
       onStop();
+      return;
+    }
+    if (sendOnEnter) {
+      // Enter sends, Shift+Enter newlines.
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submit();
+      }
+    } else {
+      // Enter newlines, Cmd/Ctrl+Enter sends.
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        submit();
+      }
     }
   };
 
@@ -121,4 +155,6 @@ export function Composer({
       </p>
     </div>
   );
-}
+});
+
+Composer.displayName = "Composer";

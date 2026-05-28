@@ -11,7 +11,7 @@ import { AssistantMessage } from "@/components/chat/assistant-message";
 import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
-import { Composer } from "@/components/chat/composer";
+import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
 import { useMockStream, type MockStreamResult } from "@/lib/use-mock-stream";
 import {
@@ -71,6 +71,11 @@ export function ChatThread() {
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
   const assistantIdRef = useRef<string | null>(null);
+  const composerRef = useRef<ComposerHandle>(null);
+
+  // True when a history entry without loaded content is selected (only "c1" has
+  // real messages in the demo). Distinct from the new-chat welcome hero.
+  const [demoEmptyConversation, setDemoEmptyConversation] = useState(false);
 
   // Chrome state: sidebar (desktop rail + mobile drawer), settings, prefs,
   // temporary mode, and which history entry is active.
@@ -90,7 +95,7 @@ export function ChatThread() {
   const headerTitle = isTemporary
     ? "Temporary chat"
     : (MOCK_CONVERSATIONS.find((c) => c.id === activeConversationId)?.title ??
-      "");
+      "New chat");
 
   // Commit the finished assistant turn when the stream terminates — event-driven
   // (the hook hands us the final flushed content), not a status-watching effect.
@@ -135,6 +140,7 @@ export function ChatThread() {
     const assistantId = uid();
     tierAtSendRef.current = selectedTierId;
     assistantIdRef.current = assistantId;
+    setDemoEmptyConversation(false);
     setMessages((prev) => [
       ...prev,
       {
@@ -205,19 +211,60 @@ export function ChatThread() {
     setLiveMessage("");
     reset();
     setActiveConversationId(null);
+    setDemoEmptyConversation(false);
+    setSelectedTierId(preferences.defaultTierId);
     setIsTemporary(preferences.temporaryByDefault);
     setMobileNavOpen(false);
   };
 
-  // Mock selection: highlight the chosen entry and exit temporary mode. The
-  // demo keeps the current thread body (only one conversation has real content).
+  // Header Ghost / banner toggle. Turning Temporary ON starts a FRESH temporary
+  // chat (clears like New chat) so the "won't be saved" promise is always true.
+  // Turning it OFF just exits temporary mode and keeps the current messages.
+  const handleToggleTemporary = () => {
+    if (isTemporary) {
+      setIsTemporary(false);
+      return;
+    }
+    if (isStreaming) stop();
+    setMessages([]);
+    setPendingId(null);
+    assistantIdRef.current = null;
+    setLiveMessage("");
+    reset();
+    setActiveConversationId(null);
+    setDemoEmptyConversation(false);
+    setSelectedTierId(preferences.defaultTierId);
+    setIsTemporary(true);
+    setMobileNavOpen(false);
+  };
+
+  // Mock selection: highlight the chosen entry and exit temporary mode. Only
+  // "c1" has loaded content; other entries clear the thread and show an honest
+  // placeholder rather than leaving an unrelated body on screen.
   const handleSelectConversation = (id: string) => {
+    if (isStreaming) stop();
+    setPendingId(null);
+    assistantIdRef.current = null;
+    setLiveMessage("");
+    reset();
+    if (id === MOCK_CONVERSATION.id) {
+      setMessages(MOCK_MESSAGES);
+      setDemoEmptyConversation(false);
+    } else {
+      setMessages([]);
+      setDemoEmptyConversation(true);
+    }
     setActiveConversationId(id);
     setIsTemporary(false);
     setMobileNavOpen(false);
   };
 
-  const showWelcome = messages.length === 0 && !pendingMessage;
+  const handlePickSuggestion = (prompt: string) => {
+    composerRef.current?.setDraft(prompt);
+  };
+
+  const showWelcome =
+    messages.length === 0 && !pendingMessage && !demoEmptyConversation;
 
   return (
     <>
@@ -248,16 +295,25 @@ export function ChatThread() {
           onNewChat={handleNewChat}
           onOpenSettings={() => setSettingsOpen(true)}
           isTemporary={isTemporary}
-          onToggleTemporary={() => setIsTemporary((v) => !v)}
+          onToggleTemporary={handleToggleTemporary}
         />
 
         {isTemporary ? (
-          <TemporaryChatBanner onTurnOff={() => setIsTemporary(false)} />
+          <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
         ) : null}
 
         {showWelcome ? (
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <WelcomeScreen onPickSuggestion={handleSend} userName={firstName} />
+            <WelcomeScreen
+              onPickSuggestion={handlePickSuggestion}
+              userName={firstName}
+            />
+          </div>
+        ) : demoEmptyConversation ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center px-4">
+            <p className="max-w-sm text-center text-sm text-muted-foreground">
+              This is a demo — only the pinned conversation has saved messages.
+            </p>
           </div>
         ) : (
           <MessageList>
@@ -272,6 +328,7 @@ export function ChatThread() {
                   canRegenerate={!isStreaming && m.id === lastAssistantId}
                   onRegenerate={handleRegenerate}
                   onFeedback={(f) => setFeedback(m.id, f)}
+                  defaultReasoningOpen={preferences.autoExpandReasoning}
                 />
               ),
             )}
@@ -288,12 +345,14 @@ export function ChatThread() {
 
         <div className="shrink-0">
           <Composer
+            ref={composerRef}
             isStreaming={isStreaming}
             selectedTierId={selectedTierId}
             onSelectTier={setSelectedTierId}
             usage={MOCK_USAGE}
             onSend={handleSend}
             onStop={stop}
+            sendOnEnter={preferences.sendOnEnter}
           />
         </div>
       </AppShell>

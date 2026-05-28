@@ -1,8 +1,14 @@
 "use client";
 
-import { Ghost, PanelLeft, Plus, Settings } from "lucide-react";
+import { Ghost, MoreVertical, PanelLeft, Plus, Settings } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { cn } from "@/lib/utils";
 
@@ -28,15 +34,15 @@ export function AppHeader({
   onToggleTemporary,
 }: AppHeaderProps) {
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-3 sm:px-4">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-3 pt-[env(safe-area-inset-top)] pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:px-4 sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]">
       <div className="flex min-w-0 items-center gap-2">
-        {/* Mobile: open the navigation drawer. */}
+        {/* Mobile: open the navigation drawer. 44px touch target on mobile. */}
         <Button
           type="button"
           variant="ghost"
           aria-label="Open navigation"
           onClick={onOpenMobileNav}
-          className="size-9 p-0 text-muted-foreground hover:text-foreground md:hidden"
+          className="size-11 p-0 text-muted-foreground hover:text-foreground md:hidden"
         >
           <PanelLeft className="size-4" />
         </Button>
@@ -69,6 +75,8 @@ export function AppHeader({
       </div>
 
       <div className="flex items-center gap-1">
+        {/* Temporary-chat: inline from md: up; collapsed into the overflow menu
+            below md: so four 44px controls don't crowd a 360px viewport. */}
         <Button
           type="button"
           variant="ghost"
@@ -76,7 +84,7 @@ export function AppHeader({
           aria-pressed={isTemporary}
           onClick={onToggleTemporary}
           className={cn(
-            "size-9 p-0 text-muted-foreground hover:text-foreground",
+            "hidden size-9 p-0 text-muted-foreground hover:text-foreground md:inline-flex",
             isTemporary && "text-foreground",
           )}
         >
@@ -86,21 +94,58 @@ export function AppHeader({
           type="button"
           variant="ghost"
           onClick={onNewChat}
-          className="h-9 gap-1.5 px-2.5 text-sm"
+          className="size-11 p-0 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5 sm:text-sm"
         >
           <Plus className="size-4" />
           <span className="hidden sm:inline">New chat</span>
         </Button>
+        {/* Settings: inline from md: up; in the overflow menu below md:. */}
         <Button
           type="button"
           variant="ghost"
           aria-label="Open settings"
           onClick={onOpenSettings}
-          className="size-9 p-0 text-muted-foreground hover:text-foreground"
+          className="hidden size-9 p-0 text-muted-foreground hover:text-foreground md:inline-flex"
         >
           <Settings className="size-4" />
         </Button>
         <ThemeToggle />
+
+        {/* Mobile overflow: collapses temporary-chat + settings into a 44px
+            kebab so each touch target stays ≥44px without overflow. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                aria-label="More options"
+                className="size-11 p-0 text-muted-foreground hover:text-foreground md:hidden"
+              >
+                <MoreVertical className="size-4" />
+              </Button>
+            }
+          />
+          <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem
+              label="Temporary chat"
+              aria-pressed={isTemporary}
+              onClick={onToggleTemporary}
+              className="gap-2"
+            >
+              <Ghost className="size-4" aria-hidden />
+              <span>Temporary chat</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              label="Open settings"
+              onClick={onOpenSettings}
+              className="gap-2"
+            >
+              <Settings className="size-4" aria-hidden />
+              <span>Settings</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
   );

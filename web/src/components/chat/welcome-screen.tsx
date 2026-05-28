@@ -37,7 +37,7 @@ export function WelcomeScreen({
   return (
     <div className="flex h-full flex-col items-center justify-center px-4">
       <div className="flex flex-col items-center text-center">
-        <div className="flex size-12 items-center justify-center rounded-2xl bg-brand text-xl font-bold text-brand-foreground shadow-sm">
+        <div className="flex size-12 items-center justify-center rounded-xl bg-brand text-xl font-bold text-brand-foreground shadow-sm">
           A
         </div>
         <h1 className="mt-5 text-2xl font-semibold tracking-tight sm:text-3xl">

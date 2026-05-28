@@ -1,6 +1,6 @@
 "use client";
 
-import { Ghost, Key, PanelLeftClose, Pin, Plus, Settings } from "lucide-react";
+import { Key, PanelLeftClose, Pin, Plus, Settings } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -122,8 +122,9 @@ function ConversationButton({
     <button
       type="button"
       onClick={() => onSelect(conversation.id)}
+      aria-label={`${conversation.title}${conversation.pinned ? ", pinned" : ""}`}
       className={cn(
-        "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
+        "flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
         active
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : "hover:bg-sidebar-accent/50"
@@ -131,9 +132,6 @@ function ConversationButton({
     >
       {conversation.pinned ? (
         <Pin className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-      ) : null}
-      {conversation.isTemporary ? (
-        <Ghost className="size-3 shrink-0 text-muted-foreground" aria-hidden />
       ) : null}
       <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
     </button>
@@ -204,14 +202,17 @@ export function Sidebar({
                 <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
                   {RECENCY_LABELS[key]}
                 </div>
-                {items.map((conversation) => (
-                  <ConversationButton
-                    key={conversation.id}
-                    conversation={conversation}
-                    active={conversation.id === activeId}
-                    onSelect={onSelect}
-                  />
-                ))}
+                <div role="list" aria-label={RECENCY_LABELS[key]}>
+                  {items.map((conversation) => (
+                    <div role="listitem" key={conversation.id}>
+                      <ConversationButton
+                        conversation={conversation}
+                        active={conversation.id === activeId}
+                        onSelect={onSelect}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
             );
           })}

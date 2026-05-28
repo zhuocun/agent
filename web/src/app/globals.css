@@ -1,0 +1,298 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* Let Tailwind v4 scan Streamdown's compiled classes (streaming markdown renderer). */
+@source "../../node_modules/streamdown/dist/index.js";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+
+  /* Semantic roles (PRD 06 §3.1) */
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  /* Brand accent */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-muted: var(--brand-muted);
+
+  /* Chat roles (PRD 06 §3.1) */
+  --color-message-user: var(--message-user);
+  --color-message-user-foreground: var(--message-user-foreground);
+  --color-message-assistant: var(--message-assistant);
+  --color-message-assistant-foreground: var(--message-assistant-foreground);
+  --color-reasoning-muted: var(--reasoning-muted);
+  --color-reasoning-muted-foreground: var(--reasoning-muted-foreground);
+  --color-code-block: var(--code-block);
+  --color-code-block-foreground: var(--code-block-foreground);
+  --color-status-line: var(--status-line);
+  --color-substitution-callout: var(--substitution-callout);
+  --color-substitution-callout-foreground: var(--substitution-callout-foreground);
+  --color-substitution-callout-border: var(--substitution-callout-border);
+
+  /* Trust roles (PRD 06 §3.1) */
+  --color-trust-badge: var(--trust-badge);
+  --color-trust-badge-foreground: var(--trust-badge-foreground);
+  --color-byok-indicator: var(--byok-indicator);
+  --color-byok-indicator-foreground: var(--byok-indicator-foreground);
+  --color-temporary-chat-banner: var(--temporary-chat-banner);
+  --color-temporary-chat-banner-foreground: var(--temporary-chat-banner-foreground);
+
+  /* Sidebar */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+
+  --animate-shimmer: shimmer 2s linear infinite;
+  --animate-caret: caret 1s steps(1) infinite;
+}
+
+/* ===== Light theme ===== */
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(0.995 0 0);
+  --foreground: oklch(0.18 0.005 285);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.005 285);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.005 285);
+
+  --primary: oklch(0.21 0.006 285);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0.002 285);
+  --secondary-foreground: oklch(0.24 0.006 285);
+  --muted: oklch(0.968 0.002 285);
+  --muted-foreground: oklch(0.52 0.008 285);
+  --accent: oklch(0.96 0.004 285);
+  --accent-foreground: oklch(0.24 0.006 285);
+
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.62 0.14 152);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.72 0.15 75);
+  --warning-foreground: oklch(0.27 0.05 75);
+  --info: oklch(0.58 0.13 245);
+  --info-foreground: oklch(0.985 0 0);
+
+  --border: oklch(0.916 0.003 285);
+  --input: oklch(0.916 0.003 285);
+  --ring: oklch(0.58 0.16 280);
+
+  /* Brand: a confident iris/indigo — distinct from incumbents (green/orange/teal). */
+  --brand: oklch(0.55 0.18 280);
+  --brand-foreground: oklch(0.99 0 0);
+  --brand-muted: oklch(0.95 0.03 280);
+
+  /* Chat surfaces */
+  --message-user: oklch(0.955 0.004 285);
+  --message-user-foreground: oklch(0.2 0.006 285);
+  --message-assistant: transparent;
+  --message-assistant-foreground: oklch(0.18 0.005 285);
+  --reasoning-muted: oklch(0.972 0.002 285);
+  --reasoning-muted-foreground: oklch(0.5 0.008 285);
+  --code-block: oklch(0.205 0.006 285);
+  --code-block-foreground: oklch(0.92 0.004 285);
+  --status-line: oklch(0.52 0.008 285);
+  --substitution-callout: oklch(0.97 0.04 75);
+  --substitution-callout-foreground: oklch(0.42 0.07 65);
+  --substitution-callout-border: oklch(0.85 0.08 75);
+
+  /* Trust */
+  --trust-badge: oklch(0.96 0.012 245);
+  --trust-badge-foreground: oklch(0.45 0.05 245);
+  --byok-indicator: oklch(0.95 0.04 280);
+  --byok-indicator-foreground: oklch(0.45 0.12 280);
+  --temporary-chat-banner: oklch(0.96 0.035 75);
+  --temporary-chat-banner-foreground: oklch(0.43 0.07 65);
+
+  --sidebar: oklch(0.985 0.001 285);
+  --sidebar-foreground: oklch(0.21 0.006 285);
+  --sidebar-primary: oklch(0.21 0.006 285);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.96 0.004 285);
+  --sidebar-accent-foreground: oklch(0.24 0.006 285);
+  --sidebar-border: oklch(0.916 0.003 285);
+  --sidebar-ring: oklch(0.58 0.16 280);
+}
+
+/* ===== Dark theme ===== */
+.dark {
+  --background: oklch(0.165 0.004 285);
+  --foreground: oklch(0.96 0.002 285);
+  --card: oklch(0.205 0.005 285);
+  --card-foreground: oklch(0.96 0.002 285);
+  --popover: oklch(0.205 0.005 285);
+  --popover-foreground: oklch(0.96 0.002 285);
+
+  --primary: oklch(0.92 0.002 285);
+  --primary-foreground: oklch(0.2 0.006 285);
+  --secondary: oklch(0.27 0.006 285);
+  --secondary-foreground: oklch(0.96 0.002 285);
+  --muted: oklch(0.27 0.006 285);
+  --muted-foreground: oklch(0.7 0.008 285);
+  --accent: oklch(0.28 0.006 285);
+  --accent-foreground: oklch(0.96 0.002 285);
+
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.7 0.14 152);
+  --success-foreground: oklch(0.18 0.02 152);
+  --warning: oklch(0.8 0.14 80);
+  --warning-foreground: oklch(0.25 0.04 80);
+  --info: oklch(0.68 0.12 245);
+  --info-foreground: oklch(0.16 0.02 245);
+
+  --border: oklch(1 0 0 / 11%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.68 0.16 280);
+
+  --brand: oklch(0.68 0.16 280);
+  --brand-foreground: oklch(0.16 0.01 285);
+  --brand-muted: oklch(0.3 0.08 280);
+
+  --message-user: oklch(0.27 0.006 285);
+  --message-user-foreground: oklch(0.96 0.002 285);
+  --message-assistant: transparent;
+  --message-assistant-foreground: oklch(0.96 0.002 285);
+  --reasoning-muted: oklch(0.225 0.005 285);
+  --reasoning-muted-foreground: oklch(0.68 0.008 285);
+  --code-block: oklch(0.235 0.006 285);
+  --code-block-foreground: oklch(0.92 0.004 285);
+  --status-line: oklch(0.7 0.008 285);
+  --substitution-callout: oklch(0.3 0.06 75);
+  --substitution-callout-foreground: oklch(0.88 0.08 80);
+  --substitution-callout-border: oklch(0.45 0.08 75);
+
+  --trust-badge: oklch(0.3 0.04 245);
+  --trust-badge-foreground: oklch(0.82 0.07 245);
+  --byok-indicator: oklch(0.3 0.07 280);
+  --byok-indicator-foreground: oklch(0.85 0.09 280);
+  --temporary-chat-banner: oklch(0.3 0.05 75);
+  --temporary-chat-banner-foreground: oklch(0.86 0.08 80);
+
+  --sidebar: oklch(0.185 0.004 285);
+  --sidebar-foreground: oklch(0.96 0.002 285);
+  --sidebar-primary: oklch(0.68 0.16 280);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.27 0.006 285);
+  --sidebar-accent-foreground: oklch(0.96 0.002 285);
+  --sidebar-border: oklch(1 0 0 / 11%);
+  --sidebar-ring: oklch(0.68 0.16 280);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv11", "ss01";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Streamed-markdown spacing/typography (PRD 01 §5.4). Zero-specificity :where()
+   rules so Streamdown's own element classes always win when present. */
+@layer components {
+  .chat-md {
+    @apply text-[15px] leading-7 text-foreground;
+  }
+  .chat-md :where(p, ul, ol, pre, blockquote, table, h1, h2, h3, h4):not(:first-child) {
+    @apply mt-4;
+  }
+  .chat-md :where(h1, h2, h3, h4) {
+    @apply font-semibold leading-snug;
+  }
+  .chat-md :where(h1) { @apply text-xl; }
+  .chat-md :where(h2) { @apply text-lg; }
+  .chat-md :where(h3) { @apply text-base; }
+  .chat-md :where(ul) { @apply list-disc pl-6; }
+  .chat-md :where(ol) { @apply list-decimal pl-6; }
+  .chat-md :where(li):not(:first-child) { @apply mt-1; }
+  .chat-md :where(a) {
+    @apply text-brand underline underline-offset-2;
+  }
+  .chat-md :where(strong) { @apply font-semibold text-foreground; }
+  .chat-md :where(code):not(:where(pre *)) {
+    @apply rounded bg-muted px-1.5 py-0.5 font-mono text-[0.875em];
+  }
+  .chat-md :where(blockquote) {
+    @apply border-l-2 border-border pl-4 text-muted-foreground;
+  }
+}
+
+/* Reduced motion (PRD 06 §3.4) — degrade shimmer/typing to static. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -4,14 +4,6 @@ import type { ModelTier, ModelTierId } from "@/lib/types";
 // Hints are sourced from the registry (PRD 02); values here are mock.
 export const MODEL_TIERS: ModelTier[] = [
   {
-    id: "auto",
-    label: "Auto",
-    description: "Routes each message to the best-value model for the task.",
-    speedHint: "fast",
-    costHint: "low",
-    contextHint: "Adaptive",
-  },
-  {
     id: "fast",
     label: "Fast",
     description: "Quick, low-cost answers for everyday questions.",

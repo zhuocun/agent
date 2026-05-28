@@ -172,7 +172,7 @@ export const MOCK_CONVERSATIONS: ConversationSummary[] = [
 
 // Privacy-first defaults (PRD 05 / PRD 06 §5.7).
 export const MOCK_PREFERENCES: UserPreferences = {
-  defaultTierId: "auto",
+  defaultTierId: "smart",
   temporaryByDefault: false,
   trainingOptIn: false,
   sendOnEnter: true,

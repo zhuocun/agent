@@ -1,5 +1,7 @@
 # Backend Minimal Plan (Python / FastAPI)
 
+> **Implementation status**: M0–M4 shipped on branch `claude/eloquent-thompson-rxdE6`. 121 tests pass + 1 known xfail (stop-path). See [Post-M4: deferred hardening](#post-m4-deferred-hardening) for the deferred items.
+
 The smallest Python backend that lets the existing Next.js FE at `web/` run against real persistence and a real model provider with **zero UI changes**. The BE is a **separate service** — FastAPI + Postgres, deployed independently, talking to the FE over CORS. Anchored to the FE wire shapes in `web/src/lib/types.ts` and the behavior in `web/src/components/chat/chat-thread.tsx`. PRDs guide direction; anything the FE does not yet render or call is deferred.
 
 "Zero UI changes" caveat: because the BE is no longer co-located, the FE needs a small `apiClient` follow-up to learn the BE origin (`NEXT_PUBLIC_API_BASE_URL`) and send `credentials: 'include'`. No visual changes, no component edits, no new buttons.

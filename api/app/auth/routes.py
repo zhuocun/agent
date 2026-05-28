@@ -112,7 +112,7 @@ async def upgrade(
 
     # Uniqueness check: another user with this email already exists -> 409.
     # MVP: SELECT-then-mutate; two concurrent upgrades could both succeed with the
-    # same email. TODO(m4): add a partial UNIQUE INDEX on users.email WHERE
+    # same email. TODO(post-m4): add a partial UNIQUE INDEX on users.email WHERE
     # email IS NOT NULL, plus retry on IntegrityError -> EMAIL_TAKEN.
     stmt = select(User).where(User.email == normalized_email, User.id != user.id)
     existing = (await db.execute(stmt)).scalar_one_or_none()

@@ -7,7 +7,7 @@ reasoning slice. A unit test asserts the delta.
 
 Cache-read pricing (M4): when `TierBinding.cache_read_per_m` is set, cached
 input tokens bill at that rate (Anthropic ~10% of input price). When None,
-fall back to billing at the input rate (the M1 behavior).
+fall back to 10% of the input rate (the Anthropic cache-read convention).
 """
 
 from __future__ import annotations
@@ -32,12 +32,14 @@ def compute_cost_breakdown(
 
     PRD 07 §7 rule 7: reasoning tokens x output_per_m / 1e6. Cached input
     tokens bill at `cache_read_per_m` when the binding sets it (M4); otherwise
-    they fall back to `input_per_m` (the M1 behavior).
+    they fall back to 10% of `input_per_m` (the Anthropic cache-read rate).
     """
     in_per_m = binding.list_price_in_per_m
     out_per_m = binding.list_price_out_per_m
     cache_per_m = (
-        binding.cache_read_per_m if binding.cache_read_per_m is not None else in_per_m
+        binding.cache_read_per_m
+        if binding.cache_read_per_m is not None
+        else 0.1 * in_per_m
     )
 
     input_cost = usage.input_tokens * in_per_m / 1_000_000
@@ -100,11 +102,14 @@ def build_attribution(
 
     M4: when `substitution` is set (one of the six wire-allowed
     `SubstitutionReasonCode` values), attach a `Substitution` object with a
-    short canonical reason text. `substituted_*` args carry the served
-    provider/model/label that replaced the registry default; they are not
-    fields on the FE's `Substitution` shape today (the wire only carries
-    `reasonCode` + `reasonText`) but are accepted so the call site can read
-    them out of the same plumbing if needed later.
+    short canonical reason text. `substituted_display_label`, when provided,
+    becomes `served_model_label` so the wire reflects the model actually
+    served on a fallback (the whole point of the substitution feature);
+    otherwise the registry default `binding.tier.label` is used.
+    `substituted_provider`/`substituted_model` are not fields on the FE's
+    `Substitution` shape today (the wire only carries `reasonCode` +
+    `reasonText`) but are accepted so the call site can read them out of the
+    same plumbing if needed later.
     """
     sub_obj: Substitution | None = None
     if substitution is not None:
@@ -114,13 +119,19 @@ def build_attribution(
         sub_obj = Substitution.model_validate(
             {"reasonCode": substitution, "reasonText": reason_text}
         )
-    # Reference substituted_* args so unused-warning tooling stays quiet —
-    # they're documented call-site sugar even when not wire-serialized.
-    _ = (substituted_provider, substituted_model, substituted_display_label)
+    # On a fallback, show the served model's label; else the registry default.
+    served_model_label = (
+        substituted_display_label
+        if substituted_display_label is not None
+        else binding.tier.label
+    )
+    # `substituted_provider`/`substituted_model` have no wire field today;
+    # reference them so unused-warning tooling stays quiet.
+    _ = (substituted_provider, substituted_model)
     return ModelAttribution(
         requested_tier_id=requested_tier_id,
         served_tier_id=binding.tier.id,
-        served_model_label=binding.tier.label,
+        served_model_label=served_model_label,
         is_byok=is_byok,
         cost_usd=breakdown.subtotal_usd + breakdown.session_surcharge_usd,
         cost_confidence=cost_confidence,

@@ -24,8 +24,8 @@ class TierBinding:
     `cache_read_per_m` (M4): optional per-million price for cache-read tokens.
     When set, `compute_cost_breakdown` bills `cached_input_tokens` at this rate
     instead of `list_price_in_per_m`. Anthropic cache reads are 10% of input
-    price; populate accordingly. `None` falls back to the input rate (the M1
-    behavior).
+    price; populate accordingly. `None` falls back to 10% of the input rate
+    (the Anthropic cache-read convention).
     """
 
     tier: ModelTier

@@ -19,6 +19,11 @@ Forced mid-stream error: when `user_text` starts with `FORCE_ERROR:`, the
 provider emits the reasoning block and a couple of answer deltas, then raises
 mid-stream (before usage / Complete). Exercises the handler's provider-error
 path: the client receives an `error` frame and no assistant row is persisted.
+
+Forced rate limit: when `user_text` starts with `FORCE_RATE_LIMIT:`, the
+provider raises a typed `AppError(RATE_LIMITED)` with `retryAfterMs` mid-stream,
+mirroring how the real provider maps a 429. Exercises the handler surfacing a
+typed provider error (code + retryAfterMs) on the wire.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 
+from app.errors import AppError, ErrorEnvelope
 from app.providers.protocol import (
     AnswerDelta,
     ChatMessage,
@@ -111,6 +117,19 @@ class FakeProvider:
             # frame and persists nothing for the turn.
             if user_text.startswith("FORCE_ERROR:") and i >= 1:
                 raise RuntimeError("forced provider error")
+            if user_text.startswith("FORCE_RATE_LIMIT:") and i >= 1:
+                # Mirror the real provider mapping a 429 to a typed AppError so
+                # the handler surfaces RATE_LIMITED + retryAfterMs to the wire.
+                raise AppError(
+                    ErrorEnvelope(
+                        code="RATE_LIMITED",
+                        severity="error",
+                        title="Rate limited",
+                        body="The model provider is rate-limiting requests. Please retry shortly.",
+                        retry_after_ms=4200,
+                    ),
+                    status_code=429,
+                )
 
         # Synthetic usage. Reasoning tokens stay nonzero so pricing tests
         # exercise the PRD 07 §7 rule 7 path.

@@ -150,8 +150,12 @@ def test_cache_read_uses_cache_read_per_m_when_set() -> None:
     assert bd.subtotal_usd != pytest.approx(naive_wrong, rel=1e-9)
 
 
-def test_cache_read_falls_back_to_input_rate_when_unset() -> None:
-    """When `cache_read_per_m` is None, fall back to input_per_m (M1 behavior)."""
+def test_cache_read_falls_back_to_ten_percent_of_input_when_unset() -> None:
+    """When `cache_read_per_m` is None, fall back to 10% of input_per_m.
+
+    Anthropic cache reads bill at ~10% of the input rate; the None fallback
+    must reflect that, NOT the full input rate (which over-charges cache reads).
+    """
     from app.providers.tiers import TierBinding
     from app.schemas.tier import ModelTier
 
@@ -174,8 +178,12 @@ def test_cache_read_falls_back_to_input_rate_when_unset() -> None:
     )
     usage = UsageUpdate(input_tokens=1000, cached_input_tokens=500)
     bd = compute_cost_breakdown(usage=usage, binding=legacy)
-    expected = 1500 * 3.0 / 1_000_000  # fallback: both buckets at input rate.
+    # Cache reads at 10% of input; input tokens at the full input rate.
+    expected = (1000 * 3.0 + 500 * 0.1 * 3.0) / 1_000_000
     assert bd.subtotal_usd == pytest.approx(expected, rel=1e-9)
+    # The old (wrong) fallback billed the cache bucket at the full input rate.
+    naive_wrong = 1500 * 3.0 / 1_000_000
+    assert bd.subtotal_usd != pytest.approx(naive_wrong, rel=1e-9)
 
 
 def test_build_attribution_done_path() -> None:
@@ -194,3 +202,36 @@ def test_build_attribution_done_path() -> None:
     assert attr.cost_confidence == "exact"
     assert attr.substitution is None  # M1: no substitution.
     assert attr.cost_usd == pytest.approx(bd.subtotal_usd, rel=1e-9)
+
+
+def test_build_attribution_uses_substituted_label_when_provided() -> None:
+    """On a fallback, served_model_label must reflect the model actually served."""
+    binding = get_binding("smart")
+    assert binding is not None
+    usage = UsageUpdate(input_tokens=10, output_tokens=20)
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+
+    # With a substituted label, the wire shows the served model, not the default.
+    attr = build_attribution(
+        requested_tier_id="smart",
+        binding=binding,
+        breakdown=bd,
+        cost_confidence="estimate",
+        substitution="provider_fallback",
+        substituted_provider="openai",
+        substituted_model="gpt-x",
+        substituted_display_label="Fallback Model X",
+    )
+    assert attr.served_model_label == "Fallback Model X"
+    assert attr.served_model_label != binding.tier.label
+    assert attr.substitution is not None
+    assert attr.substitution.reason_code == "provider_fallback"
+
+    # Without a substituted label, fall back to the registry tier label.
+    attr_default = build_attribution(
+        requested_tier_id="smart",
+        binding=binding,
+        breakdown=bd,
+        cost_confidence="exact",
+    )
+    assert attr_default.served_model_label == binding.tier.label

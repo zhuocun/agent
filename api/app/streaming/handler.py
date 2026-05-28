@@ -46,7 +46,7 @@ from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import usage as usage_repo
 from app.db.session import get_session_factory
-from app.errors import ErrorEnvelope
+from app.errors import AppError, ErrorEnvelope
 from app.providers.factory import build_provider
 from app.providers.pricing import build_attribution, compute_cost_breakdown
 from app.providers.protocol import (
@@ -551,12 +551,19 @@ async def stream_and_persist(
         # and never re-raises on await, so no real exception is hidden here.
         with contextlib.suppress(asyncio.CancelledError):
             await pump_task
-        envelope = ErrorEnvelope(
-            code="PROVIDER_UPSTREAM",
-            severity="error",
-            title="Streaming failed",
-            body=str(exc) or "The provider stream errored.",
-        )
+        if isinstance(exc, AppError):
+            # Provider raised a typed error (e.g. RATE_LIMITED with
+            # retryAfterMs); surface its envelope verbatim.
+            envelope = exc.envelope
+        else:
+            # Unknown failure: generic upstream error. Never leak the raw
+            # exception text to the client.
+            envelope = ErrorEnvelope(
+                code="PROVIDER_UPSTREAM",
+                severity="error",
+                title="Streaming failed",
+                body="The provider stream errored.",
+            )
         yield encode_error(envelope)
         # `error` does NOT persist (plan §"Persistence" rule).
         return

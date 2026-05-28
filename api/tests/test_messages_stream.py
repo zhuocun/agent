@@ -1073,3 +1073,40 @@ async def test_mid_stream_error_emits_error_frame_and_persists_nothing(
     # No leaked background task: title autogen only fires on a successful
     # terminal, so the error turn must not have scheduled one.
     assert all(t.done() for t in _BG_TASKS)
+
+
+async def test_mid_stream_rate_limit_surfaces_typed_envelope(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`FORCE_RATE_LIMIT:` makes the fake provider raise a typed
+    AppError(RATE_LIMITED) mid-stream. The handler must surface that envelope
+    verbatim — code RATE_LIMITED with retryAfterMs — rather than flattening it
+    to a generic PROVIDER_UPSTREAM, and persist no assistant row.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "FORCE_RATE_LIMIT: slow down",
+        },
+    )
+    event_names = [name for name, _ in frames]
+    assert event_names[-1] == "error"
+    assert "terminal" not in event_names
+
+    error_payload = frames[-1][1]
+    assert error_payload["code"] == "RATE_LIMITED"
+    assert error_payload["retryAfterMs"] == 4200
+
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(select(Message).where(Message.role == "assistant"))
+        ).scalars().all()
+        assert assistants == []

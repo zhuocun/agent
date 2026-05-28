@@ -4,13 +4,16 @@ Maps `client.messages.stream(...)` events to our internal `ProviderEvent`s:
 
 - `thinking` block → `ReasoningDelta` + a single `ReasoningDone` at block end.
 - `text` block → `AnswerDelta`.
-- `message_delta` carries `usage` as a running cumulative count (NOT a delta);
-  we last-write-wins each event and emit a single final `UsageUpdate` +
-  `Complete` once the `messages.stream` context closes.
+- Token usage is read from the merged final message after the stream closes.
+  Anthropic reports `input_tokens` and the cache fields on `message_start` and
+  the running cumulative `output_tokens` on each `message_delta`;
+  `get_final_message().usage` reconciles both into one `Usage`, from which we
+  emit a single final `UsageUpdate` + `Complete`.
 
 Per PRD 07 §7 rule 7 (enforced in `pricing.py`), reasoning tokens bill at the
-output rate; we map Anthropic's extended-thinking token count (if present)
-into our canonical `reasoning_tokens` field. Cache token counts map cleanly.
+output rate. Extended thinking is not enabled on the real provider, so
+`reasoning_tokens` stays 0 here; reasoning attribution is exercised by the
+FakeProvider only. Cache token counts map cleanly.
 """
 
 from __future__ import annotations
@@ -18,8 +21,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+import anthropic
 from anthropic import AsyncAnthropic
 
+from app.errors import AppError, ErrorEnvelope
 from app.providers.protocol import (
     AnswerDelta,
     ChatMessage,
@@ -39,6 +44,67 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _retry_after_ms(exc: anthropic.APIStatusError) -> int | None:
+    """Best-effort `retryAfterMs` from a rate-limit response's headers.
+
+    Mirrors the SDK's own precedence: the non-standard millisecond header
+    `retry-after-ms` wins, else integer/float `retry-after` seconds. Returns
+    None when neither header is present or parseable.
+    """
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    ms_header = headers.get("retry-after-ms")
+    if ms_header is not None:
+        try:
+            return int(float(ms_header))
+        except (TypeError, ValueError):
+            pass
+    sec_header = headers.get("retry-after")
+    if sec_header is not None:
+        try:
+            return int(float(sec_header) * 1000)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _map_sdk_error(exc: anthropic.APIError) -> AppError:
+    """Translate an Anthropic SDK error into a typed `AppError`.
+
+    Rate limits become `RATE_LIMITED` (429) with `retryAfterMs` when the
+    upstream response carries a retry-after header; everything else becomes
+    `PROVIDER_UPSTREAM` (502, or 503 for explicit unavailability). The raw SDK
+    message is never placed in the user-facing `body` — only a clean generic
+    string. The original exception is left for the caller to log.
+    """
+    if isinstance(exc, anthropic.RateLimitError):
+        return AppError(
+            ErrorEnvelope(
+                code="RATE_LIMITED",
+                severity="error",
+                title="Rate limited",
+                body="The model provider is rate-limiting requests. Please retry shortly.",
+                retry_after_ms=_retry_after_ms(exc),
+            ),
+            status_code=429,
+        )
+    # 503/529 mean the upstream is unavailable/overloaded; surface as 503 so the
+    # client can treat it as transient. All other upstream failures are 502.
+    status_code = 502
+    if isinstance(exc, anthropic.APIStatusError) and exc.status_code in (503, 529):
+        status_code = 503
+    return AppError(
+        ErrorEnvelope(
+            code="PROVIDER_UPSTREAM",
+            severity="error",
+            title="Provider error",
+            body="The model provider returned an error. Please try again.",
+        ),
+        status_code=status_code,
+    )
 
 
 class AnthropicProvider:
@@ -80,69 +146,61 @@ class AnthropicProvider:
         ]
         messages.append({"role": "user", "content": user_text})
 
-        # Last cumulative usage seen on `message_delta`. Anthropic emits the
-        # running cumulative count on each message_delta, not deltas, so
-        # last-write-wins captures the final tally without summation.
-        input_tokens = 0
-        output_tokens = 0
-        reasoning_tokens = 0
-        cached_input_tokens = 0
-
         # Track whether we're currently inside a thinking block so we can
         # emit exactly one ReasoningDone at block end.
         in_thinking = False
 
         client = self._client_for(api_key)
-        async with client.messages.stream(
-            model=model_id,
-            max_tokens=self._max_tokens,
-            messages=cast(Any, messages),
-        ) as stream:
-            async for event in stream:
-                etype = getattr(event, "type", None)
+        try:
+            async with client.messages.stream(
+                model=model_id,
+                max_tokens=self._max_tokens,
+                messages=cast(Any, messages),
+            ) as stream:
+                async for event in stream:
+                    etype = getattr(event, "type", None)
 
-                if etype == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    block_type = getattr(block, "type", None)
-                    if block_type == "thinking":
-                        in_thinking = True
+                    if etype == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        block_type = getattr(block, "type", None)
+                        if block_type == "thinking":
+                            in_thinking = True
 
-                elif etype == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    dtype = getattr(delta, "type", None)
-                    if dtype == "thinking_delta":
-                        yield ReasoningDelta(text=getattr(delta, "thinking", ""))
-                    elif dtype == "text_delta":
-                        yield AnswerDelta(text=getattr(delta, "text", ""))
+                    elif etype == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        dtype = getattr(delta, "type", None)
+                        if dtype == "thinking_delta":
+                            yield ReasoningDelta(text=getattr(delta, "thinking", ""))
+                        elif dtype == "text_delta":
+                            yield AnswerDelta(text=getattr(delta, "text", ""))
 
-                elif etype == "content_block_stop":
-                    if in_thinking:
-                        yield ReasoningDone()
-                        in_thinking = False
+                    elif etype == "content_block_stop":
+                        if in_thinking:
+                            yield ReasoningDone()
+                            in_thinking = False
 
-                elif etype == "message_delta":
-                    usage = getattr(event, "usage", None)
-                    if usage is not None:
-                        input_tokens = _safe_int(getattr(usage, "input_tokens", None))
-                        output_tokens = _safe_int(getattr(usage, "output_tokens", None))
-                        cache_create = _safe_int(
-                            getattr(usage, "cache_creation_input_tokens", None)
-                        )
-                        cache_read = _safe_int(
-                            getattr(usage, "cache_read_input_tokens", None)
-                        )
-                        cached_input_tokens = cache_create + cache_read
-                        # Optional extended-thinking token count. Field name
-                        # is not stable across SDK versions; try a few.
-                        r_tokens = (
-                            getattr(usage, "thinking_tokens", None)
-                            or getattr(usage, "reasoning_tokens", None)
-                            or getattr(usage, "thinking_output_tokens", None)
-                        )
-                        if r_tokens is not None:
-                            reasoning_tokens = _safe_int(r_tokens)
+                # Read the merged usage once the stream is fully consumed.
+                # Anthropic reports input + cache counts on `message_start` and
+                # the cumulative `output_tokens` on `message_delta`; the SDK
+                # reconciles both into `get_final_message().usage`, so reading
+                # it here gets every bucket (reading only `message_delta` would
+                # drop input/cache counts).
+                final_usage = (await stream.get_final_message()).usage
+        except anthropic.APIError as exc:
+            raise _map_sdk_error(exc) from exc
 
-        # Stream context closed: emit final usage + complete.
+        input_tokens = _safe_int(getattr(final_usage, "input_tokens", None))
+        output_tokens = _safe_int(getattr(final_usage, "output_tokens", None))
+        # Only the cache-READ bucket maps to our cache-priced slot. Cache
+        # creation/write pricing is out of scope until prompt caching is
+        # enabled (no `cache_control` is sent today, so both are 0).
+        cached_input_tokens = _safe_int(
+            getattr(final_usage, "cache_read_input_tokens", None)
+        )
+        # Extended thinking isn't enabled here, so reasoning stays 0 on the real
+        # provider (reasoning attribution is exercised by the FakeProvider only).
+        reasoning_tokens = 0
+
         usage_update = UsageUpdate(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -167,21 +225,22 @@ class AnthropicProvider:
         Returns empty string on a response without a text block (defensive —
         the caller will swallow empty titles).
         """
-        # Title-autogen calls are short; cap output tokens aggressively so a
+        # Title-autogen calls are short; cap output tokens tightly at 64 so a
         # runaway model can't burn a full max_tokens budget on a 5-word title.
-        # The number is intentionally generous (5 words ~ a couple dozen
-        # tokens) to leave headroom for unusual tokenizers.
         messages: list[dict[str, Any]] = [
             {"role": m.role, "content": m.text} for m in history
         ]
         messages.append({"role": "user", "content": user_text})
 
         client = self._client_for(api_key)
-        response = await client.messages.create(
-            model=model_id,
-            max_tokens=64,
-            messages=cast(Any, messages),
-        )
+        try:
+            response = await client.messages.create(
+                model=model_id,
+                max_tokens=64,
+                messages=cast(Any, messages),
+            )
+        except anthropic.APIError as exc:
+            raise _map_sdk_error(exc) from exc
         # `response.content` is a list of content blocks; we concatenate text
         # blocks (skip thinking / tool_use etc.). SDK shapes vary by version
         # so we duck-type defensively.

@@ -161,9 +161,9 @@ export function Sidebar({
       <div className="flex items-center justify-between p-3">
         <div className="flex items-center gap-2">
           <div className="flex size-7 items-center justify-center rounded-lg bg-brand text-sm font-bold text-brand-foreground">
-            A
+            O
           </div>
-          <span className="text-sm font-semibold">Aperture</span>
+          <span className="text-sm font-semibold">Olune</span>
         </div>
         {onCollapse ? (
           <Button

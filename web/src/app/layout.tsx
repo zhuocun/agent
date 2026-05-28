@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aperture — multi-model AI chat",
+  title: "Olune — multi-model AI chat",
   description:
     "A transparent, multi-model, privacy-first AI chat. See which model answered and what it cost.",
 };

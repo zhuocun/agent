@@ -289,10 +289,10 @@ export function ChatThread() {
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
           {/* Top chrome strip — positions the floating buttons (and the
               temporary-chat banner when on) at the top with safe-area
-              reservation. No background fade — the buttons carry their own
-              glass-regular treatment, so messages scrolling underneath
-              stay visible. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 pt-[env(safe-area-inset-top)]">
+              reservation. Gradient bg keeps the iOS status bar text
+              readable as messages scroll up under the notch; fades to
+              transparent below so messages emerge cleanly. */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-2 md:pb-6">
             <div className="pointer-events-auto">
               <AppHeader
                 sidebarOpen={sidebarOpen}

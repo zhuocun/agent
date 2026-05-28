@@ -135,7 +135,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               onClick={submit}
               disabled={!value.trim()}
               aria-label="Send message"
-              className="size-10 shrink-0 rounded-full bg-brand p-0 text-brand-foreground shadow-pill hover:bg-brand/90 disabled:opacity-40 disabled:shadow-none"
+              className="size-10 shrink-0 rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
             >
               <ArrowUp className="size-4" />
             </Button>

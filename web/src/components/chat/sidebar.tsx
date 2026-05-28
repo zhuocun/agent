@@ -123,11 +123,14 @@ function ConversationButton({
       type="button"
       onClick={() => onSelect(conversation.id)}
       aria-label={`${conversation.title}${conversation.pinned ? ", pinned" : ""}`}
+      // iOS-style pill row: generous rounded-2xl, no border/underline/accent
+      // bar, selected row uses bg-muted, hover uses bg-muted/60. The selected
+      // state reads through the fill alone — quieter than the prior accent.
       className={cn(
-        "flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm outline-none transition-colors focus-visible:shadow-[var(--focus-ring)]",
+        "flex min-h-10 w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm outline-none transition-colors focus-visible:shadow-[var(--focus-ring)]",
         active
-          ? "bg-sidebar-accent text-sidebar-accent-foreground"
-          : "hover:bg-sidebar-accent/50"
+          ? "bg-muted text-foreground"
+          : "text-sidebar-foreground hover:bg-muted/60",
       )}
     >
       {conversation.pinned ? (
@@ -169,26 +172,29 @@ export function Sidebar({
           <Button
             type="button"
             variant="ghost"
-            size="icon-sm"
             aria-label="Collapse sidebar"
             onClick={onCollapse}
-            className="text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+            // Matches the floating chrome vocabulary used in app-header so the
+            // sidebar feels like part of the same iOS-style surface.
+            className="size-9 rounded-full border-0 bg-card p-0 text-muted-foreground shadow-float transition-colors hover:bg-card hover:text-foreground"
           >
             <PanelLeftClose className="size-4" aria-hidden />
           </Button>
         ) : null}
       </div>
 
-      <div className="px-3 pb-2">
-        <Button
+      <div className="px-2 pb-2">
+        {/* iOS-style pill row matching the conversation list below — no border,
+            no fill until hover, so the action reads as part of the same surface
+            family rather than a heavy outlined affordance. */}
+        <button
           type="button"
-          variant="outline"
           onClick={onNewChat}
-          className="min-h-10 w-full justify-start gap-2"
+          className="flex min-h-10 w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm font-medium text-sidebar-foreground outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]"
         >
           <Plus className="size-4" aria-hidden />
           <span>New chat</span>
-        </Button>
+        </button>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -225,7 +231,7 @@ export function Sidebar({
           type="button"
           onClick={onOpenSettings}
           aria-label="Open settings"
-          className="flex w-full items-center gap-2 rounded-md p-2 text-left outline-none transition-colors hover:bg-sidebar-accent/50 focus-visible:shadow-[var(--focus-ring)]"
+          className="flex w-full items-center gap-2 rounded-2xl p-2 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]"
         >
           <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
             {initials(account.name)}

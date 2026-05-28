@@ -14,6 +14,12 @@ import { cn } from "@/lib/utils";
 
 interface AppHeaderProps {
   title: string;
+  /**
+   * Optional second line under the title (model/agent context). When omitted
+   * the header renders a single centered line — per design, "if subtitle data
+   * isn't trivially available, just render line 1".
+   */
+  subtitle?: string;
   onNewChat?: () => void;
   onOpenMobileNav?: () => void;
   onOpenSidebar?: () => void;
@@ -23,8 +29,20 @@ interface AppHeaderProps {
   onToggleTemporary?: () => void;
 }
 
+// Shared chrome treatment for every header affordance — a small circular
+// "floating" button that sits on the page background rather than inside a bar.
+// Mirrors the Claude / Codex iOS chrome: chrome floats, content shows through.
+const FLOAT_BUTTON =
+  "size-9 rounded-full border-0 bg-card p-0 text-muted-foreground shadow-float transition-colors hover:bg-card hover:text-foreground";
+
+// Mobile drawer / menu kebab use a 44px target for thumb reach; on desktop
+// they collapse so the 36px chrome controls take over.
+const FLOAT_BUTTON_TOUCH =
+  "size-11 rounded-full border-0 bg-card p-0 text-muted-foreground shadow-float transition-colors hover:bg-card hover:text-foreground md:hidden";
+
 export function AppHeader({
   title,
+  subtitle,
   onNewChat,
   onOpenMobileNav,
   onOpenSidebar,
@@ -34,49 +52,60 @@ export function AppHeader({
   onToggleTemporary,
 }: AppHeaderProps) {
   return (
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center justify-between gap-3 bg-background px-3 pt-[env(safe-area-inset-top)] pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:px-4 sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]">
-      <div className="flex min-w-0 items-center gap-2">
-        {/* Mobile: open the navigation drawer. 44px touch target on mobile. */}
+    <header
+      // No sticky, no border, no bar background — the header sits ON the page
+      // background and the floating buttons read as chrome via `shadow-float`.
+      // Generous h-16 matches iOS nav-bar proportions.
+      className="relative z-30 flex h-16 shrink-0 items-center gap-2 bg-background px-3 pt-[env(safe-area-inset-top)] pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:px-4 sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]"
+    >
+      {/* LEFT cluster — drawer (mobile) and sidebar reopen (desktop, when collapsed). */}
+      <div className="flex flex-1 items-center justify-start gap-2">
         <Button
           type="button"
           variant="ghost"
           aria-label="Open navigation"
           onClick={onOpenMobileNav}
-          className="size-11 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:hidden"
+          className={cn(FLOAT_BUTTON_TOUCH)}
         >
           <PanelLeft className="size-4" />
         </Button>
-        {/* Desktop: reopen the collapsed sidebar rail. */}
         {!sidebarOpen ? (
           <Button
             type="button"
             variant="ghost"
             aria-label="Open sidebar"
             onClick={onOpenSidebar}
-            className="hidden size-9 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:inline-flex"
+            className={cn("hidden md:inline-flex", FLOAT_BUTTON)}
           >
             <PanelLeft className="size-4" />
           </Button>
         ) : null}
-        {/* Brand: always on mobile; on desktop only when the sidebar is collapsed
-            (the open sidebar already shows the wordmark). */}
-        <div className={cn("flex items-center gap-2", sidebarOpen && "md:hidden")}>
-          <div className="flex size-7 items-center justify-center rounded-lg bg-brand text-sm font-bold text-brand-foreground">
-            O
-          </div>
-          <span className="text-sm font-semibold">Olune</span>
-        </div>
       </div>
 
-      <div className="hidden min-w-0 flex-1 px-4 text-center sm:block">
-        <span className="block truncate text-sm text-muted-foreground">
-          {title}
+      {/* CENTER — two-line title block, absolutely centered to the viewport so the
+          number of side buttons never shifts the title off-axis. `pointer-events-none`
+          on the outer wrapper lets clicks fall through to nothing (title is not
+          a control); the inner text remains selectable for accessibility tools.
+
+          Per the iOS chrome spec: when no chat is selected the caller still passes
+          a functional title ("New chat"), but the header should read as the app
+          shell ("Olune") rather than restating the empty state. We do that
+          translation here so callers stay untouched. */}
+      <div className="pointer-events-none absolute inset-x-0 top-[env(safe-area-inset-top)] flex h-16 flex-col items-center justify-center px-24 text-center md:px-44">
+        <span className="block max-w-full truncate text-sm font-semibold leading-tight text-foreground">
+          {title === "New chat" ? "Olune" : title}
         </span>
+        {subtitle ? (
+          <span className="block max-w-full truncate text-xs leading-tight text-muted-foreground">
+            {subtitle}
+          </span>
+        ) : null}
       </div>
 
-      <div className="flex items-center gap-1">
+      {/* RIGHT cluster — temp chat, new chat, settings, theme, mobile overflow. */}
+      <div className="flex flex-1 items-center justify-end gap-2">
         {/* Temporary-chat: inline from md: up; collapsed into the overflow menu
-            below md: so four 44px controls don't crowd a 360px viewport. */}
+            below md: so the right cluster doesn't crowd small viewports. */}
         <Button
           type="button"
           variant="ghost"
@@ -84,7 +113,8 @@ export function AppHeader({
           aria-pressed={isTemporary}
           onClick={onToggleTemporary}
           className={cn(
-            "hidden size-9 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:inline-flex",
+            "hidden md:inline-flex",
+            FLOAT_BUTTON,
             isTemporary && "text-foreground",
           )}
         >
@@ -93,11 +123,11 @@ export function AppHeader({
         <Button
           type="button"
           variant="ghost"
+          aria-label="New chat"
           onClick={onNewChat}
-          className="size-11 p-0 hover:bg-muted/60 sm:h-9 sm:w-auto sm:gap-1.5 sm:px-2.5 sm:text-sm"
+          className={cn(FLOAT_BUTTON)}
         >
           <Plus className="size-4" />
-          <span className="hidden sm:inline">New chat</span>
         </Button>
         {/* Settings: inline from md: up; in the overflow menu below md:. */}
         <Button
@@ -105,14 +135,14 @@ export function AppHeader({
           variant="ghost"
           aria-label="Open settings"
           onClick={onOpenSettings}
-          className="hidden size-9 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:inline-flex"
+          className={cn("hidden md:inline-flex", FLOAT_BUTTON)}
         >
           <Settings className="size-4" />
         </Button>
         <ThemeToggle />
 
-        {/* Mobile overflow: collapses temporary-chat + settings into a 44px
-            kebab so each touch target stays ≥44px without overflow. */}
+        {/* Mobile overflow: collapses temporary-chat + settings into a single
+            44px kebab so each touch target stays ≥44px without overflow. */}
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
@@ -120,7 +150,7 @@ export function AppHeader({
                 type="button"
                 variant="ghost"
                 aria-label="More options"
-                className="size-11 p-0 text-muted-foreground hover:bg-muted/60 hover:text-foreground md:hidden"
+                className={cn(FLOAT_BUTTON_TOUCH)}
               >
                 <MoreVertical className="size-4" />
               </Button>

@@ -38,7 +38,7 @@ export function ThemeToggle() {
             type="button"
             variant="ghost"
             aria-label="Change theme"
-            className="size-9 rounded-full bg-transparent p-0 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            className="size-9 rounded-full border-0 bg-card p-0 text-muted-foreground shadow-float transition-colors hover:bg-card hover:text-foreground"
           >
             <Active className="size-4" />
           </Button>

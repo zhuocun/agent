@@ -144,7 +144,7 @@ export function CostBreakdownDetails({
   const hasSurcharge = b.sessionSurchargeUsd > 0;
 
   return (
-    <div className="bg-muted/40 space-y-2.5 rounded-2xl p-4 text-xs">
+    <div className="bg-muted/50 space-y-2.5 rounded-2xl p-4 text-xs">
       <dl>
         <Row label="Input tokens" value={formatTokens(b.inputTokens)} />
         <Row label="Output tokens" value={formatTokens(b.outputTokens)} />

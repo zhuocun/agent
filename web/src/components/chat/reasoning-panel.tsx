@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Brain, ChevronDown } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 
 import {
   Collapsible,
@@ -44,39 +44,28 @@ export function ReasoningPanel({
   const label = isStreaming
     ? "Thinking…"
     : durationSec && durationSec > 0
-      ? `Thought for ${formatDuration(durationSec)}`
+      ? `Reasoned for ${formatDuration(durationSec)}`
       : "Reasoning";
 
   return (
     <Collapsible
       open={open}
       onOpenChange={handleOpenChange}
-      className={cn(
-        "overflow-hidden rounded-xl border-l-2 border-brand/30",
-        "text-reasoning-muted-foreground",
-      )}
+      className="text-muted-foreground"
     >
       <CollapsibleTrigger
         aria-label={open ? "Hide reasoning" : "Show reasoning"}
         className={cn(
-          "group/reasoning flex min-h-10 w-full items-center gap-2 px-3 py-2",
-          "text-left text-sm font-medium text-reasoning-muted-foreground",
-          "transition-colors hover:bg-muted/40",
-          "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+          "group/reasoning -mx-1 flex w-full min-h-10 items-center gap-1.5 rounded-md px-1 py-1",
+          "text-left text-sm text-muted-foreground",
+          "transition-colors hover:text-foreground",
+          "outline-none focus-visible:shadow-[var(--focus-ring)]",
         )}
       >
-        <Brain
-          aria-hidden="true"
-          className={cn(
-            "size-4 shrink-0 text-reasoning-muted-foreground",
-            isStreaming && "motion-safe:animate-pulse",
-          )}
-        />
-
         {isStreaming ? (
           <span
             className={cn(
-              "bg-gradient-to-r from-reasoning-muted-foreground via-foreground to-reasoning-muted-foreground",
+              "bg-gradient-to-r from-muted-foreground via-foreground to-muted-foreground",
               "bg-[length:200%_100%] bg-clip-text text-transparent",
               "motion-safe:animate-shimmer",
             )}
@@ -87,11 +76,11 @@ export function ReasoningPanel({
           <span>{label}</span>
         )}
 
-        <ChevronDown
+        <ChevronRight
           aria-hidden="true"
           className={cn(
-            "ml-auto size-4 shrink-0 text-reasoning-muted-foreground transition-transform duration-200",
-            open && "rotate-180",
+            "ml-auto size-4 shrink-0 text-muted-foreground/70 transition-transform duration-200",
+            open && "rotate-90",
           )}
         />
       </CollapsibleTrigger>
@@ -107,8 +96,8 @@ export function ReasoningPanel({
       >
         <p
           className={cn(
-            "px-3 pb-3 pt-1 text-sm leading-relaxed",
-            "whitespace-pre-wrap break-words text-reasoning-muted-foreground",
+            "mt-2 border-l border-foreground/10 pl-3 text-sm leading-relaxed",
+            "whitespace-pre-wrap break-words text-muted-foreground",
           )}
         >
           {text}

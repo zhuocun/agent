@@ -13,6 +13,7 @@ import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
+import { MODEL_TIERS_BY_ID } from "@/lib/model-tiers";
 import { useMockStream, type MockStreamResult } from "@/lib/use-mock-stream";
 import {
   MOCK_ACCOUNT,
@@ -289,6 +290,7 @@ export function ChatThread() {
       >
         <AppHeader
           title={headerTitle}
+          subtitle={MODEL_TIERS_BY_ID[selectedTierId].label}
           sidebarOpen={sidebarOpen}
           onOpenMobileNav={() => setMobileNavOpen(true)}
           onOpenSidebar={() => setSidebarOpen(true)}

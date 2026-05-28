@@ -142,9 +142,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           )}
         </div>
       </div>
-      <p className="mt-2 text-center text-xs text-muted-foreground">
-        Verify important information.
-      </p>
     </div>
   );
 });

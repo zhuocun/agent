@@ -296,7 +296,7 @@ export function ChatThread() {
               where it meets the scroll area. `pointer-events-none` on the
               outer strip + `pointer-events-auto` on the inner block lets
               clicks fall through the fade zone to messages beneath. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-6">
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-2 md:pb-6">
             <div className="pointer-events-auto">
               <AppHeader
                 title={headerTitle}
@@ -323,8 +323,8 @@ export function ChatThread() {
             <div
               className={
                 isTemporary
-                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+7rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
-                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
+                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(env(safe-area-inset-bottom)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
+                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(env(safe-area-inset-bottom)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
               }
             >
               <WelcomeScreen
@@ -336,8 +336,8 @@ export function ChatThread() {
             <div
               className={
                 isTemporary
-                  ? "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+7rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
-                  : "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+5rem)] pb-[calc(env(safe-area-inset-bottom)+11rem)]"
+                  ? "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(env(safe-area-inset-bottom)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
+                  : "flex min-h-0 flex-1 items-center justify-center px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(env(safe-area-inset-bottom)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
               }
             >
               <p className="max-w-sm text-center text-sm text-muted-foreground">

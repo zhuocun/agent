@@ -61,7 +61,7 @@ export function AppHeader({
       // Generous h-16 matches iOS nav-bar proportions. The parent chrome strip
       // owns the safe-area-top padding, the gradient bg, and the z-index; we
       // only handle the horizontal safe-area insets that the strip can't.
-      className="relative flex h-16 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)]"
+      className="relative flex h-14 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)] md:h-16"
     >
       {/* LEFT cluster — drawer (mobile) and sidebar reopen (desktop, when collapsed). */}
       <div className="flex flex-1 items-center justify-start gap-2">
@@ -96,7 +96,7 @@ export function AppHeader({
           a functional title ("New chat"), but the header should read as the app
           shell ("Olune") rather than restating the empty state. We do that
           translation here so callers stay untouched. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex h-16 flex-col items-center justify-center px-24 text-center md:px-44">
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex h-14 flex-col items-center justify-center px-24 text-center md:h-16 md:px-44">
         <span className="block max-w-full truncate text-sm font-semibold leading-tight text-foreground">
           {title === "New chat" ? "Olune" : title}
         </span>

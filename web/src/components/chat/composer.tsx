@@ -12,7 +12,6 @@ import { ArrowUp, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ModelModePicker } from "@/components/chat/model-mode-picker";
-import { UsageMeter } from "@/components/chat/usage-meter";
 import {
   SlashCommandsPopover,
   filterCommands,
@@ -24,7 +23,6 @@ import type {
   ModelTierId,
   ReasoningEffortId,
   SlashCommand,
-  UsageBudget,
 } from "@/lib/types";
 
 const SLASH_PATTERN = /^\/(\w*)$/;
@@ -35,7 +33,6 @@ interface ComposerProps {
   onSelectTier: (id: ModelTierId) => void;
   selectedReasoningEffortId: ReasoningEffortId;
   onSelectReasoningEffort: (id: ReasoningEffortId) => void;
-  usage: UsageBudget;
   onSend: (text: string) => void;
   onStop: () => void;
   sendOnEnter?: boolean;
@@ -55,7 +52,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onSelectTier,
     selectedReasoningEffortId,
     onSelectReasoningEffort,
-    usage,
     onSend,
     onStop,
     sendOnEnter = true,
@@ -257,11 +253,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       />
       <div
         ref={capsuleRef}
-        className="glass-capsule rounded-[28px] p-3 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+        className="glass-capsule flex items-end gap-2 rounded-[28px] px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
       >
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>
+        <div className="flex h-9 shrink-0 items-center">
+          <ModelModePicker
+            tiers={MODEL_TIERS}
+            selectedTierId={selectedTierId}
+            onSelectTier={onSelectTier}
+            efforts={REASONING_EFFORTS}
+            selectedEffortId={selectedReasoningEffortId}
+            onSelectEffort={onSelectReasoningEffort}
+          />
+        </div>
         <textarea
           id="composer-input"
           ref={ref}
@@ -283,44 +289,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 "aria-activedescendant": slashActiveOptionId,
               }
             : {})}
-          className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 pt-2 text-[17px] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-base"
+          className="block max-h-[200px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2 text-[17px] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-base"
         />
-        <div className="mt-1 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <ModelModePicker
-              tiers={MODEL_TIERS}
-              selectedTierId={selectedTierId}
-              onSelectTier={onSelectTier}
-              efforts={REASONING_EFFORTS}
-              selectedEffortId={selectedReasoningEffortId}
-              onSelectEffort={onSelectReasoningEffort}
-            />
-            <span className="hidden sm:block">
-              <UsageMeter usage={usage} />
-            </span>
-          </div>
-
-          {isStreaming ? (
-            <Button
-              type="button"
-              onClick={onStop}
-              aria-label="Stop generating"
-              className="size-10 shrink-0 rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90"
-            >
-              <Square className="size-3.5 fill-current" />
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              onClick={submit}
-              disabled={!value.trim()}
-              aria-label="Send message"
-              className="size-10 shrink-0 rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
-            >
-              <ArrowUp className="size-4" />
-            </Button>
-          )}
-        </div>
+        {isStreaming ? (
+          <Button
+            type="button"
+            onClick={onStop}
+            aria-label="Stop generating"
+            className="size-9 shrink-0 rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90"
+          >
+            <Square className="size-3.5 fill-current" />
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            onClick={submit}
+            disabled={!value.trim()}
+            aria-label="Send message"
+            className="size-9 shrink-0 rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
+          >
+            <ArrowUp className="size-4" />
+          </Button>
+        )}
       </div>
     </div>
   );

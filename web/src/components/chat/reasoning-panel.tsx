@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight } from "lucide-react";
 
 import {
   Collapsible,
@@ -56,16 +55,15 @@ export function ReasoningPanel({
       <CollapsibleTrigger
         aria-label={open ? "Hide reasoning" : "Show reasoning"}
         className={cn(
-          "group/reasoning -mx-1 flex w-full min-h-10 items-center gap-1.5 rounded-md px-1 py-1",
-          "text-left text-sm text-muted-foreground",
-          "transition-colors hover:text-foreground",
-          "outline-none focus-visible:shadow-[var(--focus-ring)]",
+          "inline-flex items-center text-left text-xs text-muted-foreground/70",
+          "bg-transparent p-0 hover:underline underline-offset-2",
+          "outline-none focus-visible:underline",
         )}
       >
         {isStreaming ? (
           <span
             className={cn(
-              "bg-gradient-to-r from-muted-foreground via-foreground to-muted-foreground",
+              "bg-gradient-to-r from-muted-foreground/70 via-foreground/80 to-muted-foreground/70",
               "bg-[length:200%_100%] bg-clip-text text-transparent",
               "motion-safe:animate-shimmer",
             )}
@@ -75,17 +73,8 @@ export function ReasoningPanel({
         ) : (
           <span>{label}</span>
         )}
-
-        <ChevronRight
-          aria-hidden="true"
-          className={cn(
-            "ml-auto size-4 shrink-0 text-muted-foreground/70 transition-transform duration-200",
-            open && "rotate-90",
-          )}
-        />
       </CollapsibleTrigger>
 
-      {/* keepMounted preserves streamed text so live updates stay smooth while collapsed. */}
       <CollapsibleContent
         keepMounted
         className={cn(

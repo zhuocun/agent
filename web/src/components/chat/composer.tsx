@@ -59,6 +59,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // then arm again on the next fresh "/…" token.
   const [slashDismissed, setSlashDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  // Anchor for the popover's outside-click guard — clicks anywhere on the
+  // composer surface (textarea, tier picker, send button) must NOT dismiss
+  // the popover.
+  const capsuleRef = useRef<HTMLDivElement>(null);
+  // Tracks the previous value so updateValue can detect transitions — namely a
+  // "fresh slash" (prev didn't start with "/", new does) which re-arms the
+  // popover even when the user has dismissed an earlier token with Escape.
+  const prevValueRef = useRef("");
   const slashListboxId = useId();
   const slashOptionPrefix = useId();
 
@@ -87,10 +95,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   const updateValue = (next: string) => {
+    const prev = prevValueRef.current;
+    prevValueRef.current = next;
     setValue(next);
     if (next.match(SLASH_PATTERN)) {
       // Reset highlight on every filter change so the first row stays selected.
       setSlashSelectedIndex(0);
+      // Fresh-slash re-arm: if the prior value did NOT start with "/" and the
+      // new one does, treat this as a brand-new slash session and clear any
+      // earlier Escape dismissal. This covers the flow: type "/foo" → Esc →
+      // backspace through to "" → type "/" again. (Backspacing within the
+      // same slash token — e.g. "/foo" → "/fo" — preserves dismissal.)
+      if (slashDismissed && !prev.startsWith("/") && next.startsWith("/")) {
+        setSlashDismissed(false);
+      }
     } else {
       // Token no longer present → re-arm the popover for the next "/…".
       if (slashDismissed) setSlashDismissed(false);
@@ -100,6 +118,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const pickCommand = (command: SlashCommand) => {
     const next = command.prompt;
+    prevValueRef.current = next;
     setValue(next);
     setSlashDismissed(false);
     setSlashSelectedIndex(0);
@@ -118,7 +137,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   useImperativeHandle(forwardedRef, () => ({
     setDraft: (text: string) => {
+      prevValueRef.current = text;
       setValue(text);
+      // A parent setting a draft (e.g. inserting "/something") is an explicit
+      // re-arm: the popover should open if the new draft is a slash token.
+      setSlashDismissed(false);
+      setSlashSelectedIndex(0);
       const ta = ref.current;
       if (ta) {
         ta.focus();
@@ -134,6 +158,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const text = value.trim();
     if (!text || isStreaming) return;
     onSend(text);
+    prevValueRef.current = "";
     setValue("");
     requestAnimationFrame(() => {
       if (ref.current) ref.current.style.height = "auto";
@@ -218,8 +243,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         onClose={() => setSlashDismissed(true)}
         listboxId={slashListboxId}
         optionIdPrefix={slashOptionPrefix}
+        anchorRef={capsuleRef}
       />
-      <div className="glass-capsule rounded-[28px] p-3 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]">
+      <div
+        ref={capsuleRef}
+        className="glass-capsule rounded-[28px] p-3 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+      >
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>

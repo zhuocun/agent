@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, type JSX } from "react";
+import { useEffect, useId, useMemo, useRef, type JSX, type RefObject } from "react";
 import {
   Bug,
   Code2,
@@ -39,6 +39,10 @@ export interface SlashCommandsPopoverProps {
   // pairs across the two components.
   listboxId?: string;
   optionIdPrefix?: string;
+  // Optional anchor element (e.g. the composer capsule). Clicks inside this
+  // element count as "inside" for outside-click dismissal — so positioning the
+  // cursor in the textarea doesn't close the popover.
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
 // Case-insensitive name/description filter. Pure so the composer can compute
@@ -66,6 +70,7 @@ export function SlashCommandsPopover({
   onClose,
   listboxId,
   optionIdPrefix,
+  anchorRef,
 }: SlashCommandsPopoverProps): JSX.Element | null {
   const popupRef = useRef<HTMLDivElement>(null);
   const fallbackListboxId = useId();
@@ -80,18 +85,23 @@ export function SlashCommandsPopover({
 
   // Outside-click dismissal — pointerdown beats the textarea's click and runs
   // before focus mutations, so the textarea keeps focus after the popover
-  // closes (the composer never moves focus on close).
+  // closes (the composer never moves focus on close). Clicks inside the
+  // anchor (the composer capsule) also count as "inside" so cursor positioning
+  // or tier-picker interaction never dismisses the popover.
   useEffect(() => {
     if (!open) return;
     const handler = (event: PointerEvent): void => {
       const node = popupRef.current;
       if (!node) return;
-      if (event.target instanceof Node && node.contains(event.target)) return;
+      if (!(event.target instanceof Node)) return;
+      if (node.contains(event.target)) return;
+      const anchor = anchorRef?.current;
+      if (anchor && anchor.contains(event.target)) return;
       onClose();
     };
     document.addEventListener("pointerdown", handler);
     return () => document.removeEventListener("pointerdown", handler);
-  }, [open, onClose]);
+  }, [open, onClose, anchorRef]);
 
   if (!open) return null;
 
@@ -104,7 +114,7 @@ export function SlashCommandsPopover({
     <div
       ref={popupRef}
       className={cn(
-        "absolute bottom-full left-0 right-0 z-20 mx-4 mb-2",
+        "absolute bottom-full inset-x-0 z-20 mb-2",
         "glass-strong overflow-hidden rounded-2xl text-foreground shadow-pill",
         "transition-opacity duration-150 motion-reduce:transition-none",
       )}
@@ -113,64 +123,69 @@ export function SlashCommandsPopover({
       <div id={`${resolvedListboxId}-label`} className="sr-only">
         Slash commands
       </div>
+      {/* Always render the listbox so `aria-controls` on the textarea points
+          at a real element — even when no commands match. An empty listbox is
+          valid ARIA; the no-match hint sits alongside it inside the popup. */}
+      <ul
+        role="listbox"
+        id={resolvedListboxId}
+        aria-labelledby={`${resolvedListboxId}-label`}
+        className={cn(
+          "max-h-72 overflow-y-auto py-1",
+          filtered.length === 0 && "sr-only",
+        )}
+      >
+        {filtered.map((command, index) => {
+          const isSelected = index === clamped;
+          const Icon = COMMAND_ICONS[command.icon];
+          const id = `${resolvedOptionPrefix}-${index}`;
+          return (
+            <li
+              key={command.id}
+              id={id}
+              role="option"
+              aria-selected={isSelected}
+              onMouseEnter={() => onSelectedIndexChange(index)}
+              onMouseDown={(e) => {
+                // mousedown beats the textarea's blur, which would unmount
+                // the popover before the click resolved.
+                e.preventDefault();
+                onPick(command);
+              }}
+              className={cn(
+                "mx-1 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-sm",
+                isSelected
+                  ? "bg-accent text-accent-foreground"
+                  : "text-foreground",
+              )}
+            >
+              <span
+                className={cn(
+                  "flex size-7 shrink-0 items-center justify-center rounded-lg",
+                  isSelected
+                    ? "bg-brand-muted text-brand"
+                    : "bg-secondary text-muted-foreground",
+                )}
+              >
+                <Icon aria-hidden className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-mono text-[13px] font-medium">
+                  /{command.name}
+                </span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {command.description}
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
       {filtered.length === 0 ? (
         <div className="px-4 py-3 text-sm text-muted-foreground">
           No commands match — keep typing for a regular message.
         </div>
-      ) : (
-        <ul
-          role="listbox"
-          id={resolvedListboxId}
-          aria-labelledby={`${resolvedListboxId}-label`}
-          className="max-h-72 overflow-y-auto py-1"
-        >
-          {filtered.map((command, index) => {
-            const isSelected = index === clamped;
-            const Icon = COMMAND_ICONS[command.icon];
-            const id = `${resolvedOptionPrefix}-${index}`;
-            return (
-              <li
-                key={command.id}
-                id={id}
-                role="option"
-                aria-selected={isSelected}
-                onMouseEnter={() => onSelectedIndexChange(index)}
-                onMouseDown={(e) => {
-                  // mousedown beats the textarea's blur, which would unmount
-                  // the popover before the click resolved.
-                  e.preventDefault();
-                  onPick(command);
-                }}
-                className={cn(
-                  "mx-1 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-sm",
-                  isSelected
-                    ? "bg-accent text-accent-foreground"
-                    : "text-foreground",
-                )}
-              >
-                <span
-                  className={cn(
-                    "flex size-7 shrink-0 items-center justify-center rounded-lg",
-                    isSelected
-                      ? "bg-brand-muted text-brand"
-                      : "bg-secondary text-muted-foreground",
-                  )}
-                >
-                  <Icon aria-hidden className="size-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block font-mono text-[13px] font-medium">
-                    /{command.name}
-                  </span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {command.description}
-                  </span>
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -14,6 +14,22 @@ export interface ModelTier {
   contextHint: string; // e.g. "128K"
 }
 
+// Reasoning-effort / extended-thinking control surfaced in the composer
+// (PRD 01 §4.2 / §4.3). Mapping to provider knobs lives in PRD 02; the UI
+// only needs the relative cost/latency hints to honour the transparency
+// wedge ("higher reasoning ⇒ higher cost, slower").
+export type ReasoningEffortId = "auto" | "minimal" | "standard" | "extended";
+
+export interface ReasoningEffort {
+  id: ReasoningEffortId;
+  label: string;
+  description: string;
+  // Relative hints; map to provider knobs in PRD 02. UI uses them for the
+  // "Cost: …" / "Latency: …" indicators in the dropdown.
+  costHint: "auto" | "lowest" | "low" | "medium" | "high";
+  latencyHint: "auto" | "fastest" | "fast" | "balanced" | "slow";
+}
+
 export type SubstitutionReasonCode =
   | "auto_downgrade"
   | "provider_fallback"

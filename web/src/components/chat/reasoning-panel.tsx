@@ -16,17 +16,21 @@ export interface ReasoningPanelProps {
   text: string;
   durationSec?: number;
   isStreaming: boolean; // true while reasoning tokens are still arriving
+  // When true, a completed panel stays expanded by default (user preference).
+  defaultOpen?: boolean;
 }
 
 export function ReasoningPanel({
   text,
   durationSec,
   isStreaming,
+  defaultOpen = false,
 }: ReasoningPanelProps) {
-  // Open is seeded from isStreaming (Thinking auto-expands; Done auto-collapses).
-  // Once the user toggles manually, we respect their choice for the session and
-  // stop auto-syncing to isStreaming (§5.2: "remembered for the session").
-  const [open, setOpen] = useState(isStreaming);
+  // Open is seeded from isStreaming (Thinking auto-expands) OR defaultOpen, so a
+  // completed message starts expanded when the user prefers it. Once the user
+  // toggles manually, we respect their choice for the session and stop
+  // auto-syncing (§5.2: "remembered for the session").
+  const [open, setOpen] = useState(isStreaming || defaultOpen);
   const userToggled = useRef(false);
   const prevStreaming = useRef(isStreaming);
 
@@ -34,11 +38,12 @@ export function ReasoningPanel({
     if (prevStreaming.current !== isStreaming) {
       prevStreaming.current = isStreaming;
       if (!userToggled.current) {
-        // Auto: expand while thinking, collapse on completion.
-        setOpen(isStreaming);
+        // Auto: expand while thinking; on completion stay open if defaultOpen,
+        // otherwise collapse.
+        setOpen(isStreaming || defaultOpen);
       }
     }
-  }, [isStreaming]);
+  }, [isStreaming, defaultOpen]);
 
   const handleOpenChange = (next: boolean) => {
     userToggled.current = true;
@@ -56,7 +61,7 @@ export function ReasoningPanel({
       open={open}
       onOpenChange={handleOpenChange}
       className={cn(
-        "overflow-hidden rounded-lg border border-border/60",
+        "overflow-hidden rounded-lg border border-border",
         "bg-reasoning-muted text-reasoning-muted-foreground",
       )}
     >

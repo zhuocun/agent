@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Children, useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 // (PRD 03 §4.4).
 export function MessageList({ children }: { children: React.ReactNode }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLOListElement>(null);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
 
@@ -49,12 +49,15 @@ export function MessageList({ children }: { children: React.ReactNode }) {
         onScroll={recompute}
         className="h-full overflow-y-auto overscroll-contain"
       >
-        <div
+        <ol
           ref={contentRef}
-          className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 py-6"
+          aria-label="Messages"
+          className="mx-auto flex w-full max-w-3xl list-none flex-col gap-7 px-4 py-6"
         >
-          {children}
-        </div>
+          {Children.map(children, (child) => (
+            <li className="list-none">{child}</li>
+          ))}
+        </ol>
       </div>
 
       {!atBottom ? (

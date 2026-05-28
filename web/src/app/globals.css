@@ -135,12 +135,12 @@
 
   --border: oklch(0.916 0.004 250);
   --input: oklch(0.916 0.004 250);
-  --ring: oklch(0.58 0.13 270);
+  --ring: oklch(0.58 0.17 245);
 
   /* Brand: cobalt-indigo, lower chroma so it sits with glass instead of fighting it. */
-  --brand: oklch(0.55 0.13 270);
+  --brand: oklch(0.56 0.17 245);
   --brand-foreground: oklch(0.99 0 0);
-  --brand-muted: oklch(0.95 0.025 270);
+  --brand-muted: oklch(0.95 0.035 245);
 
   /* Chat surfaces */
   --message-user: oklch(0.955 0.005 250);
@@ -173,7 +173,7 @@
   --sidebar-accent: oklch(0.96 0.005 250);
   --sidebar-accent-foreground: oklch(0.24 0.006 250);
   --sidebar-border: oklch(0.916 0.004 250);
-  --sidebar-ring: oklch(0.58 0.13 270);
+  --sidebar-ring: oklch(0.58 0.17 245);
 
   /* ===== Liquid Glass material tokens (Apple Liquid Glass — iOS 26 / macOS 26) =====
      Locked names; consumed by `@utility glass-*` and by component workers. */
@@ -202,8 +202,8 @@
   --float-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 12px -2px rgba(0, 0, 0, 0.08);
   --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 10px 24px -8px rgba(0, 0, 0, 0.20);
 
-  /* Focus ring — aligned to brand hue 270. */
-  --focus-ring: 0 0 0 3px oklch(0.62 0.12 255 / 0.35);
+  /* Focus ring — aligned to brand hue 245. */
+  --focus-ring: 0 0 0 3px oklch(0.62 0.16 245 / 0.35);
 }
 
 /* ===== Dark theme ===== */
@@ -235,11 +235,11 @@
 
   --border: oklch(1 0 0 / 11%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.68 0.13 270);
+  --ring: oklch(0.70 0.16 245);
 
-  --brand: oklch(0.68 0.13 270);
-  --brand-foreground: oklch(0.16 0.01 250);
-  --brand-muted: oklch(0.3 0.07 270);
+  --brand: oklch(0.70 0.16 245);
+  --brand-foreground: oklch(0.16 0.01 245);
+  --brand-muted: oklch(0.32 0.09 245);
 
   --message-user: oklch(0.27 0.006 250);
   --message-user-foreground: oklch(0.96 0.003 250);
@@ -265,12 +265,12 @@
 
   --sidebar: oklch(0.185 0.008 250);
   --sidebar-foreground: oklch(0.96 0.003 250);
-  --sidebar-primary: oklch(0.68 0.13 270);
+  --sidebar-primary: oklch(0.70 0.16 245);
   --sidebar-primary-foreground: oklch(0.985 0 0);
   --sidebar-accent: oklch(0.27 0.006 250);
   --sidebar-accent-foreground: oklch(0.96 0.003 250);
   --sidebar-border: oklch(1 0 0 / 11%);
-  --sidebar-ring: oklch(0.68 0.13 270);
+  --sidebar-ring: oklch(0.70 0.16 245);
 
   /* ===== Liquid Glass material tokens — dark theme ===== */
   --glass-blur: 20px;
@@ -295,7 +295,7 @@
   --float-shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.32);
   --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 24px -8px rgba(0, 0, 0, 0.55);
 
-  --focus-ring: 0 0 0 3px oklch(0.72 0.11 255 / 0.42);
+  --focus-ring: 0 0 0 3px oklch(0.72 0.15 245 / 0.42);
 }
 
 @layer base {

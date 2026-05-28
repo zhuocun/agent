@@ -272,10 +272,6 @@ export function ChatThread() {
   const { theme, setTheme, resolvedTheme } = useTheme();
 
   const firstName = MOCK_ACCOUNT.name.split(" ")[0];
-  const headerTitle = isTemporary
-    ? "Temporary chat"
-    : (conversations.find((c) => c.id === activeConversationId)?.title ??
-      "New chat");
 
   // Commit the finished assistant turn when the stream terminates — event-driven
   // (the hook hands us the final flushed content), not a status-watching effect.
@@ -546,10 +542,6 @@ export function ChatThread() {
     );
   };
 
-  const handlePickSuggestion = (prompt: string) => {
-    composerRef.current?.setDraft(prompt);
-  };
-
   const showWelcome = messages.length === 0 && !pendingMessage;
 
   const lastAssistantText = useMemo(() => {
@@ -764,14 +756,11 @@ export function ChatThread() {
           <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pb-6 md:pb-12">
             <div className="pointer-events-auto">
               <AppHeader
-                title={headerTitle}
                 sidebarOpen={sidebarOpen}
                 onOpenMobileNav={() => setMobileNavOpen(true)}
                 onOpenSidebar={() => setSidebarOpen(true)}
                 onNewChat={handleNewChat}
                 onOpenSettings={() => setSettingsOpen(true)}
-                isTemporary={isTemporary}
-                onToggleTemporary={handleToggleTemporary}
               />
               {isTemporary ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
@@ -791,10 +780,7 @@ export function ChatThread() {
                   : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+3.5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
               }
             >
-              <WelcomeScreen
-                onPickSuggestion={handlePickSuggestion}
-                userName={firstName}
-              />
+              <WelcomeScreen userName={firstName} />
             </div>
           ) : (
             <MessageList>
@@ -841,7 +827,6 @@ export function ChatThread() {
                 onSelectTier={setSelectedTierId}
                 selectedReasoningEffortId={selectedReasoningEffortId}
                 onSelectReasoningEffort={setSelectedReasoningEffortId}
-                usage={MOCK_USAGE}
                 onSend={handleSend}
                 onStop={stop}
                 sendOnEnter={preferences.sendOnEnter}

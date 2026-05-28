@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Check, Copy, GitFork, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,6 +18,10 @@ interface MessageActionsProps {
   canRegenerate?: boolean;
   onRegenerate?: () => void;
   onFeedback?: (next: Feedback) => void;
+  // Gates the "Branch in new chat" affordance (PRD 01 §4.6): copy this thread
+  // up to the current turn into a new conversation, leaving the source intact.
+  canBranch?: boolean;
+  onBranch?: () => void;
 }
 
 export function MessageActions({
@@ -26,6 +30,8 @@ export function MessageActions({
   canRegenerate,
   onRegenerate,
   onFeedback,
+  canBranch,
+  onBranch,
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
 
@@ -52,6 +58,12 @@ export function MessageActions({
       {canRegenerate ? (
         <IconAction label="Regenerate" onClick={onRegenerate}>
           <RotateCcw className="size-4" />
+        </IconAction>
+      ) : null}
+
+      {canBranch && onBranch ? (
+        <IconAction label="Branch in new chat" onClick={onBranch}>
+          <GitFork className="size-4" />
         </IconAction>
       ) : null}
 

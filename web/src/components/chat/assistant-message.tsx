@@ -17,6 +17,10 @@ interface AssistantMessageProps {
   canRegenerate?: boolean;
   onRegenerate?: () => void;
   onFeedback?: (next: Feedback) => void;
+  // True only when this assistant turn is stable (non-streaming, real id) and
+  // therefore safe to copy as the branch-point into a new conversation.
+  canBranch?: boolean;
+  onBranch?: () => void;
   defaultReasoningOpen?: boolean;
 }
 
@@ -27,6 +31,8 @@ export function AssistantMessage({
   canRegenerate,
   onRegenerate,
   onFeedback,
+  canBranch,
+  onBranch,
   defaultReasoningOpen = false,
 }: AssistantMessageProps) {
   const answerText = useMemo(
@@ -85,6 +91,8 @@ export function AssistantMessage({
               canRegenerate={canRegenerate}
               onRegenerate={onRegenerate}
               onFeedback={onFeedback}
+              canBranch={canBranch}
+              onBranch={onBranch}
             />
           </div>
         </div>

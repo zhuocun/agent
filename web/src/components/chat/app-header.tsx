@@ -1,6 +1,6 @@
 "use client";
 
-import { PanelLeft, Plus, Settings } from "lucide-react";
+import { PanelLeft, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -10,7 +10,6 @@ interface AppHeaderProps {
   onOpenMobileNav?: () => void;
   onOpenSidebar?: () => void;
   sidebarOpen?: boolean;
-  onOpenSettings?: () => void;
 }
 
 const FLOAT_BUTTON =
@@ -24,7 +23,6 @@ export function AppHeader({
   onOpenMobileNav,
   onOpenSidebar,
   sidebarOpen,
-  onOpenSettings,
 }: AppHeaderProps) {
   return (
     <header className="relative flex h-11 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),0.75rem)] pr-[max(env(safe-area-inset-right),0.75rem)] sm:pl-[max(env(safe-area-inset-left),1rem)] sm:pr-[max(env(safe-area-inset-right),1rem)] md:h-16">
@@ -60,15 +58,6 @@ export function AppHeader({
           className={cn(FLOAT_BUTTON)}
         >
           <Plus className="size-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          aria-label="Open settings"
-          onClick={onOpenSettings}
-          className={cn(FLOAT_BUTTON)}
-        >
-          <Settings className="size-4" />
         </Button>
       </div>
     </header>

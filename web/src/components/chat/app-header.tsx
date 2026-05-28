@@ -31,13 +31,17 @@ interface AppHeaderProps {
 // Shared chrome treatment for every header affordance — a small circular
 // "floating" button that sits on the page background rather than inside a bar.
 // Mirrors the Claude / Codex iOS chrome: chrome floats, content shows through.
+// Button base already provides `inline-flex items-center justify-center`, so
+// we don't repeat display utilities here — doing so would beat tailwind-merge
+// when callers stack `hidden md:inline-flex` ahead of FLOAT_BUTTON and silently
+// reveal mobile-hidden chrome.
 const FLOAT_BUTTON =
-  "glass-regular inline-flex size-9 items-center justify-center rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent";
+  "glass-regular size-9 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent";
 
 // Mobile drawer / menu kebab use a 44px target for thumb reach; on desktop
 // they collapse so the 36px chrome controls take over.
 const FLOAT_BUTTON_TOUCH =
-  "glass-regular inline-flex size-11 items-center justify-center rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
+  "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 export function AppHeader({
   title,
@@ -103,7 +107,9 @@ export function AppHeader({
         ) : null}
       </div>
 
-      {/* RIGHT cluster — temp chat, new chat, settings, theme, mobile overflow. */}
+      {/* RIGHT cluster — desktop: temp chat + new chat + settings inline.
+          Mobile: collapses to a single kebab overflow so the top-right has
+          exactly one button. */}
       <div className="flex flex-1 items-center justify-end gap-2">
         {/* Temporary-chat: inline from md: up; collapsed into the overflow menu
             below md: so the right cluster doesn't crowd small viewports. */}
@@ -126,7 +132,7 @@ export function AppHeader({
           variant="ghost"
           aria-label="New chat"
           onClick={onNewChat}
-          className={cn(FLOAT_BUTTON)}
+          className={cn("hidden md:inline-flex", FLOAT_BUTTON)}
         >
           <Plus className="size-4" />
         </Button>
@@ -140,8 +146,8 @@ export function AppHeader({
         >
           <Settings className="size-4" />
         </Button>
-        {/* Mobile overflow: collapses temporary-chat + settings into a single
-            44px kebab so each touch target stays ≥44px without overflow. */}
+        {/* Mobile overflow: collapses new chat + temporary chat + settings into
+            a single 44px kebab so the top-right has exactly one affordance. */}
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
@@ -156,6 +162,14 @@ export function AppHeader({
             }
           />
           <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem
+              label="New chat"
+              onClick={onNewChat}
+              className="gap-2"
+            >
+              <Plus className="size-4" aria-hidden />
+              <span>New chat</span>
+            </DropdownMenuItem>
             <DropdownMenuItem
               label="Temporary chat"
               aria-pressed={isTemporary}

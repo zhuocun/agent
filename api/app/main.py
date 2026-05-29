@@ -30,6 +30,7 @@ from app.middleware.ratelimit import RateLimitMiddleware, limiter
 from app.middleware.request_id import RequestIDMiddleware
 from app.observability import init_sentry, instrument_fastapi
 from app.routes.account import router as account_router
+from app.routes.account_data import router as account_data_router
 from app.routes.bootstrap import router as bootstrap_router
 from app.routes.conversations import router as conversations_router
 from app.routes.feedback import router as feedback_router
@@ -111,6 +112,7 @@ def create_app() -> FastAPI:
     app.include_router(feedback_router)
     app.include_router(preferences_router)
     app.include_router(account_router)
+    app.include_router(account_data_router)
     app.include_router(auth_router)
 
     @app.get("/healthz", tags=["meta"])

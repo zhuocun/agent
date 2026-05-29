@@ -268,7 +268,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       />
       <div
         ref={capsuleRef}
-        className="glass-capsule group flex items-end gap-2 rounded-3xl px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+        className="glass-capsule group flex items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
       >
         <label htmlFor="composer-input" className="sr-only">
           Message Olune

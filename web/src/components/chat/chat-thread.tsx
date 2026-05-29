@@ -33,6 +33,7 @@ import { AssistantMessage } from "@/components/chat/assistant-message";
 import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
+import { AiDisclosure } from "@/components/chat/ai-disclosure";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
 import { showToast } from "@/components/ui/toast";
@@ -1346,6 +1347,7 @@ export function ChatThread() {
                 onStop={stop}
                 sendOnEnter={preferences.sendOnEnter}
               />
+              <AiDisclosure />
             </div>
           </div>
         </div>

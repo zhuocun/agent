@@ -590,9 +590,36 @@ async def stream_and_persist(
         )
 
     except asyncio.CancelledError:
-        # CancelledError IS an Exception in 3.8+; re-raise so the event loop
-        # sees the cancellation rather than swallowing it into a fake `error`
-        # envelope. The `finally` clause still cancels the pump task below.
+        # Hard cancel: worker shutdown / deploy / ASGI task cancel mid-stream.
+        # Before re-raising we close out the durable stream bookkeeping so the
+        # `stream` row doesn't strand at `status="active"` forever and the live
+        # stop signal doesn't leak. Mirrors the `except Exception` branch's
+        # fresh-session + best-effort pattern.
+        #
+        # Terminal status here is `"stopped"`, not `"error"`: the turn was
+        # cancelled (the work was interrupted), not failed by the provider —
+        # `"stopped"` matches the disconnect/explicit-stop semantics. We do NOT
+        # persist a partial assistant row in this branch; there is no clean
+        # partial-persist contract for a hard cancel, so we only close the
+        # stream-lifecycle bookkeeping.
+        #
+        # KNOWN GAP: a hard worker *crash* (SIGKILL / OOM) delivers no
+        # CancelledError, so this cleanup never runs and the row stays `active`.
+        # An orphan-stream reaper that sweeps stale `active` rows is a deferred
+        # P0 gap (PRD 04 §5.1) — documented here so the absence is not silent.
+        if stream_id is not None:
+            with contextlib.suppress(Exception):
+                async with _derive_session_factory(db)() as cancel_db:
+                    await streams_repo.mark_status(
+                        cancel_db, stream_id=stream_id, status="stopped"
+                    )
+                    await cancel_db.commit()
+            with contextlib.suppress(Exception):
+                clear_stop(stream_id)
+        # Re-raise so the event loop sees the cancellation rather than
+        # swallowing it into a fake `error` envelope. The cleanup above must
+        # NEVER suppress the cancellation. The `finally` clause still cancels
+        # the pump task below.
         raise
     except Exception as exc:
         pump_task.cancel()

@@ -13,6 +13,7 @@ from app.db.models import (
     Message,
     Preferences,
     Session,
+    Stream,
     UsageRollup,
     User,
     Vote,
@@ -30,8 +31,9 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
     Postgres the `ON DELETE CASCADE` chains would also fire; the explicit
     deletes here are idempotent there too.
 
-    Order: vote (by message id) -> message (by conversation id) ->
-    conversation -> api_key / usage_rollup / preferences / session -> user.
+    Order: vote (by message id) -> stream (by conversation id) ->
+    message (by conversation id) -> conversation ->
+    api_key / usage_rollup / preferences / session -> user.
     Flush only; the caller (request dependency) owns the commit.
     """
     convo_id_stmt = select(Conversation.id).where(Conversation.user_id == user_id)
@@ -43,6 +45,14 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
         msg_ids = (await db.execute(msg_id_stmt)).scalars().all()
         if msg_ids:
             await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
+        # Drop stream rows before their parent conversation/message. The
+        # `stream` table postdates the original erasure code; its
+        # `conversation_id` is ON DELETE CASCADE, but we deliberately do NOT
+        # rely on DB cascade (SQLite tests have no `PRAGMA foreign_keys=ON`),
+        # so it must be removed explicitly or rows orphan on SQLite.
+        await db.execute(
+            delete(Stream).where(Stream.conversation_id.in_(convo_ids))
+        )
         await db.execute(
             delete(Message).where(Message.conversation_id.in_(convo_ids))
         )

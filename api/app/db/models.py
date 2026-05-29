@@ -14,10 +14,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     Boolean,
     DateTime,
-    Float,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     PrimaryKeyConstraint,
     String,
     UniqueConstraint,
@@ -154,7 +154,16 @@ class Message(Base):
     # subtotal + session surcharge) so the cost ledger can be queried without
     # re-parsing the JSON attribution blob. NULL on legacy rows written before
     # the 0006 migration and on user rows (cost is an assistant-turn concept).
-    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Numeric(12,6) for fixed-precision money: Postgres (prod) stores it as an
+    # exact NUMERIC so the SQL-side `cost_usd + excluded.cost_usd` accumulation
+    # is exact decimal arithmetic — no binary-float ULP drift near the budget
+    # `>=` cap when summed over many turns. `asdecimal=False` keeps SQLAlchemy
+    # returning Python floats (no Decimal ripple through pricing/handler/tests).
+    # SQLite (tests) stores NUMERIC as REAL, so tests don't get exactness; that
+    # is fine because prod is Postgres.
+    cost_usd: Mapped[float | None] = mapped_column(
+        Numeric(12, 6, asdecimal=False), nullable=True
+    )
     # Post-M4: explicit reply pairing. On assistant rows this points at the
     # user message whose reply this is, so `_maybe_replay` can resolve via a
     # single indexed lookup instead of pair-by-index. NULL on legacy rows
@@ -279,8 +288,17 @@ class UsageRollup(Base):
     # cost-ledger axis that cost-based budget enforcement reads. Kept separate
     # so the FE wire contract for `used` is unchanged. `server_default="0"`
     # backfills legacy rows to a non-NULL zero.
+    # Numeric(12,6) for fixed-precision money: Postgres (prod) stores exact
+    # NUMERIC and accumulates exactly via SQL `cost_usd + excluded.cost_usd`,
+    # so the period total never drifts by binary-float ULPs near the budget
+    # cap. `asdecimal=False` keeps SQLAlchemy returning Python floats so the
+    # budget gate and pricing math see plain floats. SQLite (tests) stores
+    # NUMERIC as REAL — no exactness there, fine since prod is Postgres.
     cost_usd: Mapped[float] = mapped_column(
-        Float, nullable=False, server_default=text("0"), default=0.0
+        Numeric(12, 6, asdecimal=False),
+        nullable=False,
+        server_default=text("0"),
+        default=0.0,
     )
     limit_value: Mapped[int] = mapped_column(Integer, nullable=False)
     is_byok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

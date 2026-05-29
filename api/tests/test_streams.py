@@ -12,6 +12,8 @@ teardown is verified by a DIRECT unit test of `stream_and_persist` (mirroring
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, Message, Stream, User
 from app.db.repositories import streams as streams_repo
+from app.providers.protocol import AnswerDelta, ChatMessage, ProviderEvent
 from app.streaming.stop_registry import (
     clear_stop,
     is_stop_requested,
@@ -283,4 +286,123 @@ async def test_handler_stop_signal_persists_stopped_and_clears(
         assert stream_row.status == "stopped"
 
     # The handler clears the live signal once the turn is torn down.
+    assert is_stop_requested(stream_id) is False
+
+
+class _BlockingProvider:
+    """Provider that emits one delta then blocks forever.
+
+    Lets the test cancel the consuming task while `stream_and_persist` is
+    parked on `queue.get()` mid-stream — exercising the handler's hard-cancel
+    (`asyncio.CancelledError`) cleanup branch.
+    """
+
+    def stream(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+        api_key: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text="partial")
+            # Never terminate — the consumer task gets cancelled while parked.
+            await asyncio.Event().wait()
+
+        return _gen()
+
+    async def complete(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+        api_key: str | None = None,
+    ) -> str:
+        return "unused"
+
+
+async def test_handler_hard_cancel_closes_stream_and_clears_signal(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A hard `CancelledError` mid-stream propagates, but the handler closes out
+    the durable `stream` row as `stopped` and clears the live stop signal first.
+
+    Mirrors worker shutdown / deploy / ASGI task cancel: the consuming task is
+    cancelled while `stream_and_persist` is parked mid-iteration. Driving real
+    cancellation through httpx is infeasible (same reason as the xfail in
+    `tests/test_messages_stream.py`), so we cancel a task wrapping the consume
+    loop directly.
+    """
+    from app.providers.tiers import get_binding
+    from app.streaming.handler import stream_and_persist
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="New chat",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        stream = await streams_repo.create_stream(session, conversation_id=convo.id)
+        await session.commit()
+        user_id = user.id
+        conv_id = convo.id
+        stream_id = stream.id
+
+    class _StubRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    started = asyncio.Event()
+
+    async def _consume() -> None:
+        async with session_factory() as session:
+            gen = stream_and_persist(
+                request=_StubRequest(),  # type: ignore[arg-type]
+                db=session,
+                provider=_BlockingProvider(),  # type: ignore[arg-type]
+                binding=binding,
+                requested_tier_id="smart",
+                conversation_id=conv_id,
+                user_message_id=uuid4(),
+                user_text="hello",
+                history=[],
+                is_temporary=False,
+                user_id=user_id,
+                stream_id=stream_id,
+            )
+            async for _ in gen:
+                # Signal once we've received the first wire event so the test
+                # cancels only after the generator is actively iterating.
+                started.set()
+
+    task = asyncio.create_task(_consume())
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    # Give the generator a moment to park on the queue mid-stream.
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The durable stream row was closed out (not left `active`).
+    async with session_factory() as session:
+        stream_row = (
+            await session.execute(select(Stream).where(Stream.id == stream_id))
+        ).scalar_one()
+        assert stream_row.status == "stopped"
+
+    # The live stop signal does not leak after a hard cancel.
     assert is_stop_requested(stream_id) is False

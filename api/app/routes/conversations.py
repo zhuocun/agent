@@ -434,6 +434,13 @@ async def send_message(
         # `usage_budget_usd <= 0` disables the cap entirely (the default), so
         # existing behavior is unchanged. The cap is read against the current
         # period's accumulated cost ledger; reaching it refuses the next turn.
+        #
+        # This gate is BEST-EFFORT / POST-HOC, not a hard ceiling at MVP: it
+        # checks the already-accumulated cost before starting a turn, so the
+        # current turn's own cost is unbounded by it (a single expensive turn
+        # can push the period total past the cap before the NEXT turn is
+        # refused), and concurrent in-flight turns can each pass the check then
+        # accumulate, overshooting the cap (bounded by concurrency).
         settings = get_settings()
         if settings.usage_budget_usd > 0 and resolved_api_key is None:
             period_cost = await usage_repo.get_period_cost(db, user_id=user.id)

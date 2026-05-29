@@ -10,6 +10,13 @@ Post-M4: increments use a dialect-specific `INSERT ... ON CONFLICT DO UPDATE`
 to eliminate the SELECT-then-INSERT race. Two concurrent terminals for the
 same (user_id, period_start) key both go through one atomic upsert; the DB
 serializes them so the final `used` reflects every write.
+
+Meter semantics: `usage_rollup.cost_usd` / `used` is a CUMULATIVE METER of all
+work performed in the period, NOT the sum of surviving `message.cost_usd`. Every
+generation that was triggered increments it — including regenerated or edited
+turns whose assistant messages were later deleted. "You pay for every generation
+you triggered." So the rollup will exceed the cost of the messages currently in
+the conversation; that divergence is intentional.
 """
 
 from __future__ import annotations

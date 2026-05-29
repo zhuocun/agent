@@ -13,14 +13,23 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import ApiKey, Conversation, Message, Preferences, UsageRollup, User, Vote
+from app.db.models import (
+    ApiKey,
+    Conversation,
+    Message,
+    Preferences,
+    Stream,
+    UsageRollup,
+    User,
+    Vote,
+)
 from app.db.models import Session as DbSession
 
 pytestmark = pytest.mark.asyncio
@@ -173,6 +182,31 @@ async def test_delete_erases_all_data_and_clears_cookie(
     user_id = await _current_user_id(session_factory)
     conv_id, _, asst_id = await _seed_owned_data(session_factory, user_id)
 
+    # Drive a real non-temporary streaming turn so a `stream` row exists for
+    # this user's conversation (the stream table postdates the original
+    # erasure code; we assert below that erasure drops it). We reuse the
+    # seeded conversation; the fake provider terminates the turn.
+    async with client.stream(
+        "POST",
+        f"/api/conversations/{conv_id}/messages",
+        json={"clientMessageId": str(uuid4()), "tierId": "smart", "text": "hello"},
+        timeout=10.0,
+    ) as resp:
+        assert resp.status_code == 200, await resp.aread()
+        async for _ in resp.aiter_text():
+            pass
+
+    # Sanity: a stream row was created for this conversation before deletion.
+    async with session_factory() as s:
+        stream_count = (
+            await s.execute(
+                select(func.count()).select_from(Stream).where(
+                    Stream.conversation_id == UUID(conv_id)
+                )
+            )
+        ).scalar_one()
+        assert stream_count >= 1
+
     # Sanity: the conversation is reachable before deletion.
     pre = await client.get(f"/api/conversations/{conv_id}")
     assert pre.status_code == 200
@@ -236,6 +270,16 @@ async def test_delete_erases_all_data_and_clears_cookie(
             await s.execute(
                 select(func.count()).select_from(DbSession).where(
                     DbSession.user_id == user_id
+                )
+            )
+        ).scalar_one() == 0
+        # The stream row(s) for the deleted user's (now-gone) conversation are
+        # explicitly erased — right-to-erasure must not orphan stream rows on
+        # SQLite (no PRAGMA foreign_keys=ON, so DB cascade does not fire).
+        assert (
+            await s.execute(
+                select(func.count()).select_from(Stream).where(
+                    Stream.conversation_id == UUID(conv_id)
                 )
             )
         ).scalar_one() == 0

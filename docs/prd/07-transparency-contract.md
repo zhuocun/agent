@@ -146,7 +146,7 @@ Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible 
 | `capacity_reroute` | Requested model at capacity; rerouted | Provider/gateway capacity reroute (PRD 02 FR-11b) |
 | `gateway_route` | Gateway selected an alternate route | Gateway-level routing/policy reroute |
 | `budget_cap` | Account limit constrained routing | Free/Pro cap |
-| `policy_route` | Privacy policy route selected | no-train/default route |
+| `policy_route` | Privacy policy route selected | no-train route selected by policy |
 
 **AC:** any non-null reason renders a visible callout on the assistant message.
 

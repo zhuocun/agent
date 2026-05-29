@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     rate_limit_messages: str = Field(default="30/minute", alias="RATE_LIMIT_MESSAGES")
     rate_limit_upgrade: str = Field(default="5/minute", alias="RATE_LIMIT_UPGRADE")
 
+    # Cost-based usage budget cap (USD per calendar-month period). When a user's
+    # accumulated `usage_rollup.cost_usd` for the period reaches this value, the
+    # next platform-key turn is refused with a 429 `BUDGET_EXCEEDED` envelope.
+    # `<= 0` means "disabled / unlimited" -- the default, so existing behavior
+    # and tests are unchanged. BYOK turns are always exempt (the user pays their
+    # own provider) and never consult this cap.
+    usage_budget_usd: float = Field(default=0.0, alias="USAGE_BUDGET_USD")
+
     @property
     def deepseek_key(self) -> str | None:
         """Effective DeepSeek key: `DEEPSEEK_API_KEY`, else `OPENAI_API_KEY`.

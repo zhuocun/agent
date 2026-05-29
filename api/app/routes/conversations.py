@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -31,8 +32,10 @@ from app.db.models import Message, User
 from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
+from app.db.repositories import streams as streams_repo
+from app.db.repositories import usage as usage_repo
 from app.db.session import get_db
-from app.errors import AppError, ErrorEnvelope, not_found
+from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.protocol import ChatMessage as ProviderChatMessage
@@ -55,6 +58,7 @@ from app.streaming.sse import (
     encode_submitted,
     encode_terminal,
 )
+from app.streaming.stop_registry import request_stop
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -99,6 +103,39 @@ def _duplicate_in_flight() -> AppError:
             body="A prior submission with this clientMessageId is still in flight.",
         ),
         status.HTTP_409_CONFLICT,
+    )
+
+
+def _ms_until_next_month(now: datetime | None = None) -> int:
+    """Milliseconds from `now` until the next calendar-month UTC start.
+
+    Drives `retry_after_ms` on the budget envelope: the cost ledger resets when
+    the period rolls over, so the FE can surface "try again next month". Clamped
+    to >= 0 defensively (clock skew should never make this negative).
+    """
+    ref = now if now is not None else datetime.now(UTC)
+    if ref.month == 12:
+        nxt = ref.replace(
+            year=ref.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+    else:
+        nxt = ref.replace(
+            month=ref.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+    return max(0, int((nxt - ref).total_seconds() * 1000))
+
+
+def _budget_exceeded() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="BUDGET_EXCEEDED",
+            severity="warning",
+            title="Usage limit reached",
+            body="You've reached your usage budget for this period.",
+            retry_after_ms=_ms_until_next_month(),
+            actions=[ErrorAction(label="View usage", kind="open_settings")],
+        ),
+        status.HTTP_429_TOO_MANY_REQUESTS,
     )
 
 
@@ -369,11 +406,46 @@ async def send_message(
             "regenerate / editMessageId are not supported on temporary chats.",
         )
 
+    # BYOK resolution + budget gate. Resolved here (before any user-message
+    # insert / branch logic) so the cost-based budget gate can tell whether
+    # this is a platform-key turn (counts against the cap) or a BYOK turn (the
+    # user pays their own provider, so it is exempt). The resolved value is
+    # threaded through to `stream_and_persist` unchanged.
+    #
+    # BYOK: pull the user's encrypted key for the bound provider
+    # (`binding.provider_id` — e.g. "anthropic" or "openai" depending on the
+    # active backend). Anonymous users never have keys; decryption failure
+    # inside the repo returns None (logged), so this is silently safe and the
+    # call falls back to the platform key.
+    resolved_api_key: str | None = None
+    if not user.is_anonymous:
+        resolved_api_key = await api_keys_repo.get_decrypted_for_user(
+            db, user_id=user.id, provider=binding.provider_id
+        )
+
     # Ownership / existence check.
     if not is_temp:
         owner_row = await conversations_repo.owned_by(db, conversation_id, user.id)
         if owner_row is None:
             raise not_found("conversation")
+
+        # Cost-based budget enforcement. Only platform-key turns count against
+        # the cap (BYOK turns are exempt — the user pays their own provider).
+        # `usage_budget_usd <= 0` disables the cap entirely (the default), so
+        # existing behavior is unchanged. The cap is read against the current
+        # period's accumulated cost ledger; reaching it refuses the next turn.
+        #
+        # This gate is BEST-EFFORT / POST-HOC, not a hard ceiling at MVP: it
+        # checks the already-accumulated cost before starting a turn, so the
+        # current turn's own cost is unbounded by it (a single expensive turn
+        # can push the period total past the cap before the NEXT turn is
+        # refused), and concurrent in-flight turns can each pass the check then
+        # accumulate, overshooting the cap (bounded by concurrency).
+        settings = get_settings()
+        if settings.usage_budget_usd > 0 and resolved_api_key is None:
+            period_cost = await usage_repo.get_period_cost(db, user_id=user.id)
+            if period_cost >= settings.usage_budget_usd:
+                raise _budget_exceeded()
 
     # Idempotency: prior user message for this client_message_id?
     # Skipped for regenerate / edit paths — those use a fresh clientMessageId
@@ -442,16 +514,24 @@ async def send_message(
 
     provider = build_provider()
 
-    # BYOK resolution: pull the user's encrypted key for the bound provider
-    # (`binding.provider_id` — e.g. "anthropic" or "openai" depending on the
-    # active backend). Anonymous users never have keys; decryption failure
-    # inside the repo returns None (logged), so this is silently safe and the
-    # call falls back to the platform key.
-    resolved_api_key: str | None = None
-    if not user.is_anonymous:
-        resolved_api_key = await api_keys_repo.get_decrypted_for_user(
-            db, user_id=user.id, provider=binding.provider_id
+    # Durable stream lifecycle (PRD 04 §5.1). Persist an `active` stream row for
+    # every NON-temporary turn (default / regenerate / edit). The id is threaded
+    # into `stream_and_persist`, which transitions it to done / stopped / error
+    # and links the assistant `message_id`. Temporary chats persist nothing, so
+    # they get no stream row and pass `stream_id=None`. Committed now (its own
+    # statement on the request session) so the row is visible to a concurrent
+    # `POST /{id}/stop` before the turn finishes.
+    stream_id: UUID | None = None
+    if not is_temp:
+        stream_row = await streams_repo.create_stream(
+            db, conversation_id=conversation_id
         )
+        stream_id = stream_row.id
+        await db.commit()
+
+    # `resolved_api_key` was resolved earlier (before the budget gate) so the
+    # cost cap could distinguish platform-key vs BYOK turns; it is threaded
+    # through to the stream call below unchanged.
 
     # Title autogen must not re-fire when a regen / edit-of-first-turn deletes
     # the prior assistant(s) and leaves count_assistant_messages at 0. Gate it
@@ -474,6 +554,7 @@ async def send_message(
             is_initial=is_initial,
             user_id=user.id,
             api_key=resolved_api_key,
+            stream_id=stream_id,
         ):
             yield sse_event
 
@@ -481,6 +562,59 @@ async def send_message(
         _event_stream(),
         media_type="text/event-stream",
     )
+
+
+@router.post("/{conversation_id}/stop", status_code=status.HTTP_204_NO_CONTENT)
+async def stop_stream(
+    conversation_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Dedicated server-side stop for an in-flight streaming turn (PRD 04 §5.1).
+
+    P0 foundation for the P1 dedicated-stop / resumable-stream semantics. Today
+    "stop" is implicit (the client closing the SSE socket -> the handler's
+    `request.is_disconnected()` check); this endpoint makes it explicit and
+    durable so a stop survives independent of the streaming connection.
+
+    Mechanism (two halves, both best-effort):
+    - Durable intent: mark the conversation's active `stream` row `stopped` so
+      the lifecycle is observable even if the live signal never lands.
+    - Live cancel: set the in-process stop signal (`request_stop`) so the
+      running generator tears the turn down at its next poll. Single-worker
+      only — behind multiple uvicorn workers a stop on worker A won't reach a
+      stream running on worker B (same caveat as `_TEMP_IDS`). The actual
+      generator cancellation is therefore best-effort.
+
+    Idempotent 204:
+    - No active stream (already finished / never started) -> 204, no-op.
+    - Temporary conversations have no DB row and no stream row; treated as a
+      204 no-op (nothing to stop, nothing persisted).
+    - Not owned (or missing) -> 404, mirroring the rest of this router.
+    """
+    # Temporary chats: nothing persisted, nothing to stop. Idempotent 204.
+    if _is_temp_for_user(user.id, conversation_id):
+        return None
+
+    owner_row = await conversations_repo.owned_by(db, conversation_id, user.id)
+    if owner_row is None:
+        raise not_found("conversation")
+
+    active = await streams_repo.get_active_for_conversation(
+        db, conversation_id=conversation_id
+    )
+    if active is not None:
+        # Durable intent first, then the live signal. The running generator
+        # (if on this worker) will observe `request_stop` at its next poll,
+        # persist the partial assistant row, and transition the same stream row
+        # to `stopped` itself — `mark_status` here records the intent up front
+        # so a stop is durable even if the generator never sees the signal.
+        request_stop(active.id)
+        await streams_repo.mark_status(
+            db, stream_id=active.id, status="stopped"
+        )
+        await db.commit()
+    return None
 
 
 async def _prepare_regenerate(

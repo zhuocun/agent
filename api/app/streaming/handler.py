@@ -44,6 +44,7 @@ from sse_starlette import ServerSentEvent
 
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
+from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
 from app.db.session import get_session_factory
 from app.errors import AppError, ErrorEnvelope
@@ -77,6 +78,7 @@ from app.streaming.sse import (
     encode_submitted,
     encode_terminal,
 )
+from app.streaming.stop_registry import clear_stop, is_stop_requested
 
 log = logging.getLogger(__name__)
 _struct_log = structlog.get_logger(__name__)
@@ -199,6 +201,7 @@ async def stream_and_persist(
     is_initial: bool = True,
     user_id: UUID | None = None,
     api_key: str | None = None,
+    stream_id: UUID | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -275,9 +278,10 @@ async def stream_and_persist(
         attribution: ModelAttribution,
         session: AsyncSession | None = None,
         commit: bool = True,
-    ) -> None:
+        cost_usd: float | None = None,
+    ) -> UUID | None:
         if is_temporary or conversation_id is None:
-            return
+            return None
         parts: list[dict[str, Any]] = []
         if reasoning_buf:
             parts.append({"type": "reasoning", "text": "".join(reasoning_buf)})
@@ -287,13 +291,14 @@ async def stream_and_persist(
         # lifecycle is winding down and the route's get_db cleanup may
         # double-commit, so we decouple by opening a new session for stopped.
         target_session = session if session is not None else db
-        await messages_repo.create_assistant_message(
+        row = await messages_repo.create_assistant_message(
             db=target_session,
             conversation_id=conversation_id,
             parts=parts,
             status=status,
             attribution=attribution.model_dump(by_alias=True, exclude_none=True),
             responds_to_message_id=user_message_id,
+            cost_usd=cost_usd,
         )
         # When the caller owns the session (stop/fresh-session case, commit=False)
         # we only flush here and let the caller commit AFTER bumping usage, so the
@@ -303,6 +308,7 @@ async def stream_and_persist(
             await target_session.commit()
         else:
             await target_session.flush()
+        return row.id
 
     def _apply_event(ev: ProviderEvent) -> None:
         """Fold a queue event into accumulators (no yields).
@@ -327,8 +333,13 @@ async def stream_and_persist(
 
     try:
         while True:
-            # Disconnect-detect between yields (per plan §"Streaming" rule 6).
-            if await request.is_disconnected():
+            # Tear down on EITHER a server-side stop request (the dedicated stop
+            # endpoint set the in-process signal for this stream_id) OR the
+            # client closing the socket (disconnect, per plan §"Streaming" rule
+            # 6). Both persist the same `status="stopped"` row.
+            if (
+                stream_id is not None and is_stop_requested(stream_id)
+            ) or await request.is_disconnected():
                 pump_task.cancel()
                 # Suppress ONLY the CancelledError from the cancel we just
                 # issued; the pump forwards real provider exceptions through
@@ -348,6 +359,10 @@ async def stream_and_persist(
                     _apply_event(drained)
                 # Flush accumulators, persist with status=stopped + estimate.
                 breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
+                # Per-turn cost: matches what build_attribution exposes as
+                # `attribution.costUsd` (pricing.py) so the ledger and the
+                # wire stay consistent.
+                turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
@@ -366,11 +381,12 @@ async def stream_and_persist(
                 # the happy path (bump BEFORE its single commit) so a crash
                 # between writes can never persist a stopped row without usage.
                 async with _derive_session_factory(db)() as fresh_db:
-                    await _persist_assistant(
+                    stopped_assistant_id = await _persist_assistant(
                         status="stopped",
                         attribution=attribution,
                         session=fresh_db,
                         commit=False,
+                        cost_usd=turn_cost,
                     )
                     # Stopped turn still cost partial tokens -- bump the meter.
                     # `is_temporary` already gates persistence; only increment
@@ -383,9 +399,25 @@ async def stream_and_persist(
                         await usage_repo.increment_for_period(
                             fresh_db,
                             user_id=user_id,
+                            cost_usd_delta=turn_cost,
                             is_byok=is_byok_turn,
                         )
+                    # Land the durable stream lifecycle in the SAME commit as the
+                    # stopped assistant row + meter bump. `message_id` points at
+                    # the just-persisted assistant row (may be None for
+                    # temporary, but the stop path only runs non-temporary
+                    # streams).
+                    if stream_id is not None:
+                        await streams_repo.mark_status(
+                            fresh_db,
+                            stream_id=stream_id,
+                            status="stopped",
+                            message_id=stopped_assistant_id,
+                        )
                     await fresh_db.commit()
+                # Drop the live signal now that the turn is fully torn down.
+                if stream_id is not None:
+                    clear_stop(stream_id)
                 # M4: stop-path turn log at warn level with cost_confidence=estimate.
                 _struct_log.warning(
                     "turn.stopped",
@@ -440,6 +472,10 @@ async def stream_and_persist(
 
         # Provider finished cleanly. Compute attribution and emit terminal.
         breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
+        # Per-turn cost: matches what build_attribution exposes as
+        # `attribution.costUsd` (pricing.py) so the cost ledger row and the
+        # wire attribution agree.
+        turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
         attribution = build_attribution(
             requested_tier_id=requested_tier_id,
             binding=binding,
@@ -477,6 +513,7 @@ async def stream_and_persist(
                 status="done",
                 attribution=attribution.model_dump(by_alias=True, exclude_none=True),
                 responds_to_message_id=user_message_id,
+                cost_usd=turn_cost,
             )
             # Bump usage_rollup before the commit so both writes land
             # atomically. `user_id` is set on every non-temporary path (the
@@ -487,7 +524,18 @@ async def stream_and_persist(
                 await usage_repo.increment_for_period(
                     db,
                     user_id=user_id,
+                    cost_usd_delta=turn_cost,
                     is_byok=is_byok_turn,
+                )
+            # Transition the durable stream lifecycle to `done` and point it at
+            # the assistant row, within the SAME transaction as the assistant
+            # row + meter bump so the whole turn commits atomically.
+            if stream_id is not None:
+                await streams_repo.mark_status(
+                    db,
+                    stream_id=stream_id,
+                    status="done",
+                    message_id=row.id,
                 )
             await db.commit()
             assistant_id = row.id
@@ -542,9 +590,36 @@ async def stream_and_persist(
         )
 
     except asyncio.CancelledError:
-        # CancelledError IS an Exception in 3.8+; re-raise so the event loop
-        # sees the cancellation rather than swallowing it into a fake `error`
-        # envelope. The `finally` clause still cancels the pump task below.
+        # Hard cancel: worker shutdown / deploy / ASGI task cancel mid-stream.
+        # Before re-raising we close out the durable stream bookkeeping so the
+        # `stream` row doesn't strand at `status="active"` forever and the live
+        # stop signal doesn't leak. Mirrors the `except Exception` branch's
+        # fresh-session + best-effort pattern.
+        #
+        # Terminal status here is `"stopped"`, not `"error"`: the turn was
+        # cancelled (the work was interrupted), not failed by the provider —
+        # `"stopped"` matches the disconnect/explicit-stop semantics. We do NOT
+        # persist a partial assistant row in this branch; there is no clean
+        # partial-persist contract for a hard cancel, so we only close the
+        # stream-lifecycle bookkeeping.
+        #
+        # KNOWN GAP: a hard worker *crash* (SIGKILL / OOM) delivers no
+        # CancelledError, so this cleanup never runs and the row stays `active`.
+        # An orphan-stream reaper that sweeps stale `active` rows is a deferred
+        # P0 gap (PRD 04 §5.1) — documented here so the absence is not silent.
+        if stream_id is not None:
+            with contextlib.suppress(Exception):
+                async with _derive_session_factory(db)() as cancel_db:
+                    await streams_repo.mark_status(
+                        cancel_db, stream_id=stream_id, status="stopped"
+                    )
+                    await cancel_db.commit()
+            with contextlib.suppress(Exception):
+                clear_stop(stream_id)
+        # Re-raise so the event loop sees the cancellation rather than
+        # swallowing it into a fake `error` envelope. The cleanup above must
+        # NEVER suppress the cancellation. The `finally` clause still cancels
+        # the pump task below.
         raise
     except Exception as exc:
         pump_task.cancel()
@@ -567,7 +642,24 @@ async def stream_and_persist(
                 body="The provider stream errored.",
             )
         yield encode_error(envelope)
-        # `error` does NOT persist (plan §"Persistence" rule).
+        # `error` does NOT persist an assistant row (plan §"Persistence" rule).
+        # But the durable `stream` row SHOULD reflect the failure so the
+        # lifecycle is observable. Best-effort + fresh session: the request
+        # session may be poisoned after the provider error (a failed flush
+        # leaves it in a rolled-back-pending state), so we open a clean one and
+        # swallow any failure — stream-status bookkeeping must never turn a
+        # provider error into a 500 or mask the `error` frame already yielded.
+        if stream_id is not None:
+            try:
+                async with _derive_session_factory(db)() as err_db:
+                    await streams_repo.mark_status(
+                        err_db, stream_id=stream_id, status="error"
+                    )
+                    await err_db.commit()
+            except Exception as mark_exc:  # pragma: no cover - defensive
+                log.warning("stream.mark_error.failed", exc_info=mark_exc)
+            with contextlib.suppress(Exception):
+                clear_stop(stream_id)
         return
     finally:
         if not pump_task.done():

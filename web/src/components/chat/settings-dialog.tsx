@@ -111,15 +111,12 @@ export function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* Mobile: bottom-anchored sheet (full width, pinned bottom, rounded top,
-          capped at 80dvh to let the glass surface breathe). Reverts to the
-          shared centered modal at sm: by restoring DialogContent's default
-          top/left + translate + radius. */}
-      <DialogContent className="top-auto bottom-0 left-0 max-h-[80dvh] max-w-full translate-x-0 translate-y-0 rounded-t-3xl rounded-b-none sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-3xl">
-        <div
-          aria-hidden
-          className="mx-auto -mt-2.5 h-1.5 w-9 rounded-full bg-foreground/15 sm:hidden"
-        />
+      {/* The base DialogContent now provides the mobile bottom-sheet shell
+          (full-width, bottom-pinned, rounded top, grabber, home-indicator-safe
+          bottom padding, swipe-to-dismiss) and reverts to the centered modal at
+          sm:. We keep the 80dvh cap here so the glass surface breathes a touch
+          more than the default 90dvh on the settings panel. */}
+      <DialogContent className="max-h-[80dvh] sm:max-h-none">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>

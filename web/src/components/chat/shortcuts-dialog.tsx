@@ -57,7 +57,10 @@ export function ShortcutsDialog({
   const { isMac } = usePlatform();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      {/* Bottom sheet on mobile (base default); cap width only at sm+ so the
+          mobile sheet stays full-width. Home-indicator-safe bottom padding is
+          provided by the base DialogContent. */}
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Keyboard shortcuts</DialogTitle>
           <DialogDescription>

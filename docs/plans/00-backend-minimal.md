@@ -1,6 +1,6 @@
 # Backend Minimal Plan (Python / FastAPI)
 
-> **Implementation status**: M0–M4 + all Post-M4 hardening items shipped on `main`. 257 tests pass + 1 known xfail (stop-path). The [Post-M4: deferred hardening](#post-m4-deferred-hardening) section below is preserved as a record; each item is now checked off with its landing PR.
+> **Implementation status**: M0–M4 + all Post-M4 hardening items shipped on `main`. 261 tests pass + 1 known xfail (stop-path). The [Post-M4: deferred hardening](#post-m4-deferred-hardening) section below is preserved as a record; each item is now checked off with its landing PR.
 
 The smallest Python backend that lets the existing Next.js FE at `web/` run against real persistence and a real model provider with **zero UI changes**. The BE is a **separate service** — FastAPI + Postgres, deployed independently, talking to the FE over CORS. Anchored to the FE wire shapes in `web/src/lib/types.ts` and the behavior in `web/src/components/chat/chat-thread.tsx`. PRDs guide direction; anything the FE does not yet render or call is deferred.
 

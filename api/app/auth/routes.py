@@ -24,6 +24,7 @@ import structlog
 from fastapi import APIRouter, Depends, Response, status
 from pydantic import EmailStr
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.cookies import (
@@ -162,9 +163,10 @@ async def upgrade(
     normalized_email = body.email.strip().lower()
 
     # Uniqueness check: another user with this email already exists -> 409.
-    # MVP: SELECT-then-mutate; two concurrent upgrades could both succeed with the
-    # same email. TODO(post-m4): add a partial UNIQUE INDEX on users.email WHERE
-    # email IS NOT NULL, plus retry on IntegrityError -> EMAIL_TAKEN.
+    # SELECT-first catches the common case without touching the DB write path.
+    # The partial UNIQUE INDEX from alembic/0004 is the authoritative guard;
+    # the IntegrityError catch below races with concurrent upgrades that slip
+    # past the SELECT and converts the DB-level violation into EMAIL_TAKEN.
     stmt = select(User).where(User.email == normalized_email, User.id != user.id)
     existing = (await db.execute(stmt)).scalar_one_or_none()
     if existing is not None:
@@ -180,7 +182,11 @@ async def upgrade(
     if body.password:
         user.password_hash = hash_password(body.password)
 
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _email_taken() from exc
     await db.refresh(user)
 
     # Re-sign + re-set the cookie after the upgrade succeeded. Documented in

@@ -52,7 +52,7 @@ uv run pytest
 ```
 
 Tests use a per-test SQLite database — no Postgres needed. Current count:
-**257 passed + 1 known xfail** (the stop-path test; ASGITransport doesn't expose
+**261 passed + 1 known xfail** (the stop-path test; ASGITransport doesn't expose
 mid-stream disconnect to the server side, so we can't exercise that branch
 end-to-end in-process).
 

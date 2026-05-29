@@ -92,7 +92,7 @@ pnpm add -g vercel
 vercel login
 
 # link a working copy to the project (run once per checkout)
-vercel link                                      # from web/
+vercel link                                      # from repo root — the project's Root Directory is set to web/ in Vercel
 
 # env
 vercel env ls
@@ -120,7 +120,9 @@ neonctl projects list
 neonctl branches list --project-id <id>
 neonctl connection-string --project-id <id> --branch-name main --role-name neondb_owner
 
-# psql against the prod DB (read-only ops only without backups)
+# psql against the prod DB — from your workstation. psql is NOT in the Fly
+# image (python:3.11-slim), so this won't work inside `flyctl ssh console`.
+# Get the URL from `neonctl connection-string` and never commit it.
 psql "$DATABASE_URL"
 
 # branches for migrations rehearsal
@@ -169,9 +171,13 @@ In order from cheapest to most invasive.
    https://olune-agent-zhuocuns-projects.vercel.app/api/bootstrap`. Confirms
    the `vercel.app` → `fly.dev` rewrite is live (look for `via: fly.io` in
    response headers and a 1st-party `Set-Cookie`).
-4. **Shell into the BE machine** — `flyctl ssh console -a olune-agent-server`,
-   then `psql "$DATABASE_URL"` for ad-hoc queries. (`flyctl ssh` requires a
-   WireGuard peer; if the session 503's, use `flyctl ssh issue` first.)
+4. **Shell into the BE machine** — `flyctl ssh console -a olune-agent-server`
+   for env/process inspection (`env | grep ...`, `ps`, file checks). The
+   `python:3.11-slim` image has no `psql` client; for ad-hoc SQL run
+   `psql "$DATABASE_URL"` from your workstation using a Neon
+   connection-string from `neonctl connection-string`. (`flyctl ssh`
+   requires a WireGuard peer; if the session 503's, run `flyctl ssh issue`
+   first.)
 5. **Sentry + OTel** — when wired (`SENTRY_DSN` / `OTEL_EXPORTER_OTLP_ENDPOINT`
    secrets set on Fly), exceptions go to Sentry and traces go to the OTel
    collector. Both no-op when unset.
@@ -210,6 +216,8 @@ In order from cheapest to most invasive.
   ├── db/ — SQLAlchemy 2.0 async + repositories
   ├── observability/ — Sentry + OTel (both env-gated)
   ├── middleware/ — request_id, ratelimit (slowapi)
+  ├── schemas/ — Pydantic v2 wire shapes (camelCase aliases)
+  ├── scripts/ — one-off helpers (e.g., init_test_db for Playwright fixtures)
   └── security/ — AES-GCM BYOK + versioned KEK + argon2id passwords
         |
         v

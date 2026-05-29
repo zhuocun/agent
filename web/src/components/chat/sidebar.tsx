@@ -42,7 +42,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { useSwipeActions } from "@/lib/use-swipe-actions";
 import type { AccountInfo, ConversationSummary } from "@/lib/types";
+
+// Width of the swipe-revealed trailing action tray (two 64px action buttons).
+const SWIPE_ACTIONS_WIDTH = 128;
 
 export interface SidebarProps {
   conversations: ConversationSummary[];
@@ -248,7 +252,22 @@ function ConversationRow({
     submitRename();
   };
 
+  const swipe = useSwipeActions({
+    actionsWidth: SWIPE_ACTIONS_WIDTH,
+    // Full swipe-left past this distance deletes directly (native-iOS style).
+    fullSwipeThreshold: 200,
+    onFullSwipe: () => onRequestDelete(conversation),
+    // Renaming takes over the row; don't let a drag fight the text caret.
+    disabled: isRenaming,
+  });
+
   const handleRowClick = () => {
+    // A swipe that left the row open shouldn't also select on the tap-release;
+    // first tap closes the tray (matches iOS), and the open tray swallows it.
+    if (swipe.open) {
+      swipe.close();
+      return;
+    }
     onSelect(conversation.id);
   };
 
@@ -258,6 +277,13 @@ function ConversationRow({
 
   const pinAction = conversation.pinned ? "Unpin" : "Pin";
 
+  // Reduced motion → snap instantly; otherwise ease the reveal/settle. While
+  // actively dragging we never transition (the finger is the clock).
+  const slideTransition =
+    swipe.dragging || swipe.reducedMotion
+      ? undefined
+      : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)";
+
   return (
     <div
       ref={active ? activeRowRef : undefined}
@@ -266,15 +292,79 @@ function ConversationRow({
       // strings and would race against the test).
       data-conversation-id={conversation.id}
       className={cn(
-        "group/conv relative flex min-h-11 w-full items-center rounded-2xl pr-1 text-left text-sm transition-colors",
+        "group/conv relative isolate flex min-h-11 w-full items-center overflow-hidden rounded-2xl text-left text-sm transition-colors",
         // Single-accent doctrine: the active row is signalled by a 2px brand
         // stripe at the leading edge; rest state stays on pure typography + Ma
         // (no background fill). Hover tint is intentionally barely-perceptible.
         active
-          ? "text-foreground before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-brand"
-          : "text-sidebar-foreground hover:bg-foreground/[0.03]",
+          ? "text-foreground before:absolute before:inset-y-1 before:left-0 before:z-20 before:w-0.5 before:rounded-full before:bg-brand"
+          : "text-sidebar-foreground",
       )}
     >
+      {/* Swipe-revealed trailing action tray. Sits behind the sliding row
+          content; becomes interactive only once the row is dragged/settled
+          open. Pin/Unpin + destructive Delete, mirroring the kebab menu. */}
+      <div
+        aria-hidden={!swipe.open}
+        className={cn(
+          "absolute inset-y-0 right-0 z-0 flex items-stretch",
+          swipe.open ? "" : "pointer-events-none",
+        )}
+        style={{ width: SWIPE_ACTIONS_WIDTH }}
+      >
+        <button
+          type="button"
+          tabIndex={swipe.open ? 0 : -1}
+          aria-label={pinAction}
+          onClick={(e) => {
+            e.stopPropagation();
+            onTogglePin(conversation.id);
+            swipe.close();
+          }}
+          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-muted text-xs font-medium text-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97]"
+        >
+          {conversation.pinned ? (
+            <PinOff className="size-4" aria-hidden />
+          ) : (
+            <Pin className="size-4" aria-hidden />
+          )}
+          <span>{pinAction}</span>
+        </button>
+        <button
+          type="button"
+          tabIndex={swipe.open ? 0 : -1}
+          aria-label="Delete"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRequestDelete(conversation);
+            swipe.close();
+          }}
+          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-destructive text-xs font-medium text-white transition-transform duration-100 touch-manipulation active:scale-[0.97]"
+        >
+          <Trash2 className="size-4" aria-hidden />
+          <span>Delete</span>
+        </button>
+      </div>
+
+      {/* Sliding foreground layer: holds the row's tap target + kebab. The
+          background carries the row's own surface color so the tray stays
+          hidden until revealed. */}
+      <div
+        {...swipe.handlers}
+        style={{
+          transform: `translate3d(${swipe.offset}px, 0, 0)`,
+          transition: slideTransition,
+          touchAction: "pan-y",
+        }}
+        className={cn(
+          // Opaque surface masks the trailing tray until it's revealed. The
+          // hover tint rides on top via ::after so it can't expose the tray
+          // (a translucent base would let the tray bleed through on hover).
+          "relative z-10 flex min-h-11 w-full items-center rounded-2xl bg-sidebar pr-1",
+          !active &&
+            "after:pointer-events-none after:absolute after:inset-0 after:rounded-2xl after:bg-foreground/[0.03] after:opacity-0 after:transition-opacity hover:after:opacity-100",
+        )}
+      >
       {isRenaming ? (
         // Inline-rename mode renders as a sibling subtree, NOT nested in the
         // click-to-select button. <button> cannot contain interactive
@@ -384,6 +474,7 @@ function ConversationRow({
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
     </div>
   );
 }
@@ -486,7 +577,7 @@ export function Sidebar({
           // E2E target: the header also has a "New chat" affordance, and the
           // testid keeps us from picking the wrong one.
           data-testid="sidebar-new-chat"
-          className="flex min-h-11 w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm font-medium text-sidebar-foreground outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]"
+          className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] active:scale-[0.97]"
         >
           <Plus className="size-4" aria-hidden />
           <span>New chat</span>
@@ -552,7 +643,7 @@ export function Sidebar({
               <button
                 type="button"
                 aria-label="Account menu"
-                className="flex w-full items-center gap-2 rounded-2xl p-2 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] aria-expanded:bg-muted/60"
+                className="flex w-full select-none items-center gap-2 rounded-2xl p-2 text-left outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] aria-expanded:bg-muted/60 active:not-aria-[haspopup]:scale-[0.97]"
               >
                 <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
                   {initials(account.name)}

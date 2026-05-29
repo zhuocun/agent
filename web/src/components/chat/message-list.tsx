@@ -46,6 +46,14 @@ export function MessageList({ children }: { children: React.ReactNode }) {
         role="region"
         aria-label="Messages"
         tabIndex={0}
+        // overflow-anchor:auto lets the browser keep the viewport visually
+        // pinned when content *above* the current scroll position reflows
+        // (e.g. an expanding reasoning panel earlier in the thread), so the
+        // reader doesn't get shoved. The JS ResizeObserver below still owns
+        // the "follow new tokens at the bottom" behavior; these are
+        // complementary — anchoring handles above-fold reflow, the observer
+        // handles below-fold growth.
+        style={{ overflowAnchor: "auto" }}
         className="chat-scroll h-full overflow-y-auto overscroll-contain"
       >
         <ol

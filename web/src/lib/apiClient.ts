@@ -224,7 +224,7 @@ export function fetchConversation(
 }
 
 export function createConversation(
-  body: { selectedTierId: ModelTierId; isTemporary: boolean },
+  body: { selectedTierId: ModelTierId; isTemporary?: boolean },
   signal?: AbortSignal,
 ): Promise<Conversation> {
   return apiClient.post<Conversation>("/api/conversations", body, signal);
@@ -282,10 +282,10 @@ export function deleteByok(
   provider: string,
   signal?: AbortSignal,
 ): Promise<AccountInfo> {
-  return apiClient.del(
+  return apiClient.del<AccountInfo>(
     `/api/account/byok/${encodeURIComponent(provider)}`,
     signal,
-  ) as unknown as Promise<AccountInfo>;
+  );
 }
 
 export function postAuthUpgrade(

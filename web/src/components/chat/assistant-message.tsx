@@ -56,6 +56,11 @@ export function AssistantMessage({
       role="article"
       aria-label="Assistant"
       aria-busy={!isFinal}
+      // E2E target: a stable hook for the assistant bubble so streaming
+      // tests can `locator('[data-testid="assistant-message"]').last()` for
+      // the in-flight turn without depending on the aria-label.
+      data-testid="assistant-message"
+      data-status={status}
     >
       {showTyping ? <TypingIndicator /> : null}
 
@@ -73,7 +78,9 @@ export function AssistantMessage({
         }
         if (part.type === "text") {
           return part.text ? (
-            <MarkdownRenderer key={idx}>{part.text}</MarkdownRenderer>
+            <div key={idx} data-testid="assistant-answer">
+              <MarkdownRenderer>{part.text}</MarkdownRenderer>
+            </div>
           ) : null;
         }
         if (part.type === "status") {

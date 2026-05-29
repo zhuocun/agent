@@ -433,17 +433,25 @@ export function useApiStream(
       const reader = body.getReader();
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
+      // SSE frames are separated by a blank line. sse-starlette emits CRLF
+      // (`\r\n`) line endings; the WHATWG spec also allows `\n` and `\r`. A
+      // naive per-chunk `\r\n` → `\n` replace breaks when a `\r\n` straddles
+      // two read chunks (chunk1 ends `\r`, chunk2 starts `\n`): the lone `\r`
+      // stays in the buffer and `indexOf("\n\n")` will not find the boundary
+      // because `...\r\n\n...` doesn't contain `\n\n` aligned right. Match the
+      // separator at the BUFFER level with a CR-tolerant regex so spanning
+      // chunks are correct by construction. parseFrame strips any trailing
+      // `\r` per line internally, so no further normalization is needed.
+      const FRAME_SEP = /\r?\n\r?\n/;
       try {
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          // SSE frames are separated by a blank line. Use indexOf so the
-          // remainder (incomplete frame at the tail) stays in `buffer`.
-          let sepIdx = buffer.indexOf("\n\n");
-          while (sepIdx !== -1) {
-            const raw = buffer.slice(0, sepIdx);
-            buffer = buffer.slice(sepIdx + 2);
+          let match: RegExpExecArray | null;
+          while ((match = FRAME_SEP.exec(buffer)) !== null) {
+            const raw = buffer.slice(0, match.index);
+            buffer = buffer.slice(match.index + match[0].length);
             const frame = parseFrame(raw);
             if (frame) {
               const ended = handleFrame(frame);
@@ -459,7 +467,6 @@ export function useApiStream(
                 return;
               }
             }
-            sepIdx = buffer.indexOf("\n\n");
           }
         }
         // Stream ended without a terminal frame. Treat as a protocol error.

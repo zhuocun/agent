@@ -142,7 +142,10 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
       role="article"
       aria-label="You"
     >
-      <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-muted px-5 py-3 text-[17px] leading-7 text-foreground md:text-[15px]">
+      <div
+        data-testid="user-message-text"
+        className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-muted px-5 py-3 text-[17px] leading-7 text-foreground md:text-[15px]"
+      >
         {text}
       </div>
       <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 [@media(hover:none)]:opacity-100">

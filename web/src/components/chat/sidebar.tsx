@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -400,7 +401,12 @@ function ConversationRow({
           // ("Conversation actions") button; this testid lets specs open the
           // conversation without relying on DOM order to disambiguate.
           data-testid="sidebar-conversation-link"
-          className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2 text-left outline-none focus-visible:shadow-[var(--focus-ring)]"
+          // Press feedback matches the button slice's spring feel: a fast
+          // scale-down on press, then a gentle spring-back on release. Lives on
+          // the inner tap target (a child of the swipe sliding layer) so its
+          // scale composes with — never fights — the layer's translate3d swipe.
+          // Reduced motion drops the scale entirely (motion-reduce:scale-100).
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2 text-left outline-none transition-transform duration-[280ms] ease-ios-spring focus-visible:shadow-[var(--focus-ring)] active:scale-[0.97] active:duration-[70ms] active:ease-out motion-reduce:scale-100 motion-reduce:transition-none"
         >
           {conversation.pinned ? (
             <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -479,6 +485,244 @@ function ConversationRow({
   );
 }
 
+// Per-id transition phase driving the row-wrapper enter/exit motion. "enter" is
+// only ever assigned to rows added *after* the first commit (see the seen-set
+// discipline in useListTransitions); rows present at mount get no phase so the
+// initial list never animates in.
+type RowPhase = "enter" | "exit";
+
+// Exit collapse duration; the unmount fallback timer matches this so a missed
+// transitionend (e.g. reduced motion, display:none ancestor) never leaks a row.
+const ROW_EXIT_MS = 250;
+
+// Wrapper that owns the per-row enter/exit choreography. The motion lives here
+// — on the OUTER list item — never on ConversationRow's inner sliding layer,
+// whose `transform: translate3d(...)` carries the swipe. Stacking enter/exit
+// transforms onto that layer would fight the gesture, so we animate height +
+// opacity (and a tiny translate for enter only) on this separate element.
+//
+//   - ENTER: a `starting:` @starting-style snapshot (opacity-0 + slight upward
+//     offset) that the row transitions *out of* on first paint. Applied only
+//     when phase === "enter", so the seen-set guard in useListTransitions keeps
+//     it off rows present at mount.
+//   - EXIT: collapse via grid-template-rows 1fr → 0fr (the only way to ease to
+//     an auto height) + fade. We mount the exiting row open, then flip to the
+//     collapsed state in a layout effect so the transition has two frames to
+//     run, and fire `onExited` on transitionend. The hook arms a matching
+//     timeout fallback, so reduced motion (transition:none → no transitionend)
+//     and display:none ancestors still unmount the row.
+function RowWrapper({
+  phase,
+  onExited,
+  children,
+}: {
+  phase?: RowPhase;
+  onExited: () => void;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  // For exit we start "open" (1fr) and collapse to "0fr" after the first paint
+  // so the grid-rows transition actually animates instead of mounting collapsed.
+  const [collapsed, setCollapsed] = useState(false);
+
+  useLayoutEffect(() => {
+    if (phase !== "exit") return;
+    // Next frame: flip to collapsed so 1fr → 0fr animates. rAF (not a sync set)
+    // guarantees the browser commits the open state first.
+    const id = window.requestAnimationFrame(() => setCollapsed(true));
+    return () => window.cancelAnimationFrame(id);
+  }, [phase]);
+
+  if (phase === "exit") {
+    return (
+      <div
+        role="listitem"
+        aria-hidden
+        // `inert` (React 19 DOM attr) drops the collapsing row from the tab
+        // order and blocks clicks — without it the still-live ConversationRow
+        // controls stay focusable/clickable inside an aria-hidden subtree
+        // during the ~250ms collapse (an a11y violation). pointer-events-none
+        // is the belt-and-braces for browsers lagging on `inert`.
+        inert
+        // grid-rows collapse is the height half; the inner min-h-0 child lets
+        // the 0fr track actually shrink. Reduced motion skips the ease (the
+        // hook's fallback timer still unmounts), keeping the row from lingering.
+        className={cn(
+          "pointer-events-none grid transition-[grid-template-rows,opacity] duration-[250ms] ease-ios-smooth motion-reduce:transition-none",
+          collapsed
+            ? "grid-rows-[0fr] opacity-0"
+            : "grid-rows-[1fr] opacity-100",
+        )}
+        // Fire on the grid-template-rows leg (opacity finishes first); any leg
+        // is fine since both share the duration — onExited is idempotent.
+        onTransitionEnd={(e) => {
+          if (e.propertyName === "grid-template-rows") onExited();
+        }}
+      >
+        <div className="min-h-0 overflow-hidden">{children}</div>
+      </div>
+    );
+  }
+
+  if (phase === "enter") {
+    return (
+      <div
+        role="listitem"
+        // starting: is the @starting-style snapshot the row eases out of on its
+        // first paint (Tailwind v4 maps it to @starting-style). Guarded by the
+        // "enter" phase so only genuinely-new rows animate. Reduced motion drops
+        // the slide and just cross-fades from the starting opacity.
+        className="transition-[opacity,transform] duration-[300ms] ease-ios-smooth starting:opacity-0 starting:-translate-y-1 motion-reduce:transition-opacity motion-reduce:translate-y-0"
+      >
+        {children}
+      </div>
+    );
+  }
+
+  return <div role="listitem">{children}</div>;
+}
+
+interface DisplayRow {
+  conversation: ConversationSummary;
+  phase?: RowPhase;
+}
+
+/**
+ * Drives conversation-list enter/exit motion without a JS animation lib:
+ *
+ * - ENTER: a `seenRef` Set + a `mountedRef` gate. Rows present at first commit
+ *   are seeded into `seen` so they never animate; only ids that first appear
+ *   *after* mount get the "enter" phase (which arms a `starting:` @starting-style
+ *   transition on the wrapper). Ids are committed to `seen` after paint.
+ * - EXIT: React unmounts removed rows synchronously, so we keep a snapshot of
+ *   each id's last props/position and re-inject removed rows in an "exit" phase
+ *   until their collapse transition finishes (transitionend, with a timeout
+ *   fallback). Works for both delete paths (the dialog and the full-swipe both
+ *   route through the parent's prop removal), and never double-animates.
+ *
+ * Returns the merged render list (live rows + still-exiting rows in their last
+ * position) plus an `onRowExited` callback the wrapper fires when its collapse
+ * transition ends.
+ */
+function useListTransitions(conversations: ConversationSummary[]): {
+  rows: DisplayRow[];
+  onRowExited: (id: string) => void;
+} {
+  const mountedRef = useRef(false);
+  const seenRef = useRef<Set<string>>(new Set());
+  // Last render's conversations, by id and by index, used to detect removals
+  // and to re-insert an exiting row at roughly its prior position.
+  const prevOrderRef = useRef<string[]>([]);
+  const prevByIdRef = useRef<Map<string, ConversationSummary>>(new Map());
+  // Rows mid-exit: snapshot + the id they followed in the prior order so the
+  // collapsing row stays put rather than jumping to the list end.
+  const exitingRef = useRef<Map<string, { conversation: ConversationSummary; after: string | null }>>(
+    new Map(),
+  );
+  const exitTimersRef = useRef<Map<string, number>>(new Map());
+  // Bump to force a re-render when an exit finishes (refs alone won't repaint).
+  const [, forceRender] = useState(0);
+
+  // This hook intentionally derives its render output from refs synchronously
+  // (the seen-set guard and the exit snapshots must be consistent *within* the
+  // same render that emits the merged list — a post-paint effect would flash a
+  // wrong frame). The only during-render ref write (the seenRef seeding) is
+  // gated on !mountedRef.current and is idempotent; all post-mount ref writes
+  // happen in effects. Reads stay id-keyed, so they are safe under StrictMode's
+  // double render. Hence the scoped react-hooks/refs waiver below.
+  /* eslint-disable react-hooks/refs */
+
+  // Seed `seen` with the initial list so first paint never animates rows in.
+  if (!mountedRef.current && seenRef.current.size === 0) {
+    for (const c of conversations) seenRef.current.add(c.id);
+  }
+
+  const currentIds = new Set(conversations.map((c) => c.id));
+
+  // Detect removals: ids that were rendered last commit but are gone now (and
+  // aren't already exiting) become exiting snapshots. Skip before mount.
+  if (mountedRef.current) {
+    for (let i = 0; i < prevOrderRef.current.length; i++) {
+      const id = prevOrderRef.current[i];
+      if (currentIds.has(id) || exitingRef.current.has(id)) continue;
+      const snapshot = prevByIdRef.current.get(id);
+      if (!snapshot) continue;
+      // Anchor to the nearest previous-order predecessor that's still LIVE
+      // (in currentIds), skipping any predecessor also removed this commit —
+      // anchoring to another exiting id would orphan this snapshot (no live
+      // anchor emits it, so only the fallback timer would clear it). Falling
+      // back to null emits it in the leading group, keeping the bulk-delete
+      // case (row + its predecessor removed together) animating.
+      let after: string | null = null;
+      for (let j = i - 1; j >= 0; j--) {
+        if (currentIds.has(prevOrderRef.current[j])) {
+          after = prevOrderRef.current[j];
+          break;
+        }
+      }
+      exitingRef.current.set(id, { conversation: snapshot, after });
+    }
+  }
+
+  const onRowExited = useCallback((id: string) => {
+    const timer = exitTimersRef.current.get(id);
+    if (timer != null) {
+      window.clearTimeout(timer);
+      exitTimersRef.current.delete(id);
+    }
+    if (exitingRef.current.delete(id)) {
+      forceRender((n) => n + 1);
+    }
+  }, []);
+
+  // Arm a fallback timer per exiting row in case transitionend never fires.
+  useEffect(() => {
+    for (const id of exitingRef.current.keys()) {
+      if (exitTimersRef.current.has(id)) continue;
+      const timer = window.setTimeout(() => onRowExited(id), ROW_EXIT_MS + 80);
+      exitTimersRef.current.set(id, timer);
+    }
+  });
+
+  // After paint: mark mounted, commit freshly-seen ids, snapshot this order.
+  useEffect(() => {
+    mountedRef.current = true;
+    for (const c of conversations) seenRef.current.add(c.id);
+    prevOrderRef.current = conversations.map((c) => c.id);
+    prevByIdRef.current = new Map(conversations.map((c) => [c.id, c]));
+  });
+
+  // Clean up every pending timer on unmount.
+  useEffect(() => {
+    const timers = exitTimersRef.current;
+    return () => {
+      for (const t of timers.values()) window.clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
+
+  // Build the merged list: live rows (tagged "enter" when genuinely new) with
+  // exiting snapshots re-inserted after their anchor id.
+  const rows: DisplayRow[] = [];
+  const emitExitingAfter = (anchor: string | null) => {
+    for (const entry of exitingRef.current.values()) {
+      if (entry.after === anchor) {
+        rows.push({ conversation: entry.conversation, phase: "exit" });
+      }
+    }
+  };
+  emitExitingAfter(null);
+  for (const c of conversations) {
+    const phase: RowPhase | undefined =
+      mountedRef.current && !seenRef.current.has(c.id) ? "enter" : undefined;
+    rows.push({ conversation: c, phase });
+    emitExitingAfter(c.id);
+  }
+
+  /* eslint-enable react-hooks/refs */
+
+  return { rows, onRowExited };
+}
+
 export function Sidebar({
   conversations,
   activeId,
@@ -499,11 +743,32 @@ export function Sidebar({
   const anonymous = isAnonymousAccount(account);
   const trimmedSearch = search.trim();
   const isSearching = trimmedSearch.length > 0;
+
+  // Merge in enter/exit transition bookkeeping. `displayConversations` is the
+  // live list plus any rows still collapsing out; `phaseById` tags which of
+  // those should animate in ("enter") or out ("exit").
+  const { rows: displayRows, onRowExited } = useListTransitions(conversations);
+  const displayConversations = displayRows.map((r) => r.conversation);
+  const phaseById = new Map<string, RowPhase>();
+  for (const r of displayRows) {
+    if (r.phase) phaseById.set(r.conversation.id, r.phase);
+  }
+
+  // Exiting snapshots (phase === "exit") always survive the filter so a row
+  // deleted while a search is active still animates out, even if its title no
+  // longer matches the query — otherwise its RowWrapper never mounts and the
+  // collapse falls back to the (silent) unmount timer.
   const filteredConversations = isSearching
-    ? conversations.filter((c) =>
-        c.title.toLowerCase().includes(trimmedSearch.toLowerCase()),
-      )
-    : conversations;
+    ? displayRows
+        .filter(
+          (r) =>
+            r.phase === "exit" ||
+            r.conversation.title
+              .toLowerCase()
+              .includes(trimmedSearch.toLowerCase()),
+        )
+        .map((r) => r.conversation)
+    : displayConversations;
   const groups = isSearching
     ? new Map<RecencyKey, ConversationSummary[]>()
     : groupConversations(filteredConversations);
@@ -527,20 +792,27 @@ export function Sidebar({
     setPendingDelete(null);
   };
 
-  const renderRow = (conversation: ConversationSummary) => (
-    <div role="listitem" key={conversation.id}>
-      <ConversationRow
-        conversation={conversation}
-        active={conversation.id === activeId}
-        activeRowRef={activeRowRef}
-        onSelect={onSelect}
-        onRename={onRenameConversation}
-        onTogglePin={onTogglePinConversation}
-        onCopy={onCopyConversation}
-        onRequestDelete={setPendingDelete}
-      />
-    </div>
-  );
+  const renderRow = (conversation: ConversationSummary) => {
+    const phase = phaseById.get(conversation.id);
+    return (
+      <RowWrapper
+        key={conversation.id}
+        phase={phase}
+        onExited={() => onRowExited(conversation.id)}
+      >
+        <ConversationRow
+          conversation={conversation}
+          active={conversation.id === activeId}
+          activeRowRef={activeRowRef}
+          onSelect={onSelect}
+          onRename={onRenameConversation}
+          onTogglePin={onTogglePinConversation}
+          onCopy={onCopyConversation}
+          onRequestDelete={setPendingDelete}
+        />
+      </RowWrapper>
+    );
+  };
 
   return (
     <nav

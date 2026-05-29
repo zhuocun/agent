@@ -44,6 +44,49 @@ const STOP_SETTLE_MS = 600;
 const BUTTON_BASE =
   "inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0 transition-[background-color,color,box-shadow] duration-300 ease-out";
 
+// Icon morph: both glyphs are stacked in a fixed-size box and cross-faded with
+// a spring scale so a send↔stop swap reads as an iOS control morph rather than
+// a hard cut. The active glyph sits at scale-100/opacity-100; the inactive one
+// is absolutely positioned (zero layout shift) at scale-0.6/opacity-0.
+//
+// The button itself unmounts/remounts on the isStreaming toggle (the stop side
+// is Tooltip-wrapped, the send side isn't), so a fresh icon would have no prior
+// frame to transition from. We bridge that with a one-frame mount reveal: each
+// MorphSendStopIcon mounts with both glyphs in the "incoming, pre-spring" pose
+// and flips to the rest pose on the next rAF, so the spring fires on every
+// swap. transform/opacity only (GPU-friendly). motion-reduce: collapses to a
+// plain opacity swap with no scale/spring.
+const MORPH_ICON_BASE =
+  "absolute inset-0 flex items-center justify-center transition-[opacity,transform] duration-300 ease-ios-spring motion-reduce:transition-[opacity] motion-reduce:duration-150 motion-reduce:scale-100";
+
+function MorphSendStopIcon({ isStreaming }: { isStreaming: boolean }) {
+  // false until the frame after mount → drives the from→to spring on swap.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setSettled(true));
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // Resting target: the icon matching the current state is visible, the other
+  // is shrunk away. Before `settled`, the visible icon is held in the shrunk
+  // pre-spring pose so the first painted frame springs up to rest.
+  const stopPose =
+    settled && isStreaming ? "scale-100 opacity-100" : "scale-[0.6] opacity-0";
+  const sendPose =
+    settled && !isStreaming ? "scale-100 opacity-100" : "scale-[0.6] opacity-0";
+
+  return (
+    <span aria-hidden className="relative block size-4">
+      <span className={cn(MORPH_ICON_BASE, stopPose)}>
+        <Square className="size-4 fill-current" />
+      </span>
+      <span className={cn(MORPH_ICON_BASE, sendPose)}>
+        <ArrowUp className="size-4" />
+      </span>
+    </span>
+  );
+}
+
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
   {
     isStreaming,
@@ -296,6 +339,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           className="block max-h-[200px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
         />
         <div className="flex h-11 shrink-0 items-center">
+          {/* Send↔stop swap: the stop side is Tooltip-wrapped and the send side
+              isn't, so the button remounts on toggle. MorphSendStopIcon owns the
+              icon spring and bridges that remount with a one-frame mount reveal,
+              so the morph fires on every swap without disturbing handlers,
+              aria-label, disabled, testid, or the color/shadow transition. */}
           {isStreaming ? (
             <Tooltip>
               <TooltipTrigger
@@ -309,7 +357,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                       "bg-foreground/10 text-foreground hover:bg-foreground/15",
                     )}
                   >
-                    <Square className="size-4 fill-current" />
+                    <MorphSendStopIcon isStreaming />
                   </Button>
                 }
               />
@@ -337,7 +385,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                     : "bg-transparent text-muted-foreground group-focus-within:text-foreground",
               )}
             >
-              <ArrowUp className="size-4" />
+              <MorphSendStopIcon isStreaming={false} />
             </Button>
           )}
         </div>

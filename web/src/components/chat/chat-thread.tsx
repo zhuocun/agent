@@ -257,9 +257,15 @@ export function ChatThread() {
     useState<string | null>(null);
   const { theme, setTheme, resolvedTheme } = useTheme();
 
-  // Bootstrap fetch — single trip on mount (and on retry). Aborts on unmount
-  // so we don't setState on a torn-down tree.
+  // Bootstrap fetch — single trip on mount (and on retry). The in-flight ref
+  // short-circuits StrictMode's double-mount in dev: AbortController alone
+  // doesn't help because the BE assigns an anonymous user on the cookieless
+  // first hit BEFORE the response arrives, so a second concurrent request
+  // would mint a second user row even if we discard its response.
+  const bootstrapInFlightRef = useRef(false);
   useEffect(() => {
+    if (bootstrapInFlightRef.current) return;
+    bootstrapInFlightRef.current = true;
     const controller = new AbortController();
     void (async () => {
       try {
@@ -289,6 +295,8 @@ export function ChatThread() {
         } else {
           throw cause;
         }
+      } finally {
+        bootstrapInFlightRef.current = false;
       }
     })();
     return () => {
@@ -387,6 +395,7 @@ export function ChatThread() {
   const beginTurn = useCallback(
     async (args: {
       text: string;
+      tierId: ModelTierId;
       regenerate?: boolean;
       editMessageId?: string;
     }): Promise<void> => {
@@ -394,7 +403,7 @@ export function ChatThread() {
       if (!conversationId) {
         try {
           const created = await createConversation({
-            selectedTierId,
+            selectedTierId: args.tierId,
             isTemporary,
           });
           conversationId = created.id;
@@ -429,14 +438,14 @@ export function ChatThread() {
       start({
         conversationId,
         clientMessageId: crypto.randomUUID(),
-        tierId: selectedTierId,
+        tierId: args.tierId,
         text: args.text,
         isTemporary: isTemporary || undefined,
         regenerate: args.regenerate,
         editMessageId: args.editMessageId,
       });
     },
-    [activeConversationId, isTemporary, selectedTierId, start],
+    [activeConversationId, isTemporary, start],
   );
 
   const handleSend = (text: string) => {
@@ -456,7 +465,7 @@ export function ChatThread() {
     ]);
     setPendingId(assistantPlaceholderId);
     setLiveMessage("Generating response");
-    void beginTurn({ text });
+    void beginTurn({ text, tierId: tierAtSendRef.current });
   };
 
   const pendingMessage: ChatMessage | null = useMemo(() => {
@@ -528,11 +537,19 @@ export function ChatThread() {
       }
       return "";
     })();
-    void beginTurn({ text: lastUserText, regenerate: true });
+    void beginTurn({
+      text: lastUserText,
+      tierId: tierAtSendRef.current,
+      regenerate: true,
+    });
   };
 
   const handleEditUserMessage = (messageId: string, newText: string) => {
     if (isStreaming) return;
+    // Local-only ids belong to user bubbles whose turn never persisted
+    // (e.g. a prior error before terminal). The BE rejects non-uuid edit
+    // targets with 400, so skip rather than emit a doomed request.
+    if (messageId.startsWith("local-")) return;
     const idx = messages.findIndex((m) => m.id === messageId);
     if (idx === -1) return;
     const userBubbleId = localId();
@@ -551,10 +568,11 @@ export function ChatThread() {
     ]);
     setPendingId(assistantPlaceholderId);
     setLiveMessage("Generating response");
-    // Pass the SERVER id (if reconciled) of the truncation point, falling
-    // back to the local id otherwise. The BE rejects unknown ids; FE-only ids
-    // would 400, which we surface via the stream error path.
-    void beginTurn({ text: newText, editMessageId: messageId });
+    void beginTurn({
+      text: newText,
+      tierId: tierAtSendRef.current,
+      editMessageId: messageId,
+    });
   };
 
   // Branch creates a brand-new (empty) conversation server-side. The MVP BE
@@ -562,10 +580,8 @@ export function ChatThread() {
   // NOT cloned into the new conversation — the user lands in a fresh chat
   // with the chosen tier preserved. This is a regression from the mock UX
   // (which cloned the slice locally); see plan §"Known FE follow-ups".
-  const handleBranchFromMessage = (messageId: string) => {
+  const handleBranchFromMessage = () => {
     if (isStreaming) return;
-    const idx = messages.findIndex((m) => m.id === messageId);
-    if (idx === -1) return;
 
     stop();
     reset();
@@ -600,7 +616,7 @@ export function ChatThread() {
   };
 
   const handleNewChat = () => {
-    if (isStreaming) stop();
+    if (isStreaming) reset();
     setMessages([]);
     setPendingId(null);
     assistantIdRef.current = null;
@@ -625,7 +641,7 @@ export function ChatThread() {
       setIsTemporary(false);
       return;
     }
-    if (isStreaming) stop();
+    if (isStreaming) reset();
     setMessages([]);
     setPendingId(null);
     assistantIdRef.current = null;
@@ -640,7 +656,7 @@ export function ChatThread() {
   };
 
   const handleSelectConversation = (id: string) => {
-    if (isStreaming) stop();
+    if (isStreaming) reset();
     setPendingId(null);
     assistantIdRef.current = null;
     pendingUserIdRef.current = null;
@@ -692,7 +708,7 @@ export function ChatThread() {
     const previous = conversations;
     setConversations((prev) => prev.filter((c) => c.id !== id));
     if (id === activeConversationId) {
-      if (isStreaming) stop();
+      if (isStreaming) reset();
       setMessages([]);
       setPendingId(null);
       assistantIdRef.current = null;
@@ -1019,7 +1035,7 @@ export function ChatThread() {
                   <UserMessage
                     key={m.id}
                     message={m}
-                    canEdit={!isStreaming}
+                    canEdit={!isStreaming && !m.id.startsWith("local-")}
                     onEdit={(newText) => handleEditUserMessage(m.id, newText)}
                   />
                 ) : (
@@ -1027,11 +1043,11 @@ export function ChatThread() {
                     key={m.id}
                     message={m}
                     status={m.status ?? "done"}
-                    canRegenerate={!isStreaming && m.id === lastAssistantId}
+                    canRegenerate={!isStreaming && m.id === lastAssistantId && (m.status ?? "done") === "done"}
                     onRegenerate={handleRegenerate}
                     onFeedback={(f) => setFeedback(m.id, f)}
                     canBranch={!isStreaming && m.id !== pendingId}
-                    onBranch={() => handleBranchFromMessage(m.id)}
+                    onBranch={handleBranchFromMessage}
                     defaultReasoningOpen={preferences.autoExpandReasoning}
                   />
                 ),

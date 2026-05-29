@@ -64,6 +64,34 @@ async def get_by_client_message_id(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def get_assistant_for_user_message(
+    db: AsyncSession,
+    user_message_id: UUID,
+) -> Message | None:
+    """Return the most recent assistant row whose reply links to this user.
+
+    Resolves idempotency replay in O(log n) via the `ix_message_responds_to`
+    index (post-M4). Returns None for legacy rows where the assistant has
+    `responds_to_message_id IS NULL` — callers fall back to pair-by-index.
+
+    Most-recent ordering matters because regenerate inserts a new assistant
+    for the same user message and we want the latest one, not the dropped
+    predecessor. The trailing-assistant delete in `delete_trailing_assistants`
+    keeps this set tiny in practice (regen always drops the prior before
+    inserting), but the ORDER BY makes the contract obvious.
+    """
+    stmt = (
+        select(Message)
+        .where(
+            Message.responds_to_message_id == user_message_id,
+            Message.role == "assistant",
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 async def create_user_message(
     db: AsyncSession,
     *,
@@ -101,11 +129,18 @@ async def create_assistant_message(
     parts: list[dict[str, Any]],
     status: str,
     attribution: dict[str, Any],
+    responds_to_message_id: UUID | None = None,
 ) -> Message:
     """Persist an assistant turn. `status` is `"done"` or `"stopped"`.
 
     See `create_user_message` docstring — `created_at` is set Python-side
     for microsecond precision (SQLite quirk).
+
+    `responds_to_message_id` (post-M4) points at the user message whose reply
+    this assistant turn is. Drives column-based idempotency replay in
+    `_maybe_replay`. None is accepted so callers that don't yet thread the
+    id through (or seed legacy data) still work; the pair-by-index fallback
+    in `_maybe_replay` covers those rows.
     """
     msg = Message(
         conversation_id=conversation_id,
@@ -114,6 +149,7 @@ async def create_assistant_message(
         parts=parts,
         status=status,
         attribution=attribution,
+        responds_to_message_id=responds_to_message_id,
         created_at=_now(),
     )
     db.add(msg)

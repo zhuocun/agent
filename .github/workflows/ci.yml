@@ -142,3 +142,30 @@ jobs:
           name: playwright-traces
           path: web/test-results
           retention-days: 14
+
+  deploy-api:
+    name: deploy-api
+    needs: [api, web-e2e]
+    runs-on: ubuntu-latest
+    # Only deploy when CI passes on a push to main; PRs and feature-branch
+    # pushes never reach this step. `flyctl deploy --remote-only` builds on
+    # Fly's depot remote builder using the repo working tree as context.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      # Serialize deploys so a fast follow-up push doesn't race the in-flight
+      # build. The earlier-queued deploy is cancelled — Fly will roll forward
+      # from the latest commit.
+      group: deploy-api
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly
+        working-directory: api
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only --config fly.toml

@@ -24,9 +24,10 @@ class TierBinding:
 
     `cache_read_per_m` (M4): optional per-million price for cache-read tokens.
     When set, `compute_cost_breakdown` bills `cached_input_tokens` at this rate
-    instead of `list_price_in_per_m`. DeepSeek (canonical) and Anthropic cache
-    reads are a large discount off input (DeepSeek ~90%+, Anthropic ~90%); we
-    populate ~10% of input per tier. `None` falls back to 10% of the input rate.
+    instead of `list_price_in_per_m`. Anthropic cache reads are a documented
+    ~90% discount off input; DeepSeek's cache-read rate is not documented in our
+    cited source, so we populate a ~10%-of-input placeholder ([verify-at-build]).
+    `None` falls back to 10% of the input rate.
     """
 
     tier: ModelTier
@@ -68,9 +69,11 @@ def _tier(
 # $0.870 / 1M output (current promo; documented to REVERT 2026-05-31 15:59 UTC
 # to ~4x higher — model that dated promo at build via the registry's promo
 # metadata). `deepseek-reasoner` exposes raw reasoning tokens, billed at the
-# output rate (handled by `compute_cost_breakdown`). `cache_read_per_m` uses
-# DeepSeek's large cache-read discount (~90%+); we set ~10% of the input rate
-# per the existing `cache_read_per_m` convention. All figures [verify-at-build].
+# output rate (handled by `compute_cost_breakdown`). `cache_read_per_m` is NOT
+# documented in the cited source (its "cached in" column is "—"); 0.0435 (~10%
+# of input) is a placeholder following the existing convention, pending
+# build-time verification against DeepSeek's live pricing. All figures
+# [verify-at-build].
 TIER_BINDINGS: tuple[TierBinding, ...] = (
     TierBinding(
         tier=_tier(
@@ -86,7 +89,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
         list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
         long_context_flat=True,
-        cache_read_per_m=0.0435,  # [verify-at-build] ~10% of input (DeepSeek cache discount)
+        cache_read_per_m=0.0435,  # [verify-at-build] ~10%-of-input placeholder (undocumented)
     ),
     TierBinding(
         tier=_tier(

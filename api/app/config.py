@@ -68,16 +68,14 @@ class Settings(BaseSettings):
     # docs/prd/00-product-overview.md D11). DeepSeek is OpenAI-compatible, so the
     # `deepseek` backend drives the same `OpenAIProvider` adapter against the
     # built-in default `base_url` below. Running `PROVIDER_BACKEND=deepseek`
-    # needs only an API key — no base_url/model env gymnastics: per-tier model
-    # ids default to `deepseek-chat` (fast/smart/auto) and `deepseek-reasoner`
-    # (pro). `DEEPSEEK_API_KEY` falls back to `OPENAI_API_KEY` when unset (see
+    # needs only an API key — no base_url/model env gymnastics. The per-tier
+    # model ids (`deepseek-chat` for fast/smart/auto, `deepseek-reasoner` for
+    # pro) live in the canonical `TIER_BINDINGS` registry (providers/tiers.py),
+    # the single source of truth — same pattern as the Anthropic table.
+    # `DEEPSEEK_API_KEY` falls back to `OPENAI_API_KEY` when unset (see
     # `deepseek_key`) so an OpenAI-compatible key works with either env name.
     deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
     deepseek_base_url: str = Field(default="https://api.deepseek.com")
-    deepseek_model_fast: str = Field(default="deepseek-chat")
-    deepseek_model_smart: str = Field(default="deepseek-chat")
-    deepseek_model_pro: str = Field(default="deepseek-reasoner")
-    deepseek_model_auto: str = Field(default="deepseek-chat")
 
     # Provider backend selection (M1). `fake` for dev/tests, `deepseek` is the
     # main/prod provider; `anthropic`/`openai` are alternates.

@@ -215,3 +215,28 @@ def get_binding(tier_id: ModelTierId, settings: Settings | None = None) -> TierB
 def is_known_tier(tier_id: str) -> bool:
     """Backend-independent: the set of known tier ids never changes."""
     return any(b.tier.id == tier_id for b in TIER_BINDINGS)
+
+
+# Auto today routes to the same model class as "smart" (claude-sonnet-4-6 on
+# Anthropic, gpt-4o on OpenAI). When real routing lands this constant becomes
+# a per-request decision; for now it is a single mapping. The FE attribution
+# row requires a concrete served tier (see
+# `web/src/components/chat/attribution-row.tsx::assertServedTier`).
+_AUTO_RESOLVES_TO: ModelTierId = "smart"
+
+
+def resolve_served_tier(binding: TierBinding) -> tuple[ModelTierId, str]:
+    """Resolve `(servedTierId, servedTierLabel)` for an attribution.
+
+    For concrete tiers this is `(binding.tier.id, binding.tier.label)`. For the
+    "auto" tier, the FE requires the wire to surface a concrete tier id so the
+    attribution row can render which class of model actually served the turn —
+    we resolve to the smart tier's id + label. Pricing still bills via the
+    `binding` that was actually used (which for `auto` may be the auto-specific
+    pricing if backends ever diverge).
+    """
+    if binding.tier.id == "auto":
+        for candidate in TIER_BINDINGS:
+            if candidate.tier.id == _AUTO_RESOLVES_TO:
+                return candidate.tier.id, candidate.tier.label
+    return binding.tier.id, binding.tier.label

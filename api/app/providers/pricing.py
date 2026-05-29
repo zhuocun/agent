@@ -13,7 +13,7 @@ fall back to 10% of the input rate (the Anthropic cache-read convention).
 from __future__ import annotations
 
 from app.providers.protocol import UsageUpdate
-from app.providers.tiers import TierBinding
+from app.providers.tiers import TierBinding, resolve_served_tier
 from app.schemas.common import CostConfidence, ModelTierId
 from app.schemas.message import (
     CostBreakdown,
@@ -119,18 +119,22 @@ def build_attribution(
         sub_obj = Substitution.model_validate(
             {"reasonCode": substitution, "reasonText": reason_text}
         )
-    # On a fallback, show the served model's label; else the registry default.
+    # Resolve `served_tier_id` + the default served-model label together so the
+    # "auto" tier surfaces a concrete tier on the wire (see
+    # `resolve_served_tier`) — the FE attribution row asserts a concrete tier.
+    served_tier_id, served_tier_label = resolve_served_tier(binding)
+    # On a fallback, show the served model's label; else the resolved label.
     served_model_label = (
         substituted_display_label
         if substituted_display_label is not None
-        else binding.tier.label
+        else served_tier_label
     )
     # `substituted_provider`/`substituted_model` have no wire field today;
     # reference them so unused-warning tooling stays quiet.
     _ = (substituted_provider, substituted_model)
     return ModelAttribution(
         requested_tier_id=requested_tier_id,
-        served_tier_id=binding.tier.id,
+        served_tier_id=served_tier_id,
         served_model_label=served_model_label,
         is_byok=is_byok,
         cost_usd=breakdown.subtotal_usd + breakdown.session_surcharge_usd,

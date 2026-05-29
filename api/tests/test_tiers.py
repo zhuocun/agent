@@ -18,6 +18,7 @@ from app.providers.tiers import (
     get_binding,
     is_known_tier,
     list_tiers,
+    resolve_served_tier,
 )
 
 
@@ -104,3 +105,32 @@ def test_list_tiers_and_known_tier_are_backend_independent() -> None:
     assert is_known_tier("bogus") is False
     # list_tiers() reflects the canonical table regardless of any backend env.
     assert [t.id for t in list_tiers()] == [b.tier.id for b in TIER_BINDINGS]
+
+
+def test_resolve_served_tier_maps_auto_to_smart() -> None:
+    """Auto requests must surface a concrete served tier on the wire so the FE's
+    `assertServedTier` invariant in attribution-row.tsx doesn't trip."""
+    auto = next(b for b in TIER_BINDINGS if b.tier.id == "auto")
+    served_id, served_label = resolve_served_tier(auto)
+    assert served_id == "smart"
+    assert served_label == "Smart"
+
+
+def test_resolve_served_tier_passes_concrete_tiers_through() -> None:
+    """Concrete tier bindings (fast/smart/pro) resolve to their own id+label."""
+    for tier_id in ("fast", "smart", "pro"):
+        binding = next(b for b in TIER_BINDINGS if b.tier.id == tier_id)
+        served_id, served_label = resolve_served_tier(binding)
+        assert served_id == binding.tier.id
+        assert served_label == binding.tier.label
+
+
+def test_resolve_served_tier_works_for_openai_auto_binding() -> None:
+    """Backend-aware bindings preserve the canonical `tier` object, so OpenAI's
+    auto binding resolves to smart just like Anthropic's does."""
+    s = _openai_settings()
+    auto = get_binding("auto", settings=s)
+    assert auto is not None
+    served_id, served_label = resolve_served_tier(auto)
+    assert served_id == "smart"
+    assert served_label == "Smart"

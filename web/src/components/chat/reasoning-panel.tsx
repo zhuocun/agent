@@ -51,6 +51,9 @@ export function ReasoningPanel({
     <Collapsible
       open={open}
       onOpenChange={handleOpenChange}
+      // E2E target: the streaming spec asserts reasoning text streams in;
+      // testid avoids depending on the localized "Reasoning"/"Thinking…" label.
+      data-testid="reasoning-panel"
       className="text-muted-foreground"
     >
       <CollapsibleTrigger

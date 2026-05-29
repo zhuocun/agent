@@ -42,3 +42,103 @@ jobs:
 
       - name: Pytest
         run: uv run pytest
+
+  web-e2e:
+    name: web-e2e
+    runs-on: ubuntu-latest
+    # Parallel with the `api` job: this job re-installs BE deps anyway since
+    # Playwright's `webServer` boots uvicorn locally, so chaining via `needs:`
+    # wouldn't save setup time.
+    env:
+      # Match playwright.config.ts so a misconfigured matrix can't drift.
+      ENV: test
+      PROVIDER_BACKEND: fake
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      SESSION_SECRET: playwright-e2e-session-secret-fixed-and-long-enough
+      # All-zeros dev KEK; assert_prod_safe() refuses it when ENV=production,
+      # accepts it for ENV=test. See api/app/config.py.
+      BYOK_ENCRYPTION_KEK: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: lax
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "api/uv.lock"
+
+      - name: Sync API dependencies
+        working-directory: api
+        run: uv sync --frozen
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve Playwright version
+        id: pw-version
+        working-directory: web
+        # Read the @playwright/test version straight from package.json so the
+        # browser cache key is pinned to whatever the lockfile actually
+        # installs (avoids cache hits across SDK bumps).
+        run: |
+          version=$(node -p "require('./package.json').devDependencies['@playwright/test']")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw-version.outputs.version }}
+
+      - name: Install Chromium (with OS deps)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Chromium OS deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        working-directory: web
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Run Playwright tests
+        working-directory: web
+        run: pnpm test:e2e
+        timeout-minutes: 10
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          retention-days: 14
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: web/test-results
+          retention-days: 14

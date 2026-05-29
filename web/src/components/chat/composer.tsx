@@ -249,6 +249,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         </label>
         <textarea
           id="composer-input"
+          // E2E target: aria-label is localized + role="combobox" collides with
+          // multiple test selectors; the testid is the stable handle.
+          data-testid="composer-textarea"
           ref={ref}
           rows={1}
           value={value}
@@ -289,6 +292,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               onClick={submit}
               disabled={!value.trim()}
               aria-label="Send message"
+              // E2E target: stable hook for "send the message" — Playwright
+              // specs click this to dispatch a turn, since aria-label values
+              // could drift with copy changes.
+              data-testid="composer-send"
               className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
             >
               <ArrowUp className="size-4" />

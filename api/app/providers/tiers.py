@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.config import Settings, get_settings
 from app.schemas.common import CostHint, ModelTierId, SpeedHint
 from app.schemas.tier import ModelTier
 
@@ -127,13 +128,84 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
 )
 
 
+# OpenAI(-compatible) per-tier pricing defaults (USD per million tokens),
+# tracking the *default* model ids in `Settings` (gpt-4o-mini / gpt-4o / o1).
+# `cache_read` is OpenAI's cached-input rate, which is 50% of the input rate for
+# all of these models. Overriding the model via `OPENAI_MODEL_*` makes these
+# prices APPROXIMATE — the binding still bills against these constants, not the
+# substituted model's real card. Keyed by tier id.
+_OPENAI_PRICING: dict[ModelTierId, tuple[float, float, float]] = {
+    # tier id -> (in_per_m, out_per_m, cache_read_per_m)
+    "fast": (0.15, 0.60, 0.075),  # gpt-4o-mini
+    "smart": (2.50, 10.0, 1.25),  # gpt-4o
+    "auto": (2.50, 10.0, 1.25),  # gpt-4o
+    "pro": (15.0, 60.0, 7.50),  # o1
+}
+
+
+def _openai_model_for(tier_id: ModelTierId, s: Settings) -> str | None:
+    """Map a tier id to its configured OpenAI model id, or None if unmapped."""
+    return {
+        "fast": s.openai_model_fast,
+        "smart": s.openai_model_smart,
+        "auto": s.openai_model_auto,
+        "pro": s.openai_model_pro,
+    }.get(tier_id)
+
+
+def _openai_binding(tier_id: ModelTierId, s: Settings) -> TierBinding | None:
+    """Build the OpenAI binding for a tier id, or None if unknown.
+
+    Reuses the SAME `ModelTier` instance from `TIER_BINDINGS` so labels/hints
+    stay byte-identical across backends (they're backend-independent and the FE
+    contract must not change). Only the provider id, model id, and pricing
+    differ.
+
+    Returns None (rather than raising KeyError -> a 500 mid-request) if a future
+    tier id lands in `TIER_BINDINGS` but isn't wired into `_OPENAI_PRICING` /
+    `_openai_model_for` in lockstep; `get_binding` callers already treat None as
+    an unknown tier.
+    """
+    base = next((b for b in TIER_BINDINGS if b.tier.id == tier_id), None)
+    pricing = _OPENAI_PRICING.get(tier_id)
+    model_id = _openai_model_for(tier_id, s)
+    if base is None or pricing is None or model_id is None:
+        return None
+    in_per_m, out_per_m, cache_read_per_m = pricing
+    return TierBinding(
+        tier=base.tier,
+        provider_id="openai",
+        model_id=model_id,
+        list_price_in_per_m=in_per_m,
+        list_price_out_per_m=out_per_m,
+        long_context_flat=True,
+        cache_read_per_m=cache_read_per_m,
+    )
+
+
 def list_tiers() -> list[ModelTier]:
-    """Public tier list for bootstrap."""
+    """Public tier list for bootstrap.
+
+    Backend-independent: tier ids/labels/hints never change with the provider,
+    so this always reflects the canonical `TIER_BINDINGS` table.
+    """
     return [b.tier for b in TIER_BINDINGS]
 
 
-def get_binding(tier_id: ModelTierId) -> TierBinding | None:
-    """Return the binding for a tier id, or None if unknown."""
+def get_binding(tier_id: ModelTierId, settings: Settings | None = None) -> TierBinding | None:
+    """Return the binding for a tier id, or None if unknown.
+
+    Backend-aware: when `PROVIDER_BACKEND=openai`, the returned binding points
+    at the configured OpenAI model id + OpenAI pricing (reusing the canonical
+    `ModelTier` so the FE-facing shape is identical). For `anthropic`/`fake`
+    (the default), the canonical Anthropic `TIER_BINDINGS` table is used.
+
+    `settings` is an optional override for tests / call sites that already hold
+    a `Settings`; it defaults to the process-wide `get_settings()`.
+    """
+    s = settings if settings is not None else get_settings()
+    if s.provider_backend == "openai":
+        return _openai_binding(tier_id, s)
     for binding in TIER_BINDINGS:
         if binding.tier.id == tier_id:
             return binding
@@ -141,4 +213,5 @@ def get_binding(tier_id: ModelTierId) -> TierBinding | None:
 
 
 def is_known_tier(tier_id: str) -> bool:
+    """Backend-independent: the set of known tier ids never changes."""
     return any(b.tier.id == tier_id for b in TIER_BINDINGS)

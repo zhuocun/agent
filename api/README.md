@@ -97,13 +97,27 @@ key needed; what every test runs against.
 `ANTHROPIC_API_KEY` as the platform key. Per-user BYOK keys override the
 platform key per-request.
 
+`PROVIDER_BACKEND=openai` — official OpenAI Python SDK against the Chat
+Completions API; requires `OPENAI_API_KEY` as the platform key. `OPENAI_BASE_URL`
+is optional and defaults to OpenAI's endpoint — override it to drive any
+OpenAI-compatible endpoint (Azure OpenAI, OpenRouter, Ollama, vLLM, local). The
+four fixed tiers (auto/fast/smart/pro) map to models via `OPENAI_MODEL_FAST`,
+`OPENAI_MODEL_SMART`, `OPENAI_MODEL_PRO`, `OPENAI_MODEL_AUTO` (defaults:
+`gpt-4o-mini` / `gpt-4o` / `o1` / `gpt-4o`); per-tier pricing tracks those
+defaults, so overriding a model makes the cost breakdown approximate. The wire
+contract (tier ids, labels, hints) is unchanged — only the BE-internal
+provider/model/price binding differs when this backend is active.
+
 `Settings.assert_prod_safe()` runs at boot and rejects `PROVIDER_BACKEND=fake`
-when `ENV=production`, so a misconfigured prod deploy fast-fails.
+when `ENV=production`, and requires the matching API key for the selected
+backend, so a misconfigured prod deploy fast-fails.
 
 ## BYOK
 
-Per-user Anthropic keys are AES-GCM-encrypted at rest. The KEK
-(`BYOK_ENCRYPTION_KEK`) is a base64-encoded 32-byte key supplied via env. The
+Per-user keys for the active provider (Anthropic or OpenAI, per
+`PROVIDER_BACKEND`) are AES-GCM-encrypted at rest and resolved against the bound
+provider per-request. The KEK (`BYOK_ENCRYPTION_KEK`) is a base64-encoded
+32-byte key supplied via env. The
 dev default is all-zeros and `assert_prod_safe()` refuses it in prod. Generate
 a real key with:
 
@@ -162,7 +176,7 @@ brings the schema forward. Fly's health check hits `/healthz`.
 - `POST /api/conversations/:id/messages` — SSE stream + persist.
 - `POST /api/messages/:id/feedback` — thumbs up/down + optional reason.
 - `PUT /api/preferences` — write user preferences.
-- `PUT /api/account/byok` — set the per-user Anthropic key.
+- `PUT /api/account/byok` — set the per-user key for the active provider.
 - `DELETE /api/account/byok` — clear it.
 - `POST /api/auth/upgrade` — promote anonymous → email/password.
 - `POST /api/auth/signout` — clear cookie, revoke session row.

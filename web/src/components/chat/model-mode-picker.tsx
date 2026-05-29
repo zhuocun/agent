@@ -63,7 +63,7 @@ export function ModelModePicker({
         className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl"
       >
         <DropdownMenuGroup>
-          <DropdownMenuLabel className="text-[10px] tracking-wider uppercase">
+          <DropdownMenuLabel className="text-[11px] font-semibold">
             Model
           </DropdownMenuLabel>
           {tiers.map((t) => (
@@ -78,7 +78,7 @@ export function ModelModePicker({
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          <DropdownMenuLabel className="text-[10px] tracking-wider uppercase">
+          <DropdownMenuLabel className="text-[11px] font-semibold">
             Reasoning effort
           </DropdownMenuLabel>
           {efforts.map((e) => (

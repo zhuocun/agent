@@ -52,15 +52,26 @@ class Settings(BaseSettings):
     # Anthropic (optional in M0).
     anthropic_api_key: str | None = Field(default=None)
 
-    # Provider backend selection (M1). `fake` for dev/tests, `anthropic` for prod.
-    provider_backend: Literal["anthropic", "fake"] = Field(default="fake")
+    # OpenAI(-compatible) provider (optional). Configured "OpenAI style":
+    # OPENAI_API_KEY + optional OPENAI_BASE_URL (None lets the SDK use its own
+    # default, https://api.openai.com/v1; override for Azure/OpenRouter/Ollama/
+    # vLLM/local). Per-tier model ids are overridable via env so the same
+    # backend can drive any OpenAI-compatible endpoint.
+    openai_api_key: str | None = Field(default=None)
+    openai_base_url: str | None = Field(default=None)
+    openai_model_fast: str = Field(default="gpt-4o-mini")
+    openai_model_smart: str = Field(default="gpt-4o")
+    openai_model_pro: str = Field(default="o1")
+    openai_model_auto: str = Field(default="gpt-4o")
+
+    # Provider backend selection (M1). `fake` for dev/tests, `anthropic`/`openai`
+    # for prod.
+    provider_backend: Literal["anthropic", "openai", "fake"] = Field(default="fake")
 
     # BYOK key encryption KEK (base64-encoded 32 bytes). Required in M3 — the
     # default value is a known-bad dev sentinel that `assert_prod_safe()`
     # rejects so production deploys fail fast.
-    byok_encryption_kek: str = Field(
-        default=_DEV_BYOK_KEK_B64, alias="BYOK_ENCRYPTION_KEK"
-    )
+    byok_encryption_kek: str = Field(default=_DEV_BYOK_KEK_B64, alias="BYOK_ENCRYPTION_KEK")
 
     @cached_property
     def cors_allowed_origins(self) -> list[str]:
@@ -106,6 +117,8 @@ class Settings(BaseSettings):
             raise RuntimeError("PROVIDER_BACKEND must not be 'fake' in production.")
         if self.provider_backend == "anthropic" and not self.anthropic_api_key:
             raise RuntimeError("ANTHROPIC_API_KEY required when PROVIDER_BACKEND=anthropic")
+        if self.provider_backend == "openai" and not self.openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY required when PROVIDER_BACKEND=openai")
 
 
 @lru_cache(maxsize=1)

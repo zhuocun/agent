@@ -11,6 +11,7 @@ dependencies = [
     "email-validator>=2.3.0",
     "fastapi>=0.136.3",
     "itsdangerous>=2.2.0",
+    "openai>=2.38.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
     "sqlalchemy[asyncio]>=2.0.50",
@@ -59,7 +60,7 @@ plugins = ["pydantic.mypy"]
 exclude = ["alembic/versions"]
 
 [[tool.mypy.overrides]]
-module = ["sse_starlette.*", "respx.*", "anthropic.*"]
+module = ["sse_starlette.*", "respx.*", "anthropic.*", "openai.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

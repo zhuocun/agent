@@ -230,9 +230,7 @@ async def _maybe_replay(
     DUPLICATE_IN_FLIGHT (409) if the user row exists but no assistant row has
     landed yet (in-flight on a concurrent worker or crashed before persist).
     """
-    prior_user_msg = await messages_repo.get_by_client_message_id(
-        db, conversation_id, client_uuid
-    )
+    prior_user_msg = await messages_repo.get_by_client_message_id(db, conversation_id, client_uuid)
     if prior_user_msg is None:
         return None
     # Pair-by-index matching. M1 has exactly one assistant per user message
@@ -253,9 +251,7 @@ async def _maybe_replay(
         None,
     )
     assistant_row = (
-        asst_msgs[user_index]
-        if user_index is not None and user_index < len(asst_msgs)
-        else None
+        asst_msgs[user_index] if user_index is not None and user_index < len(asst_msgs) else None
     )
     # Gate replay on `status` rather than `attribution is not None`. A
     # `status="stopped"` row also has attribution (an estimate), but the
@@ -280,9 +276,7 @@ async def _maybe_replay(
             user_message_id=prior_user_msg.id,
             assistant_message_id=assistant_row.id,
             answer_text="".join(texts),
-            attribution_dict=cast(
-                dict[str, object], assistant_row.attribution
-            ),
+            attribution_dict=cast(dict[str, object], assistant_row.attribution),
         )
     # User message exists but no completed assistant row: prior is in flight
     # (or crashed before persisting). Reject as duplicate.
@@ -328,9 +322,7 @@ async def send_message(
     try:
         client_uuid = UUID(body.client_message_id)
     except ValueError as exc:
-        raise _invalid_input(
-            "INVALID_INPUT", "clientMessageId must be a UUID."
-        ) from exc
+        raise _invalid_input("INVALID_INPUT", "clientMessageId must be a UUID.") from exc
 
     # M2: regenerate and editMessageId are mutually exclusive.
     if body.regenerate and body.edit_message_id is not None:
@@ -423,13 +415,14 @@ async def send_message(
     provider = build_provider()
 
     # BYOK resolution: pull the user's encrypted key for the bound provider
-    # (one provider name today -- "anthropic"). Anonymous users never have
-    # keys; decryption failure inside the repo returns None (logged), so this
-    # is silently safe and the call falls back to the platform key.
+    # (`binding.provider_id` — e.g. "anthropic" or "openai" depending on the
+    # active backend). Anonymous users never have keys; decryption failure
+    # inside the repo returns None (logged), so this is silently safe and the
+    # call falls back to the platform key.
     resolved_api_key: str | None = None
     if not user.is_anonymous:
         resolved_api_key = await api_keys_repo.get_decrypted_for_user(
-            db, user_id=user.id, provider="anthropic"
+            db, user_id=user.id, provider=binding.provider_id
         )
 
     # Title autogen must not re-fire when a regen / edit-of-first-turn deletes
@@ -485,9 +478,7 @@ async def _prepare_regenerate(
     # Drop trailing assistant(s). Returns 0 if the last message is already a
     # user message (no assistant to drop) — that's still a valid regen (e.g.
     # a prior turn was stopped mid-stream and never persisted assistant).
-    await messages_repo.delete_trailing_assistants(
-        db, conversation_id=conversation_id
-    )
+    await messages_repo.delete_trailing_assistants(db, conversation_id=conversation_id)
     # Regenerate accepts a new turn (reusing the existing user message), so
     # bump the conversation to the top of the sidebar. Same session as the
     # trailing-assistant delete; commits atomically with the turn below.
@@ -532,9 +523,7 @@ async def _prepare_edit(
     try:
         edit_uuid = UUID(edit_message_id_str)
     except ValueError as exc:
-        raise _invalid_input(
-            "INVALID_INPUT", "editMessageId must be a UUID."
-        ) from exc
+        raise _invalid_input("INVALID_INPUT", "editMessageId must be a UUID.") from exc
 
     # Look up the target message and assert role / conversation membership.
     target = await messages_repo.get_by_id(db, edit_uuid)

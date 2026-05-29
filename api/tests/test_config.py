@@ -101,19 +101,36 @@ def test_assert_prod_safe_rejects_short_session_secret() -> None:
         anthropic_api_key="real-key",
         session_secret="too-short",
     )
-    with pytest.raises(
-        RuntimeError, match=re.escape("at least 32 characters")
-    ):
+    with pytest.raises(RuntimeError, match=re.escape("at least 32 characters")):
         bad.assert_prod_safe()
 
 
 def test_assert_prod_safe_rejects_anthropic_without_key() -> None:
     """PROVIDER_BACKEND=anthropic with no key must fail fast at boot."""
     bad = _prod_settings(provider_backend="anthropic", anthropic_api_key=None)
-    with pytest.raises(
-        RuntimeError, match=re.escape("ANTHROPIC_API_KEY required")
-    ):
+    with pytest.raises(RuntimeError, match=re.escape("ANTHROPIC_API_KEY required")):
         bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_rejects_openai_without_key() -> None:
+    """PROVIDER_BACKEND=openai with no key must fail fast at boot.
+
+    All other prod guardrails are satisfied by `_prod_settings`, so the
+    OPENAI_API_KEY check is the only assertion that can fire.
+    """
+    bad = _prod_settings(provider_backend="openai", openai_api_key=None)
+    with pytest.raises(RuntimeError, match=re.escape("OPENAI_API_KEY required")):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_accepts_openai_provider_in_production() -> None:
+    """PROVIDER_BACKEND=openai with a key (and no base_url) -> no raise.
+
+    `OPENAI_BASE_URL` is intentionally NOT gated — it has an SDK default — so a
+    prod env may leave it unset.
+    """
+    good = _prod_settings(provider_backend="openai", openai_api_key="real-key")
+    good.assert_prod_safe()  # must not raise
 
 
 def test_assert_prod_safe_accepts_well_formed_prod_env() -> None:

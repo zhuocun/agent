@@ -62,7 +62,7 @@ export function MessageList({ children }: { children: React.ReactNode }) {
       </div>
 
       {!atBottom ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+5rem)] z-40 flex justify-center">
+        <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+6.5rem)] z-40 flex justify-center">
           <Button
             type="button"
             variant="secondary"

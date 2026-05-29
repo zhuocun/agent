@@ -75,11 +75,19 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> Iterator[FastAPI]:
     # Reset settings cache so any env tweaks land.
     get_settings.cache_clear()
     from app.main import create_app
+    from app.middleware.ratelimit import limiter
     from app.routes.conversations import _TEMP_IDS
 
     # Module-level state is shared across tests; clear it before AND after
-    # yield so a flaky prior test cannot leak temp ids into this one.
+    # yield so a flaky prior test cannot leak temp ids into this one. The
+    # slowapi limiter singleton's MemoryStorage is also process-wide — clear
+    # its counter dict so an unrelated test's 30 POSTs cannot trip a 429 here.
     _TEMP_IDS.clear()
+    _storage = limiter._storage
+    if hasattr(_storage, "storage"):
+        _storage.storage.clear()
+    if hasattr(_storage, "expirations"):
+        _storage.expirations.clear()
 
     app_ = create_app()
 

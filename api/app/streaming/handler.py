@@ -293,6 +293,7 @@ async def stream_and_persist(
             parts=parts,
             status=status,
             attribution=attribution.model_dump(by_alias=True, exclude_none=True),
+            responds_to_message_id=user_message_id,
         )
         # When the caller owns the session (stop/fresh-session case, commit=False)
         # we only flush here and let the caller commit AFTER bumping usage, so the
@@ -475,6 +476,7 @@ async def stream_and_persist(
                 parts=parts,
                 status="done",
                 attribution=attribution.model_dump(by_alias=True, exclude_none=True),
+                responds_to_message_id=user_message_id,
             )
             # Bump usage_rollup before the commit so both writes land
             # atomically. `user_id` is set on every non-temporary path (the

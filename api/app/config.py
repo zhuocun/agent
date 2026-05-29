@@ -73,11 +73,64 @@ class Settings(BaseSettings):
     # rejects so production deploys fail fast.
     byok_encryption_kek: str = Field(default=_DEV_BYOK_KEK_B64, alias="BYOK_ENCRYPTION_KEK")
 
+    # Versioned-KEK rotation registry. Raw env format is comma-separated
+    # `version:base64key` pairs, e.g. `1:AAAA...=,2:BBBB...=`. Parsed by
+    # `kek_version_registry` below into a `{version: base64}` dict. Empty
+    # default keeps the legacy single-KEK path unchanged for everyone who
+    # has not opted into rotation. See `app.security.crypto` for the on-disk
+    # format and dispatch rules.
+    byok_kek_versions_raw: str = Field(default="", alias="BYOK_KEK_VERSIONS")
+    # Active KEK version used for new writes. `0` means "write the legacy
+    # single-KEK format" (bit-compatible with rows written before rotation
+    # was wired up). `>= 1` means "write the versioned format using the
+    # registry entry for that version." Reads dispatch on the ciphertext
+    # header regardless of this value, so old rows stay decryptable.
+    byok_current_kek_version: int = Field(default=0, alias="BYOK_CURRENT_KEK_VERSION")
+
+    # Observability (Post-M4 hardening): both OTel tracing and Sentry error
+    # reporting are env-driven and no-op when unset. Production warns at boot
+    # if either is missing but never refuses to start — observability is
+    # optional and we'd rather serve traffic with degraded telemetry than
+    # refuse it outright.
+    #
+    # - `sentry_dsn`: Sentry SDK init target. Unset -> Sentry is a no-op.
+    # - `otel_exporter_otlp_endpoint`: OTLP/HTTP collector URL (e.g. the Fly
+    #   Honeycomb add-on, an OTel Collector sidecar, etc.). Unset -> no
+    #   tracer provider is registered and instrumentation is skipped. We
+    #   deliberately choose OTLP/HTTP (pure Python) over gRPC so we don't
+    #   need a native compile step in the Docker build.
+    # - `otel_service_name`: `service.name` resource attribute on spans.
+    sentry_dsn: str | None = Field(default=None, alias="SENTRY_DSN")
+    otel_exporter_otlp_endpoint: str | None = Field(
+        default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+    otel_service_name: str = Field(default="api", alias="OTEL_SERVICE_NAME")
+
+    # Slowapi rate limit strings (per-route). Format: "<count>/<window>" e.g.
+    # "30/minute", "5/minute". Storage is in-process; multi-worker prod will
+    # need a shared store (Redis). Per-route limits resolve via a callable in
+    # the decorator so settings cache invalidation in tests takes effect.
+    rate_limit_messages: str = Field(default="30/minute", alias="RATE_LIMIT_MESSAGES")
+    rate_limit_upgrade: str = Field(default="5/minute", alias="RATE_LIMIT_UPGRADE")
+
     @cached_property
     def cors_allowed_origins(self) -> list[str]:
         """Parse the comma-separated env string into a list of origins."""
         raw = self.cors_allowed_origins_raw or ""
         return [s.strip() for s in raw.split(",") if s.strip()]
+
+    @cached_property
+    def kek_version_registry(self) -> dict[int, str]:
+        """Parse `BYOK_KEK_VERSIONS` into a `{version: base64}` registry.
+
+        Parser lives in `app.security.crypto.parse_kek_versions` so tests
+        and runtime share the same error surface. A malformed entry raises
+        `RuntimeError` at first access -- in practice that is during
+        `assert_prod_safe()` at boot.
+        """
+        from app.security.crypto import parse_kek_versions
+
+        return parse_kek_versions(self.byok_kek_versions_raw)
 
     def assert_prod_safe(self) -> None:
         """Raise if production is configured with an insecure default.
@@ -94,6 +147,33 @@ class Settings(BaseSettings):
         from app.security.crypto import decode_kek
 
         decode_kek(self.byok_encryption_kek)
+
+        # Validate the rotation registry: every entry must decode to a
+        # legal 32-byte KEK, and if writes target a versioned KEK that
+        # version must actually be in the registry. Accessing
+        # `kek_version_registry` runs the parser, which already raises
+        # `RuntimeError` on malformed input.
+        registry = self.kek_version_registry
+        for version, kek_b64 in registry.items():
+            try:
+                decode_kek(kek_b64)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"BYOK_KEK_VERSIONS entry for version {version} is invalid: {exc}"
+                ) from exc
+        if self.byok_current_kek_version < 0:
+            raise RuntimeError(
+                "BYOK_CURRENT_KEK_VERSION must be >= 0"
+            )
+        if (
+            self.byok_current_kek_version >= 1
+            and self.byok_current_kek_version not in registry
+        ):
+            raise RuntimeError(
+                "BYOK_CURRENT_KEK_VERSION="
+                f"{self.byok_current_kek_version} but no matching entry in "
+                "BYOK_KEK_VERSIONS"
+            )
 
         if self.env != "production":
             return

@@ -26,12 +26,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.auth.dependency import current_user
+from app.config import get_settings
 from app.db.models import Message, User
 from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope, not_found
+from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.protocol import ChatMessage as ProviderChatMessage
 from app.providers.tiers import get_binding
@@ -229,30 +231,55 @@ async def _maybe_replay(
     exists at all (so the caller can proceed to INSERT). Raises
     DUPLICATE_IN_FLIGHT (409) if the user row exists but no assistant row has
     landed yet (in-flight on a concurrent worker or crashed before persist).
+
+    Resolution strategy (post-M4):
+    1. Column lookup via `responds_to_message_id` — an indexed seek that
+       returns the assistant row whose explicit pointer matches the prior
+       user message. Cheap and unambiguous.
+    2. Pair-by-index fallback — for rows pre-dating the column (legacy data
+       with `responds_to_message_id IS NULL`). Pairs the i-th user message
+       with the i-th assistant by `(created_at, id)` ordering. M1 invariant
+       of "one assistant per user message" still holds for legacy data, so
+       the fallback is reliable for those rows.
     """
     prior_user_msg = await messages_repo.get_by_client_message_id(db, conversation_id, client_uuid)
     if prior_user_msg is None:
         return None
-    # Pair-by-index matching. M1 has exactly one assistant per user message
-    # (no regenerate yet), so pairing the i-th user message with the i-th
-    # assistant by `(created_at, id)` ordering is reliable even when SQLite
-    # TIMESTAMP storage collapses same-second inserts into ties. M2 will need
-    # a stricter linking column (e.g. `responds_to_message_id`).
-    all_stmt = (
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at.asc(), Message.id.asc())
+
+    # Primary path: column-based lookup. Indexed; O(log n).
+    assistant_row = await messages_repo.get_assistant_for_user_message(
+        db, prior_user_msg.id
     )
-    all_msgs = (await db.execute(all_stmt)).scalars().all()
-    user_msgs = [m for m in all_msgs if m.role == "user"]
-    asst_msgs = [m for m in all_msgs if m.role == "assistant"]
-    user_index = next(
-        (i for i, m in enumerate(user_msgs) if m.id == prior_user_msg.id),
-        None,
-    )
-    assistant_row = (
-        asst_msgs[user_index] if user_index is not None and user_index < len(asst_msgs) else None
-    )
+
+    # Fallback for legacy rows whose responds_to_message_id is NULL (data
+    # written before the 0005 migration). Pair-by-index on the i-th user/i-th
+    # assistant by (created_at, id) ordering.
+    if assistant_row is None:
+        all_stmt = (
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.asc(), Message.id.asc())
+        )
+        all_msgs = (await db.execute(all_stmt)).scalars().all()
+        user_msgs = [m for m in all_msgs if m.role == "user"]
+        # Only consider legacy (NULL pointer) assistants for the fallback so a
+        # mixed conversation (some rows migrated, some not) doesn't double-
+        # count an assistant we already failed to match above.
+        asst_msgs = [
+            m
+            for m in all_msgs
+            if m.role == "assistant" and m.responds_to_message_id is None
+        ]
+        user_index = next(
+            (i for i, m in enumerate(user_msgs) if m.id == prior_user_msg.id),
+            None,
+        )
+        assistant_row = (
+            asst_msgs[user_index]
+            if user_index is not None and user_index < len(asst_msgs)
+            else None
+        )
+
     # Gate replay on `status` rather than `attribution is not None`. A
     # `status="stopped"` row also has attribution (an estimate), but the
     # original turn never emitted `terminal`. We replay both done and stopped —
@@ -284,6 +311,7 @@ async def _maybe_replay(
 
 
 @router.post("/{conversation_id}/messages")
+@limiter.limit(lambda: get_settings().rate_limit_messages)
 async def send_message(
     conversation_id: UUID,
     body: SendMessageRequest,

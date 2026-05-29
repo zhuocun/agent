@@ -21,6 +21,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +44,21 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    # Post-M4: partial UNIQUE INDEX -- two non-NULL `email` values cannot
+    # coexist. NULL `email` (anonymous users) is excluded from the index, so
+    # multiple anon rows live side by side. SQLite + Postgres both treat NULL
+    # values in a UNIQUE index as distinct, but the explicit partial predicate
+    # makes the intent obvious and matches what the migration emits.
+    __table_args__ = (
+        Index(
+            "ix_users_email_unique",
+            "email",
+            unique=True,
+            postgresql_where=text("email IS NOT NULL"),
+            sqlite_where=text("email IS NOT NULL"),
+        ),
     )
 
 
@@ -133,12 +149,22 @@ class Message(Base):
     parts: Mapped[list[dict[str, Any]]] = mapped_column(JsonVariant, nullable=False)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
     attribution: Mapped[dict[str, Any] | None] = mapped_column(JsonVariant, nullable=True)
+    # Post-M4: explicit reply pairing. On assistant rows this points at the
+    # user message whose reply this is, so `_maybe_replay` can resolve via a
+    # single indexed lookup instead of pair-by-index. NULL on legacy rows
+    # (pre-migration data) and on user rows themselves.
+    responds_to_message_id: Mapped[UUID | None] = mapped_column(
+        UuidVariant,
+        ForeignKey("message.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     __table_args__ = (
         Index("ix_message_conversation_created", "conversation_id", "created_at"),
+        Index("ix_message_responds_to", "responds_to_message_id"),
         UniqueConstraint(
             "conversation_id",
             "client_message_id",

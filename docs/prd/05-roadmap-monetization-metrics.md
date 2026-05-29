@@ -1,6 +1,6 @@
 # PRD 05 — Roadmap, Monetization, Metrics & Non-Functional Requirements
 
-**Product:** A transparent, multi-model, privacy-first AI chat for web and mobile (mobile-web first).
+**Product:** A transparent, multi-model, cost-leading AI chat for web and mobile (mobile-web first).
 **Owner:** Product Strategy
 **Status:** Draft for stakeholder review
 **Date:** 2026-05-27
@@ -46,7 +46,7 @@ Purpose:
 > This section is the **canonical persona/positioning statement** that other PRDs reference.
 
 ### 3.1 Positioning statement
-**"The transparent, multi-model, privacy-first AI chat — every major model in one place, where you see (and control) the cost and your data."**
+**"The transparent, multi-model, cost-leading AI chat — every major model in one place, where you see (and control) the cost and your data."**
 
 The open market gap is **multi-model + transparency + privacy + cost control**. Incumbents are single-model (ChatGPT/Claude/Gemini), trust-damaged on transparency (Perplexity's silent model downgrades), or bare aggregators without a privacy/transparency story (Poe). We stack three defensible wedges (model choice, transparency, BYOK/privacy) rather than fight at the commoditized $20 all-rounder tier.
 
@@ -144,7 +144,7 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 ### 5.1 Recommendation
 **Hybrid: freemium funnel + metered Pro subscription + BYOK (no token markup) + transparent USD credit overage from launch — all governed by aggressive model routing.** The **exact Pro price is an open question** (see §9.1): the ~$15–20/mo band sits at/below the legacy ~$20 anchor but is **~2–2.5× T3 Chat's $8/mo multi-model plan** (§5.3) — that premium must be justified by privacy + accessibility + mobile-web polish + true cost transparency, or the price reconsidered. (T3's 2026 model is a 4-hour usage bar + monthly overage, not a clean per-message plan, so this is a price-point comparison, not a per-message equivalence.) `[VERIFY]` price point against both the ~$20 incumbent anchor and the $8 aggregator floor.
 
-- **Free tier (metered):** message/token caps with a cheap **non-DeepSeek-hosted** default model (Gemini Flash / GPT-mini / Claude Haiku / Mistral-EU class — PRD 02 owns selection; see §9.5) to cap COGS and feed the funnel. **No training on chats by default** (privacy as an acquisition hook).
+- **Free tier (metered):** message/token caps on the **DeepSeek** default (`deepseek-chat` — the cost leader; PRD 02 owns selection; see §9.5) to cap COGS and feed the funnel; Western no-train routes stay selectable in the picker. **No training on chats by default** as a configurable posture (privacy as an acquisition hook), surfaced per route via the data-handling badge.
 - **Metered Pro subscription:** all frontier models, **explicit metered caps with transparent USD credit overage** (not a flat "generous limits" plan — see §5.2 / the P0 metered-overage primitive in §4.3), the transparency dashboard (model used + token cost), and (P1) multi-model comparison. Pulling metering forward to P0 resolves the prior §5.1-vs-§5.2 flat-Pro-vs-hard-metering inconsistency and matches the 2026 credit-economy pivot (Copilot 6/1/26, Anthropic, Cursor — §5.2). Enforcement mechanism is owned by PRD 04; the monetization/roadmap decision is owned here.
 - **BYOK option:** user plugs in their own provider keys; **we add zero token markup**. Monetize via a small flat platform fee or bundle into Pro. Near-zero COGS revenue line that converts power users cheaply and **directly de-risks our biggest margin threat**. **Routing BYOK via OpenRouter is free for the first 1M BYOK requests/mo (then 5% of equivalent cost)** — materially lowers BYOK infra cost and supports the $0-markup promise. `[VERIFY]`.
 - **Usage credits:** the **minimal metered-overage / USD credit primitive is now P0** (so Pro's caps have transparent overage); **richer prepaid credit-pack UX (top-up flows, Poe-style packs) is P1** for occasional heavy users who don't subscribe.
@@ -175,12 +175,12 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 | Poe | Yes (points) | ~$4.99 / ~$19.99 | ~$49.99 / ~$99.99 / ~$249.99 | Teams ~$249.99 | Dev API (points) |
 | OpenRouter (BYOK/agg) | free models (rate-limited) | n/a | n/a | n/a | **5.5% platform fee** on credit usage; **BYOK 5% of equiv cost, first 1M BYOK req/mo FREE** |
 | TypingMind (BYOK) | n/a | **~$79 one-time** | n/a | Team licenses | Pay providers directly |
-| **Our product (proposed)** | **Metered, cheap non-DeepSeek-hosted default** | **Metered Pro (price open — see §9.1)** | (richer credit-pack UX P1; minimal overage primitive P0) | Team/Enterprise = P2 | **BYOK at $0 markup** + transparent USD credits |
+| **Our product (proposed)** | **Metered, cheap DeepSeek default** | **Metered Pro (price open — see §9.1)** | (richer credit-pack UX P1; minimal overage primitive P0) | Team/Enterprise = P2 | **BYOK at $0 markup** + transparent USD credits |
 
 **Read:** the legacy consumer anchor is ~$20/mo "Plus/Pro"; prosumer tiers ($100/$200) are **usage multipliers, not better models**. A new **$100 power-user band** is emerging between $20 and $200 (ChatGPT Pro $100, Apr 9 2026; Google AI Ultra $100 already listed above) as vendors segment power users. But the sharper near-term anchor is **T3 Chat at $8/mo** (multi-model, transparent caps; 2026 mechanics = a 4-hour-resetting usage bar + monthly Overage bucket) — the closest competitor to our exact pitch and the **explicit price/feature anchor-to-beat**. Our differentiation over T3 is privacy/no-train + accessibility/mobile-web polish + genuine cost transparency (T3 has no privacy story). We differentiate on transparency, model choice, and BYOK rather than on a higher price; the **exact Pro price (~$15–20 vs the $8 floor) stays an open question** (§9.1).
 
 ### 5.4 Free-tier metering strategy (to cap COGS)
-1. **Cheap, non-DeepSeek-hosted default model** (Gemini Flash / GPT-mini / Claude Haiku / Mistral-EU class — PRD 02 owns selection, §9.5) for all free traffic; frontier models gated to Pro or BYOK. The **DeepSeek-hosted API is excluded** as a privacy-first default (government/enterprise bans across target markets + Italy consumer block); Western-hosted open weights remain a P2+ option only. `[VERIFY]` model IDs.
+1. **Cheap DeepSeek default model** (`deepseek-chat` — PRD 02 owns selection, §9.5) for all free traffic; frontier models gated to Pro or BYOK. The **DeepSeek-hosted API is the main provider** precisely because it is the cost leader (token prices 30–100× below frontier), which is what makes a viable metered free tier possible; its data-residency posture (jurisdictional bans + data-in-China) is an accepted, badged tradeoff (PRD 02 §5.3 / PRD 00 D11), with Western no-train routes selectable in the picker. Western-hosted DeepSeek open weights remain a P2+ self-hosting option. `[VERIFY]` model IDs.
 2. **Daily/rolling message + token caps** with clear in-UI remaining-quota display (doubles as transparency). `[VERIFY]` exact caps via cost modeling against single-digit conversion.
 3. **Routing-by-default:** classify easy queries to the cheapest capable model; escalate only on explicit user choice or detected complexity.
 4. **Reasoning/thinking gated:** thinking tokens bill as output — gate behind a tier/toggle and meter visibly.
@@ -314,7 +314,7 @@ A **stated differentiation lever**: leaders have measured gaps (unlabeled icon b
 2. **BYOK monetization:** small flat platform fee, bundled into Pro, or free as an acquisition lever? Affects billing infra. (Note: OpenRouter BYOK free for first 1M req/mo lowers infra cost — §5.1.)
 3. **Free-tier caps:** exact message/token limits — needs a cost model run against single-digit conversion assumptions. `[VERIFY]`
 4. **Metered Pro from launch — RESOLVED:** Pro is a **metered plan with explicit caps + transparent USD credit overage from launch**, and the **minimal metered-overage/credit primitive is pulled to P0** (was P1), per the 2026 credit-economy pivot. Richer prepaid credit-pack UX stays P1. (Enforcement owned by PRD 04.) This resolves the prior §5.1-vs-§5.2 inconsistency.
-5. **Default model for free tier — RESOLVED (narrowed):** **non-DeepSeek-hosted default** (Gemini Flash / GPT-mini / Claude Haiku / Mistral-EU class). The DeepSeek-hosted API is dropped as a privacy-first default (government/enterprise bans + Italy consumer block); Western-hosted open weights = **P2+** option only. **PRD 02 owns the final selection.** `[VERIFY]` model IDs.
+5. **Default model for free tier — RESOLVED:** **DeepSeek is the main provider and default** (`deepseek-chat` / `deepseek-reasoner` via the OpenAI-compatible binding) — chosen as the cost leader. Its data-residency posture is an accepted, badged tradeoff (PRD 00 D11); Western no-train routes (Gemini Flash / GPT-mini / Claude Haiku / Mistral-EU class) stay selectable in the picker, and Western-hosted DeepSeek open weights remain a **P2+** self-hosting option. **PRD 02 owns the registry/selection.** `[VERIFY]` model IDs.
 6. **EU launch timing vs AI Act dates `[CONTESTED — flag, don't decide]`:** do we gate EU availability on the **firm 2 Aug 2026** Art. 50(1) AI-**interaction disclosure** obligation, or launch globally with disclosure built in? The interaction-disclosure date is **firm**; the Art. 50(2) **content-marking** date is **legally UNSETTLED for a new launch** — the 7-May-2026 Digital Omnibus is provisional pending Official Journal, with readings from no-grace → 2 Aug 2026 to ~2 Dec 2026, and marking only attaches **if/when we ship AI-generated media** (narrow for P0 text relay). **Do not pick a marking date — needs legal sign-off before EU-launch scope is locked.** `[VERIFY]` (§7.5).
 7. **Secondary persona timing:** how aggressively to court privacy-prosumers (researchers/journalists/lawyers) in P1 — affects citation/search prioritization.
 8. **RAG in scope earlier?** If a target segment needs persistent doc knowledge bases, RAG may pull from P2 toward P1 (per PRD 04 open question).
@@ -354,7 +354,7 @@ A **stated differentiation lever**: leaders have measured gaps (unlabeled icon b
 
 ### 10.3 "Needs verification" list (fast-moving — re-confirm at build/PRD-lock)
 - All subscription **prices and per-tier limits** (ChatGPT/Claude/Gemini/Perplexity/Copilot/Mistral/Poe) and our own Pro price + free-tier caps.
-- **DeepSeek API rates** and promo end dates; which cheap model we default the free tier to.
+- **DeepSeek API rates** and promo end dates — DeepSeek is the main provider / free-tier default, so its pricing directly drives free-tier COGS.
 - **Ads (mixed signal):** **ChatGPT expanding ads** (Free + Go, US→intl) vs **Perplexity abandoned ads** (Feb 2026, trust) — confirm both still current.
 - **Model names/IDs** (GPT-5.x, Claude Opus/Sonnet/Haiku 4.x, Gemini 3.x) — churn fastest; pull from live model-list APIs.
 - **Privacy defaults & retention windows** for incumbents; current ToS.

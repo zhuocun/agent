@@ -1,6 +1,6 @@
 # PRD 03 — Mobile & Cross-Platform Experience
 
-**Product:** A transparent, multi-model, privacy-first AI chat for web and mobile (mobile-web first)
+**Product:** A transparent, multi-model, cost-leading AI chat for web and mobile (mobile-web first)
 **Workstream:** Responsive layout shell, mobile adaptation, PWA, cross-platform delivery
 **Owner:** Product (Mobile & Cross-Platform)
 **Status:** Draft for build

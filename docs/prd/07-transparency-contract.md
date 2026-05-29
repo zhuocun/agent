@@ -1,6 +1,6 @@
 # PRD 07 — Transparency Contract
 
-**Product:** Transparent, multi-model, privacy-first AI chat (web + mobile-web first).  
+**Product:** Transparent, multi-model, cost-leading AI chat (web + mobile-web first).  
 **Owner:** Product (cross-cutting workstream — single named owner required by PRD 00 D6).  
 **Status:** Draft for build.  
 **Date:** 2026-05-27.  

@@ -19,6 +19,7 @@ FakeProvider only. Cache token counts map cleanly.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from functools import lru_cache
 from typing import Any, cast
 
 import anthropic
@@ -34,6 +35,30 @@ from app.providers.protocol import (
     ReasoningDone,
     UsageUpdate,
 )
+
+
+@lru_cache(maxsize=256)
+def _build_client(api_key: str, base_url: str | None) -> AsyncAnthropic:
+    """Per-(api_key, base_url) cached `AsyncAnthropic` factory.
+
+    Constructing the SDK client is cheap but its underlying httpx pool is not:
+    a fresh client per request churns TCP / TLS sessions on the BYOK path.
+    Caching by `(api_key, base_url)` lets each BYOK user (and the platform key)
+    reuse one persistent connection pool across requests.
+
+    Cache size 256 covers a healthy mix of platform + BYOK users in a single
+    worker; LRU eviction keeps memory bounded if usage spikes. Keys are kept
+    in-process only and never logged. Tests that swap in fake clients can
+    call `_build_client.cache_clear()` to reset.
+    """
+    if base_url is None:
+        return AsyncAnthropic(api_key=api_key)
+    return AsyncAnthropic(api_key=api_key, base_url=base_url)
+
+
+def reset_anthropic_client_cache() -> None:
+    """Clear the per-key client cache. Useful in tests."""
+    _build_client.cache_clear()
 
 
 def _safe_int(value: Any) -> int:
@@ -110,27 +135,28 @@ def _map_sdk_error(exc: anthropic.APIError) -> AppError:
 class AnthropicProvider:
     """Adapter over `anthropic.AsyncAnthropic.messages.stream(...)`.
 
-    Holds a default client built from the platform key. Per-request BYOK
-    overrides build a fresh `AsyncAnthropic(api_key=...)` on the spot (the
-    SDK is cheap to construct -- HTTP session is lazy). This keeps the
-    default fast path identical to M1 while making BYOK opt-in per call.
+    Clients are resolved per-request via `_build_client(api_key, base_url)`,
+    which is `@lru_cache(maxsize=256)`. The platform-key client and each
+    BYOK-key client are reused across requests so the underlying httpx
+    connection pool isn't churned. `base_url` is currently always None for
+    Anthropic, but is part of the cache key so a future Anthropic-compatible
+    endpoint override slots in cleanly.
     """
 
     def __init__(self, api_key: str, max_tokens: int = 16000):
         self._default_api_key = api_key
-        self._client = AsyncAnthropic(api_key=api_key)
         self._max_tokens = max_tokens
 
     def _client_for(self, api_key: str | None) -> AsyncAnthropic:
-        """Return the default client, or a fresh one bound to `api_key`.
+        """Return the cached client for `api_key` (or the platform default).
 
-        The default client is reused across requests for connection pooling;
-        BYOK clients are throwaway and rely on the SDK's own connection
-        management for that single call.
+        Both the default and per-BYOK clients are cached by `_build_client`
+        keyed on `(api_key, base_url)` — same key returns the same instance
+        across requests, different key returns a different instance. LRU
+        eviction keeps the cache bounded.
         """
-        if api_key is None or api_key == self._default_api_key:
-            return self._client
-        return AsyncAnthropic(api_key=api_key)
+        key = api_key if api_key is not None else self._default_api_key
+        return _build_client(key, None)
 
     async def stream(
         self,

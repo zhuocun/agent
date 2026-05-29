@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     )
     otel_service_name: str = Field(default="api", alias="OTEL_SERVICE_NAME")
 
+    # Slowapi rate limit strings (per-route). Format: "<count>/<window>" e.g.
+    # "30/minute", "5/minute". Storage is in-process; multi-worker prod will
+    # need a shared store (Redis). Per-route limits resolve via a callable in
+    # the decorator so settings cache invalidation in tests takes effect.
+    rate_limit_messages: str = Field(default="30/minute", alias="RATE_LIMIT_MESSAGES")
+    rate_limit_upgrade: str = Field(default="5/minute", alias="RATE_LIMIT_UPGRADE")
+
     @cached_property
     def cors_allowed_origins(self) -> list[str]:
         """Parse the comma-separated env string into a list of origins."""

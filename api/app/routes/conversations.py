@@ -26,12 +26,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.auth.dependency import current_user
+from app.config import get_settings
 from app.db.models import Message, User
 from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope, not_found
+from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.protocol import ChatMessage as ProviderChatMessage
 from app.providers.tiers import get_binding
@@ -309,6 +311,7 @@ async def _maybe_replay(
 
 
 @router.post("/{conversation_id}/messages")
+@limiter.limit(lambda: get_settings().rate_limit_messages)
 async def send_message(
     conversation_id: UUID,
     body: SendMessageRequest,

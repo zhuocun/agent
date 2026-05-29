@@ -15,15 +15,18 @@ Wires:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.auth.routes import router as auth_router
 from app.config import get_settings
 from app.errors import register_exception_handlers
 from app.logging_setup import configure_logging
+from app.middleware.ratelimit import RateLimitMiddleware, limiter
 from app.middleware.request_id import RequestIDMiddleware
 from app.observability import init_sentry, instrument_fastapi
 from app.routes.account import router as account_router
@@ -70,8 +73,29 @@ def create_app() -> FastAPI:
     # are unconditionally tagged with CORS headers, including for paths that
     # fail to match a route. Starlette runs `add_middleware` calls in LIFO,
     # so the last `add_middleware` becomes the outermost — we register CORS
-    # AFTER request_id below.
+    # AFTER request_id (and SlowAPIMiddleware) below.
     app.add_middleware(RequestIDMiddleware)
+    # [ratelimit] limiter + middleware + handler.
+    # `RateLimitMiddleware` (a thin SlowAPIMiddleware subclass — see
+    # `app/middleware/ratelimit.py`) runs INSIDE CORS so preflight OPTIONS
+    # keeps its CORS headers even if a route somehow trips the limiter on
+    # OPTIONS. The exception handler (`_rate_limit_exceeded_handler`) builds
+    # a 429 JSON response with `X-RateLimit-*` headers via the limiter's
+    # header-injection path; routes opt in to per-route limits via
+    # `@limiter.limit(...)`.
+    app.state.limiter = limiter
+    app.add_middleware(RateLimitMiddleware)
+    # slowapi's handler is typed as `(Request, RateLimitExceeded) -> Response`,
+    # which is narrower than Starlette's `(Request, Exception) -> ...`. Cast
+    # locally so mypy stays strict elsewhere.
+    app.add_exception_handler(
+        RateLimitExceeded,
+        cast(
+            "Any",
+            _rate_limit_exceeded_handler,
+        ),
+    )
+    # [/ratelimit]
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,

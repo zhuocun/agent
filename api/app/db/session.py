@@ -23,15 +23,34 @@ from sqlalchemy.ext.asyncio import (
 from app.config import get_settings
 
 
+def _normalize_async_url(url: str) -> str:
+    """Coerce a bare Postgres URL to the asyncpg driver.
+
+    Managed Postgres providers (Fly, Heroku, Neon, ...) hand out postgres:// or
+    postgresql:// URLs, but create_async_engine needs an async driver. Rewrite
+    those bare schemes to postgresql+asyncpg://; a URL that already names a
+    driver (postgresql+asyncpg://, sqlite+aiosqlite://, ...) passes through
+    untouched.
+    """
+    if url.startswith(("postgresql+", "postgres+")):
+        return url
+    if url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url[len("postgresql://") :]
+    if url.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url[len("postgres://") :]
+    return url
+
+
 def _build_engine() -> AsyncEngine:
     settings = get_settings()
+    url = _normalize_async_url(settings.database_url)
     # SQLite needs check_same_thread=False even on the async driver when sessions
     # cross task boundaries; the URL is already aiosqlite-prefixed in tests.
     connect_args: dict[str, object] = {}
-    if settings.database_url.startswith("sqlite"):
+    if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
     return create_async_engine(
-        settings.database_url,
+        url,
         connect_args=connect_args,
         future=True,
         pool_pre_ping=True,

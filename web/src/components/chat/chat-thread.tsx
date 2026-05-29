@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import {
   ClipboardCopy,
@@ -47,32 +47,32 @@ import {
   useKeyboardShortcuts,
   type Shortcut,
 } from "@/lib/use-keyboard-shortcuts";
-import { useMockStream, type MockStreamResult } from "@/lib/use-mock-stream";
+import { useApiStream, type TerminalResult } from "@/lib/stream-client";
 import {
-  MOCK_ACCOUNT,
-  MOCK_CONVERSATION,
-  MOCK_CONVERSATIONS,
-  MOCK_MESSAGES,
-  MOCK_PREFERENCES,
-  MOCK_STREAM_ANSWER,
-  MOCK_STREAM_REASONING,
-  MOCK_USAGE,
-} from "@/lib/mock-data";
-import { MODEL_TIERS } from "@/lib/model-tiers";
+  ApiError,
+  ApiNetworkError,
+  createConversation,
+  deleteConversation,
+  fetchBootstrap,
+  fetchConversation,
+  patchConversation,
+  postFeedback,
+  putPreferences,
+  type BootstrapResponse,
+} from "@/lib/apiClient";
 import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
 import type {
+  AccountInfo,
   ChatMessage,
   ConversationSummary,
   Feedback,
   MessagePart,
-  ModelAttribution,
+  ModelTier,
   ModelTierId,
   ReasoningEffortId,
+  UsageBudget,
   UserPreferences,
 } from "@/lib/types";
-
-let idCounter = 0;
-const uid = () => `local-${Date.now()}-${idCounter++}`;
 
 // `KEY_BINDINGS` carries the static keystroke metadata; `runAction(id)` owns
 // the live handler. The split keeps the descriptor array free of state
@@ -202,67 +202,52 @@ const SHORTCUT_DIALOG_SECTIONS: { heading: string; ids: ShortcutId[] }[] = [
   { heading: "Editing", ids: ["copy-last-response", "copy-last-code", "delete-chat"] },
 ];
 
-// Attribution for a freshly streamed turn (mock). Served on the requested tier,
-// flat (no long-context surcharge) — the calm, "nothing to see here" case.
-function freshAttribution(tier: ModelTierId): ModelAttribution {
-  return {
-    requestedTierId: tier,
-    servedTierId: tier,
-    servedModelLabel: "Claude Sonnet 4.6",
-    isByok: false,
-    costUsd: 0.002934,
-    costConfidence: "exact",
-    breakdown: {
-      currency: "USD",
-      listPriceInPerM: 3,
-      listPriceOutPerM: 15,
-      inputTokens: 143,
-      outputTokens: 191,
-      reasoningTokens: 72,
-      cachedInputTokens: 0,
-      longContext: { flat: true, tokensRepriced: "none" },
-      promoApplied: false,
-      subtotalUsd: 0.002934,
-      sessionSurchargeUsd: 0,
-    },
-  };
-}
+// Local-only id generator for optimistic message bubbles before the server
+// echoes the real uuid. Never sent to the server (clientMessageId uses
+// crypto.randomUUID() instead). Replaced on terminal via reconciliation.
+let localIdCounter = 0;
+const localId = (): string => `local-${Date.now()}-${localIdCounter++}`;
+
+// Default tier when bootstrap is still pending — only used to seed the picker
+// for the brief loading frame; replaced by `preferences.defaultTierId` once
+// bootstrap resolves.
+const DEFAULT_TIER_ID: ModelTierId = "smart";
 
 export function ChatThread() {
-  const [messages, setMessages] = useState<ChatMessage[]>(MOCK_MESSAGES);
-  const [selectedTierId, setSelectedTierId] = useState<ModelTierId>(
-    MOCK_CONVERSATION.selectedTierId,
-  );
+  // Bootstrap-derived state. `null` until `fetchBootstrap()` resolves.
+  const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
+  const [bootstrapError, setBootstrapError] = useState<ApiError | null>(null);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+
+  // Chat state.
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [selectedTierId, setSelectedTierId] =
+    useState<ModelTierId>(DEFAULT_TIER_ID);
   const [selectedReasoningEffortId, setSelectedReasoningEffortId] =
     useState<ReasoningEffortId>("auto");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
+  // The optimistic id of the user message we just sent — set on send, cleared
+  // on terminal (after we replace it with the server-issued uuid). Reconciling
+  // user + assistant ids happens together on the `terminal` callback so the
+  // message list and feedback POSTs always reference server-issued ids.
+  const pendingUserIdRef = useRef<string | null>(null);
   const assistantIdRef = useRef<string | null>(null);
+  // Latest in-flight `fetchConversation` request id; the load callback drops
+  // its response if a faster selection has since superseded it.
+  const selectConversationTokenRef = useRef<string | null>(null);
   const composerRef = useRef<ComposerHandle>(null);
 
-  // True when a history entry without loaded content is selected (only "c1" has
-  // real messages in the demo). Tracked for future use (e.g. an empty-state
-  // affordance specific to picked-but-unloaded history); the UI currently shows
-  // the same WelcomeScreen for both fresh-new-chat and demo-empty.
-  const [, setDemoEmptyConversation] = useState(false);
-
   // Chrome state: sidebar (desktop rail + mobile drawer), settings, prefs,
-  // temporary mode, and which history entry is active.
+  // temporary mode, and which conversation is active.
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [preferences, setPreferences] =
-    useState<UserPreferences>(MOCK_PREFERENCES);
-  const [isTemporary, setIsTemporary] = useState(
-    MOCK_PREFERENCES.temporaryByDefault,
-  );
+  const [isTemporary, setIsTemporary] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
-  >(MOCK_CONVERSATION.id);
-  const [conversations, setConversations] = useState<ConversationSummary[]>(
-    MOCK_CONVERSATIONS,
-  );
+  >(null);
   const [conversationSearch, setConversationSearch] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
@@ -272,13 +257,89 @@ export function ChatThread() {
     useState<string | null>(null);
   const { theme, setTheme, resolvedTheme } = useTheme();
 
-  const firstName = MOCK_ACCOUNT.name.split(" ")[0];
+  // Bootstrap fetch — single trip on mount (and on retry). The in-flight ref
+  // short-circuits StrictMode's double-mount in dev: AbortController alone
+  // doesn't help because the BE assigns an anonymous user on the cookieless
+  // first hit BEFORE the response arrives, so a second concurrent request
+  // would mint a second user row even if we discard its response.
+  const bootstrapInFlightRef = useRef(false);
+  useEffect(() => {
+    if (bootstrapInFlightRef.current) return;
+    bootstrapInFlightRef.current = true;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const result = await fetchBootstrap(controller.signal);
+        if (controller.signal.aborted) return;
+        setBootstrap(result);
+        setBootstrapError(null);
+        setSelectedTierId(result.preferences.defaultTierId);
+        setIsTemporary(result.preferences.temporaryByDefault);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        if (cause instanceof ApiError) {
+          setBootstrapError(cause);
+        } else if (cause instanceof ApiNetworkError) {
+          setBootstrapError(
+            new ApiError(
+              {
+                code: "NETWORK",
+                severity: "error",
+                title: "Can't reach the server",
+                body:
+                  "We couldn't load your session. Check your connection and try again.",
+              },
+              0,
+            ),
+          );
+        } else {
+          throw cause;
+        }
+      } finally {
+        bootstrapInFlightRef.current = false;
+      }
+    })();
+    return () => {
+      controller.abort();
+    };
+  }, [bootstrapAttempt]);
 
-  // Commit the finished assistant turn when the stream terminates — event-driven
-  // (the hook hands us the final flushed content), not a status-watching effect.
-  const handleTerminal = useCallback((result: MockStreamResult) => {
-    const id = assistantIdRef.current;
-    if (!id) return;
+  // Stable derived bootstrap views — read once per render with `null` fallbacks
+  // so the rest of the handler graph stays simple. The render guards below
+  // ensure these are never read while `bootstrap === null`.
+  const account: AccountInfo | null = bootstrap?.account ?? null;
+  const preferences: UserPreferences | null = bootstrap?.preferences ?? null;
+  const usage: UsageBudget | null = bootstrap?.usage ?? null;
+  const modelTiers: ModelTier[] = bootstrap?.modelTiers ?? [];
+  const [conversations, setConversations] = useState<ConversationSummary[]>(
+    [],
+  );
+  // Sync conversation list from bootstrap exactly once it lands. After that,
+  // mutations own the list locally (optimistic) and bootstrap is not refetched.
+  const conversationsHydratedRef = useRef(false);
+  useEffect(() => {
+    if (bootstrap && !conversationsHydratedRef.current) {
+      conversationsHydratedRef.current = true;
+      setConversations(bootstrap.conversations);
+    }
+  }, [bootstrap]);
+
+  const firstName = useMemo(() => {
+    if (!account?.name) return undefined;
+    const trimmed = account.name.trim();
+    if (!trimmed) return undefined;
+    return trimmed.split(/\s+/)[0];
+  }, [account]);
+
+  // Commit the finished assistant turn when the stream terminates. We
+  // reconcile both the user and assistant ids HERE (terminal-time) rather than
+  // on `submitted`: doing both at once keeps the message list mutation single-
+  // shot, and a turn that errors out before `submitted` lands still leaves the
+  // user bubble visible with its local id (feedback is disabled on errored
+  // turns, so the local id is harmless).
+  const handleTerminal = useCallback((result: TerminalResult) => {
+    const assistantId = assistantIdRef.current;
+    if (!assistantId) return;
 
     const parts: MessagePart[] = [];
     if (result.reasoning) {
@@ -290,46 +351,121 @@ export function ChatThread() {
     }
     if (result.answer) parts.push({ type: "text", text: result.answer });
 
+    const serverAssistantId = result.serverAssistantMessageId ?? assistantId;
+    const serverUserId = result.serverUserMessageId;
+
     const finalized: ChatMessage = {
-      id,
+      id: serverAssistantId,
       role: "assistant",
       createdAt: new Date().toISOString(),
       status: result.status,
       feedback: null,
-      attribution:
-        result.status === "done" ? freshAttribution(tierAtSendRef.current) : undefined,
+      attribution: result.status === "done" ? result.attribution : undefined,
       parts,
     };
 
-    setMessages((prev) => [...prev, finalized]);
-    setLiveMessage(result.status === "done" ? "Response ready" : "Generation stopped");
+    const optimisticUserId = pendingUserIdRef.current;
+    setMessages((prev) => {
+      const next = optimisticUserId && serverUserId
+        ? prev.map((m) =>
+            m.id === optimisticUserId ? { ...m, id: serverUserId } : m,
+          )
+        : prev;
+      return [...next, finalized];
+    });
+
+    if (result.status === "done") setLiveMessage("Response ready");
+    else if (result.status === "stopped") setLiveMessage("Generation stopped");
+    else setLiveMessage("Generation failed");
+
     setPendingId(null);
     assistantIdRef.current = null;
+    pendingUserIdRef.current = null;
   }, []);
 
-  const { state, start, stop, reset } = useMockStream(handleTerminal);
+  const { state, start, stop, reset } = useApiStream(handleTerminal);
 
   const isStreaming =
     pendingId !== null && (state.status === "submitted" || state.status === "streaming");
 
+  // Begin (or continue) a streamed turn. Shared by send / regenerate / edit.
+  // Creates the conversation lazily on the FIRST send when none is active.
+  // Returns the conversation id used so callers can fall through their own
+  // post-start state updates.
+  const beginTurn = useCallback(
+    async (args: {
+      text: string;
+      tierId: ModelTierId;
+      regenerate?: boolean;
+      editMessageId?: string;
+    }): Promise<void> => {
+      let conversationId = activeConversationId;
+      if (!conversationId) {
+        try {
+          const created = await createConversation({
+            selectedTierId: args.tierId,
+            isTemporary,
+          });
+          conversationId = created.id;
+          setActiveConversationId(conversationId);
+          // Temporary chats get a synthetic id but bootstrap won't list them;
+          // skip sidebar insertion so the rail doesn't gain a row that 404s.
+          if (!isTemporary) {
+            const summary: ConversationSummary = {
+              id: created.id,
+              title: created.title,
+              updatedAt: new Date().toISOString(),
+              pinned: false,
+            };
+            setConversations((prev) => [summary, ...prev]);
+          }
+        } catch (cause) {
+          const title =
+            cause instanceof ApiError ? cause.title : "Couldn't start chat";
+          setLiveMessage(title);
+          // Roll back the optimistic user bubble we may have just appended.
+          const optimisticUserId = pendingUserIdRef.current;
+          if (optimisticUserId) {
+            setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId));
+          }
+          pendingUserIdRef.current = null;
+          assistantIdRef.current = null;
+          setPendingId(null);
+          return;
+        }
+      }
+
+      start({
+        conversationId,
+        clientMessageId: crypto.randomUUID(),
+        tierId: args.tierId,
+        text: args.text,
+        isTemporary: isTemporary || undefined,
+        regenerate: args.regenerate,
+        editMessageId: args.editMessageId,
+      });
+    },
+    [activeConversationId, isTemporary, start],
+  );
+
   const handleSend = (text: string) => {
-    const userId = uid();
-    const assistantId = uid();
+    const userBubbleId = localId();
+    const assistantPlaceholderId = localId();
     tierAtSendRef.current = selectedTierId;
-    assistantIdRef.current = assistantId;
-    setDemoEmptyConversation(false);
+    assistantIdRef.current = assistantPlaceholderId;
+    pendingUserIdRef.current = userBubbleId;
     setMessages((prev) => [
       ...prev,
       {
-        id: userId,
+        id: userBubbleId,
         role: "user",
         createdAt: new Date().toISOString(),
         parts: [{ type: "text", text }],
       },
     ]);
-    setPendingId(assistantId);
+    setPendingId(assistantPlaceholderId);
     setLiveMessage("Generating response");
-    start({ reasoning: MOCK_STREAM_REASONING, answer: MOCK_STREAM_ANSWER });
+    void beginTurn({ text, tierId: tierAtSendRef.current });
   };
 
   const pendingMessage: ChatMessage | null = useMemo(() => {
@@ -360,9 +496,20 @@ export function ChatThread() {
   }, [messages]);
 
   const setFeedback = (id: string, next: Feedback) => {
+    // Skip the API call for messages that haven't been reconciled with a
+    // server id yet (e.g. optimistic local-… ids on errored turns). The UI
+    // disables actions on non-final turns, so this only catches edge cases.
+    if (id.startsWith("local-")) return;
+    const previous = messages.find((m) => m.id === id)?.feedback ?? null;
     setMessages((prev) =>
       prev.map((m) => (m.id === id ? { ...m, feedback: next } : m)),
     );
+    void postFeedback(id, next).catch((cause) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, feedback: previous } : m)),
+      );
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+    });
   };
 
   const handleRegenerate = () => {
@@ -373,172 +520,233 @@ export function ChatThread() {
       while (next.length && next[next.length - 1].role === "assistant") next.pop();
       return next;
     });
-    const regenId = uid();
+    const regenId = localId();
     assistantIdRef.current = regenId;
+    pendingUserIdRef.current = null;
+    tierAtSendRef.current = selectedTierId;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
-    start({ reasoning: MOCK_STREAM_REASONING, answer: MOCK_STREAM_ANSWER });
+    // Regenerate keeps the trailing user message verbatim — send its text
+    // back to the server, which ignores `text` on regenerate but the wire
+    // schema still requires it.
+    const lastUserText = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== "user") continue;
+        for (const p of m.parts) if (p.type === "text") return p.text;
+      }
+      return "";
+    })();
+    void beginTurn({
+      text: lastUserText,
+      tierId: tierAtSendRef.current,
+      regenerate: true,
+    });
   };
 
   const handleEditUserMessage = (messageId: string, newText: string) => {
     if (isStreaming) return;
+    // Local-only ids belong to user bubbles whose turn never persisted
+    // (e.g. a prior error before terminal). The BE rejects non-uuid edit
+    // targets with 400, so skip rather than emit a doomed request.
+    if (messageId.startsWith("local-")) return;
     const idx = messages.findIndex((m) => m.id === messageId);
     if (idx === -1) return;
-    const userId = uid();
-    const assistantId = uid();
+    const userBubbleId = localId();
+    const assistantPlaceholderId = localId();
     tierAtSendRef.current = selectedTierId;
-    assistantIdRef.current = assistantId;
-    setDemoEmptyConversation(false);
+    assistantIdRef.current = assistantPlaceholderId;
+    pendingUserIdRef.current = userBubbleId;
     setMessages((prev) => [
       ...prev.slice(0, idx),
       {
-        id: userId,
+        id: userBubbleId,
         role: "user",
         createdAt: new Date().toISOString(),
         parts: [{ type: "text", text: newText }],
       },
     ]);
-    setPendingId(assistantId);
+    setPendingId(assistantPlaceholderId);
     setLiveMessage("Generating response");
-    start({ reasoning: MOCK_STREAM_REASONING, answer: MOCK_STREAM_ANSWER });
+    void beginTurn({
+      text: newText,
+      tierId: tierAtSendRef.current,
+      editMessageId: messageId,
+    });
   };
 
-  // Explicit copy-on-branch (PRD 01 §4.6, P1). We COPY the slice of the thread
-  // up-to-and-including the chosen assistant turn into a brand-new conversation;
-  // the source thread is left untouched (no in-thread tree). Streaming turns are
-  // not branchable — the affordance is gated in the UI and we defensively bail
-  // here too.
-  const handleBranchFromMessage = (messageId: string) => {
+  // Branch creates a brand-new (empty) conversation server-side. The MVP BE
+  // has no copy-messages-from-conversation primitive, so the prior thread is
+  // NOT cloned into the new conversation — the user lands in a fresh chat
+  // with the chosen tier preserved. This is a regression from the mock UX
+  // (which cloned the slice locally); see plan §"Known FE follow-ups".
+  const handleBranchFromMessage = () => {
     if (isStreaming) return;
-    const idx = messages.findIndex((m) => m.id === messageId);
-    if (idx === -1) return;
 
-    const branchSlice = messages.slice(0, idx + 1);
-
-    // Stop any in-flight stream and clear pending refs, mirroring the reset
-    // pattern in handleSelectConversation / handleNewChat.
     stop();
     reset();
 
-    // Derive a title from the first user turn in the slice. Trim, collapse
-    // internal whitespace, cap at 60 chars. No ellipsis — just truncate.
-    const firstUserText = branchSlice
-      .find((m) => m.role === "user")
-      ?.parts.find((p): p is Extract<MessagePart, { type: "text" }> => p.type === "text")
-      ?.text;
-    const normalized = firstUserText?.replace(/\s+/g, " ").trim() ?? "";
-    const title = normalized.length > 0 ? normalized.slice(0, 60) : "Branched chat";
-
-    const newId = uid();
-    const newConversation: ConversationSummary = {
-      id: newId,
-      title,
-      updatedAt: new Date().toISOString(),
-      pinned: false,
-    };
-
-    setConversations((prev) => [newConversation, ...prev]);
-    setMessages(branchSlice);
-    setActiveConversationId(newId);
-    setPendingId(null);
-    assistantIdRef.current = null;
-    setDemoEmptyConversation(false);
-    setIsTemporary(false);
-    setMobileNavOpen(false);
-    setLiveMessage("Branched into new chat");
+    void (async () => {
+      try {
+        const created = await createConversation({
+          selectedTierId,
+          isTemporary: false,
+        });
+        const summary: ConversationSummary = {
+          id: created.id,
+          title: created.title,
+          updatedAt: new Date().toISOString(),
+          pinned: false,
+        };
+        setConversations((prev) => [summary, ...prev]);
+        setMessages([]);
+        setActiveConversationId(created.id);
+        setPendingId(null);
+        assistantIdRef.current = null;
+        pendingUserIdRef.current = null;
+        setIsTemporary(false);
+        setMobileNavOpen(false);
+        setLiveMessage("Branched into new chat");
+      } catch (cause) {
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't branch chat";
+        setLiveMessage(title);
+      }
+    })();
   };
 
   const handleNewChat = () => {
-    if (isStreaming) stop();
+    if (isStreaming) reset();
     setMessages([]);
     setPendingId(null);
     assistantIdRef.current = null;
+    pendingUserIdRef.current = null;
     setLiveMessage("");
     reset();
     setActiveConversationId(null);
-    setDemoEmptyConversation(false);
-    setSelectedTierId(preferences.defaultTierId);
+    if (preferences) {
+      setSelectedTierId(preferences.defaultTierId);
+      setIsTemporary(preferences.temporaryByDefault);
+    }
     setSelectedReasoningEffortId("auto");
-    setIsTemporary(preferences.temporaryByDefault);
     setMobileNavOpen(false);
   };
 
   // Header Ghost / banner toggle. Turning Temporary ON starts a FRESH temporary
   // chat (clears like New chat) so the "won't be saved" promise is always true.
-  // Turning it OFF just exits temporary mode and keeps the current messages.
+  // Turning it OFF just exits temporary mode and keeps the current messages —
+  // any subsequent send creates a real (persisted) conversation lazily.
   const handleToggleTemporary = () => {
     if (isTemporary) {
       setIsTemporary(false);
       return;
     }
-    if (isStreaming) stop();
+    if (isStreaming) reset();
     setMessages([]);
     setPendingId(null);
     assistantIdRef.current = null;
+    pendingUserIdRef.current = null;
     setLiveMessage("");
     reset();
     setActiveConversationId(null);
-    setDemoEmptyConversation(false);
-    setSelectedTierId(preferences.defaultTierId);
+    if (preferences) setSelectedTierId(preferences.defaultTierId);
     setSelectedReasoningEffortId("auto");
     setIsTemporary(true);
     setMobileNavOpen(false);
   };
 
-  // Mock selection: highlight the chosen entry and exit temporary mode. Only
-  // "c1" has loaded content; other entries clear the thread and show an honest
-  // placeholder rather than leaving an unrelated body on screen.
   const handleSelectConversation = (id: string) => {
-    if (isStreaming) stop();
+    if (isStreaming) reset();
     setPendingId(null);
     assistantIdRef.current = null;
+    pendingUserIdRef.current = null;
     setLiveMessage("");
     reset();
-    if (id === MOCK_CONVERSATION.id) {
-      setMessages(MOCK_MESSAGES);
-      setDemoEmptyConversation(false);
-    } else {
-      setMessages([]);
-      setDemoEmptyConversation(true);
-    }
     setActiveConversationId(id);
     setIsTemporary(false);
     setMobileNavOpen(false);
+    // Show empty until the server payload lands; then populate. A faster
+    // subsequent selection will overwrite `selectConversationToken`, and the
+    // in-flight response below checks it before committing — late responses
+    // for an abandoned id are dropped.
+    setMessages([]);
+    selectConversationTokenRef.current = id;
+    void (async () => {
+      try {
+        const conversation = await fetchConversation(id);
+        if (selectConversationTokenRef.current !== id) return;
+        setMessages(conversation.messages);
+        setSelectedTierId(conversation.selectedTierId);
+      } catch (cause) {
+        if (selectConversationTokenRef.current !== id) return;
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't load chat";
+        setLiveMessage(title);
+      }
+    })();
   };
 
   const handleRenameConversation = (id: string, newTitle: string) => {
     const trimmed = newTitle.trim();
     if (!trimmed) return;
-    setConversations((prev) => {
-      const target = prev.find((c) => c.id === id);
-      if (!target || target.title === trimmed) return prev;
-      const nowIso = new Date().toISOString();
-      return prev.map((c) =>
+    const previous = conversations;
+    const target = previous.find((c) => c.id === id);
+    if (!target || target.title === trimmed) return;
+    const nowIso = new Date().toISOString();
+    setConversations((prev) =>
+      prev.map((c) =>
         c.id === id ? { ...c, title: trimmed, updatedAt: nowIso } : c,
-      );
+      ),
+    );
+    void patchConversation(id, { title: trimmed }).catch((cause) => {
+      setConversations(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
     });
   };
 
   const handleDeleteConversation = (id: string) => {
+    const previous = conversations;
     setConversations((prev) => prev.filter((c) => c.id !== id));
     if (id === activeConversationId) {
-      // Mirror handleNewChat: drop the open thread back to a fresh New chat
-      // since the conversation it represented no longer exists.
-      if (isStreaming) stop();
+      if (isStreaming) reset();
       setMessages([]);
       setPendingId(null);
       assistantIdRef.current = null;
+      pendingUserIdRef.current = null;
       setLiveMessage("");
       reset();
       setActiveConversationId(null);
-      setDemoEmptyConversation(false);
     }
+    void deleteConversation(id).catch((cause) => {
+      setConversations(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+    });
   };
 
   const handleTogglePinConversation = (id: string) => {
+    const previous = conversations;
+    const target = previous.find((c) => c.id === id);
+    if (!target) return;
+    const nextPinned = !target.pinned;
     setConversations((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c)),
+      prev.map((c) => (c.id === id ? { ...c, pinned: nextPinned } : c)),
     );
+    void patchConversation(id, { pinned: nextPinned }).catch((cause) => {
+      setConversations(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+    });
+  };
+
+  const handlePreferencesChange = (next: UserPreferences) => {
+    if (!bootstrap) return;
+    const previous = bootstrap.preferences;
+    setBootstrap({ ...bootstrap, preferences: next });
+    void putPreferences(next).catch((cause) => {
+      setBootstrap((prev) =>
+        prev ? { ...prev, preferences: previous } : prev,
+      );
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+    });
   };
 
   const showWelcome = messages.length === 0 && !pendingMessage;
@@ -717,6 +925,37 @@ export function ChatThread() {
     }),
   );
 
+  // --- Render guards ------------------------------------------------------
+  // Bootstrap is the gate: nothing renders the main shell until we have the
+  // account + preferences + tier registry. Both states are intentionally tiny
+  // — there's no FE auth surface, so the user can't recover from a failure
+  // other than retrying.
+
+  if (bootstrapError) {
+    return (
+      <div className="flex h-full min-h-svh items-center justify-center p-6">
+        <div className="max-w-sm space-y-4 text-center">
+          <h2 className="text-lg font-semibold">{bootstrapError.title}</h2>
+          <p className="text-sm text-muted-foreground">{bootstrapError.body}</p>
+          <Button
+            type="button"
+            onClick={() => {
+              setBootstrapError(null);
+              setBootstrapAttempt((n) => n + 1);
+            }}
+            className="rounded-full"
+          >
+            Try again
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!bootstrap || !account || !preferences || !usage) {
+    return <div aria-hidden className="h-full min-h-svh" />;
+  }
+
   return (
     <>
       <AppShell
@@ -724,7 +963,7 @@ export function ChatThread() {
           <Sidebar
             conversations={conversations}
             activeId={activeConversationId}
-            account={MOCK_ACCOUNT}
+            account={account}
             search={conversationSearch}
             onSearchChange={setConversationSearch}
             onSelect={handleSelectConversation}
@@ -762,7 +1001,7 @@ export function ChatThread() {
                 onOpenSettings={() => setSettingsOpen(true)}
                 isTemporary={isTemporary}
                 onToggleTemporary={handleToggleTemporary}
-                tiers={MODEL_TIERS}
+                tiers={modelTiers}
                 selectedTierId={selectedTierId}
                 onSelectTier={setSelectedTierId}
                 efforts={REASONING_EFFORTS}
@@ -775,10 +1014,10 @@ export function ChatThread() {
             </div>
           </div>
 
-          {/* Message area — for WelcomeScreen (including demo-empty history
-              picks) we put a single scroll wrapper that clears both strips.
-              For MessageList we let it own its scroll (its internal `<ol>`
-              already has matching pt/pb that clears the chrome). */}
+          {/* Message area — for WelcomeScreen we put a single scroll wrapper
+              that clears both strips. For MessageList we let it own its
+              scroll (its internal `<ol>` already has matching pt/pb that
+              clears the chrome). */}
           {showWelcome ? (
             <div
               className={
@@ -796,7 +1035,7 @@ export function ChatThread() {
                   <UserMessage
                     key={m.id}
                     message={m}
-                    canEdit={!isStreaming}
+                    canEdit={!isStreaming && !m.id.startsWith("local-")}
                     onEdit={(newText) => handleEditUserMessage(m.id, newText)}
                   />
                 ) : (
@@ -804,11 +1043,11 @@ export function ChatThread() {
                     key={m.id}
                     message={m}
                     status={m.status ?? "done"}
-                    canRegenerate={!isStreaming && m.id === lastAssistantId}
+                    canRegenerate={!isStreaming && m.id === lastAssistantId && (m.status ?? "done") === "done"}
                     onRegenerate={handleRegenerate}
                     onFeedback={(f) => setFeedback(m.id, f)}
                     canBranch={!isStreaming && m.id !== pendingId}
-                    onBranch={() => handleBranchFromMessage(m.id)}
+                    onBranch={handleBranchFromMessage}
                     defaultReasoningOpen={preferences.autoExpandReasoning}
                   />
                 ),
@@ -843,9 +1082,9 @@ export function ChatThread() {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         preferences={preferences}
-        onPreferencesChange={setPreferences}
-        account={MOCK_ACCOUNT}
-        usage={MOCK_USAGE}
+        onPreferencesChange={handlePreferencesChange}
+        account={account}
+        usage={usage}
       />
 
       <CommandPalette

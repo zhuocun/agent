@@ -3,7 +3,7 @@
 // per-message model + cost transparency (PRD 07), and served-vs-requested
 // substitution (PRD 01 §4.6 / PRD 07 §5).
 
-export type ModelTierId = "fast" | "smart" | "pro";
+export type ModelTierId = "fast" | "smart" | "pro" | "auto";
 
 export interface ModelTier {
   id: ModelTierId;

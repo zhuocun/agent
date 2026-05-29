@@ -160,9 +160,11 @@ async def test_send_message_emits_rate_limit_headers_on_success(
             pass
         assert resp.status_code == 200, resp.headers
         # Slowapi emits these on every limited response when headers_enabled=True.
-        assert resp.headers.get("x-ratelimit-limit") is not None
-        assert resp.headers.get("x-ratelimit-remaining") is not None
-        assert resp.headers.get("x-ratelimit-reset") is not None
+        # Pin "exactly one" emission — the RateLimitMiddleware override guards
+        # against double-injection (decorator + middleware) on dynamic limits.
+        assert resp.headers.get_list("x-ratelimit-limit") == ["30"]
+        assert len(resp.headers.get_list("x-ratelimit-remaining")) == 1
+        assert len(resp.headers.get_list("x-ratelimit-reset")) == 1
 
 
 async def test_send_message_rate_limit_override_returns_429_on_third_call(

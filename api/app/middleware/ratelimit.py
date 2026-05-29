@@ -33,9 +33,9 @@ from __future__ import annotations
 from slowapi import Limiter
 from slowapi.middleware import SlowAPIMiddleware, _find_route_handler, _get_route_name
 from slowapi.util import get_remote_address
+from starlette.middleware.base import RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import ASGIApp
 
 limiter = Limiter(
     key_func=get_remote_address,
@@ -61,10 +61,9 @@ class RateLimitMiddleware(SlowAPIMiddleware):
     apply normally).
     """
 
-    def __init__(self, app: ASGIApp) -> None:
-        super().__init__(app)
-
-    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         app = request.app
         lim: Limiter = app.state.limiter
         if not lim.enabled:
@@ -75,5 +74,4 @@ class RateLimitMiddleware(SlowAPIMiddleware):
             # Either flavor of route-level limit means "the decorator owns it".
             if name in lim._route_limits or name in lim._dynamic_route_limits:
                 return await call_next(request)
-        response: Response = await super().dispatch(request, call_next)
-        return response
+        return await super().dispatch(request, call_next)

@@ -15,7 +15,7 @@ Wires:
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,14 +86,11 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_middleware(RateLimitMiddleware)
     # slowapi's handler is typed as `(Request, RateLimitExceeded) -> Response`,
-    # which is narrower than Starlette's `(Request, Exception) -> ...`. Cast
-    # locally so mypy stays strict elsewhere.
+    # narrower than Starlette's `(Request, Exception) -> ...`. Localize the
+    # variance instead of laundering it through Any.
     app.add_exception_handler(
         RateLimitExceeded,
-        cast(
-            "Any",
-            _rate_limit_exceeded_handler,
-        ),
+        _rate_limit_exceeded_handler,  # type: ignore[arg-type]
     )
     # [/ratelimit]
     app.add_middleware(

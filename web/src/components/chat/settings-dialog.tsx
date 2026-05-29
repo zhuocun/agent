@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, type JSX, type ReactNode } from "react";
-import { Key } from "lucide-react";
+import { LogOut } from "lucide-react";
 
 import {
   Dialog,
@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
+import { ByokForm } from "@/components/chat/byok-form";
 import { TierPicker } from "@/components/chat/tier-picker";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { UsageMeter } from "@/components/chat/usage-meter";
@@ -24,7 +26,18 @@ export interface SettingsDialogProps {
   preferences: UserPreferences;
   onPreferencesChange: (next: UserPreferences) => void;
   account: AccountInfo;
+  onAccountChange: (next: AccountInfo) => void;
   usage: UsageBudget;
+  onSignOut: () => void;
+}
+
+// Worker C audit gap: same anonymous discriminator the BYOK form uses; kept
+// local so the dialog can gate the sign-out row without leaking a typed field
+// that the wire schema hasn't shipped yet.
+function isAnonymousAccount(account: AccountInfo): boolean {
+  const flagged = (account as { isAnonymous?: unknown }).isAnonymous;
+  if (typeof flagged === "boolean") return flagged;
+  return account.email.trim().length === 0;
 }
 
 // Derive avatar initials from a display name (first + last token), capped at
@@ -86,12 +99,15 @@ export function SettingsDialog({
   preferences,
   onPreferencesChange,
   account,
+  onAccountChange,
   usage,
+  onSignOut,
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
   const autoExpandId = useId();
   const temporaryId = useId();
   const trainingId = useId();
+  const anonymous = isAnonymousAccount(account);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -137,27 +153,29 @@ export function SettingsDialog({
 
             <UsageMeter usage={usage} />
 
-            {account.byokEnabled ? (
-              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Key aria-hidden className="size-3.5 shrink-0" />
-                <span>
-                  Billed to your key
-                  {account.byokMaskedKey ? (
-                    <>
-                      {" "}
-                      <span className="font-mono text-foreground">
-                        {account.byokMaskedKey}
-                      </span>
-                    </>
-                  ) : null}
-                </span>
-              </p>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                Using platform credits — add your own API key to bill providers
-                directly.
-              </p>
-            )}
+            {!anonymous ? (
+              <div className="pt-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onSignOut}
+                  className="-ml-2 rounded-full text-muted-foreground hover:text-foreground"
+                >
+                  <LogOut aria-hidden className="size-3.5" />
+                  <span>Sign out</span>
+                </Button>
+              </div>
+            ) : null}
+          </section>
+
+          <Separator />
+
+          {/* Bring your own key — PRD 04 §5.2 / PRD 02 FR-6. Anonymous sessions
+              are gated inside ByokForm with a sign-in CTA. */}
+          <section className="space-y-3">
+            <SectionHeading>Bring your own key</SectionHeading>
+            <ByokForm account={account} onAccountChange={onAccountChange} />
           </section>
 
           <Separator />

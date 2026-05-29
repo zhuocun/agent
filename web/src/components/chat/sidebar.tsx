@@ -9,7 +9,10 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
+  ClipboardCopy,
   Key,
+  LogIn,
+  LogOut,
   MoreHorizontal,
   PanelLeftClose,
   Pencil,
@@ -34,6 +37,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -51,9 +55,20 @@ export interface SidebarProps {
   onRenameConversation: (id: string, newTitle: string) => void;
   onDeleteConversation: (id: string) => void;
   onTogglePinConversation: (id: string) => void;
+  onCopyConversation: (id: string) => void;
   onOpenSettings: () => void;
+  onSignOut: () => void;
   onCollapse?: () => void; // desktop: hide the sidebar rail; omit the button if undefined
   className?: string;
+}
+
+// Worker C audit gap: AccountInfo has no guest/registered discriminator yet,
+// so fall back to email presence (PRD 04 §6: guests have null email). Honors
+// a future `isAnonymous` field if Worker C lands it.
+function isAnonymousAccount(account: AccountInfo): boolean {
+  const flagged = (account as { isAnonymous?: unknown }).isAnonymous;
+  if (typeof flagged === "boolean") return flagged;
+  return account.email.trim().length === 0;
 }
 
 // Recency buckets shown in the history list, in display order. "Pinned" is
@@ -154,6 +169,7 @@ function ConversationRow({
   onSelect,
   onRename,
   onTogglePin,
+  onCopy,
   onRequestDelete,
 }: {
   conversation: ConversationSummary;
@@ -162,6 +178,7 @@ function ConversationRow({
   onSelect: (id: string) => void;
   onRename: (id: string, newTitle: string) => void;
   onTogglePin: (id: string) => void;
+  onCopy: (id: string) => void;
   onRequestDelete: (conversation: ConversationSummary) => void;
 }): React.JSX.Element {
   const [isRenaming, setIsRenaming] = useState(false);
@@ -349,6 +366,14 @@ function ConversationRow({
             <span>{pinAction}</span>
           </DropdownMenuItem>
           <DropdownMenuItem
+            label="Copy conversation"
+            onClick={() => onCopy(conversation.id)}
+            className="gap-2"
+          >
+            <ClipboardCopy className="size-4" aria-hidden />
+            <span>Copy conversation</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
             label="Delete"
             variant="destructive"
             onClick={() => onRequestDelete(conversation)}
@@ -374,10 +399,13 @@ export function Sidebar({
   onRenameConversation,
   onDeleteConversation,
   onTogglePinConversation,
+  onCopyConversation,
   onOpenSettings,
+  onSignOut,
   onCollapse,
   className,
 }: SidebarProps): React.JSX.Element {
+  const anonymous = isAnonymousAccount(account);
   const trimmedSearch = search.trim();
   const isSearching = trimmedSearch.length > 0;
   const filteredConversations = isSearching
@@ -417,6 +445,7 @@ export function Sidebar({
         onSelect={onSelect}
         onRename={onRenameConversation}
         onTogglePin={onTogglePinConversation}
+        onCopy={onCopyConversation}
         onRequestDelete={setPendingDelete}
       />
     </div>
@@ -517,25 +546,70 @@ export function Sidebar({
       </ScrollArea>
 
       <div className="mt-3 p-2 pt-3">
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          className="flex w-full items-center gap-2 rounded-2xl p-2 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]"
-        >
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
-            {initials(account.name)}
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium">{account.name}</div>
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <span className="truncate">{account.planLabel}</span>
-              {account.byokEnabled ? (
-                <Key className="size-3.5 shrink-0" aria-hidden />
-              ) : null}
-            </div>
-          </div>
-          <Settings className="ml-auto size-4 shrink-0 text-muted-foreground" aria-hidden />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Account menu"
+                className="flex w-full items-center gap-2 rounded-2xl p-2 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] aria-expanded:bg-muted/60"
+              >
+                <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
+                  {initials(account.name)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">
+                    {account.name}
+                  </div>
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <span className="truncate">{account.planLabel}</span>
+                    {account.byokEnabled ? (
+                      <Key className="size-3.5 shrink-0" aria-hidden />
+                    ) : null}
+                  </div>
+                </div>
+                <MoreHorizontal
+                  className="ml-auto size-4 shrink-0 text-muted-foreground"
+                  aria-hidden
+                />
+              </button>
+            }
+          />
+          <DropdownMenuContent align="end" side="top" className="w-56">
+            {anonymous ? (
+              <DropdownMenuItem
+                label="Sign in"
+                disabled
+                className="gap-2"
+              >
+                <LogIn className="size-4" aria-hidden />
+                <span className="flex-1">Sign in</span>
+                <span className="text-xs text-muted-foreground">Soon</span>
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem
+              label="Settings"
+              onClick={onOpenSettings}
+              className="gap-2"
+            >
+              <Settings className="size-4" aria-hidden />
+              <span>Settings</span>
+            </DropdownMenuItem>
+            {!anonymous ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  label="Sign out"
+                  onClick={onSignOut}
+                  className="gap-2"
+                >
+                  <LogOut className="size-4" aria-hidden />
+                  <span>Sign out</span>
+                </DropdownMenuItem>
+              </>
+            ) : null}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <Dialog

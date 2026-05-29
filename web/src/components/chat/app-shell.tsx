@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
+import { AiDisclosure } from "@/components/chat/ai-disclosure";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useVisualViewport } from "@/lib/use-visual-viewport";
 import { cn } from "@/lib/utils";
@@ -97,6 +98,8 @@ export function AppShell({
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {children}
       </main>
+
+      <AiDisclosure />
     </div>
   );
 }

@@ -20,12 +20,18 @@ function formatCostSummary(n: number): string {
 }
 
 // `"auto"` is a request-time alias — the server must resolve it to a concrete
-// tier before attribution lands here. Narrowing the input type makes that
-// boundary explicit; if `"auto"` ever leaks through we want a loud failure,
-// not a silent title-cased "Auto" chip.
+// tier before attribution's SERVED side lands here. Narrowing the served type
+// makes that boundary explicit; if `"auto"` ever leaks through as served we
+// want a loud failure, not a silent title-cased "Auto" chip. The REQUESTED
+// side legitimately carries `"auto"` (the user picked Auto and the server
+// resolved it), so its label lookup accepts the full union.
 type ServedTierId = Exclude<ModelTierId, "auto">;
 
-function tierLabelFor(id: ServedTierId): string {
+function servedTierLabelFor(id: ServedTierId): string {
+  return MODEL_TIERS_BY_ID[id].label;
+}
+
+function requestedTierLabelFor(id: ModelTierId): string {
   return MODEL_TIERS_BY_ID[id].label;
 }
 
@@ -55,14 +61,14 @@ export function AttributionRow({
   const servedTierId = assertServedTier(attribution.servedTierId);
 
   const costText = `${isEstimate ? "~" : ""}${formatCostSummary(attribution.costUsd)}`;
-  const tierLabel = tierLabelFor(servedTierId);
+  const tierLabel = servedTierLabelFor(servedTierId);
 
   // Brief: byline reads as typography, not a stack of chips. Substitution
   // collapses into a leading muted clause ("substituted from Pro: …") so the
   // only filled chrome at rest is the BYOK chip. Per Opp 4, two filled pills
   // next to a bare line was the regression to avoid.
   const substitutionPrefix = substitution
-    ? `substituted from ${tierLabelFor(assertServedTier(attribution.requestedTierId))}: `
+    ? `substituted from ${requestedTierLabelFor(attribution.requestedTierId)}: `
     : null;
 
   const triggerLabel = [

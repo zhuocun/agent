@@ -1,6 +1,6 @@
 "use client";
 
-import { Menu, MoreHorizontal, SquarePen } from "lucide-react";
+import { ClipboardCopy, Menu, MoreHorizontal, SquarePen } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +25,8 @@ interface AppHeaderProps {
   onOpenSidebar?: () => void;
   onOpenSettings?: () => void;
   onToggleTemporary?: () => void;
+  onCopyConversation?: () => void;
+  canCopyConversation?: boolean;
   isTemporary?: boolean;
   sidebarOpen?: boolean;
   tiers: ModelTier[];
@@ -50,6 +52,8 @@ export function AppHeader({
   onOpenSidebar,
   onOpenSettings,
   onToggleTemporary,
+  onCopyConversation,
+  canCopyConversation,
   isTemporary,
   sidebarOpen,
   tiers,
@@ -122,6 +126,16 @@ export function AppHeader({
               >
                 Temporary chat
               </DropdownMenuCheckboxItem>
+              {onCopyConversation ? (
+                <DropdownMenuItem
+                  onClick={onCopyConversation}
+                  disabled={!canCopyConversation}
+                  className="gap-2"
+                >
+                  <ClipboardCopy className="size-4" aria-hidden />
+                  <span>Copy conversation</span>
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem onClick={onOpenSettings}>
                 Settings
               </DropdownMenuItem>

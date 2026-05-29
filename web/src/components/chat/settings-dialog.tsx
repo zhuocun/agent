@@ -102,7 +102,7 @@ export function SettingsDialog({
       <DialogContent className="top-auto bottom-0 left-0 max-h-[80dvh] max-w-full translate-x-0 translate-y-0 rounded-t-3xl rounded-b-none sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-3xl">
         <div
           aria-hidden
-          className="mx-auto -mt-2 h-1 w-10 rounded-full bg-foreground/15 sm:hidden"
+          className="mx-auto -mt-2.5 h-1.5 w-9 rounded-full bg-foreground/15 sm:hidden"
         />
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>

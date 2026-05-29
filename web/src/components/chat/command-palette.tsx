@@ -251,7 +251,7 @@ export function CommandPalette({
                                 runItem(item);
                               }}
                               className={cn(
-                                "mx-2 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-sm",
+                                "mx-2 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm",
                                 isSelected
                                   ? "bg-accent text-accent-foreground"
                                   : "text-foreground",
@@ -290,7 +290,7 @@ export function CommandPalette({
                               runItem(item);
                             }}
                             className={cn(
-                              "mx-2 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-sm",
+                              "mx-2 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm",
                               isSelected
                                 ? "bg-accent text-accent-foreground"
                                 : "text-foreground",

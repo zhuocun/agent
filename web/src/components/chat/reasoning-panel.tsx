@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 
 import {
   Collapsible,
@@ -54,8 +55,8 @@ export function ReasoningPanel({
     >
       <CollapsibleTrigger
         className={cn(
-          "inline-flex items-center text-left text-xs text-muted-foreground/70",
-          "bg-transparent p-0 hover:underline underline-offset-2",
+          "group/reasoning-trigger inline-flex items-center gap-1 text-left text-xs text-muted-foreground/70",
+          "bg-transparent p-0 underline-offset-2",
           "outline-none focus-visible:underline",
         )}
       >
@@ -72,6 +73,11 @@ export function ReasoningPanel({
         ) : (
           <span>{label}</span>
         )}
+        {/* Base UI's CollapsibleTrigger exposes data-panel-open (not data-state); rotate via group selector. */}
+        <ChevronDown
+          aria-hidden
+          className="size-3.5 transition-transform duration-200 group-data-[panel-open]/reasoning-trigger:rotate-180"
+        />
       </CollapsibleTrigger>
 
       <CollapsibleContent

@@ -68,7 +68,7 @@ export function MessageList({ children }: { children: React.ReactNode }) {
             variant="secondary"
             onClick={() => scrollToBottom(true)}
             aria-label="Jump to latest"
-            className="glass-regular pointer-events-auto h-9 gap-1.5 rounded-full px-3"
+            className="glass-regular pointer-events-auto h-11 gap-1.5 rounded-full px-3"
           >
             <ArrowDown className="size-4" />
             Jump to latest

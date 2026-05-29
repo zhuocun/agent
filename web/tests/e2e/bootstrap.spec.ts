@@ -45,8 +45,10 @@ test.describe("bootstrap", () => {
     // Sidebar is also live — the "New chat" rail item appears on mount.
     await expect(page.getByTestId("sidebar-new-chat")).toBeVisible();
 
-    // Welcome screen ("What's on your mind?") is the empty state.
-    await expect(page.getByText("What's on your mind?")).toBeVisible();
+    // Welcome screen empty state — the suggested-prompts list is the most
+    // stable signal here. The greeting heading itself varies by time of day
+    // (Good morning / afternoon / evening / Hello), so we don't pin its text.
+    await expect(page.getByRole("list", { name: "Suggested prompts" })).toBeVisible();
   });
 
   test("bootstrap returns a camelCase JSON payload with the expected shape", async ({

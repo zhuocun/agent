@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -149,6 +150,11 @@ class Message(Base):
     parts: Mapped[list[dict[str, Any]]] = mapped_column(JsonVariant, nullable=False)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
     attribution: Mapped[dict[str, Any] | None] = mapped_column(JsonVariant, nullable=True)
+    # Per-turn cost in USD. Mirrors `attribution.costUsd` (the breakdown
+    # subtotal + session surcharge) so the cost ledger can be queried without
+    # re-parsing the JSON attribution blob. NULL on legacy rows written before
+    # the 0006 migration and on user rows (cost is an assistant-turn concept).
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Post-M4: explicit reply pairing. On assistant rows this points at the
     # user message whose reply this is, so `_maybe_replay` can resolve via a
     # single indexed lookup instead of pair-by-index. NULL on legacy rows
@@ -220,6 +226,14 @@ class UsageRollup(Base):
         DateTime(timezone=True), nullable=False
     )
     used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Accumulated USD cost for the period. Parallel to `used` (the integer
+    # per-turn counter the FE meter renders raw); `cost_usd` is the
+    # cost-ledger axis that cost-based budget enforcement reads. Kept separate
+    # so the FE wire contract for `used` is unchanged. `server_default="0"`
+    # backfills legacy rows to a non-NULL zero.
+    cost_usd: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default=text("0"), default=0.0
+    )
     limit_value: Mapped[int] = mapped_column(Integer, nullable=False)
     is_byok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 

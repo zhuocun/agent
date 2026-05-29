@@ -275,6 +275,7 @@ async def stream_and_persist(
         attribution: ModelAttribution,
         session: AsyncSession | None = None,
         commit: bool = True,
+        cost_usd: float | None = None,
     ) -> None:
         if is_temporary or conversation_id is None:
             return
@@ -294,6 +295,7 @@ async def stream_and_persist(
             status=status,
             attribution=attribution.model_dump(by_alias=True, exclude_none=True),
             responds_to_message_id=user_message_id,
+            cost_usd=cost_usd,
         )
         # When the caller owns the session (stop/fresh-session case, commit=False)
         # we only flush here and let the caller commit AFTER bumping usage, so the
@@ -348,6 +350,10 @@ async def stream_and_persist(
                     _apply_event(drained)
                 # Flush accumulators, persist with status=stopped + estimate.
                 breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
+                # Per-turn cost: matches what build_attribution exposes as
+                # `attribution.costUsd` (pricing.py) so the ledger and the
+                # wire stay consistent.
+                turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
@@ -371,6 +377,7 @@ async def stream_and_persist(
                         attribution=attribution,
                         session=fresh_db,
                         commit=False,
+                        cost_usd=turn_cost,
                     )
                     # Stopped turn still cost partial tokens -- bump the meter.
                     # `is_temporary` already gates persistence; only increment
@@ -383,6 +390,7 @@ async def stream_and_persist(
                         await usage_repo.increment_for_period(
                             fresh_db,
                             user_id=user_id,
+                            cost_usd_delta=turn_cost,
                             is_byok=is_byok_turn,
                         )
                     await fresh_db.commit()
@@ -440,6 +448,10 @@ async def stream_and_persist(
 
         # Provider finished cleanly. Compute attribution and emit terminal.
         breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
+        # Per-turn cost: matches what build_attribution exposes as
+        # `attribution.costUsd` (pricing.py) so the cost ledger row and the
+        # wire attribution agree.
+        turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
         attribution = build_attribution(
             requested_tier_id=requested_tier_id,
             binding=binding,
@@ -477,6 +489,7 @@ async def stream_and_persist(
                 status="done",
                 attribution=attribution.model_dump(by_alias=True, exclude_none=True),
                 responds_to_message_id=user_message_id,
+                cost_usd=turn_cost,
             )
             # Bump usage_rollup before the commit so both writes land
             # atomically. `user_id` is set on every non-temporary path (the
@@ -487,6 +500,7 @@ async def stream_and_persist(
                 await usage_repo.increment_for_period(
                     db,
                     user_id=user_id,
+                    cost_usd_delta=turn_cost,
                     is_byok=is_byok_turn,
                 )
             await db.commit()

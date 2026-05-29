@@ -130,6 +130,7 @@ async def create_assistant_message(
     status: str,
     attribution: dict[str, Any],
     responds_to_message_id: UUID | None = None,
+    cost_usd: float | None = None,
 ) -> Message:
     """Persist an assistant turn. `status` is `"done"` or `"stopped"`.
 
@@ -141,6 +142,10 @@ async def create_assistant_message(
     `_maybe_replay`. None is accepted so callers that don't yet thread the
     id through (or seed legacy data) still work; the pair-by-index fallback
     in `_maybe_replay` covers those rows.
+
+    `cost_usd` is the per-turn USD cost (mirrors `attribution.costUsd`). None
+    leaves the column NULL (legacy/unmetered rows); the cost ledger only reads
+    non-NULL values.
     """
     msg = Message(
         conversation_id=conversation_id,
@@ -150,6 +155,7 @@ async def create_assistant_message(
         status=status,
         attribution=attribution,
         responds_to_message_id=responds_to_message_id,
+        cost_usd=cost_usd,
         created_at=_now(),
     )
     db.add(msg)

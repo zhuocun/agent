@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -31,8 +32,9 @@ from app.db.models import Message, User
 from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
+from app.db.repositories import usage as usage_repo
 from app.db.session import get_db
-from app.errors import AppError, ErrorEnvelope, not_found
+from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.protocol import ChatMessage as ProviderChatMessage
@@ -99,6 +101,39 @@ def _duplicate_in_flight() -> AppError:
             body="A prior submission with this clientMessageId is still in flight.",
         ),
         status.HTTP_409_CONFLICT,
+    )
+
+
+def _ms_until_next_month(now: datetime | None = None) -> int:
+    """Milliseconds from `now` until the next calendar-month UTC start.
+
+    Drives `retry_after_ms` on the budget envelope: the cost ledger resets when
+    the period rolls over, so the FE can surface "try again next month". Clamped
+    to >= 0 defensively (clock skew should never make this negative).
+    """
+    ref = now if now is not None else datetime.now(UTC)
+    if ref.month == 12:
+        nxt = ref.replace(
+            year=ref.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+    else:
+        nxt = ref.replace(
+            month=ref.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+    return max(0, int((nxt - ref).total_seconds() * 1000))
+
+
+def _budget_exceeded() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="BUDGET_EXCEEDED",
+            severity="warning",
+            title="Usage limit reached",
+            body="You've reached your usage budget for this period.",
+            retry_after_ms=_ms_until_next_month(),
+            actions=[ErrorAction(label="View usage", kind="open_settings")],
+        ),
+        status.HTTP_429_TOO_MANY_REQUESTS,
     )
 
 
@@ -369,11 +404,39 @@ async def send_message(
             "regenerate / editMessageId are not supported on temporary chats.",
         )
 
+    # BYOK resolution + budget gate. Resolved here (before any user-message
+    # insert / branch logic) so the cost-based budget gate can tell whether
+    # this is a platform-key turn (counts against the cap) or a BYOK turn (the
+    # user pays their own provider, so it is exempt). The resolved value is
+    # threaded through to `stream_and_persist` unchanged.
+    #
+    # BYOK: pull the user's encrypted key for the bound provider
+    # (`binding.provider_id` — e.g. "anthropic" or "openai" depending on the
+    # active backend). Anonymous users never have keys; decryption failure
+    # inside the repo returns None (logged), so this is silently safe and the
+    # call falls back to the platform key.
+    resolved_api_key: str | None = None
+    if not user.is_anonymous:
+        resolved_api_key = await api_keys_repo.get_decrypted_for_user(
+            db, user_id=user.id, provider=binding.provider_id
+        )
+
     # Ownership / existence check.
     if not is_temp:
         owner_row = await conversations_repo.owned_by(db, conversation_id, user.id)
         if owner_row is None:
             raise not_found("conversation")
+
+        # Cost-based budget enforcement. Only platform-key turns count against
+        # the cap (BYOK turns are exempt — the user pays their own provider).
+        # `usage_budget_usd <= 0` disables the cap entirely (the default), so
+        # existing behavior is unchanged. The cap is read against the current
+        # period's accumulated cost ledger; reaching it refuses the next turn.
+        settings = get_settings()
+        if settings.usage_budget_usd > 0 and resolved_api_key is None:
+            period_cost = await usage_repo.get_period_cost(db, user_id=user.id)
+            if period_cost >= settings.usage_budget_usd:
+                raise _budget_exceeded()
 
     # Idempotency: prior user message for this client_message_id?
     # Skipped for regenerate / edit paths — those use a fresh clientMessageId
@@ -442,16 +505,9 @@ async def send_message(
 
     provider = build_provider()
 
-    # BYOK resolution: pull the user's encrypted key for the bound provider
-    # (`binding.provider_id` — e.g. "anthropic" or "openai" depending on the
-    # active backend). Anonymous users never have keys; decryption failure
-    # inside the repo returns None (logged), so this is silently safe and the
-    # call falls back to the platform key.
-    resolved_api_key: str | None = None
-    if not user.is_anonymous:
-        resolved_api_key = await api_keys_repo.get_decrypted_for_user(
-            db, user_id=user.id, provider=binding.provider_id
-        )
+    # `resolved_api_key` was resolved earlier (before the budget gate) so the
+    # cost cap could distinguish platform-key vs BYOK turns; it is threaded
+    # through to the stream call below unchanged.
 
     # Title autogen must not re-fire when a regen / edit-of-first-turn deletes
     # the prior assistant(s) and leaves count_assistant_messages at 0. Gate it

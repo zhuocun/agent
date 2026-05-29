@@ -43,16 +43,21 @@ async def increment_for_period(
     *,
     user_id: UUID,
     used_delta: int = 1,
+    cost_usd_delta: float = 0.0,
     is_byok: bool = False,
     period_start: datetime | None = None,
 ) -> None:
-    """Upsert the (user_id, period_start) rollup row, bumping `used`.
+    """Upsert the (user_id, period_start) rollup row, bumping `used` + cost.
 
     Atomic `INSERT ... ON CONFLICT DO UPDATE` keyed on the composite primary
     key `(user_id, period_start)`. Two concurrent terminals for the same
     period both go through one statement; the DB serializes the conflict so
     the final `used` reflects every write. `is_byok` last-write-wins (column
     is analytics-only -- see module docstring).
+
+    `cost_usd_delta` accumulates alongside `used` on the same atomic upsert so
+    the cost ledger stays in lockstep with the per-turn counter. Defaults to
+    0.0 so existing callers (and the integer-only meter) are unchanged.
 
     Dialect-specific imports:
     - Postgres (production): `sqlalchemy.dialects.postgresql.insert` gives us
@@ -73,6 +78,7 @@ async def increment_for_period(
             user_id=user_id,
             period_start=period,
             used=used_delta,
+            cost_usd=cost_usd_delta,
             limit_value=_DEFAULT_LIMIT,
             is_byok=is_byok,
         )
@@ -83,6 +89,7 @@ async def increment_for_period(
                 # the current `used` instead of replacing it so concurrent
                 # writers don't clobber each other.
                 "used": UsageRollup.used + stmt_pg.excluded.used,
+                "cost_usd": UsageRollup.cost_usd + stmt_pg.excluded.cost_usd,
                 "is_byok": stmt_pg.excluded.is_byok,
             },
         )
@@ -93,6 +100,7 @@ async def increment_for_period(
             user_id=user_id,
             period_start=period,
             used=used_delta,
+            cost_usd=cost_usd_delta,
             limit_value=_DEFAULT_LIMIT,
             is_byok=is_byok,
         )
@@ -100,11 +108,33 @@ async def increment_for_period(
             index_elements=["user_id", "period_start"],
             set_={
                 "used": UsageRollup.used + stmt_sq.excluded.used,
+                "cost_usd": UsageRollup.cost_usd + stmt_sq.excluded.cost_usd,
                 "is_byok": stmt_sq.excluded.is_byok,
             },
         )
         await db.execute(stmt_sq)
     await db.flush()
+
+
+async def get_period_cost(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    period_start: datetime | None = None,
+) -> float:
+    """Return the accumulated USD cost for the current (or given) period.
+
+    Reads the `(user_id, period_start)` rollup row's `cost_usd`. Returns 0.0
+    when no row exists yet (first turn of the period). Drives the cost-based
+    budget gate in `send_message`.
+    """
+    period = period_start if period_start is not None else _month_start()
+    stmt = select(UsageRollup).where(
+        UsageRollup.user_id == user_id,
+        UsageRollup.period_start == period,
+    )
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    return float(row.cost_usd) if row is not None else 0.0
 
 
 async def get_current_budget(

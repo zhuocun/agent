@@ -109,7 +109,7 @@ function IconAction({
             aria-pressed={typeof pressed === "boolean" ? pressed : undefined}
             className={cn(
               "size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9",
-              pressed && "text-brand",
+              pressed && "bg-foreground/[0.06] text-foreground",
             )}
           >
             {children}

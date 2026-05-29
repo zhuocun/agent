@@ -257,7 +257,10 @@
   --brand-foreground: oklch(0.16 0.01 247);
   --brand-muted: oklch(0.32 0.10 247);
 
-  --message-user: oklch(0.27 0.006 250);
+  /* Lifted above 0.27 so the user surface reads as distinct from the dark
+     `--code-block` (oklch 0.235); the code inversion needs the lightness gap
+     to land as "this is code, not prose" without an extra badge. */
+  --message-user: oklch(0.305 0.006 250);
   --message-user-foreground: oklch(0.96 0.003 250);
   --message-assistant: transparent;
   --message-assistant-foreground: oklch(0.96 0.003 250);
@@ -429,7 +432,7 @@
    rules so Streamdown's own element classes always win when present. */
 @layer components {
   .chat-md {
-    @apply text-[17px] leading-7 text-foreground md:text-[15px];
+    @apply text-[1.0625rem] leading-7 text-foreground tracking-tight md:text-[0.9375rem];
   }
   .chat-md :where(p, ul, ol, pre, blockquote, table, h1, h2, h3, h4):not(:first-child) {
     @apply mt-4;
@@ -553,15 +556,84 @@ html {
   margin: calc(env(safe-area-inset-top) + 5.5rem) 0 calc(var(--bottom-inset) + 9rem) 0;
 }
 
-/* Reduced motion (PRD 06 §3.4) — degrade shimmer/typing to static.
-   Extended: also flatten glass transitions where present. */
+/* Reduced motion (PRD 06 §3.4, Decision 13) — designed parallel surface, not a
+   blanket kill-switch. Each animated affordance has a deliberate static
+   alternate so the reduced-motion rendering remains legible and the
+   discrete-state semantics survive. A universal `* { animation-duration: 0 }`
+   override is explicitly rejected (it collapses meaningful state-change
+   choreography along with the motion). */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.001ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
+  /* Scroller cadence — auto, never smooth. JS-driven `behavior: "smooth"`
+     scrolls are a sibling concern; this covers the CSS path. */
+  html,
+  body,
+  .chat-scroll {
     scroll-behavior: auto !important;
+  }
+
+  /* Shimmer (reasoning "Thinking…" label) — collapse to a static muted label.
+     The gradient + bg-clip-text + text-transparent stack is unreadable when
+     the keyframe is frozen, so the alternate restores a solid foreground
+     color in lockstep with stopping the animation. */
+  .motion-safe\:animate-shimmer {
+    animation: none;
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    -webkit-text-fill-color: currentColor;
+    color: var(--muted-foreground);
+  }
+
+  /* Typing indicator pulse — static dot at full opacity. */
+  .motion-safe\:animate-pulse-soft {
+    animation: none;
+    opacity: 0.8;
+  }
+
+  /* Streaming caret — static, no blink. */
+  .animate-caret,
+  .motion-safe\:animate-caret {
+    animation: none;
+    opacity: 1;
+  }
+
+  /* Welcome entrance — appears in final state (no slide, no fade-in).
+     `welcome-enter` is applied unconditionally (not motion-safe), so the
+     alternate has to supply the resting transform/opacity itself. */
+  .animate-welcome-enter {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  /* Welcome exit — the JS 200ms timer is source of truth for the seam, so
+     here we collapse the inline opacity/transform transition to instant.
+     The hero still ends at opacity:0 / -translate-y-2 (those are utilities
+     on the same element), the path just isn't tweened. Pairs with the
+     `animate-welcome-exit` hook on the exit wrapper. */
+  .animate-welcome-exit {
+    transition-duration: 0ms;
+  }
+
+  /* Composer focus glow — engagement still lands as a discrete state change
+     (the shadow stack swaps on focus), but without the spring-character tween. */
+  .glass-capsule {
+    transition-duration: 0ms;
+  }
+
+  /* Disclosure surfaces — drawer slide, dialog scale. The visual state still
+     flips; the path is instant. */
+  [data-slot="drawer-content"],
+  [data-slot="drawer-backdrop"],
+  [data-slot="dialog-content"],
+  [data-slot="dialog-backdrop"] {
+    transition-duration: 0ms;
+  }
+
+  /* Reasoning collapse — height/opacity swap instantly; the chevron rotation
+     and the label cross-fade share the same quiet alternate. */
+  [data-slot="collapsible-content"],
+  [data-testid="reasoning-panel"] [class*="transition-"] {
+    transition-duration: 0ms;
   }
 }

@@ -115,7 +115,7 @@ export function SlashCommandsPopover({
       ref={popupRef}
       className={cn(
         "absolute bottom-full inset-x-0 z-20 mb-2",
-        "glass-strong overflow-hidden rounded-2xl text-foreground shadow-pill",
+        "glass-strong overflow-hidden rounded-2xl text-foreground",
         "transition-opacity duration-150 motion-reduce:transition-none",
       )}
       role="presentation"
@@ -163,14 +163,14 @@ export function SlashCommandsPopover({
                 className={cn(
                   "flex size-7 shrink-0 items-center justify-center rounded-lg",
                   isSelected
-                    ? "bg-brand-muted text-brand"
+                    ? "bg-accent text-accent-foreground"
                     : "bg-secondary text-muted-foreground",
                 )}
               >
                 <Icon aria-hidden className="size-4" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block font-mono text-[13px] font-medium">
+                <span className="block font-mono text-sm font-medium">
                   /{command.name}
                 </span>
                 <span className="block truncate text-xs text-muted-foreground">

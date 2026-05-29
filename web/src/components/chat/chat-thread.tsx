@@ -255,6 +255,18 @@ export function ChatThread() {
   // this confirm — never delete without it (data-loss guard).
   const [pendingDeleteConversationId, setPendingDeleteConversationId] =
     useState<string | null>(null);
+  // Welcome→thread choreography (Decision 11, Opportunity 11): on first send
+  // the welcome hero exits before the user bubble enters. Sequential — only
+  // one disclosure surface in motion at a time (Pattern: Choreography of
+  // disclosure). The timeout below is the fallback under reduced-motion where
+  // animationend won't fire because CSS transition-duration is collapsed.
+  // `welcomeSeamLanding` flags the post-exit moment so MessageList enters on
+  // the same spring curve from below; cleared after the entrance budget so
+  // unrelated mounts (conversation select, regenerate) don't animate.
+  const [welcomeExiting, setWelcomeExiting] = useState(false);
+  const [welcomeSeamLanding, setWelcomeSeamLanding] = useState(false);
+  const welcomeExitTimerRef = useRef<number | null>(null);
+  const welcomeSeamTimerRef = useRef<number | null>(null);
   const { theme, setTheme, resolvedTheme } = useTheme();
 
   // Bootstrap fetch — single trip on mount (and on retry). The in-flight ref
@@ -454,18 +466,51 @@ export function ChatThread() {
     tierAtSendRef.current = selectedTierId;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: userBubbleId,
-        role: "user",
-        createdAt: new Date().toISOString(),
-        parts: [{ type: "text", text }],
-      },
-    ]);
-    setPendingId(assistantPlaceholderId);
-    setLiveMessage("Generating response");
-    void beginTurn({ text, tierId: tierAtSendRef.current });
+
+    const commitTurn = () => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: userBubbleId,
+          role: "user",
+          createdAt: new Date().toISOString(),
+          parts: [{ type: "text", text }],
+        },
+      ]);
+      setPendingId(assistantPlaceholderId);
+      setLiveMessage("Generating response");
+      void beginTurn({ text, tierId: tierAtSendRef.current });
+    };
+
+    // Welcome→thread seam: if the welcome surface is showing, run its exit
+    // first (200ms) so the user bubble lands into a quiet thread rather than
+    // colliding with a still-mounted hero. Decision 11's named designed moment.
+    if (messages.length === 0 && !pendingId && !welcomeExiting) {
+      setWelcomeExiting(true);
+      if (welcomeExitTimerRef.current !== null) {
+        window.clearTimeout(welcomeExitTimerRef.current);
+      }
+      welcomeExitTimerRef.current = window.setTimeout(() => {
+        welcomeExitTimerRef.current = null;
+        setWelcomeExiting(false);
+        setWelcomeSeamLanding(true);
+        commitTurn();
+        if (welcomeSeamTimerRef.current !== null) {
+          window.clearTimeout(welcomeSeamTimerRef.current);
+        }
+        welcomeSeamTimerRef.current = window.setTimeout(() => {
+          welcomeSeamTimerRef.current = null;
+          setWelcomeSeamLanding(false);
+        }, 400);
+      }, 200);
+      return;
+    }
+
+    commitTurn();
+  };
+
+  const handlePromptSelect = (text: string) => {
+    composerRef.current?.setDraft(text);
   };
 
   const pendingMessage: ChatMessage | null = useMemo(() => {
@@ -616,6 +661,20 @@ export function ChatThread() {
   };
 
   const handleNewChat = () => {
+    // Cancel any in-flight welcome→thread seam (see handleSelectConversation
+    // for the corruption shape). New chat nulls activeConversationId, so a
+    // pending exit timer firing here would commitTurn() into the wrong
+    // (newly-empty) state.
+    if (welcomeExitTimerRef.current !== null) {
+      window.clearTimeout(welcomeExitTimerRef.current);
+      welcomeExitTimerRef.current = null;
+    }
+    if (welcomeSeamTimerRef.current !== null) {
+      window.clearTimeout(welcomeSeamTimerRef.current);
+      welcomeSeamTimerRef.current = null;
+    }
+    setWelcomeExiting(false);
+    setWelcomeSeamLanding(false);
     if (isStreaming) reset();
     setMessages([]);
     setPendingId(null);
@@ -656,6 +715,23 @@ export function ChatThread() {
   };
 
   const handleSelectConversation = (id: string) => {
+    // Cancel any in-flight welcome→thread seam. Without this, an exit timer
+    // scheduled against the previous (empty) conversation would fire after we
+    // switch — calling commitTurn() with the closure-captured `text` and
+    // appending a stale user bubble into the just-selected conversation's
+    // messages, plus kicking off a stream for it. That's data corruption, not
+    // just a visual glitch. The same clear runs in handleNewChat /
+    // handleDeleteConversation paths that null `activeConversationId`.
+    if (welcomeExitTimerRef.current !== null) {
+      window.clearTimeout(welcomeExitTimerRef.current);
+      welcomeExitTimerRef.current = null;
+    }
+    if (welcomeSeamTimerRef.current !== null) {
+      window.clearTimeout(welcomeSeamTimerRef.current);
+      welcomeSeamTimerRef.current = null;
+    }
+    setWelcomeExiting(false);
+    setWelcomeSeamLanding(false);
     if (isStreaming) reset();
     setPendingId(null);
     assistantIdRef.current = null;
@@ -708,6 +784,19 @@ export function ChatThread() {
     const previous = conversations;
     setConversations((prev) => prev.filter((c) => c.id !== id));
     if (id === activeConversationId) {
+      // Cancel any in-flight welcome→thread seam — same data-corruption guard
+      // as handleSelectConversation / handleNewChat, since we're nulling
+      // activeConversationId here too.
+      if (welcomeExitTimerRef.current !== null) {
+        window.clearTimeout(welcomeExitTimerRef.current);
+        welcomeExitTimerRef.current = null;
+      }
+      if (welcomeSeamTimerRef.current !== null) {
+        window.clearTimeout(welcomeSeamTimerRef.current);
+        welcomeSeamTimerRef.current = null;
+      }
+      setWelcomeExiting(false);
+      setWelcomeSeamLanding(false);
       if (isStreaming) reset();
       setMessages([]);
       setPendingId(null);
@@ -749,7 +838,21 @@ export function ChatThread() {
     });
   };
 
-  const showWelcome = messages.length === 0 && !pendingMessage;
+  const showWelcome =
+    (messages.length === 0 && !pendingMessage) || welcomeExiting;
+
+  // Clear the pending welcome-exit timer if the component unmounts mid-seam
+  // (e.g. user closes the tab during the 200ms exit).
+  useEffect(() => {
+    return () => {
+      if (welcomeExitTimerRef.current !== null) {
+        window.clearTimeout(welcomeExitTimerRef.current);
+      }
+      if (welcomeSeamTimerRef.current !== null) {
+        window.clearTimeout(welcomeSeamTimerRef.current);
+      }
+    };
+  }, []);
 
   const lastAssistantText = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -1019,48 +1122,64 @@ export function ChatThread() {
               scroll (its internal `<ol>` already has matching pt/pb that
               clears the chrome). */}
           {showWelcome ? (
+            // Welcome state is the canonical Ma surface (Decision 11; Spacing §Ma).
+            // Padding on each side equals the chrome floor it must clear, so the
+            // greeting sits at the true visual center of the uncovered area —
+            // not biased toward either the header or the composer.
             <div
               className={
                 isTemporary
-                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
-                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+3.5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+5rem)]"
+                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+7rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+9rem)] md:pb-[calc(var(--bottom-inset)+9rem)]"
+                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+7rem)] md:pb-[calc(var(--bottom-inset)+9rem)]"
               }
             >
-              <WelcomeScreen userName={firstName} />
+              <WelcomeScreen
+                userName={firstName}
+                exiting={welcomeExiting}
+                onPromptSelect={handlePromptSelect}
+              />
             </div>
           ) : (
-            <MessageList>
-              {messages.map((m) =>
-                m.role === "user" ? (
-                  <UserMessage
-                    key={m.id}
-                    message={m}
-                    canEdit={!isStreaming && !m.id.startsWith("local-")}
-                    onEdit={(newText) => handleEditUserMessage(m.id, newText)}
-                  />
-                ) : (
-                  <AssistantMessage
-                    key={m.id}
-                    message={m}
-                    status={m.status ?? "done"}
-                    canRegenerate={!isStreaming && m.id === lastAssistantId && (m.status ?? "done") === "done"}
-                    onRegenerate={handleRegenerate}
-                    onFeedback={(f) => setFeedback(m.id, f)}
-                    canBranch={!isStreaming && m.id !== pendingId}
-                    onBranch={handleBranchFromMessage}
-                    defaultReasoningOpen={preferences.autoExpandReasoning}
-                  />
-                ),
-              )}
+            <div
+              className={
+                welcomeSeamLanding
+                  ? "flex min-h-0 flex-1 flex-col animate-welcome-enter"
+                  : "flex min-h-0 flex-1 flex-col"
+              }
+            >
+              <MessageList>
+                {messages.map((m) =>
+                  m.role === "user" ? (
+                    <UserMessage
+                      key={m.id}
+                      message={m}
+                      canEdit={!isStreaming && !m.id.startsWith("local-")}
+                      onEdit={(newText) => handleEditUserMessage(m.id, newText)}
+                    />
+                  ) : (
+                    <AssistantMessage
+                      key={m.id}
+                      message={m}
+                      status={m.status ?? "done"}
+                      canRegenerate={!isStreaming && m.id === lastAssistantId && (m.status ?? "done") === "done"}
+                      onRegenerate={handleRegenerate}
+                      onFeedback={(f) => setFeedback(m.id, f)}
+                      canBranch={!isStreaming && m.id !== pendingId}
+                      onBranch={handleBranchFromMessage}
+                      defaultReasoningOpen={preferences.autoExpandReasoning}
+                    />
+                  ),
+                )}
 
-              {pendingMessage ? (
-                <AssistantMessage
-                  message={pendingMessage}
-                  status={state.status}
-                  reasoningStreaming={state.reasoningStreaming}
-                />
-              ) : null}
-            </MessageList>
+                {pendingMessage ? (
+                  <AssistantMessage
+                    message={pendingMessage}
+                    status={state.status}
+                    reasoningStreaming={state.reasoningStreaming}
+                  />
+                ) : null}
+              </MessageList>
+            </div>
           )}
 
           {/* Bottom chrome strip — opaque at the bottom edge, fades upward. */}

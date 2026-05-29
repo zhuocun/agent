@@ -250,9 +250,12 @@ function ConversationRow({
       data-conversation-id={conversation.id}
       className={cn(
         "group/conv relative flex min-h-11 w-full items-center rounded-2xl pr-1 text-left text-sm transition-colors",
+        // Single-accent doctrine: the active row is signalled by a 2px brand
+        // stripe at the leading edge; rest state stays on pure typography + Ma
+        // (no background fill). Hover tint is intentionally barely-perceptible.
         active
-          ? "bg-muted text-foreground"
-          : "text-sidebar-foreground hover:bg-muted/60",
+          ? "text-foreground before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-brand"
+          : "text-sidebar-foreground hover:bg-foreground/[0.03]",
       )}
     >
       {isRenaming ? (
@@ -497,8 +500,10 @@ export function Sidebar({
                 return null;
               }
               return (
-                <div key={key} className="mb-1">
-                  <div className="px-2 py-1 text-[11px] font-semibold text-muted-foreground">
+                // Ma: tripled inter-group gutter so the recency label gains
+                // weight from surrounding silence, not from size or color.
+                <div key={key} className="mb-6">
+                  <div className="px-2 pb-2 pt-1 text-xs font-semibold text-muted-foreground">
                     {RECENCY_LABELS[key]}
                   </div>
                   <div role="list" aria-label={RECENCY_LABELS[key]}>

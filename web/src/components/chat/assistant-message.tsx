@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { Loader2, Square } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
@@ -89,8 +89,6 @@ export function AssistantMessage({
         return null;
       })}
 
-      {status === "stopped" ? <StoppedChip /> : null}
-
       {isFinal ? (
         <div className="space-y-2 pt-1">
           {message.attribution ? (
@@ -124,11 +122,3 @@ function StatusLine({ label, state }: { label: string; state: "active" | "done" 
   );
 }
 
-function StoppedChip() {
-  return (
-    <div className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
-      <Square className="size-3 fill-current" aria-hidden />
-      Stopped
-    </div>
-  );
-}

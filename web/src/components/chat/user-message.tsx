@@ -108,7 +108,7 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
                   autoGrow();
                 }}
                 onKeyDown={onKeyDown}
-                className="block min-h-[44px] max-h-[320px] w-full resize-none bg-transparent text-[17px] leading-7 text-foreground outline-none md:text-[15px]"
+                className="block min-h-[44px] max-h-[320px] w-full resize-none bg-transparent text-[1.0625rem] leading-7 text-foreground outline-none md:text-[0.9375rem]"
               />
             </label>
           </div>
@@ -117,7 +117,7 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
               type="button"
               variant="ghost"
               onClick={cancelEdit}
-              className="h-8 rounded-full px-3 text-sm text-muted-foreground hover:text-foreground"
+              className="h-11 rounded-full px-4 text-sm text-muted-foreground hover:text-foreground"
             >
               Cancel
             </Button>
@@ -126,7 +126,7 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
               onClick={saveEdit}
               disabled={!canSave || submitting}
               aria-label="Save and resubmit"
-              className="h-8 rounded-full bg-foreground px-3 text-sm text-background hover:bg-foreground/90 disabled:opacity-40"
+              className="h-11 rounded-full bg-foreground px-4 text-sm text-background hover:bg-foreground/90 disabled:opacity-40"
             >
               Save
             </Button>
@@ -144,7 +144,7 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
     >
       <div
         data-testid="user-message-text"
-        className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-muted px-5 py-3 text-[17px] leading-7 text-foreground md:text-[15px]"
+        className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem]"
       >
         {text}
       </div>

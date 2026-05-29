@@ -65,12 +65,11 @@ export function UsageMeter({ usage }: UsageMeterProps) {
           <div
             className={cn(
               "relative h-full rounded-full transition-[width] duration-300 ease-out",
-              "before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-white/30",
               isCritical
                 ? "bg-destructive"
                 : isWarning
                   ? "bg-warning"
-                  : "bg-brand",
+                  : "bg-muted-foreground",
             )}
             style={{ width: `${pct}%` }}
           />

@@ -27,7 +27,7 @@ function DrawerBackdrop({ className, ...props }: DialogPrimitive.Backdrop.Props)
     <DialogPrimitive.Backdrop
       data-slot="drawer-backdrop"
       className={cn(
-        "fixed inset-0 z-50 bg-black/45 backdrop-blur-sm transition-opacity duration-200 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0",
+        "fixed inset-0 z-50 bg-foreground/45 backdrop-blur-sm transition-opacity duration-200 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0",
         className
       )}
       {...props}
@@ -66,7 +66,7 @@ function DrawerContent({
             "blur(var(--glass-blur-lg)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
         }}
         className={cn(
-          "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col text-sidebar-foreground transition-transform duration-300 ease-in-out",
+          "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col text-sidebar-foreground transition-transform duration-300 ease-out",
           side === "left" &&
             "left-0 rounded-tr-3xl rounded-br-3xl data-[ending-style]:-translate-x-full data-[starting-style]:-translate-x-full",
           side === "right" &&

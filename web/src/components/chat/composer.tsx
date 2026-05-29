@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  useEffect,
   useId,
   useImperativeHandle,
   useMemo,
@@ -22,6 +23,7 @@ import {
 } from "@/components/chat/slash-commands-popover";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
 import type { SlashCommand } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const SLASH_PATTERN = /^\/(\w*)$/;
 
@@ -38,6 +40,9 @@ export interface ComposerHandle {
 }
 
 const MAX_HEIGHT = 200;
+const STOP_SETTLE_MS = 600;
+const BUTTON_BASE =
+  "inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0 transition-[background-color,color,box-shadow] duration-300 ease-out";
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
   {
@@ -49,6 +54,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   forwardedRef,
 ) {
   const [value, setValue] = useState("");
+  const [justStopped, setJustStopped] = useState(false);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   // When the user explicitly dismisses with Escape, suppress the popover until
   // the slash token disappears (e.g. user backspaces out or types past it),
@@ -64,6 +70,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const prevValueRef = useRef("");
   const slashListboxId = useId();
   const slashOptionPrefix = useId();
+  const prevStreamingRef = useRef(isStreaming);
+
+  // Stop→Send settling pose: after a stream ends, hold the slot in a quiet
+  // neutral state for a beat before reverting to rest, so the transition reads
+  // as a single choreographed moment rather than an instant snap.
+  useEffect(() => {
+    const wasStreaming = prevStreamingRef.current;
+    prevStreamingRef.current = isStreaming;
+    if (wasStreaming && !isStreaming) {
+      setJustStopped(true);
+      const t = window.setTimeout(() => setJustStopped(false), STOP_SETTLE_MS);
+      return () => window.clearTimeout(t);
+    }
+  }, [isStreaming]);
 
   const slashMatch = value.match(SLASH_PATTERN);
   const slashQuery = slashMatch ? slashMatch[1] : "";
@@ -93,6 +113,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const prev = prevValueRef.current;
     prevValueRef.current = next;
     setValue(next);
+    // A fresh keystroke that produces non-empty content cancels the post-stop
+    // settling pose so the send slot can go brand-armed immediately (visual +
+    // behavior together).
+    if (next.trim().length > 0 && justStopped) {
+      setJustStopped(false);
+    }
     if (next.match(SLASH_PATTERN)) {
       // Reset highlight on every filter change so the first row stays selected.
       setSlashSelectedIndex(0);
@@ -242,7 +268,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       />
       <div
         ref={capsuleRef}
-        className="glass-capsule flex items-end gap-2 rounded-3xl px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+        className="glass-capsule group flex items-end gap-2 rounded-3xl px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
       >
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
@@ -267,7 +293,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           aria-expanded={slashOpen}
           aria-controls={slashOpen ? slashListboxId : undefined}
           aria-activedescendant={slashActiveOptionId}
-          className="block max-h-[200px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2 text-[17px] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-base"
+          className="block max-h-[200px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
         />
         <div className="flex h-11 shrink-0 items-center">
           {isStreaming ? (
@@ -278,7 +304,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                     type="button"
                     onClick={onStop}
                     aria-label="Stop generating"
-                    className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90"
+                    className={cn(
+                      BUTTON_BASE,
+                      "bg-foreground/10 text-foreground hover:bg-foreground/15",
+                    )}
                   >
                     <Square className="size-4 fill-current" />
                   </Button>
@@ -296,7 +325,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               // specs click this to dispatch a turn, since aria-label values
               // could drift with copy changes.
               data-testid="composer-send"
-              className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-foreground p-0 text-background shadow-pill hover:bg-foreground/90 disabled:opacity-40 disabled:shadow-none"
+              className={cn(
+                BUTTON_BASE,
+                // Order matters: a fresh keystroke during the settle pose
+                // should read as "armed" (brand + clickable) before the
+                // settle-pose styling can claim the slot.
+                value.trim().length > 0
+                  ? "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
+                  : justStopped
+                    ? "bg-foreground/10 text-foreground"
+                    : "bg-transparent text-muted-foreground group-focus-within:text-foreground",
+              )}
             >
               <ArrowUp className="size-4" />
             </Button>

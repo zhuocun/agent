@@ -147,6 +147,8 @@ Commoditization vs incumbents · **aggregator price-compression** (T3 Chat @ $8/
 | D13 | **Mobile attach/camera UI → P1 with vision/PDF; P0 mobile composer is text-only.** | Resolves mobile PRD attach affordance drift against the lean text-core MVP. |
 | D14 | **P0 interrupted-stream recovery ≠ P1 resumable replay.** | P0 preserves partial output and offers Continue/Regenerate; P1 replays buffered deltas from the same stream id. Keeping these separate avoids billing, persistence, and UX bugs. |
 
+**Implementation status — D11 deviation (MVP deploy):** The current production BE is configured against DeepSeek-hosted models (`deepseek-chat` for fast/smart/auto, `deepseek-reasoner` for pro) via the OpenAI-compatible binding to `https://api.deepseek.com`. This is a pragmatic cost-and-availability choice for early-MVP shakedown — **not** a formal reversal of D11. The privacy concerns that drove D11 (government/enterprise bans, Italy consumer block, data-in-China) are not resolved by this binding; they are deferred pending the deliberate routing review owned by PRD 02 §9.9. Treat the current production binding as a temporary baseline. D11 remains the documented decision; revisiting it is an open action item, not a settled question.
+
 ---
 
 ## 12. Open questions
@@ -158,7 +160,7 @@ Each PRD carries its own open-questions section; the cross-cutting product/busin
 - **EU AI Act content-marking date (Aug 2 vs Dec 2 2026),** clouded by a May-2026 Council/Parliament provisional amendment reshuffling deadlines — **needs legal sign-off** before EU-launch scope is locked (PRD 04 §9 / PRD 05 §7.5/§9.6).
 - **Whether we serve minors / offer companion-style personas** — triggers CA SB 243 + surviving child-safety carve-outs (crisis protocols, break reminders, minor protections); needs explicit product + legal decision (PRD 05 §7.5/§9.11).
 
-**Newly resolved by the fresh-research + review pass:** AI SDK **v6** (not v5) committed; **Better Auth** committed (Auth.js dropped); free-tier default **narrowed** to a non-DeepSeek-hosted Western no-train route (final route open, PRD 02 §9.9); **metered Pro + P0 metered-overage primitive** confirmed (PRD 05 §9.4). See the decisions log (§11, D6–D11).
+**Newly resolved by the fresh-research + review pass:** AI SDK **v6** (not v5) committed; **Better Auth** committed (Auth.js dropped); free-tier default **narrowed** to a non-DeepSeek-hosted Western no-train route (final route open, PRD 02 §9.9; though MVP deploy currently runs on DeepSeek — see D11 implementation note); **metered Pro + P0 metered-overage primitive** confirmed (PRD 05 §9.4). See the decisions log (§11, D6–D11).
 
 ---
 

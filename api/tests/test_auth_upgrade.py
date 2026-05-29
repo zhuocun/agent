@@ -114,6 +114,42 @@ async def test_duplicate_email_returns_409(
         assert r2.json()["error"]["code"] == "EMAIL_TAKEN"
 
 
+async def test_upgrade_handles_integrity_error_as_email_taken(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SELECT-first guard cannot see concurrent writes. If two upgrades
+    slip past it with the same email, the flush hits the partial UNIQUE
+    INDEX (alembic/0004) and raises IntegrityError. The route must convert
+    that DB-level violation into a clean 409 EMAIL_TAKEN, not a 500.
+
+    We simulate the race by monkeypatching `AsyncSession.flush` to raise
+    IntegrityError on the NEXT call — there's no realistic way to interleave
+    two real requests inside a single-threaded async test, and the catch is
+    the behavior under test.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    # Bootstrap the anon user first; the mint flush happens here and we don't
+    # want to break it. Only the subsequent upgrade flush should raise.
+    bootstrap = await client.get("/api/bootstrap")
+    assert bootstrap.status_code == 200
+
+    real_flush = AsyncSession.flush
+
+    async def flush_raises_once(self: AsyncSession, *args: object, **kwargs: object) -> None:
+        monkeypatch.setattr(AsyncSession, "flush", real_flush)
+        raise IntegrityError("INSERT", {}, Exception("UNIQUE violation"))
+
+    monkeypatch.setattr(AsyncSession, "flush", flush_raises_once)
+
+    r = await client.post(
+        "/api/auth/upgrade", json={"email": "race@example.com"}
+    )
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "EMAIL_TAKEN"
+
+
 async def test_upgrade_preserves_conversation_fk(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

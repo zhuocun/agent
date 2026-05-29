@@ -1,6 +1,6 @@
 # Backend Minimal Plan (Python / FastAPI)
 
-> **Implementation status**: M0–M4 shipped on branch `claude/eloquent-thompson-rxdE6`. 121 tests pass + 1 known xfail (stop-path). See [Post-M4: deferred hardening](#post-m4-deferred-hardening) for the deferred items.
+> **Implementation status**: M0–M4 + all Post-M4 hardening items shipped on `main`. 261 tests pass + 1 known xfail (stop-path). The [Post-M4: deferred hardening](#post-m4-deferred-hardening) section below is preserved as a record; each item is now checked off with its landing PR.
 
 The smallest Python backend that lets the existing Next.js FE at `web/` run against real persistence and a real model provider with **zero UI changes**. The BE is a **separate service** — FastAPI + Postgres, deployed independently, talking to the FE over CORS. Anchored to the FE wire shapes in `web/src/lib/types.ts` and the behavior in `web/src/components/chat/chat-thread.tsx`. PRDs guide direction; anything the FE does not yet render or call is deferred.
 
@@ -496,18 +496,22 @@ Effort: ~2 days.
 
 ## Post-M4: deferred hardening
 
-Items the M0-M3 review pass flagged that are NOT in M4 scope. One bullet per item; file/area in parens. Carve these into discrete tickets when they earn priority.
+All 10 items shipped via PR #75 (5-worker burst, one commit per concern):
 
-- KMS envelope encryption for BYOK at-rest, replacing env-var KEK (`app/security/crypto.py`, `app/config.py`).
-- `slowapi` rate limiting on `/messages` and `/auth/upgrade` (`app/main.py`, route decorators in `app/routes/*`).
-- OTel tracing + metrics + Sentry-style error reporting (`app/logging_setup.py`, new `app/observability/*`).
-- Partial UNIQUE INDEX on `users.email WHERE email IS NOT NULL` plus IntegrityError → `EMAIL_TAKEN` retry (Alembic migration + `app/auth/routes.py`).
-- `responds_to_message_id` column on `message` to replace the pair-by-index idempotency lookup (Alembic migration + `app/routes/conversations.py::_maybe_replay`).
-- `ON CONFLICT DO UPDATE` for `usage_rollup` increments, eliminating the SELECT-then-INSERT race (`app/db/repositories/usage.py`).
-- argon2id password hashing replacing bcrypt (`app/auth/routes.py::_hash_password`, dependency swap).
-- Versioned-KEK lookup in `_CIPHER_CACHE` for clean key rotation (`app/security/crypto.py`).
-- Cookie re-sign after upgrade — defensive; current code keeps the existing signed cookie since the session id is unchanged (`app/auth/routes.py::upgrade`).
-- LRU cache for per-user Anthropic clients to improve perf for BYOK-heavy users (`app/providers/anthropic.py`).
+- [x] **Versioned-KEK rotation seam** replacing the single-KEK BYOK path (`app/security/crypto.py`, `app/config.py`). KMS-ready: registry-keyed `MAGIC || version || nonce || ciphertext` format; v0 legacy bytes preserved. (Subsumes the original "KMS envelope encryption" and "Versioned-KEK lookup in `_CIPHER_CACHE`" items.)
+- [x] `slowapi` rate limiting on `/messages` (`RATE_LIMIT_MESSAGES`, default 30/min) and `/auth/upgrade` (`RATE_LIMIT_UPGRADE`, default 5/min). Custom `RateLimitMiddleware` subclass works around slowapi's missing `_dynamic_route_limits` exemption (`app/middleware/ratelimit.py`).
+- [x] OTel tracing + Sentry error reporting, both env-driven no-op (`app/observability/{tracing,errors}.py`, `app/logging_setup.py`). structlog injects `trace_id` / `span_id` when a span is active.
+- [x] Partial UNIQUE INDEX on `users.email WHERE email IS NOT NULL` (`alembic/0004`); IntegrityError → `EMAIL_TAKEN` retry in `app/auth/routes.py`.
+- [x] `responds_to_message_id` column on `message` for explicit reply pairing (`alembic/0005`); `_maybe_replay` reads the column first, pair-by-index as legacy fallback.
+- [x] `ON CONFLICT (user_id, period_start) DO UPDATE` for `usage_rollup` increments, dialect-aware (`app/db/repositories/usage.py`).
+- [x] argon2id password hashing (m=64 MiB, t=3, p=4) replacing bcrypt for new hashes; bcrypt verify-fallback + opportunistic rehash on login (`app/security/passwords.py`, `app/auth/routes.py`).
+- [x] Cookie re-sign on `/auth/upgrade` even though the session id is unchanged — defensive against `SESSION_SECRET` rotation (`app/auth/routes.py::upgrade`).
+- [x] LRU cache (`maxsize=256`) for per-user Anthropic clients, keyed by `(api_key, base_url)` (`app/providers/anthropic.py`).
+
+Residual notes (non-blocking, captured during PR #75 review):
+- Migration `0004` doesn't pre-check for duplicate non-NULL emails — would surface as a generic IntegrityError on prod data with dupes. Today's prod has no upgraded users yet.
+- `_maybe_replay` fallback is correct for uniform legacy conversations; a mixed conversation (some NULL pointers, some not) could in theory mispair under regen-on-non-trailing-user-messages, which today's UI doesn't expose.
+- Rate-limit storage is in-process (single uvicorn worker). Multi-worker prod would need Redis.
 
 ## What we are explicitly NOT building (and where it lives in the PRD)
 

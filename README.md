@@ -30,10 +30,17 @@ Frontend defaults to `http://localhost:3000`; backend to `http://localhost:8000`
 
 ## Pointers
 
+- `AGENTS.md` — deployment platform, DB, debugging via CLI, repo conventions. Read this first.
 - `web/README.md` — frontend setup.
 - `api/README.md` — backend setup, env, tests, deploy.
 - `docs/plans/00-backend-minimal.md` — full backend plan and milestone breakdown.
 
 ## Status
 
-M0–M4 of the backend plan have shipped on branch `claude/eloquent-thompson-rxdE6`. The test suite is **121 passed + 1 xfail** (the stop-path test; see the api README). Items intentionally deferred live in the [Post-M4: deferred hardening](docs/plans/00-backend-minimal.md#post-m4-deferred-hardening) section of the plan.
+M0–M4 + Post-M4 hardening have shipped on `main`. Test suite: **261 passed + 1 xfail** (the stop-path test; see `api/README.md`).
+
+- FE: https://olune-agent-zhuocuns-projects.vercel.app (Vercel)
+- BE: https://olune-agent-server.fly.dev (Fly.io, `nrt`)
+- DB: Neon Postgres (`ap-southeast-1`)
+
+Both halves auto-deploy on push to `main`. See `AGENTS.md` for the deploy model and operational details.

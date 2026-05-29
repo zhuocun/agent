@@ -1,10 +1,11 @@
 "use client";
 
-import { useId, useMemo, useRef, useState, type JSX } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type JSX } from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { MessageSquare, Search, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useSwipeDismiss } from "@/lib/use-swipe-dismiss";
 import { KeyCaps } from "@/components/chat/key-caps";
 import type { ShortcutKeys } from "@/lib/use-keyboard-shortcuts";
 import type { ConversationSummary } from "@/lib/types";
@@ -108,9 +109,26 @@ export function CommandPalette({
 }: CommandPaletteProps): JSX.Element {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [isMobile, setIsMobile] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
   const optionIdPrefix = useId();
+
+  // Below sm: the palette presents as an iOS bottom sheet (swipe-to-dismiss);
+  // at sm+ it stays the centered top-anchored modal. SSR-safe: starts false.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 639.98px)");
+    const sync = () => setIsMobile(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  const { sheetRef, handleProps, contentProps } = useSwipeDismiss({
+    enabled: isMobile,
+    onDismiss: () => handleOpenChangeRef.current(false),
+  });
 
   const { sections, flat } = useMemo(
     () => buildItems(query, actions, conversations, activeId),
@@ -132,6 +150,13 @@ export function CommandPalette({
     }
     onOpenChange(next);
   };
+
+  // Keep a stable ref so the swipe hook's onDismiss always calls the latest
+  // handleOpenChange without re-subscribing the gesture listeners.
+  const handleOpenChangeRef = useRef(handleOpenChange);
+  useEffect(() => {
+    handleOpenChangeRef.current = handleOpenChange;
+  });
 
   const runItem = (item: Item): void => {
     if (item.kind === "action") {
@@ -170,6 +195,7 @@ export function CommandPalette({
           className="fixed inset-0 z-50 bg-foreground/45 backdrop-blur-sm transition-opacity duration-200 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0"
         />
         <DialogPrimitive.Popup
+          ref={sheetRef}
           // Override glass-regular's blur with the denser dialog blur (same
           // trick as DialogContent so the popup reads as the canonical "modal"
           // glass surface).
@@ -179,8 +205,23 @@ export function CommandPalette({
             WebkitBackdropFilter:
               "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
           }}
-          className="glass-strong fixed top-[20dvh] left-1/2 z-50 flex max-h-[60dvh] w-full max-w-xl -translate-x-1/2 flex-col gap-0 overflow-hidden rounded-3xl p-0 text-foreground transition-all duration-200 data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0"
+          {...contentProps}
+          className={cn(
+            // Mobile (default): iOS bottom sheet — full-width, bottom-pinned,
+            // rounded top, slides up with iOS sheet easing, swipe-to-dismiss.
+            "glass-strong fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] w-full flex-col gap-0 overflow-hidden rounded-t-3xl rounded-b-none p-0 text-foreground",
+            "transition-[transform,opacity] duration-[400ms] ease-[cubic-bezier(0.32,0.72,0,1)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
+            // Desktop (sm+): centered top-anchored modal with scale+fade. The
+            // -translate-x keeps composing with scale during the anim.
+            "sm:inset-x-auto sm:bottom-auto sm:top-[20dvh] sm:left-1/2 sm:max-h-[60dvh] sm:max-w-xl sm:-translate-x-1/2 sm:rounded-3xl sm:transition-all sm:duration-200 sm:data-[ending-style]:scale-95 sm:data-[ending-style]:opacity-0 sm:data-[starting-style]:scale-95 sm:data-[starting-style]:opacity-0"
+          )}
         >
+          {/* Grabber: drag affordance + swipe-to-dismiss handle, mobile only. */}
+          <div
+            aria-hidden
+            {...handleProps}
+            className="mx-auto mt-2.5 h-1.5 w-9 shrink-0 cursor-grab touch-none rounded-full bg-foreground/15 sm:hidden"
+          />
           <DialogPrimitive.Title className="sr-only">
             Command palette
           </DialogPrimitive.Title>
@@ -318,7 +359,7 @@ export function CommandPalette({
             )}
           </div>
 
-          <div className="shrink-0 border-t border-foreground/10 px-5 py-2 text-[11px] text-muted-foreground">
+          <div className="shrink-0 border-t border-foreground/10 px-5 py-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] text-[11px] text-muted-foreground sm:pb-2">
             <span className="font-mono">↑↓</span> to navigate ·{" "}
             <span className="font-mono">↵</span> to select ·{" "}
             <span className="font-mono">Esc</span> to close

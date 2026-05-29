@@ -66,7 +66,7 @@ function DrawerContent({
             "blur(var(--glass-blur-lg)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
         }}
         className={cn(
-          "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col text-sidebar-foreground transition-transform duration-300 ease-out",
+          "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col text-sidebar-foreground transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
           side === "left" &&
             "left-0 rounded-tr-3xl rounded-br-3xl data-[ending-style]:-translate-x-full data-[starting-style]:-translate-x-full",
           side === "right" &&

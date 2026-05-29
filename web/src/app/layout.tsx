@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -7,11 +7,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toast";
 import { InstallCoachmark } from "@/components/chat/install-coachmark";
 
-const geistSans = Geist({
-  variable: "--font-sans",
-  subsets: ["latin"],
-});
-
+// UI sans is the Apple system stack (defined as `--font-sans` in globals.css) —
+// no web-font load, so the standalone PWA renders in SF Pro like a native app.
+// Only the monospace code face is web-loaded (Geist Mono).
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
@@ -26,11 +24,32 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     title: "Olune",
-    statusBarStyle: "default",
+    // Edge-to-edge: content draws under the status bar. Safe because the app
+    // header already pads `env(safe-area-inset-top)` (chat-thread.tsx chrome
+    // strip) and a fixed status-bar blur strip is rendered below.
+    statusBarStyle: "black-translucent",
+    startupImage: [
+      {
+        url: "/splash-1170x2532-light.png",
+        media:
+          "(prefers-color-scheme: light) and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)",
+      },
+      {
+        url: "/splash-1170x2532-dark.png",
+        media:
+          "(prefers-color-scheme: dark) and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)",
+      },
+    ],
   },
   icons: {
-    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
-    apple: [{ url: "/apple-touch-icon.svg", type: "image/svg+xml" }],
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
+      { url: "/icon-512.png", type: "image/png", sizes: "512x512" },
+    ],
+    apple: [
+      { url: "/apple-touch-icon.png", type: "image/png", sizes: "180x180" },
+    ],
   },
 };
 
@@ -67,9 +86,25 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        {/* Status-bar safety strip (iOS `black-translucent`). Content draws
+            edge-to-edge under the status bar; this fixed, blurred strip keeps
+            the clock/battery legible over scrolling content. The mask fades
+            the strip's bottom edge so there's no hard seam against the chrome.
+            Zero height when `env(safe-area-inset-top)` is 0 (non-notch / web). */}
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-x-0 top-0 z-[100]"
+          style={{
+            height: "env(safe-area-inset-top)",
+            backdropFilter: "blur(20px) saturate(180%)",
+            WebkitBackdropFilter: "blur(20px) saturate(180%)",
+            maskImage: "linear-gradient(to bottom, black, transparent)",
+            WebkitMaskImage: "linear-gradient(to bottom, black, transparent)",
+          }}
+        />
         <ThemeProvider
           attribute="class"
           defaultTheme="system"

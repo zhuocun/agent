@@ -10,7 +10,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  /* UI sans → Apple system stack (SF Pro on Apple platforms, system-ui
+     elsewhere). No web-font load — the OS font is the native-feeling default. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    system-ui, sans-serif;
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-sans);
 
@@ -106,8 +109,9 @@
   --shadow-focus-edge: var(--focus-glow-edge);
   --shadow-focus-halo: var(--focus-glow-halo);
 
-  /* Tracking polish for Geist Sans */
-  --tracking-tight: -0.012em;
+  /* Tracking polish for SF Pro — needs less negative tracking than Geist did
+     (SF is already optically tightened), so a subtler value avoids cramping. */
+  --tracking-tight: -0.006em;
 
   /* Bottom-inset: iOS notch safe-area when present, 1.5rem floor on desktop
      so the composer chrome strip never sits flush against the viewport edge. */
@@ -324,15 +328,58 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    /* Kill the grey tap-flash on every tappable element (highest-ROI iOS fix). */
+    -webkit-tap-highlight-color: transparent;
   }
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "cv11", "ss01";
+    /* SF Pro ignores Geist's "cv11"/"ss01" alternates — dropped to avoid dead
+       CSS. Keep legibility hints; they're font-agnostic. */
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   html {
     @apply font-sans;
+    /* Stop iOS from auto-inflating text on orientation change. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* Suppress the whole-page rubber-band / pull-to-refresh in standalone PWA
+     mode. The message list keeps its own `overscroll-contain` for inner scroll. */
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+
+  /* UI chrome should feel like native controls: no tap delay, no iOS
+     long-press callout menu, no accidental text selection while interacting. */
+  button,
+  [role="button"],
+  a {
+    touch-action: manipulation;
+  }
+  button,
+  [role="button"] {
+    -webkit-touch-callout: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* …but chat content must stay selectable/copyable. We only disabled
+     selection on buttons above (not body text), so this is a conservative,
+     explicit re-enable on the real chat surfaces: `.chat-md` is the streamed
+     assistant markdown, `[data-testid="user-message-text"]` is the user
+     bubble, and `pre`/`code` cover inline + block code. */
+  .chat-md,
+  .chat-md *,
+  [data-testid="user-message-text"],
+  pre,
+  code {
+    -webkit-touch-callout: default;
+    user-select: text;
+    -webkit-user-select: text;
   }
 }
 

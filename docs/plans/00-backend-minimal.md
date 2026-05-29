@@ -57,7 +57,7 @@ Known FE follow-ups (callouts, not BE work):
         +-- routes/            (bootstrap, conversations, messages SSE, feedback, preferences, account, auth)
         +-- streaming/         (sse-starlette wiring + stream-and-persist orchestration)
         +-- auth/              (signed-cookie sessions, anonymous-first dependency)
-        +-- providers/         (Anthropic SDK wrapper, BE tier registry, pricing math)
+        +-- providers/         (DeepSeek/OpenAI-compatible + Anthropic SDK wrappers, BE tier registry, pricing math)
         +-- db/                (SQLAlchemy 2.0 async + repositories)
         +-- schemas/           (Pydantic v2 with camelCase aliases for the wire)
         |
@@ -73,13 +73,13 @@ Stack picks (one-line justifications):
 - **Pydantic v2** with `model_config = ConfigDict(populate_by_name=True, alias_generator=to_camel)` plus explicit `Field(alias=...)` where needed. Python stays snake_case; wire JSON is camelCase, matching `web/src/lib/types.ts`.
 - **Postgres + SQLAlchemy 2.0 async** with `asyncpg` and `Mapped[...]` / `mapped_column(...)`. **Alembic** under `api/alembic/versions/`.
 - **Custom minimal anonymous-first sessions** — no clean Python equivalent of Better Auth's anonymous plugin (see Auth seam). Cookie signed with `itsdangerous`, server-side session row, anonymous user row created on first hit. Upgrade stubbed at `/api/auth/*`.
-- **Anthropic Python SDK** direct for v0 — `client.messages.stream(...)` yields token events with usage in `message_delta` / `message_stop`. **LiteLLM** is the future option for multi-provider; Vercel AI Gateway is reachable via plain HTTPS but not default.
+- **DeepSeek via the OpenAI-compatible SDK** is the main provider — `client.chat.completions.create(..., stream=True)` against `base_url=https://api.deepseek.com` yields token deltas with usage on the final chunk. The Anthropic SDK ships as an alternate backend (`client.messages.stream(...)`). **LiteLLM** is the future option for broader multi-provider normalization; Vercel AI Gateway is reachable via plain HTTPS but not default.
 - **SSE** via `sse-starlette`'s `EventSourceResponse` — built-in keep-alive matters for idle tabs.
 - **Cancellation** — poll `Request.is_disconnected()` inside the SSE generator AND wrap the SDK consumer in a task cancelled on disconnect.
 - **Background work** — `asyncio.create_task` fire-and-forget on the same worker for title autogen. No Celery/Arq/Redis at MVP; **`arq`** is the future pick for durable jobs.
 - **Encryption** — `cryptography` library, AES-GCM with env-var KEK for v0 (KMS envelope deferred).
 - **Logging** — structured JSON via `structlog`: `request_id`, `user_id`, `conversation_id`, `turn_ms` per request, plus `prompt_tokens`, `completion_tokens`, `cost_usd` on terminal (internal log field names; wire stays camelCase).
-- **Dev tooling** — **`uv`** for env/deps, `ruff`, `mypy --strict`. Tests: `pytest` + `pytest-asyncio` + `httpx.AsyncClient`, `respx` for mocking the Anthropic SDK.
+- **Dev tooling** — **`uv`** for env/deps, `ruff`, `mypy --strict`. Tests: `pytest` + `pytest-asyncio` + `httpx.AsyncClient`, `respx` for mocking the provider SDK transport (DeepSeek/OpenAI-compatible and Anthropic).
 - **Deployment** — **Fly.io** (Docker, autoscale-to-zero, fast deploys). Render is a fine alternative. FE stays on Vercel.
 
 Wire-format decision: **camelCase end-to-end**. The FE types are camelCase; emitting/accepting camelCase JSON from Pydantic via `alias_generator=to_camel` keeps both sides honest without an adapter layer.
@@ -310,7 +310,7 @@ The streaming endpoint is a FastAPI route returning an `EventSourceResponse` (fr
 1. Validates the body, resolves the user, asserts conversation ownership (or accepts the synthetic temporary id).
 2. Resolves the served model from the BE registry given `tierId` (`auto` → configured default). Records any registry-driven substitution for `terminal`.
 3. Loads history (skipped for temporary), persists the user message, yields `submitted` (with the DB id).
-4. Calls `client.messages.stream(...)` and maps Anthropic events: `thinking` block → `reasoning_delta` / `reasoning_done`; `text` block → `answer_delta`; `message_delta` accumulates usage; `message_stop` finalizes.
+4. Calls the provider stream and maps its events. For the main DeepSeek/OpenAI-compatible path: `delta.reasoning_content` → `reasoning_delta` / `reasoning_done` (DeepSeek exposes raw thinking tokens via `deepseek-reasoner`); `delta.content` → `answer_delta`; the final chunk's `usage` is accumulated and finalizes the turn. The Anthropic backend maps the equivalent `thinking` / `text` blocks and `message_delta` / `message_stop`.
 5. Post-stream: compute `CostBreakdown` + `ModelAttribution`, persist the assistant message, increment `usage_rollup`, fire title autogen via `asyncio.create_task(...)` on first turn, yield `terminal`.
 6. **Cancellation**: an `asyncio.Task` wraps the SDK iteration; the generator polls `request.is_disconnected()` between yields. On disconnect: cancel, flush accumulators, persist with `status="stopped"` and `costConfidence="estimate"`. No `terminal` (socket already closed).
 
@@ -392,17 +392,17 @@ BYOK gating: `PUT/DELETE /api/account/byok/*` reject with 403 when `user.is_anon
 
 ## Provider integration
 
-Default: **Anthropic Python SDK** direct. One env var (`ANTHROPIC_API_KEY`) and `client.messages.stream(...)`. Token streaming, usage in `message_delta`, clean cancellation. Per-user BYOK keys decrypted from `api_key` at request time, passed into a per-request `Anthropic(api_key=...)` client.
+Main provider: **DeepSeek via the OpenAI-compatible Python SDK**. `PROVIDER_BACKEND=openai` with `OPENAI_BASE_URL=https://api.deepseek.com` and the platform `OPENAI_API_KEY`; tiers bind to `deepseek-chat` (fast/smart/auto) and `deepseek-reasoner` (pro). DeepSeek is the cost-leading default for the whole tier ladder and exposes raw thinking tokens on `deepseek-reasoner`. Token streaming via `chat.completions.create(..., stream=True)`, usage on the final chunk, clean cancellation. The **Anthropic SDK** is wired as an alternate backend (`PROVIDER_BACKEND=anthropic`, `ANTHROPIC_API_KEY`). Per-user BYOK keys decrypted from `api_key` at request time, passed into a per-request client (`OpenAI(api_key=..., base_url=...)` or `Anthropic(api_key=...)`).
 
-Future paths (not MVP): **LiteLLM** for multi-provider normalization; **Vercel AI Gateway** via Anthropic-compatible `base_url`. Both deferred — gateway-style routing/fallback isn't needed at v0.
+Future paths (not MVP): **LiteLLM** for broader multi-provider normalization; **Vercel AI Gateway** via an OpenAI/Anthropic-compatible `base_url`. Both deferred — gateway-style routing/fallback isn't needed at v0.
 
 BE model registry (`api/app/providers/tiers.py`) is the single source of truth for: (a) validating incoming `tierId`, (b) mapping tier to `{provider_id, model_id, display_label, pricing}`, (c) feeding `ModelTier[]` in bootstrap. Frozen `BaseModel` per tier. Same shape as `web/src/lib/model-tiers.ts` but BE-owned; the FE registry stays as a cost/speed hint, flagged for removal once the FE consumes `bootstrap.modelTiers`.
 
 Pricing math (`api/app/providers/pricing.py`) — only fields the FE reads:
 
 - `listPriceInPerM`, `listPriceOutPerM`: from the registry, per model.
-- `inputTokens`, `outputTokens`, `reasoningTokens`, `cachedInputTokens`: from accumulated usage. Map Anthropic shapes (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`) to canonical. Per PRD 07 §7 rule 7: reasoning tokens bill at output rate and are never cache-eligible — enforced in the pricing function.
-- `longContext.flat: True` for Anthropic (PRD 07 §4.1). For tiered models (Gemini etc.), populate `appliedTier` past the registry threshold. Invariant: either `sessionMultiplier` or `appliedTier`, never both, never when `flat` is True. Asserted, not silent.
+- `inputTokens`, `outputTokens`, `reasoningTokens`, `cachedInputTokens`: from accumulated usage. Map the DeepSeek/OpenAI-compatible shapes (`prompt_tokens`, `completion_tokens`, `completion_tokens_details.reasoning_tokens`, `prompt_tokens_details.cached_tokens`) and the equivalent Anthropic shapes (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`) to canonical. Per PRD 07 §7 rule 7: reasoning tokens bill at output rate and are never cache-eligible — enforced in the pricing function.
+- `longContext.flat: True` for DeepSeek and Anthropic (PRD 07 §4.1). For tiered models (Gemini etc.), populate `appliedTier` past the registry threshold. Invariant: either `sessionMultiplier` or `appliedTier`, never both, never when `flat` is True. Asserted, not silent.
 - `subtotalUsd`: tokens × prices + surcharges.
 - `sessionSurchargeUsd`: 0 at MVP. `promoApplied: False` at MVP.
 - `costConfidence: "exact"` on `done`; `"estimate"` on stopped/partial.
@@ -444,7 +444,7 @@ The FE does not render most of this today, but shipping the envelope now is chea
 - **Hosting**: **Fly.io** (Docker, autoscale-to-zero, cheap).
 - **Postgres host**: **Neon** for dev and prod.
 - **Auth approach**: **custom minimal seam** (`fastapi-users` lacks anonymous-then-upgrade).
-- **Provider abstraction**: **Anthropic SDK direct**; LiteLLM when a second provider lands.
+- **Provider abstraction**: **DeepSeek via the OpenAI-compatible SDK as the main provider**, Anthropic SDK as an alternate backend; LiteLLM when broader multi-provider routing lands.
 - **SSE library**: **`sse-starlette`** for built-in keep-alive.
 - **Schema sharing**: **hand-keep for MVP**; OpenAPI codegen when drift bites.
 - **Env / package manager**: **`uv`** — fastest, single tool.
@@ -464,7 +464,7 @@ Effort: ~2-3 days (cross-origin/cookie config eats half a day).
 
 ### M1 — Send + stream + persist + attribution
 
-Scope: `POST /api/conversations/:id/messages` with the full SSE event set via `EventSourceResponse`; Anthropic SDK wired; deltas mapped; post-stream `CostBreakdown` + `ModelAttribution` emit `terminal`; stop path via disconnect-detect + `asyncio.Task.cancel`, persisting `status: "stopped"` + `costConfidence: "estimate"`; `POST /api/conversations` and `clientMessageId` idempotency.
+Scope: `POST /api/conversations/:id/messages` with the full SSE event set via `EventSourceResponse`; DeepSeek/OpenAI-compatible SDK wired (Anthropic alternate); deltas mapped; post-stream `CostBreakdown` + `ModelAttribution` emit `terminal`; stop path via disconnect-detect + `asyncio.Task.cancel`, persisting `status: "stopped"` + `costConfidence: "estimate"`; `POST /api/conversations` and `clientMessageId` idempotency.
 
 Demo: type "hello", watch reasoning + answer stream, AttributionRow shows real cost. Hit Stop, partial persists. Refresh — message still there.
 
@@ -506,7 +506,7 @@ All 10 items shipped via PR #75 (5-worker burst, one commit per concern):
 - [x] `ON CONFLICT (user_id, period_start) DO UPDATE` for `usage_rollup` increments, dialect-aware (`app/db/repositories/usage.py`).
 - [x] argon2id password hashing (m=64 MiB, t=3, p=4) replacing bcrypt for new hashes; bcrypt verify-fallback + opportunistic rehash on login (`app/security/passwords.py`, `app/auth/routes.py`).
 - [x] Cookie re-sign on `/auth/upgrade` even though the session id is unchanged — defensive against `SESSION_SECRET` rotation (`app/auth/routes.py::upgrade`).
-- [x] LRU cache (`maxsize=256`) for per-user Anthropic clients, keyed by `(api_key, base_url)` (`app/providers/anthropic.py`).
+- [x] LRU cache (`maxsize=256`) for per-user provider clients, keyed by `(api_key, base_url)` (`app/providers/anthropic.py`, and the DeepSeek/OpenAI-compatible client in `app/providers/openai.py`).
 
 Residual notes (non-blocking, captured during PR #75 review):
 - Migration `0004` doesn't pre-check for duplicate non-NULL emails — would surface as a generic IntegrityError on prod data with dupes. Today's prod has no upgraded users yet.
@@ -537,7 +537,7 @@ Residual notes (non-blocking, captured during PR #75 review):
 | Pricing fields `cost_scope`, `multipliers.*`, `promo.*`, `notes` | PRD 07 §4.1 (no FE rendering yet) |
 | Period-end ISO + platform/BYOK budget split on `UsageBudget` | PRD 07 §6.3 (FE shape is simpler today) |
 | Server-curated `PromptSuggestion` set | PRD 01 §4.3 (mock is static client-side, fine) |
-| Multi-provider abstraction (no LiteLLM at MVP) | PRD 02 (Anthropic-only at v0) |
+| Broader multi-provider routing/fallback (no LiteLLM at MVP) | PRD 02 (DeepSeek main + Anthropic alternate at v0) |
 | OpenAPI -> FE codegen | (FE TS truth and BE Pydantic truth diverge by hand for now) |
 
 ## File / folder layout
@@ -585,7 +585,8 @@ api/
       routes.py                         # /api/auth/upgrade, /api/auth/signout
     providers/
       tiers.py                          # ModelTier registry (BE-owned, mirrors FE shape)
-      anthropic.py                      # Anthropic SDK wrapper + streaming adapter
+      openai.py                         # DeepSeek/OpenAI-compatible SDK wrapper + streaming adapter (main provider)
+      anthropic.py                      # Anthropic SDK wrapper + streaming adapter (alternate backend)
       pricing.py                        # CostBreakdown + attribution computation; PRD 07 invariants enforced
     streaming/
       sse.py                            # event encoders, sse-starlette wiring helpers

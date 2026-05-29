@@ -9,7 +9,7 @@
 
 ## 1. Summary & purpose
 
-This PRD specifies the **core conversational experience** — the chat surface itself — for a transparent, multi-model, privacy-first AI chat product on web and mobile-web (mobile-web first). It covers everything a user sees and touches while having a conversation: streaming responses, the reasoning panel, the composer, rich content rendering, conversation management, message actions, onboarding, basic settings, sharing/export, keyboard shortcuts, and the accessibility baseline.
+This PRD specifies the **core conversational experience** — the chat surface itself — for a transparent, multi-model, cost-leading AI chat product on web and mobile-web (mobile-web first). It covers everything a user sees and touches while having a conversation: streaming responses, the reasoning panel, the composer, rich content rendering, conversation management, message actions, onboarding, basic settings, sharing/export, keyboard shortcuts, and the accessibility baseline.
 
 The product thesis: **incumbents win on breadth; we win on a fast, polished, accessible core.** Rendering/streaming fidelity, composer ergonomics, accessibility, and mobile-web polish are the levers we are deliberately over-investing in. A janky renderer or a laggy stream reads as "low quality" instantly; a crisp one reads as premium. This document is written so a senior engineer can build the MVP from it.
 

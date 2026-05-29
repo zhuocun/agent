@@ -3,7 +3,8 @@
 `get_binding(tier_id, settings=...)` is backend-aware: under
 `PROVIDER_BACKEND=openai` it returns OpenAI provider/model/pricing (reusing the
 canonical `ModelTier` instance so the FE-facing shape is byte-identical); under
-`anthropic`/`fake` (the default) it returns the canonical Anthropic table.
+`anthropic` it returns the Anthropic alternate table; under `deepseek`/`fake`
+(the default) it returns the canonical DeepSeek table.
 
 `TIER_BINDINGS`, `list_tiers()`, and `is_known_tier()` are backend-independent
 and must stay identical — the wire contract (tier ids/labels/hints) never
@@ -71,23 +72,41 @@ def test_get_binding_openai_reuses_canonical_modeltier_instance() -> None:
         assert openai_b.tier is base.tier  # same instance, not a copy
 
 
-def test_get_binding_fake_still_returns_anthropic_binding() -> None:
-    """The default/fake backend keeps resolving to the Anthropic table."""
+def test_get_binding_fake_returns_canonical_deepseek_binding() -> None:
+    """The default/fake backend resolves to the canonical DeepSeek table."""
     s = Settings(provider_backend="fake")
     b = get_binding("fast", settings=s)
     assert b is not None
-    assert b.provider_id == "anthropic"
-    assert b.model_id == "claude-haiku-4-5-20251001"
-    assert b.list_price_in_per_m == 1.0
+    assert b.provider_id == "deepseek"
+    assert b.model_id == "deepseek-chat"
+    # DeepSeek promo pricing [verify-at-build]; reverts 2026-05-31.
+    assert b.list_price_in_per_m == 0.435
+    assert b.list_price_out_per_m == 0.870
+    assert b.cache_read_per_m == 0.0435
+
+
+def test_get_binding_deepseek_backend_returns_canonical_deepseek_binding() -> None:
+    """The explicit deepseek backend resolves to the canonical DeepSeek table.
+
+    `pro` binds deepseek-reasoner (raw reasoning tokens billed @ output rate).
+    """
+    s = Settings(provider_backend="deepseek", deepseek_api_key="k")
+    b = get_binding("pro", settings=s)
+    assert b is not None
+    assert b.provider_id == "deepseek"
+    assert b.model_id == "deepseek-reasoner"
+    assert b.list_price_in_per_m == 0.435
+    assert b.list_price_out_per_m == 0.870
 
 
 def test_get_binding_anthropic_backend_returns_anthropic_binding() -> None:
-    """The explicit anthropic backend also resolves to the Anthropic table."""
+    """The explicit anthropic backend resolves to the Anthropic alternate table."""
     s = Settings(provider_backend="anthropic", anthropic_api_key="k")
     b = get_binding("pro", settings=s)
     assert b is not None
     assert b.provider_id == "anthropic"
     assert b.model_id == "claude-opus-4-7"
+    assert b.list_price_in_per_m == 15.0
 
 
 def test_get_binding_unknown_tier_is_none_under_openai() -> None:

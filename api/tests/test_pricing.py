@@ -110,12 +110,16 @@ def test_compute_cost_breakdown_includes_all_token_buckets() -> None:
     bd = compute_cost_breakdown(usage=usage, binding=binding)
 
     # Hand-computed: input + output + reasoning(@output) + cache(@cache_read).
+    # Prices come from the binding (canonical DeepSeek table) so the assertion
+    # stays backend-independent.
     cache_per_m = binding.cache_read_per_m
     assert cache_per_m is not None  # M4: smart tier sets cache_read_per_m.
+    in_per_m = binding.list_price_in_per_m
+    out_per_m = binding.list_price_out_per_m
     expected = (
-        2000 * 3.0 / 1_000_000
-        + 1000 * 15.0 / 1_000_000
-        + 100 * 15.0 / 1_000_000
+        2000 * in_per_m / 1_000_000
+        + 1000 * out_per_m / 1_000_000
+        + 100 * out_per_m / 1_000_000
         + 500 * cache_per_m / 1_000_000
     )
     assert bd.subtotal_usd == pytest.approx(expected, rel=1e-9)

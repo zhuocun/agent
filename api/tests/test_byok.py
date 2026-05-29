@@ -210,9 +210,12 @@ async def test_byok_resolved_per_request_for_signed_in_user(
     from app.db.models import Conversation, UsageRollup
 
     await _upgrade_anonymous(client)
+    # Canonical backend is DeepSeek (fake/default path binds provider_id
+    # "deepseek"), so the BYOK key must be stored for the "deepseek" provider
+    # for per-request resolution to flag this turn is_byok.
     await client.put(
         "/api/account/byok",
-        json={"provider": "anthropic", "apiKey": "sk-ant-fake-12345678"},
+        json={"provider": "deepseek", "apiKey": "sk-deepseek-fake-12345678"},
     )
 
     # Seed a conversation for the upgraded user.

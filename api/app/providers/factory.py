@@ -1,9 +1,13 @@
 """Env-driven provider selection.
 
 `PROVIDER_BACKEND=fake` (default) → `FakeProvider` for dev/tests.
-`PROVIDER_BACKEND=anthropic` → `AnthropicProvider` for prod. Requires
+`PROVIDER_BACKEND=deepseek` → `OpenAIProvider` (DeepSeek is OpenAI-compatible)
+pointed at the built-in default `https://api.deepseek.com`. This is the
+canonical / main real provider. Requires only a key (`DEEPSEEK_API_KEY`, or
+`OPENAI_API_KEY` as a fallback) — no base_url/model env gymnastics.
+`PROVIDER_BACKEND=anthropic` → `AnthropicProvider` (alternate). Requires
 `ANTHROPIC_API_KEY` — boot fails fast if missing.
-`PROVIDER_BACKEND=openai` → `OpenAIProvider` (OpenAI-compatible) for prod.
+`PROVIDER_BACKEND=openai` → `OpenAIProvider` (OpenAI-compatible, alternate).
 Requires `OPENAI_API_KEY`; `OPENAI_BASE_URL` is optional (SDK default).
 """
 
@@ -20,6 +24,26 @@ from app.providers.protocol import Provider
 def build_provider(settings: Settings | None = None) -> Provider:
     """Return a Provider matching the configured backend."""
     s = settings if settings is not None else get_settings()
+    if s.provider_backend == "deepseek":
+        # DeepSeek is the canonical provider. It speaks the OpenAI-compatible
+        # API, so we reuse OpenAIProvider with DeepSeek's built-in default
+        # base_url. The key may come from DEEPSEEK_API_KEY or fall back to
+        # OPENAI_API_KEY.
+        key = s.deepseek_key
+        if not key:
+            raise AppError(
+                ErrorEnvelope(
+                    code="MISCONFIGURED",
+                    severity="fatal",
+                    title="Provider misconfigured",
+                    body=(
+                        "DEEPSEEK_API_KEY (or OPENAI_API_KEY) is required when "
+                        "PROVIDER_BACKEND=deepseek."
+                    ),
+                ),
+                status_code=500,
+            )
+        return OpenAIProvider(api_key=key, base_url=s.deepseek_base_url)
     if s.provider_backend == "anthropic":
         if not s.anthropic_api_key:
             # Surface a typed envelope so ops can grep for `MISCONFIGURED`

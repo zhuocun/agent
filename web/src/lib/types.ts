@@ -40,7 +40,7 @@ export type SubstitutionReasonCode =
 
 // Faithful UI subset of PRD 07 §4.1 cost_breakdown.
 export interface LongContext {
-  flat: boolean; // Anthropic-style: no long-context surcharge (first-class positive fact)
+  flat: boolean; // flat pricing: no long-context surcharge, e.g. DeepSeek (first-class positive fact)
   tierScope?: "session" | "overage";
   tokensRepriced?: "all" | "above_threshold" | "none";
   appliedTier?: {
@@ -69,7 +69,7 @@ export interface CostBreakdown {
 export interface ModelAttribution {
   requestedTierId: ModelTierId;
   servedTierId: ModelTierId;
-  servedModelLabel: string; // e.g. "Claude Haiku 4.5"
+  servedModelLabel: string; // e.g. "DeepSeek Chat"
   isByok: boolean;
   costUsd: number;
   costConfidence: "exact" | "estimate";

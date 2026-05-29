@@ -40,7 +40,7 @@ Never commit secrets. Each platform owns its own.
 | `DATABASE_URL` (Neon) | `flyctl secrets` on `olune-agent-server` | BE runtime |
 | `SESSION_SECRET` | `flyctl secrets` | BE cookie signer |
 | `BYOK_ENCRYPTION_KEK` (and `BYOK_KEK_VERSIONS` once rotation begins) | `flyctl secrets` | BE BYOK at-rest crypto |
-| Provider keys (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) | `flyctl secrets` | BE provider |
+| Provider key (`OPENAI_API_KEY` — the main provider is DeepSeek via the OpenAI-compatible binding; `ANTHROPIC_API_KEY` only if you switch the backend) | `flyctl secrets` | BE provider |
 | `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT` (optional) | `flyctl secrets` | BE observability |
 | `NEXT_PUBLIC_API_BASE_URL` | Vercel env (set to empty for prod — same-origin via rewrite) | FE build |
 
@@ -210,9 +210,9 @@ In order from cheapest to most invasive.
   /api/* rewrites server-side to:
 [ FastAPI BE on Fly nrt (api/) ]
   ├── routes/ — bootstrap, conversations, auth, messages SSE, feedback, prefs, account
-  ├── streaming/ — sse-starlette + Anthropic/OpenAI provider wiring
+  ├── streaming/ — sse-starlette + DeepSeek/OpenAI-compatible provider wiring
   ├── auth/ — itsdangerous signed-cookie sessions, anonymous-first
-  ├── providers/ — Anthropic + OpenAI + fake; tier registry; pricing math
+  ├── providers/ — DeepSeek (main, via OpenAI-compatible binding) + Anthropic + fake; tier registry; pricing math
   ├── db/ — SQLAlchemy 2.0 async + repositories
   ├── observability/ — Sentry + OTel (both env-gated)
   ├── middleware/ — request_id, ratelimit (slowapi)
@@ -227,7 +227,7 @@ In order from cheapest to most invasive.
 - M0–M4 of `docs/plans/00-backend-minimal.md` shipped on `main`.
 - Post-M4 hardening (10 items: versioned KEK, slowapi, OTel+Sentry,
   partial UNIQUE email, responds_to_message_id, ON CONFLICT usage,
-  argon2id, cookie re-sign, Anthropic client LRU) shipped via PR #75.
+  argon2id, cookie re-sign, provider client LRU) shipped via PR #75.
 
 ## When you need to ship something new
 

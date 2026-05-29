@@ -53,7 +53,7 @@ export function KeyCaps({
       {segments.map((s, i) => (
         <kbd
           key={i}
-          className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] leading-none text-foreground"
+          className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-xs leading-none text-foreground"
         >
           {s}
         </kbd>

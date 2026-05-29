@@ -1,11 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { AlertTriangle, Key } from "lucide-react";
+import { ChevronDown, Info, Key } from "lucide-react";
 import { Popover } from "@base-ui/react/popover";
 
-import type { ModelAttribution } from "@/lib/types";
+import type { ModelAttribution, ModelTierId } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { MODEL_TIERS_BY_ID } from "@/lib/model-tiers";
 import { CostBreakdownDetails } from "@/components/chat/cost-breakdown";
 
 export interface AttributionRowProps {
@@ -18,31 +19,89 @@ function formatCostSummary(n: number): string {
   return `$${n.toFixed(decimals)}`;
 }
 
+// `"auto"` is a request-time alias — the server must resolve it to a concrete
+// tier before attribution lands here. Narrowing the input type makes that
+// boundary explicit; if `"auto"` ever leaks through we want a loud failure,
+// not a silent title-cased "Auto" chip.
+type ServedTierId = Exclude<ModelTierId, "auto">;
+
+function tierLabelFor(id: ServedTierId): string {
+  return MODEL_TIERS_BY_ID[id].label;
+}
+
+function assertServedTier(id: ModelTierId): ServedTierId {
+  if (id === "auto") {
+    throw new Error(
+      "attribution.servedTierId must be a concrete tier; 'auto' must be resolved upstream",
+    );
+  }
+  return id;
+}
+
+// Bare interpunct used between byline segments. Local to the trigger so we
+// don't ship a one-character component, but extracted so the markup reads as
+// typography rather than a chain of repeated spans.
+const Dot = (
+  <span aria-hidden className="text-muted-foreground/60">
+    ·
+  </span>
+);
+
 export function AttributionRow({
   attribution,
 }: AttributionRowProps): React.JSX.Element {
   const isEstimate = attribution.costConfidence === "estimate";
   const { substitution, isByok, servedModelLabel } = attribution;
+  const servedTierId = assertServedTier(attribution.servedTierId);
 
   const costText = `${isEstimate ? "~" : ""}${formatCostSummary(attribution.costUsd)}`;
+  const tierLabel = tierLabelFor(servedTierId);
+
+  // Brief: byline reads as typography, not a stack of chips. Substitution
+  // collapses into a leading muted clause ("substituted from Pro: …") so the
+  // only filled chrome at rest is the BYOK chip. Per Opp 4, two filled pills
+  // next to a bare line was the regression to avoid.
+  const substitutionPrefix = substitution
+    ? `substituted from ${tierLabelFor(assertServedTier(attribution.requestedTierId))}: `
+    : null;
+
+  const triggerLabel = [
+    `served by ${servedModelLabel}`,
+    `${tierLabel} tier`,
+    costText,
+    isByok ? "billed to your API key" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-sm text-muted-foreground">
       <Popover.Root>
         <Popover.Trigger
-          aria-label="Cost details"
+          aria-label={triggerLabel}
           className={cn(
-            "inline-flex h-6 items-center gap-1.5 rounded-full bg-muted/60 px-2.5",
-            "text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+            "group inline-flex items-center gap-1 rounded-sm bg-transparent p-0",
+            "text-muted-foreground outline-none transition-colors hover:text-foreground",
             "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
           )}
         >
-          <span className="font-semibold">{servedModelLabel}</span>
-          <span aria-hidden className="text-muted-foreground/60">
-            ·
+          {substitutionPrefix ? (
+            <span className="inline-flex items-center gap-1 text-muted-foreground/80">
+              <Info aria-hidden className="size-3" />
+              <span>{substitutionPrefix}</span>
+            </span>
+          ) : null}
+          <span className="underline-offset-4 group-hover:underline">
+            {servedModelLabel}
           </span>
+          <ChevronDown
+            aria-hidden
+            className="size-3.5 opacity-70 transition-transform data-[popup-open]:rotate-180"
+          />
+          {Dot}
+          <span>{tierLabel}</span>
+          {Dot}
           <span className="font-mono tabular-nums">{costText}</span>
-          {isByok ? <Key aria-hidden className="size-3" /> : null}
         </Popover.Trigger>
 
         <Popover.Portal>
@@ -60,14 +119,19 @@ export function AttributionRow({
         </Popover.Portal>
       </Popover.Root>
 
-      {substitution ? (
-        <p
-          role="note"
-          className="inline-flex items-center gap-1 text-muted-foreground"
+      {isByok ? (
+        // Brief asked for "Key icon + provider name." `ModelAttribution` has no
+        // provider field today (see web/src/lib/types.ts), so the label degrades
+        // to the generic "Your API key" until that data is wired through.
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
+            "bg-byok-indicator text-byok-indicator-foreground",
+          )}
         >
-          <AlertTriangle aria-hidden className="size-3" />
-          <span>{substitution.reasonText}</span>
-        </p>
+          <Key aria-hidden className="size-3" />
+          <span>Your API key</span>
+        </span>
       ) : null}
     </div>
   );

@@ -41,9 +41,9 @@ export function ReasoningPanel({
     setOpen(next);
   };
 
-  const label = isStreaming
-    ? "Thinking…"
-    : durationSec && durationSec > 0
+  const streamingLabel = "Thinking…";
+  const settledLabel =
+    durationSec && durationSec > 0
       ? `Reasoned for ${formatDuration(durationSec)}`
       : "Reasoning";
 
@@ -58,24 +58,37 @@ export function ReasoningPanel({
     >
       <CollapsibleTrigger
         className={cn(
-          "group/reasoning-trigger inline-flex items-center gap-1 text-left text-xs text-muted-foreground/70",
+          "group/reasoning-trigger inline-flex items-center gap-1 text-left text-xs text-muted-foreground",
           "bg-transparent p-0 underline-offset-2",
           "outline-none focus-visible:underline",
         )}
       >
-        {isStreaming ? (
+        {/* Both labels share the same grid cell so the trigger's intrinsic
+            width snaps to the longer one and the cross-fade has no horizontal
+            shift; opacity tweens in lockstep with the body collapse below. */}
+        <span className="relative inline-grid">
           <span
+            aria-hidden={!isStreaming}
             className={cn(
+              "[grid-area:1/1] transition-opacity duration-200 ease-out",
+              isStreaming ? "opacity-100" : "opacity-0",
               "bg-gradient-to-r from-muted-foreground/70 via-foreground/80 to-muted-foreground/70",
               "bg-[length:200%_100%] bg-clip-text text-transparent",
               "motion-safe:animate-shimmer",
             )}
           >
-            {label}
+            {streamingLabel}
           </span>
-        ) : (
-          <span>{label}</span>
-        )}
+          <span
+            aria-hidden={isStreaming}
+            className={cn(
+              "[grid-area:1/1] transition-opacity duration-200 ease-out",
+              isStreaming ? "opacity-0" : "opacity-100",
+            )}
+          >
+            {settledLabel}
+          </span>
+        </span>
         {/* Base UI's CollapsibleTrigger exposes data-panel-open (not data-state); rotate via group selector. */}
         <ChevronDown
           aria-hidden
@@ -85,15 +98,21 @@ export function ReasoningPanel({
 
       <CollapsibleContent
         keepMounted
+        // Settling choreography: height and opacity tween in lockstep on the
+        // same ease-out curve so the collapse reads as an object settling
+        // rather than a div with overflow. The chevron rotation above shares
+        // the same 200ms duration.
         className={cn(
           "overflow-hidden",
-          "transition-[height] duration-200 ease-out",
-          "h-[var(--collapsible-panel-height)] data-[starting-style]:h-0 data-[ending-style]:h-0",
+          "transition-[height,opacity] duration-200 ease-out",
+          "h-[var(--collapsible-panel-height)] opacity-100",
+          "data-[starting-style]:h-0 data-[starting-style]:opacity-0",
+          "data-[ending-style]:h-0 data-[ending-style]:opacity-0",
         )}
       >
         <p
           className={cn(
-            "mt-2 border-l border-foreground/10 pl-3 text-sm leading-relaxed",
+            "mt-2 pl-3 text-sm leading-relaxed",
             "whitespace-pre-wrap break-words text-muted-foreground",
           )}
         >

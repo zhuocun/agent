@@ -15,12 +15,29 @@ from pydantic.alias_generators import to_camel
 
 
 class CamelModel(BaseModel):
-    """Base for wire schemas. snake_case in, camelCase out."""
+    """Base for wire schemas. snake_case in, camelCase out.
+
+    Whitespace handling: NOT auto-stripped. `str_strip_whitespace=True` here
+    would silently mutate every string field on construction — fine for an
+    input-validation reflex, catastrophic for opaque payloads. The two
+    concrete cases that bit us:
+
+    1. Streaming text deltas (`AnswerDeltaEvent.text`, `ReasoningDeltaEvent
+       .text`) carry single tokens including their leading/trailing spaces;
+       auto-strip turns `" ready"` into `"ready"` on every chunk and the FE
+       renders `"I'mready"`.
+    2. Passwords (`UpgradeRequest.password`) must preserve user-supplied
+       whitespace; silently trimming them changes the credential the user
+       believes they set.
+
+    Schemas that genuinely want input cleaning (e.g. a title field) should
+    do it explicitly via a Pydantic `field_validator`, not via a base-class
+    default that affects unrelated fields.
+    """
 
     model_config = ConfigDict(
         populate_by_name=True,
         alias_generator=to_camel,
-        str_strip_whitespace=True,
         from_attributes=True,
     )
 

@@ -245,7 +245,7 @@ function ConversationRow({
     <div
       ref={active ? activeRowRef : undefined}
       className={cn(
-        "group/conv relative flex min-h-10 w-full items-center rounded-2xl pr-1 text-left text-sm transition-colors",
+        "group/conv relative flex min-h-11 w-full items-center rounded-2xl pr-1 text-left text-sm transition-colors",
         active
           ? "bg-muted text-foreground"
           : "text-sidebar-foreground hover:bg-muted/60",
@@ -257,7 +257,7 @@ function ConversationRow({
         // descendants (invalid HTML; some browsers prevent the input from
         // receiving keyboard focus and click-through can occur). Mirrors the
         // edit pattern in user-message.tsx.
-        <div className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2">
+        <div className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2">
           {conversation.pinned ? (
             <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
@@ -279,7 +279,7 @@ function ConversationRow({
           onClick={handleRowClick}
           aria-label={`${conversation.title}${conversation.pinned ? ", pinned" : ""}`}
           aria-current={active ? "page" : undefined}
-          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2 text-left outline-none focus-visible:shadow-[var(--focus-ring)]"
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-2 text-left outline-none focus-visible:shadow-[var(--focus-ring)]"
         >
           {conversation.pinned ? (
             <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -433,7 +433,7 @@ export function Sidebar({
         <button
           type="button"
           onClick={onNewChat}
-          className="flex min-h-10 w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm font-medium text-sidebar-foreground outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]"
+          className="flex min-h-11 w-full items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm font-medium text-sidebar-foreground outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]"
         >
           <Plus className="size-4" aria-hidden />
           <span>New chat</span>
@@ -452,7 +452,7 @@ export function Sidebar({
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Search conversations"
             aria-label="Search conversations"
-            className="block w-full rounded-full bg-muted/50 py-1.5 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)]"
+            className="block h-11 w-full rounded-full bg-muted/50 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)]"
           />
         </div>
       </div>
@@ -477,7 +477,7 @@ export function Sidebar({
               }
               return (
                 <div key={key} className="mb-1">
-                  <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                  <div className="px-2 py-1 text-[11px] font-semibold text-muted-foreground">
                     {RECENCY_LABELS[key]}
                   </div>
                   <div role="list" aria-label={RECENCY_LABELS[key]}>

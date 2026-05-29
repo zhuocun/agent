@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # the single source of truth — same pattern as the Anthropic table.
     # `DEEPSEEK_API_KEY` falls back to `OPENAI_API_KEY` when unset (see
     # `deepseek_key`) so an OpenAI-compatible key works with either env name.
-    deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
+    deepseek_api_key: str | None = Field(default=None)
     deepseek_base_url: str = Field(default="https://api.deepseek.com")
 
     # Provider backend selection (M1). `fake` for dev/tests, `deepseek` is the

@@ -24,9 +24,9 @@ class TierBinding:
 
     `cache_read_per_m` (M4): optional per-million price for cache-read tokens.
     When set, `compute_cost_breakdown` bills `cached_input_tokens` at this rate
-    instead of `list_price_in_per_m`. Anthropic cache reads are 10% of input
-    price; populate accordingly. `None` falls back to 10% of the input rate
-    (the Anthropic cache-read convention).
+    instead of `list_price_in_per_m`. DeepSeek (canonical) and Anthropic cache
+    reads are a large discount off input (DeepSeek ~90%+, Anthropic ~90%); we
+    populate ~10% of input per tier. `None` falls back to 10% of the input rate.
     """
 
     tier: ModelTier
@@ -57,9 +57,20 @@ def _tier(
 
 
 # Order matters: the FE keeps the same order in its picker.
-# Prices align with current Anthropic public per-million-token pricing
-# (input / output). `cache_read_per_m` is 10% of input rate per Anthropic's
-# cache-read pricing convention.
+#
+# CANONICAL = DeepSeek — the main/default real provider (cost leader; see
+# docs/prd/00-product-overview.md D11). The default/`fake`/`deepseek` paths and
+# bootstrap all reflect this table. Anthropic and OpenAI are alternate paths
+# selected by `PROVIDER_BACKEND` (see `_anthropic_binding` / `_openai_binding`).
+#
+# DeepSeek pricing [verify-at-build]: from docs/research/2026-05-27/
+# 02-ai-capabilities-transparency.md — DeepSeek V4-Pro $0.435 / 1M input,
+# $0.870 / 1M output (current promo; documented to REVERT 2026-05-31 15:59 UTC
+# to ~4x higher — model that dated promo at build via the registry's promo
+# metadata). `deepseek-reasoner` exposes raw reasoning tokens, billed at the
+# output rate (handled by `compute_cost_breakdown`). `cache_read_per_m` uses
+# DeepSeek's large cache-read discount (~90%+); we set ~10% of the input rate
+# per the existing `cache_read_per_m` convention. All figures [verify-at-build].
 TIER_BINDINGS: tuple[TierBinding, ...] = (
     TierBinding(
         tier=_tier(
@@ -70,12 +81,12 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "low",
             "Adaptive",
         ),
-        provider_id="anthropic",
-        model_id="claude-sonnet-4-6",
-        list_price_in_per_m=3.0,
-        list_price_out_per_m=15.0,
+        provider_id="deepseek",
+        model_id="deepseek-chat",
+        list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
+        list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
         long_context_flat=True,
-        cache_read_per_m=0.30,
+        cache_read_per_m=0.0435,  # [verify-at-build] ~10% of input (DeepSeek cache discount)
     ),
     TierBinding(
         tier=_tier(
@@ -86,12 +97,12 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "lowest",
             "128K",
         ),
-        provider_id="anthropic",
-        model_id="claude-haiku-4-5-20251001",
-        list_price_in_per_m=1.0,
-        list_price_out_per_m=5.0,
+        provider_id="deepseek",
+        model_id="deepseek-chat",
+        list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
+        list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
         long_context_flat=True,
-        cache_read_per_m=0.10,
+        cache_read_per_m=0.0435,  # [verify-at-build] ~10% of input
     ),
     TierBinding(
         tier=_tier(
@@ -102,12 +113,12 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "medium",
             "200K",
         ),
-        provider_id="anthropic",
-        model_id="claude-sonnet-4-6",
-        list_price_in_per_m=3.0,
-        list_price_out_per_m=15.0,
+        provider_id="deepseek",
+        model_id="deepseek-chat",
+        list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
+        list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
         long_context_flat=True,
-        cache_read_per_m=0.30,
+        cache_read_per_m=0.0435,  # [verify-at-build] ~10% of input
     ),
     TierBinding(
         tier=_tier(
@@ -118,14 +129,63 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "high",
             "1M",
         ),
-        provider_id="anthropic",
-        model_id="claude-opus-4-7",
-        list_price_in_per_m=15.0,
-        list_price_out_per_m=75.0,
+        provider_id="deepseek",
+        # deepseek-reasoner exposes raw reasoning tokens (billed @ output rate).
+        model_id="deepseek-reasoner",
+        list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
+        list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
         long_context_flat=True,
-        cache_read_per_m=1.50,
+        cache_read_per_m=0.0435,  # [verify-at-build] ~10% of input
     ),
 )
+
+
+# --- Anthropic alternate path -------------------------------------------------
+# Selected when `PROVIDER_BACKEND=anthropic`. Mirrors the `_openai_binding`
+# pattern: reuses the canonical `ModelTier` instances (labels/hints are
+# backend-independent and the FE contract must not change); only provider id,
+# model id, and pricing differ. Prices track current Anthropic public
+# per-million-token pricing; `cache_read_per_m` is ~10% of input per Anthropic's
+# cache-read convention.
+_ANTHROPIC_PRICING: dict[ModelTierId, tuple[float, float, float]] = {
+    # tier id -> (in_per_m, out_per_m, cache_read_per_m)
+    "fast": (1.0, 5.0, 0.10),  # claude-haiku-4-5
+    "smart": (3.0, 15.0, 0.30),  # claude-sonnet-4-6
+    "auto": (3.0, 15.0, 0.30),  # claude-sonnet-4-6
+    "pro": (15.0, 75.0, 1.50),  # claude-opus-4-7
+}
+
+_ANTHROPIC_MODEL_FOR: dict[ModelTierId, str] = {
+    "fast": "claude-haiku-4-5-20251001",
+    "smart": "claude-sonnet-4-6",
+    "auto": "claude-sonnet-4-6",
+    "pro": "claude-opus-4-7",
+}
+
+
+def _anthropic_binding(tier_id: ModelTierId) -> TierBinding | None:
+    """Build the Anthropic binding for a tier id, or None if unknown.
+
+    Mirrors `_openai_binding`: reuses the SAME canonical `ModelTier` instance so
+    labels/hints stay byte-identical across backends. Returns None for a tier
+    not wired into `_ANTHROPIC_PRICING` / `_ANTHROPIC_MODEL_FOR` so callers can
+    treat it as an unknown tier rather than 500 mid-request.
+    """
+    base = next((b for b in TIER_BINDINGS if b.tier.id == tier_id), None)
+    pricing = _ANTHROPIC_PRICING.get(tier_id)
+    model_id = _ANTHROPIC_MODEL_FOR.get(tier_id)
+    if base is None or pricing is None or model_id is None:
+        return None
+    in_per_m, out_per_m, cache_read_per_m = pricing
+    return TierBinding(
+        tier=base.tier,
+        provider_id="anthropic",
+        model_id=model_id,
+        list_price_in_per_m=in_per_m,
+        list_price_out_per_m=out_per_m,
+        long_context_flat=True,
+        cache_read_per_m=cache_read_per_m,
+    )
 
 
 # OpenAI(-compatible) per-tier pricing defaults (USD per million tokens),
@@ -195,10 +255,11 @@ def list_tiers() -> list[ModelTier]:
 def get_binding(tier_id: ModelTierId, settings: Settings | None = None) -> TierBinding | None:
     """Return the binding for a tier id, or None if unknown.
 
-    Backend-aware: when `PROVIDER_BACKEND=openai`, the returned binding points
-    at the configured OpenAI model id + OpenAI pricing (reusing the canonical
-    `ModelTier` so the FE-facing shape is identical). For `anthropic`/`fake`
-    (the default), the canonical Anthropic `TIER_BINDINGS` table is used.
+    Backend-aware. The canonical `TIER_BINDINGS` table binds DeepSeek (the
+    main/default real provider) and is used for `deepseek`/`fake`/default.
+    `PROVIDER_BACKEND=openai` and `anthropic` are alternate paths that swap in
+    their own provider/model/pricing while reusing the canonical `ModelTier`
+    instances so the FE-facing shape stays byte-identical.
 
     `settings` is an optional override for tests / call sites that already hold
     a `Settings`; it defaults to the process-wide `get_settings()`.
@@ -206,6 +267,8 @@ def get_binding(tier_id: ModelTierId, settings: Settings | None = None) -> TierB
     s = settings if settings is not None else get_settings()
     if s.provider_backend == "openai":
         return _openai_binding(tier_id, s)
+    if s.provider_backend == "anthropic":
+        return _anthropic_binding(tier_id)
     for binding in TIER_BINDINGS:
         if binding.tier.id == tier_id:
             return binding
@@ -217,11 +280,11 @@ def is_known_tier(tier_id: str) -> bool:
     return any(b.tier.id == tier_id for b in TIER_BINDINGS)
 
 
-# Auto today routes to the same model class as "smart" (claude-sonnet-4-6 on
-# Anthropic, gpt-4o on OpenAI). When real routing lands this constant becomes
-# a per-request decision; for now it is a single mapping. The FE attribution
-# row requires a concrete served tier (see
-# `web/src/components/chat/attribution-row.tsx::assertServedTier`).
+# Auto today routes to the same model class as "smart" (deepseek-chat on the
+# canonical DeepSeek backend, claude-sonnet-4-6 on Anthropic, gpt-4o on OpenAI).
+# When real routing lands this constant becomes a per-request decision; for now
+# it is a single mapping. The FE attribution row requires a concrete served
+# tier (see `web/src/components/chat/attribution-row.tsx::assertServedTier`).
 _AUTO_RESOLVES_TO: ModelTierId = "smart"
 
 

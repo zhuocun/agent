@@ -49,10 +49,10 @@ class Settings(BaseSettings):
     cors_allowed_origins_raw: str = Field(default="", alias="CORS_ALLOWED_ORIGINS")
     cors_max_age: int = Field(default=600)
 
-    # Anthropic (optional in M0).
+    # Anthropic (alternate provider). Optional unless PROVIDER_BACKEND=anthropic.
     anthropic_api_key: str | None = Field(default=None)
 
-    # OpenAI(-compatible) provider (optional). Configured "OpenAI style":
+    # OpenAI(-compatible) provider (alternate). Configured "OpenAI style":
     # OPENAI_API_KEY + optional OPENAI_BASE_URL (None lets the SDK use its own
     # default, https://api.openai.com/v1; override for Azure/OpenRouter/Ollama/
     # vLLM/local). Per-tier model ids are overridable via env so the same
@@ -64,9 +64,26 @@ class Settings(BaseSettings):
     openai_model_pro: str = Field(default="o1")
     openai_model_auto: str = Field(default="gpt-4o")
 
-    # Provider backend selection (M1). `fake` for dev/tests, `anthropic`/`openai`
-    # for prod.
-    provider_backend: Literal["anthropic", "openai", "fake"] = Field(default="fake")
+    # DeepSeek — the canonical / main real provider (cost leader; see
+    # docs/prd/00-product-overview.md D11). DeepSeek is OpenAI-compatible, so the
+    # `deepseek` backend drives the same `OpenAIProvider` adapter against the
+    # built-in default `base_url` below. Running `PROVIDER_BACKEND=deepseek`
+    # needs only an API key — no base_url/model env gymnastics: per-tier model
+    # ids default to `deepseek-chat` (fast/smart/auto) and `deepseek-reasoner`
+    # (pro). `DEEPSEEK_API_KEY` falls back to `OPENAI_API_KEY` when unset (see
+    # `deepseek_key`) so an OpenAI-compatible key works with either env name.
+    deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
+    deepseek_base_url: str = Field(default="https://api.deepseek.com")
+    deepseek_model_fast: str = Field(default="deepseek-chat")
+    deepseek_model_smart: str = Field(default="deepseek-chat")
+    deepseek_model_pro: str = Field(default="deepseek-reasoner")
+    deepseek_model_auto: str = Field(default="deepseek-chat")
+
+    # Provider backend selection (M1). `fake` for dev/tests, `deepseek` is the
+    # main/prod provider; `anthropic`/`openai` are alternates.
+    provider_backend: Literal["deepseek", "anthropic", "openai", "fake"] = Field(
+        default="fake"
+    )
 
     # BYOK key encryption KEK (base64-encoded 32 bytes). Required in M3 — the
     # default value is a known-bad dev sentinel that `assert_prod_safe()`
@@ -112,6 +129,16 @@ class Settings(BaseSettings):
     # the decorator so settings cache invalidation in tests takes effect.
     rate_limit_messages: str = Field(default="30/minute", alias="RATE_LIMIT_MESSAGES")
     rate_limit_upgrade: str = Field(default="5/minute", alias="RATE_LIMIT_UPGRADE")
+
+    @property
+    def deepseek_key(self) -> str | None:
+        """Effective DeepSeek key: `DEEPSEEK_API_KEY`, else `OPENAI_API_KEY`.
+
+        DeepSeek is OpenAI-compatible, so a single OpenAI-compatible key set as
+        either env var works. The dedicated `DEEPSEEK_API_KEY` wins when both
+        are present.
+        """
+        return self.deepseek_api_key or self.openai_api_key
 
     @cached_property
     def cors_allowed_origins(self) -> list[str]:
@@ -195,6 +222,10 @@ class Settings(BaseSettings):
             )
         if self.provider_backend == "fake":
             raise RuntimeError("PROVIDER_BACKEND must not be 'fake' in production.")
+        if self.provider_backend == "deepseek" and not self.deepseek_key:
+            raise RuntimeError(
+                "DEEPSEEK_API_KEY (or OPENAI_API_KEY) required when PROVIDER_BACKEND=deepseek"
+            )
         if self.provider_backend == "anthropic" and not self.anthropic_api_key:
             raise RuntimeError("ANTHROPIC_API_KEY required when PROVIDER_BACKEND=anthropic")
         if self.provider_backend == "openai" and not self.openai_api_key:

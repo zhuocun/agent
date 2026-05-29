@@ -38,13 +38,13 @@ interface AppHeaderProps {
 }
 
 const FLOAT_BUTTON =
-  "glass-regular size-14 rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent";
+  "glass-regular size-12 rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent";
 
 const FLOAT_BUTTON_TOUCH =
-  "glass-regular size-14 rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden";
+  "glass-regular size-12 rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 const PILL_HALF =
-  "inline-flex h-14 w-[3.75rem] items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex h-12 w-[3.5rem] items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring";
 
 export function AppHeader({
   onNewChat,
@@ -64,7 +64,7 @@ export function AppHeader({
   onSelectEffort,
 }: AppHeaderProps) {
   return (
-    <header className="relative flex h-14 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
+    <header className="relative flex h-12 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
       <div className="flex flex-1 items-center justify-start gap-2">
         <Button
           type="button"
@@ -97,7 +97,7 @@ export function AppHeader({
       </div>
 
       <div className="flex flex-1 items-center justify-end">
-        <div className="glass-regular inline-flex h-14 items-center rounded-full">
+        <div className="glass-regular inline-flex h-12 items-center rounded-full">
           <button
             type="button"
             aria-label="New chat"

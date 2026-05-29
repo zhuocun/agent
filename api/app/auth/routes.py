@@ -11,20 +11,27 @@
 
 Passkey / magic-link / email-verification ceremonies are deferred. The MVP
 contract is just "give me an email, I'll optionally take a password, I'll
-return the upgraded AccountInfo." Cookie does not need to be re-signed -- the
-session cookie holds a session id, NOT user identity, and the session row
-already references the same user id we just mutated.
+return the upgraded AccountInfo."
+
+Password hashing is delegated to `app.security.passwords`: new digests are
+argon2id, legacy bcrypt rows are verified and opportunistically rewritten on
+their first successful login. Bcrypt remains a runtime dep for that fallback.
 """
 
 from __future__ import annotations
 
-import bcrypt
+import structlog
 from fastapi import APIRouter, Depends, Response, status
 from pydantic import EmailStr
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.cookies import COOKIE_NAME_DEFAULT, cookie_kwargs
+from app.auth.cookies import (
+    COOKIE_NAME_DEFAULT,
+    build_signer,
+    cookie_kwargs,
+    dump_session_id,
+)
 from app.auth.dependency import current_session, current_user
 from app.config import Settings, get_settings
 from app.db.models import Session as DbSession
@@ -34,14 +41,22 @@ from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
 from app.schemas.account import AccountInfo
 from app.schemas.common import CamelModel
+from app.security.passwords import (
+    _truncate_for_bcrypt as _truncate_for_bcrypt_impl,
+)
+from app.security.passwords import (
+    hash_password,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+_log = structlog.get_logger(__name__)
 
 
-# bcrypt has a hard 72-byte input limit; we cap the input on a UTF-8 character
-# boundary so longer passwords don't surface as a 500 from the underlying
-# library. Documented behavior.
-_BCRYPT_MAX_BYTES = 72
+# Re-export of the boundary-safe bcrypt truncation. The helper itself moved to
+# `app.security.passwords` along with the rest of the password machinery; this
+# alias keeps the existing test suite (which imports it from `app.auth.routes`)
+# working without churning the import site.
+_truncate_for_bcrypt = _truncate_for_bcrypt_impl
 
 
 class UpgradeRequest(CamelModel):
@@ -81,47 +96,65 @@ def _email_taken() -> AppError:
     )
 
 
-def _truncate_for_bcrypt(password: str) -> bytes:
-    """Encode `password` to at most 72 UTF-8 bytes on a character boundary.
+def _resign_session_cookie(
+    response: Response,
+    settings: Settings,
+    session: DbSession,
+) -> None:
+    """Re-emit `Set-Cookie sid=...` for the existing session id.
 
-    bcrypt only honors the first 72 bytes of its input, so we cap there. We
-    slice the UTF-8 *bytes* (not codepoints) and then drop any trailing partial
-    codepoint left by the cut, so a multi-byte UTF-8 sequence is never split.
-    Any input beyond 72 bytes is ignored (by both this cap and bcrypt itself).
+    Defensive against signature drift / key rotation: the session id itself
+    does not change on upgrade, so functionally the cookie value is usually
+    identical to what the browser already holds. We re-sign and re-set it
+    anyway so a `SESSION_SECRET` rotation between the previous request and
+    this one doesn't leave the client stuck on a stale signature, and so
+    upgraded clients always leave with a fresh `Max-Age` window.
     """
-    truncated = password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
-    # Round down to the last complete codepoint: decoding with "ignore" drops a
-    # dangling partial sequence, and re-encoding gives clean <=72-byte bytes.
-    return truncated.decode("utf-8", "ignore").encode("utf-8")
+    signer = build_signer(settings.session_secret)
+    response.set_cookie(
+        key=settings.cookie_name or COOKIE_NAME_DEFAULT,
+        value=dump_session_id(signer, str(session.id)),
+        **cookie_kwargs(settings),
+    )
 
 
-def _hash_password(password: str) -> str:
-    """Return a bcrypt digest of `password`.
+async def _maybe_rehash_password(
+    db: AsyncSession, user: User, plaintext: str
+) -> None:
+    """Rewrite the user's `password_hash` to the current scheme, best-effort.
 
-    The input is truncated to at most 72 UTF-8 bytes without splitting a
-    multi-byte character (see `_truncate_for_bcrypt`); bytes beyond 72 are
-    ignored by bcrypt regardless. The cost factor is pinned explicitly so it
-    does not drift with the bcrypt library's default rounds.
+    Called after a successful `verify_password` that returned `needs_rehash`:
+    the stored digest is legacy (bcrypt) or using outdated argon2 parameters,
+    so we mint a fresh argon2id hash and persist it. Any error here is
+    swallowed -- a failed rehash must never fail the caller's flow (login,
+    upgrade-re-auth, ...); we just log and let the next successful verify try
+    again.
     """
-    truncated = _truncate_for_bcrypt(password)
-    digest = bcrypt.hashpw(truncated, bcrypt.gensalt(rounds=12))
-    return digest.decode("ascii")
+    try:
+        user.password_hash = hash_password(plaintext)
+        await db.flush()
+    except Exception:  # pragma: no cover - defensive belt
+        _log.warning("password_rehash_failed", user_id=str(user.id), exc_info=True)
 
 
 @router.post("/upgrade", response_model=AccountInfo)
 async def upgrade(
     body: UpgradeRequest,
+    response: Response,
     user: User = Depends(current_user),
+    session: DbSession | None = Depends(current_session),
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> AccountInfo:
     """Promote anonymous user to email/password.
 
     In-place row mutation preserves the FK from `conversation.user_id` (and
     friends) -- the user id is unchanged. Verified by `test_auth_upgrade.py`.
 
-    The session cookie is NOT re-signed here: the cookie holds a session id,
-    not the user id, and the session row already references the user we
-    just upgraded. No cookie work needed.
+    The session cookie IS re-signed here as a defensive measure: the session
+    id is unchanged so the value is usually identical, but re-emitting the
+    cookie protects against signature drift across a `SESSION_SECRET` rotation
+    and refreshes the `Max-Age` window on a successful upgrade.
     """
     if not user.is_anonymous:
         raise _already_upgraded()
@@ -145,10 +178,15 @@ async def upgrade(
     if user.name in ("", "Guest"):
         user.name = normalized_email.split("@", 1)[0]
     if body.password:
-        user.password_hash = _hash_password(body.password)
+        user.password_hash = hash_password(body.password)
 
     await db.flush()
     await db.refresh(user)
+
+    # Re-sign + re-set the cookie after the upgrade succeeded. Documented in
+    # the route docstring: defensive against signature drift / key rotation.
+    if session is not None:
+        _resign_session_cookie(response, settings, session)
 
     # Synthesize the updated AccountInfo from the post-upgrade row.
     byok_rows = await api_keys.list_for_user(db, user.id)
@@ -180,3 +218,11 @@ async def signout(
         secure=kw["secure"],
         httponly=kw["httponly"],
     )
+
+
+__all__ = [
+    "UpgradeRequest",
+    "_maybe_rehash_password",
+    "_truncate_for_bcrypt",
+    "router",
+]

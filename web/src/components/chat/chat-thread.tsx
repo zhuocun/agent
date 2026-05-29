@@ -35,6 +35,7 @@ import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
+import { showToast } from "@/components/ui/toast";
 import {
   CommandPalette,
   type CommandAction,
@@ -57,6 +58,7 @@ import {
   fetchConversation,
   patchConversation,
   postFeedback,
+  postAuthSignout,
   putPreferences,
   type BootstrapResponse,
 } from "@/lib/apiClient";
@@ -208,10 +210,15 @@ const SHORTCUT_DIALOG_SECTIONS: { heading: string; ids: ShortcutId[] }[] = [
 let localIdCounter = 0;
 const localId = (): string => `local-${Date.now()}-${localIdCounter++}`;
 
+// In-memory message variant. ChatMessage is the canonical wire/persisted shape;
+// `error` is FE-only state from a stream-terminal error frame and never
+// round-trips to the server.
+type LocalChatMessage = ChatMessage & { error?: ApiError };
+
 // Default tier when bootstrap is still pending — only used to seed the picker
 // for the brief loading frame; replaced by `preferences.defaultTierId` once
 // bootstrap resolves.
-const DEFAULT_TIER_ID: ModelTierId = "smart";
+const DEFAULT_TIER_ID: ModelTierId = "auto";
 
 export function ChatThread() {
   // Bootstrap-derived state. `null` until `fetchBootstrap()` resolves.
@@ -219,8 +226,12 @@ export function ChatThread() {
   const [bootstrapError, setBootstrapError] = useState<ApiError | null>(null);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
 
-  // Chat state.
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Chat state. The in-memory message shape carries an optional `error` field
+  // on assistant turns — the canonical ApiErrorEnvelope from the terminal
+  // frame — so the bubble can render the inline chip + Details + Retry per
+  // PRD 08 §3 + §11.2. Server-loaded conversations never carry it (errored
+  // turns are not persisted as turns); the field is in-memory only.
+  const [messages, setMessages] = useState<LocalChatMessage[]>([]);
   const [selectedTierId, setSelectedTierId] =
     useState<ModelTierId>(DEFAULT_TIER_ID);
   const [selectedReasoningEffortId, setSelectedReasoningEffortId] =
@@ -366,7 +377,7 @@ export function ChatThread() {
     const serverAssistantId = result.serverAssistantMessageId ?? assistantId;
     const serverUserId = result.serverUserMessageId;
 
-    const finalized: ChatMessage = {
+    const finalized: LocalChatMessage = {
       id: serverAssistantId,
       role: "assistant",
       createdAt: new Date().toISOString(),
@@ -374,6 +385,7 @@ export function ChatThread() {
       feedback: null,
       attribution: result.status === "done" ? result.attribution : undefined,
       parts,
+      error: result.status === "error" ? result.error : undefined,
     };
 
     const optimisticUserId = pendingUserIdRef.current;
@@ -443,6 +455,17 @@ export function ChatThread() {
           pendingUserIdRef.current = null;
           assistantIdRef.current = null;
           setPendingId(null);
+          showToast({
+            severity: "error",
+            title:
+              cause instanceof ApiError ? cause.title : "Couldn't create conversation",
+            body:
+              cause instanceof ApiError
+                ? cause.body
+                : cause instanceof Error
+                  ? cause.message
+                  : undefined,
+          });
           return;
         }
       }
@@ -554,6 +577,17 @@ export function ChatThread() {
         prev.map((m) => (m.id === id ? { ...m, feedback: previous } : m)),
       );
       if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't save your reaction",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
     });
   };
 
@@ -620,45 +654,14 @@ export function ChatThread() {
     });
   };
 
-  // Branch creates a brand-new (empty) conversation server-side. The MVP BE
-  // has no copy-messages-from-conversation primitive, so the prior thread is
-  // NOT cloned into the new conversation — the user lands in a fresh chat
-  // with the chosen tier preserved. This is a regression from the mock UX
-  // (which cloned the slice locally); see plan §"Known FE follow-ups".
-  const handleBranchFromMessage = () => {
-    if (isStreaming) return;
-
-    stop();
-    reset();
-
-    void (async () => {
-      try {
-        const created = await createConversation({
-          selectedTierId,
-          isTemporary: false,
-        });
-        const summary: ConversationSummary = {
-          id: created.id,
-          title: created.title,
-          updatedAt: new Date().toISOString(),
-          pinned: false,
-        };
-        setConversations((prev) => [summary, ...prev]);
-        setMessages([]);
-        setActiveConversationId(created.id);
-        setPendingId(null);
-        assistantIdRef.current = null;
-        pendingUserIdRef.current = null;
-        setIsTemporary(false);
-        setMobileNavOpen(false);
-        setLiveMessage("Branched into new chat");
-      } catch (cause) {
-        const title =
-          cause instanceof ApiError ? cause.title : "Couldn't branch chat";
-        setLiveMessage(title);
-      }
-    })();
-  };
+  // Branch-from-here (PRD 01 §4.6 P1) is deferred until the BE exposes a
+  // copy-messages-on-create primitive. Shipping the button against the
+  // current `POST /api/conversations` (which only accepts `selectedTierId`
+  // + `isTemporary`) created an empty new chat and called it "branched" —
+  // a UX lie. The action is removed from MessageActions until either the
+  // create endpoint accepts an `initialMessages` payload or a dedicated
+  // `/branch` route lands; re-adding the button without that wire is a
+  // correctness regression, not a feature gain.
 
   const handleNewChat = () => {
     // Cancel any in-flight welcome→thread seam (see handleSelectConversation
@@ -758,6 +761,17 @@ export function ChatThread() {
         const title =
           cause instanceof ApiError ? cause.title : "Couldn't load chat";
         setLiveMessage(title);
+        showToast({
+          severity: "error",
+          title:
+            cause instanceof ApiError ? cause.title : "Couldn't load conversation",
+          body:
+            cause instanceof ApiError
+              ? cause.body
+              : cause instanceof Error
+                ? cause.message
+                : undefined,
+        });
       }
     })();
   };
@@ -777,6 +791,17 @@ export function ChatThread() {
     void patchConversation(id, { title: trimmed }).catch((cause) => {
       setConversations(previous);
       if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't rename conversation",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
     });
   };
 
@@ -809,6 +834,17 @@ export function ChatThread() {
     void deleteConversation(id).catch((cause) => {
       setConversations(previous);
       if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't delete conversation",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
     });
   };
 
@@ -823,6 +859,17 @@ export function ChatThread() {
     void patchConversation(id, { pinned: nextPinned }).catch((cause) => {
       setConversations(previous);
       if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't pin conversation",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
     });
   };
 
@@ -836,6 +883,31 @@ export function ChatThread() {
       );
       if (cause instanceof ApiError) setLiveMessage(cause.title);
     });
+  };
+
+  const handleAccountChange = (next: AccountInfo) => {
+    setBootstrap((prev) => (prev ? { ...prev, account: next } : prev));
+  };
+
+  // Sign-out + full reload so bootstrap re-runs against the fresh anonymous
+  // session the backend mints on the cookieless follow-up request.
+  const handleSignOut = () => {
+    void postAuthSignout()
+      .then(() => {
+        setLiveMessage("Signed out");
+        if (typeof window !== "undefined") window.location.reload();
+      })
+      .catch((cause) => {
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't sign out";
+        const body =
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined;
+        showToast({ severity: "error", title, body });
+      });
   };
 
   const showWelcome =
@@ -900,6 +972,85 @@ export function ChatThread() {
       () => setLiveMessage("Copied last code block"),
       () => setLiveMessage("Copy failed"),
     );
+  };
+
+  // Whole-conversation copy-as-markdown (PRD 01 §4.10 P0). Local copy is
+  // exempt from the public-share cost/token redaction rule (PRD 07 §6.4) —
+  // attribution metadata stays on the in-app message rows; the markdown
+  // payload itself is just turns and content so it round-trips cleanly into
+  // notes/docs/issues. Reasoning parts are intentionally omitted: they're a
+  // streaming-time disclosure and dump noisily when copied. Pending and
+  // errored assistant turns are skipped — the markdown should represent the
+  // settled thread, not a half-streamed snapshot.
+  const renderConversationMarkdown = (
+    source: ReadonlyArray<ChatMessage>,
+  ): string => {
+    const turns: string[] = [];
+    for (const m of source) {
+      if (m.role === "assistant" && (m.status === "error" || m.status === "submitted" || m.status === "streaming")) {
+        continue;
+      }
+      const text = m.parts
+        .filter((p): p is Extract<MessagePart, { type: "text" }> => p.type === "text")
+        .map((p) => p.text)
+        .join("\n\n")
+        .trim();
+      if (!text) continue;
+      turns.push(`**${m.role === "user" ? "You" : "Assistant"}**\n\n${text}`);
+    }
+    return turns.join("\n\n---\n\n");
+  };
+
+  const writeMarkdownToClipboard = (payload: string): void => {
+    if (!payload) {
+      setLiveMessage("Nothing to copy");
+      showToast({ severity: "info", title: "Nothing to copy" });
+      return;
+    }
+    void navigator.clipboard?.writeText(payload).then(
+      () => {
+        setLiveMessage("Conversation copied");
+        showToast({ severity: "info", title: "Conversation copied" });
+      },
+      () => {
+        setLiveMessage("Copy failed");
+        showToast({ severity: "error", title: "Copy failed" });
+      },
+    );
+  };
+
+  const handleCopyConversation = () => {
+    writeMarkdownToClipboard(renderConversationMarkdown(messages));
+  };
+
+  // Sidebar kebab path — works for any row. Fast-path the active conversation
+  // off the in-memory `messages` so the user doesn't pay a round-trip when
+  // they copy what they're already looking at; non-active rows fetch and copy.
+  const handleCopyConversationById = (id: string) => {
+    if (id === activeConversationId) {
+      handleCopyConversation();
+      return;
+    }
+    void (async () => {
+      try {
+        const conversation = await fetchConversation(id);
+        writeMarkdownToClipboard(renderConversationMarkdown(conversation.messages));
+      } catch (cause) {
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't copy conversation";
+        setLiveMessage(title);
+        showToast({
+          severity: "error",
+          title,
+          body:
+            cause instanceof ApiError
+              ? cause.body
+              : cause instanceof Error
+                ? cause.message
+                : undefined,
+        });
+      }
+    })();
   };
 
   const handleFocusComposer = () => {
@@ -1074,7 +1225,9 @@ export function ChatThread() {
             onRenameConversation={handleRenameConversation}
             onDeleteConversation={handleDeleteConversation}
             onTogglePinConversation={handleTogglePinConversation}
+            onCopyConversation={handleCopyConversationById}
             onOpenSettings={() => setSettingsOpen(true)}
+            onSignOut={handleSignOut}
             onCollapse={() => {
               setSidebarOpen(false);
               setMobileNavOpen(false);
@@ -1104,6 +1257,8 @@ export function ChatThread() {
                 onOpenSettings={() => setSettingsOpen(true)}
                 isTemporary={isTemporary}
                 onToggleTemporary={handleToggleTemporary}
+                onCopyConversation={handleCopyConversation}
+                canCopyConversation={messages.length > 0}
                 tiers={modelTiers}
                 selectedTierId={selectedTierId}
                 onSelectTier={setSelectedTierId}
@@ -1161,12 +1316,11 @@ export function ChatThread() {
                       key={m.id}
                       message={m}
                       status={m.status ?? "done"}
-                      canRegenerate={!isStreaming && m.id === lastAssistantId && (m.status ?? "done") === "done"}
+                      canRegenerate={!isStreaming && m.id === lastAssistantId && ((m.status ?? "done") === "done" || m.status === "stopped")}
                       onRegenerate={handleRegenerate}
                       onFeedback={(f) => setFeedback(m.id, f)}
-                      canBranch={!isStreaming && m.id !== pendingId}
-                      onBranch={handleBranchFromMessage}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
+                      error={m.error}
                     />
                   ),
                 )}
@@ -1203,7 +1357,9 @@ export function ChatThread() {
         preferences={preferences}
         onPreferencesChange={handlePreferencesChange}
         account={account}
+        onAccountChange={handleAccountChange}
         usage={usage}
+        onSignOut={handleSignOut}
       />
 
       <CommandPalette

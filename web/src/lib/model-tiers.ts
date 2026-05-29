@@ -2,7 +2,18 @@ import type { ModelTier, ModelTierId } from "@/lib/types";
 
 // Capability tiers shown in the picker (PRD 06 §5.6) — never raw model IDs.
 // Hints are sourced from the registry (PRD 02); values here are mock.
+// Auto leads per PRD 02 FR-7 ("Auto" is the default for new users); its
+// speed/cost/context hints are "auto" because the router resolves to a
+// concrete tier per turn, and a single hint would mislead.
 export const MODEL_TIERS: ModelTier[] = [
+  {
+    id: "auto",
+    label: "Auto",
+    description: "Match the right model to the question.",
+    speedHint: "balanced",
+    costHint: "medium",
+    contextHint: "auto",
+  },
   {
     id: "fast",
     label: "Fast",

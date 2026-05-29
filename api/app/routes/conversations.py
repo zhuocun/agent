@@ -32,6 +32,7 @@ from app.db.models import Message, User
 from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
+from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
 from app.db.session import get_db
 from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
@@ -57,6 +58,7 @@ from app.streaming.sse import (
     encode_submitted,
     encode_terminal,
 )
+from app.streaming.stop_registry import request_stop
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -505,6 +507,21 @@ async def send_message(
 
     provider = build_provider()
 
+    # Durable stream lifecycle (PRD 04 §5.1). Persist an `active` stream row for
+    # every NON-temporary turn (default / regenerate / edit). The id is threaded
+    # into `stream_and_persist`, which transitions it to done / stopped / error
+    # and links the assistant `message_id`. Temporary chats persist nothing, so
+    # they get no stream row and pass `stream_id=None`. Committed now (its own
+    # statement on the request session) so the row is visible to a concurrent
+    # `POST /{id}/stop` before the turn finishes.
+    stream_id: UUID | None = None
+    if not is_temp:
+        stream_row = await streams_repo.create_stream(
+            db, conversation_id=conversation_id
+        )
+        stream_id = stream_row.id
+        await db.commit()
+
     # `resolved_api_key` was resolved earlier (before the budget gate) so the
     # cost cap could distinguish platform-key vs BYOK turns; it is threaded
     # through to the stream call below unchanged.
@@ -530,6 +547,7 @@ async def send_message(
             is_initial=is_initial,
             user_id=user.id,
             api_key=resolved_api_key,
+            stream_id=stream_id,
         ):
             yield sse_event
 
@@ -537,6 +555,59 @@ async def send_message(
         _event_stream(),
         media_type="text/event-stream",
     )
+
+
+@router.post("/{conversation_id}/stop", status_code=status.HTTP_204_NO_CONTENT)
+async def stop_stream(
+    conversation_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Dedicated server-side stop for an in-flight streaming turn (PRD 04 §5.1).
+
+    P0 foundation for the P1 dedicated-stop / resumable-stream semantics. Today
+    "stop" is implicit (the client closing the SSE socket -> the handler's
+    `request.is_disconnected()` check); this endpoint makes it explicit and
+    durable so a stop survives independent of the streaming connection.
+
+    Mechanism (two halves, both best-effort):
+    - Durable intent: mark the conversation's active `stream` row `stopped` so
+      the lifecycle is observable even if the live signal never lands.
+    - Live cancel: set the in-process stop signal (`request_stop`) so the
+      running generator tears the turn down at its next poll. Single-worker
+      only — behind multiple uvicorn workers a stop on worker A won't reach a
+      stream running on worker B (same caveat as `_TEMP_IDS`). The actual
+      generator cancellation is therefore best-effort.
+
+    Idempotent 204:
+    - No active stream (already finished / never started) -> 204, no-op.
+    - Temporary conversations have no DB row and no stream row; treated as a
+      204 no-op (nothing to stop, nothing persisted).
+    - Not owned (or missing) -> 404, mirroring the rest of this router.
+    """
+    # Temporary chats: nothing persisted, nothing to stop. Idempotent 204.
+    if _is_temp_for_user(user.id, conversation_id):
+        return None
+
+    owner_row = await conversations_repo.owned_by(db, conversation_id, user.id)
+    if owner_row is None:
+        raise not_found("conversation")
+
+    active = await streams_repo.get_active_for_conversation(
+        db, conversation_id=conversation_id
+    )
+    if active is not None:
+        # Durable intent first, then the live signal. The running generator
+        # (if on this worker) will observe `request_stop` at its next poll,
+        # persist the partial assistant row, and transition the same stream row
+        # to `stopped` itself — `mark_status` here records the intent up front
+        # so a stop is durable even if the generator never sees the signal.
+        request_stop(active.id)
+        await streams_repo.mark_status(
+            db, stream_id=active.id, status="stopped"
+        )
+        await db.commit()
+    return None
 
 
 async def _prepare_regenerate(

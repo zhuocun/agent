@@ -179,6 +179,54 @@ class Message(Base):
     )
 
 
+class Stream(Base):
+    """Durable record of a streaming turn (PRD 04 §5.1).
+
+    One row per streaming turn on a non-temporary conversation. Tracks the
+    lifecycle `active -> done | stopped | error` and links to the in-progress /
+    final assistant `message` (NULL until the assistant row is persisted). This
+    is the durable counterpart to the in-process stop signal
+    (`app.streaming.stop_registry`): the registry is the live cancel channel,
+    this table is the persisted intent + status.
+
+    Resumable replay is OUT of scope today, but the schema is deliberately
+    shaped to support it later: the active row per conversation plus its
+    `message_id` is enough to resume / re-attach a stream once that lands.
+    """
+
+    __tablename__ = "stream"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("conversation.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # The in-progress / final assistant message. NULL until the assistant row is
+    # persisted (stop-path / terminal-success set it). SET NULL on delete so a
+    # purged message doesn't dangle the pointer.
+    message_id: Mapped[UUID | None] = mapped_column(
+        UuidVariant,
+        ForeignKey("message.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Lifecycle: one of "active" | "done" | "stopped" | "error".
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="active", default="active"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_stream_conversation", "conversation_id"),
+        Index("ix_stream_status", "status"),
+    )
+
+
 class Vote(Base):
     __tablename__ = "vote"
 

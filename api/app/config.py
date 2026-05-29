@@ -87,6 +87,25 @@ class Settings(BaseSettings):
     # header regardless of this value, so old rows stay decryptable.
     byok_current_kek_version: int = Field(default=0, alias="BYOK_CURRENT_KEK_VERSION")
 
+    # Observability (Post-M4 hardening): both OTel tracing and Sentry error
+    # reporting are env-driven and no-op when unset. Production warns at boot
+    # if either is missing but never refuses to start — observability is
+    # optional and we'd rather serve traffic with degraded telemetry than
+    # refuse it outright.
+    #
+    # - `sentry_dsn`: Sentry SDK init target. Unset -> Sentry is a no-op.
+    # - `otel_exporter_otlp_endpoint`: OTLP/HTTP collector URL (e.g. the Fly
+    #   Honeycomb add-on, an OTel Collector sidecar, etc.). Unset -> no
+    #   tracer provider is registered and instrumentation is skipped. We
+    #   deliberately choose OTLP/HTTP (pure Python) over gRPC so we don't
+    #   need a native compile step in the Docker build.
+    # - `otel_service_name`: `service.name` resource attribute on spans.
+    sentry_dsn: str | None = Field(default=None, alias="SENTRY_DSN")
+    otel_exporter_otlp_endpoint: str | None = Field(
+        default=None, alias="OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+    otel_service_name: str = Field(default="api", alias="OTEL_SERVICE_NAME")
+
     @cached_property
     def cors_allowed_origins(self) -> list[str]:
         """Parse the comma-separated env string into a list of origins."""

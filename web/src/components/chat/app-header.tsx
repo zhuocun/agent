@@ -42,7 +42,7 @@ const FLOAT_BUTTON_TOUCH =
   "glass-regular size-11 rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 const PILL_HALF =
-  "inline-flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex h-11 w-[3.25rem] items-center justify-center rounded-full text-muted-foreground transition-colors outline-none hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring";
 
 export function AppHeader({
   onNewChat,
@@ -69,7 +69,7 @@ export function AppHeader({
           onClick={onOpenMobileNav}
           className={cn(FLOAT_BUTTON_TOUCH)}
         >
-          <Menu className="size-4" />
+          <Menu className="size-[18px]" strokeWidth={2.25} />
         </Button>
         {!sidebarOpen ? (
           <Button
@@ -79,7 +79,7 @@ export function AppHeader({
             onClick={onOpenSidebar}
             className={cn("hidden md:inline-flex", FLOAT_BUTTON)}
           >
-            <Menu className="size-4" />
+            <Menu className="size-[18px]" strokeWidth={2.25} />
           </Button>
         ) : null}
         <ModelModePicker
@@ -100,7 +100,7 @@ export function AppHeader({
             onClick={onNewChat}
             className={cn(PILL_HALF)}
           >
-            <SquarePen className="size-4" />
+            <SquarePen className="size-[18px]" strokeWidth={2.25} />
           </button>
           <span aria-hidden className="h-4 w-px bg-foreground/10" />
           <DropdownMenu>
@@ -111,7 +111,7 @@ export function AppHeader({
                   aria-label="Chat menu"
                   className={cn(PILL_HALF)}
                 >
-                  <MoreHorizontal className="size-4" />
+                  <MoreHorizontal className="size-[18px]" strokeWidth={2.25} />
                 </button>
               }
             />

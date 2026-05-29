@@ -1,6 +1,5 @@
-# Fly.io app config. App name and region are placeholders — set per env.
-app = "api-placeholder"
-primary_region = "iad"
+app = "olune-agent-server"
+primary_region = "nrt"
 kill_signal = "SIGINT"
 kill_timeout = "30s"
 

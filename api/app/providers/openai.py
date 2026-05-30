@@ -49,6 +49,7 @@ from app.providers.protocol import (
     ProviderEvent,
     UsageUpdate,
 )
+from app.providers.steering import steer_user_text
 
 
 def _safe_int(value: Any) -> int:
@@ -163,7 +164,9 @@ class OpenAIProvider:
         # Build messages: history + the current user turn. Only user/assistant
         # roles (no system role), which keeps o-series models happy.
         messages: list[dict[str, Any]] = [{"role": m.role, "content": m.text} for m in history]
-        messages.append({"role": "user", "content": user_text})
+        # Steer ONLY the current user turn (real-provider, outgoing request,
+        # never persisted). History stays verbatim. See app/providers/steering.py.
+        messages.append({"role": "user", "content": steer_user_text(user_text)})
 
         client = self._client_for(api_key)
         usage_obj: Any = None

@@ -58,6 +58,7 @@ function DialogContent({
   className,
   children,
   showGrabber = true,
+  showCloseButton = true,
   ...props
 }: DialogPrimitive.Popup.Props & {
   /**
@@ -66,6 +67,13 @@ function DialogContent({
    * want it. Defaults to `true`.
    */
   showGrabber?: boolean
+  /**
+   * Render the visible top-right ✕ close affordance. Set `false` for compact
+   * confirmation sheets that already have explicit actions (e.g. Cancel) — the
+   * close button stays in the DOM as `sr-only` so swipe-to-dismiss still routes
+   * through it. Defaults to `true`.
+   */
+  showCloseButton?: boolean
 }) {
   const isMobile = useIsMobileSheet()
   const closeRef = React.useRef<HTMLButtonElement>(null)
@@ -116,7 +124,12 @@ function DialogContent({
         <DialogPrimitive.Close
           ref={closeRef}
           data-slot="dialog-close"
-          className="absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+          // Kept mounted even when hidden: swipe-to-dismiss clicks this ref.
+          className={cn(
+            showCloseButton
+              ? "absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+              : "sr-only"
+          )}
         >
           <XIcon />
           <span className="sr-only">Close</span>

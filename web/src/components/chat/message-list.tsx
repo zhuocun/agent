@@ -22,7 +22,13 @@ function messageIdOf(child: React.ReactNode): string | null {
   return typeof id === "string" ? id : null;
 }
 
-export function MessageList({ children }: { children: React.ReactNode }) {
+export function MessageList({
+  children,
+  isTemporary = false,
+}: {
+  children: React.ReactNode;
+  isTemporary?: boolean;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLOListElement>(null);
   const atBottomRef = useRef(true);
@@ -182,8 +188,15 @@ export function MessageList({ children }: { children: React.ReactNode }) {
           ref={contentRef}
           // pt/pb clear the chat-thread chrome strips (header + safe-area-top
           // above; composer + safe-area-bottom below) so message content scrolls
-          // *under* the gradient strips rather than colliding with them.
-          className="mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5.5rem)]"
+          // *under* the gradient strips rather than colliding with them. The top
+          // padding bumps +1.5rem in a temporary chat, where the chrome strip is
+          // taller (it carries the "Temporary chat" banner above the header) —
+          // mirroring the welcome surface's delta so the first message clears it.
+          className={
+            isTemporary
+              ? "mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
+              : "mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5.5rem)]"
+          }
         >
           {Children.map(children, (child) => (
             // animate-message-in carries its own reduced-motion alternate

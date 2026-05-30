@@ -1338,7 +1338,7 @@ export function ChatThread() {
                   : "flex min-h-0 flex-1 flex-col"
               }
             >
-              <MessageList>
+              <MessageList isTemporary={isTemporary}>
                 {messages.map((m) =>
                   m.role === "user" ? (
                     <UserMessage
@@ -1426,7 +1426,7 @@ export function ChatThread() {
           if (!next) setPendingDeleteConversationId(null);
         }}
       >
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm" showCloseButton={false}>
           <DialogHeader>
             <DialogTitle>Delete conversation?</DialogTitle>
             <DialogDescription>

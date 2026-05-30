@@ -157,10 +157,6 @@ export function ModelModePicker({
           }
         />
         <DialogContent className="top-auto bottom-0 left-0 max-h-[80dvh] max-w-full translate-x-0 translate-y-0 gap-3 rounded-t-3xl rounded-b-none p-4 pb-[calc(var(--bottom-inset)+0.5rem)]">
-          <div
-            aria-hidden
-            className="mx-auto -mt-1 h-1.5 w-9 rounded-full bg-foreground/15"
-          />
           <DialogHeader>
             <DialogTitle className="text-base">Model and reasoning</DialogTitle>
             <DialogDescription className="sr-only">

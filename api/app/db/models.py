@@ -119,6 +119,14 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String, nullable=False, default="New chat")
     selected_tier_id: Mapped[str] = mapped_column(String, nullable=False)
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Public-by-link share token. NULL = unshared (the default); a non-NULL
+    # URL-safe random token = shared. Anyone holding the token can read a
+    # cost-stripped snapshot of the conversation via GET /api/share/{token}
+    # without authenticating. The truthiness of this column IS the share state
+    # — there is no separate boolean flag, so revoke is simply "set back to
+    # NULL". The UNIQUE index makes the token an unguessable primary lookup key
+    # and guards against the astronomically unlikely random collision.
+    share_token: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -132,6 +140,11 @@ class Conversation(Base):
             "user_id",
             "pinned",
             "updated_at",
+        ),
+        Index(
+            "ix_conversation_share_token",
+            "share_token",
+            unique=True,
         ),
     )
 

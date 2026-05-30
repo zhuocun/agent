@@ -47,6 +47,7 @@ from app.schemas.conversation import (
     SendMessageRequest,
 )
 from app.schemas.message import ModelAttribution
+from app.schemas.share import ShareLinkResponse
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
     SubmittedEvent,
@@ -249,6 +250,58 @@ async def delete_conversation(
         _TEMP_IDS[user.id].discard(conversation_id)
         return None
     await conversations_repo.delete_for_user(db, conversation_id, user.id)
+    return None
+
+
+@router.post("/{conversation_id}/share", response_model=ShareLinkResponse)
+async def create_share_link(
+    conversation_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShareLinkResponse:
+    """Mint (or return the existing) public-by-link share token for the convo.
+
+    Public-by-link is the explicit exception to cost transparency: a holder of
+    the token reads the conversation + model attribution but NEVER per-message
+    cost (see `GET /api/share/{token}` and `app.schemas.share`).
+
+    - Ownership-checked: 404 (not 403) if the caller doesn't own the
+      conversation, so the route never leaks that the id exists.
+    - Idempotent: re-minting an already-shared conversation returns the SAME
+      token (no rotation), so previously distributed links keep working.
+    - Anonymous owners can share too — sharing is an ownership affordance, not a
+      BYOK-gated one, so there's no `is_anonymous` gate here.
+    - Temporary chats have no DB row, so they cannot be shared (treated as not
+      owned -> 404).
+    """
+    if _is_temp_for_user(user.id, conversation_id):
+        raise not_found("conversation")
+    token = await conversations_repo.mint_share_token(db, conversation_id, user.id)
+    if token is None:
+        raise not_found("conversation")
+    return ShareLinkResponse(share_token=token, share_path=f"/share/{token}")
+
+
+@router.delete(
+    "/{conversation_id}/share", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_share_link(
+    conversation_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Revoke the conversation's share token. Ownership-checked, idempotent.
+
+    Clears `share_token` back to NULL so the previously minted public link
+    404s. Revoking an unshared (or already-revoked) conversation is a 204 no-op.
+    Not owned / missing (incl. temporary chats) -> 404, mirroring the rest of
+    this router.
+    """
+    if _is_temp_for_user(user.id, conversation_id):
+        raise not_found("conversation")
+    revoked = await conversations_repo.revoke_share_token(db, conversation_id, user.id)
+    if not revoked:
+        raise not_found("conversation")
     return None
 
 

@@ -16,6 +16,7 @@ M2 adds:
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
@@ -28,6 +29,13 @@ from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.conversation import ConversationSummary
 from app.schemas.message import ChatMessage, MessagePart
+from app.schemas.share import PublicAttribution, PublicConversation, PublicMessage
+
+# Share tokens are `secrets.token_urlsafe(_SHARE_TOKEN_BYTES)` — 24 random
+# bytes => a 32-char URL-safe base64 string (~192 bits of entropy). Unguessable
+# by brute force; the UNIQUE index on `conversation.share_token` is belt-and-
+# braces against the astronomically unlikely collision.
+_SHARE_TOKEN_BYTES = 24
 
 
 def _iso(dt: datetime) -> str:
@@ -243,3 +251,93 @@ async def delete_for_user(
     await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await db.flush()
     return True
+
+
+async def mint_share_token(
+    db: AsyncSession, conversation_id: UUID, user_id: UUID
+) -> str | None:
+    """Mint (or return the existing) share token for an owned conversation.
+
+    Idempotent: re-minting on an already-shared conversation returns the SAME
+    token (no rotation) so existing links keep working. Returns None if the
+    conversation isn't owned by the user (the route maps that to a 404 so the
+    existence of the conversation never leaks).
+    """
+    row = await owned_by(db, conversation_id, user_id)
+    if row is None:
+        return None
+    if row.share_token is None:
+        row.share_token = secrets.token_urlsafe(_SHARE_TOKEN_BYTES)
+        await db.flush()
+    return row.share_token
+
+
+async def revoke_share_token(
+    db: AsyncSession, conversation_id: UUID, user_id: UUID
+) -> bool:
+    """Clear the share token on an owned conversation. Idempotent.
+
+    Returns True if the conversation is owned (whether or not it was shared),
+    False if it isn't owned / doesn't exist. Revoking an already-unshared
+    conversation is a no-op that still returns True. Once cleared, the public
+    GET on the old token 404s.
+    """
+    row = await owned_by(db, conversation_id, user_id)
+    if row is None:
+        return False
+    if row.share_token is not None:
+        row.share_token = None
+        await db.flush()
+    return True
+
+
+async def get_public_by_share_token(
+    db: AsyncSession, share_token: str
+) -> PublicConversation | None:
+    """Return the COST-STRIPPED public view for a share token, or None.
+
+    Public-by-link: NO ownership / auth check. Looks the conversation up by its
+    unique `share_token` and builds a `PublicConversation` that structurally
+    cannot carry per-message cost (it uses `PublicMessage` / `PublicAttribution`
+    which have no cost fields). Unknown / revoked token => None (the route 404s,
+    never leaking which tokens once existed).
+    """
+    stmt = select(Conversation).where(Conversation.share_token == share_token)
+    row = (await db.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        return None
+
+    messages_stmt = (
+        select(Message)
+        .where(Message.conversation_id == row.id)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+    )
+    message_rows = (await db.execute(messages_stmt)).scalars().all()
+
+    messages: list[PublicMessage] = []
+    for m in message_rows:
+        parts_list = cast(list[MessagePart], m.parts) if m.parts is not None else []
+        # Re-project attribution through PublicAttribution so ONLY model
+        # identity survives — cost_usd / costConfidence / breakdown are dropped
+        # because the public schema has no field to receive them.
+        public_attribution: PublicAttribution | None = None
+        if m.attribution is not None:
+            attribution_dict = cast(dict[str, object], m.attribution)
+            public_attribution = PublicAttribution.model_validate(attribution_dict)
+        messages.append(
+            PublicMessage.model_validate(
+                {
+                    "id": str(m.id),
+                    "role": m.role,
+                    "parts": parts_list,
+                    "created_at": _iso(m.created_at),
+                    "attribution": public_attribution,
+                }
+            )
+        )
+
+    return PublicConversation(
+        id=str(row.id),
+        title=row.title,
+        messages=messages,
+    )

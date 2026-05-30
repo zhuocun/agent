@@ -35,6 +35,7 @@ from app.routes.bootstrap import router as bootstrap_router
 from app.routes.conversations import router as conversations_router
 from app.routes.feedback import router as feedback_router
 from app.routes.preferences import router as preferences_router
+from app.routes.share import router as share_router
 
 
 def create_app() -> FastAPI:
@@ -114,6 +115,9 @@ def create_app() -> FastAPI:
     app.include_router(account_router)
     app.include_router(account_data_router)
     app.include_router(auth_router)
+    # Public-by-link share read. Distinct prefix (/api/share), NO current_user
+    # dependency — it's the one unauthenticated read in the API.
+    app.include_router(share_router)
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:

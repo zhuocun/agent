@@ -44,13 +44,13 @@ Prefer one subagent per distinct subtask. Bias toward spawning earlier rather th
 
 After each worker returns, dispatch its output to a fresh reviewer subagent before integrating. Reviewers run in parallel across multiple worker outputs.
 
-**Reviewer input** — no more, no less:
+**Reviewer input** — the handoff is exactly this:
 
 - the exact brief the worker received
 - the worker's final artifact (diff for code; write-up for research)
 - the surrounding files needed for context
 
-The reviewer does not see the worker's intermediate reasoning, scratch work, or chat — it judges the artifact, not the process.
+The reviewer does not see the worker's intermediate reasoning, scratch work, or chat — it judges the artifact, not the process. What is withheld is the worker's reasoning (to keep the gate independent), not the reviewer's access to ground truth: beyond the handoff above, the reviewer may pull whatever it needs to check the work — primary sources, the wider repo, a test run. A context-starved reviewer is an untrustworthy one; independence means not anchoring on the worker's reasoning, not judging blind.
 
 **Reviewer output** — structured:
 
@@ -59,7 +59,7 @@ The reviewer does not see the worker's intermediate reasoning, scratch work, or 
 - **suggested fixes**: precise corrections, not paraphrased rewordings
 - **confidence**: low / medium / high, called out explicitly on judgment calls
 
-The reviewer reads only. It does not edit code.
+The reviewer does not edit the artifact or any shared deliverable — it judges, it does not author the fix (separation of duties: a reviewer that rewrites the work stops being an independent gate). But "reads only" means *no writes to the deliverable*, not passive reading: the reviewer must **ground its verdict against external truth** wherever that signal exists — run the tests, types, lint, and reproduce for code; re-check claims against primary sources for research. A verdict reached without such grounding is the unreliable case — mark it low confidence.
 
 **Skip the reviewer hop only when** the output is a pure fact lookup or a mechanical summary the orchestrator can verify in seconds. If the output could be wrong-but-plausible, route through the reviewer.
 
@@ -105,7 +105,7 @@ A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask
 
 - Verify each subtask against its original goal: scope, expected output, ownership, constraints.
 - Reconcile conflicts with surrounding code, conventions, and other concurrent subagent edits.
-- Run the relevant quality gates (typecheck, lint, targeted tests, full suite, manual smoke checks) before declaring a task done.
+- Run the relevant quality gates (typecheck, lint, targeted tests, full suite, manual smoke checks) before declaring a task done. This is the integration backstop, not a substitute for grounding at the reviewer: the final gate runs the full/integration suite to catch cross-subtask breakage, while the reviewer's grounded per-subtask checks catch defects early and locally, before they compound across the integration. Both are required.
 - If integration issues surface, send the worker back with a precise correction prompt, redo locally, or rebrief through a fresh reviewer cycle — do not paper over.
 - Surface unresolved risks, skipped checks, or known gaps explicitly in the final summary.
 

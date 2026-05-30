@@ -204,6 +204,12 @@ In order from cheapest to most invasive.
   `pull_request_read`, or `git cherry origin/main HEAD`). If it's merged,
   don't push onto the dead branch — branch off the latest `main` and open a
   new PR for the follow-up.
+- **Watch CI, then auto-merge on green**: after opening a PR, watch its CI
+  (subscribe to PR activity, or poll checks via `pull_request_read`
+  `get_check_runs`). Once all required checks pass, merge it automatically
+  (squash). If CI goes red, diagnose and push a fix rather than leaving it
+  stranded. Note merging `main` triggers the FE + BE auto-deploy, so green
+  CI is the gate.
 - **Workflow file changes**: never skip CI hooks (`--no-verify`,
   `--no-gpg-sign`). If pre-commit fails, fix and create a new commit; don't
   amend.

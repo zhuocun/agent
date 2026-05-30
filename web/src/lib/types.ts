@@ -38,6 +38,16 @@ export type SubstitutionReasonCode =
   | "deprecated_model"
   | "gateway_route";
 
+// Served-vs-requested substitution detail (PRD 01 §4.6 / PRD 07 §5). Present
+// only when the served tier/model differs from what the user requested
+// (silent-downgrade prevention). Named so the full `ModelAttribution` (private
+// surface) and the cost-stripped `PublicAttribution` (share surface) reuse one
+// shape. Mirrors `Substitution` in api/app/schemas/message.py.
+export interface Substitution {
+  reasonCode: SubstitutionReasonCode;
+  reasonText: string; // e.g. "answered by Fast because Pro was rate-limited"
+}
+
 // Faithful UI subset of PRD 07 §4.1 cost_breakdown.
 export interface LongContext {
   flat: boolean; // flat pricing: no long-context surcharge, e.g. DeepSeek (first-class positive fact)
@@ -75,10 +85,7 @@ export interface ModelAttribution {
   costConfidence: "exact" | "estimate";
   breakdown: CostBreakdown;
   // Present only when served != requested (silent-downgrade prevention).
-  substitution?: {
-    reasonCode: SubstitutionReasonCode;
-    reasonText: string; // e.g. "answered by Fast because Pro was rate-limited"
-  };
+  substitution?: Substitution;
 }
 
 export type MessagePart =
@@ -201,4 +208,51 @@ export interface SlashCommand {
   description: string;
   prompt: string;
   icon: SlashCommandIconKey;
+}
+
+// --- Public-by-link share wire shapes (cost-stripped) -----------------------
+//
+// PRD 01 §4.10 / PRD 05 §4.3 / PRD 07 §6.4: a shared-by-link conversation shows
+// the messages and the MODEL ATTRIBUTION but HIDES per-message cost. This is
+// the deliberate exception to the cost-transparency surface — anyone with the
+// link can read the conversation, so the per-turn cost ledger must never leak.
+//
+// These are NOT a filtered view over `ChatMessage` / `ModelAttribution`; they
+// are a separate, deliberately narrow shape that has NOWHERE to put a cost
+// field. The strip is therefore structural (the field can't exist), mirroring
+// `api/app/schemas/share.py`. Reuse `MessagePart`, `Substitution`,
+// `ModelTierId`, and `MessageRole` above — only the attribution differs (no
+// cost / breakdown / confidence).
+
+export interface PublicAttribution {
+  requestedTierId: ModelTierId;
+  servedTierId: ModelTierId;
+  servedModelLabel: string; // e.g. "DeepSeek Chat"
+  isByok: boolean;
+  // Present only when served != requested. Same shape as the private surface.
+  substitution?: Substitution;
+}
+
+export interface PublicMessage {
+  id: string;
+  role: MessageRole;
+  parts: MessagePart[];
+  createdAt: string; // ISO
+  // Assistant turns carry model identity; user turns omit it.
+  attribution?: PublicAttribution;
+}
+
+export interface PublicConversation {
+  id: string;
+  title: string;
+  messages: PublicMessage[];
+}
+
+// Minting a share token for a conversation returns a RELATIVE path only; the
+// FE assembles the absolute URL from its own origin (the BE never knows the
+// public origin). Re-minting an already-shared conversation is idempotent and
+// returns the SAME token.
+export interface ShareLinkResponse {
+  shareToken: string;
+  sharePath: string; // relative, e.g. "/share/<token>"
 }

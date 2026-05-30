@@ -295,6 +295,18 @@ export function postAuthUpgrade(
   return apiClient.post<AccountInfo>("/api/auth/upgrade", body, signal);
 }
 
+export function postAuthLogin(
+  email: string,
+  password: string,
+  signal?: AbortSignal,
+): Promise<AccountInfo> {
+  return apiClient.post<AccountInfo>(
+    "/api/auth/login",
+    { email, password },
+    signal,
+  );
+}
+
 export function postAuthSignout(signal?: AbortSignal): Promise<void> {
   return apiClient.post<void>("/api/auth/signout", undefined, signal);
 }

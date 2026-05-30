@@ -153,6 +153,21 @@ export interface AccountInfo {
   planLabel: string; // e.g. "Pro" — never a raw SKU
   byokEnabled: boolean;
   byokMaskedKey?: string; // e.g. "sk-…4f2a", shown only when byokEnabled
+  // Guest vs. registered discriminator (camelCase wire field). Authoritative
+  // signal for gating the sign-in CTA, BYOK, and the sign-out row. Guests are
+  // minted server-side without an email; registered accounts carry one.
+  isAnonymous: boolean;
+}
+
+// Single source of truth for the guest/registered split. Prefer the
+// authoritative `isAnonymous` wire field; fall back to email-presence only as
+// a safety net for any payload that predates the field (PRD 04 §6: guests have
+// null email). The `as` cast keeps the fallback honest if a caller passes an
+// object that hasn't been refreshed yet.
+export function isAnonymousAccount(account: AccountInfo): boolean {
+  const flagged = (account as { isAnonymous?: unknown }).isAnonymous;
+  if (typeof flagged === "boolean") return flagged;
+  return account.email.trim().length === 0;
 }
 
 // Onboarding / empty-state prompt starters (PRD 01 §4.3).

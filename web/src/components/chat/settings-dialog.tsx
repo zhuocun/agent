@@ -18,7 +18,12 @@ import { TierPicker } from "@/components/chat/tier-picker";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { UsageMeter } from "@/components/chat/usage-meter";
 import { MODEL_TIERS } from "@/lib/model-tiers";
-import type { AccountInfo, UsageBudget, UserPreferences } from "@/lib/types";
+import {
+  isAnonymousAccount,
+  type AccountInfo,
+  type UsageBudget,
+  type UserPreferences,
+} from "@/lib/types";
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -29,15 +34,6 @@ export interface SettingsDialogProps {
   onAccountChange: (next: AccountInfo) => void;
   usage: UsageBudget;
   onSignOut: () => void;
-}
-
-// Worker C audit gap: same anonymous discriminator the BYOK form uses; kept
-// local so the dialog can gate the sign-out row without leaking a typed field
-// that the wire schema hasn't shipped yet.
-function isAnonymousAccount(account: AccountInfo): boolean {
-  const flagged = (account as { isAnonymous?: unknown }).isAnonymous;
-  if (typeof flagged === "boolean") return flagged;
-  return account.email.trim().length === 0;
 }
 
 // Derive avatar initials from a display name (first + last token), capped at

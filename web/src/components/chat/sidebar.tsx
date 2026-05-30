@@ -994,7 +994,7 @@ export function Sidebar({
           if (!next) setPendingDelete(null);
         }}
       >
-        <DialogContent className="max-w-sm" showCloseButton={false}>
+        <DialogContent className="sm:max-w-sm" showCloseButton={false}>
           <DialogHeader>
             <DialogTitle>Delete conversation?</DialogTitle>
             <DialogDescription>

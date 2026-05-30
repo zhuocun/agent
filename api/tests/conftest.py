@@ -77,7 +77,7 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> Iterator[FastAPI]:
     from app.main import create_app
     from app.middleware.ratelimit import limiter
     from app.routes.conversations import _TEMP_IDS
-    from app.streaming import stop_registry
+    from app.streaming import replay_registry, stop_registry
 
     # Module-level state is shared across tests; clear it before AND after
     # yield so a flaky prior test cannot leak temp ids into this one. The
@@ -85,8 +85,11 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> Iterator[FastAPI]:
     # its counter dict so an unrelated test's 30 POSTs cannot trip a 429 here.
     # The in-process stop registry is process-wide too — clear it so a test
     # that requested a stop and failed before teardown can't pollute siblings.
+    # The resumable-stream replay registry is likewise process-wide — clear it
+    # so a leftover ReplayBuffer can't leak into an unrelated test.
     _TEMP_IDS.clear()
     stop_registry._STOP_REQUESTS.clear()
+    replay_registry._BUFFERS.clear()
     _storage = limiter._storage
     if hasattr(_storage, "storage"):
         _storage.storage.clear()
@@ -110,6 +113,7 @@ def app(session_factory: async_sessionmaker[AsyncSession]) -> Iterator[FastAPI]:
     finally:
         _TEMP_IDS.clear()
         stop_registry._STOP_REQUESTS.clear()
+        replay_registry._BUFFERS.clear()
 
 
 @pytest.fixture

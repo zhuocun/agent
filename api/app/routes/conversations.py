@@ -55,7 +55,12 @@ from app.schemas.stream_events import (
     SubmittedEvent,
     TerminalEvent,
 )
-from app.streaming.handler import stream_and_persist
+from app.streaming import replay_registry
+from app.streaming.handler import (
+    _derive_session_factory,
+    spawn_detached_producer,
+    stream_and_persist,
+)
 from app.streaming.sse import (
     encode_answer_delta,
     encode_submitted,
@@ -624,6 +629,55 @@ async def send_message(
     # conditions before scheduling the detached autogen task.
     is_initial = not body.regenerate and body.edit_message_id is None
 
+    settings = get_settings()
+
+    # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
+    # provider pump as a DETACHED producer that survives this connection and
+    # appends every wire event to an in-process ReplayBuffer; this POST then
+    # SUBSCRIBES and tails the buffer. A client disconnect stops the tailing but
+    # NOT the producer (the semantics inversion). Reconnects re-subscribe via
+    # `GET .../stream/{stream_id}`. Temporary chats (no `stream_id`, nothing
+    # persisted, nothing to reconnect to) always take the legacy inline path,
+    # even with the flag on.
+    if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
+        ttl = settings.resumable_buffer_ttl_seconds
+        buffer = replay_registry.create(stream_id, ttl_seconds=ttl)
+        # The detached producer owns a FRESH session derived from THIS request's
+        # engine (the request session closes when the POST returns). Using
+        # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite
+        # file rather than the process-wide env DATABASE_URL factory.
+        spawn_detached_producer(
+            buffer=buffer,
+            session_factory=_derive_session_factory(db),
+            provider=provider,
+            binding=binding,
+            requested_tier_id=body.tier_id,
+            conversation_id=conversation_id,
+            user_message_id=user_message_id,
+            user_text=provider_user_text,
+            history=history,
+            is_temporary=is_temp,
+            is_initial=is_initial,
+            user_id=user.id,
+            api_key=resolved_api_key,
+            stream_id=stream_id,
+        )
+
+        async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
+            # Subscribe at offset 0 and tail. On client disconnect we simply
+            # stop iterating (the generator is GC'd / aclosed) — the producer
+            # keeps running and persisting. Subscribers NEVER persist.
+            subscription = await buffer.subscribe()
+            async for sse_event in subscription.events():
+                if await request.is_disconnected():
+                    return
+                yield sse_event
+
+        return _eventsource_response(
+            _subscriber_stream(),
+            media_type="text/event-stream",
+        )
+
     async def _event_stream() -> AsyncIterator[ServerSentEvent]:
         async for sse_event in stream_and_persist(
             request=request,
@@ -646,6 +700,76 @@ async def send_message(
 
     return _eventsource_response(
         _event_stream(),
+        media_type="text/event-stream",
+    )
+
+
+@router.get("/{conversation_id}/stream/{stream_id}")
+async def reconnect_stream(
+    conversation_id: UUID,
+    stream_id: UUID,
+    request: Request,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> EventSourceResponse:
+    """Re-attach to a live (or just-finished) resumable stream (PRD 04 §5.1 P1).
+
+    Same-device replay: subscribe to the in-process ReplayBuffer for
+    `stream_id`, replay every buffered event from the start, then tail live
+    until the detached producer is `done`. If the stream already terminated but
+    its buffer is still within TTL, replay the full final sequence then close.
+
+    Gated behind `resumable_streams_enabled` — when the flag is OFF the feature
+    is not exposed, so this 404s (feature disabled), matching the rest of the
+    router's "never reveal that the id exists" stance.
+
+    Ownership / IDOR (404, never 403):
+    - Conversation not owned by the caller (or missing / temporary) → 404.
+    - Stream row missing, or belonging to a DIFFERENT conversation → 404.
+    - No live/within-TTL buffer for the stream (never started on this worker,
+      or evicted past TTL) → 404. Multi-worker: a reconnect that lands on a
+      different worker than the producer finds no buffer → 404 (see the
+      `replay_registry` module + `resumable_streams_enabled` config caveat).
+    """
+    settings = get_settings()
+    if not settings.resumable_streams_enabled:
+        # Feature disabled — do not expose new behavior. 404, not 403.
+        raise not_found("stream")
+
+    # Ownership: the conversation must be owned by the caller. Temporary chats
+    # have no DB row / stream and are not resumable, so they fall through to 404.
+    if _is_temp_for_user(user.id, conversation_id):
+        raise not_found("stream")
+    owner_row = await conversations_repo.owned_by(db, conversation_id, user.id)
+    if owner_row is None:
+        raise not_found("stream")
+
+    # The stream must exist AND belong to THIS conversation (block cross-convo
+    # IDOR: a valid stream id from another of the user's conversations must not
+    # leak here either).
+    stream_row = await streams_repo.get_by_id(db, stream_id=stream_id)
+    if stream_row is None or stream_row.conversation_id != conversation_id:
+        raise not_found("stream")
+
+    # Live (or within-TTL done) buffer for this stream on this worker?
+    buffer = replay_registry.get(
+        stream_id, ttl_seconds=settings.resumable_buffer_ttl_seconds
+    )
+    if buffer is None:
+        raise not_found("stream")
+
+    async def _replay_stream() -> AsyncIterator[ServerSentEvent]:
+        # Replay from offset 0 then tail. Disconnect just stops tailing; the
+        # producer (and any other subscribers) are unaffected. This subscriber
+        # NEVER persists.
+        subscription = await buffer.subscribe()
+        async for sse_event in subscription.events():
+            if await request.is_disconnected():
+                return
+            yield sse_event
+
+    return _eventsource_response(
+        _replay_stream(),
         media_type="text/event-stream",
     )
 

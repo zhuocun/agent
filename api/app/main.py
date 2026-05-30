@@ -42,15 +42,16 @@ from app.routes.conversations import router as conversations_router
 from app.routes.feedback import router as feedback_router
 from app.routes.preferences import router as preferences_router
 from app.routes.share import router as share_router
+from app.streaming.handler import cancel_all_producers
 from app.streaming.reaper import reap_once, run_reaper_loop
 
 _log = structlog.get_logger(__name__)
 
 
 def _build_lifespan(settings: Settings) -> Any:
-    """Build the ASGI lifespan wiring the orphan-stream reaper.
+    """Build the ASGI lifespan: orphan-stream reaper + resumable-producer cleanup.
 
-    Two trigger seams (see `app.streaming.reaper`):
+    Two reaper trigger seams (see `app.streaming.reaper`):
 
     1. Startup sweep: one best-effort `reap_once` on boot. A fresh process
        knows any `active` `stream` row it didn't create is orphaned from a
@@ -67,6 +68,13 @@ def _build_lifespan(settings: Settings) -> Any:
     one loop per process — harmless (the bulk UPDATE is idempotent) but a
     production-grade reaper belongs in a single coordinated job; see the
     `stream_reap_after_seconds` doc in `app.config`.
+
+    Shutdown also cancels any detached resumable-stream producers
+    (`cancel_all_producers`). When `resumable_streams_enabled` is on, the
+    provider pump runs as a detached task that outlives its originating request;
+    on a graceful shutdown / deploy we cancel any still-running producer so it
+    doesn't leak past the process. No-op when the flag is off (the producer set
+    is empty). A hard crash bypasses this — that gap is the orphan-reaper's job.
     """
 
     @contextlib.asynccontextmanager
@@ -95,6 +103,9 @@ def _build_lifespan(settings: Settings) -> Any:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            # Cancel any detached resumable-stream producers (no-op when the
+            # resumable flag is off — the producer set is empty).
+            await cancel_all_producers()
 
     return lifespan
 

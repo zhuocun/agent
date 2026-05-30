@@ -114,6 +114,22 @@ async def reap_stale_active(
     return cast("CursorResult[Any]", result).rowcount
 
 
+async def get_by_id(
+    db: AsyncSession,
+    *,
+    stream_id: UUID,
+) -> Stream | None:
+    """Return the `stream` row for `stream_id`, else None.
+
+    Used by the resumable-stream reconnect endpoint to assert the stream
+    belongs to the requested conversation (ownership is checked one hop up via
+    the conversation). No status filter — a reconnect may land after the row is
+    already `done` / `stopped` (replay the final buffered sequence within TTL).
+    """
+    stmt = select(Stream).where(Stream.id == stream_id)
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 async def get_active_for_conversation(
     db: AsyncSession,
     *,

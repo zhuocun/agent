@@ -70,6 +70,7 @@ from app.schemas.stream_events import (
     SubmittedEvent,
     TerminalEvent,
 )
+from app.streaming.replay_registry import ReplayBuffer
 from app.streaming.sse import (
     encode_answer_delta,
     encode_error,
@@ -88,6 +89,45 @@ _struct_log = structlog.get_logger(__name__)
 # be garbage-collected mid-flight under some event-loop policies. Keep a
 # module-level strong-ref set and discard each entry in the done callback.
 _BG_TASKS: set[asyncio.Task[None]] = set()
+
+# Detached resumable-stream PRODUCER tasks (flag ON only). Held strongly here so
+# they survive the POST request that spawned them (the producer outlives its
+# originating connection — that is the whole point) and so the app lifespan can
+# cancel any still-running producer on shutdown. Each entry discards itself in a
+# done callback. See `run_detached_producer` + `cancel_all_producers`.
+_PRODUCER_TASKS: set[asyncio.Task[None]] = set()
+
+
+class _NeverDisconnectedRequest:
+    """A stand-in `Request` whose socket never reports disconnected.
+
+    The detached producer (flag ON) must NOT be torn down by the originating
+    client closing its HTTP connection — that is the resumable-stream semantics
+    inversion. `stream_and_persist` polls `request.is_disconnected()` to detect
+    a stop; by handing it this stub, the ONLY live cancel paths left are the
+    dedicated stop endpoint (via `stop_registry`, which the handler also polls)
+    and natural completion. Disconnect of the POST/reconnect subscriber simply
+    stops that subscriber tailing; the producer keeps running.
+    """
+
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+async def cancel_all_producers() -> None:
+    """Cancel every in-flight detached producer. Called on app shutdown.
+
+    Mirrors the lifespan's handling of other detached tasks: a clean cancel so a
+    producer doesn't leak past process shutdown. A hard crash (SIGKILL / OOM)
+    still bypasses this, leaving the durable `stream` row `active` — that gap is
+    the orphan-reaper's job (the same gap the non-resumable path has today).
+    """
+    tasks = list(_PRODUCER_TASKS)
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
 
 @dataclass(frozen=True)
@@ -729,3 +769,107 @@ async def stream_and_persist(
             # genuine provider exception would have surfaced via the queue.
             with contextlib.suppress(asyncio.CancelledError):
                 await pump_task
+
+
+async def run_detached_producer(
+    *,
+    buffer: ReplayBuffer,
+    session_factory: async_sessionmaker[AsyncSession],
+    provider: Provider,
+    binding: TierBinding,
+    requested_tier_id: ModelTierId,
+    conversation_id: UUID | None,
+    user_message_id: UUID,
+    user_text: str,
+    history: list[ChatMessage],
+    is_temporary: bool,
+    is_initial: bool = True,
+    user_id: UUID | None = None,
+    api_key: str | None = None,
+    stream_id: UUID | None = None,
+) -> None:
+    """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
+
+    Runs the EXACT same producer body as the flag-off path — same provider pump,
+    accumulation, cost ledger, usage rollup, attribution, persistence, title
+    autogen — so cost/budget/lifecycle semantics are identical. The only
+    differences are structural, not behavioral:
+
+    1. It owns a FRESH DB session (the originating POST request's session closes
+       as soon as the POST returns; the producer outlives it). The session is
+       derived from the process-wide `session_factory` so persistence lands on
+       the right engine in both prod and tests.
+    2. It hands `stream_and_persist` a `_NeverDisconnectedRequest`, so a client
+       disconnect can NOT tear the turn down. The live cancel paths that remain
+       are the dedicated stop endpoint (via `stop_registry`, polled inside
+       `stream_and_persist`) and natural completion — exactly the resumable
+       semantics.
+    3. Instead of yielding wire events to a socket, it APPENDS each event to the
+       `ReplayBuffer`, from which the POST connection + any reconnects tail.
+
+    On completion (terminal / stopped / error) — or an unexpected exception — it
+    `mark_done`s the buffer so every subscriber drains and closes. ONLY this
+    producer persists; subscribers never write to the DB, so a reconnect cannot
+    double-persist or double-count.
+    """
+    terminal_kind = "stopped"  # default: no terminal/error frame ⇒ stopped/cancelled
+    try:
+        async with session_factory() as session:
+            async for event in stream_and_persist(
+                request=_NeverDisconnectedRequest(),  # type: ignore[arg-type]
+                db=session,
+                provider=provider,
+                binding=binding,
+                requested_tier_id=requested_tier_id,
+                conversation_id=conversation_id,
+                user_message_id=user_message_id,
+                user_text=user_text,
+                history=history,
+                is_temporary=is_temporary,
+                is_initial=is_initial,
+                user_id=user_id,
+                api_key=api_key,
+                stream_id=stream_id,
+            ):
+                # Mirror the last frame kind so the buffer's terminal_kind is
+                # observable. `terminal`/`error` are the only closing frames;
+                # absence of either means the stop-path teardown ran (stopped).
+                if event.event == "terminal":
+                    terminal_kind = "done"
+                elif event.event == "error":
+                    terminal_kind = "error"
+                await buffer.append(event)
+    except asyncio.CancelledError:
+        # Shutdown/lifespan cancel. `stream_and_persist` already closed out its
+        # own durable `stream` bookkeeping in its CancelledError branch before
+        # this propagated; we just close the buffer so subscribers drain.
+        terminal_kind = "stopped"
+        with contextlib.suppress(Exception):
+            await buffer.mark_done(terminal_kind=terminal_kind)
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        # `stream_and_persist` already converts provider errors into an `error`
+        # frame internally; reaching here means an unexpected failure. Surface
+        # nothing to a socket (there isn't one) — just close the buffer.
+        log.warning("resumable.producer.failed", exc_info=exc)
+        terminal_kind = "error"
+    finally:
+        # Idempotent: a natural terminal already set the kind via the loop; the
+        # CancelledError branch marked done before re-raising. This is the
+        # normal close for the non-cancelled paths.
+        with contextlib.suppress(Exception):
+            await buffer.mark_done(terminal_kind=terminal_kind)
+
+
+def spawn_detached_producer(
+    **kwargs: Any,
+) -> asyncio.Task[None]:
+    """Spawn `run_detached_producer` as a tracked, GC-safe background task.
+
+    Held strongly in `_PRODUCER_TASKS` so it survives the POST request and so
+    the lifespan can cancel it on shutdown. Discards itself on completion.
+    """
+    task = asyncio.create_task(run_detached_producer(**kwargs))
+    _PRODUCER_TASKS.add(task)
+    task.add_done_callback(_PRODUCER_TASKS.discard)
+    return task

@@ -39,7 +39,9 @@ from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.protocol import ChatMessage as ProviderChatMessage
+from app.providers.router import route_auto
 from app.providers.tiers import get_binding
+from app.schemas.common import SubstitutionReasonCode
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.conversation import (
     CreateConversationRequest,
@@ -567,6 +569,36 @@ async def send_message(
 
     provider = build_provider()
 
+    # Auto-tier routing. When the user picked `auto`, run the v0 complexity
+    # heuristic (providers/router.py) to choose the concrete tier that actually
+    # serves + bills this turn. We rebind `binding` to the routed tier so:
+    #   - pricing bills the model actually served (compute_cost_breakdown reads
+    #     `binding`), and
+    #   - `resolve_served_tier(binding)` surfaces a concrete served tier on the
+    #     wire (the routed binding is fast/smart/pro, never `auto`).
+    # `requested_tier_id` stays `auto` (threaded separately), so the FE still
+    # shows the user requested Auto.
+    #
+    # Honest surfacing: when the routed tier is CHEAPER than the auto baseline
+    # (`smart`), we set a router-side `auto_downgrade` substitution so the
+    # downgrade is visible on the wire — never silent (PRD §2.2.4 / §7.4).
+    # `auto_downgrade` is the only auto-routing reason code the FE renders
+    # (web/src/lib/types.ts::SubstitutionReasonCode). Routing to baseline or
+    # escalating above it emits no substitution. The router-side reason is the
+    # SEED; a real provider fallback overwrites it inside the handler (provider
+    # fallback wins precedence).
+    router_substitution: SubstitutionReasonCode | None = None
+    settings_for_routing = get_settings()
+    if body.tier_id == "auto" and settings_for_routing.auto_routing_enabled:
+        routed = route_auto(provider_user_text, history)
+        routed_binding = get_binding(routed.tier_id, settings=settings_for_routing)
+        # Defensive: a known concrete tier always has a binding; fall back to the
+        # original `auto` binding rather than 500 if the registry ever diverges.
+        if routed_binding is not None:
+            binding = routed_binding
+        if routed.is_downgrade:
+            router_substitution = "auto_downgrade"
+
     # Durable stream lifecycle (PRD 04 §5.1). Persist an `active` stream row for
     # every NON-temporary turn (default / regenerate / edit). The id is threaded
     # into `stream_and_persist`, which transitions it to done / stopped / error
@@ -608,6 +640,7 @@ async def send_message(
             user_id=user.id,
             api_key=resolved_api_key,
             stream_id=stream_id,
+            router_substitution=router_substitution,
         ):
             yield sse_event
 

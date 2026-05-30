@@ -283,11 +283,15 @@ def is_known_tier(tier_id: str) -> bool:
     return any(b.tier.id == tier_id for b in TIER_BINDINGS)
 
 
-# Auto today routes to the same model class as "smart" (deepseek-chat on the
-# canonical DeepSeek backend, claude-sonnet-4-6 on Anthropic, gpt-4o on OpenAI).
-# When real routing lands this constant becomes a per-request decision; for now
-# it is a single mapping. The FE attribution row requires a concrete served
-# tier (see `web/src/components/chat/attribution-row.tsx::assertServedTier`).
+# Fallback served tier for an UNROUTED `auto` binding. The per-request router
+# (`providers/router.py`, wired in `routes/conversations.py::send_message`)
+# rebinds `auto` to a concrete tier BEFORE attribution, so in the routed path
+# `resolve_served_tier` never sees an `auto` binding. This constant is the
+# safety net for the unrouted path — `AUTO_ROUTING_ENABLED=false`, or any future
+# call site that bills the raw `auto` binding — and matches the historical
+# auto->smart mapping (deepseek-chat on DeepSeek, claude-sonnet on Anthropic,
+# gpt-4o on OpenAI). The FE attribution row requires a concrete served tier (see
+# `web/src/components/chat/attribution-row.tsx::assertServedTier`).
 _AUTO_RESOLVES_TO: ModelTierId = "smart"
 
 

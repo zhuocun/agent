@@ -61,7 +61,7 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.tiers import TierBinding, get_binding
-from app.schemas.common import ModelTierId
+from app.schemas.common import ModelTierId, SubstitutionReasonCode
 from app.schemas.message import ModelAttribution
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
@@ -102,6 +102,35 @@ class _PumpError:
     """
 
     exc: BaseException
+
+
+def _fold_complete_substitution(
+    ev: Complete,
+    current: tuple[str | None, str | None, str | None, str | None],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Fold a `Complete` event's substitution into the running sub state.
+
+    `current` is the `(sub_code, sub_provider, sub_model, sub_label)` tuple
+    accumulated so far — it may already hold a router-side `auto_downgrade`
+    seed. A provider-side fallback WINS precedence and overwrites the seed,
+    bringing the real served-model triple with it. But this only happens when
+    the provider ACTUALLY substituted: a `Complete` with `substitution is None`
+    means "no provider fallback" and MUST NOT clobber the router seed (the
+    silent-downgrade-leak invariant). In that case `current` is returned
+    unchanged.
+
+    Centralizing this so the three `Complete` consumers (the two inline
+    streaming branches AND the disconnect/stop drain branch) can never drift
+    apart on the guard.
+    """
+    if ev.substitution is None:
+        return current
+    return (
+        ev.substitution,
+        ev.substituted_provider,
+        ev.substituted_model,
+        ev.substituted_display_label,
+    )
 
 
 def _derive_session_factory(
@@ -202,6 +231,7 @@ async def stream_and_persist(
     user_id: UUID | None = None,
     api_key: str | None = None,
     stream_id: UUID | None = None,
+    router_substitution: SubstitutionReasonCode | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -222,6 +252,16 @@ async def stream_and_persist(
     - `api_key` is the resolved BYOK key for this turn (None means platform
       default). Passed through to `provider.stream(...)`. The `is_byok` flag
       on the rollup row is derived from `api_key is not None`.
+
+    `router_substitution` (auto-routing): a substitution reason decided BEFORE
+    the provider call — set by the route when the `auto` tier routed to a
+    cheaper-than-baseline concrete tier (`auto_downgrade`). It seeds the
+    attribution's substitution so an auto downgrade is surfaced honestly. The
+    PROVIDER's own substitution (a real fallback emitted on the `Complete`
+    event) takes PRECEDENCE: a provider fallback ON TOP of an auto route
+    describes a more urgent, accurate served-vs-requested delta, so it wins and
+    overwrites the router-side seed (it carries the actual served model label).
+    When neither side substitutes, no `substitution` is emitted.
     """
     # Emit `submitted` immediately.
     yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
@@ -233,10 +273,19 @@ async def stream_and_persist(
     final_usage = UsageUpdate()
     emitted_reasoning_done = False
     is_byok_turn = api_key is not None
-    # M4: substitution metadata threads from the provider's Complete event
-    # through to build_attribution(...). When the provider didn't substitute
-    # this stays None and the wire emits no `substitution` field.
-    sub_code: str | None = None
+    # Substitution metadata threaded into build_attribution(...). Two sources
+    # feed it, with provider-side winning (see below + the docstring):
+    #  1. Router-side (auto-routing): seeded here from `router_substitution`.
+    #     This is the `auto_downgrade` decided before the provider call. It has
+    #     no substituted model triple — the routed concrete `binding` already
+    #     carries the served tier/label, so the attribution renders correctly
+    #     off the binding alone.
+    #  2. Provider-side (M4 fallback): the provider's `Complete` event. When the
+    #     provider substituted, `_apply_event` / the Complete branch OVERWRITE
+    #     the router-side seed (provider fallback wins precedence) and bring the
+    #     real served-model triple with it.
+    # When both stay None the wire emits no `substitution` field.
+    sub_code: str | None = router_substitution
     sub_provider: str | None = None
     sub_model: str | None = None
     sub_label: str | None = None
@@ -326,10 +375,16 @@ async def stream_and_persist(
             final_usage = ev
         elif isinstance(ev, Complete):
             final_usage = ev.usage
-            sub_code = ev.substitution
-            sub_provider = ev.substituted_provider
-            sub_model = ev.substituted_model
-            sub_label = ev.substituted_display_label
+            # Provider-side fallback wins over the router-side seed, but only
+            # when the provider ACTUALLY substituted (see helper docstring) —
+            # a `substitution is None` here must NOT clobber a router-side
+            # `auto_downgrade` already in `sub_code`. Shared with both inline
+            # streaming branches via `_fold_complete_substitution`.
+            sub_code, sub_provider, sub_model, sub_label = (
+                _fold_complete_substitution(
+                    ev, (sub_code, sub_provider, sub_model, sub_label)
+                )
+            )
 
     try:
         while True:
@@ -465,10 +520,15 @@ async def stream_and_persist(
                 final_usage = ev
             elif isinstance(ev, Complete):
                 final_usage = ev.usage
-                sub_code = ev.substitution
-                sub_provider = ev.substituted_provider
-                sub_model = ev.substituted_model
-                sub_label = ev.substituted_display_label
+                # Provider-side fallback wins over the router-side seed, but
+                # only when the provider ACTUALLY substituted; a `None` here
+                # must not clobber a router-side `auto_downgrade` seed. Shared
+                # with the drain branch via `_fold_complete_substitution`.
+                sub_code, sub_provider, sub_model, sub_label = (
+                    _fold_complete_substitution(
+                        ev, (sub_code, sub_provider, sub_model, sub_label)
+                    )
+                )
 
         # Provider finished cleanly. Compute attribution and emit terminal.
         breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)

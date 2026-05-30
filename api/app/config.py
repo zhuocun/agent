@@ -164,6 +164,14 @@ class Settings(BaseSettings):
         default=300, alias="STREAM_REAP_INTERVAL_SECONDS"
     )
 
+    # Auto-tier routing. When True (default), an `auto` request runs the v0
+    # complexity heuristic (`providers/router.py`) and is served by the routed
+    # concrete tier (fast / smart / pro). When False, `auto` falls back to its
+    # legacy static behavior (served by the `smart`-class binding) so the
+    # routing layer can be killed without a redeploy. Disabling does NOT change
+    # any non-auto tier.
+    auto_routing_enabled: bool = Field(default=True, alias="AUTO_ROUTING_ENABLED")
+
     @property
     def deepseek_key(self) -> str | None:
         """Effective DeepSeek key: `DEEPSEEK_API_KEY`, else `OPENAI_API_KEY`.

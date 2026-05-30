@@ -1,5 +1,8 @@
 "use client";
 
+import { AlignLeft, Lightbulb, PenLine, Sparkles } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
 export interface WelcomeScreenProps {
   userName?: string;
   exiting?: boolean;
@@ -16,13 +19,26 @@ function buildGreeting(userName?: string): string {
   return userName ? `Hello, ${userName}` : "Hello";
 }
 
-// Authoring placeholders — quiet objects that hint at variety of use without
-// performing a feature pitch.
-const PROMPTS: readonly string[] = [
-  "Explain a concept like I'm new to it",
-  "Help me draft a message",
-  "Summarize this for me",
-  "Brainstorm with me",
+function formatDate(): string {
+  // Locale-aware; never hardcode field order. iOS-lockscreen-style eyebrow.
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  }).format(new Date());
+}
+
+interface Prompt {
+  icon: LucideIcon;
+  label: string;
+}
+
+// Quiet objects that hint at variety of use without performing a feature pitch.
+const PROMPTS: readonly Prompt[] = [
+  { icon: Lightbulb, label: "Explain a concept, simply" },
+  { icon: PenLine, label: "Help me draft a message" },
+  { icon: AlignLeft, label: "Summarize something for me" },
+  { icon: Sparkles, label: "Brainstorm ideas with me" },
 ];
 
 export function WelcomeScreen({
@@ -31,6 +47,7 @@ export function WelcomeScreen({
   onPromptSelect,
 }: WelcomeScreenProps) {
   const heading = buildGreeting(userName);
+  const today = formatDate();
 
   return (
     <div className="flex h-full flex-col items-center justify-center px-4">
@@ -42,12 +59,26 @@ export function WelcomeScreen({
             // inline transition the same way it zeroes `.animate-welcome-enter`.
             // Without the hook, prefers-reduced-motion would still see a 200ms
             // opacity/transform tween here even though the JS timer is source
-            // of truth for the seam.
-            ? "animate-welcome-exit flex w-full max-w-3xl flex-col items-center text-center transition-[opacity,transform] duration-200 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] opacity-0 -translate-y-2"
-            : "flex w-full max-w-3xl flex-col items-center text-center animate-welcome-enter"
+            // of truth for the seam. On exit the whole block fades/translates as
+            // one unit; the children's already-finished enter animations don't
+            // replay.
+            ? "animate-welcome-exit flex w-full max-w-2xl flex-col items-center text-center transition-[opacity,transform] duration-200 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] opacity-0 -translate-y-2"
+            // Entrance choreography lives on each child below (staggered via
+            // inline animationDelay). The wrapper itself carries layout only.
+            : "flex w-full max-w-2xl flex-col items-center text-center"
         }
       >
-        <h1 className="text-4xl font-medium tracking-tight md:text-5xl lg:text-6xl">
+        <p
+          className="animate-welcome-enter mb-3 text-sm font-medium tracking-tight text-muted-foreground"
+          style={{ animationDelay: "0ms" }}
+        >
+          {today}
+        </p>
+
+        <h1
+          className="animate-welcome-enter text-4xl font-medium tracking-tight md:text-5xl lg:text-6xl"
+          style={{ animationDelay: "70ms" }}
+        >
           {heading}
         </h1>
 
@@ -55,14 +86,16 @@ export function WelcomeScreen({
           aria-label="Suggested prompts"
           className="mt-16 grid w-full grid-cols-1 gap-3 md:mt-20 md:grid-cols-2"
         >
-          {PROMPTS.map((prompt) => (
-            <li key={prompt} className="list-none">
+          {PROMPTS.map(({ icon: Icon, label }, index) => (
+            <li key={label} className="list-none">
               <button
                 type="button"
-                onClick={() => onPromptSelect?.(prompt)}
-                className="w-full rounded-2xl bg-foreground/[0.04] p-5 text-left text-sm leading-6 text-foreground transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-background md:text-base"
+                onClick={() => onPromptSelect?.(label)}
+                className="animate-welcome-enter flex w-full items-center gap-3 rounded-2xl bg-foreground/[0.04] p-5 text-left text-sm leading-6 text-foreground transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-background md:text-base"
+                style={{ animationDelay: `${150 + index * 60}ms` }}
               >
-                {prompt}
+                <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                {label}
               </button>
             </li>
           ))}

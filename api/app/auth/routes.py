@@ -7,6 +7,12 @@
   to point at the same user without any data migration. This is the whole
   reason the anonymous-first seam is shaped this way (plan §"Auth seam").
 
+- `POST /api/auth/login` -- authenticate against an existing registered user.
+  Unlike upgrade (which merges the current anonymous identity in place), login
+  is a HANDOFF: the current session is repointed at the target user and the
+  previous anonymous user + its guest scratch are discarded. Failures are a
+  single uniform 401 that never reveals whether the email exists.
+
 - `POST /api/auth/signout` -- clears the cookie and revokes the session row.
 
 Passkey / magic-link / email-verification ceremonies are deferred. The MVP
@@ -20,8 +26,10 @@ their first successful login. Bcrypt remains a runtime dep for that fallback.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import structlog
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import EmailStr
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -40,6 +48,7 @@ from app.db.models import User
 from app.db.repositories import api_keys, users
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
+from app.middleware.ratelimit import limiter
 from app.schemas.account import AccountInfo
 from app.schemas.common import CamelModel
 from app.security.passwords import (
@@ -47,6 +56,7 @@ from app.security.passwords import (
 )
 from app.security.passwords import (
     hash_password,
+    verify_password,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -73,6 +83,20 @@ class UpgradeRequest(CamelModel):
     password: str | None = None
 
 
+class LoginRequest(CamelModel):
+    """Body for POST /api/auth/login.
+
+    Both fields are required: login authenticates against an existing
+    registered user, so unlike upgrade there is no passwordless variant here.
+    `EmailStr` enforces basic validity; everything else (no such user, wrong
+    password, password-less account) collapses into a single uniform 401 in
+    the route -- we never reveal whether the email exists.
+    """
+
+    email: EmailStr
+    password: str
+
+
 def _already_upgraded() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -97,6 +121,47 @@ def _email_taken() -> AppError:
     )
 
 
+def _invalid_credentials() -> AppError:
+    """Single uniform 401 for every login failure mode.
+
+    Returned identically whether the email is unknown, the account has no
+    password set, or the password is wrong -- the title/body must not let a
+    caller distinguish "no such account" from "wrong password" (no account
+    enumeration). The matching dummy-verify in the route closes the timing
+    side-channel for the unknown-email branch.
+    """
+    return AppError(
+        ErrorEnvelope(
+            code="INVALID_CREDENTIALS",
+            severity="error",
+            title="Sign-in failed",
+            body="Incorrect email or password.",
+        ),
+        status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _set_session_cookie(
+    response: Response,
+    settings: Settings,
+    session_id: str,
+) -> None:
+    """Emit `Set-Cookie sid=...` for `session_id` with the standard flags.
+
+    The lowest-level cookie writer shared by the re-sign path (existing
+    session id, used by upgrade/login when reusing the session) and the
+    fresh-session path (a new session id minted during login when the caller
+    arrived without a usable cookie). Mirrors `dependency._create_anonymous`'s
+    cookie emission so every issuance uses the same signer + flags.
+    """
+    signer = build_signer(settings.session_secret)
+    response.set_cookie(
+        key=settings.cookie_name or COOKIE_NAME_DEFAULT,
+        value=dump_session_id(signer, session_id),
+        **cookie_kwargs(settings),
+    )
+
+
 def _resign_session_cookie(
     response: Response,
     settings: Settings,
@@ -111,12 +176,7 @@ def _resign_session_cookie(
     this one doesn't leave the client stuck on a stale signature, and so
     upgraded clients always leave with a fresh `Max-Age` window.
     """
-    signer = build_signer(settings.session_secret)
-    response.set_cookie(
-        key=settings.cookie_name or COOKIE_NAME_DEFAULT,
-        value=dump_session_id(signer, str(session.id)),
-        **cookie_kwargs(settings),
-    )
+    _set_session_cookie(response, settings, str(session.id))
 
 
 async def _maybe_rehash_password(
@@ -139,8 +199,10 @@ async def _maybe_rehash_password(
 
 
 @router.post("/upgrade", response_model=AccountInfo)
+@limiter.limit(lambda: get_settings().rate_limit_upgrade)
 async def upgrade(
     body: UpgradeRequest,
+    request: Request,
     response: Response,
     user: User = Depends(current_user),
     session: DbSession | None = Depends(current_session),
@@ -203,6 +265,101 @@ async def upgrade(
     )
 
 
+# A throwaway argon2id digest used purely to spend a verify cycle when the
+# target user is missing, so the unknown-email branch costs roughly the same
+# wall-clock time as a wrong-password branch (timing-enumeration mitigation).
+# Best-effort: minted once at import; the plaintext it hashes is irrelevant.
+_DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-timing-equalization")
+
+
+@router.post("/login", response_model=AccountInfo)
+@limiter.limit(lambda: get_settings().rate_limit_login)
+async def login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(current_user),
+    session: DbSession | None = Depends(current_session),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> AccountInfo:
+    """Authenticate against an existing registered user (session handoff).
+
+    Unlike `upgrade` (in-place merge of the current anonymous identity), login
+    is a HANDOFF: the current session is repointed at the target user and the
+    previous anonymous user + its guest scratch are discarded. Any guest data
+    the caller created in this session is intentionally NOT migrated -- it is
+    upgrade's job to keep guest work, login switches to an existing account.
+
+    Failures are a single uniform 401 (`INVALID_CREDENTIALS`) that never lets
+    a caller distinguish "no such email" from "wrong password" / "no password
+    set" -- the message is identical across all three, and a dummy verify is
+    run when the user is missing to flatten the timing side-channel.
+    """
+    normalized_email = body.email.strip().lower()
+
+    stmt = select(User).where(
+        User.email == normalized_email, User.is_anonymous == False  # noqa: E712
+    )
+    target = (await db.execute(stmt)).scalar_one_or_none()
+
+    if target is None or target.password_hash is None:
+        # Spend a verify cycle so the unknown-email / no-password branches cost
+        # roughly the same as a real verify (timing-enumeration mitigation),
+        # then fail uniformly.
+        verify_password(body.password, _DUMMY_PASSWORD_HASH)
+        raise _invalid_credentials()
+
+    ok, needs_rehash = verify_password(body.password, target.password_hash)
+    if not ok:
+        raise _invalid_credentials()
+
+    if needs_rehash:
+        await _maybe_rehash_password(db, target, body.password)
+
+    # Session handoff. Repoint the current session at the target FIRST so the
+    # subsequent anon-cleanup delete does not take the session row with it (the
+    # repointed row is now FK'd to `target`, not to the previous anon user).
+    prev = user
+    if prev.id != target.id:
+        if session is not None:
+            session.user_id = target.id
+            await db.flush()
+            _resign_session_cookie(response, settings, session)
+        else:
+            # No usable session arrived with the request (e.g. cookie cleared
+            # mid-flight). Mint a fresh session for the target, mirroring how
+            # `dependency._create_anonymous` builds one, and point the cookie
+            # at it.
+            expires_at = datetime.now(UTC) + timedelta(
+                seconds=settings.session_max_age_seconds
+            )
+            new_session = DbSession(user_id=target.id, expires_at=expires_at)
+            db.add(new_session)
+            await db.flush()
+            _set_session_cookie(response, settings, str(new_session.id))
+
+        # Discard the guest identity we are switching away FROM. Only anon
+        # scratch is reclaimed -- an account switch (prev is a real account)
+        # must leave the other account's rows intact.
+        if prev.is_anonymous:
+            await users.delete_user_and_data(db, user_id=prev.id)
+    elif session is not None:
+        # Already this user (re-login). Refresh the cookie window defensively.
+        _resign_session_cookie(response, settings, session)
+
+    # Login mutates/deletes rows; commit explicitly (mirrors `signout`) rather
+    # than relying solely on the request dependency's end-of-request commit.
+    await db.commit()
+
+    byok_rows = await api_keys.list_for_user(db, target.id)
+    has_byok = len(byok_rows) > 0
+    masked = byok_rows[0].masked_key if has_byok else None
+    return users.to_account_info(
+        target, byok_enabled=has_byok, byok_masked_key=masked
+    )
+
+
 @router.post("/signout", status_code=status.HTTP_204_NO_CONTENT)
 async def signout(
     response: Response,
@@ -227,6 +384,7 @@ async def signout(
 
 
 __all__ = [
+    "LoginRequest",
     "UpgradeRequest",
     "_maybe_rehash_password",
     "_truncate_for_bcrypt",

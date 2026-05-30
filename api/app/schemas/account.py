@@ -10,6 +10,7 @@ from app.schemas.preferences import UserPreferences
 class AccountInfo(CamelModel):
     name: str
     email: str
+    is_anonymous: bool
     plan_label: str
     byok_enabled: bool
     byok_masked_key: str | None = None

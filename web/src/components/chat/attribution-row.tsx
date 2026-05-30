@@ -15,6 +15,7 @@ export interface AttributionRowProps {
 
 function formatCostSummary(n: number): string {
   if (n === 0) return "$0.00";
+  if (n < 0.0001) return "<$0.0001";
   const decimals = n < 0.01 ? 4 : n < 1 ? 3 : 2;
   return `$${n.toFixed(decimals)}`;
 }
@@ -60,7 +61,10 @@ export function AttributionRow({
   const { substitution, isByok, servedModelLabel } = attribution;
   const servedTierId = assertServedTier(attribution.servedTierId);
 
-  const costText = `${isEstimate ? "~" : ""}${formatCostSummary(attribution.costUsd)}`;
+  // The "<$0.0001" floor already reads as an upper bound, so don't stack a
+  // "~" estimate marker on top of it ("~<$0.0001" parses as two operators).
+  const costSummary = formatCostSummary(attribution.costUsd);
+  const costText = `${isEstimate && !costSummary.startsWith("<") ? "~" : ""}${costSummary}`;
   const tierLabel = servedTierLabelFor(servedTierId);
 
   // Brief: byline reads as typography, not a stack of chips. Substitution

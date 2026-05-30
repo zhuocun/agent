@@ -25,9 +25,16 @@ class TierBinding:
     `cache_read_per_m` (M4): optional per-million price for cache-read tokens.
     When set, `compute_cost_breakdown` bills `cached_input_tokens` at this rate
     instead of `list_price_in_per_m`. Anthropic cache reads are a documented
-    ~90% discount off input; DeepSeek's cache-read rate is not documented in our
-    cited source, so we populate a ~10%-of-input placeholder ([verify-at-build]).
-    `None` falls back to 10% of the input rate.
+    ~90% discount off input; DeepSeek's cache-read rates are now the real
+    documented values (no longer placeholders). `None` falls back to 10% of the
+    input rate.
+
+    `thinking` toggles DeepSeek V4 thinking mode via the provider call — the
+    per-tier intent for which tier reasons by default. `None` leaves the
+    provider default; `True`/`False` force-enable/disable. `reasoning_effort`
+    (e.g. "high") is passed through to the provider when set, and omitted when
+    `None`. Both default to `None` so the Anthropic/OpenAI alternate bindings,
+    which never set them, stay valid.
     """
 
     tier: ModelTier
@@ -37,6 +44,8 @@ class TierBinding:
     list_price_out_per_m: float
     long_context_flat: bool
     cache_read_per_m: float | None = None
+    thinking: bool | None = None
+    reasoning_effort: str | None = None
 
 
 def _tier(
@@ -64,16 +73,21 @@ def _tier(
 # bootstrap all reflect this table. Anthropic and OpenAI are alternate paths
 # selected by `PROVIDER_BACKEND` (see `_anthropic_binding` / `_openai_binding`).
 #
-# DeepSeek pricing [verify-at-build]: from docs/research/2026-05-27/
-# 02-ai-capabilities-transparency.md — DeepSeek V4-Pro $0.435 / 1M input,
-# $0.870 / 1M output (current promo; documented to REVERT 2026-05-31 15:59 UTC
-# to ~4x higher — model that dated promo at build via the registry's promo
-# metadata). `deepseek-reasoner` exposes raw reasoning tokens, billed at the
-# output rate (handled by `compute_cost_breakdown`). `cache_read_per_m` is NOT
-# documented in the cited source (its "cached in" column is "—"); 0.0435 (~10%
-# of input) is a placeholder following the existing convention, pending
-# build-time verification against DeepSeek's live pricing. All figures
-# [verify-at-build].
+# DeepSeek V4 pricing (shipped 2026-04-24), per api-docs.deepseek.com/
+# quick_start/pricing. Two models, both 1M context, both dual-mode (thinking
+# default + non-thinking):
+#   - deepseek-v4-flash: cheap, standing price — input(cache-miss) $0.14,
+#     output $0.28, input(cache-hit) $0.0028 per 1M tokens.
+#   - deepseek-v4-pro: frontier — POST-PROMO full price (the launch promo
+#     expires 2026-05-31; we deploy at the cutover, so use full price):
+#     input(cache-miss) $1.74, output $3.48, input(cache-hit) $0.0145 per 1M.
+# These models REPLACE the legacy `deepseek-chat` / `deepseek-reasoner` aliases,
+# which retire 2026-07-24. Thinking mode is a per-request param (the provider
+# call path applies it); the per-tier default intent lives here on `thinking` /
+# `reasoning_effort`. DeepSeek is flat-rate (no context-length pricing tiers for
+# V4), so `long_context_flat=True` for all. `cache_read_per_m` values are the
+# REAL documented DeepSeek cache-hit rates (flash 0.0028, pro 0.0145) — no
+# longer placeholders.
 TIER_BINDINGS: tuple[TierBinding, ...] = (
     TierBinding(
         tier=_tier(
@@ -85,11 +99,12 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "Adaptive",
         ),
         provider_id="deepseek",
-        model_id="deepseek-chat",
-        list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
-        list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
+        model_id="deepseek-v4-flash",
+        list_price_in_per_m=0.14,
+        list_price_out_per_m=0.28,
         long_context_flat=True,
-        cache_read_per_m=0.0435,  # [verify-at-build] ~10%-of-input placeholder (undocumented)
+        cache_read_per_m=0.0028,
+        thinking=True,
     ),
     TierBinding(
         tier=_tier(
@@ -98,14 +113,15 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "Quick, low-cost answers for everyday questions.",
             "fastest",
             "lowest",
-            "128K",
+            "1M",
         ),
         provider_id="deepseek",
-        model_id="deepseek-chat",
-        list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
-        list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
+        model_id="deepseek-v4-flash",
+        list_price_in_per_m=0.14,
+        list_price_out_per_m=0.28,
         long_context_flat=True,
-        cache_read_per_m=0.0435,  # [verify-at-build] ~10% of input
+        cache_read_per_m=0.0028,
+        thinking=False,
     ),
     TierBinding(
         tier=_tier(
@@ -114,14 +130,15 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "Balanced reasoning and speed for most work.",
             "balanced",
             "medium",
-            "200K",
+            "1M",
         ),
         provider_id="deepseek",
-        model_id="deepseek-chat",
-        list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
-        list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
+        model_id="deepseek-v4-flash",
+        list_price_in_per_m=0.14,
+        list_price_out_per_m=0.28,
         long_context_flat=True,
-        cache_read_per_m=0.0435,  # [verify-at-build] ~10% of input
+        cache_read_per_m=0.0028,
+        thinking=True,
     ),
     TierBinding(
         tier=_tier(
@@ -133,12 +150,13 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
             "1M",
         ),
         provider_id="deepseek",
-        # deepseek-reasoner exposes raw reasoning tokens (billed @ output rate).
-        model_id="deepseek-reasoner",
-        list_price_in_per_m=0.435,  # [verify-at-build] promo; reverts 2026-05-31
-        list_price_out_per_m=0.870,  # [verify-at-build] promo; reverts 2026-05-31
+        model_id="deepseek-v4-pro",
+        list_price_in_per_m=1.74,
+        list_price_out_per_m=3.48,
         long_context_flat=True,
-        cache_read_per_m=0.0435,  # [verify-at-build] ~10% of input
+        cache_read_per_m=0.0145,
+        thinking=True,
+        reasoning_effort="high",
     ),
 )
 

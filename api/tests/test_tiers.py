@@ -78,25 +78,48 @@ def test_get_binding_fake_returns_canonical_deepseek_binding() -> None:
     b = get_binding("fast", settings=s)
     assert b is not None
     assert b.provider_id == "deepseek"
-    assert b.model_id == "deepseek-chat"
-    # DeepSeek promo pricing [verify-at-build]; reverts 2026-05-31.
-    assert b.list_price_in_per_m == 0.435
-    assert b.list_price_out_per_m == 0.870
-    assert b.cache_read_per_m == 0.0435
+    assert b.model_id == "deepseek-v4-flash"
+    # DeepSeek V4 flash standing price.
+    assert b.list_price_in_per_m == 0.14
+    assert b.list_price_out_per_m == 0.28
+    assert b.cache_read_per_m == 0.0028
 
 
 def test_get_binding_deepseek_backend_returns_canonical_deepseek_binding() -> None:
     """The explicit deepseek backend resolves to the canonical DeepSeek table.
 
-    `pro` binds deepseek-reasoner (raw reasoning tokens billed @ output rate).
+    `pro` binds deepseek-v4-pro (thinking on, reasoning_effort "high").
     """
     s = Settings(provider_backend="deepseek", deepseek_api_key="k")
     b = get_binding("pro", settings=s)
     assert b is not None
     assert b.provider_id == "deepseek"
-    assert b.model_id == "deepseek-reasoner"
-    assert b.list_price_in_per_m == 0.435
-    assert b.list_price_out_per_m == 0.870
+    assert b.model_id == "deepseek-v4-pro"
+    # DeepSeek V4 pro post-promo full price.
+    assert b.list_price_in_per_m == 1.74
+    assert b.list_price_out_per_m == 3.48
+    assert b.thinking is True
+    assert b.reasoning_effort == "high"
+
+
+def test_deepseek_per_tier_thinking_and_effort_config() -> None:
+    """Per-tier thinking/effort intent on the canonical DeepSeek table:
+    fast is non-thinking; smart thinks; pro thinks with high reasoning effort."""
+    by_id = {b.tier.id: b for b in TIER_BINDINGS}
+    # auto/fast/smart all serve deepseek-v4-flash; pro serves deepseek-v4-pro.
+    assert by_id["auto"].model_id == "deepseek-v4-flash"
+    assert by_id["fast"].model_id == "deepseek-v4-flash"
+    assert by_id["smart"].model_id == "deepseek-v4-flash"
+    assert by_id["pro"].model_id == "deepseek-v4-pro"
+    # auto mirrors the smart baseline: thinking on, no explicit effort.
+    assert by_id["auto"].thinking is True
+    assert by_id["auto"].reasoning_effort is None
+    assert by_id["fast"].thinking is False
+    assert by_id["fast"].reasoning_effort is None
+    assert by_id["smart"].thinking is True
+    assert by_id["smart"].reasoning_effort is None
+    assert by_id["pro"].thinking is True
+    assert by_id["pro"].reasoning_effort == "high"
 
 
 def test_get_binding_anthropic_backend_returns_anthropic_binding() -> None:

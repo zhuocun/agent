@@ -304,6 +304,8 @@ class _BlockingProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         async def _gen() -> AsyncIterator[ProviderEvent]:
             yield AnswerDelta(text="partial")

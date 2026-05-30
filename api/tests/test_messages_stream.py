@@ -1205,6 +1205,8 @@ class _NoSubstitutionThenBlockProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         try:
             yield ReasoningDelta(text="thinking")

@@ -37,6 +37,7 @@ import { AiDisclosure } from "@/components/chat/ai-disclosure";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
 import { showToast } from "@/components/ui/toast";
+import { cn } from "@/lib/utils";
 import {
   CommandPalette,
   type CommandAction,
@@ -1243,6 +1244,19 @@ export function ChatThread() {
             the top and bottom, with the floating header buttons and composer
             capsule sitting fully opaque on top. iOS Claude / Codex chrome. */}
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          {/* First-run welcome ambient halo: a soft, single-hue brand bloom
+              behind the greeting. Welcome-only, decorative, vignetted by the
+              z-30 chrome strips. Fades in on mount, out at the welcome→thread
+              exit seam; static at rest. */}
+          {showWelcome ? (
+            <div
+              aria-hidden
+              className={cn(
+                "pointer-events-none absolute inset-0 [background:var(--welcome-ambient)] transition-opacity duration-700 ease-out starting:opacity-0 motion-reduce:transition-none",
+                welcomeExiting ? "opacity-0" : "opacity-100",
+              )}
+            />
+          ) : null}
           {/* Top chrome strip — positions the floating buttons (and the
               temporary-chat banner when on) at the top with safe-area
               reservation. Gradient bg keeps the iOS status bar text
@@ -1285,8 +1299,8 @@ export function ChatThread() {
             <div
               className={
                 isTemporary
-                  ? "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+7rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+9rem)] md:pb-[calc(var(--bottom-inset)+9rem)]"
-                  : "min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+7rem)] md:pb-[calc(var(--bottom-inset)+9rem)]"
+                  ? "relative min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+7rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+9rem)] md:pb-[calc(var(--bottom-inset)+9rem)]"
+                  : "relative min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+7rem)] md:pb-[calc(var(--bottom-inset)+9rem)]"
               }
             >
               <WelcomeScreen

@@ -172,6 +172,12 @@
   --brand-foreground: oklch(0.99 0 0);
   --brand-muted: oklch(0.95 0.04 247);
 
+  /* Single-hue brand halo for the first-run welcome surface: a soft radial
+     bloom of the brand hue (247) behind the greeting, fading to neutral.
+     Vignetted at top/bottom by the z-30 chrome strips; zeroed under
+     prefers-contrast (below) to protect welcome text contrast. Felt, not seen. */
+  --welcome-ambient: radial-gradient(60% 50% at 50% 40%, oklch(0.59 0.20 247 / 0.06), transparent 70%);
+
   /* Chat surfaces */
   --message-user: oklch(0.955 0.005 250);
   --message-user-foreground: oklch(0.2 0.006 250);
@@ -274,6 +280,11 @@
   --brand: oklch(0.72 0.18 247);
   --brand-foreground: oklch(0.16 0.01 247);
   --brand-muted: oklch(0.32 0.10 247);
+
+  /* Brand halo for the first-run welcome surface (dark parity). A touch
+     stronger than light since it lifts a near-black surface; still barely
+     there. See the :root token for rationale. */
+  --welcome-ambient: radial-gradient(60% 50% at 50% 40%, oklch(0.72 0.18 247 / 0.09), transparent 72%);
 
   /* Lifted above 0.27 so the user surface reads as distinct from the dark
      `--code-block` (oklch 0.235); the code inversion needs the lightness gap
@@ -622,12 +633,15 @@
     --glass-strong-bg:  rgba(255, 255, 255, 0.92);
     --glass-clear-bg:   rgba(255, 255, 255, 0.38);
     --glass-border:     rgba(0, 0, 0, 0.38);
+    /* Drop the welcome halo so it never erodes welcome text contrast. */
+    --welcome-ambient: none;
   }
   .dark {
     --glass-regular-bg: rgba(24, 24, 28, 0.78);
     --glass-strong-bg:  rgba(24, 24, 28, 0.94);
     --glass-clear-bg:   rgba(24, 24, 28, 0.42);
     --glass-border:     rgba(255, 255, 255, 0.28);
+    --welcome-ambient: none;
   }
 }
 

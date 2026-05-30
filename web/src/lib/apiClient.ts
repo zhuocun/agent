@@ -12,6 +12,8 @@ import type {
   ModelTier,
   ModelTierId,
   PromptSuggestion,
+  PublicConversation,
+  ShareLinkResponse,
   UsageBudget,
   UserPreferences,
 } from "@/lib/types";
@@ -252,6 +254,34 @@ export function deleteConversation(
   );
 }
 
+// Mint (or re-fetch — the BE is idempotent) a public share link for a
+// conversation. Returns a RELATIVE `sharePath`; the caller assembles the
+// absolute URL from `window.location.origin`. 404 when the conversation isn't
+// owned by the caller or is a temporary chat.
+export function createShareLink(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ShareLinkResponse> {
+  return apiClient.post<ShareLinkResponse>(
+    `/api/conversations/${encodeURIComponent(id)}/share`,
+    undefined,
+    signal,
+  );
+}
+
+// Revoke a conversation's share link. Idempotent: revoking an unshared/
+// already-revoked conversation still resolves (the BE returns 204). 404 when
+// the conversation isn't owned by the caller or is a temporary chat.
+export function deleteShareLink(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.del(
+    `/api/conversations/${encodeURIComponent(id)}/share`,
+    signal,
+  );
+}
+
 export function putPreferences(
   prefs: UserPreferences,
   signal?: AbortSignal,
@@ -309,4 +339,20 @@ export function postAuthLogin(
 
 export function postAuthSignout(signal?: AbortSignal): Promise<void> {
   return apiClient.post<void>("/api/auth/signout", undefined, signal);
+}
+
+// Public-by-link read. UNAUTHENTICATED on the BE (no cookie minted) — the share
+// token IS the capability. We still route through the same `request()` helper
+// (and thus the FE `/api/*` rewrite) for one wire path; `credentials: "include"`
+// is harmless here since the BE never reads a session for this route. An unknown
+// or revoked token surfaces as an `ApiError` with `.status === 404`, which the
+// share page maps to its "no longer available" empty state.
+export function fetchPublicConversation(
+  token: string,
+  signal?: AbortSignal,
+): Promise<PublicConversation> {
+  return apiClient.get<PublicConversation>(
+    `/api/share/${encodeURIComponent(token)}`,
+    signal,
+  );
 }

@@ -1,6 +1,12 @@
 "use client";
 
-import { ClipboardCopy, Menu, MoreHorizontal, SquarePen } from "lucide-react";
+import {
+  ClipboardCopy,
+  Menu,
+  MoreHorizontal,
+  Share,
+  SquarePen,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -27,6 +33,11 @@ interface AppHeaderProps {
   onToggleTemporary?: () => void;
   onCopyConversation?: () => void;
   canCopyConversation?: boolean;
+  onShareConversation?: () => void;
+  // Sharing is only offered for a real, persisted (non-temporary) conversation
+  // — the BE 404s on temporary chats and there's nothing to share before the
+  // first turn lands a row.
+  canShareConversation?: boolean;
   isTemporary?: boolean;
   sidebarOpen?: boolean;
   tiers: ModelTier[];
@@ -54,6 +65,8 @@ export function AppHeader({
   onToggleTemporary,
   onCopyConversation,
   canCopyConversation,
+  onShareConversation,
+  canShareConversation,
   isTemporary,
   sidebarOpen,
   tiers,
@@ -134,6 +147,16 @@ export function AppHeader({
                 >
                   <ClipboardCopy className="size-4" aria-hidden />
                   <span>Copy conversation</span>
+                </DropdownMenuItem>
+              ) : null}
+              {onShareConversation ? (
+                <DropdownMenuItem
+                  onClick={onShareConversation}
+                  disabled={!canShareConversation}
+                  className="gap-2"
+                >
+                  <Share className="size-4" aria-hidden />
+                  <span>Share chat</span>
                 </DropdownMenuItem>
               ) : null}
               <DropdownMenuItem onClick={onOpenSettings}>

@@ -34,6 +34,7 @@ import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
+import { ShareDialog } from "@/components/chat/share-dialog";
 import { AiDisclosure } from "@/components/chat/ai-disclosure";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
@@ -260,6 +261,7 @@ export function ChatThread() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [isTemporary, setIsTemporary] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
@@ -1103,6 +1105,24 @@ export function ChatThread() {
     setSettingsOpen(true);
   };
 
+  const handleOpenShare = () => {
+    setShareOpen(true);
+  };
+
+  // Sharing is only meaningful once the active conversation is a real,
+  // persisted (non-temporary) row: temporary chats 404 on the share routes,
+  // and before the first send no conversation exists yet. The header gates the
+  // menu item on this flag and the dialog is only fed a real id.
+  const canShareActiveConversation =
+    activeConversationId !== null && !isTemporary;
+
+  // The active conversation's title (for the dialog's heading copy). Falls back
+  // to null when the row isn't in the list yet (e.g. just created); the dialog
+  // copes with a null title.
+  const activeConversationTitle = activeConversationId
+    ? conversations.find((c) => c.id === activeConversationId)?.title ?? null
+    : null;
+
   // Custom instructions live inside the settings dialog in MVP; wiring the
   // shortcut now so muscle memory transfers when a dedicated panel ships.
   const handleOpenCustomInstructions = () => {
@@ -1295,6 +1315,8 @@ export function ChatThread() {
                 onToggleTemporary={handleToggleTemporary}
                 onCopyConversation={handleCopyConversation}
                 canCopyConversation={messages.length > 0}
+                onShareConversation={handleOpenShare}
+                canShareConversation={canShareActiveConversation}
                 tiers={modelTiers}
                 selectedTierId={selectedTierId}
                 onSelectTier={setSelectedTierId}
@@ -1403,6 +1425,13 @@ export function ChatThread() {
         open={authOpen}
         onOpenChange={setAuthOpen}
         onSuccess={handleAuthSuccess}
+      />
+
+      <ShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        conversationId={activeConversationId}
+        conversationTitle={activeConversationTitle}
       />
 
       <CommandPalette

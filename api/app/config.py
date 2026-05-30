@@ -136,6 +136,34 @@ class Settings(BaseSettings):
     # own provider) and never consult this cap.
     usage_budget_usd: float = Field(default=0.0, alias="USAGE_BUDGET_USD")
 
+    # Orphan-stream reaper TTL (seconds). A hard worker crash (SIGKILL / OOM /
+    # power loss) runs no Python cleanup, so a `stream` row can strand at
+    # `status="active"` forever (PRD 04 §5.1). The reaper sweeps `active` rows
+    # whose `updated_at` is older than this many seconds and marks them
+    # `"error"`. Default 900s (15 min): MVP turns last seconds, and
+    # `mark_status` bumps `updated_at` on every transition, so 15 minutes is
+    # vastly longer than any legitimately-active stream — a live turn is never
+    # reaped. (If a turn could ever plausibly run longer than the TTL the
+    # handler should heartbeat `updated_at`; not needed for MVP.) `<= 0`
+    # disables the reaper entirely.
+    #
+    # Single-process caveat (same as `_TEMP_IDS` / `stop_registry` / the
+    # slowapi in-memory store): the reaper runs in-process. Behind multiple
+    # uvicorn workers each process sweeps independently — harmless because the
+    # bulk UPDATE is idempotent and keyed on a shared DB column, but a
+    # production-grade reaper belongs in a single coordinated job (cron /
+    # Redis-locked worker) rather than every web process.
+    stream_reap_after_seconds: int = Field(
+        default=900, alias="STREAM_REAP_AFTER_SECONDS"
+    )
+    # Interval (seconds) between background reaper sweeps. The first sweep also
+    # runs once at startup (a fresh process knows any `active` row it didn't
+    # create is orphaned from a prior crash). `<= 0` on EITHER this or
+    # `stream_reap_after_seconds` disables the background loop.
+    stream_reap_interval_seconds: int = Field(
+        default=300, alias="STREAM_REAP_INTERVAL_SECONDS"
+    )
+
     @property
     def deepseek_key(self) -> str | None:
         """Effective DeepSeek key: `DEEPSEEK_API_KEY`, else `OPENAI_API_KEY`.

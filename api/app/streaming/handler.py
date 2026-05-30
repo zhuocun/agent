@@ -603,10 +603,11 @@ async def stream_and_persist(
         # partial-persist contract for a hard cancel, so we only close the
         # stream-lifecycle bookkeeping.
         #
-        # KNOWN GAP: a hard worker *crash* (SIGKILL / OOM) delivers no
-        # CancelledError, so this cleanup never runs and the row stays `active`.
-        # An orphan-stream reaper that sweeps stale `active` rows is a deferred
-        # P0 gap (PRD 04 §5.1) — documented here so the absence is not silent.
+        # A hard worker *crash* (SIGKILL / OOM) delivers no CancelledError, so
+        # this cleanup never runs and the row would stay `active`. That gap is
+        # closed by the orphan-stream reaper (`app.streaming.reaper` +
+        # `streams_repo.reap_stale_active`), which sweeps stale `active` rows to
+        # `"error"` on startup and on an interval (PRD 04 §5.1).
         if stream_id is not None:
             with contextlib.suppress(Exception):
                 async with _derive_session_factory(db)() as cancel_db:

@@ -493,6 +493,51 @@ async def test_post_creates_resumable_stream_and_reconnect_after_done_replays(
     assert resp2.status_code == 404
 
 
+async def test_resumable_auto_downgrade_is_persisted_honestly(
+    resumable_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Flag ON: an `auto` turn the router downgrades below baseline must persist
+    its `auto_downgrade` substitution through the DETACHED producer path — the
+    same honest-surfacing invariant the inline path protects. Regression guard
+    for the integration bug where `router_substitution` was not threaded into
+    `run_detached_producer`, silently dropping the downgrade disclosure on the
+    persisted assistant row whenever both flags were on.
+    """
+    await resumable_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    async with session_factory() as session:
+        convo = Conversation(
+            user_id=user_id, title="New chat", selected_tier_id="auto", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        conv_id = str(convo.id)
+
+    # Short small-talk prompt → the v0 heuristic routes `auto` down to `fast`.
+    await _drain_post_stream(
+        resumable_client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "auto", "text": "hi"},
+    )
+
+    # Assert against the PERSISTED assistant row (not an in-flight frame): the
+    # detached producer must have written the downgrade disclosure durably.
+    async with session_factory() as session:
+        asst = (
+            await session.execute(
+                select(Message).where(Message.role == "assistant")
+            )
+        ).scalar_one()
+        assert asst.attribution is not None
+        assert asst.attribution["requestedTierId"] == "auto"
+        assert asst.attribution["servedTierId"] == "fast"
+        sub = asst.attribution.get("substitution")
+        assert sub is not None, "detached producer dropped the auto_downgrade seed"
+        assert sub["reasonCode"] == "auto_downgrade"
+
+
 async def test_reconnect_unknown_stream_is_404(
     resumable_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

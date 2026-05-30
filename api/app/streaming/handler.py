@@ -787,6 +787,7 @@ async def run_detached_producer(
     user_id: UUID | None = None,
     api_key: str | None = None,
     stream_id: UUID | None = None,
+    router_substitution: SubstitutionReasonCode | None = None,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 
@@ -830,6 +831,7 @@ async def run_detached_producer(
                 user_id=user_id,
                 api_key=api_key,
                 stream_id=stream_id,
+                router_substitution=router_substitution,
             ):
                 # Mirror the last frame kind so the buffer's terminal_kind is
                 # observable. `terminal`/`error` are the only closing frames;

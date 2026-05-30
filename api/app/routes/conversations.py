@@ -661,6 +661,7 @@ async def send_message(
             user_id=user.id,
             api_key=resolved_api_key,
             stream_id=stream_id,
+            router_substitution=router_substitution,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:

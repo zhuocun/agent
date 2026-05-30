@@ -199,18 +199,17 @@ In order from cheapest to most invasive.
   Multi-concern bursts are OK as one PR with logical commits if the changes
   share an integration story (see PR #75 — 5 commits, one per concern, one
   cleanup commit).
-- **Pushing follow-up commits to a PR**: before pushing to an existing PR's
-  branch, check whether that PR is already merged (`gh`/GitHub MCP
-  `pull_request_read`, or `git cherry origin/main HEAD`). If it's merged,
-  don't push onto the dead branch — branch off the latest `main` and open a
-  new PR for the follow-up.
 - **Open a PR before wrapping up**: a task isn't finished until its changes
-  are up for review. Before declaring a task complete, check whether an open
-  PR already covers the work (GitHub MCP `pull_request_read` /
+  are up for review — don't leave finished work stranded on a pushed branch
+  with no PR. Before declaring a task complete, check whether an open PR
+  already covers the work (GitHub MCP `pull_request_read` /
   `list_pull_requests`); if there isn't one, create it (`create_pull_request`)
-  off the working branch. Don't leave finished work stranded on a pushed
-  branch with no PR. (Still don't open one while the user has explicitly asked
-  you to hold off, or for throwaway/experimental branches.)
+  off the working branch. One caveat when following up on a branch that
+  already had a PR: first check whether that PR is already merged (`git cherry
+  origin/main HEAD`, or `pull_request_read`). If it's merged, don't push onto
+  the dead branch — branch off the latest `main` and open a fresh PR. (Still
+  don't open one while the user has explicitly asked you to hold off, or for
+  throwaway/experimental branches.)
 - **Watch CI, then auto-merge on green**: after opening a PR, watch its CI
   (subscribe to PR activity, or poll checks via `pull_request_read`
   `get_check_runs`). Once all required checks pass, merge it automatically

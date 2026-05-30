@@ -35,6 +35,7 @@ from app.providers.protocol import (
     ReasoningDone,
     UsageUpdate,
 )
+from app.providers.steering import steer_user_text
 
 
 @lru_cache(maxsize=256)
@@ -170,7 +171,9 @@ class AnthropicProvider:
         messages: list[dict[str, Any]] = [
             {"role": m.role, "content": m.text} for m in history
         ]
-        messages.append({"role": "user", "content": user_text})
+        # Steer ONLY the current user turn (real-provider, outgoing request,
+        # never persisted). History stays verbatim. See app/providers/steering.py.
+        messages.append({"role": "user", "content": steer_user_text(user_text)})
 
         # Track whether we're currently inside a thinking block so we can
         # emit exactly one ReasoningDone at block end.

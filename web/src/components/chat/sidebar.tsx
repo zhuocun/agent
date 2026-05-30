@@ -361,9 +361,14 @@ function ConversationRow({
           // Opaque surface masks the trailing tray until it's revealed. The
           // hover tint rides on top via ::after so it can't expose the tray
           // (a translucent base would let the tray bleed through on hover).
-          "relative z-10 flex min-h-11 w-full items-center rounded-2xl bg-sidebar pr-1",
+          // No own border-radius: the parent row is `overflow-hidden
+          // rounded-2xl`, so this opaque square layer fully masks the trailing
+          // tray at rest (rounded corners of its own would expose the red
+          // Delete action through the gaps), and the parent clip rounds both
+          // this layer and the tray as it slides open.
+          "relative z-10 flex min-h-11 w-full items-center bg-sidebar pr-1",
           !active &&
-            "after:pointer-events-none after:absolute after:inset-0 after:rounded-2xl after:bg-foreground/[0.03] after:opacity-0 after:transition-opacity hover:after:opacity-100",
+            "after:pointer-events-none after:absolute after:inset-0 after:bg-foreground/[0.03] after:opacity-0 after:transition-opacity hover:after:opacity-100",
         )}
       >
       {isRenaming ? (
@@ -981,7 +986,7 @@ export function Sidebar({
           if (!next) setPendingDelete(null);
         }}
       >
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm" showCloseButton={false}>
           <DialogHeader>
             <DialogTitle>Delete conversation?</DialogTitle>
             <DialogDescription>
@@ -995,7 +1000,7 @@ export function Sidebar({
               type="button"
               variant="ghost"
               onClick={() => setPendingDelete(null)}
-              className="rounded-full"
+              className="h-11 rounded-full px-6"
             >
               Cancel
             </Button>
@@ -1003,7 +1008,10 @@ export function Sidebar({
               type="button"
               variant="destructive"
               onClick={confirmDelete}
-              className="rounded-full"
+              // Solid native-destructive fill (not the soft tint the variant
+              // uses elsewhere) so the primary commit action reads clearly; 44px
+              // iOS touch target.
+              className="h-11 rounded-full bg-destructive px-6 text-white hover:bg-destructive/90 dark:bg-destructive dark:text-white dark:hover:bg-destructive/90"
             >
               Delete
             </Button>

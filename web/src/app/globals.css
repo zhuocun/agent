@@ -178,7 +178,7 @@
      prefers-contrast (below) to protect welcome text contrast. Pitched to read
      as deliberate light, not a panel-uniformity artifact — too low an alpha
      looks like an uneven-white display glitch rather than a designed glow. */
-  --welcome-ambient: radial-gradient(60% 50% at 50% 40%, oklch(0.59 0.20 247 / 0.13), transparent 72%);
+  --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.59 0.20 247 / 0.13), transparent 72%);
 
   /* Chat surfaces */
   --message-user: oklch(0.955 0.005 250);
@@ -286,7 +286,7 @@
   /* Brand halo for the first-run welcome surface (dark parity). A touch
      stronger than light since it lifts a near-black surface. See the :root
      token for rationale. */
-  --welcome-ambient: radial-gradient(60% 50% at 50% 40%, oklch(0.72 0.18 247 / 0.16), transparent 74%);
+  --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.72 0.18 247 / 0.16), transparent 74%);
 
   /* Lifted above 0.27 so the user surface reads as distinct from the dark
      `--code-block` (oklch 0.235); the code inversion needs the lightness gap

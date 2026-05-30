@@ -1,6 +1,6 @@
 "use client";
 
-import { AlignLeft, Lightbulb, PenLine, Sparkles } from "lucide-react";
+import { AlignLeft, ChevronRight, Lightbulb, PenLine, Sparkles } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export interface WelcomeScreenProps {
@@ -61,11 +61,12 @@ export function WelcomeScreen({
             // opacity/transform tween here even though the JS timer is source
             // of truth for the seam. On exit the whole block fades/translates as
             // one unit; the children's already-finished enter animations don't
-            // replay.
-            ? "animate-welcome-exit flex w-full max-w-2xl flex-col items-center text-center transition-[opacity,transform] duration-200 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] opacity-0 -translate-y-2"
+            // replay. Max-width must match the resting variant exactly, or the
+            // group snaps width at the exit seam.
+            ? "animate-welcome-exit flex w-full max-w-md flex-col items-center text-center transition-[opacity,transform] duration-200 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] opacity-0 -translate-y-2"
             // Entrance choreography lives on each child below (staggered via
             // inline animationDelay). The wrapper itself carries layout only.
-            : "flex w-full max-w-2xl flex-col items-center text-center"
+            : "flex w-full max-w-md flex-col items-center text-center"
         }
       >
         <p
@@ -82,20 +83,29 @@ export function WelcomeScreen({
           {heading}
         </h1>
 
+        {/* One iOS-Settings-style inset group: a single quiet surface with
+            hairline separators between rows (none above the first) and a
+            trailing disclosure chevron per row. `overflow-hidden` clips the
+            row press-highlights to the rounded corners. The fill is lighter
+            than the old per-card 0.04 so the brand halo reads through it. */}
         <ul
           aria-label="Suggested prompts"
-          className="mt-16 grid w-full grid-cols-1 gap-3 md:mt-20 md:grid-cols-2"
+          className="mt-10 w-full overflow-hidden rounded-2xl bg-foreground/[0.03] text-left md:mt-12"
         >
           {PROMPTS.map(({ icon: Icon, label }, index) => (
             <li key={label} className="list-none">
               <button
                 type="button"
                 onClick={() => onPromptSelect?.(label)}
-                className="animate-welcome-enter flex w-full items-center gap-3 rounded-2xl bg-foreground/[0.04] p-5 text-left text-sm leading-6 text-foreground transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 focus-visible:ring-offset-background md:text-base"
+                className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-sm leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand md:text-base"
                 style={{ animationDelay: `${150 + index * 60}ms` }}
               >
                 <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
                 {label}
+                <ChevronRight
+                  className="ml-auto size-4 shrink-0 text-muted-foreground/60"
+                  aria-hidden="true"
+                />
               </button>
             </li>
           ))}

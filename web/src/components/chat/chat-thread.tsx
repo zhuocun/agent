@@ -66,6 +66,7 @@ import {
   type BootstrapResponse,
 } from "@/lib/apiClient";
 import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
+import { isAnonymousAccount } from "@/lib/types";
 import type {
   AccountInfo,
   ChatMessage,
@@ -353,6 +354,10 @@ export function ChatThread() {
 
   const firstName = useMemo(() => {
     if (!account?.name) return undefined;
+    // Anonymous accounts carry a server-minted placeholder name ("Guest").
+    // A bare greeting ("Good afternoon") is warmer than naming a stranger, so
+    // suppress the name entirely for guests — only registered users keep theirs.
+    if (isAnonymousAccount(account)) return undefined;
     const trimmed = account.name.trim();
     if (!trimmed) return undefined;
     return trimmed.split(/\s+/)[0];

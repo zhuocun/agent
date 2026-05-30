@@ -44,7 +44,11 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useSwipeActions } from "@/lib/use-swipe-actions";
-import type { AccountInfo, ConversationSummary } from "@/lib/types";
+import {
+  isAnonymousAccount,
+  type AccountInfo,
+  type ConversationSummary,
+} from "@/lib/types";
 
 // Width of the swipe-revealed trailing action tray (two 64px action buttons).
 const SWIPE_ACTIONS_WIDTH = 128;
@@ -62,18 +66,10 @@ export interface SidebarProps {
   onTogglePinConversation: (id: string) => void;
   onCopyConversation: (id: string) => void;
   onOpenSettings: () => void;
+  onSignIn: () => void;
   onSignOut: () => void;
   onCollapse?: () => void; // desktop: hide the sidebar rail; omit the button if undefined
   className?: string;
-}
-
-// Worker C audit gap: AccountInfo has no guest/registered discriminator yet,
-// so fall back to email presence (PRD 04 §6: guests have null email). Honors
-// a future `isAnonymous` field if Worker C lands it.
-function isAnonymousAccount(account: AccountInfo): boolean {
-  const flagged = (account as { isAnonymous?: unknown }).isAnonymous;
-  if (typeof flagged === "boolean") return flagged;
-  return account.email.trim().length === 0;
 }
 
 // Recency buckets shown in the history list, in display order. "Pinned" is
@@ -753,6 +749,7 @@ export function Sidebar({
   onTogglePinConversation,
   onCopyConversation,
   onOpenSettings,
+  onSignIn,
   onSignOut,
   onCollapse,
   className,
@@ -959,12 +956,11 @@ export function Sidebar({
             {anonymous ? (
               <DropdownMenuItem
                 label="Sign in"
-                disabled
+                onClick={onSignIn}
                 className="gap-2"
               >
                 <LogIn className="size-4" aria-hidden />
-                <span className="flex-1">Sign in</span>
-                <span className="text-xs text-muted-foreground">Soon</span>
+                <span>Sign in</span>
               </DropdownMenuItem>
             ) : null}
             <DropdownMenuItem

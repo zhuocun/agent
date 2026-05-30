@@ -84,6 +84,7 @@ def to_account_info(
     return AccountInfo(
         name=user.name or "Guest",
         email=user.email or "",
+        is_anonymous=user.is_anonymous,
         plan_label=user.plan_label,
         byok_enabled=byok_enabled,
         byok_masked_key=byok_masked_key if byok_enabled else None,

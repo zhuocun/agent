@@ -33,6 +33,7 @@ import { AssistantMessage } from "@/components/chat/assistant-message";
 import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
+import { AuthDialog } from "@/components/chat/auth-dialog";
 import { AiDisclosure } from "@/components/chat/ai-disclosure";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import { LiveRegion } from "@/components/chat/live-region";
@@ -256,6 +257,7 @@ export function ChatThread() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
   const [isTemporary, setIsTemporary] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
@@ -911,6 +913,19 @@ export function ChatThread() {
       });
   };
 
+  // Sign-in / account-creation success: close the dialog and full-reload so
+  // bootstrap re-runs against the now-registered session. A reload (rather than
+  // a local re-fetch) is the correct call here — login swaps identity wholesale
+  // (conversations, prefs, usage, account), and the conversation list only
+  // hydrates once per mount (see `conversationsHydratedRef`), so a partial
+  // re-fetch would leave the sidebar showing the guest's chats. This mirrors
+  // `handleSignOut` exactly, keeping both identity transitions on one path.
+  const handleAuthSuccess = () => {
+    setAuthOpen(false);
+    setLiveMessage("Signed in");
+    if (typeof window !== "undefined") window.location.reload();
+  };
+
   const showWelcome =
     (messages.length === 0 && !pendingMessage) || welcomeExiting;
 
@@ -1228,6 +1243,7 @@ export function ChatThread() {
             onTogglePinConversation={handleTogglePinConversation}
             onCopyConversation={handleCopyConversationById}
             onOpenSettings={() => setSettingsOpen(true)}
+            onSignIn={() => setAuthOpen(true)}
             onSignOut={handleSignOut}
             onCollapse={() => {
               setSidebarOpen(false);
@@ -1362,6 +1378,12 @@ export function ChatThread() {
         onAccountChange={handleAccountChange}
         usage={usage}
         onSignOut={handleSignOut}
+      />
+
+      <AuthDialog
+        open={authOpen}
+        onOpenChange={setAuthOpen}
+        onSuccess={handleAuthSuccess}
       />
 
       <CommandPalette

@@ -127,6 +127,7 @@ class Settings(BaseSettings):
     # the decorator so settings cache invalidation in tests takes effect.
     rate_limit_messages: str = Field(default="30/minute", alias="RATE_LIMIT_MESSAGES")
     rate_limit_upgrade: str = Field(default="5/minute", alias="RATE_LIMIT_UPGRADE")
+    rate_limit_login: str = Field(default="5/minute", alias="RATE_LIMIT_LOGIN")
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the

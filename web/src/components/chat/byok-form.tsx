@@ -7,18 +7,7 @@ import { Button } from "@/components/ui/button";
 import { showToast } from "@/components/ui/toast";
 import { deleteByok, putByok } from "@/lib/apiClient";
 import { ApiError, ApiNetworkError } from "@/lib/apiClient";
-import type { AccountInfo } from "@/lib/types";
-
-// Worker C audit gap: `AccountInfo` does not yet carry a guest/registered
-// discriminator. Until it lands, gate BYOK on the presence of a real email —
-// guests are minted server-side without one (PRD 04 §6 `user.email null for
-// guests`). The optional `isAnonymous` runtime field is honored if Worker C
-// ships it as the authoritative signal.
-function isAnonymousAccount(account: AccountInfo): boolean {
-  const flagged = (account as { isAnonymous?: unknown }).isAnonymous;
-  if (typeof flagged === "boolean") return flagged;
-  return account.email.trim().length === 0;
-}
+import { isAnonymousAccount, type AccountInfo } from "@/lib/types";
 
 // PRD 04 §5.2 — surface providers as user-facing labels; the canonical id list
 // is not yet exported from `lib/`, so the form hardcodes the two MVP providers

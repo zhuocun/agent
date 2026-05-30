@@ -194,7 +194,11 @@ export function MessageList({
           // mirroring the welcome surface's delta so the first message clears it.
           className={
             isTemporary
-              ? "mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+5.5rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+7rem)]"
+              // Temporary mode adds the ~3rem TemporaryChatBanner to the top
+              // chrome strip, so clear it by the banner's full height (+3rem
+              // over the non-temporary offset) — a +1.5rem bump still left the
+              // first message tucked under the banner.
+              ? "mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+7rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+8.5rem)]"
               : "mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5.5rem)]"
           }
         >
@@ -222,10 +226,9 @@ export function MessageList({
             variant="secondary"
             onClick={() => scrollToBottom(true)}
             aria-label="Jump to latest"
-            className="glass-regular pointer-events-auto h-11 gap-1.5 rounded-full px-3"
+            className="glass-regular pointer-events-auto size-10 rounded-full p-0"
           >
             <ArrowDown className="size-4" />
-            Jump to latest
           </Button>
         </div>
       ) : null}

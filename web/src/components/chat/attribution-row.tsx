@@ -66,6 +66,12 @@ export function AttributionRow({
   const costSummary = formatCostSummary(attribution.costUsd);
   const costText = `${isEstimate && !costSummary.startsWith("<") ? "~" : ""}${costSummary}`;
   const tierLabel = servedTierLabelFor(servedTierId);
+  // When the served model label degenerates to the served tier's own label
+  // (a data gap in the auto→fast path leaves served_model_label === tierLabel),
+  // rendering both stutters ("Fast · Fast"). Drop the redundant tier segment;
+  // the genuine-fallback case keeps a distinct model name and shows both.
+  // Mirrors the model-mode-picker's showEffort dedupe.
+  const showTier = tierLabel !== servedModelLabel;
 
   // Brief: byline reads as typography, not a stack of chips. Substitution
   // collapses into a leading muted clause ("substituted from Pro: …") so the
@@ -108,8 +114,12 @@ export function AttributionRow({
             aria-hidden
             className="size-3.5 opacity-70 transition-transform data-[popup-open]:rotate-180"
           />
-          {Dot}
-          <span>{tierLabel}</span>
+          {showTier ? (
+            <>
+              {Dot}
+              <span>{tierLabel}</span>
+            </>
+          ) : null}
           {Dot}
           <span className="font-mono tabular-nums">{costText}</span>
         </Popover.Trigger>

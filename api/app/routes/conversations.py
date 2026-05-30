@@ -39,7 +39,9 @@ from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.protocol import ChatMessage as ProviderChatMessage
+from app.providers.router import route_auto
 from app.providers.tiers import get_binding
+from app.schemas.common import SubstitutionReasonCode
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.conversation import (
     CreateConversationRequest,
@@ -47,12 +49,18 @@ from app.schemas.conversation import (
     SendMessageRequest,
 )
 from app.schemas.message import ModelAttribution
+from app.schemas.share import ShareLinkResponse
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
     SubmittedEvent,
     TerminalEvent,
 )
-from app.streaming.handler import stream_and_persist
+from app.streaming import replay_registry
+from app.streaming.handler import (
+    _derive_session_factory,
+    spawn_detached_producer,
+    stream_and_persist,
+)
 from app.streaming.sse import (
     encode_answer_delta,
     encode_submitted,
@@ -249,6 +257,58 @@ async def delete_conversation(
         _TEMP_IDS[user.id].discard(conversation_id)
         return None
     await conversations_repo.delete_for_user(db, conversation_id, user.id)
+    return None
+
+
+@router.post("/{conversation_id}/share", response_model=ShareLinkResponse)
+async def create_share_link(
+    conversation_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ShareLinkResponse:
+    """Mint (or return the existing) public-by-link share token for the convo.
+
+    Public-by-link is the explicit exception to cost transparency: a holder of
+    the token reads the conversation + model attribution but NEVER per-message
+    cost (see `GET /api/share/{token}` and `app.schemas.share`).
+
+    - Ownership-checked: 404 (not 403) if the caller doesn't own the
+      conversation, so the route never leaks that the id exists.
+    - Idempotent: re-minting an already-shared conversation returns the SAME
+      token (no rotation), so previously distributed links keep working.
+    - Anonymous owners can share too — sharing is an ownership affordance, not a
+      BYOK-gated one, so there's no `is_anonymous` gate here.
+    - Temporary chats have no DB row, so they cannot be shared (treated as not
+      owned -> 404).
+    """
+    if _is_temp_for_user(user.id, conversation_id):
+        raise not_found("conversation")
+    token = await conversations_repo.mint_share_token(db, conversation_id, user.id)
+    if token is None:
+        raise not_found("conversation")
+    return ShareLinkResponse(share_token=token, share_path=f"/share/{token}")
+
+
+@router.delete(
+    "/{conversation_id}/share", status_code=status.HTTP_204_NO_CONTENT
+)
+async def delete_share_link(
+    conversation_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Revoke the conversation's share token. Ownership-checked, idempotent.
+
+    Clears `share_token` back to NULL so the previously minted public link
+    404s. Revoking an unshared (or already-revoked) conversation is a 204 no-op.
+    Not owned / missing (incl. temporary chats) -> 404, mirroring the rest of
+    this router.
+    """
+    if _is_temp_for_user(user.id, conversation_id):
+        raise not_found("conversation")
+    revoked = await conversations_repo.revoke_share_token(db, conversation_id, user.id)
+    if not revoked:
+        raise not_found("conversation")
     return None
 
 
@@ -514,6 +574,36 @@ async def send_message(
 
     provider = build_provider()
 
+    # Auto-tier routing. When the user picked `auto`, run the v0 complexity
+    # heuristic (providers/router.py) to choose the concrete tier that actually
+    # serves + bills this turn. We rebind `binding` to the routed tier so:
+    #   - pricing bills the model actually served (compute_cost_breakdown reads
+    #     `binding`), and
+    #   - `resolve_served_tier(binding)` surfaces a concrete served tier on the
+    #     wire (the routed binding is fast/smart/pro, never `auto`).
+    # `requested_tier_id` stays `auto` (threaded separately), so the FE still
+    # shows the user requested Auto.
+    #
+    # Honest surfacing: when the routed tier is CHEAPER than the auto baseline
+    # (`smart`), we set a router-side `auto_downgrade` substitution so the
+    # downgrade is visible on the wire — never silent (PRD §2.2.4 / §7.4).
+    # `auto_downgrade` is the only auto-routing reason code the FE renders
+    # (web/src/lib/types.ts::SubstitutionReasonCode). Routing to baseline or
+    # escalating above it emits no substitution. The router-side reason is the
+    # SEED; a real provider fallback overwrites it inside the handler (provider
+    # fallback wins precedence).
+    router_substitution: SubstitutionReasonCode | None = None
+    settings_for_routing = get_settings()
+    if body.tier_id == "auto" and settings_for_routing.auto_routing_enabled:
+        routed = route_auto(provider_user_text, history)
+        routed_binding = get_binding(routed.tier_id, settings=settings_for_routing)
+        # Defensive: a known concrete tier always has a binding; fall back to the
+        # original `auto` binding rather than 500 if the registry ever diverges.
+        if routed_binding is not None:
+            binding = routed_binding
+        if routed.is_downgrade:
+            router_substitution = "auto_downgrade"
+
     # Durable stream lifecycle (PRD 04 §5.1). Persist an `active` stream row for
     # every NON-temporary turn (default / regenerate / edit). The id is threaded
     # into `stream_and_persist`, which transitions it to done / stopped / error
@@ -539,6 +629,56 @@ async def send_message(
     # conditions before scheduling the detached autogen task.
     is_initial = not body.regenerate and body.edit_message_id is None
 
+    settings = get_settings()
+
+    # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
+    # provider pump as a DETACHED producer that survives this connection and
+    # appends every wire event to an in-process ReplayBuffer; this POST then
+    # SUBSCRIBES and tails the buffer. A client disconnect stops the tailing but
+    # NOT the producer (the semantics inversion). Reconnects re-subscribe via
+    # `GET .../stream/{stream_id}`. Temporary chats (no `stream_id`, nothing
+    # persisted, nothing to reconnect to) always take the legacy inline path,
+    # even with the flag on.
+    if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
+        ttl = settings.resumable_buffer_ttl_seconds
+        buffer = replay_registry.create(stream_id, ttl_seconds=ttl)
+        # The detached producer owns a FRESH session derived from THIS request's
+        # engine (the request session closes when the POST returns). Using
+        # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite
+        # file rather than the process-wide env DATABASE_URL factory.
+        spawn_detached_producer(
+            buffer=buffer,
+            session_factory=_derive_session_factory(db),
+            provider=provider,
+            binding=binding,
+            requested_tier_id=body.tier_id,
+            conversation_id=conversation_id,
+            user_message_id=user_message_id,
+            user_text=provider_user_text,
+            history=history,
+            is_temporary=is_temp,
+            is_initial=is_initial,
+            user_id=user.id,
+            api_key=resolved_api_key,
+            stream_id=stream_id,
+            router_substitution=router_substitution,
+        )
+
+        async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
+            # Subscribe at offset 0 and tail. On client disconnect we simply
+            # stop iterating (the generator is GC'd / aclosed) — the producer
+            # keeps running and persisting. Subscribers NEVER persist.
+            subscription = await buffer.subscribe()
+            async for sse_event in subscription.events():
+                if await request.is_disconnected():
+                    return
+                yield sse_event
+
+        return _eventsource_response(
+            _subscriber_stream(),
+            media_type="text/event-stream",
+        )
+
     async def _event_stream() -> AsyncIterator[ServerSentEvent]:
         async for sse_event in stream_and_persist(
             request=request,
@@ -555,11 +695,82 @@ async def send_message(
             user_id=user.id,
             api_key=resolved_api_key,
             stream_id=stream_id,
+            router_substitution=router_substitution,
         ):
             yield sse_event
 
     return _eventsource_response(
         _event_stream(),
+        media_type="text/event-stream",
+    )
+
+
+@router.get("/{conversation_id}/stream/{stream_id}")
+async def reconnect_stream(
+    conversation_id: UUID,
+    stream_id: UUID,
+    request: Request,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> EventSourceResponse:
+    """Re-attach to a live (or just-finished) resumable stream (PRD 04 §5.1 P1).
+
+    Same-device replay: subscribe to the in-process ReplayBuffer for
+    `stream_id`, replay every buffered event from the start, then tail live
+    until the detached producer is `done`. If the stream already terminated but
+    its buffer is still within TTL, replay the full final sequence then close.
+
+    Gated behind `resumable_streams_enabled` — when the flag is OFF the feature
+    is not exposed, so this 404s (feature disabled), matching the rest of the
+    router's "never reveal that the id exists" stance.
+
+    Ownership / IDOR (404, never 403):
+    - Conversation not owned by the caller (or missing / temporary) → 404.
+    - Stream row missing, or belonging to a DIFFERENT conversation → 404.
+    - No live/within-TTL buffer for the stream (never started on this worker,
+      or evicted past TTL) → 404. Multi-worker: a reconnect that lands on a
+      different worker than the producer finds no buffer → 404 (see the
+      `replay_registry` module + `resumable_streams_enabled` config caveat).
+    """
+    settings = get_settings()
+    if not settings.resumable_streams_enabled:
+        # Feature disabled — do not expose new behavior. 404, not 403.
+        raise not_found("stream")
+
+    # Ownership: the conversation must be owned by the caller. Temporary chats
+    # have no DB row / stream and are not resumable, so they fall through to 404.
+    if _is_temp_for_user(user.id, conversation_id):
+        raise not_found("stream")
+    owner_row = await conversations_repo.owned_by(db, conversation_id, user.id)
+    if owner_row is None:
+        raise not_found("stream")
+
+    # The stream must exist AND belong to THIS conversation (block cross-convo
+    # IDOR: a valid stream id from another of the user's conversations must not
+    # leak here either).
+    stream_row = await streams_repo.get_by_id(db, stream_id=stream_id)
+    if stream_row is None or stream_row.conversation_id != conversation_id:
+        raise not_found("stream")
+
+    # Live (or within-TTL done) buffer for this stream on this worker?
+    buffer = replay_registry.get(
+        stream_id, ttl_seconds=settings.resumable_buffer_ttl_seconds
+    )
+    if buffer is None:
+        raise not_found("stream")
+
+    async def _replay_stream() -> AsyncIterator[ServerSentEvent]:
+        # Replay from offset 0 then tail. Disconnect just stops tailing; the
+        # producer (and any other subscribers) are unaffected. This subscriber
+        # NEVER persists.
+        subscription = await buffer.subscribe()
+        async for sse_event in subscription.events():
+            if await request.is_disconnected():
+                return
+            yield sse_event
+
+    return _eventsource_response(
+        _replay_stream(),
         media_type="text/event-stream",
     )
 

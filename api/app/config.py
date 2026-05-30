@@ -136,6 +136,81 @@ class Settings(BaseSettings):
     # own provider) and never consult this cap.
     usage_budget_usd: float = Field(default=0.0, alias="USAGE_BUDGET_USD")
 
+    # Orphan-stream reaper TTL (seconds). A hard worker crash (SIGKILL / OOM /
+    # power loss) runs no Python cleanup, so a `stream` row can strand at
+    # `status="active"` forever (PRD 04 §5.1). The reaper sweeps `active` rows
+    # whose `updated_at` is older than this many seconds and marks them
+    # `"error"`. Default 900s (15 min): MVP turns last seconds, and
+    # `mark_status` bumps `updated_at` on every transition, so 15 minutes is
+    # vastly longer than any legitimately-active stream — a live turn is never
+    # reaped. (If a turn could ever plausibly run longer than the TTL the
+    # handler should heartbeat `updated_at`; not needed for MVP.) `<= 0`
+    # disables the reaper entirely.
+    #
+    # Single-process caveat (same as `_TEMP_IDS` / `stop_registry` / the
+    # slowapi in-memory store): the reaper runs in-process. Behind multiple
+    # uvicorn workers each process sweeps independently — harmless because the
+    # bulk UPDATE is idempotent and keyed on a shared DB column, but a
+    # production-grade reaper belongs in a single coordinated job (cron /
+    # Redis-locked worker) rather than every web process.
+    stream_reap_after_seconds: int = Field(
+        default=900, alias="STREAM_REAP_AFTER_SECONDS"
+    )
+    # Interval (seconds) between background reaper sweeps. The first sweep also
+    # runs once at startup (a fresh process knows any `active` row it didn't
+    # create is orphaned from a prior crash). `<= 0` on EITHER this or
+    # `stream_reap_after_seconds` disables the background loop.
+    stream_reap_interval_seconds: int = Field(
+        default=300, alias="STREAM_REAP_INTERVAL_SECONDS"
+    )
+
+    # Auto-tier routing. When True (default), an `auto` request runs the v0
+    # complexity heuristic (`providers/router.py`) and is served by the routed
+    # concrete tier (fast / smart / pro). When False, `auto` falls back to its
+    # legacy static behavior (served by the `smart`-class binding) so the
+    # routing layer can be killed without a redeploy. Disabling does NOT change
+    # any non-auto tier.
+    auto_routing_enabled: bool = Field(default=True, alias="AUTO_ROUTING_ENABLED")
+
+    # Same-device resumable-stream replay (PRD 04 §5.1 P1; PRD 05 §4.4
+    # "Resumable-stream spine"). DEFAULT-OFF feature flag — a hard safety gate
+    # around the highest-risk path in the codebase.
+    #
+    # When OFF (the default), streaming behavior is byte-identical to today: a
+    # client disconnect (or the stop endpoint) cancels the provider pump and
+    # persists `status="stopped"`. The reconnect endpoint 404s (feature
+    # disabled). Every existing test passes unchanged.
+    #
+    # When ON, the provider pump runs DETACHED from the HTTP connection: a mere
+    # client disconnect no longer cancels it (a deliberate semantics inversion).
+    # The producer keeps running, appending each SSE event to an in-process
+    # ReplayBuffer (`app.streaming.replay_registry`); the POST connection and
+    # any `GET .../stream/{stream_id}` reconnect subscribe to that buffer, replay
+    # buffered events from the start, then tail live until the producer is done.
+    # Only the stop endpoint (via `stop_registry`) or natural completion cancels
+    # the producer. Cost / usage-rollup / attribution / persistence semantics are
+    # unchanged — the producer runs the SAME code path, just detached.
+    #
+    # In-process, NO REDIS (single-worker MVP compromise — same caveat as
+    # `stop_registry`, `_TEMP_IDS`, and the slowapi in-memory store). Behind
+    # multiple uvicorn workers a reconnect that lands on a different worker than
+    # the producer 404s (the buffer lives in the producer's process only);
+    # multi-worker resumable streams need a shared Redis replay log. The durable
+    # `stream` row remains the cross-worker record of the turn's lifecycle.
+    resumable_streams_enabled: bool = Field(
+        default=False, alias="RESUMABLE_STREAMS_ENABLED"
+    )
+
+    # TTL (seconds) a finished ReplayBuffer is retained after the producer marks
+    # it `done`, so a late same-device reconnect can still replay the full final
+    # sequence. After this window the buffer is evicted (lazy per-access sweep in
+    # `replay_registry.get` / `.create`) and a reconnect → 404. Default 60s:
+    # long enough for a transient network blip + reconnect, short enough to bound
+    # per-process memory. Only consulted when `resumable_streams_enabled`.
+    resumable_buffer_ttl_seconds: float = Field(
+        default=60.0, alias="RESUMABLE_BUFFER_TTL_SECONDS"
+    )
+
     @property
     def deepseek_key(self) -> str | None:
         """Effective DeepSeek key: `DEEPSEEK_API_KEY`, else `OPENAI_API_KEY`.

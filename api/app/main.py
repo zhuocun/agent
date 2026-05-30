@@ -15,15 +15,21 @@ Wires:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from collections.abc import AsyncIterator
+from datetime import timedelta
 from typing import Any
 
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.auth.routes import router as auth_router
-from app.config import get_settings
+from app.config import Settings, get_settings
+from app.db.session import get_session_factory
 from app.errors import register_exception_handlers
 from app.logging_setup import configure_logging
 from app.middleware.ratelimit import RateLimitMiddleware, limiter
@@ -35,6 +41,73 @@ from app.routes.bootstrap import router as bootstrap_router
 from app.routes.conversations import router as conversations_router
 from app.routes.feedback import router as feedback_router
 from app.routes.preferences import router as preferences_router
+from app.routes.share import router as share_router
+from app.streaming.handler import cancel_all_producers
+from app.streaming.reaper import reap_once, run_reaper_loop
+
+_log = structlog.get_logger(__name__)
+
+
+def _build_lifespan(settings: Settings) -> Any:
+    """Build the ASGI lifespan: orphan-stream reaper + resumable-producer cleanup.
+
+    Two reaper trigger seams (see `app.streaming.reaper`):
+
+    1. Startup sweep: one best-effort `reap_once` on boot. A fresh process
+       knows any `active` `stream` row it didn't create is orphaned from a
+       prior hard crash (SIGKILL / OOM / power loss ran no Python cleanup).
+       Best-effort — `reap_once` swallows + logs, so a DB hiccup never blocks
+       startup.
+    2. Background loop: a detached `asyncio` task that re-sweeps on an
+       interval, cancelled cleanly on shutdown. Catches the slow drip of
+       crashes during a long-running process.
+
+    Both are gated on `stream_reap_after_seconds > 0`; the background loop
+    additionally needs `stream_reap_interval_seconds > 0`. The session factory
+    is the process-wide one (never a request session). Multi-worker prod runs
+    one loop per process — harmless (the bulk UPDATE is idempotent) but a
+    production-grade reaper belongs in a single coordinated job; see the
+    `stream_reap_after_seconds` doc in `app.config`.
+
+    Shutdown also cancels any detached resumable-stream producers
+    (`cancel_all_producers`). When `resumable_streams_enabled` is on, the
+    provider pump runs as a detached task that outlives its originating request;
+    on a graceful shutdown / deploy we cancel any still-running producer so it
+    doesn't leak past the process. No-op when the flag is off (the producer set
+    is empty). A hard crash bypasses this — that gap is the orphan-reaper's job.
+    """
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        ttl_seconds = settings.stream_reap_after_seconds
+        interval_seconds = settings.stream_reap_interval_seconds
+        task: asyncio.Task[None] | None = None
+        if ttl_seconds > 0:
+            older_than = timedelta(seconds=ttl_seconds)
+            factory = get_session_factory()
+            # Startup sweep — best-effort, never blocks boot.
+            await reap_once(factory, older_than=older_than)
+            # Background loop — only if an interval is configured.
+            if interval_seconds > 0:
+                task = asyncio.create_task(
+                    run_reaper_loop(
+                        factory,
+                        older_than=older_than,
+                        interval_seconds=interval_seconds,
+                    )
+                )
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            # Cancel any detached resumable-stream producers (no-op when the
+            # resumable flag is off — the producer set is empty).
+            await cancel_all_producers()
+
+    return lifespan
 
 
 def create_app() -> FastAPI:
@@ -60,6 +133,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="API",
         version="0.1.0",
+        lifespan=_build_lifespan(settings),
         **docs_kwargs,
     )
 
@@ -114,6 +188,9 @@ def create_app() -> FastAPI:
     app.include_router(account_router)
     app.include_router(account_data_router)
     app.include_router(auth_router)
+    # Public-by-link share read. Distinct prefix (/api/share), NO current_user
+    # dependency — it's the one unauthenticated read in the API.
+    app.include_router(share_router)
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:

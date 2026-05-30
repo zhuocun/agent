@@ -12,10 +12,11 @@ handler / stop route), not here.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Stream
@@ -59,6 +60,74 @@ async def mark_status(
         row.message_id = message_id
     row.updated_at = datetime.now(UTC)
     await db.flush()
+
+
+async def reap_stale_active(
+    db: AsyncSession,
+    *,
+    older_than: timedelta,
+) -> int:
+    """Transition orphaned `active` stream rows to a terminal state. Flush.
+
+    Closes the hard-crash gap (PRD 04 §5.1): a SIGKILL / OOM / power loss kills
+    the worker mid-stream WITHOUT running any Python exception path (not even
+    `asyncio.CancelledError`), so the handler's cleanup never fires and the
+    row strands at `status="active"` forever. This sweeps every `active` row
+    whose `updated_at` is older than `older_than` and marks it `"error"`.
+
+    Why `"error"` and not `"stopped"`: `"stopped"` means the *user* (or a
+    graceful disconnect/shutdown) ended the turn — an intentional, clean stop.
+    An orphan is a turn that did NOT complete normally and was never explicitly
+    stopped; the worker died under it. `"error"` is the honest terminal state
+    for "this turn failed / never finished" and keeps the lifecycle observable
+    (the `error` semantics already mean "did not persist a clean assistant
+    row", which matches an orphan).
+
+    Liveness guarantee: the cutoff is keyed on `updated_at`, which
+    `mark_status` bumps on EVERY transition (see above). A genuinely in-flight
+    turn keeps a fresh `updated_at`; only rows untouched for longer than
+    `older_than` are reaped. The caller picks `older_than` (from
+    `settings.stream_reap_after_seconds`) comfortably larger than the longest
+    plausible live turn, so a live stream is never reaped. NOTE: for MVP turns
+    last seconds, so a static TTL with no heartbeating is safe. If a turn could
+    ever plausibly exceed the TTL, the handler should heartbeat `updated_at`
+    mid-stream; we deliberately do NOT add heartbeating now.
+
+    Single bulk `UPDATE` — dialect-safe (Postgres prod + SQLite tests): the
+    cutoff is computed in Python and passed as a bound parameter, and
+    `updated_at` is set to a Python `datetime` rather than a SQL `now()`, so no
+    dialect-specific time function is involved. Returns the number of rows
+    reaped.
+    """
+    cutoff = datetime.now(UTC) - older_than
+    stmt = (
+        update(Stream)
+        .where(Stream.status == "active", Stream.updated_at < cutoff)
+        .values(status="error", updated_at=datetime.now(UTC))
+    )
+    result = await db.execute(stmt)
+    await db.flush()
+    # `rowcount` is reliable for a bulk UPDATE on both asyncpg and aiosqlite.
+    # `execute()` is typed as returning `Result`, but a DML statement yields a
+    # `CursorResult` at runtime (the only kind that carries `rowcount`); cast so
+    # the attribute is typed without laundering through `Any`.
+    return cast("CursorResult[Any]", result).rowcount
+
+
+async def get_by_id(
+    db: AsyncSession,
+    *,
+    stream_id: UUID,
+) -> Stream | None:
+    """Return the `stream` row for `stream_id`, else None.
+
+    Used by the resumable-stream reconnect endpoint to assert the stream
+    belongs to the requested conversation (ownership is checked one hop up via
+    the conversation). No status filter — a reconnect may land after the row is
+    already `done` / `stopped` (replay the final buffered sequence within TTL).
+    """
+    stmt = select(Stream).where(Stream.id == stream_id)
+    return (await db.execute(stmt)).scalar_one_or_none()
 
 
 async def get_active_for_conversation(

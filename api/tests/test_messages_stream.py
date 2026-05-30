@@ -8,7 +8,9 @@ the disconnect-detect path is exercised manually in dev.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
@@ -17,6 +19,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, Message, User
+from app.providers.protocol import (
+    AnswerDelta,
+    ChatMessage,
+    Complete,
+    ProviderEvent,
+    ReasoningDelta,
+    ReasoningDone,
+    UsageUpdate,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -1110,3 +1121,240 @@ async def test_mid_stream_rate_limit_surfaces_typed_envelope(
             await session.execute(select(Message).where(Message.role == "assistant"))
         ).scalars().all()
         assert assistants == []
+
+
+# Auto-tier routing ------------------------------------------------------------
+
+
+async def test_auto_route_downgrade_surfaces_substitution(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`auto` + a short, signal-free prompt routes to `fast` and surfaces the
+    `auto_downgrade` substitution honestly (never silent)."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id, tier_id="auto")
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "auto",
+            "text": "hi",
+        },
+    )
+    attribution = frames[-1][1]["attribution"]
+    assert isinstance(attribution, dict)
+    # Requested stays `auto`; served is the routed concrete tier (`fast`).
+    assert attribution["requestedTierId"] == "auto"
+    assert attribution["servedTierId"] == "fast"
+    sub = attribution.get("substitution")
+    assert isinstance(sub, dict)
+    assert sub["reasonCode"] == "auto_downgrade"
+
+
+async def test_auto_route_to_baseline_emits_no_substitution(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`auto` + a code fence routes to the `smart` baseline -> no substitution
+    (routing to the baseline is not a downgrade)."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id, tier_id="auto")
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "auto",
+            "text": "Review this:\n```python\nprint('x')\n```",
+        },
+    )
+    attribution = frames[-1][1]["attribution"]
+    assert isinstance(attribution, dict)
+    assert attribution["requestedTierId"] == "auto"
+    assert attribution["servedTierId"] == "smart"
+    assert attribution.get("substitution") is None
+
+
+# Auto-routing x stop / provider-fallback interplay ---------------------------
+
+
+class _NoSubstitutionThenBlockProvider:
+    """Streams a normal turn, then a `Complete` carrying NO substitution.
+
+    Used by the stop-path test. After the terminal `Complete` is yielded (and
+    thus enqueued by the handler's pump), the generator sets `done` so the test
+    can tell the handler to tear the turn down. The closing `finally` therefore
+    runs only after `Complete` is on the queue — guaranteeing the drain path
+    sees a `substitution=None` `Complete`, which is exactly the event that must
+    NOT clobber the router's `auto_downgrade` seed.
+    """
+
+    def __init__(self, done: asyncio.Event) -> None:
+        self._done = done
+
+    async def stream(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+        api_key: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
+        try:
+            yield ReasoningDelta(text="thinking")
+            yield ReasoningDone()
+            yield AnswerDelta(text="partial answer")
+            usage = UsageUpdate(
+                input_tokens=20,
+                output_tokens=5,
+                reasoning_tokens=2,
+                cached_input_tokens=0,
+            )
+            yield UsageUpdate(
+                input_tokens=20,
+                output_tokens=5,
+                reasoning_tokens=2,
+                cached_input_tokens=0,
+            )
+            # Terminal Complete with NO provider substitution. On the stop/drain
+            # path this is the event that, pre-fix, clobbered the auto_downgrade
+            # seed with None.
+            yield Complete(usage=usage)
+        finally:
+            # Runs after `Complete` has been pulled by the pump and enqueued, so
+            # signalling `done` here means the queue already holds the Complete
+            # the drain branch must fold without clobbering the seed.
+            self._done.set()
+
+    async def complete(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+        api_key: str | None = None,
+    ) -> str:
+        return "title"
+
+
+async def test_stop_path_preserves_auto_downgrade_seed_in_persisted_row(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STOP an `auto`→`fast` turn mid-stream; the PERSISTED stopped assistant
+    row must still carry `substitution.reasonCode == "auto_downgrade"`.
+
+    Catches the silent-downgrade leak: the disconnect/stop drain folds a
+    trailing `Complete(substitution=None)` into the running sub state. Without
+    the `_fold_complete_substitution` guard that None overwrites the router's
+    `auto_downgrade` seed, and the stopped row — re-served on reload — loses its
+    downgrade disclosure. We assert against the durable DB row, not an in-flight
+    frame.
+    """
+    from app.routes import conversations as conv_routes
+
+    provider_done = asyncio.Event()
+
+    monkeypatch.setattr(
+        conv_routes,
+        "build_provider",
+        lambda *a, **k: _NoSubstitutionThenBlockProvider(provider_done),
+    )
+
+    # Drive the stop via the handler's `request.is_disconnected()` poll. The
+    # first poll BLOCKS until the provider has fully streamed (Complete enqueued
+    # + terminal None), then reports disconnected. This makes the handler take
+    # the drain path with the un-substituted Complete already in the queue —
+    # deterministic, no timing race.
+    from starlette.requests import Request
+
+    async def _fake_is_disconnected(self: Request) -> bool:
+        await provider_done.wait()
+        return True
+
+    monkeypatch.setattr(Request, "is_disconnected", _fake_is_disconnected)
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id, tier_id="auto")
+
+    # `"hi"` is the short, signal-free prompt that routes auto→fast (downgrade),
+    # seeding router_substitution="auto_downgrade" before the provider call.
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "auto",
+            "text": "hi",
+        },
+    )
+    # Stop/disconnect path emits no terminal frame (socket closed semantics);
+    # the proof is the persisted row, asserted below.
+    assert all(name != "terminal" for name, _ in frames)
+
+    # Reload the durable stopped assistant row and assert its attribution still
+    # discloses the auto downgrade.
+    async with session_factory() as session:
+        assistant = (
+            await session.execute(
+                select(Message).where(Message.role == "assistant")
+            )
+        ).scalar_one()
+        assert assistant.status == "stopped"
+        attribution = assistant.attribution
+        assert isinstance(attribution, dict)
+        assert attribution["requestedTierId"] == "auto"
+        assert attribution["servedTierId"] == "fast"
+        sub = attribution.get("substitution")
+        assert isinstance(sub, dict), "stopped auto→fast row lost its substitution"
+        assert sub["reasonCode"] == "auto_downgrade"
+
+
+async def test_auto_route_provider_fallback_wins_over_downgrade_seed(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`auto`→`fast` (downgrade-seeded) turn whose provider ALSO force-falls-back:
+    the provider substitution WINS over the router seed.
+
+    Precedence claim: a real provider `Complete(substitution="provider_fallback")`
+    overwrites the router-side `auto_downgrade` seed AND brings the served model
+    label with it. The terminal attribution must read `provider_fallback`, not
+    `auto_downgrade`, and the served model label must reflect the fallback model.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id, tier_id="auto")
+
+    # `FORCE_FALLBACK:` flips the fake provider's terminal Complete into the
+    # provider_fallback shape; the leading short text still routes auto→fast,
+    # so the router seeds `auto_downgrade` first — the provider must override it.
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "auto",
+            "text": "FORCE_FALLBACK: hi",
+        },
+    )
+    attribution = frames[-1][1]["attribution"]
+    assert isinstance(attribution, dict)
+    assert attribution["requestedTierId"] == "auto"
+    # Routed to the concrete fast tier before the provider fallback fired.
+    assert attribution["servedTierId"] == "fast"
+    sub = attribution.get("substitution")
+    assert isinstance(sub, dict)
+    # Provider fallback wins precedence over the auto_downgrade seed.
+    assert sub["reasonCode"] == "provider_fallback"
+    # The served label reflects the provider's substituted model, not the
+    # routed tier's default label.
+    assert attribution["servedModelLabel"] == "Fallback Model"

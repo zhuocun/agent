@@ -59,10 +59,17 @@ export function ModelModePicker({
 
   const triggerLabel = `Model ${tier?.label}, reasoning ${effort?.label}. Change.`;
 
+  // Hide the reasoning-effort label when it duplicates the tier label (the
+  // default "Auto"/"Auto" case, and any future collision) so the header states
+  // the model state once rather than stuttering. The accessible triggerLabel
+  // above still announces both values for screen-reader users.
+  const showEffort = effort?.label && effort.label !== tier?.label;
   const triggerInner = (
     <>
       <span className="truncate font-medium text-foreground">{tier?.label}</span>
-      <span className="text-muted-foreground">{effort?.label}</span>
+      {showEffort ? (
+        <span className="text-muted-foreground">{effort.label}</span>
+      ) : null}
       <ChevronDown aria-hidden className="size-4 text-muted-foreground" />
     </>
   );

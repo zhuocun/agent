@@ -311,7 +311,19 @@ function ConversationRow({
           "absolute inset-y-0 right-0 z-0 flex items-stretch",
           swipe.open ? "" : "pointer-events-none",
         )}
-        style={{ width: SWIPE_ACTIONS_WIDTH }}
+        style={{
+          width: SWIPE_ACTIONS_WIDTH,
+          // Don't paint the tray while the row is fully closed. On iOS Safari a
+          // parent with `overflow:hidden` + `border-radius` fails to clip a
+          // GPU-composited sibling (the sliding layer uses `translate3d`), so a
+          // ~1px sliver of this red Delete action leaks past the rounded corners
+          // as stray arcs at rest. Chromium clips correctly, so it never shows
+          // locally / in e2e. Removing the tray from paint when closed sidesteps
+          // the leak entirely; it reappears the instant a swipe moves the row
+          // (offset != 0) or it settles open.
+          visibility:
+            swipe.open || swipe.offset !== 0 ? "visible" : "hidden",
+        }}
       >
         <button
           type="button"

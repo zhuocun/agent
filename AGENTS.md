@@ -199,6 +199,11 @@ In order from cheapest to most invasive.
   Multi-concern bursts are OK as one PR with logical commits if the changes
   share an integration story (see PR #75 — 5 commits, one per concern, one
   cleanup commit).
+- **Pushing follow-up commits to a PR**: before pushing to an existing PR's
+  branch, check whether that PR is already merged (`gh`/GitHub MCP
+  `pull_request_read`, or `git cherry origin/main HEAD`). If it's merged,
+  don't push onto the dead branch — branch off the latest `main` and open a
+  new PR for the follow-up.
 - **Workflow file changes**: never skip CI hooks (`--no-verify`,
   `--no-gpg-sign`). If pre-commit fails, fix and create a new commit; don't
   amend.

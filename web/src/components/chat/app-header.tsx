@@ -38,13 +38,13 @@ interface AppHeaderProps {
 }
 
 const FLOAT_BUTTON =
-  "glass-regular size-[46px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent";
+  "glass-regular size-[45px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent";
 
 const FLOAT_BUTTON_TOUCH =
-  "glass-regular size-[46px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden";
+  "glass-regular size-[45px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden";
 
 const PILL_HALF =
-  "inline-flex h-[46px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring active:not-aria-[haspopup]:scale-[0.97]";
+  "inline-flex h-[45px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring active:not-aria-[haspopup]:scale-[0.97]";
 
 export function AppHeader({
   onNewChat,
@@ -97,7 +97,7 @@ export function AppHeader({
       </div>
 
       <div className="flex flex-1 items-center justify-end">
-        <div className="glass-regular inline-flex h-[46px] items-center rounded-full">
+        <div className="glass-regular inline-flex h-[45px] items-center rounded-full">
           <button
             type="button"
             aria-label="New chat"

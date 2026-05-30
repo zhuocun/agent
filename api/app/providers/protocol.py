@@ -106,6 +106,12 @@ class Provider(Protocol):
     the implementation MUST use that key for the underlying provider call
     instead of its default credentials. Implementations that don't talk to a
     real provider (e.g. the fake) may ignore this argument.
+
+    `thinking` / `reasoning_effort` are optional provider hints (DeepSeek V4
+    dual-mode): `thinking` toggles the model's chain-of-thought (None = provider
+    default, True = enabled, False = disabled) and `reasoning_effort` selects the
+    effort level (e.g. "high"; None = omit). Implementations that don't support
+    them ignore them.
     """
 
     def stream(
@@ -115,6 +121,8 @@ class Provider(Protocol):
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[ProviderEvent]: ...
 
     async def complete(

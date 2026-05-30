@@ -336,6 +336,11 @@ async def stream_and_persist(
         history=history,
         user_text=user_text,
         api_key=api_key,
+        # DeepSeek V4 dual-mode hints from the tier binding. None means
+        # "provider default" (the Anthropic/OpenAI alternate bindings leave
+        # both unset, and the provider adapters ignore what they don't support).
+        thinking=binding.thinking,
+        reasoning_effort=binding.reasoning_effort,
     )
 
     queue: asyncio.Queue[ProviderEvent | _PumpError | None] = asyncio.Queue()

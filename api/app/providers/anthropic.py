@@ -166,7 +166,11 @@ class AnthropicProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # `thinking` / `reasoning_effort` accepted for Protocol conformance but
+        # ignored: Anthropic extended-thinking is not yet wired here.
         # Build messages: history + the current user turn.
         messages: list[dict[str, Any]] = [
             {"role": m.role, "content": m.text} for m in history

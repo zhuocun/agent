@@ -20,7 +20,7 @@ export const MODEL_TIERS: ModelTier[] = [
     description: "Quick, low-cost answers for everyday questions.",
     speedHint: "fastest",
     costHint: "lowest",
-    contextHint: "128K",
+    contextHint: "1M",
   },
   {
     id: "smart",
@@ -28,7 +28,7 @@ export const MODEL_TIERS: ModelTier[] = [
     description: "Balanced reasoning and speed for most work.",
     speedHint: "balanced",
     costHint: "medium",
-    contextHint: "200K",
+    contextHint: "1M",
   },
   {
     id: "pro",

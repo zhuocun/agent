@@ -6,11 +6,14 @@ accounting, and error mapping so the rest of the system stays provider-agnostic.
 
 Notable differences from the Anthropic adapter:
 
-- No reasoning-text streaming. OpenAI Chat Completions does NOT stream the
-  model's reasoning content; it only reports `reasoning_tokens` in usage. So we
-  never emit `ReasoningDelta`/`ReasoningDone` (zero reasoning events is a legal
-  stream per the Provider Protocol). Reasoning is still billed at the output
-  rate via the usage buckets below.
+- Reasoning-text streaming is path-dependent. Stock OpenAI Chat Completions does
+  NOT stream the model's reasoning content; it only reports `reasoning_tokens` in
+  usage. DeepSeek's OpenAI-compatible endpoint, however, DOES surface the
+  chain-of-thought as a separate `delta.reasoning_content` field, which we now
+  forward as `ReasoningDelta`/`ReasoningDone`. The field is absent/None on stock
+  OpenAI (and o-series) responses, so reading it is a safe no-op there (zero
+  reasoning events is a legal stream per the Provider Protocol). Either way,
+  reasoning is billed at the output rate via the usage buckets below.
 
 - Disjoint usage buckets (THE correctness detail). `pricing.compute_cost_breakdown`
   sums FOUR buckets independently:
@@ -47,6 +50,8 @@ from app.providers.protocol import (
     ChatMessage,
     Complete,
     ProviderEvent,
+    ReasoningDelta,
+    ReasoningDone,
     UsageUpdate,
 )
 from app.providers.steering import steer_user_text
@@ -160,6 +165,8 @@ class OpenAIProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        thinking: bool | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         # Build messages: history + the current user turn. Only user/assistant
         # roles (no system role), which keeps o-series models happy.
@@ -168,8 +175,26 @@ class OpenAIProvider:
         # never persisted). History stays verbatim. See app/providers/steering.py.
         messages.append({"role": "user", "content": steer_user_text(user_text)})
 
+        # Optional provider hints, built CONDITIONALLY so we never send a
+        # `reasoning_effort=None` or an empty `extra_body` to stock OpenAI.
+        # `thinking` maps to DeepSeek V4's dual-mode toggle via `extra_body`;
+        # `reasoning_effort` is the DeepSeek effort level ("high"/"max").
+        kwargs: dict[str, Any] = {}
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+        if thinking is not None:
+            kwargs["extra_body"] = {
+                "thinking": {"type": "enabled" if thinking else "disabled"}
+            }
+
         client = self._client_for(api_key)
         usage_obj: Any = None
+        # Reasoning-event invariant (DeepSeek's `delta.reasoning_content`): emit
+        # at most one ReasoningDone, only after >=1 ReasoningDelta, and before any
+        # AnswerDelta. Stock OpenAI never sends `reasoning_content`, so these stay
+        # False and no reasoning events are emitted.
+        reasoning_seen = False
+        reasoning_done_sent = False
         try:
             stream = await client.chat.completions.create(
                 model=model_id,
@@ -180,6 +205,7 @@ class OpenAIProvider:
                 # REQUIRED to get usage on a streaming call -- it rides the final
                 # chunk (which has empty `choices`).
                 stream_options={"include_usage": True},
+                **kwargs,
             )
             async for chunk in stream:
                 # Usage arrives on the final chunk; capture from any chunk that
@@ -189,8 +215,19 @@ class OpenAIProvider:
                     usage_obj = chunk_usage
                 for choice in getattr(chunk, "choices", None) or []:
                     delta = getattr(choice, "delta", None)
+                    # DeepSeek streams chain-of-thought separately on
+                    # `delta.reasoning_content` (absent/None on stock OpenAI).
+                    rc = getattr(delta, "reasoning_content", None)
+                    if rc:
+                        yield ReasoningDelta(text=rc)
+                        reasoning_seen = True
                     content = getattr(delta, "content", None)
                     if content:
+                        # Close the reasoning block exactly once, just before the
+                        # first answer text follows it.
+                        if reasoning_seen and not reasoning_done_sent:
+                            yield ReasoningDone()
+                            reasoning_done_sent = True
                         yield AnswerDelta(text=content)
         except openai.APIError as exc:
             raise _map_sdk_error(exc) from exc
@@ -209,6 +246,14 @@ class OpenAIProvider:
         # non-conformant endpoint reporting a negative must not produce a
         # negative cost. (input/output are already clamped via the subtraction.)
         cached_input_tokens = max(_safe_int(getattr(prompt_details, "cached_tokens", None)), 0)
+        # DeepSeek reports cache hits at the TOP LEVEL as `prompt_cache_hit_tokens`
+        # (not under `prompt_tokens_details.cached_tokens`), so fall back to it
+        # when the standard nested field is absent/zero — otherwise DeepSeek cache
+        # discounts would never apply.
+        if cached_input_tokens == 0:
+            cached_input_tokens = max(
+                _safe_int(getattr(usage_obj, "prompt_cache_hit_tokens", None)), 0
+            )
         reasoning_tokens = max(_safe_int(getattr(completion_details, "reasoning_tokens", None)), 0)
         input_tokens = max(prompt_tokens - cached_input_tokens, 0)
         output_tokens = max(completion_tokens - reasoning_tokens, 0)

@@ -20,6 +20,8 @@ reasoning-text events (zero `ReasoningDelta`/`ReasoningDone`).
 from __future__ import annotations
 
 import json
+from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -54,6 +56,8 @@ def _stream_body(
     completion_tokens: int,
     reasoning_tokens: int = 0,
     cached_tokens: int = 0,
+    cache_hit_tokens: int | None = None,
+    reasoning_chunks: tuple[str, ...] = (),
     answer_chunks: tuple[str, ...] = ("Hello", " there"),
     include_usage: bool = True,
 ) -> str:
@@ -62,8 +66,32 @@ def _stream_body(
     Content chunks carry `choices[0].delta.content`; the final usage chunk
     (emitted because `stream_options.include_usage` is set) carries empty
     `choices` and a `usage` object. Terminated by `data: [DONE]`.
+
+    `reasoning_chunks` model DeepSeek's OpenAI-compatible chain-of-thought
+    stream (`choices[0].delta.reasoning_content`), emitted BEFORE any content.
+    `cache_hit_tokens` models DeepSeek's TOP-LEVEL `usage.prompt_cache_hit_tokens`
+    (distinct from the nested `prompt_tokens_details.cached_tokens`); when set,
+    the nested `cached_tokens` field is omitted entirely so we exercise the
+    DeepSeek fallback path.
     """
     frames: list[str] = []
+    for part in reasoning_chunks:
+        frames.append(
+            _chunk(
+                {
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion.chunk",
+                    "model": "deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"reasoning_content": part},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+        )
     for part in answer_chunks:
         frames.append(
             _chunk(
@@ -93,6 +121,17 @@ def _stream_body(
         )
     )
     if include_usage:
+        usage: dict[str, Any] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "completion_tokens_details": {"reasoning_tokens": reasoning_tokens},
+        }
+        if cache_hit_tokens is not None:
+            # DeepSeek shape: TOP-LEVEL cache field, no nested `cached_tokens`.
+            usage["prompt_cache_hit_tokens"] = cache_hit_tokens
+        else:
+            usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens}
         frames.append(
             _chunk(
                 {
@@ -100,13 +139,7 @@ def _stream_body(
                     "object": "chat.completion.chunk",
                     "model": "gpt-4o",
                     "choices": [],
-                    "usage": {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": prompt_tokens + completion_tokens,
-                        "completion_tokens_details": {"reasoning_tokens": reasoning_tokens},
-                        "prompt_tokens_details": {"cached_tokens": cached_tokens},
-                    },
+                    "usage": usage,
                 }
             )
         )
@@ -374,3 +407,166 @@ async def test_client_for_byok_selects_fresh_client_with_same_base_url() -> None
     byok_client = provider._client_for("byok-other-key")
     assert byok_client is not provider._client
     assert byok_client.base_url == provider._client.base_url
+
+
+# --- DeepSeek V4 dual-mode hints + reasoning_content + cache fallback ---------
+#
+# These exercise the provider-hint passthrough (thinking / reasoning_effort) and
+# DeepSeek-specific stream/usage shapes that stock OpenAI never produces.
+
+
+class _EmptyStream:
+    """An empty async-iterable of chunks — the awaited result of `create(...)`.
+
+    Used by the kwargs-passthrough tests, where we only care about what was
+    passed into `create(...)`, not what comes back.
+    """
+
+    def __aiter__(self) -> _EmptyStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        raise StopAsyncIteration
+
+
+async def _capture_create_kwargs(
+    *, thinking: bool | None, reasoning_effort: str | None
+) -> dict[str, Any]:
+    """Patch the client's `create` and return the kwargs `stream(...)` passed it."""
+    provider = _provider()
+    create_mock = AsyncMock(return_value=_EmptyStream())
+    provider._client.chat.completions.create = create_mock  # type: ignore[method-assign]
+    async for _ in provider.stream(
+        model_id="deepseek-v4-pro",
+        history=[],
+        user_text="hi",
+        thinking=thinking,
+        reasoning_effort=reasoning_effort,
+    ):
+        pass
+    assert create_mock.await_count == 1
+    return dict(create_mock.await_args.kwargs)
+
+
+async def test_stream_thinking_enabled_sets_extra_body() -> None:
+    """thinking=True -> extra_body={"thinking": {"type": "enabled"}}."""
+    kwargs = await _capture_create_kwargs(thinking=True, reasoning_effort=None)
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert "reasoning_effort" not in kwargs
+
+
+async def test_stream_thinking_disabled_sets_extra_body() -> None:
+    """thinking=False -> extra_body={"thinking": {"type": "disabled"}}."""
+    kwargs = await _capture_create_kwargs(thinking=False, reasoning_effort=None)
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+async def test_stream_thinking_none_omits_extra_body() -> None:
+    """thinking=None -> no extra_body / no thinking key (provider default)."""
+    kwargs = await _capture_create_kwargs(thinking=None, reasoning_effort=None)
+    assert "extra_body" not in kwargs
+
+
+async def test_stream_reasoning_effort_passed_through() -> None:
+    """reasoning_effort="high" is forwarded verbatim; None is omitted."""
+    kwargs = await _capture_create_kwargs(thinking=None, reasoning_effort="high")
+    assert kwargs["reasoning_effort"] == "high"
+    assert "extra_body" not in kwargs
+
+    kwargs_none = await _capture_create_kwargs(thinking=None, reasoning_effort=None)
+    assert "reasoning_effort" not in kwargs_none
+
+
+@respx.mock
+async def test_stream_reasoning_content_emits_ordered_events() -> None:
+    """DeepSeek `reasoning_content` -> ReasoningDelta(s), one ReasoningDone, then AnswerDelta(s).
+
+    The Provider invariant: at most one ReasoningDone, only after >=1
+    ReasoningDelta, and strictly before the first AnswerDelta.
+    """
+    respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(
+                prompt_tokens=10,
+                completion_tokens=10,
+                reasoning_chunks=("Thinking", " harder"),
+                answer_chunks=("Answer", " here"),
+            )
+        )
+    )
+
+    provider = _provider()
+    events: list[str] = []
+    reasoning_text: list[str] = []
+    answer_text: list[str] = []
+    async for event in provider.stream(model_id="deepseek-v4-pro", history=[], user_text="hi"):
+        if isinstance(event, ReasoningDelta):
+            events.append("rdelta")
+            reasoning_text.append(event.text)
+        elif isinstance(event, ReasoningDone):
+            events.append("rdone")
+        elif isinstance(event, AnswerDelta):
+            events.append("answer")
+            answer_text.append(event.text)
+
+    assert "".join(reasoning_text) == "Thinking harder"
+    assert "".join(answer_text) == "Answer here"
+    # Exactly one ReasoningDone, after the reasoning deltas and before any answer.
+    assert events.count("rdone") == 1
+    done_idx = events.index("rdone")
+    first_answer_idx = events.index("answer")
+    assert all(e == "rdelta" for e in events[:done_idx])
+    assert done_idx < first_answer_idx
+
+
+@respx.mock
+async def test_stream_content_without_reasoning_emits_no_reasoning_done() -> None:
+    """Content with no prior reasoning_content -> NO ReasoningDone (stock OpenAI shape)."""
+    respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(
+                prompt_tokens=10,
+                completion_tokens=10,
+                answer_chunks=("Just", " answer"),
+            )
+        )
+    )
+
+    provider = _provider()
+    reasoning_events = 0
+    async for event in provider.stream(model_id="gpt-4o", history=[], user_text="hi"):
+        if isinstance(event, (ReasoningDelta, ReasoningDone)):
+            reasoning_events += 1
+
+    assert reasoning_events == 0
+
+
+@respx.mock
+async def test_stream_deepseek_prompt_cache_hit_tokens_captured() -> None:
+    """DeepSeek top-level `prompt_cache_hit_tokens` -> cached bucket, subtracted from input.
+
+    No nested `prompt_tokens_details.cached_tokens` is present (DeepSeek shape),
+    so the provider must fall back to the top-level field — otherwise DeepSeek
+    cache discounts would silently never apply.
+    """
+    respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(
+                prompt_tokens=80,
+                completion_tokens=40,
+                cache_hit_tokens=30,
+                answer_chunks=("ok",),
+            )
+        )
+    )
+
+    provider = _provider()
+    final_usage: UsageUpdate | None = None
+    async for event in provider.stream(model_id="deepseek-v4-pro", history=[], user_text="hi"):
+        if isinstance(event, UsageUpdate):
+            final_usage = event
+
+    assert final_usage is not None
+    assert final_usage.cached_input_tokens == 30
+    assert final_usage.input_tokens == 50  # prompt(80) - cache_hit(30)
+    assert final_usage.output_tokens == 40

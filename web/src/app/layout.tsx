@@ -111,12 +111,18 @@ export default function RootLayout({
           className="pointer-events-none fixed inset-x-0 top-0 z-[100]"
           style={{
             height: "env(safe-area-inset-top)",
-            // Track the glass system rather than hardcoding — same blur,
-            // saturation, and brightness lift as the `glass-*` utilities.
+            // Track the glass system's blur + saturation, but deliberately omit
+            // the `brightness(--glass-brightness)` lift the `glass-*` utilities
+            // carry. That lift (1.03) is sub-perceptual over colored content but
+            // pushes the near-white app surface (#f9fafc) PAST the top of the
+            // gamut — every channel clips to 255 — so over the page this strip
+            // rendered a pure-white band that read brighter than the body. The
+            // brightness lift only earns its keep over rich content (bubbles,
+            // dialogs); over the flat top surface it just manufactures a seam.
             backdropFilter:
-              "blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness))",
+              "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
             WebkitBackdropFilter:
-              "blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness))",
+              "blur(var(--glass-blur)) saturate(var(--glass-saturate))",
             maskImage: "linear-gradient(to bottom, black, transparent)",
             WebkitMaskImage: "linear-gradient(to bottom, black, transparent)",
           }}

@@ -14,6 +14,13 @@ class ModelTier(CamelModel):
     speed_hint: SpeedHint
     cost_hint: CostHint
     context_hint: str
+    # Curated display name of the model the tier actually serves (e.g.
+    # "DeepSeek V4 Flash") — a friendly label, never a raw model id (PRD 06
+    # §5.6). Populated by bootstrap from the ACTIVE backend's binding, so it
+    # reflects what really answers. Empty for `auto` (the router picks per
+    # message, so there is no single model) and as the backend-independent
+    # default on the canonical tier objects.
+    model_label: str = ""
 
 
 class PromptSuggestion(CamelModel):

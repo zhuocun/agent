@@ -231,11 +231,34 @@ def test_build_attribution_uses_substituted_label_when_provided() -> None:
     assert attr.substitution is not None
     assert attr.substitution.reason_code == "provider_fallback"
 
-    # Without a substituted label, fall back to the registry tier label.
+    # Without a substituted label, use the served binding's model label.
     attr_default = build_attribution(
         requested_tier_id="smart",
         binding=binding,
         breakdown=bd,
         cost_confidence="exact",
     )
-    assert attr_default.served_model_label == binding.tier.label
+    assert attr_default.served_model_label == binding.model_label
+    # The model label is distinct from the tier label, so this is non-trivial.
+    assert binding.model_label != binding.tier.label
+
+
+def test_build_attribution_unrouted_auto_falls_back_to_tier_label() -> None:
+    """The raw `auto` binding (unrouted safety-net) carries no model_label, so
+    served_model_label falls back to the resolved tier label — never empty."""
+    binding = get_binding("auto")
+    assert binding is not None
+    assert binding.model_label == ""  # safety-net precondition
+    usage = UsageUpdate(input_tokens=10, output_tokens=20)
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+
+    attr = build_attribution(
+        requested_tier_id="auto",
+        binding=binding,
+        breakdown=bd,
+        cost_confidence="estimate",
+    )
+    # resolve_served_tier maps auto -> smart, label "Smart".
+    assert attr.served_tier_id == "smart"
+    assert attr.served_model_label == "Smart"
+    assert attr.served_model_label != ""

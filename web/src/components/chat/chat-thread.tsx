@@ -241,6 +241,13 @@ export function ChatThread() {
     useState<ModelTierId>(DEFAULT_TIER_ID);
   const [selectedReasoningEffortId, setSelectedReasoningEffortId] =
     useState<ReasoningEffortId>("auto");
+  // Composer web-search toggle. Only ever sent (and only ever togglable) when
+  // the selected tier supports web search; switching to a non-supporting tier
+  // clears it (see the effect below), so an off-tier turn can never carry it.
+  const [searchEnabled, setSearchEnabled] = useState(false);
+  // Captured at send-time alongside the tier so a mid-stream toggle can't
+  // retroactively change what this turn requested.
+  const searchAtSendRef = useRef(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
@@ -341,6 +348,17 @@ export function ChatThread() {
   const preferences: UserPreferences | null = bootstrap?.preferences ?? null;
   const usage: UsageBudget | null = bootstrap?.usage ?? null;
   const modelTiers: ModelTier[] = bootstrap?.modelTiers ?? [];
+  // The selected tier's web-search capability. Drives the picker's toggle
+  // visibility and gates whether `webSearch` is ever sent. Defaults to false
+  // while bootstrap is pending (the tier list is empty). Every read of
+  // `searchEnabled` is AND-gated on this flag (the picker prop, all send
+  // paths), so a stale `searchEnabled === true` left over from a tier switch
+  // is inert until the tier supports search again — no reconciling effect
+  // needed (and none allowed: setState-in-effect is a lint error here).
+  const selectedTierSupportsSearch =
+    modelTiers.find((t) => t.id === selectedTierId)?.supportsWebSearch === true;
+  // Effective, gated view used by every consumer.
+  const effectiveSearchEnabled = searchEnabled && selectedTierSupportsSearch;
   const [conversations, setConversations] = useState<ConversationSummary[]>(
     [],
   );
@@ -376,6 +394,16 @@ export function ChatThread() {
     if (!assistantId) return;
 
     const parts: MessagePart[] = [];
+    // Persist the search status line first (mirrors `pendingMessage`). The
+    // search has finished by terminal time, so force `state: "done"` — the
+    // spinner stops, the label stays (e.g. "Searched the web").
+    if (result.searchStatus) {
+      parts.push({
+        type: "status",
+        label: result.searchStatus.label,
+        state: "done",
+      });
+    }
     if (result.reasoning) {
       parts.push({
         type: "reasoning",
@@ -384,6 +412,10 @@ export function ChatThread() {
       });
     }
     if (result.answer) parts.push({ type: "text", text: result.answer });
+    // Sources part follows the answer text (contract ordering).
+    if (result.sources.length > 0) {
+      parts.push({ type: "sources", items: result.sources });
+    }
 
     const serverAssistantId = result.serverAssistantMessageId ?? assistantId;
     const serverUserId = result.serverUserMessageId;
@@ -433,6 +465,7 @@ export function ChatThread() {
       tierId: ModelTierId;
       regenerate?: boolean;
       editMessageId?: string;
+      webSearch?: boolean;
     }): Promise<void> => {
       let conversationId = activeConversationId;
       if (!conversationId) {
@@ -489,6 +522,9 @@ export function ChatThread() {
         isTemporary: isTemporary || undefined,
         regenerate: args.regenerate,
         editMessageId: args.editMessageId,
+        // Sent only when on; stream-client further drops it from the wire when
+        // falsy, so the off path is byte-identical to today.
+        webSearch: args.webSearch,
       });
     },
     [activeConversationId, isTemporary, start],
@@ -498,6 +534,10 @@ export function ChatThread() {
     const userBubbleId = localId();
     const assistantPlaceholderId = localId();
     tierAtSendRef.current = selectedTierId;
+    // Only ride web search along when the selected tier actually supports it —
+    // the effect already keeps `searchEnabled` false off-tier, but gate here too
+    // so a same-tick tier switch can't leak a stale flag.
+    searchAtSendRef.current = effectiveSearchEnabled;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
 
@@ -513,7 +553,11 @@ export function ChatThread() {
       ]);
       setPendingId(assistantPlaceholderId);
       setLiveMessage("Generating response");
-      void beginTurn({ text, tierId: tierAtSendRef.current });
+      void beginTurn({
+        text,
+        tierId: tierAtSendRef.current,
+        webSearch: searchAtSendRef.current || undefined,
+      });
     };
 
     // Welcome→thread seam: if the welcome surface is showing, run its exit
@@ -550,6 +594,15 @@ export function ChatThread() {
   const pendingMessage: ChatMessage | null = useMemo(() => {
     if (!pendingId) return null;
     const parts: MessagePart[] = [];
+    // Web-search status line ("Searching the web…") sits at the TOP of the
+    // turn — it precedes reasoning + answer just as it does on the wire.
+    if (state.searchStatus) {
+      parts.push({
+        type: "status",
+        label: state.searchStatus.label,
+        state: state.searchStatus.state,
+      });
+    }
     if (state.reasoning) {
       parts.push({
         type: "reasoning",
@@ -558,6 +611,11 @@ export function ChatThread() {
       });
     }
     if (state.answer) parts.push({ type: "text", text: state.answer });
+    // Sources render AFTER the answer text (contract: sources part follows the
+    // answer). They stream in once the search resolves.
+    if (state.sources.length > 0) {
+      parts.push({ type: "sources", items: state.sources });
+    }
     return {
       id: pendingId,
       role: "assistant",
@@ -614,6 +672,7 @@ export function ChatThread() {
     assistantIdRef.current = regenId;
     pendingUserIdRef.current = null;
     tierAtSendRef.current = selectedTierId;
+    searchAtSendRef.current = effectiveSearchEnabled;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
     // Regenerate keeps the trailing user message verbatim — send its text
@@ -631,6 +690,7 @@ export function ChatThread() {
       text: lastUserText,
       tierId: tierAtSendRef.current,
       regenerate: true,
+      webSearch: searchAtSendRef.current || undefined,
     });
   };
 
@@ -645,6 +705,7 @@ export function ChatThread() {
     const userBubbleId = localId();
     const assistantPlaceholderId = localId();
     tierAtSendRef.current = selectedTierId;
+    searchAtSendRef.current = effectiveSearchEnabled;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
     setMessages((prev) => [
@@ -662,6 +723,7 @@ export function ChatThread() {
       text: newText,
       tierId: tierAtSendRef.current,
       editMessageId: messageId,
+      webSearch: searchAtSendRef.current || undefined,
     });
   };
 
@@ -702,6 +764,7 @@ export function ChatThread() {
       setIsTemporary(preferences.temporaryByDefault);
     }
     setSelectedReasoningEffortId("auto");
+    setSearchEnabled(false);
     setMobileNavOpen(false);
   };
 
@@ -724,6 +787,7 @@ export function ChatThread() {
     setActiveConversationId(null);
     if (preferences) setSelectedTierId(preferences.defaultTierId);
     setSelectedReasoningEffortId("auto");
+    setSearchEnabled(false);
     setIsTemporary(true);
     setMobileNavOpen(false);
   };
@@ -1347,6 +1411,8 @@ export function ChatThread() {
                 efforts={REASONING_EFFORTS}
                 selectedEffortId={selectedReasoningEffortId}
                 onSelectEffort={setSelectedReasoningEffortId}
+                searchEnabled={effectiveSearchEnabled}
+                onToggleSearch={setSearchEnabled}
               />
               {isTemporary ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />

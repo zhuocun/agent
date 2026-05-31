@@ -11,6 +11,7 @@ from typing import Literal
 
 from app.schemas.common import CamelModel
 from app.schemas.message import ModelAttribution
+from app.search.protocol import SourceItem
 
 
 class SubmittedEvent(CamelModel):
@@ -28,6 +29,18 @@ class ReasoningDoneEvent(CamelModel):
 class StatusEvent(CamelModel):
     label: str
     state: Literal["active", "done"]
+
+
+class SourcesEvent(CamelModel):
+    """Resolved source / citation list for a web-search turn.
+
+    `items` carries the ordered `SourceItem`s (1-based ids) the search backend
+    returned. `SourceItem`'s fields are all single lowercase words, so the wire
+    camelCase form is identical to snake_case — no aliases needed; we serialize
+    the `SourceItem` models directly.
+    """
+
+    items: list[SourceItem]
 
 
 class AnswerDeltaEvent(CamelModel):

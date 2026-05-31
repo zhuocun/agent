@@ -58,6 +58,8 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    Sources,
+    StatusUpdate,
     UsageUpdate,
 )
 from app.providers.tiers import TierBinding, get_binding
@@ -67,15 +69,20 @@ from app.schemas.stream_events import (
     AnswerDeltaEvent,
     ReasoningDeltaEvent,
     ReasoningDoneEvent,
+    SourcesEvent,
+    StatusEvent,
     SubmittedEvent,
     TerminalEvent,
 )
+from app.search.protocol import SourceItem
 from app.streaming.replay_registry import ReplayBuffer
 from app.streaming.sse import (
     encode_answer_delta,
     encode_error,
     encode_reasoning_delta,
     encode_reasoning_done,
+    encode_sources,
+    encode_status,
     encode_submitted,
     encode_terminal,
 )
@@ -272,6 +279,7 @@ async def stream_and_persist(
     api_key: str | None = None,
     stream_id: UUID | None = None,
     router_substitution: SubstitutionReasonCode | None = None,
+    web_search: bool = False,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -312,6 +320,14 @@ async def stream_and_persist(
     answer_buf: list[str] = []
     final_usage = UsageUpdate()
     emitted_reasoning_done = False
+    # Web-search accumulators (only populated when the provider emits the
+    # corresponding events). `latest_status` holds the most recent
+    # (label, state) so the persisted `status` part records the final line (the
+    # `done` line for a completed search). `search_items` holds the resolved
+    # `Sources`. When neither is emitted (the common, web_search=False path) the
+    # persist sites append no status/sources parts and the stream is unchanged.
+    latest_status: tuple[str, str] | None = None
+    search_items: list[SourceItem] = []
     is_byok_turn = api_key is not None
     # Substitution metadata threaded into build_attribution(...). Two sources
     # feed it, with provider-side winning (see below + the docstring):
@@ -341,6 +357,9 @@ async def stream_and_persist(
         # both unset, and the provider adapters ignore what they don't support).
         thinking=binding.thinking,
         reasoning_effort=binding.reasoning_effort,
+        # Opt this turn into the web_search tool. False (the default) leaves the
+        # provider stream byte-for-byte unchanged — no StatusUpdate / Sources.
+        web_search=web_search,
     )
 
     queue: asyncio.Queue[ProviderEvent | _PumpError | None] = asyncio.Queue()
@@ -366,6 +385,36 @@ async def stream_and_persist(
 
     pump_task = asyncio.create_task(_pump())
 
+    def _build_parts() -> list[dict[str, Any]]:
+        """Assemble the persisted assistant parts in canonical order.
+
+        Order for a web-search turn: [reasoning?] [status(done)] [text]
+        [sources]. The status part is appended only if a `StatusUpdate` was
+        seen (recording the FINAL line — `state="done"` for a completed search),
+        and the sources part only if a `Sources` event was seen. On a
+        non-web-search turn neither is present, so the parts are exactly
+        [reasoning?] [text] as before — the regression-critical no-op invariant.
+        Shared by the terminal-success and stop-path persist sites so they can
+        never drift.
+        """
+        parts: list[dict[str, Any]] = []
+        if reasoning_buf:
+            parts.append({"type": "reasoning", "text": "".join(reasoning_buf)})
+        if latest_status is not None:
+            label, _state = latest_status
+            parts.append({"type": "status", "label": label, "state": "done"})
+        parts.append({"type": "text", "text": "".join(answer_buf)})
+        if search_items:
+            parts.append(
+                {
+                    "type": "sources",
+                    "items": [
+                        it.model_dump(exclude_none=True) for it in search_items
+                    ],
+                }
+            )
+        return parts
+
     async def _persist_assistant(
         *,
         status: str,
@@ -376,10 +425,7 @@ async def stream_and_persist(
     ) -> UUID | None:
         if is_temporary or conversation_id is None:
             return None
-        parts: list[dict[str, Any]] = []
-        if reasoning_buf:
-            parts.append({"type": "reasoning", "text": "".join(reasoning_buf)})
-        parts.append({"type": "text", "text": "".join(answer_buf)})
+        parts = _build_parts()
         # Stop-path uses a fresh session (passed via `session=`); terminal-success
         # reuses the request-scoped `db`. Asymmetry: at disconnect the request
         # lifecycle is winding down and the route's get_db cleanup may
@@ -412,10 +458,15 @@ async def stream_and_persist(
         latest cumulative usage even on stopped turns.
         """
         nonlocal final_usage, sub_code, sub_provider, sub_model, sub_label
+        nonlocal latest_status, search_items
         if isinstance(ev, ReasoningDelta):
             reasoning_buf.append(ev.text)
         elif isinstance(ev, AnswerDelta):
             answer_buf.append(ev.text)
+        elif isinstance(ev, StatusUpdate):
+            latest_status = (ev.label, ev.state)
+        elif isinstance(ev, Sources):
+            search_items = list(ev.items)
         elif isinstance(ev, UsageUpdate):
             final_usage = ev
         elif isinstance(ev, Complete):
@@ -553,6 +604,18 @@ async def stream_and_persist(
                 if not emitted_reasoning_done:
                     yield encode_reasoning_done(ReasoningDoneEvent())
                     emitted_reasoning_done = True
+            elif isinstance(ev, StatusUpdate):
+                # Web-search status line (reuses the existing `status` SSE
+                # event). Emit live and remember the latest (label, state) so
+                # the persisted `status` part records the final, `done` line.
+                latest_status = (ev.label, ev.state)
+                yield encode_status(StatusEvent(label=ev.label, state=ev.state))
+            elif isinstance(ev, Sources):
+                # Resolved citation list. Emit the `sources` SSE event and stash
+                # the items for the persisted `sources` part (appended after the
+                # text part at the persist sites).
+                search_items = list(ev.items)
+                yield encode_sources(SourcesEvent(items=list(ev.items)))
             elif isinstance(ev, AnswerDelta):
                 # Invariant: emit ReasoningDone before the first AnswerDelta,
                 # if any reasoning_delta has been seen but done hasn't fired.
@@ -607,10 +670,7 @@ async def stream_and_persist(
             is_first_terminal = is_initial and (
                 await messages_repo.count_assistant_messages(db, conversation_id) == 0
             )
-            parts: list[dict[str, Any]] = []
-            if reasoning_buf:
-                parts.append({"type": "reasoning", "text": "".join(reasoning_buf)})
-            parts.append({"type": "text", "text": "".join(answer_buf)})
+            parts = _build_parts()
             row = await messages_repo.create_assistant_message(
                 db=db,
                 conversation_id=conversation_id,
@@ -793,6 +853,7 @@ async def run_detached_producer(
     api_key: str | None = None,
     stream_id: UUID | None = None,
     router_substitution: SubstitutionReasonCode | None = None,
+    web_search: bool = False,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 
@@ -837,6 +898,7 @@ async def run_detached_producer(
                 api_key=api_key,
                 stream_id=stream_id,
                 router_substitution=router_substitution,
+                web_search=web_search,
             ):
                 # Mirror the last frame kind so the buffer's terminal_kind is
                 # observable. `terminal`/`error` are the only closing frames;

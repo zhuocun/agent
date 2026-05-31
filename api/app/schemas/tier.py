@@ -21,6 +21,12 @@ class ModelTier(CamelModel):
     # message, so there is no single model) and as the backend-independent
     # default on the canonical tier objects.
     model_label: str = ""
+    # Whether this tier can ground a turn with web search. The wire flag is
+    # `binding.supports_web_search AND search_enabled(settings)` — set by
+    # `list_tiers` so the FE only shows the affordance when a search backend is
+    # actually configured. Defaults to False as the backend-independent default
+    # on the canonical tier objects.
+    supports_web_search: bool = False
 
 
 class PromptSuggestion(CamelModel):

@@ -17,6 +17,11 @@ export interface ModelTier {
   // active provider backend. Empty for "auto" (its model varies per message via
   // the router), so the picker shows no single model for it.
   modelLabel: string;
+  // Whether this tier can ground answers with a live web search. The composer's
+  // web-search toggle is shown/enabled ONLY when the selected tier has this
+  // true. Filled by the BE from the active provider backend (the mock in
+  // model-tiers.ts is a realistic stand-in for the loading frame).
+  supportsWebSearch: boolean;
 }
 
 // Reasoning-effort / extended-thinking control surfaced in the composer
@@ -93,10 +98,26 @@ export interface ModelAttribution {
   substitution?: Substitution;
 }
 
+// A single web-search result surfaced as a source card under a grounded
+// answer. Mirrors the BE `sources` SSE event item + the persisted `sources`
+// message part (api/app/schemas/message.py). `snippet` / `domain` are
+// best-effort and may be absent.
+export interface SourceItem {
+  id: number;
+  title: string;
+  url: string;
+  snippet?: string;
+  domain?: string;
+}
+
 export type MessagePart =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string; durationSec?: number }
-  | { type: "status"; label: string; state: "active" | "done" };
+  | { type: "status"; label: string; state: "active" | "done" }
+  // Web-search sources, rendered AFTER the answer text. Added to the shared
+  // `MessagePart` union so it auto-flows to the share surface (`PublicMessage`
+  // reuses `MessagePart`) and round-trips via GET /api/conversations/:id.
+  | { type: "sources"; items: SourceItem[] };
 
 export type MessageRole = "user" | "assistant";
 

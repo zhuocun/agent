@@ -1,8 +1,8 @@
 """Message parts, attribution, cost breakdown, ChatMessage.
 
 Mirrors `web/src/lib/types.ts` exactly. `MessagePart` is a discriminated union
-of the three variants the FE renders (`text` | `reasoning` | `status`). The
-wider PRD-04 §6 schema (e.g. `tool-call`) is deliberately not in M0.
+of the variants the FE renders (`text` | `reasoning` | `status` | `sources`).
+The wider PRD-04 §6 schema (e.g. `tool-call`) is deliberately not in M0.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from app.schemas.common import (
     StreamStatus,
     SubstitutionReasonCode,
 )
+from app.search.protocol import SourceItem
 
 
 class TextPart(CamelModel):
@@ -39,8 +40,20 @@ class StatusPart(CamelModel):
     state: Literal["active", "done"]
 
 
+class SourcesPart(CamelModel):
+    """Persisted source / citation list for a web-search turn.
+
+    Mirrors the `sources` SSE event. `SourceItem`'s fields are all single
+    lowercase words, so the wire camelCase form equals snake_case — the
+    `SourceItem` models serialize directly with no alias churn.
+    """
+
+    type: Literal["sources"] = "sources"
+    items: list[SourceItem]
+
+
 MessagePart = Annotated[
-    TextPart | ReasoningPart | StatusPart,
+    TextPart | ReasoningPart | StatusPart | SourcesPart,
     Field(discriminator="type"),
 ]
 

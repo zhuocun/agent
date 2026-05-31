@@ -19,11 +19,16 @@ from app.providers.anthropic import AnthropicProvider
 from app.providers.fake import FakeProvider
 from app.providers.openai import OpenAIProvider
 from app.providers.protocol import Provider
+from app.search.factory import get_search_provider
 
 
 def build_provider(settings: Settings | None = None) -> Provider:
     """Return a Provider matching the configured backend."""
     s = settings if settings is not None else get_settings()
+    # Web-search backend (None when SEARCH_BACKEND=none/unset, or tavily with no
+    # key). Injected into the OpenAI-compatible provider so a `web_search=True`
+    # turn can run a real search mid-stream. None makes `web_search=True` a no-op.
+    search_provider = get_search_provider(s)
     if s.provider_backend == "deepseek":
         # DeepSeek is the canonical provider. It speaks the OpenAI-compatible
         # API, so we reuse OpenAIProvider with DeepSeek's built-in default
@@ -43,7 +48,11 @@ def build_provider(settings: Settings | None = None) -> Provider:
                 ),
                 status_code=500,
             )
-        return OpenAIProvider(api_key=key, base_url=s.deepseek_base_url)
+        return OpenAIProvider(
+            api_key=key,
+            base_url=s.deepseek_base_url,
+            search_provider=search_provider,
+        )
     if s.provider_backend == "anthropic":
         if not s.anthropic_api_key:
             # Surface a typed envelope so ops can grep for `MISCONFIGURED`
@@ -69,5 +78,9 @@ def build_provider(settings: Settings | None = None) -> Provider:
                 ),
                 status_code=500,
             )
-        return OpenAIProvider(api_key=s.openai_api_key, base_url=s.openai_base_url)
+        return OpenAIProvider(
+            api_key=s.openai_api_key,
+            base_url=s.openai_base_url,
+            search_provider=search_provider,
+        )
     return FakeProvider()

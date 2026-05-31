@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
+import { SourcesPanel } from "@/components/chat/sources-panel";
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
 import { AttributionRow } from "@/components/chat/attribution-row";
 import { MessageActions } from "@/components/chat/message-actions";
@@ -102,6 +103,11 @@ export function AssistantMessage({
         }
         if (part.type === "status") {
           return <StatusLine key={idx} label={part.label} state={part.state} />;
+        }
+        if (part.type === "sources") {
+          // Rendered AFTER the answer text (the part ordering — text then
+          // sources — is established upstream in chat-thread.tsx).
+          return <SourcesPanel key={idx} items={part.items} />;
         }
         return null;
       })}

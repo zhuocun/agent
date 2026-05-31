@@ -14,6 +14,7 @@ export const MODEL_TIERS: ModelTier[] = [
     costHint: "medium",
     contextHint: "auto",
     modelLabel: "", // varies per message via the router
+    supportsWebSearch: true,
   },
   {
     id: "fast",
@@ -23,6 +24,7 @@ export const MODEL_TIERS: ModelTier[] = [
     costHint: "lowest",
     contextHint: "1M",
     modelLabel: "DeepSeek V4 Flash",
+    supportsWebSearch: true,
   },
   {
     id: "smart",
@@ -32,6 +34,7 @@ export const MODEL_TIERS: ModelTier[] = [
     costHint: "medium",
     contextHint: "1M",
     modelLabel: "DeepSeek V4 Flash",
+    supportsWebSearch: true,
   },
   {
     id: "pro",
@@ -41,6 +44,7 @@ export const MODEL_TIERS: ModelTier[] = [
     costHint: "high",
     contextHint: "1M",
     modelLabel: "DeepSeek V4 Pro",
+    supportsWebSearch: true,
   },
 ];
 

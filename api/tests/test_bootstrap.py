@@ -92,6 +92,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
             "costHint",
             "contextHint",
             "modelLabel",
+            "supportsWebSearch",
         ):
             assert key in tier
     # The picker discloses each tier's model (friendly label, never a raw id);
@@ -100,6 +101,12 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     assert by_id["fast"]["modelLabel"] == "DeepSeek V4 Flash"
     assert by_id["pro"]["modelLabel"] == "DeepSeek V4 Pro"
     assert by_id["auto"]["modelLabel"] == ""
+    # Test config sets SEARCH_BACKEND=fake, so search is enabled and every real
+    # tier (including `auto`, whose binding supports search via the tool loop)
+    # reports the capability. The wire flag = binding.supports_web_search AND
+    # search_enabled(settings); with the fake backend that's True for all.
+    for tier_id in ("auto", "fast", "smart", "pro"):
+        assert by_id[tier_id]["supportsWebSearch"] is True
 
     suggestions = body["suggestions"]
     assert isinstance(suggestions, list) and len(suggestions) >= 1

@@ -22,6 +22,11 @@ os.environ.setdefault("SESSION_SECRET", "test-session-secret-fixed-and-long-enou
 os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("COOKIE_SAMESITE", "lax")
 os.environ.setdefault("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
+# Enable web search with the deterministic, network-free fake backend so the
+# per-tier `supportsWebSearch` capability lights up and the streaming web-search
+# path is exercised in e2e/integration tests. `search_enabled(settings)` is True
+# for `fake`. Tests that need search OFF construct their own `Settings`.
+os.environ.setdefault("SEARCH_BACKEND", "fake")
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient

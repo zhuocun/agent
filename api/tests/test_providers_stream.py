@@ -23,7 +23,13 @@ import respx
 from app.errors import AppError
 from app.providers.anthropic import AnthropicProvider
 from app.providers.pricing import compute_cost_breakdown
-from app.providers.protocol import Complete, UsageUpdate
+from app.providers.protocol import (
+    AnswerDelta,
+    Complete,
+    Sources,
+    StatusUpdate,
+    UsageUpdate,
+)
 from app.providers.tiers import get_binding
 
 pytestmark = pytest.mark.asyncio
@@ -268,3 +274,188 @@ async def test_complete_maps_server_error_to_provider_upstream() -> None:
     assert err.envelope.code == "PROVIDER_UPSTREAM"
     assert err.status_code == 503
     assert "busy" not in err.envelope.body
+
+
+# --- web_search (server-side hosted tool, best-effort) -------------------------
+#
+# Anthropic runs the search server-side and streams `server_tool_use` (it
+# dispatched a search) + `web_search_tool_result` (results returned) content
+# blocks. The provider maps those to StatusUpdate(active/done) + Sources. With
+# web_search=False the path is unchanged (no tools advertised).
+
+
+def _web_search_stream_body(*, input_tokens: int, output_tokens: int) -> str:
+    """An SSE stream that includes a server_tool_use + web_search_tool_result.
+
+    Mirrors Anthropic's hosted web-search wire shape: the model emits a
+    `server_tool_use` block (the dispatched query), then a
+    `web_search_tool_result` block carrying `web_search_result` entries, then a
+    `text` block with the grounded answer.
+    """
+    start_msg = {
+        "id": "msg_ws_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "test-model",
+        "content": [],
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": 1,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+    }
+    frames = [
+        _sse("message_start", {"type": "message_start", "message": start_msg}),
+        # The model dispatches a server-side search.
+        _sse(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": {},
+                },
+            },
+        ),
+        _sse("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        # Results return.
+        _sse(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_1",
+                    "content": [
+                        {
+                            "type": "web_search_result",
+                            "title": "Rust 1.99 released",
+                            "url": "https://blog.rust-lang.org/1.99.html",
+                            "content": "The Rust team announced 1.99.",
+                            "encrypted_content": "enc1",
+                            "page_age": None,
+                        },
+                        {
+                            "type": "web_search_result",
+                            "title": "Release notes",
+                            "url": "https://doc.rust-lang.org/notes",
+                            "content": "Detailed changelog.",
+                            "encrypted_content": "enc2",
+                            "page_age": None,
+                        },
+                    ],
+                },
+            },
+        ),
+        _sse("content_block_stop", {"type": "content_block_stop", "index": 1}),
+        # Grounded answer text.
+        _sse(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 2,
+                "content_block": {"type": "text", "text": ""},
+            },
+        ),
+        _sse(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 2,
+                "delta": {"type": "text_delta", "text": "Rust 1.99 is out [1]."},
+            },
+        ),
+        _sse("content_block_stop", {"type": "content_block_stop", "index": 2}),
+        _sse(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": output_tokens},
+            },
+        ),
+        _sse("message_stop", {"type": "message_stop"}),
+    ]
+    return "".join(frames)
+
+
+@respx.mock
+async def test_stream_web_search_emits_status_and_sources() -> None:
+    """server_tool_use -> Status(active); web_search_tool_result -> Status(done)+Sources."""
+    respx.post(_MESSAGES_URL).mock(
+        return_value=_sse_response(_web_search_stream_body(input_tokens=10, output_tokens=20))
+    )
+
+    provider = AnthropicProvider(api_key="sk-test")
+    seq: list[str] = []
+    statuses: list[StatusUpdate] = []
+    sources: list[Sources] = []
+    answer_parts: list[str] = []
+    async for event in provider.stream(
+        model_id="test-model", history=[], user_text="latest rust", web_search=True
+    ):
+        if isinstance(event, StatusUpdate):
+            seq.append(f"status:{event.state}")
+            statuses.append(event)
+        elif isinstance(event, Sources):
+            seq.append("sources")
+            sources.append(event)
+        elif isinstance(event, AnswerDelta):
+            seq.append("answer")
+            answer_parts.append(event.text)
+
+    assert [s.state for s in statuses] == ["active", "done"]
+    assert statuses[0].label == "Searching the web…"
+    assert seq.index("status:active") < seq.index("status:done") < seq.index("sources")
+    assert seq.index("sources") < seq.index("answer")
+
+    assert len(sources) == 1
+    items = sources[0].items
+    assert [it.id for it in items] == [1, 2]
+    assert items[0].title == "Rust 1.99 released"
+    assert items[0].domain == "blog.rust-lang.org"
+    assert "".join(answer_parts) == "Rust 1.99 is out [1]."
+
+
+@respx.mock
+async def test_stream_web_search_advertises_tool() -> None:
+    """web_search=True sends the hosted web_search tool; False sends no tools."""
+    route = respx.post(_MESSAGES_URL).mock(
+        return_value=_sse_response(_stream_body(input_tokens=5, output_tokens=5))
+    )
+
+    provider = AnthropicProvider(api_key="sk-test")
+    async for _ in provider.stream(
+        model_id="test-model", history=[], user_text="hi", web_search=True
+    ):
+        pass
+    body = json.loads(route.calls.last.request.content)
+    assert body.get("tools") == [
+        {"type": "web_search_20250305", "name": "web_search", "max_uses": 3}
+    ]
+
+
+@respx.mock
+async def test_stream_web_search_false_sends_no_tools() -> None:
+    """web_search=False -> no tools key, behavior unchanged."""
+    route = respx.post(_MESSAGES_URL).mock(
+        return_value=_sse_response(_stream_body(input_tokens=5, output_tokens=5))
+    )
+
+    provider = AnthropicProvider(api_key="sk-test")
+    search_events = 0
+    async for event in provider.stream(
+        model_id="test-model", history=[], user_text="hi", web_search=False
+    ):
+        if isinstance(event, (StatusUpdate, Sources)):
+            search_events += 1
+    body = json.loads(route.calls.last.request.content)
+    assert "tools" not in body
+    assert search_events == 0

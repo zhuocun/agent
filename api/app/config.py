@@ -84,6 +84,20 @@ class Settings(BaseSettings):
         default="fake"
     )
 
+    # Web-search backend selection. `none` (default) disables the web_search
+    # tool entirely — the provider never advertises the tool and behavior is
+    # byte-for-byte unchanged from a pre-web-search build. `tavily` wires the
+    # real Tavily search API (requires `TAVILY_API_KEY`; if the key is missing
+    # the backend silently degrades to "no search provider available"). `fake`
+    # is the deterministic, no-network backend for tests/e2e. Default "none" is
+    # prod-safe — `assert_prod_safe()` makes no demands on it.
+    search_backend: Literal["none", "tavily", "fake"] = Field(
+        default="none", alias="SEARCH_BACKEND"
+    )
+    # Tavily API key. Only consulted when `search_backend == "tavily"`. Comes
+    # from env / Fly secrets only — never commit it.
+    tavily_api_key: str | None = Field(default=None, alias="TAVILY_API_KEY")
+
     # BYOK key encryption KEK (base64-encoded 32 bytes). Required in M3 — the
     # default value is a known-bad dev sentinel that `assert_prod_safe()`
     # rejects so production deploys fail fast.

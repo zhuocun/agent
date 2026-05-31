@@ -220,3 +220,76 @@ def test_resolve_served_tier_works_for_openai_auto_binding() -> None:
     served_id, served_label = resolve_served_tier(auto)
     assert served_id == "smart"
     assert served_label == "Smart"
+
+
+# Web search capability --------------------------------------------------------
+
+
+def test_all_canonical_bindings_support_web_search() -> None:
+    """Every real DeepSeek tier binding advertises the provider-capability half
+    (the tool loop / server tool); the wire flag is gated separately on a
+    configured search backend in `list_tiers`."""
+    for binding in TIER_BINDINGS:
+        assert binding.supports_web_search is True, binding.tier.id
+
+
+def test_alternate_backend_bindings_support_web_search() -> None:
+    """The OpenAI and Anthropic alternate bindings also support web search."""
+    oa = _openai_settings()
+    for tier_id in ("auto", "fast", "smart", "pro"):
+        ob = get_binding(tier_id, settings=oa)  # type: ignore[arg-type]
+        assert ob is not None
+        assert ob.supports_web_search is True
+    an = Settings(provider_backend="anthropic", anthropic_api_key="k")
+    for tier_id in ("auto", "fast", "smart", "pro"):
+        ab = get_binding(tier_id, settings=an)  # type: ignore[arg-type]
+        assert ab is not None
+        assert ab.supports_web_search is True
+
+
+def test_list_tiers_gates_supports_web_search_on_search_enabled() -> None:
+    """`list_tiers` sets the wire flag = binding.supports_web_search AND
+    search_enabled(settings). With a configured backend (`fake`) the flag is
+    True for every tier; with `none` it is False even though every binding
+    supports search at the provider level."""
+    # `search_backend` carries the env alias `SEARCH_BACKEND`; pydantic-settings
+    # populates aliased fields by their alias, not the field name, so pass the
+    # alias key (a bare `search_backend=` kwarg would be ignored in favor of the
+    # process env, which conftest sets to `fake`).
+    on = {
+        t.id: t.supports_web_search
+        for t in list_tiers(
+            Settings(  # type: ignore[call-arg]
+                provider_backend="deepseek",
+                deepseek_api_key="k",
+                SEARCH_BACKEND="fake",
+            )
+        )
+    }
+    assert all(on.values())
+    assert set(on) == {"auto", "fast", "smart", "pro"}
+
+    off = {
+        t.id: t.supports_web_search
+        for t in list_tiers(
+            Settings(  # type: ignore[call-arg]
+                provider_backend="deepseek",
+                deepseek_api_key="k",
+                SEARCH_BACKEND="none",
+            )
+        )
+    }
+    assert not any(off.values())
+
+
+def test_list_tiers_supports_web_search_false_when_tavily_key_missing() -> None:
+    """`tavily` backend with no key is NOT search-enabled, so the wire flag is
+    False even though the bindings support search."""
+    tiers = list_tiers(
+        Settings(  # type: ignore[call-arg]
+            provider_backend="deepseek",
+            deepseek_api_key="k",
+            SEARCH_BACKEND="tavily",
+        )
+    )
+    assert all(t.supports_web_search is False for t in tiers)

@@ -31,9 +31,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, type ApiErrorEnvelope } from "@/lib/apiClient";
-import type { ModelAttribution, ModelTierId, StreamStatus } from "@/lib/types";
+import type {
+  ModelAttribution,
+  ModelTierId,
+  SourceItem,
+  StreamStatus,
+} from "@/lib/types";
 
 // --- Types -----------------------------------------------------------------
+
+// Live web-search status line, accumulated from `status` SSE events. `null`
+// until the BE emits one (web search off ⇒ never set). `state` flips to
+// "done" when the search completes (the spinner stops; the label stays).
+export interface SearchStatus {
+  label: string;
+  state: "active" | "done";
+}
 
 export interface ApiStreamState {
   status: StreamStatus;
@@ -42,6 +55,12 @@ export interface ApiStreamState {
   // FE-computed wall-clock seconds; the BE does not emit a duration.
   reasoningDurationSec: number;
   answer: string;
+  // Web-search status line ("Searching the web…"); null when web search is off
+  // or the BE hasn't emitted a `status` event yet.
+  searchStatus: SearchStatus | null;
+  // Web-search source cards, accumulated from `sources` SSE events. Empty until
+  // the BE emits sources.
+  sources: SourceItem[];
 }
 
 export interface TerminalResult {
@@ -49,6 +68,11 @@ export interface TerminalResult {
   reasoning: string;
   reasoningDurationSec: number;
   answer: string;
+  // Final web-search status line (if any) so finalized messages keep the
+  // "Searched the web" part. Null when web search was off.
+  searchStatus: SearchStatus | null;
+  // Final web-search sources (if any) so finalized messages keep their cards.
+  sources: SourceItem[];
   // From `submitted` — always present once the server sent the first frame.
   serverUserMessageId?: string;
   // From `terminal` — present on `done` only (never on stopped/error).
@@ -72,6 +96,9 @@ export interface StartArgs {
   isTemporary?: boolean;
   regenerate?: boolean;
   editMessageId?: string;
+  // Toggled on in the composer; sent only when true (the BE treats absence as
+  // false). Gated upstream on the selected tier's `supportsWebSearch`.
+  webSearch?: boolean;
 }
 
 const INITIAL: ApiStreamState = {
@@ -80,6 +107,8 @@ const INITIAL: ApiStreamState = {
   reasoningStreaming: false,
   reasoningDurationSec: 0,
   answer: "",
+  searchStatus: null,
+  sources: [],
 };
 
 // --- Base URL --------------------------------------------------------------
@@ -182,6 +211,46 @@ function parseTerminal(value: unknown): TerminalPayload | null {
   return { messageId, attribution: attribution as unknown as ModelAttribution };
 }
 
+// `status` payload narrows to `{ label, state }`. `state` is constrained to
+// "active" | "done"; anything else (or a missing field) yields null and the
+// frame is skipped.
+function parseStatus(value: unknown): SearchStatus | null {
+  if (!isRecord(value)) return null;
+  const label = readStringField(value, "label");
+  const state = readStringField(value, "state");
+  if (label === null) return null;
+  if (state !== "active" && state !== "done") return null;
+  return { label, state };
+}
+
+// `sources` payload narrows to `{ items: SourceItem[] }`. Each item must carry
+// a numeric id plus string title + url; `snippet` / `domain` are optional.
+// Malformed items are dropped rather than failing the whole stream — sources
+// are a non-essential enrichment, not load-bearing answer content.
+function parseSources(value: unknown): SourceItem[] | null {
+  if (!isRecord(value)) return null;
+  const items = value.items;
+  if (!Array.isArray(items)) return null;
+  const out: SourceItem[] = [];
+  for (const raw of items) {
+    if (!isRecord(raw)) continue;
+    const id = raw.id;
+    const title = readStringField(raw, "title");
+    const url = readStringField(raw, "url");
+    if (typeof id !== "number" || title === null || url === null) continue;
+    const snippet = readStringField(raw, "snippet");
+    const domain = readStringField(raw, "domain");
+    out.push({
+      id,
+      title,
+      url,
+      ...(snippet !== null ? { snippet } : {}),
+      ...(domain !== null ? { domain } : {}),
+    });
+  }
+  return out;
+}
+
 // --- Hook ------------------------------------------------------------------
 
 export interface UseApiStreamResult {
@@ -208,6 +277,10 @@ export function useApiStream(
   const reasoningRef = useRef("");
   const answerRef = useRef("");
   const durationRef = useRef(0);
+  // Web-search accumulators — mirror the reasoning/answer refs so terminal
+  // handlers read the authoritative latest value, never stale React state.
+  const searchStatusRef = useRef<SearchStatus | null>(null);
+  const sourcesRef = useRef<SourceItem[]>([]);
   const reasoningStartedAtRef = useRef<number | null>(null);
   // `submitted` lands the user message id; we keep it for the terminal so the
   // FE can replace its local `local-…` user id with the server uuid.
@@ -253,6 +326,8 @@ export function useApiStream(
         reasoning: reasoningRef.current,
         reasoningDurationSec: durationRef.current,
         answer: answerRef.current,
+        searchStatus: searchStatusRef.current,
+        sources: sourcesRef.current,
         serverUserMessageId: serverUserIdRef.current,
         ...extras,
       });
@@ -265,6 +340,8 @@ export function useApiStream(
     answerRef.current = "";
     durationRef.current = 0;
     reasoningStartedAtRef.current = null;
+    searchStatusRef.current = null;
+    sourcesRef.current = [];
     serverUserIdRef.current = undefined;
     terminalEmittedRef.current = false;
   }, []);
@@ -401,7 +478,21 @@ export function useApiStream(
           return true;
         }
         case "status": {
-          // Reserved by the BE — not emitted at MVP. Skip silently.
+          // Web-search status line ("Searching the web…" → "Searched the web").
+          // Last write wins; the BE flips `state` to "done" when search ends.
+          const parsed = parseStatus(payload);
+          if (!parsed) return false;
+          searchStatusRef.current = parsed;
+          setState((s) => ({ ...s, searchStatus: parsed }));
+          return false;
+        }
+        case "sources": {
+          // Web-search source cards. The BE emits the full set in one frame;
+          // we replace (not append) so a re-emit can't duplicate cards.
+          const parsed = parseSources(payload);
+          if (parsed === null) return false;
+          sourcesRef.current = parsed;
+          setState((s) => ({ ...s, sources: parsed }));
           return false;
         }
         default: {
@@ -530,6 +621,9 @@ export function useApiStream(
       if (args.regenerate !== undefined) body.regenerate = args.regenerate;
       if (args.editMessageId !== undefined)
         body.editMessageId = args.editMessageId;
+      // Send `webSearch` only when on — the BE treats absence as false, so the
+      // off path is a no-op vs today's wire shape.
+      if (args.webSearch) body.webSearch = true;
 
       let response: Response;
       try {

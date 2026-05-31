@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
+from pydantic import StringConstraints
+
 from app.schemas.common import CamelModel, ModelTierId
 from app.schemas.message import ChatMessage
 
@@ -36,7 +40,16 @@ class PatchConversationRequest(CamelModel):
     (no point in PATCHing nothing). Sentinel-less: unset fields are left alone.
     """
 
-    title: str | None = None
+    # Constrained ONLY when present: a partial PATCH may omit `title` entirely
+    # (stays None / unset). When supplied it is stripped and must be 1..200
+    # chars after stripping — a whitespace-only title collapses to "" and is
+    # rejected as INVALID_INPUT, never silently persisted as a blank title.
+    title: (
+        Annotated[
+            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+        ]
+        | None
+    ) = None
     pinned: bool | None = None
 
 
@@ -50,7 +63,12 @@ class SendMessageRequest(CamelModel):
 
     client_message_id: str
     tier_id: ModelTierId
-    text: str
+    # Bounded so a single submission can't ship an unbounded prompt (the text is
+    # persisted AND replayed to the provider every turn). 32k chars is generous
+    # for chat input while capping per-request memory / token blowup. No
+    # whitespace strip — chat text may intentionally carry leading/trailing
+    # whitespace (code blocks, formatting).
+    text: Annotated[str, StringConstraints(max_length=32000)]
     is_temporary: bool = False
     regenerate: bool = False
     edit_message_id: str | None = None

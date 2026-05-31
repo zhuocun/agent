@@ -171,28 +171,35 @@ async def test_reap_counts_only_stale_active_among_mixed(
 ) -> None:
     """With a mix of stale-active, fresh-active, and terminal rows, only the
     stale-active ones are reaped and the count reflects exactly those."""
-    conv_id = await _seed_conversation(session_factory)
+    # One active stream per conversation (enforced by the partial unique index
+    # on stream(conversation_id) WHERE status='active'), so each active row gets
+    # its own conversation. The terminal `done` row deliberately shares a
+    # conversation with a fresh active one to confirm the index permits an
+    # active and a terminal stream to coexist.
+    conv_a = await _seed_conversation(session_factory)
+    conv_b = await _seed_conversation(session_factory)
+    conv_c = await _seed_conversation(session_factory)
     stale_a = await _seed_stream(
         session_factory,
-        conversation_id=conv_id,
+        conversation_id=conv_a,
         status="active",
         updated_age=timedelta(hours=1),
     )
     stale_b = await _seed_stream(
         session_factory,
-        conversation_id=conv_id,
+        conversation_id=conv_b,
         status="active",
         updated_age=timedelta(hours=3),
     )
     fresh = await _seed_stream(
         session_factory,
-        conversation_id=conv_id,
+        conversation_id=conv_c,
         status="active",
         updated_age=timedelta(seconds=1),
     )
     done = await _seed_stream(
         session_factory,
-        conversation_id=conv_id,
+        conversation_id=conv_c,
         status="done",
         updated_age=timedelta(hours=5),
     )

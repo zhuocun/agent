@@ -168,6 +168,35 @@ async def test_stop_marks_active_stream_stopped(
     clear_stop(stream_id)
 
 
+async def test_send_message_with_active_stream_is_409(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A second turn while one is already streaming is rejected with 409
+    STREAM_IN_PROGRESS (the single-in-flight-per-conversation guard), and no
+    second stream row is created."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Seed an active stream row directly (simulates an in-flight turn).
+    async with session_factory() as session:
+        await streams_repo.create_stream(session, conversation_id=UUID(conv_id))
+        await session.commit()
+
+    resp = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"clientMessageId": str(uuid4()), "tierId": "smart", "text": "hi"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "STREAM_IN_PROGRESS"
+
+    # The guard rejected before creating a second stream row.
+    async with session_factory() as session:
+        rows = (await session.execute(select(Stream))).scalars().all()
+        assert len(rows) == 1
+
+
 async def test_stop_no_active_stream_is_idempotent_204(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

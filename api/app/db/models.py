@@ -246,6 +246,24 @@ class Stream(Base):
     __table_args__ = (
         Index("ix_stream_conversation", "conversation_id"),
         Index("ix_stream_status", "status"),
+        # Concurrency guard: at most ONE active stream per conversation. A
+        # partial UNIQUE INDEX over `conversation_id` restricted to
+        # `status = 'active'` rows means a concurrent double-submit /
+        # double-regenerate that both try to open an active stream loses one
+        # side to an IntegrityError (mapped to 409 by the repo + route).
+        # Terminal rows (done / stopped / error) are excluded by the predicate,
+        # so the legitimate sequential case — a new turn after the prior stream
+        # finished — is always allowed. Both dialects get the predicate: SQLite
+        # (tests, via Base.metadata.create_all) supports partial indexes (3.8+),
+        # Postgres (prod) is the real enforcer. Matches the partial-index style
+        # of `ix_users_email_unique` above.
+        Index(
+            "ix_stream_conversation_active_unique",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
     )
 
 

@@ -1,7 +1,8 @@
 """Provider abstraction: a swappable backend that streams model output.
 
-Both `AnthropicProvider` and `FakeProvider` implement `Provider`. The streaming
-handler consumes `ProviderEvent`s and maps them to wire SSE events.
+DeepSeek/OpenAI-compatible, Anthropic, and fake providers implement `Provider`.
+The streaming handler consumes `ProviderEvent`s and maps them to wire SSE
+events.
 
 `ProviderEvent` is an internal union — keep it tight to what the handler
 needs. The wire schema (`schemas/stream_events.py`) stays the source of truth

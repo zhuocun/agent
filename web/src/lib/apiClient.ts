@@ -1,8 +1,11 @@
 // Typed fetch wrapper for the FastAPI backend.
 //
-// Reads NEXT_PUBLIC_API_BASE_URL at module load. The value is inlined at build
-// time by Next, so this MUST be a direct `process.env.NEXT_PUBLIC_API_BASE_URL`
-// reference (dynamic lookups are not inlined).
+// Reads NEXT_PUBLIC_API_BASE_URL at module load. Production sets it to an
+// empty string so browser requests stay same-origin (/api/*) and Next rewrites
+// them to Fly. Local/e2e runs may set it to http://localhost:8000 to exercise
+// the backend's direct-CORS path. The value is inlined at build time by Next,
+// so this MUST be a direct `process.env.NEXT_PUBLIC_API_BASE_URL` reference
+// (dynamic lookups are not inlined).
 // See node_modules/next/dist/docs/01-app/02-guides/environment-variables.md.
 import type {
   AccountInfo,
@@ -90,7 +93,7 @@ const API_BASE_URL: string | undefined = process.env.NEXT_PUBLIC_API_BASE_URL;
 function resolveUrl(path: string): string {
   if (API_BASE_URL === undefined) {
     throw new ApiNetworkError(
-      "NEXT_PUBLIC_API_BASE_URL is not set. Define it in web/.env.local (or your deploy env) before making API calls.",
+      "NEXT_PUBLIC_API_BASE_URL is not set. Define it as an empty string for same-origin /api/*, or as a backend origin for direct CORS.",
     );
   }
   // Empty string = same-origin (rewrite path); use the path as-is.
@@ -343,10 +346,11 @@ export function postAuthSignout(signal?: AbortSignal): Promise<void> {
 
 // Public-by-link read. UNAUTHENTICATED on the BE (no cookie minted) — the share
 // token IS the capability. We still route through the same `request()` helper
-// (and thus the FE `/api/*` rewrite) for one wire path; `credentials: "include"`
-// is harmless here since the BE never reads a session for this route. An unknown
-// or revoked token surfaces as an `ApiError` with `.status === 404`, which the
-// share page maps to its "no longer available" empty state.
+// for one wire path; in production that means the FE `/api/*` rewrite, while
+// local/e2e can also target the backend origin directly. Including credentials
+// is harmless here since the BE never reads a session for this route. An
+// unknown or revoked token surfaces as an `ApiError` with `.status === 404`,
+// which the share page maps to its "no longer available" empty state.
 export function fetchPublicConversation(
   token: string,
   signal?: AbortSignal,

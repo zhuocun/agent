@@ -2,6 +2,12 @@
 
 **What this is.** The integrating document for a fresh online research pass (current as of May 2026) plus a critical review of the existing PRD set (PRDs 00–08). Five domain workstreams each did (A) comprehensive online research for new ideas and (B) a skeptical review of their PRD(s); every workstream artifact then passed through an independent senior reviewer before this synthesis. The per-workstream reports are the detail; this document frames the headline verdict, the cross-cutting findings, the integration conflicts, and a single prioritized action list.
 
+> **Superseded implementation note (2026-06 housekeeping):** the W4
+> architecture research reviewed the then-proposed Vercel-native AI SDK /
+> Better Auth / Drizzle / Upstash stack. The shipped implementation is now the
+> split Vercel FE + FastAPI/Fly API + SQLAlchemy/Alembic/Neon stack documented
+> in PRD 04, `AGENTS.md`, and `api/README.md`.
+
 **Method / provenance.** Orchestrated as five parallel research+review workers → five independent reviewers (all top-tier, high-reasoning) → orchestrator integration. **All five reviews returned `pass`** with only minor, precise corrections; those corrections have been folded back into each report (see §5). Sources with access dates live in each report's `## Sources` section.
 
 | # | Workstream | Report | Reviewer verdict |
@@ -23,7 +29,7 @@ The most important single finding per domain:
 - **W1 (UX):** the streaming **accessibility announce model** is the highest-value fix — and a11y is our cited differentiation wedge. Get the live-region semantics right and add two cheap "beat-the-leader" ACs.
 - **W2 (model layer):** the **transparency cost-accounting schema (PRD 07 §4.1) has one real, high-stakes gap** — a single `threshold_tier` scalar cannot correctly express the real 2026 long-context pricing models. This is the core wedge; a wrong number here is wrong on exactly the high-value turns.
 - **W3 (mobile):** no architectural rework; the PRD's hard calls (visualViewport-primary, disk-proportional storage, server-side Web Speech) hold. A few platform facts went stale; the virtualizer choice is a spike.
-- **W4 (architecture):** the committed stack verifies as current and sound. The real gaps are **billing-consistency** (no message-send idempotency key; billing-vs-stream-failure atomicity unspecified), which connect directly to the transparency ledger.
+- **W4 (architecture):** the then-proposed Vercel-native stack verified as current and sound at the time, but has since been superseded by the shipped split architecture. The durable findings were **billing-consistency** (message-send idempotency key; billing-vs-stream-failure atomicity), which connect directly to the transparency ledger and are now reflected in PRD 04.
 - **W5 (GTM/compliance):** **two factual compliance errors** (EU Art. 50 penalty tier; Colorado SB 205 is dead) and a stale T3 Chat anchor; the metered-credit thesis (D8) is vindicated and now mainstream; the privacy wedge is **stronger** than the PRD claims.
 
 ---

@@ -22,11 +22,11 @@
 // synthesize a local `{ status: "stopped" }` terminal for the caller.
 //
 // We deliberately use `fetch` + ReadableStream rather than `EventSource`:
-// EventSource cannot send credentials cross-origin reliably and has no header
-// configuration (per AGENTS.md / plan §"Architecture overview"). sse-starlette
-// emits keep-alive comment lines (`:`-prefixed) every ~15s; the parser drops
-// them. `data:` is always single-line JSON (Pydantic `model_dump_json`), so we
-// don't bother stitching multi-line `data:` values.
+// this stream is a credentialed POST with a JSON body, and local/e2e may target
+// the backend origin directly to exercise CORS. sse-starlette emits keep-alive
+// comment lines (`:`-prefixed) every ~15s; the parser drops them. `data:` is
+// always single-line JSON (Pydantic `model_dump_json`), so we don't bother
+// stitching multi-line `data:` values.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -114,7 +114,9 @@ const INITIAL: ApiStreamState = {
 // --- Base URL --------------------------------------------------------------
 
 // Local helper: apiClient.ts does not export its `resolveUrl` so we duplicate
-// the same `process.env.NEXT_PUBLIC_API_BASE_URL` read here. The value is
+// the same `process.env.NEXT_PUBLIC_API_BASE_URL` read here. Production leaves
+// it empty for same-origin /api/* requests through the Next rewrite; local/e2e
+// may set it to the backend origin for direct-CORS coverage. The value is
 // inlined at build time by Next, so it MUST be a direct env reference (not a
 // destructured variable) for the dead-code elimination to work.
 // See node_modules/next/dist/docs/01-app/02-guides/environment-variables.md.
@@ -127,8 +129,8 @@ function getApiBase(): string {
         severity: "error",
         title: "API base URL missing",
         body:
-          "NEXT_PUBLIC_API_BASE_URL is not set. Define it in web/.env.local " +
-          "(or your deploy env) before sending messages.",
+          "NEXT_PUBLIC_API_BASE_URL is not set. Define it as an empty string " +
+          "for same-origin /api/*, or as a backend origin for direct CORS.",
       },
       0,
     );

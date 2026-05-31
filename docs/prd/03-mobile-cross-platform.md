@@ -253,7 +253,7 @@ Add a **Capacitor** shell that wraps the existing web app in a WebView + native 
 - **PRD 01 — Chat UI:** owns base chat features, streaming protocol, message actions (copy/edit/regenerate/react/delete), artifact/canvas content, model selection, desktop key handling. This PRD frames and adapts them for mobile; do not duplicate.
 - **PRD 04 — Architecture / PWA / Storage:** owns service-worker/caching strategy internals, IndexedDB schema, sync engine, offline reconciliation, backend source-of-truth contract, and the AI-data-disclosure/consent mechanism (used by §6.2 Guideline 5.1.2). This PRD states UX requirements against those systems.
 - **PRD 05 — Metrics:** owns RUM/analytics instrumentation that backs §8 success metrics (mobile CWV, retention, install rate, mobile TTFT).
-- **Tech baseline:** Next.js App Router + Vercel AI SDK; responsive web; Tailwind/component library reused into Capacitor later.
+- **Tech baseline:** Next.js App Router frontend + FastAPI/Fly SSE backend; responsive web; Tailwind/component library reused into Capacitor later.
 
 ---
 

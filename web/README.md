@@ -1,33 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Next.js frontend for Olune Agent.
 
 ## Getting Started
 
-First, run the development server:
+Install dependencies, then run the development server:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
 pnpm dev
-# or
-bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## API Routing
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Production should keep `NEXT_PUBLIC_API_BASE_URL` set to an empty string. The
+browser then calls same-origin `/api/*`, and `next.config.ts` rewrites those
+requests server-side to the Fly backend. This keeps session cookies first-party
+on the Vercel origin.
 
-## Learn More
+For local development, choose one of these modes:
 
-To learn more about Next.js, take a look at the following resources:
+- Same-origin proxy: leave `NEXT_PUBLIC_API_BASE_URL` empty and set
+  `BE_ORIGIN=http://localhost:8000` so the Next rewrite points at local FastAPI.
+- Direct CORS: set `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` so browser
+  requests go straight to the FastAPI dev server. The e2e setup may use this to
+  exercise the backend CORS path.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+See `.env.example` for the environment variable examples.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Build
+
+```bash
+pnpm build
+```
 
 ## Tests
 
@@ -54,12 +58,12 @@ pnpm test:e2e:ui       # interactive runner
 ```
 
 The BE uses an ephemeral SQLite at
-`test-results/.playwright-db/test.sqlite3` for tests — your `api/dev.sqlite3`
+`test-results/.playwright-db/test-<pid>.sqlite3` for tests — your `api/dev.sqlite3`
 is never touched. Playwright's `globalSetup` mints the file and creates the
 schema via `python -m app.scripts.init_test_db`; `globalTeardown` removes it.
 
-## Deploy on Vercel
+## Deploy
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Production deploys are handled by the Vercel GitHub integration for this repo,
+with `web/` as the project root. Keep `NEXT_PUBLIC_API_BASE_URL` empty in the
+production environment so the `/api/*` rewrite remains the browser-facing path.

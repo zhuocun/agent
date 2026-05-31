@@ -4,13 +4,22 @@
 **Date:** 2026-05-27
 **Reviewer:** Senior software architect (fresh-research + critical PRD review pass)
 **Scope reviewed:** `/home/user/agent/docs/prd/04-technical-architecture.md` (framed by `/home/user/agent/docs/prd/00-product-overview.md`)
-**Method:** Live web verification of every committed stack component against May-2026 sources (npm dist-tags, vendor docs with `lastUpdated` stamps, GitHub issues, legal analyses). All claims cited with URL + access date (2026-05-27 unless noted).
+**Method:** Live web verification of every then-proposed stack component against May-2026 sources (npm dist-tags, vendor docs with `lastUpdated` stamps, GitHub issues, legal analyses). All claims cited with URL + access date (2026-05-27 unless noted).
+
+> **Superseded implementation note (2026-06 housekeeping):** this is a dated
+> research artifact for the original Vercel-native AI SDK / Better Auth /
+> Drizzle / Upstash architecture. The shipped implementation is now documented
+> in PRD 04, `AGENTS.md`, and `api/README.md`: Next.js FE on Vercel, same-origin
+> `/api/*` rewrite to FastAPI on Fly, SQLAlchemy/Alembic on Neon, custom
+> signed-cookie auth, DeepSeek via the OpenAI-compatible adapter, and optional
+> Sentry/OpenTelemetry. Treat the stack-specific claims below as historical
+> research context, not current implementation truth.
 
 ---
 
 ## 1. Summary
 
-- **The committed stack is sound and current as of May 2026.** Next.js 16 (now 16.2.6), AI SDK v6 (now `latest` = 6.0.191, GA 2025-12-22), Better Auth (1.6.11), Postgres/Drizzle, Upstash, Vercel Fluid Compute, Langfuse v4 + OTel — every load-bearing version claim in PRD 04 verified true or conservatively framed. No stale "this is experimental" claims found; the riskier framings are *under*-stated, not over-stated.
+- **The originally researched Vercel-native stack was sound and current as of May 2026, but it is no longer the shipped implementation.** Next.js 16 (now 16.2.6), AI SDK v6 (now `latest` = 6.0.191, GA 2025-12-22), Better Auth (1.6.11), Postgres/Drizzle, Upstash, Vercel Fluid Compute, Langfuse v4 + OTel — every load-bearing version claim in that PRD framing was verified true or conservatively framed. Current implementation truth lives in PRD 04 and ops docs.
 - **Two version-framing items have moved and the PRD lags reality:** (1) **AI SDK v7 is in active public beta** (`7.0.0-beta.116`, daily canaries, v7.0 milestone opened 2026-04-01) — the PRD treats v6→v7 as a distant "horizon," but it is the *next* migration and is closer than implied. (2) **Vercel Workflows / `DurableAgent` is now GA** (100M+ runs since Oct-2025 beta), not the "P1 horizon" the PRD describes — still correctly *scoped out* of the text-core MVP, but it is shipped tech now, not a research bet.
 - **The EU AI Act content-marking question has materially shifted and should be re-flagged, not left as a generic "Aug 2 vs Dec 2" standoff.** The **7 May 2026 Digital Omnibus provisional agreement** keeps interaction-disclosure at **2 Aug 2026** and points content-marking/watermarking (Art. 50(2)) at **2 Dec 2026** (with grandfathering for pre-Aug-2 systems *still unconfirmed*). The PRD already flags this provisional agreement generically (§5.7) and its instinct ("keep the `[VERIFY]` flag, legal owns it") is correct — what this review adds is the now-public *specifics* (the 7-May dates and the Dec-2 marking read), not a correction of a PRD that was unaware of it.
 - **The streaming/resumable-stream design is the strongest part of the PRD and is well-supported by primary sources** — the abort-semantics inversion, the dedicated stop endpoint, the orphaned-run reaper, and the known resume bugs (#13160 still open) all check out against AI SDK docs and live GitHub issues.

@@ -364,10 +364,10 @@ def is_known_tier(tier_id: str) -> bool:
 # rebinds `auto` to a concrete tier BEFORE attribution, so in the routed path
 # `resolve_served_tier` never sees an `auto` binding. This constant is the
 # safety net for the unrouted path — `AUTO_ROUTING_ENABLED=false`, or any future
-# call site that bills the raw `auto` binding — and matches the historical
-# auto->smart mapping (deepseek-chat on DeepSeek, claude-sonnet on Anthropic,
-# gpt-4o on OpenAI). The FE attribution row requires a concrete served tier (see
-# `web/src/components/chat/attribution-row.tsx::assertServedTier`).
+# call site that bills the raw `auto` binding — and matches the current
+# auto->smart mapping (deepseek-v4-flash on DeepSeek, claude-sonnet on
+# Anthropic, gpt-4o on OpenAI). The FE attribution row requires a concrete
+# served tier (see `web/src/components/chat/attribution-row.tsx::assertServedTier`).
 _AUTO_RESOLVES_TO: ModelTierId = "smart"
 
 

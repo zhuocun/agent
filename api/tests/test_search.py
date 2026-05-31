@@ -143,6 +143,34 @@ async def test_tavily_maps_results_to_source_items() -> None:
 
 
 @respx.mock
+async def test_tavily_drops_non_http_urls_and_renumbers_ids() -> None:
+    """Results with a non-http(s) scheme (javascript:, data:, protocol-relative)
+    are dropped entirely; surviving items keep contiguous 1-based ids so cited
+    references can't point at a dropped source."""
+    reset_tavily_client_cache()
+    respx.post(_TAVILY_URL).mock(
+        return_value=_tavily_response(
+            [
+                {"title": "Safe", "url": "https://a.example.com/x", "content": "ok"},
+                {"title": "XSS", "url": "javascript:alert(1)", "content": "bad"},
+                {"title": "Data", "url": "data:text/html,<b>", "content": "bad"},
+                {"title": "Schemeless", "url": "//evil.example.com", "content": "bad"},
+                {"title": "Safe2", "url": "http://b.example.com/y", "content": "ok2"},
+            ]
+        )
+    )
+
+    items = await TavilySearchProvider(api_key="k").search("q", max_results=5)
+
+    # Only the two http(s) results survive, renumbered 1..2 (no gaps).
+    assert [it.id for it in items] == [1, 2]
+    assert [it.url for it in items] == [
+        "https://a.example.com/x",
+        "http://b.example.com/y",
+    ]
+
+
+@respx.mock
 async def test_tavily_truncates_long_snippet() -> None:
     """A >300-char `content` is truncated to ~300 chars with an ellipsis."""
     reset_tavily_client_cache()

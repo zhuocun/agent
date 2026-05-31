@@ -834,6 +834,17 @@ async def stream_and_persist(
             # genuine provider exception would have surfaced via the queue.
             with contextlib.suppress(asyncio.CancelledError):
                 await pump_task
+        # Stop-registry leak guard: every terminal path must drop the live stop
+        # signal exactly once. The stop / disconnect, CancelledError, and
+        # `error` branches each `clear_stop` before returning, but the natural
+        # `done` terminal path returns through this `finally` WITHOUT having
+        # cleared — leaving a `_STOP_REQUESTS` entry behind if a (late) stop was
+        # ever requested for this stream. `clear_stop` is idempotent (a plain
+        # `set.discard`), so re-clearing here is harmless on the paths that
+        # already cleared and closes the leak on the `done` path. Guarded on a
+        # non-None stream_id (temporary turns never register a stream).
+        if stream_id is not None:
+            clear_stop(stream_id)
 
 
 async def run_detached_producer(

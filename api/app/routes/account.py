@@ -15,15 +15,17 @@ surfaces a spurious "not found" toast.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependency import current_user
+from app.config import get_settings
 from app.db.models import User
 from app.db.repositories import api_keys, users
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
+from app.middleware.ratelimit import limiter
 from app.schemas.account import AccountInfo
 from app.schemas.common import CamelModel
 
@@ -83,8 +85,11 @@ async def _current_account_info(
 
 
 @router.put("/byok", response_model=AccountInfo)
+@limiter.limit(lambda: get_settings().rate_limit_byok)
 async def put_byok(
     body: ByokPutRequest,
+    request: Request,
+    response: Response,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AccountInfo:
@@ -106,8 +111,11 @@ async def put_byok(
 
 
 @router.delete("/byok/{provider}", response_model=AccountInfo)
+@limiter.limit(lambda: get_settings().rate_limit_byok)
 async def delete_byok(
     provider: str,
+    request: Request,
+    response: Response,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AccountInfo:

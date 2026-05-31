@@ -27,6 +27,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Message, Vote
 from app.providers.protocol import ChatMessage as ProviderChatMessage
 
+# Cap on how many of the most-recent messages `load_history` replays to the
+# provider. Every turn re-sends the whole prior conversation as context, so an
+# unbounded history grows the prompt (and token cost / latency) without bound on
+# long threads. 40 messages ≈ 20 user/assistant turns — enough recent context
+# for coherent continuation while bounding the prompt. We keep the NEWEST N and
+# preserve oldest-to-newest order (we do NOT reverse the conversation).
+_HISTORY_WINDOW_MESSAGES = 40
+
 
 def _now() -> datetime:
     """UTC-aware microsecond-precision Python timestamp.
@@ -201,6 +209,12 @@ async def load_history(
             continue
         role = cast(Any, row.role)  # narrowed by the role check above
         history.append(ProviderChatMessage(role=role, text="".join(text_chunks)))
+    # History-window cap: keep only the most-recent N messages. Slicing the tail
+    # preserves the oldest-to-newest order (we do NOT reverse) while dropping the
+    # oldest overflow so the provider prompt stays bounded on long threads. When
+    # the conversation is shorter than the window this is a no-op.
+    if len(history) > _HISTORY_WINDOW_MESSAGES:
+        history = history[-_HISTORY_WINDOW_MESSAGES:]
     return history
 
 

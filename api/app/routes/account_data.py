@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,7 @@ from app.config import Settings, get_settings
 from app.db.models import User
 from app.db.repositories import api_keys, conversations, preferences, usage, users
 from app.db.session import get_db
+from app.middleware.ratelimit import limiter
 from app.schemas.account import AccountExport
 from app.schemas.conversation import Conversation as ConversationSchema
 
@@ -41,7 +42,9 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 
 
 @router.get("/export")
+@limiter.limit(lambda: get_settings().rate_limit_export)
 async def export_account(
+    request: Request,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -85,7 +88,9 @@ async def export_account(
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(lambda: get_settings().rate_limit_account_delete)
 async def delete_account(
+    request: Request,
     response: Response,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
@@ -93,13 +98,25 @@ async def delete_account(
 ) -> None:
     """Permanently delete the caller's account + all data, then clear the cookie.
 
-    The repo flushes in FK-dependency order (the request dependency commits on
-    success). After deletion the caller's session row is gone, so the NEXT
-    request mints a fresh anonymous user — the desired right-to-erasure
-    behavior. The cookie is cleared with the same path/samesite/secure attrs the
-    signout handler uses so the browser actually drops it.
+    The repo flushes in FK-dependency order. We commit EXPLICITLY here (before
+    clearing the cookie / returning 204) rather than relying solely on the
+    request dependency's end-of-request commit: a right-to-erasure success must
+    not be signalled (204 + cleared cookie) unless the rows are actually gone.
+    A commit failure after the handler returns would otherwise leave the client
+    believing its data was erased while the rows survived — silent incomplete
+    erasure. Committing here surfaces that failure as a 5xx and leaves the
+    cookie intact. The dependency's later commit is then a no-op (nothing
+    pending), so there is exactly one effective commit.
+
+    After deletion the caller's session row is gone, so the NEXT request mints a
+    fresh anonymous user — the desired right-to-erasure behavior. The cookie is
+    cleared with the same path/samesite/secure attrs the signout handler uses so
+    the browser actually drops it.
     """
     await users.delete_user_and_data(db, user_id=user.id)
+    # Durably commit the cascade BEFORE signalling success. A failure here
+    # propagates (the dependency rolls back) and the cookie is never cleared.
+    await db.commit()
 
     cookie_name = settings.cookie_name or COOKIE_NAME_DEFAULT
     kw = cookie_kwargs(settings)

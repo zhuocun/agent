@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,6 +105,19 @@ def _invalid_input(code: str, body: str) -> AppError:
             body=body,
         ),
         status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _stream_in_progress() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="STREAM_IN_PROGRESS",
+            severity="error",
+            title="A response is still streaming",
+            body="This conversation already has a response in progress. "
+            "Wait for it to finish or stop it before sending again.",
+        ),
+        status.HTTP_409_CONFLICT,
     )
 
 
@@ -631,11 +644,31 @@ async def send_message(
     # they get no stream row and pass `stream_id=None`. Committed now (its own
     # statement on the request session) so the row is visible to a concurrent
     # `POST /{id}/stop` before the turn finishes.
+    # Concurrency guard: at most ONE active stream per conversation. Covers all
+    # three non-temporary paths (default / regenerate / edit) since they all
+    # converge here before stream creation. Two layers:
+    #  1. Fast precheck — `get_active_for_conversation` rejects the common case
+    #     (a visibly in-flight turn) with 409 before doing any work. A turn that
+    #     completed / stopped / errored is no longer `active`, so the legitimate
+    #     sequential next turn passes.
+    #  2. Durable guard — the partial unique index
+    #     (`ix_stream_conversation_active_unique`) catches the true race where
+    #     two concurrent submits both pass the precheck; `create_stream` raises
+    #     `ActiveStreamExistsError`, which we map to the same 409.
     stream_id: UUID | None = None
     if not is_temp:
-        stream_row = await streams_repo.create_stream(
+        existing_active = await streams_repo.get_active_for_conversation(
             db, conversation_id=conversation_id
         )
+        if existing_active is not None:
+            raise _stream_in_progress()
+        try:
+            stream_row = await streams_repo.create_stream(
+                db, conversation_id=conversation_id
+            )
+        except streams_repo.ActiveStreamExistsError as exc:
+            await db.rollback()
+            raise _stream_in_progress() from exc
         stream_id = stream_row.id
         await db.commit()
 
@@ -738,6 +771,7 @@ async def send_message(
 
 
 @router.get("/{conversation_id}/stream/{stream_id}")
+@limiter.limit(lambda: get_settings().rate_limit_messages)
 async def reconnect_stream(
     conversation_id: UUID,
     stream_id: UUID,
@@ -808,8 +842,11 @@ async def reconnect_stream(
 
 
 @router.post("/{conversation_id}/stop", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(lambda: get_settings().rate_limit_messages)
 async def stop_stream(
     conversation_id: UUID,
+    request: Request,
+    response: Response,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:

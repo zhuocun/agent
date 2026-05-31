@@ -143,6 +143,17 @@ class Settings(BaseSettings):
     rate_limit_messages: str = Field(default="30/minute", alias="RATE_LIMIT_MESSAGES")
     rate_limit_upgrade: str = Field(default="5/minute", alias="RATE_LIMIT_UPGRADE")
     rate_limit_login: str = Field(default="5/minute", alias="RATE_LIMIT_LOGIN")
+    # BYOK key upsert/delete. A signed-in account mutation; keep it modest so a
+    # compromised session can't hammer the encrypt-at-rest path.
+    rate_limit_byok: str = Field(default="10/minute", alias="RATE_LIMIT_BYOK")
+    # GDPR export. Tight: the handler does an N+1 over every conversation +
+    # message, so it is the most expensive read on the surface.
+    rate_limit_export: str = Field(default="5/minute", alias="RATE_LIMIT_EXPORT")
+    # GDPR account deletion. Tight: destructive cascade across every table the
+    # caller owns.
+    rate_limit_account_delete: str = Field(
+        default="5/minute", alias="RATE_LIMIT_ACCOUNT_DELETE"
+    )
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the

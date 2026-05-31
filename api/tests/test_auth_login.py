@@ -140,7 +140,7 @@ async def test_login_preserves_target_data_discards_guest_scratch(
     target_id = await _seed_registered_user(
         session_factory,
         email="owner@example.com",
-        password_hash=hash_password("pw"),
+        password_hash=hash_password("changeme123"),
     )
     # Pre-existing conversation owned by the target.
     async with session_factory() as s:
@@ -162,7 +162,7 @@ async def test_login_preserves_target_data_discards_guest_scratch(
 
     response = await client.post(
         "/api/auth/login",
-        json={"email": "owner@example.com", "password": "pw"},
+        json={"email": "owner@example.com", "password": "changeme123"},
     )
     assert response.status_code == 200, response.text
 
@@ -188,7 +188,7 @@ async def test_login_with_anon_no_session_mints_fresh_session(
     target_id = await _seed_registered_user(
         session_factory,
         email="nocookie@example.com",
-        password_hash=hash_password("pw"),
+        password_hash=hash_password("changeme123"),
     )
     async with AsyncClient(
         transport=ASGITransport(app=app),  # type: ignore[arg-type]
@@ -196,7 +196,7 @@ async def test_login_with_anon_no_session_mints_fresh_session(
     ) as fresh:
         response = await fresh.post(
             "/api/auth/login",
-            json={"email": "nocookie@example.com", "password": "pw"},
+            json={"email": "nocookie@example.com", "password": "changeme123"},
         )
         assert response.status_code == 200, response.text
         assert response.json()["isAnonymous"] is False
@@ -230,7 +230,7 @@ async def test_login_wrong_password_401(
     await client.get("/api/bootstrap")
     response = await client.post(
         "/api/auth/login",
-        json={"email": "bob@example.com", "password": "wrong"},
+        json={"email": "bob@example.com", "password": "wrongpassword"},
     )
     assert response.status_code == 401
     assert _error(response.json())["code"] == "INVALID_CREDENTIALS"
@@ -250,7 +250,7 @@ async def test_login_unknown_email_matches_wrong_password_envelope(
 
     wrong_pw = await client.post(
         "/api/auth/login",
-        json={"email": "known@example.com", "password": "wrong"},
+        json={"email": "known@example.com", "password": "wrongpassword"},
     )
     unknown = await client.post(
         "/api/auth/login",
@@ -321,26 +321,26 @@ async def test_login_account_switch_leaves_other_account_intact(
     a_id = await _seed_registered_user(
         session_factory,
         email="a@example.com",
-        password_hash=hash_password("a-pw"),
+        password_hash=hash_password("a-password"),
         name="a",
     )
     b_id = await _seed_registered_user(
         session_factory,
         email="b@example.com",
-        password_hash=hash_password("b-pw"),
+        password_hash=hash_password("b-password"),
         name="b",
     )
 
     # Establish session A: an anon client logs in as A.
     await client.get("/api/bootstrap")
     login_a = await client.post(
-        "/api/auth/login", json={"email": "a@example.com", "password": "a-pw"}
+        "/api/auth/login", json={"email": "a@example.com", "password": "a-password"}
     )
     assert login_a.status_code == 200
 
     # Now switch to B on the same session.
     login_b = await client.post(
-        "/api/auth/login", json={"email": "b@example.com", "password": "b-pw"}
+        "/api/auth/login", json={"email": "b@example.com", "password": "b-password"}
     )
     assert login_b.status_code == 200
     assert login_b.json()["email"] == "b@example.com"
@@ -374,11 +374,11 @@ async def test_bootstrap_is_anonymous_false_after_login(
     await _seed_registered_user(
         session_factory,
         email="reg@example.com",
-        password_hash=hash_password("pw"),
+        password_hash=hash_password("changeme123"),
     )
     await client.get("/api/bootstrap")
     await client.post(
-        "/api/auth/login", json={"email": "reg@example.com", "password": "pw"}
+        "/api/auth/login", json={"email": "reg@example.com", "password": "changeme123"}
     )
     response = await client.get("/api/bootstrap")
     assert response.json()["account"]["isAnonymous"] is False

@@ -17,9 +17,22 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import CursorResult, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Stream
+
+
+class ActiveStreamExistsError(Exception):
+    """Raised by `create_stream` when an active stream already exists.
+
+    Surfaces the partial-unique-index violation
+    (`ix_stream_conversation_active_unique`) as a typed domain signal the route
+    maps to 409 CONFLICT. Catching the IntegrityError HERE (not at the route)
+    keeps the durable concurrency guard self-contained: a concurrent
+    double-submit that races past the route's fast precheck loses on INSERT and
+    the loser gets this instead of a generic 500.
+    """
 
 
 async def create_stream(
@@ -27,13 +40,25 @@ async def create_stream(
     *,
     conversation_id: UUID,
 ) -> Stream:
-    """Insert an `active` stream row for the conversation. Flush + refresh."""
+    """Insert an `active` stream row for the conversation. Flush + refresh.
+
+    Raises `ActiveStreamExistsError` when the partial unique index
+    (`ix_stream_conversation_active_unique`) rejects a second concurrent active
+    stream for the same conversation. The caller (the route) rolls back and
+    returns 409. The flush is wrapped in a SAVEPOINT (`db.begin_nested`) so the
+    IntegrityError doesn't poison the outer transaction — only the nested insert
+    is rolled back, leaving the session usable for the 409 response.
+    """
     row = Stream(
         conversation_id=conversation_id,
         status="active",
     )
-    db.add(row)
-    await db.flush()
+    try:
+        async with db.begin_nested():
+            db.add(row)
+            await db.flush()
+    except IntegrityError as exc:
+        raise ActiveStreamExistsError(str(conversation_id)) from exc
     await db.refresh(row)
     return row
 

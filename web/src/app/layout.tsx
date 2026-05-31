@@ -60,17 +60,26 @@ export const metadata: Metadata = {
 // content draw under notches/home indicators so `env(safe-area-inset-*)`
 // resolves to real values; `interactiveWidget: "resizes-content"` makes the
 // Android soft keyboard shrink the layout viewport (content resizes).
-// `themeColor` is paired (light/dark) to the canon's `--background` token so
-// the OS chrome (Android status bar, iOS standalone tint) matches the app
-// surface in both schemes.
+// `themeColor` tints the OS/browser chrome (Android status bar, iOS Safari
+// web-tinting of the toolbar + status-bar area, iOS standalone tint) to the
+// canon's `--background` token. The light value is emitted UNCONDITIONALLY
+// (no `media`) as the baseline, with dark layered on as a `media` override —
+// rather than two `media`-scoped entries. iOS Safari skips web-tinting when
+// every theme-color is media-scoped (it wants a plain, unconditional one to
+// honor); the baseline makes the tint reliably engage. Resolution still lands
+// correctly: light/no-preference falls through to the baseline, and dark wins
+// via its media query (a no-media meta always matches, so the later dark meta
+// overrides it only under prefers-color-scheme: dark). Both values match
+// `--background` exactly — light oklch(0.985 0.003 250) → #f9fafc, dark
+// oklch(0.165 0.008 250) → #0c0f12.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
   interactiveWidget: "resizes-content",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f9fafc" },
-    { media: "(prefers-color-scheme: dark)", color: "#101216" },
+    { color: "#f9fafc" },
+    { media: "(prefers-color-scheme: dark)", color: "#0c0f12" },
   ],
 };
 

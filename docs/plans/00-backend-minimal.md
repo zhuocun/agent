@@ -2,9 +2,9 @@
 
 > **Implementation status**: M0–M4 + all Post-M4 hardening items shipped on `main`. 261 tests pass + 1 known xfail (stop-path). The [Post-M4: deferred hardening](#post-m4-deferred-hardening) section below is preserved as a record; each item is now checked off with its landing PR.
 
-The smallest Python backend that lets the existing Next.js FE at `web/` run against real persistence and a real model provider with **zero UI changes**. The BE is a **separate service** — FastAPI + Postgres, deployed independently, talking to the FE over CORS. Anchored to the FE wire shapes in `web/src/lib/types.ts` and the behavior in `web/src/components/chat/chat-thread.tsx`. PRDs guide direction; anything the FE does not yet render or call is deferred.
+The smallest Python backend that lets the existing Next.js FE at `web/` run against real persistence and a real model provider with **zero UI changes**. The BE is a **separate service** — FastAPI + Postgres, deployed independently. Production browser traffic reaches it through the FE's same-origin `/api/*` Next rewrite; direct cross-origin/CORS remains a local/e2e/diagnostic mode. Anchored to the FE wire shapes in `web/src/lib/types.ts` and the behavior in `web/src/components/chat/chat-thread.tsx`. PRDs guide direction; anything the FE does not yet render or call is deferred.
 
-"Zero UI changes" caveat: because the BE is no longer co-located, the FE needs a small `apiClient` follow-up to learn the BE origin (`NEXT_PUBLIC_API_BASE_URL`) and send `credentials: 'include'`. No visual changes, no component edits, no new buttons.
+"Zero UI changes" caveat: because the BE is no longer co-located, the FE needs a small `apiClient` follow-up to resolve API URLs from `NEXT_PUBLIC_API_BASE_URL` and send `credentials: 'include'`. In production that env var is intentionally the empty string so requests stay same-origin and flow through the Next rewrite. No visual changes, no component edits, no new buttons.
 
 ## Goal & non-goals
 
@@ -17,22 +17,25 @@ In scope (justified by existing FE surface):
 - Message feedback, `UserPreferences`, BYOK write/delete — every settings-dialog mutation has a backend.
 - Anonymous-first sessions via custom minimal seam (PRD 04 §5.5) — per-user persistence from day one, no FE auth surface.
 - Per-turn requested tier captured from the request body (FE already sends `tierAtSendRef`).
-- **CORS configuration** first-class: different origin in dev and prod means CORS headers, allowed methods, credentialed cookies, SSE headers are BE's job.
+- **Routing/CORS configuration** first-class: prod uses same-origin `/api/*` through the Next rewrite, while local/e2e/direct modes can still target the BE origin with credentialed CORS.
 
-Explicitly out (no FE surface today):
+Explicitly out from the initial M0-M4 scope (some items later shipped during
+Post-M4 hardening and are called out below):
 
 - Attachments / uploads (PRD 01 §5.3, F21); tools, web search, memory, citations, interactive blocks (PRD 02; PRD 01 §4.4).
 - Resumable replay and server-side stop (PRD 04 §5.1 P1).
 - Conversation export, share links, audit log (PRD 01 §4.8; PRD 04 §5.8 P1).
 - Sync engine / multi-device (PRD 03); payments / plans / BYOK budget split (PRD 05; PRD 07 §6.3).
-- Rate limiting, cost budget enforcement, abuse protection (PRD 04 §5.6, PRD 08).
-- Full observability stack (PRD 04 §5.10) — replaced by structured JSON logs.
+- Advanced abuse protection beyond the shipped slowapi route limits and
+  best-effort cost budget gate (PRD 04 §5.6, PRD 08).
+- Full metrics/trace backend operations beyond the shipped optional Sentry/OTel
+  hooks and structured JSON logs (PRD 04 §5.10).
 - Substitution codes the FE does not render (`auto_route`, `budget_cap`, `policy_route`).
 - Server-curated prompt suggestions (`MOCK_SUGGESTIONS` stays client-static).
 
 Known FE follow-ups (callouts, not BE work):
 
-- **API base URL** via `NEXT_PUBLIC_API_BASE_URL`.
+- **API base URL** via `NEXT_PUBLIC_API_BASE_URL` (`""` for same-origin rewrite in prod; explicit BE origin for direct local/e2e).
 - **`apiClient`**: thin `web/src/lib/apiClient.ts` that prepends the base URL and sets `credentials: 'include'` + JSON content-type.
 - **SSE consumer**: `fetch` + ReadableStream parser; native `EventSource` rejected (no header config, unreliable cross-origin credentials).
 - **Conversation create**: FE switches from client-only to `POST /api/conversations` (one-line call site change).
@@ -45,10 +48,12 @@ Known FE follow-ups (callouts, not BE work):
 ```
 [ Next.js 16 FE at web/  (Vercel or any static host) ]
         |
-        |  fetch(NEXT_PUBLIC_API_BASE_URL + "/api/...", { credentials: "include" })
+        |  fetch("/api/...", { credentials: "include" })
+        |  production: Next rewrite forwards /api/* to Fly
+        |  local/direct: NEXT_PUBLIC_API_BASE_URL may point at the BE origin
         |  EventSource-style stream via fetch + ReadableStream
         v
-   [ CORS preflight + credentialed request ]
+   [ Same-origin rewrite, or CORS preflight in direct mode ]
         |
         v
 [ FastAPI service at api/  (Fly.io / Render / self-hosted) ]
@@ -88,13 +93,13 @@ Wire-format decision: **camelCase end-to-end**. The FE types are camelCase; emit
 
 The biggest change: the BE is **no longer co-located with the FE**. Python fits streaming/providers/pricing; a separate deploy keeps the FE footprint identical. Knock-on effects:
 
-- **CORS + cross-origin cookies** at `CORSMiddleware`: origins from `CORS_ALLOWED_ORIGINS` env list, echo the request `Origin` (**never `*`** with credentials), preflight TTL 600s. Session cookie is `HttpOnly; Secure; SameSite=None; Path=/` in prod, `SameSite=Lax` without `Secure` in dev. FE switches SSE consumption to `fetch`+ReadableStream (`EventSource` rejected); FE base URL via `NEXT_PUBLIC_API_BASE_URL`.
+- **Same-origin prod routing + direct-mode CORS**: the production FE calls `/api/*` with `NEXT_PUBLIC_API_BASE_URL=""`; `web/next.config.ts` rewrites those requests to Fly so the BE's `Set-Cookie` lands first-party on the Vercel origin. Direct FE-to-BE requests remain supported for local/e2e/diagnostics via `NEXT_PUBLIC_API_BASE_URL=<BE origin>` and `CORSMiddleware` (`CORS_ALLOWED_ORIGINS`, never `*` with credentials, preflight TTL 600s). Session cookie is `HttpOnly; Secure; SameSite=None; Path=/` in prod, `SameSite=Lax` without `Secure` in dev. FE switches SSE consumption to `fetch`+ReadableStream (`EventSource` rejected).
 - **Deploy split** — FE on Vercel, BE on Fly.io. Independent scaling: streaming wants long-lived processes that don't fit Vercel's serverless model.
 - **Type sharing** — TS and Pydantic diverge by hand for now. Future: OpenAPI → `openapi-typescript`. Defer until drift bites.
 
 ## Wire contract
 
-All endpoints are JSON over HTTPS unless noted. CORS headers from `CORSMiddleware` on every response. The SSE endpoint uses `text/event-stream` via `EventSourceResponse`. Mutations are scoped to the caller's user. Responses are camelCase. Errors use the envelope from `## Errors & limits`.
+All endpoints are JSON over HTTPS unless noted. In production they are reached by the browser as same-origin `/api/*` routes through the Next rewrite; direct mode uses CORS headers from `CORSMiddleware`. The SSE endpoint uses `text/event-stream` via `EventSourceResponse`. Mutations are scoped to the caller's user. Responses are camelCase. Errors use the envelope from `## Errors & limits`.
 
 ### `GET /api/bootstrap`
 
@@ -310,7 +315,7 @@ The streaming endpoint is a FastAPI route returning an `EventSourceResponse` (fr
 1. Validates the body, resolves the user, asserts conversation ownership (or accepts the synthetic temporary id).
 2. Resolves the served model from the BE registry given `tierId` (`auto` → configured default). Records any registry-driven substitution for `terminal`.
 3. Loads history (skipped for temporary), persists the user message, yields `submitted` (with the DB id).
-4. Calls the provider stream and maps its events. For the main DeepSeek/OpenAI-compatible path: `delta.reasoning_content` → `reasoning_delta` / `reasoning_done` (DeepSeek exposes raw thinking tokens via `deepseek-reasoner`); `delta.content` → `answer_delta`; the final chunk's `usage` is accumulated and finalizes the turn. The Anthropic backend maps the equivalent `thinking` / `text` blocks and `message_delta` / `message_stop`.
+4. Calls the provider stream and maps its events. For the main DeepSeek/OpenAI-compatible path (`PROVIDER_BACKEND=deepseek`, currently `deepseek-v4-flash` for auto/fast/smart and `deepseek-v4-pro` for pro): `delta.reasoning_content` → `reasoning_delta` / `reasoning_done` when the provider returns thinking tokens; `delta.content` → `answer_delta`; the final chunk's `usage` is accumulated and finalizes the turn. The Anthropic backend maps the equivalent `thinking` / `text` blocks and `message_delta` / `message_stop`.
 5. Post-stream: compute `CostBreakdown` + `ModelAttribution`, persist the assistant message, increment `usage_rollup`, fire title autogen via `asyncio.create_task(...)` on first turn, yield `terminal`.
 6. **Cancellation**: an `asyncio.Task` wraps the SDK iteration; the generator polls `request.is_disconnected()` between yields. On disconnect: cancel, flush accumulators, persist with `status="stopped"` and `costConfidence="estimate"`. No `terminal` (socket already closed).
 
@@ -394,7 +399,7 @@ BYOK gating: `PUT/DELETE /api/account/byok/*` reject with 403 when `user.is_anon
 
 ## Provider integration
 
-Main provider: **DeepSeek via the OpenAI-compatible Python SDK**. `PROVIDER_BACKEND=openai` with `OPENAI_BASE_URL=https://api.deepseek.com` and the platform `OPENAI_API_KEY`; tiers bind to `deepseek-chat` (fast/smart/auto) and `deepseek-reasoner` (pro). DeepSeek is the cost-leading default for the whole tier ladder and exposes raw thinking tokens on `deepseek-reasoner`. Token streaming via `chat.completions.create(..., stream=True)`, usage on the final chunk, clean cancellation. The **Anthropic SDK** is wired as an alternate backend (`PROVIDER_BACKEND=anthropic`, `ANTHROPIC_API_KEY`). Per-user BYOK keys decrypted from `api_key` at request time, passed into a per-request client (`OpenAI(api_key=..., base_url=...)` or `Anthropic(api_key=...)`).
+Main provider: **DeepSeek via the OpenAI-compatible Python SDK**. Production pins `PROVIDER_BACKEND=deepseek`, which uses `DEEPSEEK_API_KEY` (or `OPENAI_API_KEY` as a fallback) and the built-in `https://api.deepseek.com` base URL. The canonical tier registry binds auto/fast/smart to `deepseek-v4-flash` and pro to `deepseek-v4-pro`; thinking mode is a per-tier/per-request parameter rather than a legacy model alias. Token streaming uses `chat.completions.create(..., stream=True)`, usage on the final chunk, clean cancellation. The **Anthropic SDK** is wired as an alternate backend (`PROVIDER_BACKEND=anthropic`, `ANTHROPIC_API_KEY`), and `PROVIDER_BACKEND=openai` remains an alternate OpenAI-compatible path. Per-user BYOK keys are decrypted from `api_key` by the served binding's `provider_id` and passed into a per-request client (`OpenAI(api_key=..., base_url=...)` or `Anthropic(api_key=...)`).
 
 Future paths (not MVP): **LiteLLM** for broader multi-provider normalization; **Vercel AI Gateway** via an OpenAI/Anthropic-compatible `base_url`. Both deferred — gateway-style routing/fallback isn't needed at v0.
 
@@ -439,7 +444,13 @@ The FE does not render most of this today, but shipping the envelope now is chea
 - Stream errors emit `event: error\ndata: <envelope>\n\n` and end the stream; the FE flips `StreamStatus` to `"error"`.
 - Stream stop (client-initiated) is not an error and not a `terminal` either — the disconnect-detect handler flushes accumulators and persists with `status: "stopped"` and an `estimate` attribution.
 
-**No rate limiting or budget enforcement at MVP.** Deliberate. When added, **`slowapi`** (Redis-backed, decorator-style, plays with `Depends(current_user)`) is the pick. PRD 04 §5.6; ship once `usage_rollup` carries real cost data and the FE has a soft-cap warning.
+**Current status:** route-level rate limiting and a best-effort cost budget gate
+have shipped. The backend uses **`slowapi`** with in-process storage for the
+message/auth/BYOK/export/delete surfaces, and `USAGE_BUDGET_USD` blocks the next
+platform-key turn once the current period's `usage_rollup.cost_usd` has reached
+the cap. Remaining future work is token-aware/shared-store abuse control (Redis
+or equivalent), richer FE soft-cap warning, and provider/gateway budget
+backstops.
 
 ## Open questions / decisions for the user
 
@@ -450,7 +461,7 @@ The FE does not render most of this today, but shipping the envelope now is chea
 - **SSE library**: **`sse-starlette`** for built-in keep-alive.
 - **Schema sharing**: **hand-keep for MVP**; OpenAPI codegen when drift bites.
 - **Env / package manager**: **`uv`** — fastest, single tool.
-- **CORS in dev**: **Next rewrites in dev, cross-origin in prod**.
+- **Routing/CORS**: **same-origin Next rewrite in prod; direct cross-origin only for local/e2e/diagnostics**.
 - **BYOK encryption**: **env-var KEK for v0**; KMS envelope before public users.
 - **Usage units**: **per-turn counter for MVP**; switch when the FE has a real meter.
 
@@ -529,8 +540,8 @@ Residual notes (non-blocking, captured during PR #75 review):
 | Structured outputs / JSON-schema-constrained responses | PRD 02 (no FE surface yet) |
 | GDPR export and delete user-data flows | PRD 04 §5.7 (no FE surface yet) |
 | Payments, plan upgrades, BYOK billing split | PRD 05; PRD 07 §6.3 |
-| Observability stack (OTel, metrics, error reporting) | PRD 04 §5.10 |
-| Rate limiting / cost budget enforcement (no `slowapi` at MVP) | PRD 04 §5.6; PRD 08 |
+| Metrics dashboards / trace backend operations beyond optional Sentry+OTel hooks | PRD 04 §5.10 |
+| Shared-store token-aware abuse controls beyond shipped slowapi + cost budget gate | PRD 04 §5.6; PRD 08 |
 | Background job queue (no Celery/arq/Redis at MVP) | PRD 04 §5.10 |
 | Audit log enforcement and admin tools | PRD 04 §5.8 (P1) |
 | Sync engine / multi-device live updates | PRD 03 |
@@ -544,7 +555,7 @@ Residual notes (non-blocking, captured during PR #75 review):
 
 ## File / folder layout
 
-`api/` is a sibling of `web/`, not inside it. Separate deploy, separate tooling — co-locating under `web/` would confuse the Next build. The FE finds it via `NEXT_PUBLIC_API_BASE_URL`.
+`api/` is a sibling of `web/`, not inside it. Separate deploy, separate tooling — co-locating under `web/` would confuse the Next build. Production browser calls use same-origin `/api/*` through the Next rewrite; that rewrite targets Fly via server-side `BE_ORIGIN`. Direct local/e2e mode sets `NEXT_PUBLIC_API_BASE_URL` to the BE origin so the browser exercises CORS.
 
 ```
 api/

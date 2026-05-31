@@ -15,7 +15,9 @@
 
 This document converts the architecture research into a buildable engineering spec for the MVP and the immediate fast-follow. It defines the stack per layer, the streaming/resumability design, the data model, the provider-abstraction and BYOK security model, file uploads, cross-cutting concerns (rate limiting, jobs, observability), the security/privacy non-functional requirements, and the deployment/portability strategy.
 
-The guiding principle is **MVP-fast-but-not-cornered**: pick pragmatic, Vercel-native defaults to ship quickly, but place every external dependency (provider, storage, auth, queue, cache, tracing) behind a thin adapter so a later move to Cloudflare, containers, OpenRouter, or LiteLLM is a *migration, not a rewrite*.
+**Implementation note:** the original PRD investigated a Vercel-native AI SDK / Better Auth / Drizzle / Upstash architecture. The shipped implementation is now the source of truth: Next.js FE on Vercel, same-origin `/api/*` rewrite to a FastAPI backend on Fly, SQLAlchemy/Alembic on Neon Postgres, custom signed-cookie anonymous sessions, DeepSeek via an OpenAI-compatible adapter, optional Anthropic/OpenAI backends, slowapi, and optional Sentry/OpenTelemetry. Historical Vercel-native references below are retained only as design context where explicitly marked.
+
+The guiding principle is **MVP-fast-but-not-cornered**: pick pragmatic hosted defaults to ship quickly, but place every external dependency (provider, storage, auth, queue, cache, tracing) behind a thin adapter so a later move to a different host, gateway, or provider layer is a *migration, not a rewrite*.
 
 Three product constraints drive the architecture and are non-negotiable across all PRDs:
 1. **Multi-provider model support from day one** via a thin provider-abstraction layer.
@@ -27,10 +29,10 @@ Three product constraints drive the architecture and are non-negotiable across a
 ## 2. Goals & non-goals (technical)
 
 ### Goals
-- Ship a hosted, streaming, multi-model chat MVP on a TypeScript-first stack with the smallest viable service count.
+- Ship a hosted, streaming, multi-model chat MVP with a TypeScript frontend, Python backend, and the smallest viable service count.
 - Make model choice, per-message model attribution, and per-message token/cost a **first-class part of the data model**, not an afterthought.
 - Support **guest sessions** with seamless upgrade/linking to a real account, with no data loss on upgrade.
-- Survive serverless function timeouts and network drops for long AI streams (resumable streams).
+- Survive process restarts and network drops for long AI streams; resumable replay is feature-flagged and designed for shared storage later.
 - Keep COGS controllable: rate-limit by user *and* IP (for guests), route work off the request path, and support BYOK.
 - Keep the whole stack portable behind adapters; avoid one-way doors.
 - Meet baseline security/privacy NFRs (encryption, key handling, no-train default, export/delete, AI-interaction disclosure).
@@ -47,71 +49,63 @@ Three product constraints drive the architecture and are non-negotiable across a
 
 ## 3. Architecture overview + reference diagram
 
-The system is a **Next.js 16** App Router web app (responsive PWA for mobile) with **Cache Components / PPR** as the rendering baseline (static shell instant, chat pane streamed) talking to Vercel serverless route handlers / server actions. Auth-guard and rate-limit interception live in **`proxy.ts` on the Node runtime** (the Next.js 16 successor to the deprecated Edge `middleware.ts`). The chat loop runs through the **Vercel AI SDK v6** (`streamText` / `useChat`) over SSE, with a Redis-backed resumable-stream layer for refresh/drop resilience. A thin provider layer (AI SDK providers behind the AI Gateway) fans out to model providers. Postgres (Drizzle) is the system of record; Upstash Redis backs cache + resumable streams; Upstash QStash runs background jobs; object storage holds attachments uploaded directly by the client via presigned URLs. Langfuse + OpenTelemetry (OTel GenAI semantic conventions) provide tracing.
+The shipped system is a **Next.js 16** App Router web app (responsive PWA for mobile) deployed on Vercel. Browser code calls same-origin `/api/*`; `web/next.config.ts` rewrites those requests server-side to the **FastAPI** backend on Fly so the backend's `Set-Cookie` lands first-party on the Vercel origin. The backend owns auth, persistence, provider routing, SSE streaming, BYOK, usage/cost attribution, rate limiting, account export/delete, and public share reads.
+
+Postgres on Neon is the system of record. The backend uses SQLAlchemy 2.0 async + Alembic, Pydantic camelCase wire models, `sse-starlette`, slowapi, structlog, optional Sentry, optional OpenTelemetry, and an internal provider protocol with DeepSeek/OpenAI-compatible, Anthropic, and fake adapters. Resumable-stream replay is default-off and currently in-process; a production multi-worker version needs shared replay/stop coordination (Redis or equivalent).
 
 ```mermaid
 flowchart TD
     subgraph Client["Browser — web + mobile PWA"]
-        UI["Next.js App Router UI<br/>shadcn/ui + Tailwind"]
-        UC["AI SDK useChat (SSE)"]
-        ST["Zustand — UI state"]
-        RQ["TanStack Query — server state"]
+        UI["Next.js App Router UI<br/>Tailwind + local UI primitives"]
+        SC["fetch + ReadableStream SSE client"]
     end
 
-    subgraph Edge["Vercel — Fluid Compute"]
-        RT["Route Handlers / Server Actions"]
-        PROXY["proxy.ts (Node) — auth-guard + rate limit"]
-        AUTH["Better Auth (+ anonymous/guest)"]
-        AISDK["AI SDK v6 streamText + Agent"]
-        RL["Upstash token + cost-budget caps"]
-        ENC["BYOK envelope decrypt (KMS)"]
+    subgraph Vercel["Vercel — web project"]
+        NEXT["Next rewrite /api/* -> Fly"]
     end
 
-    subgraph Data["Data & Infra"]
-        PG[("Postgres + Drizzle<br/>Neon/Supabase (+pgvector later)")]
-        REDIS[("Upstash Redis<br/>cache + resumable streams")]
-        QSTASH["Upstash QStash — bg jobs"]
-        BLOB[("R2 / Vercel Blob — attachments")]
-        KMS["KMS / envelope keys"]
+    subgraph Fly["Fly.io — FastAPI"]
+        API["FastAPI routers"]
+        AUTH["custom signed-cookie sessions"]
+        STREAM["sse-starlette stream handler"]
+        PROVIDERS["provider protocol + tier registry"]
+        LIMITS["slowapi + usage budget gate"]
+        BYOK["AES-GCM BYOK decrypt"]
+        OBS["structlog + optional Sentry/OTel"]
     end
 
-    subgraph AI["Model layer"]
-        GW["Vercel AI Gateway<br/>BYOK, fallback, budgets"]
-        PROV["OpenAI / Anthropic / Google /<br/>open models / OpenRouter (later)"]
+    subgraph Data["Data & providers"]
+        PG[("Neon Postgres<br/>SQLAlchemy + Alembic")]
+        DS["DeepSeek API<br/>(OpenAI-compatible)"]
+        ALT["Anthropic / OpenAI alternates<br/>fake provider for tests"]
     end
 
-    OBS["Langfuse + OpenTelemetry"]
-
-    UI --> UC --> RT
-    UI --> RQ --> RT
-    UI --> ST
-    RT --> AUTH
-    RT --> RL
-    RT --> ENC --> KMS
-    RT --> AISDK --> GW --> PROV
-    RT <--> PG
-    AISDK <--> REDIS
-    RT --> QSTASH --> BLOB
-    UI -. presigned upload .-> BLOB
-    AISDK -. traces .-> OBS
-    RT -. traces .-> OBS
+    UI --> SC --> NEXT --> API
+    API --> AUTH
+    API --> STREAM
+    API --> PROVIDERS
+    API --> LIMITS
+    API --> BYOK
+    API --> OBS
+    API <--> PG
+    PROVIDERS --> DS
+    PROVIDERS --> ALT
 ```
 
 ASCII fallback:
 
 ```
-Browser (Next.js + useChat/SSE, Zustand, TanStack Query)
-   |  HTTP/SSE                                  \ presigned upload (direct)
-   v                                             v
-Vercel Route Handlers / Server Actions     Object storage (R2 / Vercel Blob)
-  | auth   | rate-limit | byok-decrypt | stream | bg-job        ^
-  v        v            v             v        v                |
-BetterAuth Upstash     KMS          AISDK     QStash -----------+
-                                     |
-                                     v
-                            Vercel AI Gateway --> OpenAI / Anthropic / Google / open / OpenRouter
-  Postgres+Drizzle (chats/messages/usage)   Upstash Redis (cache + resumable streams)
-                       \________ OTel traces ________/  -->  Langfuse
+Browser (Next.js PWA)
+  | same-origin /api/* (or direct CORS in local/e2e)
+  v
+Vercel rewrite -> Fly FastAPI
+  | auth | rate-limit | BYOK decrypt | SSE stream | account/share routes
+  v
+Neon Postgres (SQLAlchemy/Alembic)
+  |
+  +--> DeepSeek via OpenAI-compatible adapter
+  +--> Anthropic/OpenAI alternates, fake provider in tests
+  +--> optional Sentry / OpenTelemetry
 ```
 
 ---
@@ -120,20 +114,20 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 
 | Layer | Choice (MVP) | Rationale | Main tradeoff | Alternative (when) |
 |---|---|---|---|---|
-| **Frontend** | **Next.js 16** App Router + **Cache Components (PPR)** + shadcn/ui + Tailwind; responsive **PWA** for mobile | Largest ecosystem; the leading reference apps + the AI SDK's richest features are built here, so we inherit streaming/resumable/persistence patterns; PPR gives static-shell-instant + streamed-chat-pane natively | App Router (RSC/caching/streaming) learning curve; async `cookies()/headers()/params` migration; mild Vercel gravity | React Router v7 / SvelteKit if team rejects RSC |
-| **AI orchestration** | **Vercel AI SDK v6** (`ai@6.x` + `@ai-sdk/*`): `useChat` + `streamText`, `Agent` primitive, tool calling | Collapses streaming protocol, tool-call streaming, message typing, provider switching, resumable streams into one maintained lib; v6 adds the `Agent`/`ToolLoopAgent` primitive (+ `needsApproval` HITL), stable MCP, `Output.object()` | v6→v7 API churn — **pin exact versions (no `^`)** + lockfile + a manual-gate Renovate/Dependabot (v6 patches multiple times/week), isolate behind adapter, follow migration notes. **AI SDK v7 is in active public beta as of May 2026** (not a distant horizon) — plan the v6→v7 codemod (`npx @ai-sdk/codemod`) in **P1**; `generateObject`/`streamObject` deprecated (use `Output.object()`) | LangChain.js (heavier) only if agent complexity grows |
-| **Transport** | **SSE** (AI SDK default) + Redis-backed resumable streams; **dedicated stop endpoint** (abort via `AbortSignal` only pre-resumable) | Native, debuggable, robust; resumable streams survive refresh/timeout | No bidirectional (fine for chat); abort semantics invert under resumable streams — every stop is a disconnect (§5.1) | WebSockets / Durable Objects if voice/collab lands; **Vercel Workflows / DurableAgent** (durable execution) as the P1 long-run / agent-loop horizon |
-| **Provider layer** | AI SDK providers + **Vercel AI Gateway** (BYOK, fallback, budgets, **ZDR**); thin adapter interface | One key → many models; zero-markup BYOK; usage/budget controls; ZDR as **defense-in-depth** (provider DPAs/no-train modes are the primary no-train control, §5.7) | Gateway lock-in (mitigated by adapter); **ZDR is plan-gated — per-request ZDR free on Pro/Ent, team-wide ZDR metered ($0.10/1k req), unavailable on Hobby** | OpenRouter (breadth) / LiteLLM (self-host) / **Portkey (OSS, self-host + built-in guardrails)** later |
-| **Database** | **Postgres + Drizzle** on Neon or Supabase | Serverless-friendly cold starts; SQL control; working pgvector for future RAG. Neon (now Databricks-owned, runs independently) cut storage/compute pricing materially in 2026 | Drizzle is more SQL-forward, less "batteries-included"; the cold-start gap vs Prisma is `[Recall]` — re-benchmark on Neon + Fluid Compute before quoting | Prisma if DX wins out and pgvector not needed |
-| **Cache / Redis** | **Upstash Redis** (HTTP/REST) | No connection pooling, no cold-start penalty; same Redis backs resumable streams + rate limiting | HTTP-per-op latency vs persistent client | Self-managed Redis at scale |
-| **Background jobs** | **Upstash QStash** (HTTP queue: retries, delay, DLQ) | Fits serverless without a worker fleet; idempotent retries | HTTP-queue semantics; not a full broker | SQS / a worker fleet at scale |
-| **Auth** | **Better Auth** (anonymous plugin → account linking) — **committed** | Owns users in *our* Postgres; best guest→account upgrade; passkeys/2FA/orgs built in; no per-MAU bill. Auth.js is now security-patch-only and its own maintainers (the Better Auth team, since Sept 2025) point new projects to Better Auth | Newer lib we operate; enterprise SSO/SAML/SCIM still maturing | **Supabase Auth** *only if* we standardize the data platform on Supabase (RLS synergy). ~~Auth.js~~ dropped — deprecated path |
-| **Object storage** *(P1 — lands with attachments)* | **Cloudflare R2** (S3-compatible, presigned PUT); **Vercel Blob** acceptable | Zero egress fees at scale; direct client uploads keep files off function compute | R2 ecosystem younger; not needed until file attachments (P1) | S3 (max maturity, egress cost) behind same adapter |
-| **Secrets / BYOK** | KMS-backed **envelope encryption** for user keys | Keys encrypted at rest, scoped per user, never logged | Adds a KMS dependency | Cloud-provider KMS equivalent on migration |
-| **Observability** | **Langfuse v4 (OTel-native)** + **OpenTelemetry GenAI semantic conventions** | OSS, tracing + prompt mgmt + evals; Langfuse v4 consumes OTel so it's *one* instrumentation surface, not two; OTel GenAI semconv (client spans stable-ish) avoids APM lock-in | Self-hosted Langfuse now needs ClickHouse + Postgres + Redis/S3 (non-trivial ops) — prefer cloud tier for MVP | Any OTel-compatible APM (Datadog/Grafana ingest GenAI semconv natively); Helicone as an observability-first proxy complement |
-| **Deploy** | **Vercel** (Fluid Compute) for MVP | Fastest to ship; best AI SDK/Gateway/streaming integration; OTel export. Fluid Compute default now **300s on all plans**, **max 800s on Pro/Enterprise** (>300s requires Pro/Enterprise) **[confirm at build against Vercel duration docs]** | Function max-duration limits; cost/egress at scale | Cloudflare (Workers/DO/Containers) or Fly/Railway at scale; **Vercel Workflows** for durable long runs (proprietary — gate behind adapter; Temporal/Restate as portable equivalents) |
+| **Frontend** | **Next.js 16** App Router + Tailwind/local UI primitives; responsive **PWA** for mobile | Current shipped FE; Vercel hosting gives simple previews/prod deploys and same-origin rewrite support | App Router conventions and build-time env behavior must be respected | React Router / SvelteKit only if team rejects App Router |
+| **Backend** | **FastAPI** on Fly.io, Python 3.11, `uv`, `sse-starlette` | Long-lived streaming process, clean Python provider SDKs, simple Docker deploy | Separate service from FE; CORS/rewrite/cookie details are load-bearing | Other container hosts if Fly constraints bite |
+| **Transport** | **SSE** over `fetch` + `ReadableStream`; `EventSourceResponse` server-side | Credentialed POST body support; same parser works for direct CORS and same-origin rewrite | No bidirectional channel; stop/reconnect coordination is in-process today | WebSockets only if voice/collab requires it |
+| **Provider layer** | Internal Python `Provider` protocol; DeepSeek via OpenAI-compatible adapter as canonical; Anthropic/OpenAI/fake alternates | Keeps provider/model/pricing behind backend registry; supports BYOK per provider id | Broader gateway/fallback breadth still future | LiteLLM/OpenRouter/gateway as P1/P2 breadth layer |
+| **Database** | **Neon Postgres + SQLAlchemy 2.0 async + Alembic** | SQL control, async driver, migrations, SQLite-compatible tests | Hand-kept Pydantic/TS schema drift | OpenAPI codegen when drift hurts |
+| **Cache / Redis** | None required for current MVP; in-process registries for temp IDs/stop/replay/rate-limit | Simpler single-worker MVP | Multi-worker resumable/stop/rate-limit needs shared storage | Redis/Upstash when multi-worker or resumable replay graduates |
+| **Background jobs** | In-process detached tasks and lifespan reaper | Enough for title autogen and stale-stream cleanup in a single process | Hard crashes skip work; no durable retries | Dedicated worker/queue for attachments, embeddings, durable reapers |
+| **Auth** | Custom signed-cookie sessions, anonymous-first users, in-place upgrade, login handoff | Minimal and proven in this repo; preserves guest data on upgrade | We own all auth flows and password policy | Better Auth/Supabase only if the product needs their feature set |
+| **Object storage** *(P1 — lands with attachments)* | Not built | P0 is text-only | Attachments require storage, virus/abuse checks, and async processing | R2/S3/Vercel Blob behind adapter |
+| **Secrets / BYOK** | AES-GCM ciphertext in DB with env KEK and versioned KEK registry | Simple deployable encryption at rest; prod refuses dev KEK | KMS envelope encryption is future hardening | Cloud KMS before larger public exposure |
+| **Observability** | structlog request IDs; optional Sentry and OpenTelemetry | Low-cost visibility without requiring telemetry backend | No product analytics/metrics dashboard yet | Any OTel-compatible APM; Langfuse-style LLM tracing later |
+| **Deploy** | **Vercel FE + Fly API + Neon DB** | Matches current prod; FE rewrite keeps cookies first-party | Split deploy and secrets across platforms | Consolidate only if operational cost outweighs benefits |
 
-**One-line summary:** Next.js App Router + Vercel AI SDK over SSE (resumable) + Postgres/Drizzle + Upstash + Better Auth + R2 + Langfuse, on Vercel, with every external dependency behind a thin adapter.
+**One-line summary:** Next.js on Vercel rewrites `/api/*` to a FastAPI service on Fly; FastAPI streams via SSE, persists to Neon through SQLAlchemy/Alembic, and calls DeepSeek/Anthropic/OpenAI through backend adapters.
 
 ---
 
@@ -141,51 +135,44 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 
 ### 5.1 Streaming & resumable streams
 
-- **[P0/MVP]** Default transport is **SSE** via the AI SDK (`streamText` server-side, `useChat` client-side). Token-by-token streaming is the core UX requirement (TTFT is a tracked metric — see PRD 05 §7). SSE caveats to enforce at build: HTTP/1.1 caps **6 SSE connections per domain per browser** across tabs (HTTP/2 ≈100; Vercel serves HTTP/2+, which mitigates the multi-tab case), and **proxy/CDN response buffering can defeat token streaming** — set no-buffering headers / keep-alives.
-- **[P0/MVP]** Run the chat route on the **Node runtime** (richer library surface, safe streaming) on **Fluid Compute** to maximize stream duration. Fluid Compute default is now **300s on all plans**, **max 800s on Pro/Enterprise** (>300s requires Pro/Enterprise). **[confirm at build]** the exact current limits against [Vercel duration docs](https://vercel.com/docs/functions/configuring-functions/duration) before locking timeouts.
-- **[P0/MVP] Stop / abort — semantics invert when resumable streams turn on:**
-  - **MVP (no resumable replay):** `useChat` stop closes the client stream; an `AbortSignal` propagates into `streamText` so the upstream provider request is cancelled (stop billing). On abort, persist the partial assistant message and mark the run aborted. This is simple and correct *because there is no resumable layer*.
-  - **The moment resumable replay lands (P1):** client-side aborts (`stop()`, refresh, tab close, network loss) are all treated as **disconnects by design and do NOT cancel generation** — the server keeps producing so the client can reconnect. Stop must therefore become a **dedicated server-side stop endpoint** (out-of-band cancel), *not* a client `AbortSignal`. This is a documented behavioral switch: **the abort behavior inverts between MVP and P1**, and building it naively will silently re-introduce bill-until-timeout for *every* stop once resumability ships. ([ai-sdk.dev resume-streams](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams), [vercel/ai #8390](https://github.com/vercel/ai/issues/8390).)
-- **[P0/MVP] Interrupted-stream UX (no resumable replay):** network drops, server errors, and user Stop all end with a **persisted partial assistant message** in `message.parts` and `stream.status = aborted` (or `error`). The client does **not** SSE-resume in P0. PRD 01/03 own the surface: inline **Continue** (re-submit continuation context as a new turn) and **Regenerate** (re-run last user message). *AC:* partial tokens survive reload; Continue/Regenerate never silently discard partial content.
-- **[P1] Resumable streams:** wrap the SSE stream with Vercel's `resumable-stream` library, backed by **Upstash Redis pub/sub** (validated: one `INCR` + `SUBSCRIBE` per stream; minimal Redis cost unless a resume happens). On reconnect (page refresh / network drop on the *same* device) the client replays buffered tokens from the last cursor — **best-effort, subject to Redis retention; not a guarantee of lossless replay across arbitrary outages.** Requires: persist the in-progress assistant message *and* track the active stream id per chat (the `Stream` table). Design the persistence for this in MVP even if resumable replay ships as P1. **Build-time watch items:** known resume bugs where a resumed stream starting with a `text-delta` for an existing part fails ([vercel/ai #13160](https://github.com/vercel/ai/issues/13160)) and tab-backgrounding resume issues ([#11865](https://github.com/vercel/ai/issues/11865)).
-- **[P0/MVP with resumable streams → PRIMARY stop path] Orphaned-run handling (not an edge case):** once resumable streams are on, **every** stop/refresh/close is a disconnect that does not reach the generating process — so out-of-band cancel is the **primary stop mechanism**, and it must exist the moment resumable streams ship. Mechanism:
-  - A **dedicated stop endpoint** persists the partial message, cancels the producing work, clears `activeStreamId`, and writes `aborted` to the `Stream` row.
-  - The `Stream` row is the source of truth for run state (`active | done | aborted`); the stop endpoint publishes an abort signal on the Redis channel for that stream id.
-  - The generating process polls/subscribes to that channel (or checks the row at each step boundary) and self-cancels its `AbortSignal` when it sees `aborted`.
-  - A **reaper** (QStash scheduled job) backstops by marking `active` streams older than max-duration as `aborted` and reconciling their messages.
-  - **Degraded-path UX:** on reconnect when the Redis buffer has been evicted, show the persisted partial + "generation interrupted, retry." On a concurrent send to a chat that already has an `active` stream (unique-active-stream index violation), return `409` + "a response is already generating in this chat."
-- **[P0/MVP] Long-stream-vs-timeout constraint:** functions cannot stream indefinitely. Layered mitigations: (1) resumable streams (resume after a drop/timeout), (2) Fluid Compute for longer single runs (Cloudflare 5-min CPU Workers as the portability escape hatch), (3) push heavy/long non-token work (file processing, embeddings, title generation) to **QStash background jobs**, never the request path. **[P1 horizon] Vercel Workflows / `DurableAgent`** is the strategic answer for the **P1 tool/agent loop and any multi-minute generation**: it checkpoints state at every `await`, survives timeouts/deploys/crashes, provides durable streams, and solves the orphaned-run problem structurally (steps are individually checkpointed/retried/cancelled), collapsing resumable-stream + reaper + background-job into one durable-step model. It is **Vercel-proprietary** — gate it behind the runtime adapter (Temporal/Restate + AI SDK are portable equivalents). Don't pull it forward for the text-core MVP.
-- **[P0/MVP] Client error contract (`useChat`):** wire streaming failures through the AI SDK hook surface, not ad-hoc fetch parsing. Surface `error` from `useChat` in the assistant bubble footer; recovery actions are **`regenerate()`** for stream/provider failure and **`clearError()`** after dismiss/retry so the composer re-enables. Preserve partial `message.parts` on error. Emit one terminal analytics event per assistant turn from lifecycle finish handling: `completed` | `stopped` | `error` | `interrupted`, with `chat_id`, `message_id`, `model_id`, `served_model_id` (if substitution), and token/cost snapshot when available.
-- **[P0/MVP] Message-send idempotency key (billing-consistency, OWASP LLM10):** the client generates a **`client_message_id` (UUID v4)** per user send intent and includes it in the `/api/chat` send payload. Because `message.cost_usd` (§6) is the **live billing ledger**, a single user intent must never spawn duplicate assistant turns under network retries, double-clicks, optimistic-send replays (PRD 00 "optimistic send + offline draft/queue"), or `regenerate()`. The route handler **dedupes on `client_message_id` BEFORE any provider call or ledger write** (a duplicate returns the existing turn / its in-progress stream, never a second generation). Stored as `message.client_message_id`, **unique per chat** (§6). *AC:* replaying the same `client_message_id` to a chat produces at most one assistant turn and at most one ledger write — no double-charge.
+- **[P0/MVP]** Default transport is **SSE** from FastAPI via `sse-starlette`, consumed by the Next.js client with `fetch` + `ReadableStream`. Browser calls are same-origin in production through the Next rewrite; local/e2e can call the backend directly with CORS. Token-by-token streaming is the core UX requirement (TTFT is a tracked metric — see PRD 05 §7). SSE caveats still apply: HTTP/1.1 caps concurrent SSE connections per browser/domain, and proxy/CDN buffering can defeat token streaming — the backend must set no-buffering headers / keep-alives.
+- **[P0/MVP]** The streaming route runs on the Fly-hosted FastAPI backend, not a Vercel function. Fly still has machine lifecycle and deploy-interruption realities, so every stream must persist enough state for reload recovery and should avoid unbounded work in the request path.
+- **[P0/MVP] Stop / abort semantics:** user Stop is a **dedicated server-side stop endpoint** (`POST /api/conversations/:id/stop`). The backend records durable stop intent on the active `stream` row and signals the in-process generator through `stop_registry`; the generator polls the signal between provider chunks and persists the assistant turn as `stopped`. A browser disconnect also tears down the turn as `stopped` in the current single-process MVP.
+- **[P0/MVP] Interrupted-stream UX:** network drops, server errors, user Stop, and deploy interruption all end with a persisted partial assistant message in `message.parts` and `stream.status = stopped | error`. PRD 01/03 own the surface: inline **Continue** (submit continuation context as a new turn) and **Regenerate** (re-run last user message). *AC:* partial tokens survive reload; Continue/Regenerate never silently discard partial content.
+- **[P0/MVP] Reconnect/replay:** `GET /api/conversations/:id/stream/:stream_id` replays from the in-process replay buffer and then tails the live producer. This is best-effort and scoped to the current process: a browser refresh on the same live backend can recover buffered events, but a process restart or multi-worker deployment requires a shared replay store.
+- **[P1] Resumable streams:** move replay and stop signaling from in-process registries to shared storage (Redis or equivalent). The `stream` row remains the source of truth for run state (`active | done | stopped | error`), while shared replay storage handles cross-worker reconnect and shared stop signaling handles cross-worker cancel. On a concurrent send to a chat that already has an active stream, return `409` + "a response is already generating in this chat."
+- **[P0/MVP] Long-stream constraint:** do not assume streams can run indefinitely. Layered mitigations: (1) persist partial output and stream rows as chunks arrive, (2) support explicit stop and best-effort replay, (3) keep heavyweight non-token work such as file processing, embeddings, and durable title generation off the request path when those features land. Durable workflow engines remain a P1/P2 option for multi-minute agent loops.
+- **[P0/MVP] Client error contract:** wire streaming failures through the frontend SSE client and show recoverable error state in the assistant bubble/footer. Preserve partial `message.parts` on error. Emit one terminal analytics/observability event per assistant turn from backend terminal handling: `done` | `stopped` | `error`, with `conversation_id`, `message_id`, `requested_model_id`, `served_model_id`, and token/cost snapshot when available.
+- **[P0/MVP] Message-send idempotency key (billing-consistency, OWASP LLM10):** the client generates a **`client_message_id` (UUID v4)** per user send intent and includes it in the message-send payload. Because `message.cost_usd` (§6) is the live billing ledger, a single user intent must never spawn duplicate assistant turns under network retries, double-clicks, optimistic-send replays, or Regenerate. The backend dedupes on `client_message_id` before any provider call or ledger write; a duplicate returns the existing turn / its in-progress stream, never a second generation. Stored as `message.client_message_id`, unique per chat (§6). *AC:* replaying the same `client_message_id` to a chat produces at most one assistant turn and at most one ledger write — no double-charge.
 - **[P0/MVP] Billing-vs-stream-failure atomicity (order-of-operations):** define exactly **when** `cost_usd` / `usage_rollup` is written relative to a stream that may complete, stop, error, or be interrupted — to avoid bill-for-nothing (charge then stream dies) and stream-for-free (tokens consumed, never metered):
-  - **Capture** provider usage from the AI SDK lifecycle (`onFinish` / terminal events), covering all four terminal states the §5.1 client error contract already emits — `completed` | `stopped` | `error` | `interrupted`.
+  - **Capture** provider usage from backend provider-stream terminal handling, covering the terminal states the §5.1 client error contract emits — `done` | `stopped` | `error`.
   - **Write** the cost ledger (`message.cost_usd` + `cost_breakdown`, `usage_rollup`) in the **same transaction/step** that finalizes the `message` + `stream` row — never as a separate, unguarded write.
   - **Meter partial usage on abort:** provider-reported tokens on a stopped/interrupted run are still metered (the persisted partial `message.parts` carries a real, billable cost); a run that never produced billable usage writes zero.
-  - **Reconcile** orphaned runs via the **reaper** (§5.1 / QStash): a `Stream` row marked `aborted` by the reaper finalizes its message + ledger from the last captured usage so no run is left unmetered or double-metered.
+  - **Reconcile** orphaned runs via the backend reaper (§5.1): a stale active `Stream` row is marked stopped/error and reconciled from the last captured usage so no run is left unmetered or double-metered.
   *AC:* every terminal state writes exactly one ledger entry atomic with message+stream finalization; a stream that dies mid-flight meters only the provider-reported partial usage; reaper-reaped orphans are metered exactly once.
 
 ### 5.2 Provider abstraction & BYOK
 
-- **[P0/MVP] Thin provider adapter:** all model calls go through one internal interface (`ModelProvider`) that wraps AI SDK providers behind the **Vercel AI Gateway**. App code references models by stable ids (e.g. `openai/gpt-...`, `anthropic/...`); swapping the gateway for OpenRouter or LiteLLM must not touch call sites.
-- **[P0/MVP] Structured outputs (v6 API):** the MVP ships "structured outputs + schema validation" (PRD 00 §5). Build this against **`streamText`/`generateText` + `Output.object()`** — the standalone `generateObject`/`streamObject` helpers are **deprecated in AI SDK v6**. Do not build the MVP against the deprecated helpers.
-- **[P1] Tool/agent loop (v6 `Agent`):** use the v6 **`Agent`/`ToolLoopAgent`** primitive (typed stop conditions `stepCountIs()`/`hasToolCall()`, stable MCP) rather than hand-rolling multi-step. Use **`needsApproval`** for human-in-the-loop tool-execution approval. Keep the AI layer isolated behind the provider adapter (migration discipline now points at v6→v7).
+- **[P0/MVP] Thin provider adapter:** all model calls go through the backend's internal provider protocol. App code references stable tier/model ids; adapter implementations own provider-specific SDKs, base URLs, streaming deltas, usage extraction, pricing inputs, and BYOK client construction. Swapping DeepSeek/OpenAI-compatible routing for LiteLLM, OpenRouter, or a gateway must not touch route handlers or UI call sites.
+- **[P0/MVP] Structured outputs / schema validation:** the MVP reserves structured-output contracts behind provider capabilities and Pydantic/JSON-schema validation. Do not bind product code to a frontend SDK-specific structured-output API; keep schema validation at the backend/provider boundary.
+- **[P1] Tool/agent loop:** tool execution, HITL approval, and multi-step agents stay behind the provider/agent adapter. The P0 message schema already accepts tool-call/status parts; the execution engine can be OpenAI-compatible tools, Anthropic tools, a workflow engine, or another adapter without changing the chat data model.
 - **[P0/MVP] Multi-provider from day one:** the **main provider is DeepSeek** (the cost-leading default for free-tier / casual queries; PRD 02/05 own the registry), with OpenAI, Anthropic, and Google as selectable picker routes / alternate backends (see PRD 05 §3; PRD 02 §5.3 owns the model-selection rule).
-- **Current implementation (MVP deploy):** the deployed BE binds the OpenAI-compatible adapter to the DeepSeek-hosted API as the main provider. Config today: `PROVIDER_BACKEND=openai`, `OPENAI_BASE_URL=https://api.deepseek.com`, and per-tier overrides `OPENAI_MODEL_FAST` / `OPENAI_MODEL_SMART` / `OPENAI_MODEL_AUTO` = `deepseek-chat` with `OPENAI_MODEL_PRO=deepseek-reasoner` (env-var names match `api/app/config.py` and `api/.env.example`). This matches the main-provider/default decision in **PRD 00 §11 D11** and the model-selection rule in PRD 02 §5.3.
+- **Current implementation (MVP deploy):** the deployed BE binds the OpenAI-compatible adapter to the DeepSeek-hosted API as the main provider. Config today: `PROVIDER_BACKEND=deepseek` (pinned in `api/fly.toml`), `https://api.deepseek.com` as the built-in base URL, and canonical tier bindings in `api/app/providers/tiers.py`: auto/fast/smart use `deepseek-v4-flash`, and pro uses `deepseek-v4-pro`. Production DeepSeek no longer depends on `OPENAI_BASE_URL` or per-tier `OPENAI_MODEL_*` overrides. This matches the main-provider/default decision in **PRD 00 §11 D11** and the model-selection rule in PRD 02 §5.3.
 - **[P0/MVP] Per-message model + usage capture:** every assistant message records the resolved `model_id`, `provider`, and token usage (prompt/completion/total) and a computed cost. The cost field must be able to represent **effective/tiered cost** (cached-input, threshold/long-context multipliers, promos), not just a single scalar — **PRD 02 owns the pricing schema** that produces these multipliers, **PRD 01 owns the display**, this PRD owns the **storage/capture** shape (§6). This powers the transparency UX (model used + token cost per message), unit-economics metrics, **and** the live budget-enforcement signal (§5.6). **This is a hard cross-PRD contract.**
 - **[P0/MVP] BYOK key security:**
-  - Encrypt user-supplied keys at rest with **envelope encryption** (data key per record, master key in KMS). Store only ciphertext in `api_key.encrypted_key`.
+  - Encrypt user-supplied keys at rest with AES-GCM using the environment KEK / versioned KEK registry, with a future path to KMS envelope encryption. Store only ciphertext in `api_key.encrypted_key`.
   - **Never log keys**; redact in error traces; never place keys in system prompts (OWASP LLM system-prompt-leakage risk).
   - Scope keys per user; decrypt only in-process at call time; never return plaintext to the client.
-  - Use a **fresh data-encryption key (DEK) per record (AES-256-GCM)** wrapped by the KMS master key; store unique `(user_id, provider)`, `last_used_at`/`updated_at`, and support **soft-delete/revocation/rotation** (§6 `api_key`).
+  - Use a fresh AES-GCM nonce per encryption, store unique `(user_id, provider)`, track `last_used_at`/`updated_at`, and support **soft-delete/revocation/rotation** (§6 `api_key`). Per-record DEKs wrapped by KMS are the future hardening path, not the shipped mechanism.
 - **[P0/MVP] Guest + BYOK policy:** **BYOK requires a non-anonymous account.** A guest gets a real `user` row (FK works) but its identity is evictable and may never upgrade — storing a provider key against it is a key-security/abuse hazard. Gate key entry on a real account.
 - **[P0/MVP] BYOK UI gate:** hide key-entry controls and block `api_key` writes when `user.is_anonymous = true`; show upgrade-to-link-account CTA (PRD 01 §4.8).
-- **[P0/MVP] Grok registry gating:** registry seed may include xAI/Grok via gateway/OpenRouter breadth, but set `default_route_eligible = false` until `data_policy` review passes PR-1. Auto-routing and free-tier defaults MUST NOT select Grok.
-- **[P0/MVP] Platform-keys vs BYOK policy:** platform keys = we pay, we meter and rate-limit (default for free/Pro tiers); BYOK = user pays, we proxy with no token markup. The Gateway makes the BYOK proxy path simple. Metering/limits apply to platform-key usage; BYOK usage is still rate-limited for abuse but not metered for billing.
+- **[P0/MVP] Grok registry gating:** registry seed may include xAI/Grok through a future breadth layer, but set `default_route_eligible = false` until `data_policy` review passes PR-1. Auto-routing and free-tier defaults MUST NOT select Grok.
+- **[P0/MVP] Platform-keys vs BYOK policy:** platform keys = we pay, we meter and rate-limit (default for free/Pro tiers); BYOK = user pays, we proxy with no token markup. Metering/limits apply to platform-key usage; BYOK usage is still rate-limited for abuse but not metered for billing.
 - **[P1] Provider drift handling:** model ids and capabilities (tools, vision, reasoning) move fast — keep a capability registry per model so the UI can gate features (e.g. vision-only models) and the adapter can fall back.
 
 ### 5.3 Data model — see §6 for the full draft schema
 
-- **[P0/MVP]** Postgres + Drizzle is the system of record. Client state (Zustand for UI, TanStack Query for server state) is a cache; the DB is authoritative.
+- **[P0/MVP]** Postgres + SQLAlchemy/Alembic is the system of record. Client state is a cache; the DB is authoritative.
 - **[P0/MVP]** Required tables for MVP: `user` (with `is_anonymous`), `chat` (with `visibility` + `model_id`), `message` (**typed multi-part `parts`** + attachments jsonb + per-message model + token + effective/tiered cost), `stream`, `vote`, **`api_key` (BYOK — P0 per the launch-BYOK decision)**.
 - **[P0/MVP] Typed multi-part message model (THIS PRD owns the data-model schema):** a `message` is an **ordered list of typed parts** — `text | reasoning | tool-call | tool-result | citation | interactive-block` — not a single markdown string. Modeling this in the P0 data layer (even if P0 only *renders* the text/reasoning/code subset) de-risks tools, structured citations, interactive viz, and generative UI in one move; skipping it guarantees a P1 refactor. **PRD 01 references this for rendering** (the rendering decision is really a data-model decision and is made here once).
 - **[P0/MVP] `tool-call` part shape (schema now, minimal renderer):** even before tools ship (P1), `message.parts` MUST accept persistable tool/status parts so PRD 01 status lines are not throwaway. Minimum fields: `type: 'tool-call'`, stable `id`, `toolName` or `displayLabel`, `status: 'pending' | 'running' | 'completed' | 'failed' | 'denied'`, nullable `input`/`output` jsonb, nullable `error`, optional `startedAt`/`completedAt`. P0 UI may render these as status lines only; expandable tool UI is P1.
@@ -199,44 +186,39 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 
 - **[P1] Presigned direct-to-storage upload:** client requests a presigned PUT URL from our API → browser uploads **directly** to object storage (keeps large files off function compute/timeout budget) → API writes the `attachment` row with object URL + metadata.
 - **[P1] Validation:** server issues presigned URLs only for allowed content-types and a max size; verify object existence + size after upload before marking `ready`.
-- **[P1] Async processing via queue:** thumbnailing/resize, PDF/text extraction (for future RAG), virus/abuse scanning run as **QStash background jobs**, never inline. `attachment.status` transitions `uploaded → processing → ready | failed`.
+- **[P1] Async processing via queue/worker:** thumbnailing/resize, PDF/text extraction (for future RAG), and virus/abuse scanning run out of band, never inline. The queue can be a dedicated worker, QStash, or another durable job runner behind an adapter. `attachment.status` transitions `uploaded → processing → ready | failed`.
 - **[P1] Storage adapter:** wrap R2/Blob/S3 behind one interface so R2 ↔ Blob ↔ S3 swaps are config, not code.
 
 ### 5.5 Auth & guest sessions
 
 - **[P0/MVP] Guest/anonymous sessions are a hard requirement.** A first-time visitor can start chatting with **no sign-up**. The anonymous user gets a real `user` row with `is_anonymous = true`.
-- **[P0/MVP] Upgrade / link:** on sign-up or OAuth login, the anonymous account is **linked/merged** into the real account with **no chat loss** (chats/messages re-parented to the upgraded user id). Better Auth's anonymous plugin provides anonymous→link natively.
+- **[P0/MVP] Upgrade / link:** on sign-up or login, the anonymous account is upgraded in place with **no chat loss**. The current implementation uses custom signed-cookie sessions, argon2id password auth, and a login handoff cookie; any future auth provider must preserve this anonymous→linked contract.
 - **[P0/MVP] Guest cost control:** guests are rate-limited by **IP** (and by anonymous user id) to cap model spend — see §5.6.
-- **[P1]** Passkeys / 2FA, organizations / RBAC (Better Auth has these built in; enable as team features mature).
+- **[P1]** Passkeys / 2FA, organizations / RBAC — enable as team features mature, either in the custom auth layer or by migrating behind the auth boundary.
 - **[P2]** SSO / SAML for teams (later — see §5.7).
-- **Decision note / spike:** Better Auth is **committed** (owns users in our Postgres, best guest→link; aligns with PRD 00's Better Auth commitment). The **only** alternative is **Supabase Auth** (RLS synergy + anonymous sign-in), contingent on standardizing the data platform on Supabase. **Auth.js is dropped** — it is security-patch-only as of Sept 2025 and its own maintainers (now the Better Auth team) point new projects to Better Auth ([better-auth.com/blog/authjs-joins-better-auth](https://better-auth.com/blog/authjs-joins-better-auth)). *Spike (still open): prove guest→account linking with no data loss **in Better Auth** — auth is the hardest dependency to migrate (password hashes, sessions, OAuth links, the anonymous→linked graph), so validate the linking path before lock.*
+- **Decision note:** custom auth is the shipped implementation. Better Auth or Supabase Auth remain migration options only if their team/enterprise features justify the cost; they must be evaluated against data migration, password/session migration, and anonymous-upgrade preservation.
 
 ### 5.6 Rate limiting, jobs & observability
 
-- **[P0/MVP] Rate limiting — token + cost-budget aware, not request-count-only (OWASP LLM10 Unbounded Consumption):** a request-count window bounds request *rate*, not token/$ *spend* — one request can be 200k tokens, which is the real "inference whale" exposure (PRD 05 §3; §8 Risk #5). Build a multi-layered limiter on Upstash Redis + `@upstash/ratelimit`, limited **by authenticated user AND by IP for guests/anonymous**:
-  - **(a) request-rate limits** (sliding window) per bucket: message send, model calls, file uploads.
-  - **(b) token-rate limits** (tokens/window) so a single huge request is bounded.
-  - **(c) per-user rolling cost-budget caps** enforced off the `message.cost_usd` ledger (§6) — the live spend signal, especially for guests/free tier.
-  - **(d) circuit breaker** for runaway multi-step / tool runs (trips when an agent loops on an expensive tool — critical when the P1 tool loop lands).
-  - **(e) Gateway budgets** as a second enforcement layer.
-  Return `429` with retry-after; surface a clear UI state. **Budget/metering hook (cross-PRD):** this limiter is also the **enforcement mechanism** for the P0 metered-overage/credit primitive PRD 05 is adopting — expose the per-user budget/spend reads against the `message.cost_usd` ledger as the metering hook. **PRD 05 owns the monetization/credit decision; this PRD owns enforcement.** ([genai.owasp.org LLM10 Unbounded Consumption](https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/), [zuplo token-based rate limiting](https://zuplo.com/learning-center/token-based-rate-limiting-ai-agents).)
-- **[P0/MVP] Caching:** Upstash Redis for session/state and hot reads (conversation list, model registry). Same Redis instance backs resumable streams. Layer **Next.js 16 Cache Components (`"use cache"`)** for those hot reads (RSC-level caching pairs with the Upstash layer). **Build gotcha:** `cookies()/headers()/params/searchParams` are **async** in Next.js 16 — `await` them in every Better Auth session read in route handlers.
-- **[P1] Background jobs:** Upstash QStash for attachment processing, embeddings, **title generation**, webhooks, and the stream-reaper. Jobs must be **idempotent** (safe retries; QStash gives retries + DLQ).
-- **[P0/MVP] Observability / tracing:** instrument the LLM calls with **Langfuse** (traces, token usage, latency, evals) and emit **OpenTelemetry** traces from route handlers + AI SDK so we can export to any APM and avoid lock-in. Track TTFT and full-response latency **per model** (PRD 05 §7 KPI). Avoid Helicone as a strategic dependency (maintenance mode).
-- **[P0/MVP] Error handling:** distinguish stream errors, provider errors (rate-limit/quota/timeout — with fallback via Gateway), and app errors; log with key redaction; design idempotent retries for jobs.
+- **[P0/MVP] Rate limiting — token + cost-budget aware, not request-count-only (OWASP LLM10 Unbounded Consumption):** the shipped baseline uses slowapi request limits plus a best-effort `USAGE_BUDGET_USD` gate enforced from the usage/cost ledger. A request-count window bounds request *rate*, not token/$ *spend* — one request can be 200k tokens, which is the real "inference whale" exposure (PRD 05 §3; §8 Risk #5).
+  - **(a) shipped request-rate limits** per route bucket, with guest controls by IP/session where available.
+  - **(b) shipped cost-budget caps** enforced off the usage ledger / `message.cost_usd` signal, especially for guests/free tier.
+  - **(c) P1 shared limiter** for multi-worker deployments: token-window limits, weighted limits by model cost class, and a circuit breaker for runaway tool/agent loops.
+  Return `429` with retry-after and surface a clear UI state. **Budget/metering hook (cross-PRD):** this limiter is also the enforcement mechanism for the P0 metered-overage/credit primitive PRD 05 is adopting. **PRD 05 owns the monetization/credit decision; this PRD owns enforcement.** ([genai.owasp.org LLM10 Unbounded Consumption](https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/), [zuplo token-based rate limiting](https://zuplo.com/learning-center/token-based-rate-limiting-ai-agents).)
+- **[P0/MVP] Caching/state:** sessions and durable chat state live in Postgres; per-process registries handle temporary ids, replay buffers, stop signals, and limiter state. Shared Redis/Upstash becomes a requirement when replay, stop, rate limiting, or hot-read caching must work across multiple workers.
+- **[P1] Background jobs:** attachment processing, embeddings, durable title generation, webhooks, and stream reaping move to an idempotent queue/worker with retries and dead-letter handling. Current title/reaper behavior is in-process and acceptable only for the single-process MVP.
+- **[P0/MVP] Observability / tracing:** emit structured logs with request IDs and model/usage/cost fields. Optional Sentry captures exceptions and optional OpenTelemetry exports traces. Track TTFT and full-response latency per model (PRD 05 §7 KPI). Langfuse-style LLM tracing is a future observability backend, not a shipped dependency.
+- **[P0/MVP] Error handling:** distinguish stream errors, provider errors (rate-limit/quota/timeout), and app errors; log with key redaction; design idempotent retries for future jobs.
 
 ### 5.7 Security & privacy NFRs
 
-- **[P0/MVP] Encryption:** TLS in transit everywhere; encryption at rest for DB and object storage; BYOK keys envelope-encrypted (§5.2).
-- **[P0/MVP] No-train-by-default — provider DPAs / no-train API modes are the PRIMARY control:** never send user chats to providers for training; **the no-train wedge rests primarily on choosing provider API modes / DPAs that prohibit training on our traffic** (these are no-train-by-default on paid Western APIs and require no Vercel plan). Surface retention status in-product. **ZDR is defense-in-depth, not the baseline guarantee:** layer **Vercel AI Gateway Zero-Data-Retention (ZDR)** (covers Anthropic/OpenAI/Google "and more" as of 2026-04-06) to reduce provider-side log surface. Two distinct ZDR modes — keep them separate:
-  - **Per-request ZDR** is **free on Pro/Enterprise** — the cheap, always-on hardening control.
-  - **Team-wide ZDR** is the **metered** mode at **$0.10 per 1,000 requests** (Pro/Enterprise only) — fold this per-request fee into the **cost-per-message KPI** / COGS.
-  - **Team-wide ZDR is unavailable on Hobby**, so ZDR presupposes a paid Vercel plan — **do not market "ZDR" as a baseline guarantee.** **[Verified existence; per-provider coverage Uncertain — confirm at build]** ([vercel.com/docs/ai-gateway/pricing](https://vercel.com/docs/ai-gateway/pricing).)
-- **[P0/MVP] Retention controls + export/delete — cross-store cascade (GDPR-complete, not Postgres-only):** short, **configurable retention**; one-click **export** (user's chats/messages) and **delete**. The §6 schema cascades within Postgres, but `delete (hard-delete user + cascade)` in Postgres alone is **not** GDPR-complete. Delete/retention must fan out across **every store that can hold PII** via a **QStash delete job** with documented per-store TTLs:
+- **[P0/MVP] Encryption:** TLS in transit everywhere; encryption at rest for DB and object storage; BYOK keys encrypted with the app KEK/versioned KEK registry (§5.2), with KMS envelope encryption as the hardening path.
+- **[P0/MVP] No-train-by-default — provider DPAs / no-train API modes are the PRIMARY control:** never send user chats to providers for training; the no-train wedge rests primarily on choosing provider API modes / DPAs that prohibit training on our traffic. Surface retention status in-product. Gateway ZDR can be a future defense-in-depth layer if the provider mix moves through a gateway, but it is not the baseline guarantee.
+- **[P0/MVP] Retention controls + export/delete — cross-store cascade (GDPR-complete, not Postgres-only):** short, **configurable retention**; one-click **export** (user's chats/messages) and **delete**. The shipped export/delete routes cover Postgres-owned user data. When attachments, shared replay storage, and third-party trace backends are added, delete/retention must fan out across every store that can hold PII via an idempotent delete job with documented per-store TTLs:
   - **Object storage (R2/Blob/S3):** delete the user's attachment objects (otherwise orphaned after the row delete).
-  - **Redis:** purge buffered resumable-stream data and cached reads (keys scoped per user/chat).
-  - **Observability traces (Langfuse/OTel):** **traces are a PII store** — they can contain full prompt/response content — so they are in scope for export/delete (Langfuse delete API / OTel retention policy) and must honor no-telemetry mode.
-  - **Gateway/provider logs:** ZDR (above) minimizes this surface.
+  - **Shared replay/cache storage:** purge buffered resumable-stream data and cached reads (keys scoped per user/chat).
+  - **Observability traces:** **traces are a PII store** if they contain prompt/response content, so they are in scope for export/delete or must be configured for retention/no-content capture.
+  - **Gateway/provider logs:** provider DPAs/no-train modes are the primary control; any gateway must document retention/ZDR behavior separately.
   This is the product's core privacy wedge and a GDPR requirement.
 - **[P0/MVP — UNCONDITIONAL] AI-interaction disclosure (EU AI Act Article 50(1) transparency):** the interaction-disclosure duty is **FIRM at 2 Aug 2026** (unchanged by the 7-May-2026 Digital Omnibus). A persistent UI affordance/flag disclosing the user is interacting with AI. **Build the disclosure hook (a disclosure flag in the chat UI + response metadata) as an unconditional P0 — it is NOT contingent on the content-marking debate** and is needed regardless of EU outcome (US disclosure gates apply too; PRD 05 owns). This is a firm date, not a `[confirm at build]` item.
 - **[VERIFY — LEGALLY UNSETTLED COMPLIANCE DATE; NEEDS LEGAL SIGN-OFF BEFORE EU-LAUNCH SCOPE IS LOCKED] AI-content marking (EU AI Act Article 50(2), machine-readable marking of AI-generated content):** the binding date is **legally unsettled for a new launch** following the **7-May-2026 Digital Omnibus** (a Council/Parliament provisional agreement that is **provisional pending Official Journal publication**). **Do not pick a single marking date** — readings range from an **architecture read (~2 Dec 2026)** to a **compliance read (no grace for a new product → binds 2 Aug 2026)**. This is a legal call, **coordinated with PRD 05** so the two PRDs agree (neither PRD asserts one date unilaterally).
@@ -249,8 +231,8 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 
 ### 5.8 Deployment & portability
 
-- **[P0/MVP]** Deploy on **Vercel (Fluid Compute)** for speed-to-MVP and native AI SDK/Gateway/streaming integration.
-- **[P0/MVP] Portability by adapter:** provider, storage, auth, cache/queue (Upstash over HTTP), and tracing (OTel) all behind thin interfaces. Drizzle keeps the DB portable. The escape hatches are explicit: Cloudflare (Workers 5-min CPU, Durable Objects for stateful/WebSocket, Containers for Node-heavy work; zero egress) or containers (Fly/Railway) for long-running/voice needs.
+- **[P0/MVP]** Deploy the frontend on **Vercel** and the API on **Fly.io**, with Neon Postgres as the database. Browser calls use same-origin `/api/*`; Next rewrites those requests server-side to Fly so auth cookies stay first-party on the Vercel origin.
+- **[P0/MVP] Portability by adapter:** provider, storage, auth, cache/queue, and tracing all stay behind thin interfaces. SQLAlchemy/Alembic keep the DB portable across Postgres hosts. The escape hatches are explicit: another container host for the API, Redis/shared workers for multi-process stream state, or Cloudflare/Durable Objects only if realtime/voice requirements justify that move.
 - **[P0/MVP] Client storage is non-authoritative:** client-side PWA storage (IndexedDB / Cache API) is a **best-effort cache** only; Postgres is the system of record (offline UX: PRD 03 §4.6). **iOS correction:** Safari 17+ per-origin quota is **disk-proportional** via `navigator.storage.estimate()` — not ~50 MB. The binding constraint is **7-day ITP eviction** of non-persisted data unless `navigator.storage.persist()` is granted (more likely for installed PWAs). Request `persist()` at install/first-save; still re-hydrate from server on load. Never treat IndexedDB as authoritative for message history, BYOK keys, or billing.
 - **[P2] Realtime multi-device sync:** deferred. **P0** uses server-persisted partials + Continue/Regenerate on interrupt (PRD 01/03). **P1** adds same-device resumable-stream replay (§5.1). True live multi-device push (SSE fan-out, Supabase Realtime, Durable Objects) is added only when prioritized. Chat is mostly append-only, so last-write-wins on metadata + ordered inserts suffices; no CRDT for MVP.
 
@@ -258,7 +240,7 @@ BetterAuth Upstash     KMS          AISDK     QStash -----------+
 
 ## 6. Data model (draft schema)
 
-Modeled on the Vercel Chat SDK schema (verified shape), extended for per-message model/usage transparency and BYOK. SQL-ish; `jsonb` where noted. UUID PKs unless stated.
+Aligned with the shipped SQLAlchemy/Alembic schema, with typed multi-part messages, per-message model/usage transparency, and BYOK. SQL-ish; `jsonb` where noted. UUID PKs unless stated.
 
 ```sql
 -- USER --------------------------------------------------------------- [P0]
@@ -334,7 +316,7 @@ message (
 --   -- message-send idempotency: dedupe a send BEFORE any provider call / ledger write (§5.1)
 -- cost_usd doubles as the live budget-enforcement signal for §5.6 (not just a display value)
 -- billing-vs-stream-failure atomicity: cost_usd/cost_breakdown + usage_rollup are written in the SAME
---   transaction that finalizes message+stream, from AI SDK onFinish/terminal-event usage (§5.1)
+--   transaction that finalizes message+stream, from backend provider terminal usage (§5.1)
 
 -- USER_PLAN / USAGE --------------------------------------------------- [P0] (metered free + Pro + credits)
 user_plan (
@@ -469,11 +451,11 @@ audit_log (
 
 | # | Risk | Impact | Mitigation |
 |---|---|---|---|
-| 1 | **Long streams vs serverless timeouts** | Agentic/multi-step responses outlast function limits; dropped streams | Resumable streams (Redis) + Fluid Compute / 5-min CPU Workers + push heavy work to QStash; **explicitly handle the stop-from-resumed-connection orphaned run** (Stream-row source of truth + Redis abort channel + reaper job) |
-| 2 | **Vendor lock-in / cost cliffs** | Heavy reliance on Vercel-native pieces (Gateway, Blob, Fluid Compute) and any per-MAU auth creates migration pain + cost cliffs | Thin adapters (provider/storage/auth/cache/queue); self-ownable defaults (Drizzle, Better Auth, R2, OTel); re-evaluate Cloudflare (zero egress, cheaper CPU) at scale |
-| 3 | **AI SDK churn + provider drift** | `useChat`/transport changed materially across v5→v6 (now resolved → **v6 GA, build target**); model ids/capabilities move fast | **Pin exact AI SDK + Next.js versions (no `^`)** + lockfile + manual-gated Renovate/Dependabot (v6 ships multiple patch releases/week); isolate the AI layer behind the provider adapter; maintain a per-model capability registry; read migration guides before upgrades. **v7 is in active public beta as of May 2026** — plan the v6→v7 codemod in **P1** (keep the adapter thin enough that it is a ~1-day codemod, not a sprint) |
-| 4 | **BYOK key security** | Key leakage = direct financial + trust damage | Envelope encryption (KMS), per-user scoping, never log, never in system prompts, redact in traces; store only last-4 hint for UI |
-| 5 | **Guest-traffic cost** | Free/anonymous users can run up model spend (inference-whale risk, PRD 05 §3) | Rate-limit by user AND IP; cheap default model for free/guest; weighted limits by model cost class; budgets in the Gateway |
+| 1 | **Long streams vs process/deploy interruption** | Agentic/multi-step responses outlast a request, deploy, or machine lifecycle; dropped streams | Persist partial messages + stream rows, support explicit stop, run a stale-stream reaper, and graduate replay/stop state to shared storage before multi-worker resumability |
+| 2 | **Vendor lock-in / cost cliffs** | Split hosting plus provider APIs can create migration pain and cost cliffs | Thin adapters (provider/storage/auth/cache/queue/tracing); self-ownable defaults (SQLAlchemy/Alembic, custom auth, OTel); keep Fly/Vercel/Neon-specific assumptions in config and ops docs |
+| 3 | **Provider drift** | Model ids, pricing, capabilities, usage semantics, and reasoning modes move fast | Isolate provider SDKs behind the backend protocol; maintain a tier/capability/pricing registry; pin Python/JS dependencies with lockfiles; gate provider/model changes through tests and docs |
+| 4 | **BYOK key security** | Key leakage = direct financial + trust damage | AES-GCM with versioned KEK today, KMS envelope encryption as future hardening, per-user scoping, never log, never in system prompts, redact in traces; store only last-4 hint for UI |
+| 5 | **Guest-traffic cost** | Free/anonymous users can run up model spend (inference-whale risk, PRD 05 §3) | Rate-limit by user AND IP where available; use cheap default models for guests; enforce cost budgets from the usage ledger; add weighted token limits before agent/tool expansion |
 
 ---
 
@@ -481,14 +463,14 @@ audit_log (
 
 1. **[VERIFY — LEGAL SIGN-OFF REQUIRED] EU AI Act content-marking date (§5.7).** Interaction-disclosure (Art. 50(1)) is **FIRM at 2 Aug 2026** → the disclosure hook is an **unconditional P0**, not contingent on this question. Content-marking (Art. 50(2)) is **legally unsettled for a new launch** after the **7-May-2026 Digital Omnibus** (provisional pending Official Journal): readings range from an architecture read (~2 Dec 2026) to a compliance read (no grace → 2 Aug 2026). **Do not pick one** — marking only attaches **if/when we ship AI-generated media** (image/media gen is P2), and the date needs **legal sign-off before EU-launch scope is locked**. **Coordinated with PRD 05 so the two PRDs agree; not decidable inside either PRD unilaterally. Do NOT downgrade the `[VERIFY]` flag.**
 2. **Postgres host** — Neon vs Supabase Postgres (branching vs bundled auth/storage/realtime + RLS). Note: Neon (now Databricks-owned, runs independently) cut pricing materially in 2026, shifting economics toward Neon.
-3. **Vercel max-duration / Fluid Compute numbers** — **[confirm at build]** the 300s-default / max-800s (Pro/Enterprise) figures and current Hobby/Pro/Enterprise limits against [Vercel duration docs](https://vercel.com/docs/functions/configuring-functions/duration) before locking the streaming/timeout design.
+3. **Multi-worker stream state** — decide when usage/load justifies shared replay, shared stop signaling, and shared rate-limit storage instead of the current single-process registries.
 4. **RAG in MVP?** — determines whether pgvector + an ingestion pipeline (LlamaIndex.TS / hand-rolled) is day-1 or deferred (currently P2). pgvector 0.8 iterative scan improves filtered/per-user-RAG recall when this lands.
 5. **Voice scope** — STT/TTS would pull WebSockets/Durable Objects forward and change the transport decision; confirm out-of-scope for MVP.
 6. **Realtime multi-device sync priority** — confirm deferred (resumable streams + refetch) vs build SSE fan-out / Supabase Realtime / Durable Objects.
 
 **Resolved by the fresh-research + PRD-review pass:**
-- ~~**AI SDK major version (v5 vs v6).**~~ **Resolved → AI SDK v6** (GA 2025-12-22). `generateObject`/`streamObject` deprecated; build structured outputs on `Output.object()`; use the `Agent` primitive for the P1 tool loop.
-- ~~**Auth choice (Better Auth vs Supabase vs Auth.js).**~~ **Resolved → Better Auth committed** (Auth.js dropped — security-patch-only; Supabase Auth the sole alternative, contingent on the Supabase data-platform choice). Remaining spike narrowed to: *prove guest→account linking with no data loss in Better Auth.*
+- ~~**Frontend-only Vercel-native backend architecture.**~~ **Superseded by shipped split architecture:** Next.js FE on Vercel, FastAPI API on Fly, Neon Postgres, same-origin rewrite for cookies.
+- ~~**Auth choice for MVP.**~~ **Resolved → custom signed-cookie anonymous-first auth**, with argon2id password upgrade/login and an explicit future migration boundary.
 - ~~**BYOK policy at launch.**~~ **Resolved → user BYOK day-1 (P0)**, gated to **non-anonymous accounts**; platform keys metered, BYOK proxied zero-markup (§5.2).
 
 ---
@@ -496,22 +478,15 @@ audit_log (
 ## 10. References
 
 Key source URLs (re-verify fast-moving facts at build):
-- AI SDK v6 (GA 2025-12-22; `Agent`/`Output.object()`; `generateObject`/`streamObject` deprecated) — pin exact versions (no `^`); **v7 in active public beta as of May 2026, plan the v6→v7 codemod in P1** — https://vercel.com/blog/ai-sdk-6 , https://ai-sdk.dev/docs/migration-guides/migration-guide-6-0 , https://github.com/vercel/ai/releases , https://github.com/vercel/ai/issues/14011
-- Next.js 16 (Cache Components/PPR; `middleware.ts`→`proxy.ts` Node runtime; async `cookies()/headers()`) — https://nextjs.org/blog/next-16
-- Better Auth / Auth.js (Auth.js security-patch-only) — https://better-auth.com/blog/authjs-joins-better-auth , https://better-auth.com/docs/plugins/anonymous
-- Vercel Workflows / DurableAgent — https://vercel.com/blog/a-new-programming-model-for-durable-execution , https://vercel.com/docs/workflows
-- AI Gateway pricing / ZDR / BYOK zero-markup — https://vercel.com/docs/ai-gateway/pricing
-- Fluid Compute limits (300s default / max 800s Pro-Enterprise) — https://vercel.com/changelog/higher-defaults-and-limits-for-vercel-functions-running-fluid-compute , https://vercel.com/docs/functions/configuring-functions/duration
+- Next.js 16 and Vercel FE hosting — https://nextjs.org/blog/next-16
+- FastAPI / SSE / Fly runtime docs — https://fastapi.tiangolo.com/ , https://fly.io/docs/
+- Provider gateway and BYOK alternatives for future breadth layers — https://vercel.com/ai-gateway , https://openrouter.ai/announcements/bring-your-own-api-keys , https://www.edenai.co/post/best-alternatives-to-litellm
 - Rate limiting / OWASP LLM10 Unbounded Consumption — https://zuplo.com/learning-center/token-based-rate-limiting-ai-agents , https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/
 - EU AI Act Article 50 transparency — https://artificialintelligenceact.eu/article/50/ , https://digital-strategy.ec.europa.eu/en/policies/code-practice-ai-generated-content
 - pgvector 0.8 (iterative scan) — https://supabase.com/blog/pgvector-vs-pinecone
-- Vercel AI Chatbot / Chat SDK — https://github.com/vercel/ai-chatbot , https://chat-sdk.dev/
-- Chat SDK schema — https://www.mintlify.com/vercel/openchat/api/schema
-- Resumable streams (+ known bugs #13160/#11865) — https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams , https://github.com/vercel/resumable-stream , https://github.com/vercel/ai/issues/8390 , https://github.com/vercel/ai/issues/13160 , https://github.com/vercel/ai/issues/11865
+- Resumable stream design references — https://github.com/vercel/resumable-stream
 - Streaming transport (SSE vs WebSockets) — https://www.hivenet.com/post/llm-streaming-sse-websockets , https://websocket.org/guides/websockets-and-ai/
-- Provider gateways / BYOK — https://vercel.com/ai-gateway , https://openrouter.ai/announcements/bring-your-own-api-keys , https://www.edenai.co/post/best-alternatives-to-litellm
-- ORM & pgvector — https://orm.drizzle.team/docs/guides/vector-similarity-search , https://www.tigerdata.com/blog/pgvector-vs-pinecone
-- Auth — https://better-auth.com/docs/plugins/anonymous , https://supastarter.dev/blog/better-auth-vs-nextauth-vs-clerk
+- ORM & pgvector — https://www.tigerdata.com/blog/pgvector-vs-pinecone
 - Storage — https://developers.cloudflare.com/r2/api/s3/presigned-urls/
 - Rate limit / queues — https://github.com/upstash/ratelimit-js , https://upstash.com/docs/redis/tutorials/rate-limiting
 - Observability — https://www.firecrawl.dev/blog/best-llm-observability-tools

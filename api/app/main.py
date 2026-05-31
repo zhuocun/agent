@@ -10,7 +10,8 @@ Wires:
 - structlog configuration at import time (single global config, idempotent).
 - exception handlers for `AppError`, Pydantic `RequestValidationError`, and a
   catch-all for unhandled exceptions (envelope serialized `by_alias=True`).
-- routes: bootstrap, conversations, auth.
+- routes: bootstrap, conversations, auth, account/BYOK, account export/delete,
+  preferences, feedback, and public share reads.
 """
 
 from __future__ import annotations

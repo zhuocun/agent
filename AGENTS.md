@@ -40,7 +40,7 @@ Never commit secrets. Each platform owns its own.
 | `DATABASE_URL` (Neon) | `flyctl secrets` on `olune-agent-server` | BE runtime |
 | `SESSION_SECRET` | `flyctl secrets` | BE cookie signer |
 | `BYOK_ENCRYPTION_KEK` (and `BYOK_KEK_VERSIONS` once rotation begins) | `flyctl secrets` | BE BYOK at-rest crypto |
-| Provider key (`OPENAI_API_KEY` — the main provider is DeepSeek via the OpenAI-compatible binding; `ANTHROPIC_API_KEY` only if you switch the backend) | `flyctl secrets` | BE provider |
+| Provider key (`DEEPSEEK_API_KEY` for prod `PROVIDER_BACKEND=deepseek`; `OPENAI_API_KEY` is accepted as a DeepSeek fallback and is required only for `PROVIDER_BACKEND=openai`; `ANTHROPIC_API_KEY` only if you switch the backend) | `flyctl secrets` | BE provider |
 | `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT` (optional) | `flyctl secrets` | BE observability |
 | `NEXT_PUBLIC_API_BASE_URL` | Vercel env (set to empty for prod — same-origin via rewrite) | FE build |
 
@@ -148,7 +148,7 @@ the sandbox; use the GitHub MCP tools or `git push` + GitHub web.
 - **Driver**: SQLAlchemy 2.0 async + asyncpg. Connection string uses
   `postgresql+asyncpg://...?ssl=require` (asyncpg uses `ssl`, not `sslmode`).
 - **Migrations**: Alembic under `api/alembic/versions/`. Head as of this writing
-  is `0005_message_responds_to`. The Dockerfile runs `uv run alembic upgrade
+  is `0010_active_stream_unique`. The Dockerfile runs `uv run alembic upgrade
   head` before launching uvicorn, so each deploy brings the schema forward.
 - **Tests** run on SQLite (`aiosqlite`) — `tests/conftest.py` builds the schema
   via `Base.metadata.create_all`, not Alembic, for speed. Use the SQLAlchemy

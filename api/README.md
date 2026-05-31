@@ -1,16 +1,18 @@
 # api/
 
-FastAPI service that backs the Next.js FE at `../web/`. The FE expects a real BE
-on a different origin: bootstrap payload that replaces every `MOCK_*` constant,
-conversation CRUD, a single SSE streaming endpoint, message feedback, user
-preferences, BYOK key management, and an anonymous-first session seam with an
-`/api/auth/upgrade` ceremony. Wire is camelCase end-to-end; cookies are
-credentialed cross-origin.
+FastAPI service that backs the Next.js FE at `../web/`: bootstrap payload that
+replaces every `MOCK_*` constant, conversation CRUD, a single SSE streaming
+endpoint, message feedback, user preferences, BYOK key management, and an
+anonymous-first session seam with an `/api/auth/upgrade` ceremony. Wire is
+camelCase end-to-end. In production the browser calls same-origin `/api/*` on
+Vercel and Next rewrites to this Fly service; direct cross-origin/CORS access is
+for local, e2e, and diagnostic modes.
 
 ## Stack
 
-FastAPI + SQLAlchemy 2.0 async + Postgres (Neon) + Alembic + Anthropic Python
-SDK + structlog + uv + ruff + mypy + pytest.
+FastAPI + SQLAlchemy 2.0 async + Postgres (Neon) + Alembic +
+DeepSeek/OpenAI-compatible + Anthropic provider adapters + structlog + uv +
+ruff + mypy + pytest.
 
 ## Local setup
 
@@ -93,20 +95,22 @@ deploy.
 `PROVIDER_BACKEND=fake` (default) — deterministic in-process provider; no API
 key needed; what every test runs against.
 
+`PROVIDER_BACKEND=deepseek` — canonical production provider. DeepSeek speaks the
+OpenAI-compatible API, so this uses the shared OpenAI-compatible adapter pointed
+at `https://api.deepseek.com`. Requires `DEEPSEEK_API_KEY`; if unset,
+`OPENAI_API_KEY` is accepted as a fallback. The canonical tier registry binds
+auto/fast/smart to `deepseek-v4-flash` and pro to `deepseek-v4-pro`, with
+thinking/reasoning intent and pricing in `app/providers/tiers.py`.
+
 `PROVIDER_BACKEND=anthropic` — real Anthropic Python SDK; requires
 `ANTHROPIC_API_KEY` as the platform key. Per-user BYOK keys override the
 platform key per-request.
 
-`PROVIDER_BACKEND=openai` — official OpenAI Python SDK against the Chat
-Completions API; requires `OPENAI_API_KEY` as the platform key. `OPENAI_BASE_URL`
-is optional and defaults to OpenAI's endpoint — override it to drive any
-OpenAI-compatible endpoint (Azure OpenAI, OpenRouter, Ollama, vLLM, local). The
-four fixed tiers (auto/fast/smart/pro) map to models via `OPENAI_MODEL_FAST`,
-`OPENAI_MODEL_SMART`, `OPENAI_MODEL_PRO`, `OPENAI_MODEL_AUTO` (defaults:
-`gpt-4o-mini` / `gpt-4o` / `o1` / `gpt-4o`); per-tier pricing tracks those
-defaults, so overriding a model makes the cost breakdown approximate. The wire
-contract (tier ids, labels, hints) is unchanged — only the BE-internal
-provider/model/price binding differs when this backend is active.
+`PROVIDER_BACKEND=openai` — alternate OpenAI-compatible backend; requires
+`OPENAI_API_KEY` as the platform key. `OPENAI_BASE_URL` is optional and defaults
+to OpenAI's endpoint; override it for another OpenAI-compatible endpoint. This
+backend uses the OpenAI tier binding table in `app/providers/tiers.py`, not the
+DeepSeek production registry.
 
 `Settings.assert_prod_safe()` runs at boot and rejects `PROVIDER_BACKEND=fake`
 when `ENV=production`, and requires the matching API key for the selected
@@ -114,12 +118,16 @@ backend, so a misconfigured prod deploy fast-fails.
 
 ## BYOK
 
-Per-user keys for the active provider (Anthropic or OpenAI, per
-`PROVIDER_BACKEND`) are AES-GCM-encrypted at rest and resolved against the bound
-provider per-request. The KEK (`BYOK_ENCRYPTION_KEK`) is a base64-encoded
-32-byte key supplied via env. The
-dev default is all-zeros and `assert_prod_safe()` refuses it in prod. Generate
-a real key with:
+Per-user keys are AES-GCM-encrypted at rest and stored by provider id. For each
+message, the backend resolves the served tier binding and looks up a key for
+that binding's `provider_id` (`deepseek` in production, or `anthropic`/`openai`
+on alternate backends). If found, the decrypted key is passed as a per-request
+provider override and the turn is treated as BYOK. Anonymous users cannot store
+BYOK keys.
+
+The KEK (`BYOK_ENCRYPTION_KEK`) is a base64-encoded 32-byte key supplied via
+env. The dev default is all-zeros and `assert_prod_safe()` refuses it in prod.
+Generate a real key with:
 
 ```
 python -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())"
@@ -166,15 +174,21 @@ the user. Sessions live 30 days.
 `api_key`, `preferences`, etc. stays valid without a data migration. This is
 the whole reason the anonymous-first seam is shaped this way.
 
-## CORS
+## Routing, CORS, and cookies
 
-Driven by `CORS_ALLOWED_ORIGINS` (comma-separated origin list). The middleware
-echoes the request `Origin` against the allow-list — never `*` with
-credentials.
+Production browser traffic should stay same-origin: the FE calls `/api/*` with
+`NEXT_PUBLIC_API_BASE_URL=""`, and `web/next.config.ts` rewrites those requests
+server-side to Fly. This makes the BE `Set-Cookie` first-party on the Vercel
+origin, which is important for iOS Safari.
+
+Direct cross-origin access still exists for local/e2e/diagnostic modes and is
+driven by `CORS_ALLOWED_ORIGINS` (comma-separated origin list). The middleware
+echoes the request `Origin` against the allow-list — never `*` with credentials.
 
 Cookies:
 - Dev: `SameSite=Lax`, `Secure=false` (so localhost works without HTTPS).
-- Prod: `SameSite=None; Secure` (cross-origin BE on its own host).
+- Prod: `SameSite=None; Secure` from the BE. In the normal Vercel rewrite path,
+  that cookie is received as first-party on the FE origin.
 
 Controlled by `COOKIE_SECURE` + `COOKIE_SAMESITE`.
 
@@ -208,13 +222,24 @@ rollback).
   call; replaces every `MOCK_*` constant on the FE.
 - `GET/POST /api/conversations` — list and create.
 - `GET/PATCH/DELETE /api/conversations/:id` — read, rename/pin, delete.
+- `POST /api/conversations/:id/share` — mint or return a public share link.
+- `DELETE /api/conversations/:id/share` — revoke a public share link.
 - `POST /api/conversations/:id/messages` — SSE stream + persist.
+- `GET /api/conversations/:id/stream/:stream_id` — same-device stream replay
+  when `RESUMABLE_STREAMS_ENABLED=true`.
+- `POST /api/conversations/:id/stop` — best-effort server-side stop for an
+  active stream.
+- `GET /api/share/:token` — unauthenticated cost-stripped public share read.
 - `POST /api/messages/:id/feedback` — thumbs up/down + optional reason.
 - `PUT /api/preferences` — write user preferences.
-- `PUT /api/account/byok` — set the per-user key for the active provider.
-- `DELETE /api/account/byok` — clear it.
+- `PUT /api/account/byok` — set or replace the per-user key for the provider in the request body.
+- `DELETE /api/account/byok/:provider` — clear the per-user key for a provider.
 - `POST /api/auth/upgrade` — promote anonymous → email/password.
+- `POST /api/auth/login` — sign in to an existing email/password account.
 - `POST /api/auth/signout` — clear cookie, revoke session row.
+- `GET /api/account/export` — export account, preferences, usage, and
+  conversations as JSON.
+- `DELETE /api/account` — permanently delete the caller's account and data.
 
 ## Pointers
 

@@ -24,11 +24,15 @@ export function TemporaryChatBanner({
     <div className={cn("flex justify-center px-3 pt-1", className)}>
       <div
         role="note"
-        // iOS-style pill: inline-flex, rounded-full, muted surface, no border,
-        // no shadow — reads as a quiet status chip. Height is governed by the
-        // h-11 "Turn off" button child so the trailing tap target meets the
-        // touch-target minimum without making the pill awkward.
-        className="inline-flex h-11 items-center gap-1.5 rounded-full bg-temporary-chat-banner pl-3 pr-1 text-xs text-temporary-chat-banner-foreground"
+        // iOS-style pill: inline-flex, rounded-full, muted surface. A faint
+        // hairline (`ring-1` in the dedicated `--temporary-chat-banner-border`
+        // token) layers it above the chrome the way iOS status pills sit on
+        // their backdrop — the token is themed so it holds in light and dark.
+        // Deliberately no shadow: a resting status chip must stay flat ("idle
+        // is still"). Height is governed by the h-11 "Turn off" button child so
+        // the trailing tap target meets the touch-target minimum without making
+        // the pill awkward.
+        className="inline-flex h-11 items-center gap-1.5 rounded-full bg-temporary-chat-banner pl-3 pr-1 text-xs text-temporary-chat-banner-foreground ring-1 ring-temporary-chat-banner-border"
       >
         <Ghost aria-hidden className="size-3.5 shrink-0" />
         <span className="truncate">

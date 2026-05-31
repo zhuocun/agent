@@ -27,7 +27,7 @@ function DrawerBackdrop({ className, ...props }: DialogPrimitive.Backdrop.Props)
     <DialogPrimitive.Backdrop
       data-slot="drawer-backdrop"
       className={cn(
-        "fixed inset-0 z-50 bg-foreground/45 backdrop-blur-sm transition-opacity duration-200 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0",
+        "fixed inset-0 z-50 bg-foreground/30 backdrop-blur-md transition-opacity duration-200 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0",
         className
       )}
       {...props}
@@ -58,15 +58,17 @@ function DrawerContent({
       <DialogPrimitive.Popup
         data-slot="drawer-content"
         data-side={side}
-        // Override glass-regular's blur with the larger drawer blur.
+        // Override glass-strong's blur with the larger drawer blur. Keep the
+        // saturate/contrast/brightness chain identical to the glass utilities
+        // so the only difference is the heavier blur radius.
         style={{
           backdropFilter:
-            "blur(var(--glass-blur-lg)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+            "blur(var(--glass-blur-lg)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness))",
           WebkitBackdropFilter:
-            "blur(var(--glass-blur-lg)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+            "blur(var(--glass-blur-lg)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness))",
         }}
         className={cn(
-          "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col text-sidebar-foreground transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
+          "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col text-sidebar-foreground transition-transform duration-300 ease-[var(--ease-ios-sheet)]",
           side === "left" &&
             "left-0 rounded-tr-3xl rounded-br-3xl data-[ending-style]:-translate-x-full data-[starting-style]:-translate-x-full",
           side === "right" &&
@@ -82,7 +84,9 @@ function DrawerContent({
         {showClose ? (
           <DialogPrimitive.Close
             data-slot="drawer-close"
-            className="absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+            // 44pt hit target (size-11) with a centered size-4 glyph — matches
+            // the toast/dialog close-button pattern so touch targets stay native.
+            className="absolute top-4 right-4 inline-flex size-11 items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
           >
             <XIcon />
             <span className="sr-only">Close</span>

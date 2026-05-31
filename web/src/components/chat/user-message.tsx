@@ -96,7 +96,11 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
     return (
       <div className="flex justify-end" role="article" aria-label="You">
         <div className="w-full max-w-[85%] space-y-2">
-          <div className="rounded-3xl bg-muted px-5 py-3">
+          {/* Edit reuses the SAME tinted-glass material as the display bubble
+              (see below) so entering edit doesn't change the bubble's surface —
+              only its contents. brand-muted wash + inset top highlight + 1px
+              hairline read it as the user's raised glass object. */}
+          <div className="rounded-3xl bg-brand-muted px-5 py-3 shadow-[var(--glass-highlight),inset_0_0_0_1px_var(--glass-border)]">
             <label className="block">
               <span className="sr-only">Edit message</span>
               <textarea
@@ -126,7 +130,9 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
               onClick={saveEdit}
               disabled={!canSave || submitting}
               aria-label="Save and resubmit"
-              className="h-11 rounded-full bg-foreground px-4 text-sm text-background hover:bg-foreground/90 disabled:opacity-40"
+              // Brand fill (matching the composer's primary send) so "submit a
+              // turn" has one consistent primary color across the surface.
+              className="h-11 rounded-full bg-brand px-4 text-sm text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
             >
               Save
             </Button>
@@ -142,9 +148,17 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
       role="article"
       aria-label="You"
     >
+      {/* The user's bubble reads as a faint brand-tinted glass object, not a
+          flat gray fill: `bg-brand-muted` (themed light/dark) is the user's
+          single-accent "voice," and the inset top highlight + 1px hairline
+          give it raised glass dimensionality. Tail-less + continuous
+          rounded-3xl is the modern iOS-26 direction. `text-foreground` stays
+          legible over the wash in both themes (pale-blue/near-black in light,
+          mid-blue/near-white in dark). Kept deliberately subtle — a wash, not
+          a saturated blue bubble. */}
       <div
         data-testid="user-message-text"
-        className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem]"
+        className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground shadow-[var(--glass-highlight),inset_0_0_0_1px_var(--glass-border)] md:text-[0.9375rem]"
       >
         {text}
       </div>

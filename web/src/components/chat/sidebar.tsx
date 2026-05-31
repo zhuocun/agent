@@ -251,8 +251,10 @@ function ConversationRow({
 
   const swipe = useSwipeActions({
     actionsWidth: SWIPE_ACTIONS_WIDTH,
-    // Full swipe-left past this distance deletes directly (native-iOS style).
-    fullSwipeThreshold: 200,
+    // Full swipe-left deletes directly (native-iOS style). The threshold is
+    // proportional to the row's measured width (the hook's default ≈60%, floored
+    // at 160px) rather than a fixed 200px — a fixed px fired too early on the
+    // wide desktop rail and felt inconsistent across the phone sheet vs. rail.
     onFullSwipe: () => onRequestDelete(conversation),
     // Renaming takes over the row; don't let a drag fight the text caret.
     disabled: isRenaming,

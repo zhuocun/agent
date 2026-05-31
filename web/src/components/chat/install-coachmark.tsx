@@ -67,8 +67,12 @@ export function InstallCoachmark(): React.JSX.Element | null {
         "pointer-events-auto fixed inset-x-3 z-40",
         "bottom-[calc(env(safe-area-inset-bottom)+0.75rem)]",
         "mx-auto flex max-w-md items-center gap-3 rounded-2xl",
-        "border border-border bg-popover/95 px-3.5 py-2.5",
-        "text-popover-foreground shadow-float backdrop-blur"
+        // `glass-regular` supplies the translucent material: saturated/
+        // contrasted backdrop-filter, the inset hairline rim, the top highlight,
+        // and the ambient+key shadow. So we drop the old flat `bg-popover/95`,
+        // the explicit `border border-border`, and `shadow-float` — the utility
+        // carries all three. Only layout/padding/foreground stay local.
+        "glass-regular px-3.5 py-2.5 text-popover-foreground"
       )}
     >
       <Share

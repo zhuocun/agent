@@ -104,27 +104,80 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
     );
   }
 
+  // The key-entry row shares the inset-grouped card with the provider row
+  // (mirrors the welcome-list pattern), so compute its visibility once: shown
+  // when there's no stored key, or when the user is explicitly replacing one.
+  const showKeyRow = !hasKeyForProvider || editing;
+
   return (
     <div className="space-y-3">
-      <div className="space-y-1.5">
-        <label htmlFor={providerId} className="text-sm font-medium">
-          Provider
-        </label>
-        <select
-          id={providerId}
-          value={provider}
-          onChange={(e) => {
-            setProvider(e.target.value);
-            reset();
-          }}
-          className="block h-9 w-full rounded-2xl bg-muted/50 px-3 text-sm text-foreground outline-none focus-visible:shadow-[var(--focus-ring)]"
-        >
-          {PROVIDERS.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
+      {/* iOS inset-grouped card: Provider + API-key as two rows inside one
+          `glass-clear` surface with a hairline `border-t` separator between
+          them (none above the first row). `overflow-hidden rounded-2xl` clips
+          the field corners to the card. Labels sit above each field within the
+          row; the controls themselves are bare (no per-field surface) so the
+          card is the only material — same grouping language as the welcome
+          list. */}
+      <div className="glass-clear overflow-hidden rounded-2xl">
+        <div className="space-y-1.5 px-3.5 py-3">
+          <label htmlFor={providerId} className="text-sm font-medium">
+            Provider
+          </label>
+          <select
+            id={providerId}
+            value={provider}
+            onChange={(e) => {
+              setProvider(e.target.value);
+              reset();
+            }}
+            // h-11 = 44pt, the iOS minimum touch target (was h-9/36px). The
+            // field is transparent (`bg-transparent`) because the card behind
+            // it is the surface now.
+            className="block h-11 w-full rounded-xl bg-transparent px-2.5 text-sm text-foreground outline-none focus-visible:shadow-[var(--focus-ring)]"
+          >
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {showKeyRow ? (
+          <div className="space-y-1.5 border-t border-border/60 px-3.5 py-3">
+            <label htmlFor={keyId} className="text-sm font-medium">
+              API key
+            </label>
+            <div className="relative">
+              <input
+                id={keyId}
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder={currentProvider.placeholder}
+                // h-11 = 44pt (was h-9). Transparent against the card surface;
+                // right padding leaves room for the clear button. The password
+                // hardening (autoComplete/autoCorrect/spellCheck off) is kept.
+                className="block h-11 w-full rounded-xl bg-transparent pl-2.5 pr-10 font-mono text-sm text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)]"
+              />
+              {apiKey.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setApiKey("")}
+                  aria-label="Clear API key"
+                  // Centered in the 44px row; the size-9 hit area keeps a
+                  // comfortable target while the icon stays small.
+                  className="absolute right-1 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                >
+                  <X aria-hidden className="size-3.5" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {hasKeyForProvider && !editing ? (
@@ -194,34 +247,11 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
         </div>
       ) : null}
 
-      {!hasKeyForProvider || editing ? (
+      {/* The key field itself now lives in the inset-grouped card above; what
+          remains here is the help text and the Save/Cancel actions, gated on
+          the same `showKeyRow` so they appear together with the field. */}
+      {showKeyRow ? (
         <div className="space-y-2">
-          <label htmlFor={keyId} className="text-sm font-medium">
-            API key
-          </label>
-          <div className="relative">
-            <input
-              id={keyId}
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              placeholder={currentProvider.placeholder}
-              className="block h-9 w-full rounded-2xl bg-muted/50 pl-3 pr-9 font-mono text-sm text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)]"
-            />
-            {apiKey.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => setApiKey("")}
-                aria-label="Clear API key"
-                className="absolute right-1.5 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-              >
-                <X aria-hidden className="size-3.5" />
-              </button>
-            ) : null}
-          </div>
           <p className="text-xs text-muted-foreground">
             Stored encrypted server-side; never sent to other providers.
           </p>

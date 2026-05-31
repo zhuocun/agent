@@ -73,7 +73,7 @@ function LongContextSummary({ breakdown }: { breakdown: CostBreakdown }) {
 
   if (lc.flat) {
     return (
-      <div className="flex items-start gap-2 rounded-md bg-success/10 px-2.5 py-2 text-success">
+      <div className="flex items-start gap-2 rounded-xl bg-success/10 px-2.5 py-2 text-success">
         <Check aria-hidden className="mt-0.5 size-3.5 shrink-0" />
         <div className="space-y-0.5">
           <p className="font-medium">No long-context surcharge</p>
@@ -88,7 +88,7 @@ function LongContextSummary({ breakdown }: { breakdown: CostBreakdown }) {
   if (lc.sessionMultiplier) {
     const { input, output } = lc.sessionMultiplier;
     return (
-      <div className="flex items-start gap-2 rounded-md bg-muted px-2.5 py-2 text-muted-foreground">
+      <div className="flex items-start gap-2 rounded-xl bg-muted px-2.5 py-2 text-muted-foreground">
         <TrendingUp aria-hidden className="mt-0.5 size-3.5 shrink-0" />
         <div className="space-y-0.5">
           <p className="font-medium text-foreground">
@@ -108,7 +108,7 @@ function LongContextSummary({ breakdown }: { breakdown: CostBreakdown }) {
   if (lc.appliedTier) {
     const tier = lc.appliedTier;
     return (
-      <div className="space-y-1.5 rounded-md bg-muted px-2.5 py-2 text-muted-foreground">
+      <div className="space-y-1.5 rounded-xl bg-muted px-2.5 py-2 text-muted-foreground">
         <div className="flex items-start gap-2">
           <Layers aria-hidden className="mt-0.5 size-3.5 shrink-0" />
           <div className="space-y-0.5">

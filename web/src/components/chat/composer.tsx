@@ -40,6 +40,10 @@ export interface ComposerHandle {
 }
 
 const MAX_HEIGHT = 200;
+// Above this measured scrollHeight (px) the textarea is multi-line and the
+// capsule drops its perfect pill for a large continuous radius. One line is
+// ~44px (leading-7 + py-2); 60 leaves headroom so a single line never trips it.
+const ONE_LINE_THRESHOLD = 60;
 const STOP_SETTLE_MS = 600;
 const BUTTON_BASE =
   "inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0 transition-[background-color,color,box-shadow] duration-300 ease-out";
@@ -98,6 +102,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 ) {
   const [value, setValue] = useState("");
   const [justStopped, setJustStopped] = useState(false);
+  // True once the textarea has grown past a single line. A perfect 9999px pill
+  // looks wrong at 4–6 lines, so the capsule swaps to a large continuous radius
+  // when grown (see the render). Derived from the measured scrollHeight in
+  // autoGrow, the same place we set the height, so the two never disagree.
+  const [grown, setGrown] = useState(false);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   // When the user explicitly dismisses with Escape, suppress the popover until
   // the slash token disappears (e.g. user backspaces out or types past it),
@@ -149,7 +158,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const ta = ref.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, MAX_HEIGHT)}px`;
+    const scrollHeight = ta.scrollHeight;
+    ta.style.height = `${Math.min(scrollHeight, MAX_HEIGHT)}px`;
+    // One line (leading-7 = 28px + py-2 = 16px) measures ~44px; anything past a
+    // comfortable margin above that is multi-line, so flip to the large
+    // continuous radius. The threshold sits above one line so a single wrapped
+    // glyph or descender jitter can't toggle the radius mid-type.
+    setGrown(scrollHeight > ONE_LINE_THRESHOLD);
   };
 
   const updateValue = (next: string) => {
@@ -224,6 +239,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onSend(text);
     prevValueRef.current = "";
     setValue("");
+    // The textarea collapses back to one line on send, so drop the grown radius
+    // in lockstep — otherwise the empty pill would briefly keep its large
+    // multi-line corners.
+    setGrown(false);
     requestAnimationFrame(() => {
       if (ref.current) ref.current.style.height = "auto";
     });
@@ -311,7 +330,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       />
       <div
         ref={capsuleRef}
-        className="glass-capsule group flex items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--focus-glow-halo),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+        // Radius: a perfect pill at one line, a large continuous radius once
+        // grown (a 9999px pill looks wrong at 4–6 lines). `glass-capsule` sets
+        // border-radius:9999px in CSS; rather than fight @utility ordering we
+        // override deterministically with an inline border-radius only in the
+        // grown state (inline style always wins), and leave the pill to the
+        // utility default otherwise.
+        // Focus halo: dropped `--focus-glow-halo` (a 24px outer glow) from the
+        // focus-within stack — iOS text fields don't glow. The thin lit edge
+        // (`--focus-glow-edge`) + highlight + ambient/key shadows remain; the
+        // brand send button is the real focus signal.
+        style={grown ? { borderRadius: "1.75rem" } : undefined}
+        className="glass-capsule group flex items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
       >
         <label htmlFor="composer-input" className="sr-only">
           Message Olune

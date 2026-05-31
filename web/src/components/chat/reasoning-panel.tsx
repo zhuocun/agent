@@ -59,7 +59,12 @@ export function ReasoningPanel({
       <CollapsibleTrigger
         className={cn(
           "group/reasoning-trigger inline-flex items-center gap-1 text-left text-xs text-muted-foreground",
-          "bg-transparent p-0 underline-offset-2",
+          // Tap target: the trigger is intrinsically ~16px tall (text-xs line +
+          // p-0), well under the iOS 44pt floor. Expand the hit area vertically
+          // with py-1.5 and cancel it back out with -my-1.5 so the surrounding
+          // layout (the assistant bubble's gap stack) is unchanged — only the
+          // clickable region grows.
+          "bg-transparent py-1.5 -my-1.5 underline-offset-2",
           "outline-none focus-visible:underline",
         )}
       >
@@ -89,22 +94,26 @@ export function ReasoningPanel({
             {settledLabel}
           </span>
         </span>
-        {/* Base UI's CollapsibleTrigger exposes data-panel-open (not data-state); rotate via group selector. */}
+        {/* Base UI's CollapsibleTrigger exposes data-panel-open (not data-state); rotate via group selector.
+            The chevron is the one place a spring belongs: a rotation can overshoot
+            and settle without looking wrong (unlike the panel height, which would
+            visibly jitter), so it gets the iOS spring while the body collapse below
+            stays on the smooth curve. */}
         <ChevronDown
           aria-hidden
-          className="size-3.5 transition-transform duration-200 group-data-[panel-open]/reasoning-trigger:rotate-180"
+          className="size-3.5 transition-transform duration-300 ease-[var(--ease-ios-spring)] group-data-[panel-open]/reasoning-trigger:rotate-180"
         />
       </CollapsibleTrigger>
 
       <CollapsibleContent
         keepMounted
         // Settling choreography: height and opacity tween in lockstep on the
-        // same ease-out curve so the collapse reads as an object settling
-        // rather than a div with overflow. The chevron rotation above shares
-        // the same 200ms duration.
+        // iOS "smooth" curve (NOT a spring — height overshoot reads as a glitch,
+        // so the spring is reserved for the chevron rotation above) so the
+        // collapse reads as an object settling rather than a div with overflow.
         className={cn(
           "overflow-hidden",
-          "transition-[height,opacity] duration-200 ease-out",
+          "transition-[height,opacity] duration-200 ease-[var(--ease-ios-smooth)]",
           "h-[var(--collapsible-panel-height)] opacity-100",
           "data-[starting-style]:h-0 data-[starting-style]:opacity-0",
           "data-[ending-style]:h-0 data-[ending-style]:opacity-0",

@@ -46,7 +46,9 @@ function ScrollBar({
     >
       <ScrollAreaPrimitive.Thumb
         data-slot="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-foreground/15"
+        // Match the native ::-webkit-scrollbar-thumb recipe in globals.css so
+        // the overlay scrollbar and the native one read as one treatment.
+        className="relative flex-1 rounded-full bg-[color-mix(in_oklch,var(--muted-foreground),transparent_65%)]"
       />
     </ScrollAreaPrimitive.Scrollbar>
   )

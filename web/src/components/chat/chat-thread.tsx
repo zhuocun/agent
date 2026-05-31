@@ -1300,10 +1300,34 @@ export function ChatThread() {
           ) : null}
           {/* Top chrome strip — positions the floating buttons (and the
               temporary-chat banner when on) at the top with safe-area
-              reservation. Gradient bg keeps the iOS status bar text
-              readable as messages scroll up under the notch; fades to
-              transparent below so messages emerge cleanly. */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background via-background/85 to-background/0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-6 pl-[env(safe-area-inset-left)] md:pb-12">
+              reservation. The strip now FROSTS the content beneath it rather
+              than wiping it with an opaque fade: a masked backdrop-blur layer
+              (below) carries the separation, so messages scrolling under the
+              notch read as glass-occluded rather than dissolving into a flat
+              band — the headline iOS-26 fidelity fix. The color gradient is
+              kept but much LIGHTER (from-background/70, no opaque stop) purely
+              to preserve status-bar-text legibility at the very top edge; the
+              blur does the heavy lifting now. */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-background/70 via-background/30 to-background/0 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-6 pl-[env(safe-area-inset-left)] md:pb-12">
+            {/* Refractive blur layer. Absolutely fills the strip and blurs the
+                messages behind it, then fades the blur OUT toward the bottom
+                with a linear mask so the frost dies exactly where the color
+                gradient does — no hard blur seam over live message text.
+                pointer-events-none so taps fall through to messages wherever
+                the strip is visually transparent. The blur lives in the
+                `chrome-frost` utility (globals.css) precisely so it can be
+                gated under prefers-reduced-transparency / no-backdrop-filter —
+                there the frost drops to nothing and the light color gradient
+                above is the fallback separation. The mask direction is
+                strip-specific, so it stays inline. */}
+            <div
+              aria-hidden
+              className="chrome-frost pointer-events-none absolute inset-0 -z-10"
+              style={{
+                maskImage: "linear-gradient(to bottom, black, transparent)",
+                WebkitMaskImage: "linear-gradient(to bottom, black, transparent)",
+              }}
+            />
             <div className="pointer-events-auto">
               <AppHeader
                 sidebarOpen={sidebarOpen}
@@ -1394,8 +1418,23 @@ export function ChatThread() {
             </div>
           )}
 
-          {/* Bottom chrome strip — opaque at the bottom edge, fades upward. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-background via-background/85 to-background/0 pt-6 pr-[env(safe-area-inset-right)] pb-[var(--bottom-inset)] pl-[env(safe-area-inset-left)]">
+          {/* Bottom chrome strip — mirror of the top: a masked backdrop-blur
+              frosts the messages scrolling beneath the composer, and a LIGHT
+              color gradient (to-background/70 at the bottom edge) keeps the
+              composer capsule's lower edge legible against busy content. The
+              blur mask fades to TOP (the inverse of the top strip) so the
+              frost dies upward into the live thread. The frost uses the same
+              `chrome-frost` utility as the top strip, so it shares the
+              reduced-transparency / no-backdrop-filter gating. */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-background/70 via-background/30 to-background/0 pt-6 pr-[env(safe-area-inset-right)] pb-[var(--bottom-inset)] pl-[env(safe-area-inset-left)]">
+            <div
+              aria-hidden
+              className="chrome-frost pointer-events-none absolute inset-0 -z-10"
+              style={{
+                maskImage: "linear-gradient(to top, black, transparent)",
+                WebkitMaskImage: "linear-gradient(to top, black, transparent)",
+              }}
+            />
             <div className="pointer-events-auto">
               <Composer
                 ref={composerRef}

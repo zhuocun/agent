@@ -116,7 +116,14 @@ export function SlashCommandsPopover({
       className={cn(
         "absolute bottom-full inset-x-0 z-20 mb-2",
         "glass-strong overflow-hidden rounded-2xl text-foreground",
-        "transition-opacity duration-150 motion-reduce:transition-none",
+        // iOS popover entrance: anchored to the bottom edge (it sits above the
+        // composer) it springs up from a slightly-shrunk, faded state via a
+        // `starting:` @starting-style snapshot. The spring easing gives it that
+        // native "pop". Reduced motion falls back to a plain cross-fade with no
+        // scale/translate so nothing moves.
+        "origin-bottom transition-[opacity,transform,scale] duration-200 ease-[var(--ease-ios-spring)]",
+        "starting:scale-95 starting:opacity-0 starting:translate-y-1",
+        "motion-reduce:transition-opacity motion-reduce:duration-150 motion-reduce:scale-100 motion-reduce:translate-y-0",
       )}
       role="presentation"
     >
@@ -153,17 +160,22 @@ export function SlashCommandsPopover({
                 onPick(command);
               }}
               className={cn(
-                "mx-1 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm",
-                isSelected
-                  ? "bg-accent text-accent-foreground"
-                  : "text-foreground",
+                // min-h-11: 44pt touch floor on the touch sheet (harmless on
+                // desktop). Quiet translucent selection tint to match the
+                // model/tier pickers and command palette — the solid
+                // `bg-accent` fill read too loud against glass-strong.
+                "mx-1 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-foreground",
+                isSelected && "bg-foreground/[0.06]",
               )}
             >
               <span
                 className={cn(
+                  // The icon chip keeps a faint brand wash when selected so the
+                  // highlight still carries a single-accent cue without the
+                  // heavy solid fill it used before.
                   "flex size-7 shrink-0 items-center justify-center rounded-lg",
                   isSelected
-                    ? "bg-accent text-accent-foreground"
+                    ? "bg-brand/10 text-foreground"
                     : "bg-secondary text-muted-foreground",
                 )}
               >

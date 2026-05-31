@@ -24,6 +24,7 @@ from app.schemas.stream_events import (
     AnswerDeltaEvent,
     ReasoningDeltaEvent,
     ReasoningDoneEvent,
+    SourcesEvent,
     StatusEvent,
     SubmittedEvent,
     TerminalEvent,
@@ -54,6 +55,13 @@ def encode_reasoning_done(payload: ReasoningDoneEvent) -> ServerSentEvent:
 def encode_status(payload: StatusEvent) -> ServerSentEvent:
     return ServerSentEvent(
         event="status",
+        data=payload.model_dump_json(by_alias=True, exclude_none=True),
+    )
+
+
+def encode_sources(payload: SourcesEvent) -> ServerSentEvent:
+    return ServerSentEvent(
+        event="sources",
         data=payload.model_dump_json(by_alias=True, exclude_none=True),
     )
 

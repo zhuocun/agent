@@ -46,6 +46,8 @@ interface AppHeaderProps {
   efforts: ReasoningEffort[];
   selectedEffortId: ReasoningEffortId;
   onSelectEffort: (id: ReasoningEffortId) => void;
+  searchEnabled: boolean;
+  onToggleSearch: (next: boolean) => void;
 }
 
 const FLOAT_BUTTON =
@@ -75,6 +77,8 @@ export function AppHeader({
   efforts,
   selectedEffortId,
   onSelectEffort,
+  searchEnabled,
+  onToggleSearch,
 }: AppHeaderProps) {
   return (
     <header className="relative flex h-[46px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
@@ -106,6 +110,8 @@ export function AppHeader({
           efforts={efforts}
           selectedEffortId={selectedEffortId}
           onSelectEffort={onSelectEffort}
+          searchEnabled={searchEnabled}
+          onToggleSearch={onToggleSearch}
         />
       </div>
 

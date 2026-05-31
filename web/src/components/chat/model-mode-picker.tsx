@@ -35,6 +35,11 @@ export interface ModelModePickerProps {
   efforts: ReasoningEffort[];
   selectedEffortId: ReasoningEffortId;
   onSelectEffort: (id: ReasoningEffortId) => void;
+  // Web-search toggle. The "Web search" section is shown ONLY when the
+  // currently-selected tier reports `supportsWebSearch`; on a tier that can't
+  // search, the toggle is hidden entirely (the BE would ignore the flag).
+  searchEnabled: boolean;
+  onToggleSearch: (next: boolean) => void;
   disabled?: boolean;
 }
 
@@ -51,11 +56,17 @@ export function ModelModePicker({
   efforts,
   selectedEffortId,
   onSelectEffort,
+  searchEnabled,
+  onToggleSearch,
   disabled,
 }: ModelModePickerProps): JSX.Element {
   const tier = tiers.find((t) => t.id === selectedTierId) ?? tiers[0];
   const effort = efforts.find((e) => e.id === selectedEffortId) ?? efforts[0];
   const [sheetOpen, setSheetOpen] = useState(false);
+  // The web-search section only exists for tiers that support it; the parent
+  // also clears `searchEnabled` when switching to a non-supporting tier, so
+  // this is a pure display gate.
+  const showWebSearch = tier?.supportsWebSearch === true;
 
   const triggerLabel = `Model ${tier?.label}, reasoning ${effort?.label}. Change.`;
 
@@ -96,6 +107,7 @@ export function ModelModePicker({
             <button
               type="button"
               aria-label={triggerLabel}
+              data-testid="model-mode-trigger"
               className={cn(TRIGGER_CLASS, "hidden md:inline-flex")}
             >
               {triggerInner}
@@ -136,6 +148,43 @@ export function ModelModePicker({
               />
             ))}
           </DropdownMenuGroup>
+          {showWebSearch ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuLabel className="text-[11px] font-semibold">
+                  Web search
+                </DropdownMenuLabel>
+                {/* `closeOnClick={false}` keeps the menu open so toggling
+                    search on/off doesn't dismiss the picker mid-decision. */}
+                <DropdownMenuItem
+                  label="Web search"
+                  closeOnClick={false}
+                  onClick={() => onToggleSearch(!searchEnabled)}
+                  className="py-2"
+                  data-testid="web-search-toggle"
+                  aria-pressed={searchEnabled}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">
+                        {searchEnabled ? "On" : "Off"}
+                      </span>
+                      {searchEnabled ? (
+                        <Check
+                          aria-hidden
+                          className="ml-auto size-4 text-foreground"
+                        />
+                      ) : null}
+                    </div>
+                    <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                      Ground answers with a live web search.
+                    </p>
+                  </div>
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -197,6 +246,19 @@ export function ModelModePicker({
                 />
               ))}
             </SheetSection>
+            {showWebSearch ? (
+              <SheetSection title="Web search">
+                {/* Toggle stays in-sheet (no auto-dismiss) so the user can see
+                    the On/Off state flip before closing. */}
+                <SheetRow
+                  label={searchEnabled ? "On" : "Off"}
+                  description="Ground answers with a live web search."
+                  selected={searchEnabled}
+                  onSelect={() => onToggleSearch(!searchEnabled)}
+                  testId="web-search-toggle"
+                />
+              </SheetSection>
+            ) : null}
           </div>
         </DialogContent>
       </Dialog>
@@ -254,11 +316,13 @@ function SheetRow({
   description,
   selected,
   onSelect,
+  testId,
 }: {
   label: string;
   description: string;
   selected: boolean;
   onSelect: () => void;
+  testId?: string;
 }): JSX.Element {
   return (
     <li>
@@ -267,6 +331,7 @@ function SheetRow({
         onClick={onSelect}
         aria-label={label}
         aria-pressed={selected}
+        data-testid={testId}
         className={cn(
           "flex min-h-11 w-full items-start gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           selected && "bg-foreground/[0.06]",

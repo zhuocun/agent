@@ -33,9 +33,23 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    Sources,
+    StatusUpdate,
     UsageUpdate,
 )
 from app.providers.steering import steer_user_text
+from app.search.protocol import SourceItem
+
+# Anthropic's server-side web-search tool (hosted; the model runs the search and
+# streams `server_tool_use` / `web_search_tool_result` content blocks back). We
+# advertise it only when `web_search=True`. `max_uses` bounds the per-turn search
+# count.
+_ANTHROPIC_WEB_SEARCH_TOOL: dict[str, Any] = {
+    "type": "web_search_20250305",
+    "name": "web_search",
+    "max_uses": 3,
+}
+_SEARCH_STATUS_LABEL = "Searching the web…"
 
 
 @lru_cache(maxsize=256)
@@ -70,6 +84,59 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _domain_of(url: str) -> str | None:
+    """Parse the host out of a URL; None when it can't be determined."""
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(url).netloc
+    except ValueError:
+        return None
+    return host or None
+
+
+def _parse_web_search_result(block: Any) -> list[SourceItem]:
+    """Map an Anthropic `web_search_tool_result` content block to SourceItems.
+
+    The block's `content` is a list of `web_search_result` entries, each with a
+    `title`, `url`, and (optionally) page `content`. We duck-type defensively
+    since the SDK shape varies by version; an `error`-shaped content (search
+    failed upstream) yields an empty list so the turn still completes.
+    """
+    content = getattr(block, "content", None)
+    if not isinstance(content, list):
+        return []
+    items: list[SourceItem] = []
+    for idx, result in enumerate(content, start=1):
+        url = getattr(result, "url", None)
+        if url is None and isinstance(result, dict):
+            url = result.get("url")
+        if not url:
+            continue
+        title = getattr(result, "title", None)
+        if title is None and isinstance(result, dict):
+            title = result.get("title")
+        raw_snippet: Any = None
+        if isinstance(result, dict):
+            raw_snippet = result.get("content") or result.get("snippet")
+        else:
+            raw_snippet = getattr(result, "content", None)
+        snippet = (
+            str(raw_snippet)[:300].strip() if isinstance(raw_snippet, str) and raw_snippet else None
+        )
+        url_str = str(url)
+        items.append(
+            SourceItem(
+                id=idx,
+                title=str(title) if title else url_str,
+                url=url_str,
+                snippet=snippet,
+                domain=_domain_of(url_str),
+            )
+        )
+    return items
 
 
 def _retry_after_ms(exc: anthropic.APIStatusError) -> int | None:
@@ -168,6 +235,7 @@ class AnthropicProvider:
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
+        web_search: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
         # `thinking` / `reasoning_effort` accepted for Protocol conformance but
         # ignored: Anthropic extended-thinking is not yet wired here.
@@ -179,9 +247,22 @@ class AnthropicProvider:
         # never persisted). History stays verbatim. See app/providers/steering.py.
         messages.append({"role": "user", "content": steer_user_text(user_text)})
 
+        # Anthropic server-side web search (hosted tool). Advertise the tool only
+        # when opted in; the model runs the search itself and streams
+        # `server_tool_use` (it dispatched a search) + `web_search_tool_result`
+        # (results came back) content blocks, which we map to StatusUpdate +
+        # Sources. When web_search=False, no tools are sent and the path is
+        # byte-for-byte unchanged.
+        stream_kwargs: dict[str, Any] = {}
+        if web_search:
+            stream_kwargs["tools"] = [_ANTHROPIC_WEB_SEARCH_TOOL]
+
         # Track whether we're currently inside a thinking block so we can
         # emit exactly one ReasoningDone at block end.
         in_thinking = False
+        # Whether we've already announced an active search status (so a multi-use
+        # search turn only emits a single active/done pair around the results).
+        search_active_emitted = False
 
         client = self._client_for(api_key)
         try:
@@ -189,6 +270,7 @@ class AnthropicProvider:
                 model=model_id,
                 max_tokens=self._max_tokens,
                 messages=cast(Any, messages),
+                **stream_kwargs,
             ) as stream:
                 async for event in stream:
                     etype = getattr(event, "type", None)
@@ -198,6 +280,23 @@ class AnthropicProvider:
                         block_type = getattr(block, "type", None)
                         if block_type == "thinking":
                             in_thinking = True
+                        elif block_type == "server_tool_use":
+                            # The model dispatched a server-side web search.
+                            # Surface the "Searching the web…" status once.
+                            if not search_active_emitted:
+                                yield StatusUpdate(
+                                    label=_SEARCH_STATUS_LABEL, state="active"
+                                )
+                                search_active_emitted = True
+                        elif block_type == "web_search_tool_result":
+                            # Results returned: close the status and emit sources.
+                            if search_active_emitted:
+                                yield StatusUpdate(
+                                    label=_SEARCH_STATUS_LABEL, state="done"
+                                )
+                            items = _parse_web_search_result(block)
+                            if items:
+                                yield Sources(items=items)
 
                     elif etype == "content_block_delta":
                         delta = getattr(event, "delta", None)

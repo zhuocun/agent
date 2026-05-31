@@ -52,9 +52,13 @@ from app.schemas.message import ModelAttribution
 from app.schemas.share import ShareLinkResponse
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
+    SourcesEvent,
+    StatusEvent,
     SubmittedEvent,
     TerminalEvent,
 )
+from app.search.factory import search_enabled
+from app.search.protocol import SourceItem
 from app.streaming import replay_registry
 from app.streaming.handler import (
     _derive_session_factory,
@@ -63,6 +67,8 @@ from app.streaming.handler import (
 )
 from app.streaming.sse import (
     encode_answer_delta,
+    encode_sources,
+    encode_status,
     encode_submitted,
     encode_terminal,
 )
@@ -391,16 +397,30 @@ async def _maybe_replay(
         # → generic 500. Fall through to a fresh insert instead of replaying.
         if assistant_row.attribution is None:
             return None
-        # Replay path. Reconstruct prior answer text from parts.
+        # Replay path. Reconstruct prior answer text + any web-search frames
+        # (status / sources) from the persisted parts, so a reconnecting client
+        # sees the SAME sequence the original turn streamed: a grounded turn
+        # replays its `status` and `sources` frames, not just the answer.
         texts: list[str] = []
+        status_part: dict[str, object] | None = None
+        sources_items: list[dict[str, object]] = []
         for part in cast(list[dict[str, object]], assistant_row.parts or []):
-            if part.get("type") == "text":
+            ptype = part.get("type")
+            if ptype == "text":
                 texts.append(str(part.get("text", "")))
+            elif ptype == "status":
+                status_part = part
+            elif ptype == "sources":
+                sources_items = cast(
+                    list[dict[str, object]], part.get("items", []) or []
+                )
         return _replay_response(
             user_message_id=prior_user_msg.id,
             assistant_message_id=assistant_row.id,
             answer_text="".join(texts),
             attribution_dict=cast(dict[str, object], assistant_row.attribution),
+            status_part=status_part,
+            sources_items=sources_items,
         )
     # User message exists but no completed assistant row: prior is in flight
     # (or crashed before persisting). Reject as duplicate.
@@ -631,6 +651,16 @@ async def send_message(
 
     settings = get_settings()
 
+    # Effective web-search opt-in for this turn. The requested flag is honored
+    # ONLY when both the served binding's provider supports search AND a search
+    # backend is configured (`search_enabled`). When unsupported we degrade to
+    # False SILENTLY (no error) — the turn still answers, just ungrounded. Uses
+    # the (possibly auto-routed) `binding` so the served provider's capability
+    # is what gates it.
+    effective_web_search = (
+        body.web_search and binding.supports_web_search and search_enabled(settings)
+    )
+
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
     # appends every wire event to an in-process ReplayBuffer; this POST then
@@ -662,6 +692,7 @@ async def send_message(
             api_key=resolved_api_key,
             stream_id=stream_id,
             router_substitution=router_substitution,
+            web_search=effective_web_search,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -696,6 +727,7 @@ async def send_message(
             api_key=resolved_api_key,
             stream_id=stream_id,
             router_substitution=router_substitution,
+            web_search=effective_web_search,
         ):
             yield sse_event
 
@@ -951,19 +983,47 @@ def _replay_response(
     assistant_message_id: UUID,
     answer_text: str,
     attribution_dict: dict[str, object],
+    status_part: dict[str, object] | None = None,
+    sources_items: list[dict[str, object]] | None = None,
 ) -> EventSourceResponse:
     """Replay a prior terminal as a single combined frame.
 
     Plan §"Behavior - Idempotency": yields `submitted` with the prior user
     message id, one `answer_delta` carrying the full prior answer text, then
     `terminal` with the stored attribution. No new DB writes.
+
+    Web-search turns also replay the `status` and `sources` frames
+    reconstructed from the persisted parts, in the same relative order the
+    original turn streamed them (status before the answer, sources after) so a
+    reconnecting client sees the grounded turn's citations. Non-search turns
+    pass neither and the sequence is the historical
+    submitted → answer_delta → terminal.
     """
     attribution = ModelAttribution.model_validate(attribution_dict)
+    items = sources_items or []
 
     async def _gen() -> AsyncIterator[ServerSentEvent]:
         yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
+        # Persisted `status` part (a completed search line) replays before the
+        # answer, mirroring the live order [status(done)] [text].
+        if status_part is not None:
+            yield encode_status(
+                StatusEvent(
+                    label=str(status_part.get("label", "")),
+                    state="done",
+                )
+            )
         # Single answer_delta carrying the full final text (no mid-stream resume).
         yield encode_answer_delta(AnswerDeltaEvent(text=answer_text))
+        # Persisted `sources` part replays after the answer, mirroring the live
+        # order [text] [sources]. `SourceItem.model_validate` re-validates the
+        # stored dicts so a malformed row can't emit a broken wire frame.
+        if items:
+            yield encode_sources(
+                SourcesEvent(
+                    items=[SourceItem.model_validate(it) for it in items]
+                )
+            )
         yield encode_terminal(
             TerminalEvent(
                 message_id=str(assistant_message_id),

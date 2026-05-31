@@ -38,10 +38,12 @@ Notable differences from the Anthropic adapter:
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import openai
+import structlog
 from openai import AsyncOpenAI
 
 from app.errors import AppError, ErrorEnvelope
@@ -52,9 +54,44 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    Sources,
+    StatusUpdate,
     UsageUpdate,
 )
 from app.providers.steering import steer_user_text
+from app.search.protocol import SearchProvider
+
+_log = structlog.get_logger(__name__)
+
+# OpenAI function-tool schema advertised when `web_search=True` AND a search
+# backend is wired. The model decides (tool_choice="auto") whether to call it;
+# when it does, we run the configured `SearchProvider`, feed the results back as
+# a tool-result message, and stream a SECOND completion for the grounded answer.
+WEB_SEARCH_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the public web for current, factual, or citable information. "
+            "Use this when the answer depends on recent events or facts you are "
+            "unsure about. Returns a ranked list of sources with titles, URLs, and "
+            "snippets that you should ground your answer in and cite as [1], [2], …"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query to run against the web.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+_SEARCH_STATUS_LABEL = "Searching the web…"
+_MAX_SEARCH_RESULTS = 5
 
 
 def _safe_int(value: Any) -> int:
@@ -65,6 +102,127 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+class _UsageAccumulator:
+    """Sums the raw OpenAI usage buckets across one or more completions.
+
+    The web-search path makes TWO completions (tool-decision + grounded answer);
+    each carries its own `usage` object on its final chunk. We add the raw
+    (still-overlapping) OpenAI counts here, then compute the four DISJOINT
+    buckets once in `to_usage_update()` so the subtraction (prompt minus cached,
+    completion minus reasoning) is applied to the summed totals, never double-counted.
+    """
+
+    def __init__(self) -> None:
+        self._prompt_tokens = 0
+        self._completion_tokens = 0
+        self._reasoning_tokens = 0
+        self._cached_input_tokens = 0
+
+    def add(self, usage_obj: Any) -> None:
+        """Add one completion's raw usage object to the running totals."""
+        self._prompt_tokens += _safe_int(getattr(usage_obj, "prompt_tokens", None))
+        self._completion_tokens += _safe_int(getattr(usage_obj, "completion_tokens", None))
+        prompt_details = getattr(usage_obj, "prompt_tokens_details", None)
+        completion_details = getattr(usage_obj, "completion_tokens_details", None)
+        cached = max(_safe_int(getattr(prompt_details, "cached_tokens", None)), 0)
+        # DeepSeek reports cache hits at the TOP LEVEL as `prompt_cache_hit_tokens`
+        # (not under `prompt_tokens_details.cached_tokens`), so fall back to it
+        # when the standard nested field is absent/zero — otherwise DeepSeek cache
+        # discounts would never apply.
+        if cached == 0:
+            cached = max(_safe_int(getattr(usage_obj, "prompt_cache_hit_tokens", None)), 0)
+        self._cached_input_tokens += cached
+        self._reasoning_tokens += max(
+            _safe_int(getattr(completion_details, "reasoning_tokens", None)), 0
+        )
+
+    def to_usage_update(self) -> UsageUpdate:
+        """Compute the four DISJOINT buckets from the summed raw totals.
+
+        OpenAI usage overlaps:
+          prompt_tokens     includes prompt_tokens_details.cached_tokens
+          completion_tokens includes completion_tokens_details.reasoning_tokens
+        so we subtract the overlaps to avoid double-billing (pricing sums the four
+        buckets independently). No usage seen at all leaves everything at 0.
+        """
+        input_tokens = max(self._prompt_tokens - self._cached_input_tokens, 0)
+        output_tokens = max(self._completion_tokens - self._reasoning_tokens, 0)
+        return UsageUpdate(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=self._reasoning_tokens,
+            cached_input_tokens=self._cached_input_tokens,
+        )
+
+
+class _ToolCallAccumulator:
+    """Reassembles one streamed OpenAI `tool_call` from its delta fragments.
+
+    OpenAI streams a tool call across many chunks: the `id` and
+    `function.name` arrive once (on the first fragment for that index), then
+    `function.arguments` arrives in pieces that must be concatenated.
+    """
+
+    def __init__(self) -> None:
+        self.id: str | None = None
+        self.name: str | None = None
+        self.arguments: str = ""
+
+    def update(self, tc: Any) -> None:
+        tc_id = getattr(tc, "id", None)
+        if tc_id:
+            self.id = tc_id
+        fn = getattr(tc, "function", None)
+        if fn is not None:
+            name = getattr(fn, "name", None)
+            if name:
+                self.name = name
+            args = getattr(fn, "arguments", None)
+            if args:
+                self.arguments += args
+
+
+def _accumulate_tool_calls(delta: Any, acc: dict[int, _ToolCallAccumulator]) -> None:
+    """Fold a chunk's `delta.tool_calls` fragments into the per-index accumulators."""
+    tool_calls = getattr(delta, "tool_calls", None)
+    if not tool_calls:
+        return
+    for tc in tool_calls:
+        index = getattr(tc, "index", 0) or 0
+        acc.setdefault(index, _ToolCallAccumulator()).update(tc)
+
+
+def _select_web_search_call(
+    acc: dict[int, _ToolCallAccumulator] | None,
+) -> _ToolCallAccumulator | None:
+    """Return the first accumulated call whose function name is `web_search`."""
+    if not acc:
+        return None
+    for index in sorted(acc):
+        call = acc[index]
+        if call.name == "web_search":
+            return call
+    return None
+
+
+def _parse_query(raw_arguments: str) -> str:
+    """Parse the `query` field out of a tool call's JSON arguments string.
+
+    Tolerant: malformed / missing JSON yields an empty query (the search backend
+    then returns whatever it returns for an empty string; the turn still
+    completes rather than crashing on a model that emitted bad arguments).
+    """
+    try:
+        parsed = json.loads(raw_arguments or "{}")
+    except (ValueError, TypeError):
+        return ""
+    if isinstance(parsed, dict):
+        query = parsed.get("query")
+        if isinstance(query, str):
+            return query
+    return ""
 
 
 def _retry_after_ms(exc: openai.RateLimitError) -> int | None:
@@ -141,10 +299,20 @@ class OpenAIProvider:
     keeps the default fast path identical while making BYOK opt-in per call.
     """
 
-    def __init__(self, api_key: str, base_url: str | None = None, max_tokens: int = 16000):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str | None = None,
+        max_tokens: int = 16000,
+        search_provider: SearchProvider | None = None,
+    ):
         self._default_api_key = api_key
         self._base_url = base_url
         self._max_tokens = max_tokens
+        # Optional web-search backend. When None, `web_search=True` is a no-op
+        # (no tools advertised) — identical to a pre-web-search build. Injected
+        # at the construction site (see app/providers/factory.py) from settings.
+        self._search_provider = search_provider
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
     def _client_for(self, api_key: str | None) -> AsyncOpenAI:
@@ -167,6 +335,7 @@ class OpenAIProvider:
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
+        web_search: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
         # Build messages: history + the current user turn. Only user/assistant
         # roles (no system role), which keeps o-series models happy.
@@ -188,7 +357,124 @@ class OpenAIProvider:
             }
 
         client = self._client_for(api_key)
-        usage_obj: Any = None
+
+        # Web-search is opt-in AND requires a configured backend. When either is
+        # absent, `tool_kwargs` stays empty and the whole path below is identical
+        # to a pre-web-search build (no tools advertised). This is the
+        # regression-critical no-op invariant.
+        search_active = web_search and self._search_provider is not None
+        tool_kwargs: dict[str, Any] = {}
+        if search_active:
+            tool_kwargs = {"tools": [WEB_SEARCH_TOOL], "tool_choice": "auto"}
+
+        # Accumulated usage across (possibly) two completions: the first (tool
+        # decision) call and the second (grounded answer) call. We sum the raw
+        # OpenAI buckets across both, then compute the four DISJOINT buckets once.
+        usage_acc = _UsageAccumulator()
+
+        # First completion. When tools are advertised the model may stream a
+        # tool_call instead of answer text; we accumulate the call deltas and
+        # suppress the disjoint-usage emission until after the (optional) second
+        # completion.
+        tool_calls: dict[int, _ToolCallAccumulator] | None = (
+            {} if search_active else None
+        )
+        async for event in self._consume_completion(
+            client=client,
+            model_id=model_id,
+            messages=messages,
+            extra_kwargs={**kwargs, **tool_kwargs},
+            usage_acc=usage_acc,
+            tool_calls=tool_calls,
+        ):
+            yield event
+
+        # If the first call requested web_search, run the search, surface the
+        # status + sources, append the tool-call + tool-result turns, and make a
+        # SECOND streaming completion (no tools) for the grounded answer.
+        web_search_call = (
+            _select_web_search_call(tool_calls) if tool_calls is not None else None
+        )
+        if web_search_call is not None and self._search_provider is not None:
+            query = _parse_query(web_search_call.arguments)
+            yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="active")
+            try:
+                items = await self._search_provider.search(
+                    query, max_results=_MAX_SEARCH_RESULTS
+                )
+            except Exception as exc:  # degrade gracefully on any backend failure
+                # The search backend raised (transport / non-200). Don't fail the
+                # whole turn: log, surface a `done` status with no sources, and
+                # feed an empty result back so the model answers from its own
+                # knowledge.
+                _log.warning("web_search.backend_failed", error=str(exc))
+                items = []
+            yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="done")
+            yield Sources(items=items)
+
+            # Append the assistant tool-call turn and the tool-result turn so the
+            # second completion sees the search output as context.
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": web_search_call.id or "web_search_0",
+                            "type": "function",
+                            "function": {
+                                "name": "web_search",
+                                "arguments": web_search_call.arguments or "{}",
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": web_search_call.id or "web_search_0",
+                    "content": json.dumps(
+                        {"results": [item.model_dump() for item in items]}
+                    ),
+                }
+            )
+            # Second completion: stream the grounded reasoning/answer. No tools
+            # (tool_choice="none") so the model is forced to answer, not loop.
+            async for event in self._consume_completion(
+                client=client,
+                model_id=model_id,
+                messages=messages,
+                extra_kwargs={**kwargs, "tool_choice": "none"},
+                usage_acc=usage_acc,
+                tool_calls=None,
+            ):
+                yield event
+
+        usage_update = usage_acc.to_usage_update()
+        yield usage_update
+        yield Complete(usage=usage_update)
+
+    async def _consume_completion(
+        self,
+        *,
+        client: AsyncOpenAI,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        extra_kwargs: dict[str, Any],
+        usage_acc: _UsageAccumulator,
+        tool_calls: dict[int, _ToolCallAccumulator] | None,
+    ) -> AsyncIterator[ProviderEvent]:
+        """Stream one chat completion, yield reasoning/answer events, accumulate usage.
+
+        `usage_acc` collects the raw OpenAI usage buckets so the caller can sum
+        them across multiple completions before emitting the single final
+        `UsageUpdate`. When `tool_calls` is a dict, streamed `delta.tool_calls`
+        fragments are accumulated into it (keyed by index) instead of being
+        treated as answer text — the caller inspects it to decide whether a
+        web_search call was requested. When `tool_calls` is None, tool-call
+        deltas are ignored (the second, grounded completion advertises no tools).
+        """
         # Reasoning-event invariant (DeepSeek's `delta.reasoning_content`): emit
         # at most one ReasoningDone, only after >=1 ReasoningDelta, and before any
         # AnswerDelta. Stock OpenAI never sends `reasoning_content`, so these stay
@@ -205,16 +491,21 @@ class OpenAIProvider:
                 # REQUIRED to get usage on a streaming call -- it rides the final
                 # chunk (which has empty `choices`).
                 stream_options={"include_usage": True},
-                **kwargs,
+                **extra_kwargs,
             )
             async for chunk in stream:
                 # Usage arrives on the final chunk; capture from any chunk that
                 # carries it (some compat endpoints place it differently).
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage is not None:
-                    usage_obj = chunk_usage
+                    usage_acc.add(chunk_usage)
                 for choice in getattr(chunk, "choices", None) or []:
                     delta = getattr(choice, "delta", None)
+                    # Accumulate streamed tool_call deltas (id / name / arguments
+                    # arrive fragmented across chunks) when the caller is watching
+                    # for a tool call.
+                    if tool_calls is not None:
+                        _accumulate_tool_calls(delta, tool_calls)
                     # DeepSeek streams chain-of-thought separately on
                     # `delta.reasoning_content` (absent/None on stock OpenAI).
                     rc = getattr(delta, "reasoning_content", None)
@@ -231,41 +522,6 @@ class OpenAIProvider:
                         yield AnswerDelta(text=content)
         except openai.APIError as exc:
             raise _map_sdk_error(exc) from exc
-
-        # Compute the four DISJOINT buckets. OpenAI usage overlaps:
-        #   prompt_tokens     includes prompt_tokens_details.cached_tokens
-        #   completion_tokens includes completion_tokens_details.reasoning_tokens
-        # so we subtract the overlaps to avoid double-billing (pricing sums the
-        # four buckets independently). `usage_obj is None` (compat endpoint that
-        # ignored stream_options) leaves everything at 0.
-        prompt_tokens = _safe_int(getattr(usage_obj, "prompt_tokens", None))
-        completion_tokens = _safe_int(getattr(usage_obj, "completion_tokens", None))
-        prompt_details = getattr(usage_obj, "prompt_tokens_details", None)
-        completion_details = getattr(usage_obj, "completion_tokens_details", None)
-        # Clamp at read: cached/reasoning flow straight into UsageUpdate, so a
-        # non-conformant endpoint reporting a negative must not produce a
-        # negative cost. (input/output are already clamped via the subtraction.)
-        cached_input_tokens = max(_safe_int(getattr(prompt_details, "cached_tokens", None)), 0)
-        # DeepSeek reports cache hits at the TOP LEVEL as `prompt_cache_hit_tokens`
-        # (not under `prompt_tokens_details.cached_tokens`), so fall back to it
-        # when the standard nested field is absent/zero — otherwise DeepSeek cache
-        # discounts would never apply.
-        if cached_input_tokens == 0:
-            cached_input_tokens = max(
-                _safe_int(getattr(usage_obj, "prompt_cache_hit_tokens", None)), 0
-            )
-        reasoning_tokens = max(_safe_int(getattr(completion_details, "reasoning_tokens", None)), 0)
-        input_tokens = max(prompt_tokens - cached_input_tokens, 0)
-        output_tokens = max(completion_tokens - reasoning_tokens, 0)
-
-        usage_update = UsageUpdate(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
-            cached_input_tokens=cached_input_tokens,
-        )
-        yield usage_update
-        yield Complete(usage=usage_update)
 
     async def complete(
         self,

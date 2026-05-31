@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from app.config import Settings, get_settings
 from app.schemas.common import CostHint, ModelTierId, SpeedHint
 from app.schemas.tier import ModelTier
+from app.search.factory import search_enabled
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,12 @@ class TierBinding:
     # model id. Empty for tiers whose served model varies per request (the
     # `auto` router), so the picker shows no single model for them.
     model_label: str = ""
+    # Whether this binding's provider can ground a turn with web search (via the
+    # tool loop / server tool). True on all real providers (DeepSeek, Anthropic,
+    # OpenAI, fake). The FE-facing flag is gated additionally on a configured
+    # search backend in `list_tiers` (`... AND search_enabled(settings)`); this
+    # binding-level flag is the provider-capability half.
+    supports_web_search: bool = False
 
 
 def _tier(
@@ -110,6 +117,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         long_context_flat=True,
         cache_read_per_m=0.0028,
         thinking=True,
+        supports_web_search=True,
     ),
     TierBinding(
         tier=_tier(
@@ -128,6 +136,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         cache_read_per_m=0.0028,
         thinking=False,
         model_label="DeepSeek V4 Flash",
+        supports_web_search=True,
     ),
     TierBinding(
         tier=_tier(
@@ -146,6 +155,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         cache_read_per_m=0.0028,
         thinking=True,
         model_label="DeepSeek V4 Flash",
+        supports_web_search=True,
     ),
     TierBinding(
         tier=_tier(
@@ -165,6 +175,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         thinking=True,
         reasoning_effort="high",
         model_label="DeepSeek V4 Pro",
+        supports_web_search=True,
     ),
 )
 
@@ -224,6 +235,7 @@ def _anthropic_binding(tier_id: ModelTierId) -> TierBinding | None:
         long_context_flat=True,
         cache_read_per_m=cache_read_per_m,
         model_label=_ANTHROPIC_LABEL_FOR.get(tier_id, ""),
+        supports_web_search=True,
     )
 
 
@@ -283,6 +295,7 @@ def _openai_binding(tier_id: ModelTierId, s: Settings) -> TierBinding | None:
         # OPENAI_MODEL_*, so the configured id IS the most honest disclosure.
         # `auto` stays blank (router picks per message).
         model_label="" if tier_id == "auto" else model_id,
+        supports_web_search=True,
     )
 
 
@@ -295,11 +308,26 @@ def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
     model varies per message via the router.
     """
     s = settings if settings is not None else get_settings()
+    # Web search is usable only when a search backend is configured; the
+    # per-tier capability also requires the active binding's provider to support
+    # it. Gate the wire flag on BOTH so the FE shows the affordance only when a
+    # turn could actually ground.
+    search_on = search_enabled(s)
     tiers: list[ModelTier] = []
     for base in TIER_BINDINGS:
         binding = get_binding(base.tier.id, settings=s)
         label = binding.model_label if binding is not None else ""
-        tiers.append(base.tier.model_copy(update={"model_label": label}))
+        supports_search = (
+            binding.supports_web_search if binding is not None else False
+        ) and search_on
+        tiers.append(
+            base.tier.model_copy(
+                update={
+                    "model_label": label,
+                    "supports_web_search": supports_search,
+                }
+            )
+        )
     return tiers
 
 

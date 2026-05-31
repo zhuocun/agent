@@ -41,6 +41,11 @@ export const DATABASE_URL = `sqlite+aiosqlite:///${DB_PATH}`;
 export const BE_ENV = {
   ENV: "test",
   PROVIDER_BACKEND: "fake",
+  // Enable web search against the deterministic FakeSearchProvider so the
+  // capability lights up (supportsWebSearch=true) and the fake provider emits
+  // the status/sources frames the web-search e2e asserts. Mirrors the
+  // SEARCH_BACKEND=fake set in api/tests/conftest.py for the pytest suite.
+  SEARCH_BACKEND: "fake",
   DATABASE_URL,
   CORS_ALLOWED_ORIGINS: FE_URL,
   // Long-and-fixed; assert_prod_safe() requires >=32 chars in prod, dev/test

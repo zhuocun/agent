@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from app.schemas.common import SubstitutionReasonCode
+from app.search.protocol import SourceItem
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,33 @@ class ReasoningDone:
 class AnswerDelta:
     type: Literal["answer_delta"] = "answer_delta"
     text: str = ""
+
+
+@dataclass(frozen=True)
+class StatusUpdate:
+    """Generic streamed status line (e.g. "Searching the web…").
+
+    `state` toggles between an in-progress (`active`) and finished (`done`)
+    rendering of the same `label`. The web-search loop emits an `active` line
+    when it dispatches the search and a `done` line when results return.
+    """
+
+    label: str
+    state: Literal["active", "done"]
+    type: Literal["status_update"] = "status_update"
+
+
+@dataclass(frozen=True)
+class Sources:
+    """The resolved source / citation list for a web-search turn.
+
+    `items` is the ordered (1-based id) `SourceItem` list the search backend
+    returned; the handler maps it to the wire `sources` event and the FE
+    renders inline citations keyed on `id`.
+    """
+
+    items: list[SourceItem] = field(default_factory=list)
+    type: Literal["sources"] = "sources"
 
 
 @dataclass(frozen=True)
@@ -82,7 +110,15 @@ class Complete:
     substituted_display_label: str | None = None
 
 
-ProviderEvent = ReasoningDelta | ReasoningDone | AnswerDelta | UsageUpdate | Complete
+ProviderEvent = (
+    ReasoningDelta
+    | ReasoningDone
+    | AnswerDelta
+    | StatusUpdate
+    | Sources
+    | UsageUpdate
+    | Complete
+)
 
 
 class Provider(Protocol):
@@ -112,6 +148,13 @@ class Provider(Protocol):
     default, True = enabled, False = disabled) and `reasoning_effort` selects the
     effort level (e.g. "high"; None = omit). Implementations that don't support
     them ignore them.
+
+    `web_search` opts the turn into the `web_search` tool: when True AND a
+    search backend is configured, the implementation may run a real web search
+    mid-stream and emit `StatusUpdate` + `Sources` events around the grounded
+    answer. When False (the default), behavior is byte-for-byte unchanged — no
+    tools are advertised. Implementations with no search backend available
+    treat True as a no-op.
     """
 
     def stream(
@@ -123,6 +166,7 @@ class Provider(Protocol):
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
+        web_search: bool = False,
     ) -> AsyncIterator[ProviderEvent]: ...
 
     async def complete(

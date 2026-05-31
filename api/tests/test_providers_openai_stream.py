@@ -36,9 +36,13 @@ from app.providers.protocol import (
     Complete,
     ReasoningDelta,
     ReasoningDone,
+    Sources,
+    StatusUpdate,
     UsageUpdate,
 )
 from app.providers.tiers import get_binding
+from app.search.fake import FakeSearchProvider
+from app.search.protocol import SourceItem
 
 pytestmark = pytest.mark.asyncio
 
@@ -570,3 +574,328 @@ async def test_stream_deepseek_prompt_cache_hit_tokens_captured() -> None:
     assert final_usage.cached_input_tokens == 30
     assert final_usage.input_tokens == 50  # prompt(80) - cache_hit(30)
     assert final_usage.output_tokens == 40
+
+
+# --- web_search tool loop -----------------------------------------------------
+#
+# When `web_search=True` AND a search backend is injected, the provider advertises
+# the `web_search` function tool. If the FIRST completion streams a tool_call, the
+# provider runs the search (emitting StatusUpdate active/done + Sources), then makes
+# a SECOND completion (no tools) for the grounded answer. Usage sums across BOTH.
+
+
+def _tool_call_stream_body(
+    *,
+    query: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> str:
+    """A first-completion SSE body that streams a single `web_search` tool_call.
+
+    The tool call's id/name arrive on the first fragment; the JSON arguments are
+    split across two fragments to exercise the delta-accumulation path. The final
+    usage chunk carries the first call's token counts.
+    """
+    args = json.dumps({"query": query})
+    half = len(args) // 2
+    frames = [
+        _chunk(
+            {
+                "id": "chatcmpl-1",
+                "object": "chat.completion.chunk",
+                "model": "deepseek-v4-pro",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_abc",
+                                    "type": "function",
+                                    "function": {"name": "web_search", "arguments": args[:half]},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        ),
+        _chunk(
+            {
+                "id": "chatcmpl-1",
+                "object": "chat.completion.chunk",
+                "model": "deepseek-v4-pro",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": args[half:]}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+        ),
+        _chunk(
+            {
+                "id": "chatcmpl-1",
+                "object": "chat.completion.chunk",
+                "model": "deepseek-v4-pro",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
+                    "completion_tokens_details": {"reasoning_tokens": 0},
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                },
+            }
+        ),
+        "data: [DONE]\n\n",
+    ]
+    return "".join(frames)
+
+
+def _search_provider() -> OpenAIProvider:
+    return OpenAIProvider(
+        api_key="test-key",
+        base_url="https://api.openai.com/v1",
+        search_provider=FakeSearchProvider(),
+    )
+
+
+@respx.mock
+async def test_stream_web_search_runs_tool_loop_and_sums_usage() -> None:
+    """web_search=True + tool_call -> Status(active)→Status(done)→Sources→answer.
+
+    The first completion streams a `web_search` tool_call (prompt=10/comp=5); the
+    second streams the grounded answer (prompt=20/comp=30). Final usage is the SUM
+    of both calls' disjoint buckets: input=30, output=35.
+    """
+    first = _sse_response(
+        _tool_call_stream_body(query="latest rust release", prompt_tokens=10, completion_tokens=5)
+    )
+    second = _sse_response(
+        _stream_body(prompt_tokens=20, completion_tokens=30, answer_chunks=("Per", " [1]", " yes."))
+    )
+    respx.post(_COMPLETIONS_URL).mock(side_effect=[first, second])
+
+    provider = _search_provider()
+    seq: list[str] = []
+    statuses: list[StatusUpdate] = []
+    sources: list[Sources] = []
+    answer_parts: list[str] = []
+    final_usage: UsageUpdate | None = None
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, StatusUpdate):
+            seq.append(f"status:{event.state}")
+            statuses.append(event)
+        elif isinstance(event, Sources):
+            seq.append("sources")
+            sources.append(event)
+        elif isinstance(event, AnswerDelta):
+            seq.append("answer")
+            answer_parts.append(event.text)
+        elif isinstance(event, UsageUpdate):
+            final_usage = event
+
+    # Ordered: active status, done status, sources, THEN answer deltas.
+    assert statuses[0].state == "active"
+    assert statuses[0].label == "Searching the web…"
+    assert statuses[1].state == "done"
+    first_status_idx = seq.index("status:active")
+    done_idx = seq.index("status:done")
+    sources_idx = seq.index("sources")
+    first_answer_idx = seq.index("answer")
+    assert first_status_idx < done_idx < sources_idx < first_answer_idx
+
+    # Sources come from the injected FakeSearchProvider (3 deterministic items).
+    assert len(sources) == 1
+    assert [it.id for it in sources[0].items] == [1, 2, 3]
+
+    assert "".join(answer_parts) == "Per [1] yes."
+
+    # Usage summed across BOTH completions: input = 10+20, output = 5+30.
+    assert final_usage is not None
+    assert final_usage.input_tokens == 30
+    assert final_usage.output_tokens == 35
+    assert final_usage.reasoning_tokens == 0
+    assert final_usage.cached_input_tokens == 0
+
+
+@respx.mock
+async def test_stream_web_search_advertises_tool_on_first_call_only() -> None:
+    """The first call carries tools; the second (grounded) call does not."""
+    first = _sse_response(
+        _tool_call_stream_body(query="q", prompt_tokens=1, completion_tokens=1)
+    )
+    second = _sse_response(
+        _stream_body(prompt_tokens=1, completion_tokens=1, answer_chunks=("ok",))
+    )
+    route = respx.post(_COMPLETIONS_URL).mock(side_effect=[first, second])
+
+    provider = _search_provider()
+    async for _ in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        pass
+
+    assert route.call_count == 2
+    body0 = json.loads(route.calls[0].request.content)
+    body1 = json.loads(route.calls[1].request.content)
+    assert body0.get("tools")
+    assert body0.get("tool_choice") == "auto"
+    # Second call advertises no tools; tool_choice is "none".
+    assert "tools" not in body1
+    assert body1.get("tool_choice") == "none"
+    # The tool-result turn was appended for the second call's context.
+    roles = [m["role"] for m in body1["messages"]]
+    assert "tool" in roles
+
+
+@respx.mock
+async def test_stream_web_search_no_tool_call_finishes_normally() -> None:
+    """web_search=True but the model answers directly -> no Status/Sources, one call."""
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(prompt_tokens=10, completion_tokens=8, answer_chunks=("Direct",))
+        )
+    )
+
+    provider = _search_provider()
+    events: list[str] = []
+    final_usage: UsageUpdate | None = None
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, (StatusUpdate, Sources)):
+            events.append("search")
+        elif isinstance(event, UsageUpdate):
+            final_usage = event
+
+    # No second call, no search events.
+    assert route.call_count == 1
+    assert events == []
+    assert final_usage is not None
+    assert final_usage.input_tokens == 10
+    assert final_usage.output_tokens == 8
+
+
+@respx.mock
+async def test_stream_web_search_false_is_unchanged_no_tools() -> None:
+    """web_search=False -> no tools advertised, behavior identical to today."""
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(prompt_tokens=5, completion_tokens=7, answer_chunks=("Hi",))
+        )
+    )
+
+    provider = _search_provider()
+    search_events = 0
+    answer_parts: list[str] = []
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=False
+    ):
+        if isinstance(event, (StatusUpdate, Sources)):
+            search_events += 1
+        elif isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+
+    assert route.call_count == 1
+    assert search_events == 0
+    assert "".join(answer_parts) == "Hi"
+    # No tools key sent.
+    body = json.loads(route.calls[0].request.content)
+    assert "tools" not in body
+
+
+@respx.mock
+async def test_stream_web_search_true_without_backend_is_noop() -> None:
+    """web_search=True but NO search provider injected -> no tools, no search events."""
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(prompt_tokens=5, completion_tokens=7, answer_chunks=("Hi",))
+        )
+    )
+
+    # Provider built WITHOUT a search_provider (the default).
+    provider = _provider()
+    search_events = 0
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, (StatusUpdate, Sources)):
+            search_events += 1
+
+    assert route.call_count == 1
+    assert search_events == 0
+    body = json.loads(route.calls[0].request.content)
+    assert "tools" not in body
+
+
+class _RaisingSearchProvider:
+    """A search backend that always fails — exercises graceful degradation."""
+
+    async def search(self, query: str, *, max_results: int = 5) -> list[SourceItem]:
+        raise RuntimeError("search backend down")
+
+
+@respx.mock
+async def test_stream_web_search_backend_failure_degrades_gracefully() -> None:
+    """If the search backend raises, the turn still completes.
+
+    The model calls `web_search`, the backend throws → the provider logs, emits a
+    `done` status with an EMPTY `Sources`, feeds empty results to the grounded
+    second completion, and still streams an answer. Usage sums both calls.
+    """
+    first = _sse_response(
+        _tool_call_stream_body(query="q", prompt_tokens=10, completion_tokens=5)
+    )
+    second = _sse_response(
+        _stream_body(prompt_tokens=20, completion_tokens=30, answer_chunks=("Answer",))
+    )
+    route = respx.post(_COMPLETIONS_URL).mock(side_effect=[first, second])
+
+    provider = OpenAIProvider(
+        api_key="test-key",
+        base_url="https://api.openai.com/v1",
+        search_provider=_RaisingSearchProvider(),
+    )
+    statuses: list[StatusUpdate] = []
+    sources: list[Sources] = []
+    answer_parts: list[str] = []
+    final_usage: UsageUpdate | None = None
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, StatusUpdate):
+            statuses.append(event)
+        elif isinstance(event, Sources):
+            sources.append(event)
+        elif isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+        elif isinstance(event, UsageUpdate):
+            final_usage = event
+
+    # Both completions ran despite the backend failure (no turn-level crash).
+    assert route.call_count == 2
+    # Status still resolves active -> done, but with an EMPTY sources list.
+    assert [s.state for s in statuses] == ["active", "done"]
+    assert len(sources) == 1
+    assert sources[0].items == []
+    # The grounded answer still streamed.
+    assert "".join(answer_parts) == "Answer"
+    # The tool-result turn carried an empty results array.
+    body1 = json.loads(route.calls[1].request.content)
+    tool_msg = next(m for m in body1["messages"] if m["role"] == "tool")
+    assert json.loads(tool_msg["content"]) == {"results": []}
+    # Usage summed across both calls: input = 10+20, output = 5+30.
+    assert final_usage is not None
+    assert final_usage.input_tokens == 30
+    assert final_usage.output_tokens == 35

@@ -1123,6 +1123,167 @@ async def test_mid_stream_rate_limit_surfaces_typed_envelope(
         assert assistants == []
 
 
+# Web search ------------------------------------------------------------------
+
+
+async def test_web_search_emits_status_sources_and_persists_parts(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`webSearch=true` (fake search backend) -> the stream carries `status`
+    then `sources` (status before the answer, sources after), and the persisted
+    assistant row gains a `status` part and a `sources` part in canonical order
+    [reasoning] [status] [text] [sources]."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "what is rust",
+            "webSearch": True,
+        },
+    )
+    event_names = [name for name, _ in frames]
+    # Both new wire events appear, in the right relative order.
+    assert "status" in event_names
+    assert "sources" in event_names
+    status_idx = event_names.index("status")
+    sources_idx = event_names.index("sources")
+    first_answer_idx = event_names.index("answer_delta")
+    terminal_idx = event_names.index("terminal")
+    # LIVE wire order follows the provider emission: status -> sources ->
+    # answer deltas (the grounded answer references the just-resolved sources),
+    # all before terminal. (The PERSISTED parts order is different — sources
+    # land AFTER the text part there; asserted below.)
+    assert status_idx < sources_idx
+    assert sources_idx < first_answer_idx
+    assert first_answer_idx < terminal_idx
+
+    # The `sources` payload carries the deterministic fake citations (ids 1..3).
+    sources_payload = next(p for n, p in frames if n == "sources")
+    items = sources_payload["items"]
+    assert isinstance(items, list)
+    assert [it["id"] for it in items] == [1, 2, 3]
+    for it in items:
+        assert isinstance(it["title"], str)
+        assert isinstance(it["url"], str)
+
+    # The `status` payload's final state is `done`.
+    status_payloads = [p for n, p in frames if n == "status"]
+    assert status_payloads[-1]["state"] == "done"
+
+    # Persisted assistant parts: [reasoning] [status] [text] [sources].
+    async with session_factory() as session:
+        asst = (
+            await session.execute(
+                select(Message).where(Message.role == "assistant")
+            )
+        ).scalar_one()
+        part_types = [p["type"] for p in asst.parts]
+        assert part_types == ["reasoning", "status", "text", "sources"]
+        status_part = next(p for p in asst.parts if p["type"] == "status")
+        assert status_part["state"] == "done"
+        sources_part = next(p for p in asst.parts if p["type"] == "sources")
+        assert [it["id"] for it in sources_part["items"]] == [1, 2, 3]
+
+    # GET round-trips the new parts through the wire schema (validates the union).
+    get_resp = await client.get(f"/api/conversations/{conv_id}")
+    assert get_resp.status_code == 200
+    body = get_resp.json()
+    asst_msg = next(m for m in body["messages"] if m["role"] == "assistant")
+    wire_types = [p["type"] for p in asst_msg["parts"]]
+    assert "status" in wire_types
+    assert "sources" in wire_types
+
+
+async def test_web_search_omitted_is_byte_for_byte_unchanged(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`webSearch` omitted/false -> NO status/sources frames or parts (no-op).
+
+    Regression-critical: the non-search turn must be identical to the historical
+    stream — no `status`, no `sources`, and the persisted parts stay
+    [reasoning] [text].
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "what is rust",
+            # webSearch intentionally omitted (defaults False).
+        },
+    )
+    event_names = [name for name, _ in frames]
+    assert "status" not in event_names
+    assert "sources" not in event_names
+    # The classic shape is intact.
+    assert event_names[0] == "submitted"
+    assert "reasoning_done" in event_names
+    assert "answer_delta" in event_names
+    assert event_names[-1] == "terminal"
+
+    # Persisted parts unchanged: [reasoning] [text], no status/sources.
+    async with session_factory() as session:
+        asst = (
+            await session.execute(
+                select(Message).where(Message.role == "assistant")
+            )
+        ).scalar_one()
+        part_types = [p["type"] for p in asst.parts]
+        assert part_types == ["reasoning", "text"]
+
+
+async def test_web_search_replay_reconstructs_status_and_sources(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An idempotent re-POST of a web-search turn replays the persisted parts
+    back into `status` + `sources` frames so a reconnecting client still sees
+    the grounded turn's citations."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    client_msg_id = str(uuid4())
+    body = {
+        "clientMessageId": client_msg_id,
+        "tierId": "smart",
+        "text": "what is rust",
+        "webSearch": True,
+    }
+    await _collect_sse(client, f"/api/conversations/{conv_id}/messages", body)
+
+    # Re-POST the SAME clientMessageId -> idempotent replay from persisted parts.
+    replay = await _collect_sse(
+        client, f"/api/conversations/{conv_id}/messages", body
+    )
+    replay_names = [name for name, _ in replay]
+    # Replay sequence: submitted -> status -> answer_delta -> sources -> terminal.
+    assert replay_names == [
+        "submitted",
+        "status",
+        "answer_delta",
+        "sources",
+        "terminal",
+    ]
+    replay_sources = next(p for n, p in replay if n == "sources")
+    assert [it["id"] for it in replay_sources["items"]] == [1, 2, 3]
+    replay_status = next(p for n, p in replay if n == "status")
+    assert replay_status["state"] == "done"
+
+
 # Auto-tier routing ------------------------------------------------------------
 
 
@@ -1207,6 +1368,7 @@ class _NoSubstitutionThenBlockProvider:
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
+        web_search: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
         try:
             yield ReasoningDelta(text="thinking")

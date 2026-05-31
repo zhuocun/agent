@@ -40,8 +40,12 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    Sources,
+    StatusUpdate,
     UsageUpdate,
 )
+from app.search.fake import FakeSearchProvider
+from app.search.protocol import SourceItem
 
 # Small bank of response templates. Hash the input to pick one deterministically.
 _RESPONSE_TEMPLATES: tuple[tuple[str, str, str, str], ...] = (
@@ -100,6 +104,7 @@ class FakeProvider:
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
+        web_search: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
         # `thinking` / `reasoning_effort` are accepted to satisfy the Provider
         # Protocol but ignored — the fake's output is fixed/deterministic.
@@ -111,7 +116,26 @@ class FakeProvider:
         await asyncio.sleep(self._delay)
         yield ReasoningDone()
 
-        # Four answer deltas varying by input.
+        # Web-search path: emit the status line + deterministic sources between
+        # the reasoning block and the answer, mirroring the real provider's
+        # event order (StatusUpdate active → done → Sources → grounded answer).
+        # Deterministic via FakeSearchProvider so e2e/tests can assert exact
+        # shape. When `web_search=False` this whole block is skipped and the
+        # fake's output is byte-for-byte unchanged.
+        search_items: list[SourceItem] = []
+        if web_search:
+            await asyncio.sleep(self._delay)
+            yield StatusUpdate(label="Searching the web…", state="active")
+            search_items = await FakeSearchProvider().search(user_text, max_results=3)
+            await asyncio.sleep(self._delay)
+            yield StatusUpdate(label="Searching the web…", state="done")
+            yield Sources(items=search_items)
+
+        # Four answer deltas varying by input. On a web_search turn, prepend a
+        # citation-bearing delta so the grounded answer references the sources.
+        if web_search and search_items:
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="Based on the sources [1][2], ")
         chunks = _pick_template(user_text)
         for i, chunk in enumerate(chunks):
             await asyncio.sleep(self._delay)

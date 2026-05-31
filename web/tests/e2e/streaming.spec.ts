@@ -121,4 +121,123 @@ test.describe("streaming", () => {
     expect(assistantMsg.parts.some((p) => p.type === "text" && (p.text ?? "").length > 0))
       .toBe(true);
   });
+
+  // Web-search path. Requires the integrated BE running the FakeProvider with
+  // web search wired (api/app/providers/fake.py emits a `status` event
+  // "Searching the web…" — active then done — and a `sources` event with 3
+  // deterministic items when the message-create carries `webSearch: true`; the
+  // BE persists the `sources` part on the assistant row). This asserts the FE
+  // half of the contract end-to-end:
+  //   (a) toggling web search on sends `webSearch: true`
+  //   (b) the "Searching the web…" status line shows WHILE data-status is
+  //       streaming/submitted
+  //   (c) the sources panel + >=1 source card render AFTER data-status="done"
+  //   (d) the assistant row persists a `sources` part (GET round-trip)
+  test("web search: status line shows while streaming, sources render after done, sources part persists", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    // Capture the message-create POST body to confirm `webSearch: true` rode
+    // along, plus the conversation id from the SSE URL.
+    let createdConvoId = "";
+    let sentWebSearch: boolean | undefined;
+    page.on("request", (request) => {
+      const url = request.url();
+      if (
+        request.method() === "POST" &&
+        /\/api\/conversations\/[^/]+\/messages$/.test(url)
+      ) {
+        const m = url.match(/\/api\/conversations\/([^/]+)\/messages$/);
+        if (m) createdConvoId = m[1];
+        try {
+          const body = request.postDataJSON() as { webSearch?: unknown };
+          if (typeof body.webSearch === "boolean") sentWebSearch = body.webSearch;
+        } catch {
+          // Non-JSON body — leave `sentWebSearch` undefined; the assertion
+          // below will flag it.
+        }
+      }
+    });
+
+    // Toggle web search ON via the model-mode picker. The default tier ("auto")
+    // supports search, so the "Web search" section is present. Desktop project
+    // (Desktop Chrome) → the dropdown variant; open it, then click the toggle.
+    await page.getByTestId("model-mode-trigger").click();
+    const toggle = page.getByTestId("web-search-toggle");
+    await expect(toggle).toBeVisible({ timeout: 5_000 });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // Dismiss the dropdown so it doesn't overlay the composer.
+    await page.keyboard.press("Escape");
+
+    const composer = page.getByTestId("composer-textarea");
+    await composer.fill("What is the latest on Playwright?");
+    await page.getByTestId("composer-send").click();
+
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toBeVisible({ timeout: 15_000 });
+
+    // (b) The "Searching the web…" status line is visible while the turn is
+    // still in flight (data-status submitted/streaming). The status part
+    // renders an active spinner + the BE-provided label.
+    await expect(assistant).toHaveAttribute("data-status", /submitted|streaming/, {
+      timeout: 15_000,
+    });
+    await expect(assistant.getByText("Searching the web…")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // (a) The create request carried webSearch: true.
+    expect(sentWebSearch).toBe(true);
+
+    // (c) Terminal lands; the sources panel + at least one source card render
+    // after the answer settles.
+    await expect(assistant).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+    const answer = assistant.getByTestId("assistant-answer");
+    await expect(answer).toBeVisible();
+
+    const sourcesPanel = assistant.getByTestId("sources-panel");
+    await expect(sourcesPanel).toBeVisible({ timeout: 15_000 });
+    const sourceCards = assistant.getByTestId("source-card");
+    await expect(sourceCards.first()).toBeVisible({ timeout: 15_000 });
+    expect(await sourceCards.count()).toBeGreaterThanOrEqual(1);
+
+    // (d) BE round-trip: the assistant row persists a `sources` part whose
+    // items carry the contract shape (id/title/url, optional snippet/domain).
+    expect(createdConvoId).toBeTruthy();
+    const fetched = await page.request.get(
+      `${BE_URL}/api/conversations/${createdConvoId}`,
+    );
+    expect(fetched.status()).toBe(200);
+    const body = await fetched.json();
+    const messages: Array<{
+      role: string;
+      parts: Array<{
+        type: string;
+        items?: Array<{ id: number; title: string; url: string }>;
+      }>;
+    }> = body.messages;
+
+    const assistantMsg = messages.find((m) => m.role === "assistant");
+    expect(assistantMsg).toBeTruthy();
+    const sourcesPart = assistantMsg!.parts.find((p) => p.type === "sources");
+    expect(sourcesPart).toBeTruthy();
+    expect(Array.isArray(sourcesPart!.items)).toBe(true);
+    expect((sourcesPart!.items ?? []).length).toBeGreaterThanOrEqual(1);
+    const first = (sourcesPart!.items ?? [])[0];
+    expect(typeof first.id).toBe("number");
+    expect(typeof first.title).toBe("string");
+    expect(typeof first.url).toBe("string");
+
+    // The sources part is ordered AFTER the answer text part (contract: sources
+    // render after the answer).
+    const textIdx = assistantMsg!.parts.findIndex((p) => p.type === "text");
+    const sourcesIdx = assistantMsg!.parts.findIndex((p) => p.type === "sources");
+    expect(textIdx).toBeGreaterThanOrEqual(0);
+    expect(sourcesIdx).toBeGreaterThan(textIdx);
+  });
 });

@@ -576,12 +576,16 @@ async def test_stream_deepseek_prompt_cache_hit_tokens_captured() -> None:
     assert final_usage.output_tokens == 40
 
 
-# --- web_search tool loop -----------------------------------------------------
+# --- web_search agentic tool loop ---------------------------------------------
 #
 # When `web_search=True` AND a search backend is injected, the provider advertises
-# the `web_search` function tool. If the FIRST completion streams a tool_call, the
-# provider runs the search (emitting StatusUpdate active/done + Sources), then makes
-# a SECOND completion (no tools) for the grounded answer. Usage sums across BOTH.
+# the `web_search` function tool with `tool_choice="auto"` and runs a BOUNDED
+# agentic loop: each round streams one completion; if it emits web_search
+# tool_call(s) the provider runs the search (StatusUpdate active/done + Sources),
+# appends the tool-call + tool-result turns, and continues. The first round that
+# produces NO tool_call streams the grounded answer and stops. The round count is
+# capped at `_MAX_SEARCH_ROUNDS`; the final round forces `tool_choice="none"`.
+# Usage sums across ALL rounds.
 
 
 def _tool_call_stream_body(
@@ -730,8 +734,16 @@ async def test_stream_web_search_runs_tool_loop_and_sums_usage() -> None:
 
 
 @respx.mock
-async def test_stream_web_search_advertises_tool_on_first_call_only() -> None:
-    """The first call carries tools; the second (grounded) call does not."""
+async def test_stream_web_search_advertises_tool_across_rounds() -> None:
+    """The tool stays advertised on EVERY (non-final) round.
+
+    Root-cause fix: keeping `tools=[WEB_SEARCH_TOOL]` with `tool_choice="auto"`
+    across rounds makes the OpenAI-compatible endpoint parse tool calls into
+    STRUCTURED `delta.tool_calls` rather than leaking the raw special tokens as
+    content. Here round 1 streams a tool_call and round 2 streams the grounded
+    answer — BOTH calls advertise the tool with `tool_choice="auto"` (round 2 is
+    not the final capped round, so it is not forced to "none").
+    """
     first = _sse_response(
         _tool_call_stream_body(query="q", prompt_tokens=1, completion_tokens=1)
     )
@@ -749,11 +761,14 @@ async def test_stream_web_search_advertises_tool_on_first_call_only() -> None:
     assert route.call_count == 2
     body0 = json.loads(route.calls[0].request.content)
     body1 = json.loads(route.calls[1].request.content)
+    # Round 1 advertises the tool, auto choice.
     assert body0.get("tools")
     assert body0.get("tool_choice") == "auto"
-    # Second call advertises no tools; tool_choice is "none".
-    assert "tools" not in body1
-    assert body1.get("tool_choice") == "none"
+    # Round 2 (grounded answer) STILL advertises the tool with auto choice — the
+    # model declines to call it again and answers instead. This is what keeps the
+    # endpoint parsing any further tool intent as structured calls, not content.
+    assert body1.get("tools")
+    assert body1.get("tool_choice") == "auto"
     # The tool-result turn was appended for the second call's context.
     roles = [m["role"] for m in body1["messages"]]
     assert "tool" in roles
@@ -899,3 +914,192 @@ async def test_stream_web_search_backend_failure_degrades_gracefully() -> None:
     assert final_usage is not None
     assert final_usage.input_tokens == 30
     assert final_usage.output_tokens == 35
+
+
+# --- multi-round loop, leak regression, round cap -----------------------------
+
+
+@respx.mock
+async def test_stream_web_search_multi_round_dedupes_and_sums_usage() -> None:
+    """Three rounds: tool_call → tool_call → answer.
+
+    - Exactly THREE completions are made; the search backend runs TWICE.
+    - The two searches use the SAME query, so the accumulated sources collide on
+      url and dedup to a single coherent set, renumbered 1..N (contiguous).
+    - The final round produces no tool_call; its content is the clean answer.
+    - Usage sums the disjoint buckets across ALL THREE rounds.
+    """
+    # Same query both rounds → identical urls from the FakeSearchProvider → the
+    # accumulated 6 items dedup down to 3, renumbered 1..3.
+    round1 = _sse_response(
+        _tool_call_stream_body(query="spurs score", prompt_tokens=10, completion_tokens=5)
+    )
+    round2 = _sse_response(
+        _tool_call_stream_body(query="spurs score", prompt_tokens=20, completion_tokens=7)
+    )
+    round3 = _sse_response(
+        _stream_body(
+            prompt_tokens=40, completion_tokens=9, answer_chunks=("Final", " [1]", " answer.")
+        )
+    )
+    route = respx.post(_COMPLETIONS_URL).mock(side_effect=[round1, round2, round3])
+
+    provider = _search_provider()
+    statuses: list[StatusUpdate] = []
+    sources: list[Sources] = []
+    answer_parts: list[str] = []
+    final_usage: UsageUpdate | None = None
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, StatusUpdate):
+            statuses.append(event)
+        elif isinstance(event, Sources):
+            sources.append(event)
+        elif isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+        elif isinstance(event, UsageUpdate):
+            final_usage = event
+
+    # Three completions, two of which triggered a search.
+    assert route.call_count == 3
+    # Two search cycles → two active/done pairs, two Sources emissions.
+    assert [s.state for s in statuses] == ["active", "done", "active", "done"]
+    assert len(sources) == 2
+    # The FINAL emitted Sources set is deduped (same query both rounds → 3 urls)
+    # and renumbered contiguously 1..3.
+    final_sources = sources[-1].items
+    assert [it.id for it in final_sources] == [1, 2, 3]
+    assert len({it.url for it in final_sources}) == 3
+
+    # Final-round content is the clean grounded answer.
+    assert "".join(answer_parts) == "Final [1] answer."
+
+    # Usage summed across ALL THREE rounds: input = 10+20+40, output = 5+7+9.
+    assert final_usage is not None
+    assert final_usage.input_tokens == 70
+    assert final_usage.output_tokens == 21
+    assert final_usage.reasoning_tokens == 0
+    assert final_usage.cached_input_tokens == 0
+
+
+@respx.mock
+async def test_stream_web_search_multi_round_distinct_queries_accumulate() -> None:
+    """Distinct queries across rounds accumulate into one renumbered set."""
+    round1 = _sse_response(
+        _tool_call_stream_body(query="query alpha", prompt_tokens=1, completion_tokens=1)
+    )
+    round2 = _sse_response(
+        _tool_call_stream_body(query="query beta", prompt_tokens=1, completion_tokens=1)
+    )
+    round3 = _sse_response(
+        _stream_body(prompt_tokens=1, completion_tokens=1, answer_chunks=("done",))
+    )
+    respx.post(_COMPLETIONS_URL).mock(side_effect=[round1, round2, round3])
+
+    provider = _search_provider()
+    sources: list[Sources] = []
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, Sources):
+            sources.append(event)
+
+    # Two distinct queries → 3 + 3 distinct urls → 6 sources renumbered 1..6.
+    final_sources = sources[-1].items
+    assert [it.id for it in final_sources] == [1, 2, 3, 4, 5, 6]
+    assert len({it.url for it in final_sources}) == 6
+
+
+# A content body that leaks the EXACT captured prod tool-call markup as answer
+# text. `｜` is U+FF5C (fullwidth bar). A correct fix must scrub all of this so
+# none of it reaches the client as an answer delta.
+_LEAKED_MARKUP = (
+    "The user is asking if the Spurs played. Let me search for that."
+    "<｜｜DSML｜｜tool_calls>\n"
+    '<｜｜DSML｜｜invoke name="web_search">\n'
+    '<｜｜DSML｜｜parameter name="query" string="true">'
+    "San Antonio Spurs score</｜｜DSML｜｜parameter>\n"
+    "</｜｜DSML｜｜invoke>\n"
+    "</｜｜DSML｜｜tool_calls>"
+)
+
+
+@respx.mock
+async def test_stream_web_search_leaked_markup_is_scrubbed_from_answer() -> None:
+    """A round whose CONTENT leaks raw tool-call markup → none reaches the answer.
+
+    The model declines the structured tool call and instead dumps the raw
+    special-token block into `delta.content`. The streaming sanitizer truncates
+    the answer at the first start marker, so the emitted answer contains NONE of
+    the leak markup (`tool_calls`, `invoke name`, `｜｜DSML`, `web_search`).
+    """
+    leaked = _sse_response(
+        _stream_body(
+            prompt_tokens=10,
+            completion_tokens=20,
+            # Split the leak across two content chunks so the marker also
+            # straddles a chunk boundary in part of the run.
+            answer_chunks=(_LEAKED_MARKUP[:90], _LEAKED_MARKUP[90:]),
+        )
+    )
+    respx.post(_COMPLETIONS_URL).mock(return_value=leaked)
+
+    provider = _search_provider()
+    answer_parts: list[str] = []
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+
+    answer = "".join(answer_parts)
+    # The clean lead-in prose (before the marker) survives; everything from the
+    # marker onward is scrubbed.
+    assert "Let me search for that." in answer
+    for forbidden in ("tool_calls", "invoke name", "｜｜DSML", "DSML", "web_search", "<｜"):
+        assert forbidden not in answer
+
+
+@respx.mock
+async def test_stream_web_search_round_cap_forces_terminal_answer() -> None:
+    """If the model calls the tool EVERY round, the loop stops at the cap.
+
+    Every round streams a `web_search` tool_call. The loop must stop after
+    `_MAX_SEARCH_ROUNDS` completions; the final round is sent with
+    `tool_choice="none"`. A terminal UsageUpdate + Complete still arrive, with
+    usage summed across all capped rounds.
+    """
+    from app.providers.openai import _MAX_SEARCH_ROUNDS
+
+    # Enough tool-call bodies to exceed the cap; only _MAX_SEARCH_ROUNDS consumed.
+    bodies = [
+        _sse_response(
+            _tool_call_stream_body(query=f"q{i}", prompt_tokens=2, completion_tokens=3)
+        )
+        for i in range(_MAX_SEARCH_ROUNDS + 2)
+    ]
+    route = respx.post(_COMPLETIONS_URL).mock(side_effect=bodies)
+
+    provider = _search_provider()
+    usage_updates: list[UsageUpdate] = []
+    completes: list[Complete] = []
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, UsageUpdate):
+            usage_updates.append(event)
+        elif isinstance(event, Complete):
+            completes.append(event)
+
+    # Stops exactly at the cap — no infinite loop.
+    assert route.call_count == _MAX_SEARCH_ROUNDS
+    # The final round was forced to answer (tool_choice="none").
+    final_body = json.loads(route.calls[-1].request.content)
+    assert final_body.get("tool_choice") == "none"
+    # Still a single terminal UsageUpdate + Complete, usage summed across rounds.
+    assert len(usage_updates) == 1
+    assert len(completes) == 1
+    assert usage_updates[0].input_tokens == 2 * _MAX_SEARCH_ROUNDS
+    assert usage_updates[0].output_tokens == 3 * _MAX_SEARCH_ROUNDS
+    assert completes[0].usage == usage_updates[0]

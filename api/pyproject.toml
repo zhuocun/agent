@@ -49,6 +49,13 @@ select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF"]
 ignore = [
     "B008",  # FastAPI uses Depends() in argument defaults intentionally.
 ]
+# These code points are LOAD-BEARING in the tool-markup sanitizer: they are the
+# exact special-token characters DeepSeek/the OpenAI-compatible endpoint leaks
+# into answer content (U+FF5C fullwidth vertical bar, U+2581 lower one-eighth
+# block). We match on them byte-for-byte, so they must appear verbatim in source
+# (markers, docstrings, and comments) — not be "corrected" to ASCII. Allow them
+# instead of papering every occurrence with noqa.
+allowed-confusables = ["｜", "▁"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B"]

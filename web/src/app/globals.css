@@ -550,14 +550,20 @@
 
 /* Chrome-strip frost — the masked backdrop-blur layer behind the floating
    header/composer (chat-thread.tsx) that frosts messages scrolling beneath the
-   chrome instead of wiping them with an opaque fade. Only the backdrop-filter
-   lives here (brightness matched to the glass utilities); the direction-specific
+   chrome instead of wiping them with an opaque fade. Carries the glass blur +
+   saturation but deliberately OMITS the `brightness(--glass-brightness)` lift:
+   the empty/welcome surface beneath the chrome is the near-white app background
+   (#f9fafc), and a 1.03 lift clips it past the gamut to pure white (#ffffff),
+   so the masked top of this strip rendered a whiter-than-page band — the
+   reported "top section is a different color than the page." Saturation is kept
+   (sub-perceptual on the flat surface, but preserves the glass character when
+   colored message content does scroll under the chrome). The direction-specific
    `mask-image` stays inline on the element (top strip fades down, bottom fades
    up). Pulled into a class — not inline — so the fallbacks below can gate it
    for reduced transparency, exactly like the `glass-*` utilities. */
 @utility chrome-frost {
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
 
 /* Skeleton shimmer — iOS-style placeholder: a muted base block with a moving

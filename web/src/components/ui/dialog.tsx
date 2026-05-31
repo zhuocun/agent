@@ -28,7 +28,7 @@ function DialogBackdrop({ className, ...props }: DialogPrimitive.Backdrop.Props)
     <DialogPrimitive.Backdrop
       data-slot="dialog-backdrop"
       className={cn(
-        "fixed inset-0 z-50 bg-foreground/45 backdrop-blur-sm transition-opacity duration-200 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0",
+        "fixed inset-0 z-50 bg-foreground/30 backdrop-blur-md transition-opacity duration-200 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0",
         className
       )}
       {...props}
@@ -103,11 +103,11 @@ function DialogContent({
           // bottom, rounded top only, capped height, home-indicator-safe bottom
           // padding. Slides up/down with iOS sheet easing.
           "glass-strong fixed inset-x-0 bottom-0 z-50 grid w-full gap-4 rounded-t-3xl rounded-b-none p-6 pb-[max(env(safe-area-inset-bottom),1rem)] text-foreground",
-          "max-h-[90dvh] transition-[transform,opacity] duration-[400ms] ease-[cubic-bezier(0.32,0.72,0,1)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
+          "max-h-[90dvh] transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
           // Desktop (sm+): restore the centered modal — reset the sheet anchor,
           // radius and slide, and swap back to the scale+fade transition. The
           // centering -translate keeps composing with scale during the anim.
-          "sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-3xl sm:rounded-b-3xl sm:p-6 sm:pb-6 sm:transition-all sm:duration-200 sm:ease-out sm:data-[ending-style]:scale-95 sm:data-[ending-style]:opacity-0 sm:data-[starting-style]:scale-95 sm:data-[starting-style]:opacity-0",
+          "sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-3xl sm:rounded-b-3xl sm:p-6 sm:pb-6 sm:transition-all sm:duration-300 sm:ease-[var(--ease-ios-smooth)] sm:data-[ending-style]:scale-95 sm:data-[ending-style]:opacity-0 sm:data-[starting-style]:scale-95 sm:data-[starting-style]:opacity-0",
           className
         )}
         {...contentProps}
@@ -117,7 +117,7 @@ function DialogContent({
           <div
             aria-hidden
             {...handleProps}
-            className="-mt-2.5 mx-auto h-1.5 w-9 shrink-0 cursor-grab touch-none rounded-full bg-foreground/15 sm:hidden"
+            className="-mt-2.5 mx-auto h-1.5 w-9 shrink-0 cursor-grab touch-none rounded-full bg-foreground/25 sm:hidden"
           />
         ) : null}
         {children}
@@ -127,7 +127,7 @@ function DialogContent({
           // Kept mounted even when hidden: swipe-to-dismiss clicks this ref.
           className={cn(
             showCloseButton
-              ? "absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+              ? "absolute top-2 right-2 inline-flex size-11 items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
               : "sr-only"
           )}
         >

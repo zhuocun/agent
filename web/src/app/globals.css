@@ -222,13 +222,24 @@
   --glass-blur-xl: 32px;          /* dialog */
   --glass-saturate: 1.7;
   --glass-contrast: 1.05;
+  /* Sub-perceptual brightness lift on the backdrop — reads as depth, not shine.
+     Pairs with --glass-rim so the material lifts the scene behind it slightly
+     the way real glass refracts. Kept near 1 deliberately. */
+  --glass-brightness: 1.03;
 
   --glass-regular-bg: rgba(255, 255, 255, 0.72);
   --glass-strong-bg:  rgba(255, 255, 255, 0.90);
   --glass-clear-bg:   rgba(255, 255, 255, 0.32);
 
-  /* Top-edge specular highlight (inset). */
+  /* Top-edge specular highlight (inset). Retained as a standalone token because
+     the `shadow-glass-highlight` Tailwind utility references it. */
   --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  /* Refraction rim — the top highlight PLUS a faint bottom inset so the
+     specular edge wraps the surface (liquid glass) instead of catching only
+     the top edge (frosted). Used inside the glass utilities' shadow stacks. */
+  --glass-rim:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12);
   /* Hairline contour via inner shadow (NOT a solid border). */
   --glass-border: rgba(255, 255, 255, 0.18);
 
@@ -330,12 +341,19 @@
   --glass-blur-xl: 32px;
   --glass-saturate: 1.6;
   --glass-contrast: 1.05;
+  /* Slightly stronger than light — a dark surface needs a touch more lift to
+     read as refractive depth. Still sub-perceptual. */
+  --glass-brightness: 1.06;
 
   --glass-regular-bg: rgba(24, 24, 28, 0.74);
   --glass-strong-bg:  rgba(24, 24, 28, 0.92);
   --glass-clear-bg:   rgba(24, 24, 28, 0.38);
 
   --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  /* Refraction rim — dark parity (see :root token for rationale). */
+  --glass-rim:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
   --glass-border: rgba(255, 255, 255, 0.08);
 
   --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.20);
@@ -487,10 +505,10 @@
 
 @utility glass-regular {
   background-color: var(--glass-regular-bg);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
   box-shadow:
-    var(--glass-highlight),
+    var(--glass-rim),
     inset 0 0 0 1px var(--glass-border),
     var(--glass-shadow-ambient),
     var(--glass-shadow-key);
@@ -498,10 +516,10 @@
 
 @utility glass-strong {
   background-color: var(--glass-strong-bg);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
   box-shadow:
-    var(--glass-highlight),
+    var(--glass-rim),
     inset 0 0 0 1px var(--glass-border),
     var(--glass-shadow-ambient),
     var(--glass-shadow-key);
@@ -509,10 +527,10 @@
 
 @utility glass-clear {
   background-color: var(--glass-clear-bg);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
   box-shadow:
-    var(--glass-highlight),
+    var(--glass-rim),
     inset 0 0 0 1px var(--glass-border),
     var(--glass-shadow-ambient),
     var(--glass-shadow-key);
@@ -521,13 +539,25 @@
 @utility glass-capsule {
   background-color: var(--glass-regular-bg);
   border-radius: 9999px;
-  -webkit-backdrop-filter: blur(var(--glass-blur-capsule)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
-  backdrop-filter: blur(var(--glass-blur-capsule)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast));
+  -webkit-backdrop-filter: blur(var(--glass-blur-capsule)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur-capsule)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
   box-shadow:
-    var(--glass-highlight),
+    var(--glass-rim),
     inset 0 0 0 1px var(--glass-border),
     var(--glass-shadow-ambient),
     var(--glass-shadow-key);
+}
+
+/* Chrome-strip frost — the masked backdrop-blur layer behind the floating
+   header/composer (chat-thread.tsx) that frosts messages scrolling beneath the
+   chrome instead of wiping them with an opaque fade. Only the backdrop-filter
+   lives here (brightness matched to the glass utilities); the direction-specific
+   `mask-image` stays inline on the element (top strip fades down, bottom fades
+   up). Pulled into a class — not inline — so the fallbacks below can gate it
+   for reduced transparency, exactly like the `glass-*` utilities. */
+@utility chrome-frost {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
 }
 
 /* Skeleton shimmer — iOS-style placeholder: a muted base block with a moving
@@ -552,7 +582,7 @@
    rules so Streamdown's own element classes always win when present. */
 @layer components {
   .chat-md {
-    @apply text-[1.0625rem] leading-7 text-foreground tracking-tight md:text-[0.9375rem];
+    @apply text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem];
   }
   .chat-md :where(p, ul, ol, pre, blockquote, table, h1, h2, h3, h4):not(:first-child) {
     @apply mt-4;
@@ -604,6 +634,12 @@
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+  /* Chrome frost has nothing to fall back to (no own background); just drop
+     the blur — the strip's light color gradient remains as the separation. */
+  .chrome-frost {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 
 /* Reduced transparency → solid fills, no blur, no highlight; keep hairline + key for depth. */
@@ -625,6 +661,12 @@
     box-shadow:
       inset 0 0 0 1px var(--border),
       var(--glass-shadow-key);
+  }
+  /* Drop the chrome frost too — the strip's color gradient is the fallback
+     separation, so the chrome stays legible without any backdrop blur. */
+  .chrome-frost {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }
 

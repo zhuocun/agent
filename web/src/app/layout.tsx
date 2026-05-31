@@ -27,7 +27,10 @@ export const metadata: Metadata = {
     // Edge-to-edge: content draws under the status bar. Safe because the app
     // header already pads `env(safe-area-inset-top)` (chat-thread.tsx chrome
     // strip) and a fixed status-bar blur strip is rendered below.
-    statusBarStyle: "black-translucent",
+    // `default` (not the deprecated `black-translucent`) so the status-bar
+    // glyphs follow the paired light/dark `theme-color` metas below — under
+    // iOS 26 `black-translucent` can force white glyphs even in light mode.
+    statusBarStyle: "default",
     startupImage: [
       {
         url: "/splash-1170x2532-light.png",
@@ -99,8 +102,12 @@ export default function RootLayout({
           className="pointer-events-none fixed inset-x-0 top-0 z-[100]"
           style={{
             height: "env(safe-area-inset-top)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
+            // Track the glass system rather than hardcoding — same blur,
+            // saturation, and brightness lift as the `glass-*` utilities.
+            backdropFilter:
+              "blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness))",
+            WebkitBackdropFilter:
+              "blur(var(--glass-blur)) saturate(var(--glass-saturate)) brightness(var(--glass-brightness))",
             maskImage: "linear-gradient(to bottom, black, transparent)",
             WebkitMaskImage: "linear-gradient(to bottom, black, transparent)",
           }}

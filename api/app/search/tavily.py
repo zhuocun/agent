@@ -23,6 +23,14 @@ from app.search.protocol import SourceItem
 
 _TAVILY_URL = "https://api.tavily.com/search"
 _SNIPPET_MAX_CHARS = 300
+# Defensive cap on the outgoing query so a runaway model-emitted argument can't
+# bloat the request body (the provider layer also caps; belt-and-suspenders).
+_QUERY_MAX_CHARS = 512
+# Only web URLs are safe to surface as clickable citations. Result URLs are
+# attacker-influenceable (an adversary can rank a page, or Tavily could return
+# an arbitrary scheme), so any non-http(s) scheme (javascript:, data:, …) is
+# dropped server-side before a SourceItem is ever built / persisted / rendered.
+_SAFE_URL_SCHEMES = frozenset({"http", "https"})
 # Tavily is a synchronous third-party round-trip; bound it so a slow upstream
 # can't stall a streaming turn indefinitely.
 _DEFAULT_TIMEOUT_S = 15.0
@@ -62,6 +70,20 @@ def _domain_of(url: str) -> str | None:
     return host or None
 
 
+def _is_safe_url(url: str) -> bool:
+    """True only when `url` parses to an http(s) scheme.
+
+    Result URLs are attacker-influenceable, so anything that isn't plain web
+    (javascript:, data:, file:, …) is rejected — the caller skips the whole
+    result rather than emitting an empty / unsafe href.
+    """
+    try:
+        scheme = urlparse(url).scheme
+    except ValueError:
+        return False
+    return scheme.lower() in _SAFE_URL_SCHEMES
+
+
 def _truncate(text: str, limit: int = _SNIPPET_MAX_CHARS) -> str:
     """Truncate a snippet to ~`limit` chars, appending an ellipsis when cut."""
     text = text.strip()
@@ -81,7 +103,8 @@ class TavilySearchProvider:
         client = _build_client(self._timeout)
         payload = {
             "api_key": self._api_key,
-            "query": query,
+            # Defensive cap: bound the query length regardless of caller.
+            "query": query[:_QUERY_MAX_CHARS],
             "max_results": max_results,
             "search_depth": "basic",
             "include_answer": False,
@@ -101,10 +124,20 @@ class TavilySearchProvider:
 
         results = data.get("results") or []
         items: list[SourceItem] = []
-        for idx, result in enumerate(results, start=1):
+        # `idx` is the 1-based citation ordinal; bump it only for results we
+        # actually keep so ids stay contiguous (1..N) after unsafe-URL drops.
+        idx = 0
+        for result in results:
             if not isinstance(result, dict):
                 continue
             url = str(result.get("url") or "")
+            # Drop any result whose URL isn't plain http(s). The URL is
+            # attacker-influenceable and flows unmodified into an href on the
+            # public share view, so an unsafe scheme (javascript:, data:, …) is
+            # rejected here rather than emitted as an empty/dangerous source.
+            if not _is_safe_url(url):
+                continue
+            idx += 1
             title = str(result.get("title") or url or f"Result {idx}")
             content = result.get("content")
             snippet = _truncate(str(content)) if content else None

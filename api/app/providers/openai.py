@@ -101,6 +101,10 @@ _MAX_SEARCH_RESULTS = 5
 # the FINAL round we force `tool_choice="none"` so the model is compelled to
 # answer; the streaming sanitizer scrubs any residual leaked markup.
 _MAX_SEARCH_ROUNDS = 4
+# Cap the model-emitted query length before it reaches the search backend. The
+# model can emit an arbitrarily long `query` argument; bound it so a runaway
+# value can't bloat the upstream request.
+_MAX_SEARCH_QUERY_CHARS = 512
 
 
 def _safe_int(value: Any) -> int:
@@ -239,9 +243,10 @@ def _dedupe_and_renumber(items: list[SourceItem]) -> list[SourceItem]:
 def _parse_query(raw_arguments: str) -> str:
     """Parse the `query` field out of a tool call's JSON arguments string.
 
-    Tolerant: malformed / missing JSON yields an empty query (the search backend
-    then returns whatever it returns for an empty string; the turn still
-    completes rather than crashing on a model that emitted bad arguments).
+    Tolerant: malformed / missing JSON yields an empty query (the caller then
+    short-circuits with empty sources rather than crashing on a model that
+    emitted bad arguments). The returned query is length-capped so a runaway
+    model-emitted value can't bloat the search backend request.
     """
     try:
         parsed = json.loads(raw_arguments or "{}")
@@ -250,7 +255,7 @@ def _parse_query(raw_arguments: str) -> str:
     if isinstance(parsed, dict):
         query = parsed.get("query")
         if isinstance(query, str):
-            return query
+            return query[:_MAX_SEARCH_QUERY_CHARS]
     return ""
 
 
@@ -459,16 +464,23 @@ class OpenAIProvider:
             results_by_call: list[tuple[_ToolCallAccumulator, list[SourceItem]]] = []
             for call in calls:
                 query = _parse_query(call.arguments)
-                try:
-                    items = await self._search_provider.search(
-                        query, max_results=_MAX_SEARCH_RESULTS
-                    )
-                except Exception as exc:  # degrade gracefully on backend failure
-                    # The search backend raised (transport / non-200). Don't fail
-                    # the whole turn: log and feed empty results so the model
-                    # answers from its own knowledge.
-                    _log.warning("web_search.backend_failed", error=str(exc))
+                if not query.strip():
+                    # Malformed / empty tool arguments: there's nothing to
+                    # search. Skip the live backend call and feed an empty
+                    # result so the second completion answers from the model's
+                    # own knowledge.
                     items = []
+                else:
+                    try:
+                        items = await self._search_provider.search(
+                            query, max_results=_MAX_SEARCH_RESULTS
+                        )
+                    except Exception as exc:  # degrade gracefully on backend failure
+                        # The search backend raised (transport / non-200). Don't
+                        # fail the whole turn: log and feed empty results so the
+                        # model answers from its own knowledge.
+                        _log.warning("web_search.backend_failed", error=str(exc))
+                        items = []
                 results_by_call.append((call, items))
                 accumulated_sources.extend(items)
             yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="done")

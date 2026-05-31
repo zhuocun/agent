@@ -86,18 +86,22 @@ function SourceCard({ item }: { item: SourceItem }) {
     ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`
     : null;
 
-  return (
-    <a
-      href={item.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      data-testid="source-card"
-      className={cn(
-        "flex items-start gap-3 rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] p-3",
-        "transition-colors hover:bg-foreground/[0.04]",
-        "outline-none focus-visible:ring-2 focus-visible:ring-ring",
-      )}
-    >
+  // Belt-and-suspenders: the BE already drops non-http(s) URLs, but result URLs
+  // are attacker-influenceable and this card also renders on the unauthenticated
+  // public share view. Only emit a clickable href for a plain web URL; anything
+  // else renders as non-clickable text so a bad scheme (javascript:, data:, …)
+  // can never become a live link.
+  const clickable = isHttpUrl(item.url);
+
+  const cardClassName = cn(
+    "flex items-start gap-3 rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] p-3",
+    "transition-colors",
+    clickable && "hover:bg-foreground/[0.04]",
+    "outline-none focus-visible:ring-2 focus-visible:ring-ring",
+  );
+
+  const body = (
+    <>
       <span
         aria-hidden
         className="mt-0.5 flex size-5 shrink-0 items-center justify-center overflow-hidden rounded text-muted-foreground"
@@ -142,8 +146,37 @@ function SourceCard({ item }: { item: SourceItem }) {
           </span>
         ) : null}
       </span>
+    </>
+  );
+
+  if (!clickable) {
+    // Unsafe / non-web URL: render the card as static, non-clickable text so an
+    // attacker-supplied scheme can never become a live link.
+    return (
+      <div data-testid="source-card" className={cardClassName}>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={item.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-testid="source-card"
+      className={cardClassName}
+    >
+      {body}
     </a>
   );
+}
+
+// True only for a plain http(s) URL. Mirrors the BE scheme allow-list so a
+// non-web URL (javascript:, data:, …) is never rendered as a clickable href —
+// belt-and-suspenders for the unauthenticated public share view.
+function isHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url.trim());
 }
 
 // Best-effort host extraction for the favicon + label when the BE omits the

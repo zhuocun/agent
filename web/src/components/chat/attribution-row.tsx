@@ -74,9 +74,10 @@ export function AttributionRow({
   const showTier = tierLabel !== servedModelLabel;
 
   // Brief: byline reads as typography, not a stack of chips. Substitution
-  // collapses into a leading muted clause ("substituted from Pro: …") so the
-  // only filled chrome at rest is the BYOK chip. Per Opp 4, two filled pills
-  // next to a bare line was the regression to avoid.
+  // collapses into a leading muted clause ("substituted from Pro: …"), and the
+  // BYOK indicator is a muted inline glyph+label too — so there is zero filled
+  // chrome at rest. Per Opp 4, filled pills next to a bare line were the
+  // regression to avoid.
   const substitutionPrefix = substitution
     ? `substituted from ${requestedTierLabelFor(attribution.requestedTierId)}: `
     : null;
@@ -91,7 +92,7 @@ export function AttributionRow({
     .join(", ");
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-sm text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-xs text-muted-foreground">
       <Popover.Root>
         <Popover.Trigger
           aria-label={triggerLabel}
@@ -140,15 +141,14 @@ export function AttributionRow({
       </Popover.Root>
 
       {isByok ? (
-        // Brief asked for "Key icon + provider name." `ModelAttribution` has no
-        // provider field today (see web/src/lib/types.ts), so the label degrades
-        // to the generic "Your API key" until that data is wired through.
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
-            "bg-byok-indicator text-byok-indicator-foreground",
-          )}
-        >
+        // Rendered INLINE (Key glyph + muted text, no filled background) so the
+        // byline carries zero filled chrome at rest — matching the substitution
+        // clause's treatment. A lone filled pill next to a bare typographic line
+        // was the regression to avoid (Opp 4). Brief asked for "Key icon +
+        // provider name"; `ModelAttribution` has no provider field today (see
+        // web/src/lib/types.ts), so the label degrades to the generic "Your API
+        // key" until that data is wired through.
+        <span className="inline-flex items-center gap-1 text-muted-foreground/80">
           <Key aria-hidden className="size-3" />
           <span>Your API key</span>
         </span>

@@ -10,6 +10,7 @@ import {
 import { ArrowDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 // Pull the stable message id off a rendered child. UserMessage/AssistantMessage
 // both take a `message` prop (see chat-thread.tsx) — that id is what we track
@@ -219,19 +220,31 @@ export function MessageList({
         </ol>
       </div>
 
-      {!atBottom ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+6.5rem)] z-40 flex justify-center">
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => scrollToBottom(true)}
-            aria-label="Jump to latest"
-            className="glass-regular pointer-events-auto size-10 rounded-full p-0"
-          >
-            <ArrowDown className="size-4" />
-          </Button>
-        </div>
-      ) : null}
+      {/* Jump-to-latest. Kept MOUNTED at all times and animated on `atBottom`
+          so it springs in/out (opacity + scale + a small upward translate)
+          rather than hard-mounting. Under motion-reduce it collapses to a
+          plain opacity fade (no scale/translate). When hidden it's fully
+          non-interactive: pointer-events-none + aria-hidden + tabIndex -1 keep
+          it out of the tab order and from intercepting taps. 44pt (size-11)
+          meets the iOS touch-target floor; icon-only by design. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+6.5rem)] z-40 flex justify-center">
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => scrollToBottom(true)}
+          aria-label="Jump to latest"
+          aria-hidden={atBottom}
+          tabIndex={atBottom ? -1 : 0}
+          className={cn(
+            "glass-regular size-11 rounded-full p-0 transition-[opacity,transform,scale] duration-300 ease-[var(--ease-ios-spring)] motion-reduce:transition-[opacity] motion-reduce:duration-150",
+            atBottom
+              ? "pointer-events-none translate-y-1 scale-90 opacity-0 motion-reduce:translate-y-0 motion-reduce:scale-100"
+              : "pointer-events-auto translate-y-0 scale-100 opacity-100",
+          )}
+        >
+          <ArrowDown className="size-4" />
+        </Button>
+      </div>
     </div>
   );
 }

@@ -46,6 +46,11 @@ class TierBinding:
     cache_read_per_m: float | None = None
     thinking: bool | None = None
     reasoning_effort: str | None = None
+    # Curated display name of this binding's model, surfaced to the FE tier
+    # picker via bootstrap (see `list_tiers`). A friendly label, never a raw
+    # model id. Empty for tiers whose served model varies per request (the
+    # `auto` router), so the picker shows no single model for them.
+    model_label: str = ""
 
 
 def _tier(
@@ -122,6 +127,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         long_context_flat=True,
         cache_read_per_m=0.0028,
         thinking=False,
+        model_label="DeepSeek V4 Flash",
     ),
     TierBinding(
         tier=_tier(
@@ -139,6 +145,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         long_context_flat=True,
         cache_read_per_m=0.0028,
         thinking=True,
+        model_label="DeepSeek V4 Flash",
     ),
     TierBinding(
         tier=_tier(
@@ -157,6 +164,7 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         cache_read_per_m=0.0145,
         thinking=True,
         reasoning_effort="high",
+        model_label="DeepSeek V4 Pro",
     ),
 )
 
@@ -183,6 +191,15 @@ _ANTHROPIC_MODEL_FOR: dict[ModelTierId, str] = {
     "pro": "claude-opus-4-7",
 }
 
+# Friendly model display names for the FE picker (never the raw model id).
+# `auto` is empty: its served model varies per message via the router.
+_ANTHROPIC_LABEL_FOR: dict[ModelTierId, str] = {
+    "fast": "Claude Haiku 4.5",
+    "smart": "Claude Sonnet 4.6",
+    "auto": "",
+    "pro": "Claude Opus 4.7",
+}
+
 
 def _anthropic_binding(tier_id: ModelTierId) -> TierBinding | None:
     """Build the Anthropic binding for a tier id, or None if unknown.
@@ -206,6 +223,7 @@ def _anthropic_binding(tier_id: ModelTierId) -> TierBinding | None:
         list_price_out_per_m=out_per_m,
         long_context_flat=True,
         cache_read_per_m=cache_read_per_m,
+        model_label=_ANTHROPIC_LABEL_FOR.get(tier_id, ""),
     )
 
 
@@ -261,16 +279,28 @@ def _openai_binding(tier_id: ModelTierId, s: Settings) -> TierBinding | None:
         list_price_out_per_m=out_per_m,
         long_context_flat=True,
         cache_read_per_m=cache_read_per_m,
+        # The OpenAI(-compatible) backend's model is operator-configured via
+        # OPENAI_MODEL_*, so the configured id IS the most honest disclosure.
+        # `auto` stays blank (router picks per message).
+        model_label="" if tier_id == "auto" else model_id,
     )
 
 
-def list_tiers() -> list[ModelTier]:
+def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
     """Public tier list for bootstrap.
 
-    Backend-independent: tier ids/labels/hints never change with the provider,
-    so this always reflects the canonical `TIER_BINDINGS` table.
+    Tier ids/labels/hints are backend-independent, but each tier's
+    `model_label` is filled from the ACTIVE backend's binding so the FE picker
+    discloses the model that actually answers. `auto` stays blank — its served
+    model varies per message via the router.
     """
-    return [b.tier for b in TIER_BINDINGS]
+    s = settings if settings is not None else get_settings()
+    tiers: list[ModelTier] = []
+    for base in TIER_BINDINGS:
+        binding = get_binding(base.tier.id, settings=s)
+        label = binding.model_label if binding is not None else ""
+        tiers.append(base.tier.model_copy(update={"model_label": label}))
+    return tiers
 
 
 def get_binding(tier_id: ModelTierId, settings: Settings | None = None) -> TierBinding | None:

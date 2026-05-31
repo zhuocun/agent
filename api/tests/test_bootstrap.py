@@ -84,8 +84,22 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     tier_ids = {t["id"] for t in tiers}
     assert {"auto", "fast", "smart", "pro"}.issubset(tier_ids)
     for tier in tiers:
-        for key in ("id", "label", "description", "speedHint", "costHint", "contextHint"):
+        for key in (
+            "id",
+            "label",
+            "description",
+            "speedHint",
+            "costHint",
+            "contextHint",
+            "modelLabel",
+        ):
             assert key in tier
+    # The picker discloses each tier's model (friendly label, never a raw id);
+    # `auto` is blank because its served model varies per message.
+    by_id = {t["id"]: t for t in tiers}
+    assert by_id["fast"]["modelLabel"] == "DeepSeek V4 Flash"
+    assert by_id["pro"]["modelLabel"] == "DeepSeek V4 Pro"
+    assert by_id["auto"]["modelLabel"] == ""
 
     suggestions = body["suggestions"]
     assert isinstance(suggestions, list) and len(suggestions) >= 1

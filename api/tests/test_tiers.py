@@ -21,6 +21,7 @@ from app.providers.tiers import (
     list_tiers,
     resolve_served_tier,
 )
+from app.schemas.tier import ModelTier
 
 
 def _openai_settings(**overrides: object) -> Settings:
@@ -120,6 +121,49 @@ def test_deepseek_per_tier_thinking_and_effort_config() -> None:
     assert by_id["smart"].reasoning_effort is None
     assert by_id["pro"].thinking is True
     assert by_id["pro"].reasoning_effort == "high"
+    # Curated model-disclosure labels (FE tier picker); auto is blank (varies).
+    assert by_id["fast"].model_label == "DeepSeek V4 Flash"
+    assert by_id["smart"].model_label == "DeepSeek V4 Flash"
+    assert by_id["pro"].model_label == "DeepSeek V4 Pro"
+    assert by_id["auto"].model_label == ""
+
+
+def _openai_settings_tiers(**overrides: object) -> list[ModelTier]:
+    base: dict[str, object] = {"provider_backend": "openai", "openai_api_key": "x"}
+    base.update(overrides)
+    return list_tiers(Settings(**base))  # type: ignore[arg-type]
+
+
+def test_list_tiers_carries_active_backend_model_label() -> None:
+    """`list_tiers` fills each wire tier's `model_label` from the ACTIVE
+    backend's binding so the picker discloses the model that really answers."""
+    # DeepSeek (canonical): friendly V4 names; auto blank.
+    ds = {
+        t.id: t.model_label
+        for t in list_tiers(
+            Settings(provider_backend="deepseek", deepseek_api_key="k")
+        )
+    }
+    assert ds["fast"] == "DeepSeek V4 Flash"
+    assert ds["pro"] == "DeepSeek V4 Pro"
+    assert ds["auto"] == ""
+    # Anthropic alternate: friendly Claude names; auto blank.
+    an = {
+        t.id: t.model_label
+        for t in list_tiers(
+            Settings(provider_backend="anthropic", anthropic_api_key="k")
+        )
+    }
+    assert an["fast"] == "Claude Haiku 4.5"
+    assert an["pro"] == "Claude Opus 4.7"
+    assert an["auto"] == ""
+    # OpenAI(-compatible): the operator-configured model id is the disclosure.
+    oa = {
+        t.id: t.model_label
+        for t in _openai_settings_tiers(openai_model_pro="deepseek-reasoner")
+    }
+    assert oa["pro"] == "deepseek-reasoner"
+    assert oa["auto"] == ""
 
 
 def test_get_binding_anthropic_backend_returns_anthropic_binding() -> None:

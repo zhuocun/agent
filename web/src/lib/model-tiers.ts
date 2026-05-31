@@ -13,6 +13,7 @@ export const MODEL_TIERS: ModelTier[] = [
     speedHint: "balanced",
     costHint: "medium",
     contextHint: "auto",
+    modelLabel: "", // varies per message via the router
   },
   {
     id: "fast",
@@ -21,6 +22,7 @@ export const MODEL_TIERS: ModelTier[] = [
     speedHint: "fastest",
     costHint: "lowest",
     contextHint: "1M",
+    modelLabel: "DeepSeek V4 Flash",
   },
   {
     id: "smart",
@@ -29,6 +31,7 @@ export const MODEL_TIERS: ModelTier[] = [
     speedHint: "balanced",
     costHint: "medium",
     contextHint: "1M",
+    modelLabel: "DeepSeek V4 Flash",
   },
   {
     id: "pro",
@@ -37,6 +40,7 @@ export const MODEL_TIERS: ModelTier[] = [
     speedHint: "slow",
     costHint: "high",
     contextHint: "1M",
+    modelLabel: "DeepSeek V4 Pro",
   },
 ];
 

@@ -100,6 +100,11 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                   <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
                     {tier.description}
                   </p>
+                  {tier.modelLabel ? (
+                    <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground/70 group-focus/dropdown-menu-item:text-accent-foreground/70">
+                      {tier.modelLabel}
+                    </p>
+                  ) : null}
                 </div>
               </DropdownMenuItem>
             );
@@ -166,6 +171,11 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                       <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
                         {tier.description}
                       </p>
+                      {tier.modelLabel ? (
+                        <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground/70">
+                          {tier.modelLabel}
+                        </p>
+                      ) : null}
                     </div>
                     {isSelected ? (
                       <Check

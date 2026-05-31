@@ -47,6 +47,7 @@ import structlog
 from openai import AsyncOpenAI
 
 from app.errors import AppError, ErrorEnvelope
+from app.providers._tool_markup import ToolMarkupSanitizer
 from app.providers.protocol import (
     AnswerDelta,
     ChatMessage,
@@ -59,14 +60,18 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.steering import steer_user_text
-from app.search.protocol import SearchProvider
+from app.search.protocol import SearchProvider, SourceItem
 
 _log = structlog.get_logger(__name__)
 
 # OpenAI function-tool schema advertised when `web_search=True` AND a search
-# backend is wired. The model decides (tool_choice="auto") whether to call it;
-# when it does, we run the configured `SearchProvider`, feed the results back as
-# a tool-result message, and stream a SECOND completion for the grounded answer.
+# backend is wired. The model decides (tool_choice="auto") whether to call it.
+# CRITICAL: the schema stays advertised on EVERY round of the agentic loop so the
+# OpenAI-compatible endpoint parses tool calls into STRUCTURED `delta.tool_calls`
+# instead of leaking the raw tool-call special tokens into `delta.content`. We
+# run the configured `SearchProvider`, feed results back as a tool-result
+# message, and loop until the model answers without calling the tool (or the
+# round cap forces an answer).
 WEB_SEARCH_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -92,6 +97,10 @@ WEB_SEARCH_TOOL: dict[str, Any] = {
 
 _SEARCH_STATUS_LABEL = "Searching the web…"
 _MAX_SEARCH_RESULTS = 5
+# Hard cap on web-search tool-call rounds to prevent an infinite tool loop. On
+# the FINAL round we force `tool_choice="none"` so the model is compelled to
+# answer; the streaming sanitizer scrubs any residual leaked markup.
+_MAX_SEARCH_ROUNDS = 4
 
 
 def _safe_int(value: Any) -> int:
@@ -107,11 +116,12 @@ def _safe_int(value: Any) -> int:
 class _UsageAccumulator:
     """Sums the raw OpenAI usage buckets across one or more completions.
 
-    The web-search path makes TWO completions (tool-decision + grounded answer);
-    each carries its own `usage` object on its final chunk. We add the raw
-    (still-overlapping) OpenAI counts here, then compute the four DISJOINT
-    buckets once in `to_usage_update()` so the subtraction (prompt minus cached,
-    completion minus reasoning) is applied to the summed totals, never double-counted.
+    The web-search path makes one completion PER ROUND of the agentic tool loop
+    (tool-call rounds + the final grounded answer); each carries its own `usage`
+    object on its final chunk. We add the raw (still-overlapping) OpenAI counts
+    here, then compute the four DISJOINT buckets once in `to_usage_update()` so
+    the subtraction (prompt minus cached, completion minus reasoning) is applied
+    to the summed totals, never double-counted.
     """
 
     def __init__(self) -> None:
@@ -194,17 +204,36 @@ def _accumulate_tool_calls(delta: Any, acc: dict[int, _ToolCallAccumulator]) -> 
         acc.setdefault(index, _ToolCallAccumulator()).update(tc)
 
 
-def _select_web_search_call(
+def _select_web_search_calls(
     acc: dict[int, _ToolCallAccumulator] | None,
-) -> _ToolCallAccumulator | None:
-    """Return the first accumulated call whose function name is `web_search`."""
+) -> list[_ToolCallAccumulator]:
+    """Return all accumulated calls whose function name is `web_search`, in order.
+
+    A round may emit more than one `web_search` call (the model parallel-searches);
+    we run each and feed back one tool-result message per call so the assistant
+    tool-call turn and the tool-result turns stay paired (OpenAI requires every
+    `tool_calls[*].id` to be answered by a matching `role="tool"` message).
+    """
     if not acc:
-        return None
-    for index in sorted(acc):
-        call = acc[index]
-        if call.name == "web_search":
-            return call
-    return None
+        return []
+    return [acc[index] for index in sorted(acc) if acc[index].name == "web_search"]
+
+
+def _dedupe_and_renumber(items: list[SourceItem]) -> list[SourceItem]:
+    """Dedup sources by url (first occurrence wins) and renumber ids 1..N.
+
+    Sources accumulate across rounds; the same url can surface in multiple
+    searches. We keep the first occurrence's display fields and reassign a
+    coherent 1-based ordinal so the final `Sources`/citation ids are contiguous.
+    """
+    seen: set[str] = set()
+    out: list[SourceItem] = []
+    for item in items:
+        if item.url in seen:
+            continue
+        seen.add(item.url)
+        out.append(item.model_copy(update={"id": len(out) + 1}))
+    return out
 
 
 def _parse_query(raw_arguments: str) -> str:
@@ -363,93 +392,118 @@ class OpenAIProvider:
         # to a pre-web-search build (no tools advertised). This is the
         # regression-critical no-op invariant.
         search_active = web_search and self._search_provider is not None
-        tool_kwargs: dict[str, Any] = {}
-        if search_active:
-            tool_kwargs = {"tools": [WEB_SEARCH_TOOL], "tool_choice": "auto"}
 
-        # Accumulated usage across (possibly) two completions: the first (tool
-        # decision) call and the second (grounded answer) call. We sum the raw
-        # OpenAI buckets across both, then compute the four DISJOINT buckets once.
+        # Accumulated usage across ALL rounds of the agentic loop. We sum the raw
+        # OpenAI buckets across every completion, then compute the four DISJOINT
+        # buckets once at the end so the overlap subtraction is applied to the
+        # summed totals, never double-counted.
         usage_acc = _UsageAccumulator()
 
-        # First completion. When tools are advertised the model may stream a
-        # tool_call instead of answer text; we accumulate the call deltas and
-        # suppress the disjoint-usage emission until after the (optional) second
-        # completion.
-        tool_calls: dict[int, _ToolCallAccumulator] | None = (
-            {} if search_active else None
-        )
-        async for event in self._consume_completion(
-            client=client,
-            model_id=model_id,
-            messages=messages,
-            extra_kwargs={**kwargs, **tool_kwargs},
-            usage_acc=usage_acc,
-            tool_calls=tool_calls,
-        ):
-            yield event
+        if not search_active:
+            # Fast path: web_search disabled or no backend. ONE completion, no
+            # tools, no sanitizer. Byte-for-byte identical to a pre-web-search
+            # build — the regression-critical no-op invariant.
+            async for event in self._consume_completion(
+                client=client,
+                model_id=model_id,
+                messages=messages,
+                extra_kwargs=kwargs,
+                usage_acc=usage_acc,
+                tool_calls=None,
+                sanitizer=None,
+            ):
+                yield event
+            usage_update = usage_acc.to_usage_update()
+            yield usage_update
+            yield Complete(usage=usage_update)
+            return
 
-        # If the first call requested web_search, run the search, surface the
-        # status + sources, append the tool-call + tool-result turns, and make a
-        # SECOND streaming completion (no tools) for the grounded answer.
-        web_search_call = (
-            _select_web_search_call(tool_calls) if tool_calls is not None else None
-        )
-        if web_search_call is not None and self._search_provider is not None:
-            query = _parse_query(web_search_call.arguments)
+        # Bounded agentic tool loop. Each round streams ONE completion with the
+        # web_search tool advertised (tool_choice="auto") so tool calls arrive as
+        # STRUCTURED `delta.tool_calls`, never leaked as content. If the model
+        # emits web_search call(s): run them, surface status + sources, append the
+        # tool-call + tool-result turns, and continue. If it emits NO tool call,
+        # that completion's content IS the final answer — stream it and stop.
+        assert self._search_provider is not None  # search_active implies this
+        accumulated_sources: list[SourceItem] = []
+        for round_index in range(_MAX_SEARCH_ROUNDS):
+            is_final_round = round_index == _MAX_SEARCH_ROUNDS - 1
+            # Advertise the tool every round so structured parsing holds. On the
+            # final capped round force tool_choice="none" to compel an answer and
+            # break any infinite tool loop (sanitizer scrubs residual leaks).
+            round_tool_kwargs: dict[str, Any] = {"tools": [WEB_SEARCH_TOOL]}
+            round_tool_kwargs["tool_choice"] = "none" if is_final_round else "auto"
+
+            tool_calls: dict[int, _ToolCallAccumulator] = {}
+            sanitizer = ToolMarkupSanitizer()
+            async for event in self._consume_completion(
+                client=client,
+                model_id=model_id,
+                messages=messages,
+                extra_kwargs={**kwargs, **round_tool_kwargs},
+                usage_acc=usage_acc,
+                tool_calls=tool_calls,
+                sanitizer=sanitizer,
+            ):
+                yield event
+
+            calls = _select_web_search_calls(tool_calls)
+            if not calls:
+                # No tool call this round → the streamed content was the final
+                # answer. Done.
+                break
+
+            # Run each requested search, append ONE assistant tool-call turn
+            # (carrying every call) plus one tool-result turn per call.
             yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="active")
-            try:
-                items = await self._search_provider.search(
-                    query, max_results=_MAX_SEARCH_RESULTS
-                )
-            except Exception as exc:  # degrade gracefully on any backend failure
-                # The search backend raised (transport / non-200). Don't fail the
-                # whole turn: log, surface a `done` status with no sources, and
-                # feed an empty result back so the model answers from its own
-                # knowledge.
-                _log.warning("web_search.backend_failed", error=str(exc))
-                items = []
+            results_by_call: list[tuple[_ToolCallAccumulator, list[SourceItem]]] = []
+            for call in calls:
+                query = _parse_query(call.arguments)
+                try:
+                    items = await self._search_provider.search(
+                        query, max_results=_MAX_SEARCH_RESULTS
+                    )
+                except Exception as exc:  # degrade gracefully on backend failure
+                    # The search backend raised (transport / non-200). Don't fail
+                    # the whole turn: log and feed empty results so the model
+                    # answers from its own knowledge.
+                    _log.warning("web_search.backend_failed", error=str(exc))
+                    items = []
+                results_by_call.append((call, items))
+                accumulated_sources.extend(items)
             yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="done")
-            yield Sources(items=items)
+            # Emit the running deduped/renumbered set so citation ids stay
+            # coherent. The handler keeps only the latest Sources, so emitting
+            # per round with the full accumulated set is correct.
+            yield Sources(items=_dedupe_and_renumber(accumulated_sources))
 
-            # Append the assistant tool-call turn and the tool-result turn so the
-            # second completion sees the search output as context.
             messages.append(
                 {
                     "role": "assistant",
                     "content": None,
                     "tool_calls": [
                         {
-                            "id": web_search_call.id or "web_search_0",
+                            "id": call.id or f"web_search_{round_index}_{i}",
                             "type": "function",
                             "function": {
                                 "name": "web_search",
-                                "arguments": web_search_call.arguments or "{}",
+                                "arguments": call.arguments or "{}",
                             },
                         }
+                        for i, (call, _items) in enumerate(results_by_call)
                     ],
                 }
             )
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": web_search_call.id or "web_search_0",
-                    "content": json.dumps(
-                        {"results": [item.model_dump() for item in items]}
-                    ),
-                }
-            )
-            # Second completion: stream the grounded reasoning/answer. No tools
-            # (tool_choice="none") so the model is forced to answer, not loop.
-            async for event in self._consume_completion(
-                client=client,
-                model_id=model_id,
-                messages=messages,
-                extra_kwargs={**kwargs, "tool_choice": "none"},
-                usage_acc=usage_acc,
-                tool_calls=None,
-            ):
-                yield event
+            for i, (call, items) in enumerate(results_by_call):
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id or f"web_search_{round_index}_{i}",
+                        "content": json.dumps(
+                            {"results": [item.model_dump() for item in items]}
+                        ),
+                    }
+                )
 
         usage_update = usage_acc.to_usage_update()
         yield usage_update
@@ -464,16 +518,22 @@ class OpenAIProvider:
         extra_kwargs: dict[str, Any],
         usage_acc: _UsageAccumulator,
         tool_calls: dict[int, _ToolCallAccumulator] | None,
+        sanitizer: ToolMarkupSanitizer | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         """Stream one chat completion, yield reasoning/answer events, accumulate usage.
 
         `usage_acc` collects the raw OpenAI usage buckets so the caller can sum
         them across multiple completions before emitting the single final
         `UsageUpdate`. When `tool_calls` is a dict, streamed `delta.tool_calls`
-        fragments are accumulated into it (keyed by index) instead of being
-        treated as answer text — the caller inspects it to decide whether a
-        web_search call was requested. When `tool_calls` is None, tool-call
-        deltas are ignored (the second, grounded completion advertises no tools).
+        fragments are accumulated into it (keyed by index) so the caller can
+        inspect which web_search call(s) were requested this round. When
+        `tool_calls` is None, tool-call deltas are ignored.
+
+        `sanitizer`, when provided, scrubs leaked tool-call markup out of CONTENT
+        (answer) deltas before they're yielded as `AnswerDelta` — a streaming-safe
+        safety net for the web-search path. It is applied ONLY to content, NEVER
+        to `reasoning_content`. When None (the no-web-search fast path) content
+        passes through verbatim.
         """
         # Reasoning-event invariant (DeepSeek's `delta.reasoning_content`): emit
         # at most one ReasoningDone, only after >=1 ReasoningDelta, and before any
@@ -514,12 +574,29 @@ class OpenAIProvider:
                         reasoning_seen = True
                     content = getattr(delta, "content", None)
                     if content:
-                        # Close the reasoning block exactly once, just before the
-                        # first answer text follows it.
-                        if reasoning_seen and not reasoning_done_sent:
-                            yield ReasoningDone()
-                            reasoning_done_sent = True
-                        yield AnswerDelta(text=content)
+                        # Scrub any leaked tool-call markup from the answer
+                        # stream (web-search safety net). `feed` may hold back a
+                        # split-marker tail and returns only confirmed-clean text.
+                        emit = (
+                            sanitizer.feed(content)
+                            if sanitizer is not None
+                            else content
+                        )
+                        if emit:
+                            # Close the reasoning block exactly once, just before
+                            # the first answer text follows it.
+                            if reasoning_seen and not reasoning_done_sent:
+                                yield ReasoningDone()
+                                reasoning_done_sent = True
+                            yield AnswerDelta(text=emit)
+            # Flush any clean tail the sanitizer held back (no marker followed).
+            if sanitizer is not None:
+                tail = sanitizer.finish()
+                if tail:
+                    if reasoning_seen and not reasoning_done_sent:
+                        yield ReasoningDone()
+                        reasoning_done_sent = True
+                    yield AnswerDelta(text=tail)
         except openai.APIError as exc:
             raise _map_sdk_error(exc) from exc
 

@@ -19,7 +19,6 @@ from uuid import UUID
 
 import structlog
 from fastapi import Depends, Request, Response
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.cookies import (
@@ -39,11 +38,19 @@ def _now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-async def _try_load_existing_user(
+async def _resolve_valid_session(
     db: AsyncSession,
     settings: Settings,
     raw_cookie: str,
-) -> User | None:
+) -> DbSession | None:
+    """Cookie -> the VALID (unexpired) `DbSession` row, or None.
+
+    The single source of truth for "is this cookie a live session?". Both
+    `current_user` and `current_session` resolve identity through this helper
+    so they can never drift on the expiry check: a missing / malformed /
+    bad-signature cookie, an unknown session id, or an EXPIRED session all
+    collapse to None here. Anything that returns a row is guaranteed unexpired.
+    """
     signer = build_signer(settings.session_secret)
     session_id_str = load_session_id(signer, raw_cookie)
     if not session_id_str:
@@ -62,6 +69,17 @@ async def _try_load_existing_user(
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
     if expires_at <= _now_utc():
+        return None
+    return db_session
+
+
+async def _try_load_existing_user(
+    db: AsyncSession,
+    settings: Settings,
+    raw_cookie: str,
+) -> User | None:
+    db_session = await _resolve_valid_session(db, settings, raw_cookie)
+    if db_session is None:
         return None
     return await db.get(User, db_session.user_id)
 
@@ -119,18 +137,18 @@ async def current_session(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> DbSession | None:
-    """Return the current DB session row if the cookie is valid."""
+    """Return the current DB session row if the cookie is valid.
+
+    Resolves through the SAME `_resolve_valid_session` helper as `current_user`,
+    so the two can never disagree on whether a cookie is live. In particular an
+    EXPIRED session row returns None here, identical to how `current_user`
+    treats it (it would mint a fresh anonymous user/session for the request).
+    This collapses the previously-divergent expired-cookie path where
+    `current_session` handed login/upgrade/signout a dead session row to repoint
+    while `current_user` had already minted a fresh anonymous identity.
+    """
     cookie_name = settings.cookie_name or COOKIE_NAME_DEFAULT
     raw = request.cookies.get(cookie_name)
     if not raw:
         return None
-    signer = build_signer(settings.session_secret)
-    session_id_str = load_session_id(signer, raw)
-    if not session_id_str:
-        return None
-    try:
-        session_uuid = UUID(session_id_str)
-    except ValueError:
-        return None
-    stmt = select(DbSession).where(DbSession.id == session_uuid)
-    return (await db.execute(stmt)).scalar_one_or_none()
+    return await _resolve_valid_session(db, settings, raw)

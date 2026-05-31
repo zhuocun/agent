@@ -27,10 +27,12 @@ their first successful login. Bcrypt remains a runtime dep for that fallback.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
+from urllib.parse import urlsplit
 
 import structlog
 from fastapi import APIRouter, Depends, Request, Response, status
-from pydantic import EmailStr
+from pydantic import EmailStr, StringConstraints
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,6 +72,14 @@ _log = structlog.get_logger(__name__)
 _truncate_for_bcrypt = _truncate_for_bcrypt_impl
 
 
+# Shared password bound for the auth request models. 8..128 chars: a sane lower
+# floor against trivially-guessable secrets and an upper cap so an oversized
+# body can't drive the (deliberately slow) argon2id hash into a DoS. Applied via
+# `Annotated[str, StringConstraints(...)]` in pydantic v2 style; the upgrade
+# variant wraps it in `... | None` to keep password optional there.
+_Password = Annotated[str, StringConstraints(min_length=8, max_length=128)]
+
+
 class UpgradeRequest(CamelModel):
     """Body for POST /api/auth/upgrade.
 
@@ -80,7 +90,7 @@ class UpgradeRequest(CamelModel):
     """
 
     email: EmailStr
-    password: str | None = None
+    password: _Password | None = None
 
 
 class LoginRequest(CamelModel):
@@ -94,7 +104,7 @@ class LoginRequest(CamelModel):
     """
 
     email: EmailStr
-    password: str
+    password: _Password
 
 
 def _already_upgraded() -> AppError:
@@ -119,6 +129,79 @@ def _email_taken() -> AppError:
         ),
         status.HTTP_409_CONFLICT,
     )
+
+
+def _forbidden_origin() -> AppError:
+    """403 for a state-changing auth POST whose Origin isn't allowlisted.
+
+    The cookie carrying the session is `SameSite=None` in production (load-
+    bearing for the iOS-Safari same-origin proxy), so the browser would attach
+    it to a cross-site POST. With no other CSRF token in play, a server-side
+    Origin/Referer allowlist is the defense: a forged cross-site form/fetch
+    carries the attacker's Origin, which won't be in `cors_allowed_origins`.
+    """
+    return AppError(
+        ErrorEnvelope(
+            code="FORBIDDEN_ORIGIN",
+            severity="error",
+            title="Request blocked",
+            body="This request originated from an untrusted site.",
+        ),
+        status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _origin_of(value: str) -> str | None:
+    """Return scheme://host[:port] for a URL/origin string, or None if unusable.
+
+    Accepts both a bare Origin header (already an origin) and a full Referer URL
+    (from which we keep only the origin). Returns None when there's no scheme or
+    host to compare, so a malformed/relative value is treated as "no signal".
+    """
+    parts = urlsplit(value)
+    if not parts.scheme or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def enforce_trusted_origin(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """CSRF guard for the state-changing auth POSTs (login/upgrade/signout).
+
+    Validates the request's `Origin` (falling back to `Referer`'s origin when
+    `Origin` is absent) against `settings.cors_allowed_origins`.
+
+    Policy:
+    - Empty allowlist (local/dev default) -> fail OPEN (skip the check) so dev
+      and the test suite aren't broken; only enforce when an allowlist exists.
+    - No Origin AND no Referer -> pass. Browsers always send `Origin` on a
+      cross-site POST, so absence means a non-browser client (curl, native app,
+      server-to-server) where CSRF doesn't apply. This preserves API clients.
+    - Origin/Referer present but its origin is NOT in the allowlist -> 403.
+
+    In production the FE proxies `/api/*` same-origin from the vercel.app
+    origin, so that origin must be present in `CORS_ALLOWED_ORIGINS` for the
+    real same-origin requests to pass (it already must be, since
+    `assert_prod_safe()` requires `CORS_ALLOWED_ORIGINS` to be set in prod).
+    """
+    allowlist = settings.cors_allowed_origins
+    if not allowlist:
+        return  # dev/test: nothing configured -> fail open.
+
+    candidate = request.headers.get("origin")
+    if candidate is None:
+        referer = request.headers.get("referer")
+        candidate = referer if referer is not None else None
+    if candidate is None:
+        return  # non-browser client -> not a CSRF vector.
+
+    origin = _origin_of(candidate)
+    if origin is None:
+        return  # unparseable -> treat as "no signal", consistent with absence.
+    if origin not in allowlist:
+        raise _forbidden_origin()
 
 
 def _invalid_credentials() -> AppError:
@@ -198,7 +281,11 @@ async def _maybe_rehash_password(
         _log.warning("password_rehash_failed", user_id=str(user.id), exc_info=True)
 
 
-@router.post("/upgrade", response_model=AccountInfo)
+@router.post(
+    "/upgrade",
+    response_model=AccountInfo,
+    dependencies=[Depends(enforce_trusted_origin)],
+)
 @limiter.limit(lambda: get_settings().rate_limit_upgrade)
 async def upgrade(
     body: UpgradeRequest,
@@ -272,7 +359,11 @@ async def upgrade(
 _DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-timing-equalization")
 
 
-@router.post("/login", response_model=AccountInfo)
+@router.post(
+    "/login",
+    response_model=AccountInfo,
+    dependencies=[Depends(enforce_trusted_origin)],
+)
 @limiter.limit(lambda: get_settings().rate_limit_login)
 async def login(
     body: LoginRequest,
@@ -360,7 +451,11 @@ async def login(
     )
 
 
-@router.post("/signout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/signout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(enforce_trusted_origin)],
+)
 async def signout(
     response: Response,
     db: AsyncSession = Depends(get_db),

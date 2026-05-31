@@ -11,7 +11,12 @@ export interface ModelTier {
   description: string;
   speedHint: "fastest" | "fast" | "balanced" | "slow";
   costHint: "lowest" | "low" | "medium" | "high";
-  contextHint: string; // e.g. "128K"
+  contextHint: string; // e.g. "1M"
+  // Curated display name of the model this tier serves (e.g. "DeepSeek V4
+  // Flash") — a friendly label, never a raw model ID. Filled by the BE from the
+  // active provider backend. Empty for "auto" (its model varies per message via
+  // the router), so the picker shows no single model for it.
+  modelLabel: string;
 }
 
 // Reasoning-effort / extended-thinking control surfaced in the composer

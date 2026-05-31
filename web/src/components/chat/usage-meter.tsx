@@ -65,11 +65,15 @@ export function UsageMeter({ usage }: UsageMeterProps) {
           <div
             className={cn(
               "relative h-full rounded-full transition-[width] duration-300 ease-out",
+              // Nominal fill uses the brand tint — iOS capacity bars colour
+              // normal fill with the tint, not gray (gray reads inert/
+              // disabled). `/80` keeps it calm rather than fully saturated.
+              // The warning/critical threshold branches are unchanged.
               isCritical
                 ? "bg-destructive"
                 : isWarning
                   ? "bg-warning"
-                  : "bg-muted-foreground",
+                  : "bg-brand/80",
             )}
             style={{ width: `${pct}%` }}
           />

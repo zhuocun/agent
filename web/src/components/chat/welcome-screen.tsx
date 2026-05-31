@@ -86,11 +86,16 @@ export function WelcomeScreen({
         {/* One iOS-Settings-style inset group: a single quiet surface with
             hairline separators between rows (none above the first) and a
             trailing disclosure chevron per row. `overflow-hidden` clips the
-            row press-highlights to the rounded corners. The fill is lighter
-            than the old per-card 0.04 so the brand halo reads through it. */}
+            row press-highlights to the rounded corners. `glass-clear` is the
+            lowest-opacity material in the system — the brand halo still reads
+            through it (per the old 0.03 intent) while it adds the saturated
+            backdrop-filter and the inset hairline rim the flat tint lacked.
+            `rounded-3xl` gives the iOS-26-generous outer curvature; the rows'
+            press-highlights are clipped to it, and their inner edges stay
+            square against the separators so nothing fights the curve. */}
         <ul
           aria-label="Suggested prompts"
-          className="mt-10 w-full overflow-hidden rounded-2xl bg-foreground/[0.03] text-left md:mt-12"
+          className="glass-clear mt-10 w-full overflow-hidden rounded-3xl text-left md:mt-12"
         >
           {PROMPTS.map(({ icon: Icon, label }, index) => (
             <li key={label} className="list-none">

@@ -6,6 +6,7 @@ import { MessageSquare, Search, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useSwipeDismiss } from "@/lib/use-swipe-dismiss";
+import { useVisualViewport } from "@/lib/use-visual-viewport";
 import { KeyCaps } from "@/components/chat/key-caps";
 import type { ShortcutKeys } from "@/lib/use-keyboard-shortcuts";
 import type { ConversationSummary } from "@/lib/types";
@@ -130,6 +131,23 @@ export function CommandPalette({
     onDismiss: () => handleOpenChangeRef.current(false),
   });
 
+  // The mobile sheet is bottom-pinned, so the iOS software keyboard (which does
+  // NOT shrink dvh) slides up *over* the lower results. Lift the whole sheet by
+  // the measured keyboard inset and trim that much off its max-height, so the
+  // results list always ends above the keyboard rather than behind it. Desktop
+  // (sm+) is unaffected: the sheet is top-anchored there and we only feed the
+  // inset into the mobile-only inline style below.
+  const { keyboardInset } = useVisualViewport();
+  const mobileKeyboardStyle =
+    isMobile && keyboardInset > 0
+      ? {
+          // bottom inset clears the keyboard; max-height subtracts it so the
+          // 80dvh cap still leaves the input + results fully visible above it.
+          bottom: keyboardInset,
+          maxHeight: `calc(80dvh - ${keyboardInset}px)`,
+        }
+      : undefined;
+
   const { sections, flat } = useMemo(
     () => buildItems(query, actions, conversations, activeId),
     [query, actions, conversations, activeId],
@@ -204,6 +222,8 @@ export function CommandPalette({
               "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
             WebkitBackdropFilter:
               "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+            // Keyboard-safe lift on mobile (no-op on desktop / no keyboard).
+            ...mobileKeyboardStyle,
           }}
           {...contentProps}
           className={cn(
@@ -220,7 +240,7 @@ export function CommandPalette({
           <div
             aria-hidden
             {...handleProps}
-            className="mx-auto mt-2.5 h-1.5 w-9 shrink-0 cursor-grab touch-none rounded-full bg-foreground/15 sm:hidden"
+            className="mx-auto mt-2.5 h-1.5 w-9 shrink-0 cursor-grab touch-none rounded-full bg-foreground/25 sm:hidden"
           />
           <DialogPrimitive.Title className="sr-only">
             Command palette
@@ -292,10 +312,13 @@ export function CommandPalette({
                                 runItem(item);
                               }}
                               className={cn(
-                                "mx-2 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm",
-                                isSelected
-                                  ? "bg-accent text-accent-foreground"
-                                  : "text-foreground",
+                                // min-h-11: 44pt touch floor on the mobile
+                                // sheet (harmless on desktop). Selection uses a
+                                // quiet translucent tint to match the model/tier
+                                // pickers' selected-row treatment — the solid
+                                // `bg-accent` fill read too loud against glass.
+                                "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-foreground",
+                                isSelected && "bg-foreground/[0.06]",
                               )}
                             >
                               {Icon ? (
@@ -331,10 +354,10 @@ export function CommandPalette({
                               runItem(item);
                             }}
                             className={cn(
-                              "mx-2 flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm",
-                              isSelected
-                                ? "bg-accent text-accent-foreground"
-                                : "text-foreground",
+                              // min-h-11: 44pt touch floor; quiet selection
+                              // tint consistent with the action rows above.
+                              "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-foreground",
+                              isSelected && "bg-foreground/[0.06]",
                             )}
                           >
                             <MessageSquare

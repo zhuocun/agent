@@ -139,10 +139,20 @@ export function ModelModePicker({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* Mobile: bottom sheet. Decision 10 + Pattern: Thumb zone primacy. The
-          sheet rises from the bottom, honours safe-area-inset-bottom via the
-          --bottom-inset token, and each row meets the PRD 06 §3.3 44px touch
-          target floor. */}
+      {/* Mobile: bottom sheet. Decision 10 + Pattern: Thumb zone primacy. We
+          ride the shared <DialogContent> shell, which already supplies the
+          bottom-sheet geometry (fixed inset-x-0 bottom-0, rounded top, spring
+          slide, grabber, swipe-to-dismiss, home-indicator-safe bottom padding)
+          and reverts to the centered modal at sm:. So we pass ONLY intent here:
+          a slightly tighter `gap-3 px-4 pt-4` density for the dense option rows
+          and a 80dvh cap (vs the shell's 90dvh) so the sheet sits a touch lower.
+          We re-state the shell's safe-area `pb` explicitly because a bare `p-4`
+          shorthand would twMerge-clobber it and drop the last row under the home
+          indicator; `sm:p-6` then restores even padding on the desktop modal. The
+          old `top-auto bottom-0 translate-*-0 rounded-t-3xl rounded-b-none`
+          overrides just re-stated the shell's own geometry — dropping them lets
+          the picker inherit the shell's clean grabber + swipe path. Each row
+          still meets the PRD 06 §3.3 44px touch floor. */}
       <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
         <DialogTrigger
           disabled={disabled}
@@ -156,7 +166,7 @@ export function ModelModePicker({
             </button>
           }
         />
-        <DialogContent className="top-auto bottom-0 left-0 max-h-[80dvh] max-w-full translate-x-0 translate-y-0 gap-3 rounded-t-3xl rounded-b-none p-4 pb-[calc(var(--bottom-inset)+0.5rem)]">
+        <DialogContent className="max-h-[80dvh] gap-3 px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
           <DialogHeader>
             <DialogTitle className="text-base">Model and reasoning</DialogTitle>
             <DialogDescription className="sr-only">

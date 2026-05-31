@@ -13,9 +13,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
  *   bails out entirely so the scroll container handles the touch.
  * - Uses Pointer Events + pointer capture so we keep receiving moves even if the
  *   finger leaves the row, and so we don't depend on touch-event quirks.
- * - Full-swipe past `fullSwipeThreshold` triggers the destructive action
- *   directly on release. A shorter swipe past `revealThreshold` snaps to the
- *   open (revealed) position; anything less snaps back closed.
+ * - Full-swipe past a *proportional* distance (`fullSwipeRatio` × the row's
+ *   measured width, floored at `fullSwipeFloor`) triggers the destructive
+ *   action directly on release. A shorter swipe past `revealThreshold` snaps to
+ *   the open (revealed) position; anything less snaps back closed.
  * - Honors `prefers-reduced-motion`: callers get `reducedMotion` so they can
  *   render the translate instantly (no slide transition).
  */
@@ -25,9 +26,19 @@ export interface SwipeActionsOptions {
   actionsWidth: number;
   /** Min leftward drag (px) to settle open after release. Default actionsWidth * 0.5. */
   revealThreshold?: number;
-  /** Min leftward drag (px) that triggers the destructive action directly. */
-  fullSwipeThreshold?: number;
-  /** Fires when a full-swipe-left crosses `fullSwipeThreshold` on release. */
+  /**
+   * Fraction of the row's own measured width the finger must travel to trigger
+   * the destructive action directly on release. A *proportional* threshold
+   * (rather than a fixed px) so the full-swipe fires at a consistent "most of
+   * the way across" feel regardless of layout width — a fixed 200px fires far
+   * too early on a wide desktop rail and too late on a narrow phone sheet.
+   * Defaults to 0.6 (≈60% of the row). Floored by `fullSwipeFloor` so a tiny
+   * row can't make the gesture hair-trigger.
+   */
+  fullSwipeRatio?: number;
+  /** Absolute floor (px) for the proportional full-swipe distance. Default 160. */
+  fullSwipeFloor?: number;
+  /** Fires when a full-swipe-left crosses the proportional threshold on release. */
   onFullSwipe: () => void;
   /** Disable the gesture entirely (e.g. while inline-renaming). */
   disabled?: boolean;
@@ -75,7 +86,8 @@ export function useSwipeActions(
     onFullSwipe,
     disabled = false,
     revealThreshold = actionsWidth * 0.5,
-    fullSwipeThreshold = Math.max(actionsWidth * 2.2, 160),
+    fullSwipeRatio = 0.6,
+    fullSwipeFloor = 160,
   } = options;
 
   const [offset, setOffset] = useState(0);
@@ -90,7 +102,15 @@ export function useSwipeActions(
     startY: number;
     axis: Axis;
     baseOffset: number; // offset at gesture start (0 closed, -actionsWidth open)
-  }>({ pointerId: null, startX: 0, startY: 0, axis: "undecided", baseOffset: 0 });
+    rowWidth: number; // measured width of the swiped row at gesture start
+  }>({
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    axis: "undecided",
+    baseOffset: 0,
+    rowWidth: 0,
+  });
 
   // True once the current gesture has been claimed as a horizontal drag, read
   // synchronously by the click guard. A ref (not state) so the trailing click
@@ -137,12 +157,19 @@ export function useSwipeActions(
       if (e.button != null && e.button > 0) return;
       // Fresh gesture: until we see horizontal movement, a release is a tap.
       draggedRef.current = false;
+      // Measure the row up front (the handlers are spread onto the sliding row,
+      // so currentTarget is the element we want). Captured per-gesture so the
+      // proportional full-swipe threshold tracks the actual layout width — wide
+      // desktop rail vs. narrow phone sheet — without any extra ref plumbing.
+      const rowWidth =
+        (e.currentTarget as Element).getBoundingClientRect?.().width ?? 0;
       gesture.current = {
         pointerId: e.pointerId,
         startX: e.clientX,
         startY: e.clientY,
         axis: "undecided",
         baseOffset: open ? -actionsWidth : 0,
+        rowWidth,
       };
     },
     [disabled, open, actionsWidth],
@@ -195,6 +222,13 @@ export function useSwipeActions(
       }
       const wasHorizontal = g.axis === "horizontal";
       const totalDx = e.clientX - g.startX;
+      // Proportional full-swipe distance from the row width measured at
+      // pointer-down, floored so a narrow row can't make it hair-trigger. Fall
+      // back to the floor if the measurement was unavailable (width 0).
+      const fullSwipeThreshold =
+        g.rowWidth > 0
+          ? Math.max(g.rowWidth * fullSwipeRatio, fullSwipeFloor)
+          : fullSwipeFloor;
       gesture.current.pointerId = null;
       gesture.current.axis = "undecided";
       (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
@@ -221,7 +255,7 @@ export function useSwipeActions(
         setOpen(false);
       }
     },
-    [fullSwipeThreshold, revealThreshold, actionsWidth, offset],
+    [fullSwipeRatio, fullSwipeFloor, revealThreshold, actionsWidth, offset],
   );
 
   return {

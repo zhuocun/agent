@@ -105,7 +105,9 @@ def build_attribution(
     short canonical reason text. `substituted_display_label`, when provided,
     becomes `served_model_label` so the wire reflects the model actually
     served on a fallback (the whole point of the substitution feature);
-    otherwise the registry default `binding.tier.label` is used.
+    otherwise the served binding's `model_label` (e.g. "DeepSeek V4 Flash")
+    is used, falling back to the tier label only when the binding carries no
+    model label (the unrouted `auto` safety-net path).
     `substituted_provider`/`substituted_model` are not fields on the FE's
     `Substitution` shape today (the wire only carries `reasonCode` +
     `reasonText`) but are accepted so the call site can read them out of the
@@ -123,11 +125,14 @@ def build_attribution(
     # "auto" tier surfaces a concrete tier on the wire (see
     # `resolve_served_tier`) — the FE attribution row asserts a concrete tier.
     served_tier_id, served_tier_label = resolve_served_tier(binding)
-    # On a fallback, show the served model's label; else the resolved label.
+    # On a provider fallback, show the substituted model's label; otherwise the
+    # served binding's model label (e.g. "DeepSeek V4 Flash"). Fall back to the
+    # tier label only when the binding carries no model label (the unrouted
+    # `auto` safety-net path), so the field is never empty.
     served_model_label = (
         substituted_display_label
         if substituted_display_label is not None
-        else served_tier_label
+        else (binding.model_label or served_tier_label)
     )
     # `substituted_provider`/`substituted_model` have no wire field today;
     # reference them so unused-warning tooling stays quiet.

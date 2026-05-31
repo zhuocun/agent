@@ -69,8 +69,9 @@ export const metadata: Metadata = {
 // honor); the baseline makes the tint reliably engage. Resolution still lands
 // correctly: light/no-preference falls through to the baseline, and dark wins
 // via its media query (a no-media meta always matches, so the later dark meta
-// overrides it only under prefers-color-scheme: dark). The light value matches
-// `--background` exactly — oklch(0.985 0.003 250) resolves to #f9fafc.
+// overrides it only under prefers-color-scheme: dark). Both values match
+// `--background` exactly — light oklch(0.985 0.003 250) → #f9fafc, dark
+// oklch(0.165 0.008 250) → #0c0f12.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
@@ -78,7 +79,7 @@ export const viewport: Viewport = {
   interactiveWidget: "resizes-content",
   themeColor: [
     { color: "#f9fafc" },
-    { media: "(prefers-color-scheme: dark)", color: "#101216" },
+    { media: "(prefers-color-scheme: dark)", color: "#0c0f12" },
   ],
 };
 

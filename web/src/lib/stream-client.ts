@@ -107,6 +107,9 @@ export interface StartArgs {
   conversationId: string;
   clientMessageId: string; // FE-minted UUID; powers idempotent replay.
   tierId: ModelTierId;
+  // Optional provider route for per-turn model selection. Older backends ignore
+  // the field; newer backends use it to resolve the tier binding.
+  providerId?: string;
   text: string;
   isTemporary?: boolean;
   regenerate?: boolean;
@@ -752,6 +755,7 @@ export function useApiStream(
         tierId: args.tierId,
         text: args.text,
       };
+      if (args.providerId !== undefined) body.providerId = args.providerId;
       if (args.isTemporary !== undefined) body.isTemporary = args.isTemporary;
       if (args.regenerate !== undefined) body.regenerate = args.regenerate;
       if (args.editMessageId !== undefined)

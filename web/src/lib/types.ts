@@ -40,6 +40,20 @@ export interface ModelTier {
   providerRouteStatus: "available" | "pending" | "unavailable";
   defaultRouteEligible: boolean;
   dataPolicy: ProviderDataPolicy | null;
+  providerOptions?: ProviderTierOption[];
+}
+
+export type ProviderRouteStatus = "available" | "pending" | "unavailable";
+
+export interface ProviderTierOption {
+  providerId: string;
+  label: string;
+  status: ProviderRouteStatus;
+  modelLabel: string;
+  supportsWebSearch: boolean;
+  supportsAttachments: boolean;
+  defaultRouteEligible: boolean;
+  dataPolicy: ProviderDataPolicy | null;
 }
 
 // Reasoning-effort / extended-thinking control surfaced in the composer

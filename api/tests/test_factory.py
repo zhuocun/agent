@@ -98,6 +98,24 @@ def test_build_provider_anthropic_returns_anthropic_provider() -> None:
     assert isinstance(p, AnthropicProvider)
 
 
+def test_build_provider_provider_id_override_does_not_mutate_settings() -> None:
+    """Per-request provider selection builds the override without global mutation."""
+    s = Settings(provider_backend="fake", openai_api_key="x")
+    p = build_provider(s, provider_id="openai")
+    assert isinstance(p, OpenAIProvider)
+    assert s.provider_backend == "fake"
+
+
+def test_build_provider_uses_request_api_key_for_override() -> None:
+    """A BYOK key can satisfy provider construction for a per-request route."""
+    p = build_provider(
+        Settings(provider_backend="fake", openai_api_key=None),
+        provider_id="openai",
+        api_key="sk-user-byok",
+    )
+    assert isinstance(p, OpenAIProvider)
+
+
 def test_build_provider_gemini_pending_route_fails_closed() -> None:
     """Gemini is registered for roadmap visibility but has no adapter yet."""
     with pytest.raises(AppError) as exc_info:
@@ -107,6 +125,19 @@ def test_build_provider_gemini_pending_route_fails_closed() -> None:
     assert err.envelope.code == "MISCONFIGURED"
     assert "PROVIDER_BACKEND='gemini'" in err.envelope.body
     assert "no available adapter" in err.envelope.body
+
+
+def test_build_provider_fake_production_override_fails_closed() -> None:
+    """A crafted per-request fake override cannot bypass the prod guard."""
+    with pytest.raises(AppError) as exc_info:
+        build_provider(
+            Settings(provider_backend="deepseek", deepseek_api_key="ds", env="production"),
+            provider_id="fake",
+        )
+    err = exc_info.value
+    assert err.status_code == 500
+    assert err.envelope.code == "MISCONFIGURED"
+    assert "not allowed in production" in err.envelope.body
 
 
 def test_build_provider_default_is_fake() -> None:

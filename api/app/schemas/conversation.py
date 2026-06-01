@@ -36,6 +36,7 @@ class CreateConversationRequest(CamelModel):
 
     selected_tier_id: ModelTierId
     is_temporary: bool = False
+    provider_id: str | None = None
 
 
 class BranchConversationRequest(CamelModel):
@@ -74,6 +75,7 @@ class SendMessageRequest(CamelModel):
 
     client_message_id: str
     tier_id: ModelTierId
+    provider_id: str | None = None
     # Bounded so a single submission can't ship an unbounded prompt (the text is
     # persisted AND replayed to the provider every turn). 32k chars is generous
     # for chat input while capping per-request memory / token blowup. No

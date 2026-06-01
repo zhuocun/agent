@@ -240,7 +240,11 @@ export function searchConversations(
 }
 
 export function createConversation(
-  body: { selectedTierId: ModelTierId; isTemporary?: boolean },
+  body: {
+    selectedTierId: ModelTierId;
+    isTemporary?: boolean;
+    providerId?: string;
+  },
   signal?: AbortSignal,
 ): Promise<Conversation> {
   return apiClient.post<Conversation>("/api/conversations", body, signal);

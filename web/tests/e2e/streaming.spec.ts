@@ -143,6 +143,7 @@ test.describe("streaming", () => {
     // along, plus the conversation id from the SSE URL.
     let createdConvoId = "";
     let sentWebSearch: boolean | undefined;
+    let sentProviderId: unknown;
     page.on("request", (request) => {
       const url = request.url();
       if (
@@ -152,7 +153,11 @@ test.describe("streaming", () => {
         const m = url.match(/\/api\/conversations\/([^/]+)\/messages$/);
         if (m) createdConvoId = m[1];
         try {
-          const body = request.postDataJSON() as { webSearch?: unknown };
+          const body = request.postDataJSON() as {
+            providerId?: unknown;
+            webSearch?: unknown;
+          };
+          sentProviderId = body.providerId;
           if (typeof body.webSearch === "boolean") sentWebSearch = body.webSearch;
         } catch {
           // Non-JSON body — leave `sentWebSearch` undefined; the assertion
@@ -191,6 +196,8 @@ test.describe("streaming", () => {
 
     // (a) The create request carried webSearch: true.
     expect(sentWebSearch).toBe(true);
+    expect(typeof sentProviderId).toBe("string");
+    expect((sentProviderId as string).length).toBeGreaterThan(0);
 
     // (c) Terminal lands; the sources panel + at least one source card render
     // after the answer settles.

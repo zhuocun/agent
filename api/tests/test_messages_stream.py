@@ -545,6 +545,168 @@ async def test_unknown_tier_returns_400(
     assert body["error"]["code"] in ("INVALID_INPUT", "INVALID_TIER")
 
 
+async def test_send_message_provider_id_selects_alternate_binding(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db.repositories import api_keys as api_keys_repo
+    from app.providers.fake import FakeProvider
+    from app.routes import conversations as conversation_routes
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        user.is_anonymous = False
+        await api_keys_repo.upsert(
+            session,
+            user_id=user.id,
+            provider="openai",
+            raw_api_key="sk-openai-test-byok-12345678",
+        )
+        await session.commit()
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    calls: list[dict[str, object]] = []
+
+    def _fake_build_provider(
+        settings: object | None = None,
+        *,
+        provider_id: str | None = None,
+        api_key: str | None = None,
+    ) -> FakeProvider:
+        calls.append({"settings": settings, "provider_id": provider_id, "api_key": api_key})
+        return FakeProvider(delay_ms=0)
+
+    monkeypatch.setattr(conversation_routes, "build_provider", _fake_build_provider)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "openai",
+            "text": "use openai binding",
+        },
+    )
+
+    assert calls[0]["provider_id"] == "openai"
+    terminal = next(payload for name, payload in frames if name == "terminal")
+    assert terminal["attribution"]["servedModelLabel"] == "gpt-4o"
+
+
+async def test_send_message_provider_id_missing_credentials_returns_400_before_insert(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "openai",
+            "text": "hi",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "PROVIDER_UNAVAILABLE"
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert rows == []
+
+
+async def test_send_message_pending_provider_id_returns_400(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "gemini",
+            "text": "hi",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "PROVIDER_UNAVAILABLE"
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert rows == []
+
+
+async def test_send_message_unknown_provider_id_returns_400(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "bogus",
+            "text": "hi",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_PROVIDER"
+
+
+async def test_send_message_fake_provider_id_returns_400_in_production(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import Settings
+    from app.routes import conversations as conversation_routes
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    monkeypatch.setattr(
+        conversation_routes,
+        "get_settings",
+        lambda: Settings(
+            provider_backend="deepseek",
+            deepseek_api_key="k",
+            env="production",
+        ),
+    )
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "fake",
+            "text": "hi",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "PROVIDER_UNAVAILABLE"
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert rows == []
+
+
 # M2: regenerate path ---------------------------------------------------------
 
 

@@ -14,9 +14,12 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import Settings
+from app.db.models import ApiKey, User
 from app.db.models import Session as DbSession
-from app.db.models import User
+from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import usage as usage_repo
+from app.routes import bootstrap as bootstrap_routes
 
 pytestmark = pytest.mark.asyncio
 
@@ -101,6 +104,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
             "providerRouteStatus",
             "defaultRouteEligible",
             "dataPolicy",
+            "providerOptions",
         ):
             assert key in tier
     # The picker discloses each tier's model (friendly label, never a raw id);
@@ -114,6 +118,20 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     assert by_id["fast"]["providerRouteStatus"] == "available"
     assert by_id["fast"]["defaultRouteEligible"] is False
     assert by_id["fast"]["dataPolicy"]["policyLabel"] == "Local deterministic test route"
+    options = {option["providerId"]: option for option in by_id["fast"]["providerOptions"]}
+    assert set(options) == {"deepseek", "anthropic", "openai", "gemini", "fake"}
+    assert options["deepseek"]["label"] == "DeepSeek"
+    assert options["deepseek"]["status"] == "unavailable"
+    assert options["deepseek"]["modelLabel"] == "DeepSeek V4 Flash"
+    assert options["anthropic"]["status"] == "unavailable"
+    assert options["anthropic"]["modelLabel"] == "Claude Haiku 4.5"
+    assert options["openai"]["status"] == "unavailable"
+    assert options["openai"]["modelLabel"] == "gpt-4o-mini"
+    assert options["fake"]["status"] == "available"
+    assert options["fake"]["modelLabel"] == "Fake"
+    assert options["gemini"]["status"] == "pending"
+    assert options["gemini"]["supportsWebSearch"] is False
+    assert options["gemini"]["supportsAttachments"] is False
     # Test config sets SEARCH_BACKEND=fake, so search is enabled and every real
     # tier (including `auto`, whose binding supports search via the tool loop)
     # reports the capability. The wire flag = binding.supports_web_search AND
@@ -129,6 +147,74 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
             assert key in s
 
     assert body["conversations"] == []
+
+
+async def test_bootstrap_ignores_corrupt_byok_for_provider_availability(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    upgrade = await client.post(
+        "/api/auth/upgrade",
+        json={"email": "u@example.com", "password": "hunter2hunter2"},
+    )
+    assert upgrade.status_code == 200
+    put = await client.put(
+        "/api/account/byok",
+        json={"provider": "openai", "apiKey": "sk-openai-fake-12345678"},
+    )
+    assert put.status_code == 200
+
+    async with session_factory() as session:
+        row = (await session.execute(select(ApiKey))).scalar_one()
+        row.ciphertext = "not-valid-base64!!!"
+        await session.commit()
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.status_code == 200
+    fast = next(tier for tier in boot.json()["modelTiers"] if tier["id"] == "fast")
+    options = {option["providerId"]: option for option in fast["providerOptions"]}
+    assert options["openai"]["status"] == "unavailable"
+
+
+async def test_bootstrap_does_not_mark_fake_byok_available_in_production(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await client.get("/api/bootstrap")
+    upgrade = await client.post(
+        "/api/auth/upgrade",
+        json={"email": "u@example.com", "password": "hunter2hunter2"},
+    )
+    assert upgrade.status_code == 200
+
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        await api_keys_repo.upsert(
+            session,
+            user_id=user.id,
+            provider="fake",
+            raw_api_key="fake-key-12345678",
+        )
+        await session.commit()
+
+    monkeypatch.setattr(
+        bootstrap_routes,
+        "get_settings",
+        lambda: Settings(
+            provider_backend="deepseek",
+            deepseek_api_key="k",
+            env="production",
+        ),
+    )
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.status_code == 200
+    fast = next(tier for tier in boot.json()["modelTiers"] if tier["id"] == "fast")
+    options = {option["providerId"]: option for option in fast["providerOptions"]}
+    assert options["deepseek"]["status"] == "available"
+    assert options["fake"]["status"] == "unavailable"
 
 
 async def test_bootstrap_second_hit_returns_same_user(

@@ -457,7 +457,7 @@ class BillingWebhookEvent(Base):
     __tablename__ = "billing_webhook_event"
 
     event_id: Mapped[str] = mapped_column(String, primary_key=True)
-    provider: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, primary_key=True)
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JsonVariant, nullable=False)
     processed_at: Mapped[datetime] = mapped_column(

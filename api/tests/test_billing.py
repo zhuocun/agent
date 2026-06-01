@@ -13,7 +13,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings, get_settings
-from app.db.models import BillingCustomer, BillingEntitlement, User
+from app.db.models import (
+    BillingCustomer,
+    BillingEntitlement,
+    BillingFulfillment,
+    BillingWebhookEvent,
+    User,
+)
 from app.db.repositories import billing as billing_repo
 from app.db.repositories import usage as usage_repo
 
@@ -304,7 +310,85 @@ async def test_credit_purchase_webhook_is_event_idempotent(
     assert unpaid["processed"] is True
     async with session_factory() as session:
         balance = await usage_repo.get_credit_balance(session, user_id=user.id)
+        webhook_events = (
+            (await session.execute(select(BillingWebhookEvent)))
+            .scalars()
+            .all()
+        )
+        fulfillments = (
+            (await session.execute(select(BillingFulfillment)))
+            .scalars()
+            .all()
+        )
     assert balance == pytest.approx(12.5)
+    assert sorted(row.event_id for row in webhook_events) == [
+        "evt_credit",
+        "evt_credit_duplicate_object",
+        "evt_credit_unpaid",
+    ]
+    assert [(row.object_id, row.event_id) for row in fulfillments] == [
+        ("cs_credit", "evt_credit")
+    ]
+
+
+async def test_webhook_customer_mapping_wins_over_conflicting_metadata(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_fake_billing(monkeypatch)
+
+    await client.get("/api/bootstrap")
+    await _upgrade(client)
+    primary_user = await _current_user(session_factory)
+    other_user = User(
+        email=f"{uuid4()}@example.com",
+        name="Other",
+        is_anonymous=False,
+    )
+    async with session_factory() as session:
+        session.add(other_user)
+        await session.flush()
+        await billing_repo.upsert_customer(
+            session,
+            user_id=primary_user.id,
+            provider="fake",
+            external_customer_id="cus_shared",
+        )
+        await session.commit()
+
+    result = await _post_fake_webhook(
+        client,
+        {
+            "id": "evt_conflicting_customer_metadata",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "id": "cs_conflicting_customer_metadata",
+                    "customer": "cus_shared",
+                    "payment_status": "paid",
+                    "metadata": {
+                        "user_id": str(other_user.id),
+                        "purpose": "credit_purchase",
+                        "credit_amount_usd": "7.00",
+                    },
+                }
+            },
+        },
+    )
+
+    assert result["processed"] is True
+    async with session_factory() as session:
+        primary_balance = await usage_repo.get_credit_balance(
+            session,
+            user_id=primary_user.id,
+        )
+        other_balance = await usage_repo.get_credit_balance(
+            session,
+            user_id=other_user.id,
+        )
+    assert primary_balance == pytest.approx(7.0)
+    assert other_balance == pytest.approx(0.0)
 
 
 async def test_credit_purchase_webhook_handles_bad_amount_metadata(
@@ -362,6 +446,45 @@ async def test_credit_purchase_webhook_handles_bad_amount_metadata(
     async with session_factory() as session:
         balance = await usage_repo.get_credit_balance(session, user_id=user.id)
     assert balance == pytest.approx(20.0)
+
+
+async def test_webhook_rejects_invalid_utf8_payload(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_fake_billing(monkeypatch)
+
+    response = await client.post(
+        "/api/billing/webhook",
+        content=b"\xff",
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_WEBHOOK_PAYLOAD"
+
+
+async def test_handled_webhook_rejects_missing_object(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_fake_billing(monkeypatch)
+
+    response = await client.post(
+        "/api/billing/webhook",
+        json={
+            "id": "evt_missing_object",
+            "type": "checkout.session.completed",
+            "data": {},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_WEBHOOK_PAYLOAD"
+    async with session_factory() as session:
+        rows = (await session.execute(select(BillingWebhookEvent))).scalars().all()
+    assert rows == []
 
 
 async def test_customer_mapping_is_scoped_by_provider(

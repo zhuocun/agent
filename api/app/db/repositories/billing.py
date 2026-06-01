@@ -12,7 +12,9 @@ from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -218,19 +220,27 @@ async def mark_webhook_event_processing(
     event_type: str,
     payload: dict[str, Any],
 ) -> bool:
-    row = BillingWebhookEvent(
+    values = dict(
         event_id=event_id,
         provider=provider,
         event_type=event_type,
         payload=payload,
     )
-    db.add(row)
-    try:
-        await db.flush()
-    except IntegrityError:
-        await db.rollback()
-        return False
-    return True
+    dialect = db.bind.dialect.name if db.bind is not None else "sqlite"
+    if dialect == "postgresql":
+        stmt_pg = pg_insert(BillingWebhookEvent).values(**values)
+        stmt_pg = stmt_pg.on_conflict_do_nothing(
+            index_elements=["provider", "event_id"]
+        )
+        result = await db.execute(stmt_pg)
+    else:
+        stmt_sq = sqlite_insert(BillingWebhookEvent).values(**values)
+        stmt_sq = stmt_sq.on_conflict_do_nothing(
+            index_elements=["provider", "event_id"]
+        )
+        result = await db.execute(stmt_sq)
+    await db.flush()
+    return cast(CursorResult[Any], result).rowcount == 1
 
 
 async def mark_fulfillment_processing(
@@ -241,19 +251,27 @@ async def mark_fulfillment_processing(
     object_id: str,
     event_id: str,
 ) -> bool:
-    row = BillingFulfillment(
+    values = dict(
         provider=provider,
         fulfillment_type=fulfillment_type,
         object_id=object_id,
         event_id=event_id,
     )
-    db.add(row)
-    try:
-        await db.flush()
-    except IntegrityError:
-        await db.rollback()
-        return False
-    return True
+    dialect = db.bind.dialect.name if db.bind is not None else "sqlite"
+    if dialect == "postgresql":
+        stmt_pg = pg_insert(BillingFulfillment).values(**values)
+        stmt_pg = stmt_pg.on_conflict_do_nothing(
+            index_elements=["provider", "fulfillment_type", "object_id"]
+        )
+        result = await db.execute(stmt_pg)
+    else:
+        stmt_sq = sqlite_insert(BillingFulfillment).values(**values)
+        stmt_sq = stmt_sq.on_conflict_do_nothing(
+            index_elements=["provider", "fulfillment_type", "object_id"]
+        )
+        result = await db.execute(stmt_sq)
+    await db.flush()
+    return cast(CursorResult[Any], result).rowcount == 1
 
 
 async def upsert_subscription_entitlement(

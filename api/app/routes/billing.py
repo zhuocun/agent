@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import time
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -31,6 +32,12 @@ router = APIRouter(prefix="/api/billing", tags=["billing"])
 
 _STRIPE_API_VERSION = "2025-05-28.basil"
 _WEBHOOK_TOLERANCE_SECONDS = 300
+_HANDLED_EVENT_TYPES = {
+    "checkout.session.completed",
+    "customer.subscription.created",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+}
 
 
 def _billing_error(
@@ -92,29 +99,45 @@ async def _stripe_post(
     data: dict[str, str],
 ) -> dict[str, Any]:
     key = _require_stripe_secret(settings)
-    async with httpx.AsyncClient(base_url=settings.stripe_api_base_url) as client:
-        response = await client.post(
-            path,
-            data=data,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Stripe-Version": _STRIPE_API_VERSION,
-            },
-            timeout=15.0,
+    try:
+        async with httpx.AsyncClient(base_url=settings.stripe_api_base_url) as client:
+            response = await client.post(
+                path,
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Stripe-Version": _STRIPE_API_VERSION,
+                },
+                timeout=15.0,
+            )
+    except httpx.RequestError as exc:
+        raise _billing_error(
+            code="BILLING_PROVIDER_ERROR",
+            title="Billing provider error",
+            body="The billing provider could not be reached.",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        ) from exc
+    try:
+        parsed = response.json()
+    except ValueError as exc:
+        raise _billing_error(
+            code="BILLING_PROVIDER_ERROR",
+            title="Billing provider error",
+            body="The billing provider returned an unexpected response.",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise _billing_error(
+            code="BILLING_PROVIDER_ERROR",
+            title="Billing provider error",
+            body="The billing provider returned an unexpected response.",
+            status_code=status.HTTP_502_BAD_GATEWAY,
         )
     if response.status_code >= 400:
         raise _billing_error(
             code="BILLING_PROVIDER_ERROR",
             title="Billing provider error",
             body="The billing provider rejected the request.",
-            status_code=status.HTTP_502_BAD_GATEWAY,
-        )
-    parsed = response.json()
-    if not isinstance(parsed, dict):
-        raise _billing_error(
-            code="BILLING_PROVIDER_ERROR",
-            title="Billing provider error",
-            body="The billing provider returned an unexpected response.",
             status_code=status.HTTP_502_BAD_GATEWAY,
         )
     return cast(dict[str, Any], parsed)
@@ -316,8 +339,13 @@ def _object_id(value: Any) -> str | None:
 
 
 def _timestamp_to_datetime(value: Any) -> datetime | None:
-    if isinstance(value, int | float):
-        return datetime.fromtimestamp(value, tz=UTC)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float) and math.isfinite(value):
+        try:
+            return datetime.fromtimestamp(value, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
     return None
 
 
@@ -349,17 +377,16 @@ async def _user_id_for_payload(
     provider: billing_repo.ProviderId,
     obj: dict[str, Any],
 ) -> UUID | None:
-    user_id = _metadata_user_id(obj.get("metadata"))
-    if user_id is not None:
-        return user_id
+    metadata_user_id = _metadata_user_id(obj.get("metadata"))
     customer_id = _object_id(obj.get("customer"))
     if customer_id is None:
-        return None
-    return await billing_repo.get_user_id_for_customer(
+        return metadata_user_id
+    mapped_user_id = await billing_repo.get_user_id_for_customer(
         db,
         provider=provider,
         external_customer_id=customer_id,
     )
+    return mapped_user_id if mapped_user_id is not None else metadata_user_id
 
 
 async def _handle_checkout_completed(
@@ -464,8 +491,8 @@ async def billing_webhook(
             webhook_secret=settings.stripe_webhook_secret,
         )
     try:
-        event = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError as exc:
+        event = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _billing_error(
             code="INVALID_WEBHOOK_PAYLOAD",
             title="Invalid webhook payload",
@@ -487,7 +514,12 @@ async def billing_webhook(
         if isinstance(event.get("data"), dict)
         else None
     )
-    if not isinstance(event_id, str) or not isinstance(event_type, str):
+    if (
+        not isinstance(event_id, str)
+        or not event_id
+        or not isinstance(event_type, str)
+        or not event_type
+    ):
         raise _billing_error(
             code="INVALID_WEBHOOK_PAYLOAD",
             title="Invalid webhook payload",
@@ -495,6 +527,13 @@ async def billing_webhook(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     if not isinstance(obj, dict):
+        if event_type in _HANDLED_EVENT_TYPES:
+            raise _billing_error(
+                code="INVALID_WEBHOOK_PAYLOAD",
+                title="Invalid webhook payload",
+                body="Webhook data.object must be an object for this event type.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
         obj = {}
 
     should_process = await billing_repo.mark_webhook_event_processing(
@@ -515,11 +554,7 @@ async def billing_webhook(
             obj=cast(dict[str, Any], obj),
             settings=settings,
         )
-    elif event_type in (
-        "customer.subscription.created",
-        "customer.subscription.updated",
-        "customer.subscription.deleted",
-    ):
+    elif event_type in _HANDLED_EVENT_TYPES:
         await _handle_subscription_event(
             db,
             provider=provider,

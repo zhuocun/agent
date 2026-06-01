@@ -458,10 +458,7 @@ async def test_stream_sends_attachment_bytes_as_multimodal_content() -> None:
     assert content[0] == {
         "type": "image_url",
         "image_url": {
-            "url": (
-                "data:image/png;base64,"
-                + base64.b64encode(image_bytes).decode("ascii")
-            )
+            "url": ("data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii"))
         },
     }
     assert content[1] == {
@@ -469,8 +466,7 @@ async def test_stream_sends_attachment_bytes_as_multimodal_content() -> None:
         "file": {
             "filename": "paper.pdf",
             "file_data": (
-                "data:application/pdf;base64,"
-                + base64.b64encode(pdf_bytes).decode("ascii")
+                "data:application/pdf;base64," + base64.b64encode(pdf_bytes).decode("ascii")
             ),
         },
     }
@@ -658,6 +654,8 @@ def _tool_call_stream_body(
     query: str,
     prompt_tokens: int,
     completion_tokens: int,
+    reasoning_chunks: tuple[str, ...] = (),
+    pre_tool_answer_chunks: tuple[str, ...] = (),
 ) -> str:
     """A first-completion SSE body that streams a single `web_search` tool_call.
 
@@ -667,65 +665,103 @@ def _tool_call_stream_body(
     """
     args = json.dumps({"query": query})
     half = len(args) // 2
-    frames = [
-        _chunk(
-            {
-                "id": "chatcmpl-1",
-                "object": "chat.completion.chunk",
-                "model": "deepseek-v4-pro",
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": "call_abc",
-                                    "type": "function",
-                                    "function": {"name": "web_search", "arguments": args[:half]},
-                                }
-                            ]
-                        },
-                        "finish_reason": None,
-                    }
-                ],
-            }
-        ),
-        _chunk(
-            {
-                "id": "chatcmpl-1",
-                "object": "chat.completion.chunk",
-                "model": "deepseek-v4-pro",
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": args[half:]}}
-                            ]
-                        },
-                        "finish_reason": "tool_calls",
-                    }
-                ],
-            }
-        ),
-        _chunk(
-            {
-                "id": "chatcmpl-1",
-                "object": "chat.completion.chunk",
-                "model": "deepseek-v4-pro",
-                "choices": [],
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens,
-                    "completion_tokens_details": {"reasoning_tokens": 0},
-                    "prompt_tokens_details": {"cached_tokens": 0},
-                },
-            }
-        ),
-        "data: [DONE]\n\n",
-    ]
+    frames: list[str] = []
+    for part in reasoning_chunks:
+        frames.append(
+            _chunk(
+                {
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion.chunk",
+                    "model": "deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"reasoning_content": part},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+        )
+    for part in pre_tool_answer_chunks:
+        frames.append(
+            _chunk(
+                {
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion.chunk",
+                    "model": "deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": part},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+        )
+    frames.extend(
+        [
+            _chunk(
+                {
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion.chunk",
+                    "model": "deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_abc",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "web_search",
+                                            "arguments": args[:half],
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            ),
+            _chunk(
+                {
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion.chunk",
+                    "model": "deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [{"index": 0, "function": {"arguments": args[half:]}}]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                }
+            ),
+            _chunk(
+                {
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion.chunk",
+                    "model": "deepseek-v4-pro",
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": prompt_tokens + completion_tokens,
+                        "completion_tokens_details": {"reasoning_tokens": 0},
+                        "prompt_tokens_details": {"cached_tokens": 0},
+                    },
+                }
+            ),
+            "data: [DONE]\n\n",
+        ]
+    )
     return "".join(frames)
 
 
@@ -809,9 +845,7 @@ async def test_stream_web_search_advertises_tool_across_rounds() -> None:
     answer — BOTH calls advertise the tool with `tool_choice="auto"` (round 2 is
     not the final capped round, so it is not forced to "none").
     """
-    first = _sse_response(
-        _tool_call_stream_body(query="q", prompt_tokens=1, completion_tokens=1)
-    )
+    first = _sse_response(_tool_call_stream_body(query="q", prompt_tokens=1, completion_tokens=1))
     second = _sse_response(
         _stream_body(prompt_tokens=1, completion_tokens=1, answer_chunks=("ok",))
     )
@@ -837,6 +871,44 @@ async def test_stream_web_search_advertises_tool_across_rounds() -> None:
     # The tool-result turn was appended for the second call's context.
     roles = [m["role"] for m in body1["messages"]]
     assert "tool" in roles
+
+
+@respx.mock
+async def test_stream_web_search_suppresses_pre_tool_answer_and_replays_reasoning() -> None:
+    """Tool-call rounds are provider context, not persisted final answer text."""
+    first = _sse_response(
+        _tool_call_stream_body(
+            query="latest rust release",
+            prompt_tokens=10,
+            completion_tokens=5,
+            reasoning_chunks=("Need current facts. ",),
+            pre_tool_answer_chunks=("I should search first. ",),
+        )
+    )
+    second = _sse_response(
+        _stream_body(prompt_tokens=20, completion_tokens=30, answer_chunks=("Grounded answer.",))
+    )
+    route = respx.post(_COMPLETIONS_URL).mock(side_effect=[first, second])
+
+    provider = _search_provider()
+    answer_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+        elif isinstance(event, ReasoningDelta):
+            reasoning_parts.append(event.text)
+
+    assert "".join(answer_parts) == "Grounded answer."
+    assert reasoning_parts == []
+
+    body1 = json.loads(route.calls[1].request.content)
+    assistant_msg = next(m for m in body1["messages"] if m["role"] == "assistant")
+    assert assistant_msg["content"] == "I should search first. "
+    assert assistant_msg["reasoning_content"] == "Need current facts. "
+    assert assistant_msg["tool_calls"][0]["function"]["name"] == "web_search"
 
 
 @respx.mock
@@ -934,9 +1006,7 @@ async def test_stream_web_search_backend_failure_degrades_gracefully() -> None:
     `done` status with an EMPTY `Sources`, feeds empty results to the grounded
     second completion, and still streams an answer. Usage sums both calls.
     """
-    first = _sse_response(
-        _tool_call_stream_body(query="q", prompt_tokens=10, completion_tokens=5)
-    )
+    first = _sse_response(_tool_call_stream_body(query="q", prompt_tokens=10, completion_tokens=5))
     second = _sse_response(
         _stream_body(prompt_tokens=20, completion_tokens=30, answer_chunks=("Answer",))
     )
@@ -1139,9 +1209,7 @@ async def test_stream_web_search_round_cap_forces_terminal_answer() -> None:
 
     # Enough tool-call bodies to exceed the cap; only _MAX_SEARCH_ROUNDS consumed.
     bodies = [
-        _sse_response(
-            _tool_call_stream_body(query=f"q{i}", prompt_tokens=2, completion_tokens=3)
-        )
+        _sse_response(_tool_call_stream_body(query=f"q{i}", prompt_tokens=2, completion_tokens=3))
         for i in range(_MAX_SEARCH_ROUNDS + 2)
     ]
     route = respx.post(_COMPLETIONS_URL).mock(side_effect=bodies)

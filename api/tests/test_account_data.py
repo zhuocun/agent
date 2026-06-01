@@ -27,6 +27,7 @@ from app.db.models import (
     Message,
     Preferences,
     Stream,
+    UsageCreditLedger,
     UsageRollup,
     User,
     Vote,
@@ -52,7 +53,7 @@ async def _seed_owned_data(
 
     Creates a conversation with a user + assistant message, a vote on the
     assistant message, a preferences row, a BYOK api_key row (with ciphertext +
-    masked key) and a usage_rollup row.
+    masked key), usage rows, and an audit event.
 
     Returns (conversation_id, user_message_id, assistant_message_id).
     """
@@ -137,6 +138,28 @@ async def _seed_owned_data(
                 is_byok=False,
             )
         )
+        for i in range(12):
+            if i % 4 == 0:
+                entry_type = "grant"
+                amount = 1.0
+            elif i % 4 == 1:
+                entry_type = "platform_debit"
+                amount = -0.1
+            elif i % 4 == 2:
+                entry_type = "adjustment"
+                amount = 0.25
+            else:
+                entry_type = "adjustment"
+                amount = -0.05
+            s.add(
+                UsageCreditLedger(
+                    user_id=user_id,
+                    entry_type=entry_type,
+                    amount_usd=amount,
+                    description=f"Ledger entry {i}",
+                    created_at=datetime(2026, 1, 1, 13, i, 0, tzinfo=UTC),
+                )
+            )
         s.add(
             AuditEvent(
                 user_id=user_id,
@@ -176,6 +199,7 @@ async def test_export_returns_data_with_attachment_and_no_secrets(
         "accountMetadata",
         "preferences",
         "usage",
+        "usageCreditLedger",
         "usageRollups",
         "byokKeys",
         "conversations",
@@ -209,6 +233,15 @@ async def test_export_returns_data_with_attachment_and_no_secrets(
             "createdAt": body["byokKeys"][0]["createdAt"],
         }
     ]
+    assert len(body["usage"]["recentLedgerEntries"]) == 10
+    assert len(body["usageCreditLedger"]) == 12
+    assert body["usageCreditLedger"][0]["description"] == "Ledger entry 0"
+    assert body["usageCreditLedger"][-1]["description"] == "Ledger entry 11"
+    assert {
+        entry["entryType"] for entry in body["usageCreditLedger"]
+    } == {"grant", "platform_debit", "adjustment"}
+    assert any(entry["amountUsd"] < 0 for entry in body["usageCreditLedger"])
+    assert any(entry["amountUsd"] > 0 for entry in body["usageCreditLedger"])
     assert body["usageRollups"][0]["costUsd"] == 0.012345
     event_types = {event["eventType"] for event in body["auditEvents"]}
     assert {"byok.upsert", "account.export"}.issubset(event_types)
@@ -373,16 +406,23 @@ async def test_delete_erases_all_data_and_clears_cookie(
         ).scalar_one() == 0
         assert (
             await s.execute(
+                select(func.count()).select_from(UsageCreditLedger).where(
+                    UsageCreditLedger.user_id == user_id
+                )
+            )
+        ).scalar_one() == 0
+        assert (
+            await s.execute(
                 select(func.count()).select_from(DbSession).where(
                     DbSession.user_id == user_id
                 )
             )
         ).scalar_one() == 0
-        audit_rows = (
-            await s.execute(select(AuditEvent).where(AuditEvent.event_type == "account.delete"))
-        ).scalars().all()
+        audit_rows = (await s.execute(select(AuditEvent))).scalars().all()
         assert len(audit_rows) == 1
+        assert audit_rows[0].event_type == "account.delete"
         assert audit_rows[0].user_id is None
+        assert audit_rows[0].details == {}
         # The stream row(s) for the deleted user's (now-gone) conversation are
         # explicitly erased — right-to-erasure must not orphan stream rows on
         # SQLite (no PRAGMA foreign_keys=ON, so DB cascade does not fire).

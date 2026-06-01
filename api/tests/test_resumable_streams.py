@@ -371,6 +371,54 @@ async def test_stop_during_resumable_persists_stopped_and_marks_done(
         assert stream_row.status == "stopped"
 
 
+async def test_stop_intent_keeps_active_guard_until_producer_releases(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Repository-level stop intent keeps the active guard in place.
+
+    The stop route records intent before the producer has flushed the stopped
+    assistant. That call must not free the conversation for a second stream; the
+    producer's final status transition releases the guard once it really stops.
+    """
+    _user_id, conv_id = await _seed_user_and_conversation(session_factory)
+    stream_id = await _seed_stream(session_factory, conversation_id=conv_id)
+
+    async with session_factory() as session:
+        await streams_repo.mark_status(
+            session,
+            stream_id=stream_id,
+            status="stopped",
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        stream_row = (
+            await session.execute(select(Stream).where(Stream.id == stream_id))
+        ).scalar_one()
+        assert stream_row.status == "active"
+        assert await streams_repo.get_active_for_conversation(
+            session, conversation_id=conv_id
+        ) is not None
+        with pytest.raises(streams_repo.ActiveStreamExistsError):
+            await streams_repo.create_stream(session, conversation_id=conv_id)
+
+    async with session_factory() as session:
+        await streams_repo.mark_status(
+            session,
+            stream_id=stream_id,
+            status="stopped",
+            release_active_guard=True,
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        assert (
+            await streams_repo.get_active_for_conversation(
+                session, conversation_id=conv_id
+            )
+        ) is None
+
+
 # Route surface: reconnect endpoint -------------------------------------------
 
 
@@ -487,6 +535,7 @@ async def test_post_creates_resumable_stream_and_reconnect_after_done_replays(
         assert resp.status_code == 200
         body = "".join([chunk async for chunk in resp.aiter_text()])
     assert "event: submitted" in body
+    assert f'"streamId":"{stream_id}"' in body
     assert "event: terminal" in body
 
     # Evict (simulate TTL expiry) → reconnect 404s.

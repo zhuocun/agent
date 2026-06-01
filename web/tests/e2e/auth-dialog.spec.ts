@@ -98,9 +98,7 @@ test.describe("auth dialog", () => {
   test("submits sign-in to /api/auth/login with the entered credentials", async ({
     page,
   }) => {
-    let loginBody: unknown = null;
     await page.route("**/api/auth/login", async (route) => {
-      loginBody = route.request().postDataJSON();
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -123,18 +121,16 @@ test.describe("auth dialog", () => {
     // before the navigation tears the page down.
     const loginRequest = page.waitForRequest("**/api/auth/login");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await loginRequest;
+    const request = await loginRequest;
 
-    expect(loginBody).toEqual({
+    expect(request.postDataJSON()).toEqual({
       email: "ada@example.com",
       password: "correct-horse",
     });
   });
 
   test("create-account submits to /api/auth/upgrade", async ({ page }) => {
-    let upgradeBody: unknown = null;
     await page.route("**/api/auth/upgrade", async (route) => {
-      upgradeBody = route.request().postDataJSON();
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -158,9 +154,9 @@ test.describe("auth dialog", () => {
     await page
       .getByRole("button", { name: "Create account", exact: true })
       .click();
-    await upgradeRequest;
+    const request = await upgradeRequest;
 
-    expect(upgradeBody).toEqual({
+    expect(request.postDataJSON()).toEqual({
       email: "grace@example.com",
       password: "amazing-grace",
     });

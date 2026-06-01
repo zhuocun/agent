@@ -27,7 +27,7 @@ from sqlalchemy import String, delete, func, or_, select
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Message, Vote
+from app.db.models import Conversation, Message, Stream, Vote
 from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.conversation import ConversationSearchResult, ConversationSummary
@@ -495,10 +495,44 @@ async def delete_for_user(
     msg_ids = (await db.execute(msg_id_stmt)).scalars().all()
     if msg_ids:
         await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
+    await db.execute(delete(Stream).where(Stream.conversation_id == conversation_id))
     await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
     await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await db.flush()
     return True
+
+
+async def delete_older_than_for_user(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    cutoff: datetime,
+) -> int:
+    """Delete conversations older than `cutoff` for a user's retention policy.
+
+    Retention is keyed on `updated_at`: an old conversation that was recently
+    renamed, pinned, or continued is still active data. SQLite tests do not rely
+    on FK cascades, so the dependent rows are removed explicitly.
+    """
+    stmt = select(Conversation.id).where(
+        Conversation.user_id == user_id,
+        Conversation.updated_at < cutoff,
+    )
+    conversation_ids = (await db.execute(stmt)).scalars().all()
+    if not conversation_ids:
+        return 0
+
+    msg_id_stmt = select(Message.id).where(
+        Message.conversation_id.in_(conversation_ids)
+    )
+    msg_ids = (await db.execute(msg_id_stmt)).scalars().all()
+    if msg_ids:
+        await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
+    await db.execute(delete(Stream).where(Stream.conversation_id.in_(conversation_ids)))
+    await db.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
+    await db.execute(delete(Conversation).where(Conversation.id.in_(conversation_ids)))
+    await db.flush()
+    return len(conversation_ids)
 
 
 async def mint_share_token(

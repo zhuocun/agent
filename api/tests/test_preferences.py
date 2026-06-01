@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -19,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Preferences, User
+from app.db.models import Conversation, Preferences, User
 
 pytestmark = pytest.mark.asyncio
 
@@ -89,6 +90,42 @@ async def test_put_accepts_retention_forever(
 
     boot = await client.get("/api/bootstrap")
     assert boot.json()["preferences"]["retentionDays"] is None
+
+
+async def test_put_finite_retention_erases_expired_conversations(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    now = datetime.now(UTC)
+    async with session_factory() as s:
+        user = (await s.execute(select(User))).scalar_one()
+        old = Conversation(
+            user_id=user.id,
+            title="old",
+            selected_tier_id="smart",
+            pinned=False,
+            updated_at=now - timedelta(days=40),
+        )
+        fresh = Conversation(
+            user_id=user.id,
+            title="fresh",
+            selected_tier_id="smart",
+            pinned=False,
+            updated_at=now - timedelta(days=5),
+        )
+        s.add_all([old, fresh])
+        await s.commit()
+        fresh_id = fresh.id
+
+    body = dict(_VALID_BODY)
+    body["retentionDays"] = 30
+    response = await client.put("/api/preferences", json=body)
+    assert response.status_code == 204
+
+    async with session_factory() as s:
+        rows = (await s.execute(select(Conversation))).scalars().all()
+        assert [row.id for row in rows] == [fresh_id]
 
 
 async def test_put_rejects_unknown_retention_days(client: AsyncClient) -> None:

@@ -156,11 +156,7 @@ def _openai_user_content(
         else:
             content.append(part)
 
-    text = (
-        text_with_attachment_fallback(user_text, metadata_only)
-        if metadata_only
-        else user_text
-    )
+    text = text_with_attachment_fallback(user_text, metadata_only) if metadata_only else user_text
     prompt = steer_user_text(text)
     if not content:
         return prompt
@@ -443,9 +439,7 @@ class OpenAIProvider:
         messages: list[dict[str, Any]] = [{"role": m.role, "content": m.text} for m in history]
         # Steer ONLY the current user turn (real-provider, outgoing request,
         # never persisted). History stays verbatim. See app/providers/steering.py.
-        messages.append(
-            {"role": "user", "content": _openai_user_content(user_text, attachments)}
-        )
+        messages.append({"role": "user", "content": _openai_user_content(user_text, attachments)})
 
         # Optional provider hints, built CONDITIONALLY so we never send a
         # `reasoning_effort=None` or an empty `extra_body` to stock OpenAI.
@@ -455,9 +449,7 @@ class OpenAIProvider:
         if reasoning_effort is not None:
             kwargs["reasoning_effort"] = reasoning_effort
         if thinking is not None:
-            kwargs["extra_body"] = {
-                "thinking": {"type": "enabled" if thinking else "disabled"}
-            }
+            kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
 
         client = self._client_for(api_key)
 
@@ -510,6 +502,7 @@ class OpenAIProvider:
 
             tool_calls: dict[int, _ToolCallAccumulator] = {}
             sanitizer = ToolMarkupSanitizer()
+            round_events: list[ProviderEvent] = []
             async for event in self._consume_completion(
                 client=client,
                 model_id=model_id,
@@ -519,12 +512,14 @@ class OpenAIProvider:
                 tool_calls=tool_calls,
                 sanitizer=sanitizer,
             ):
-                yield event
+                round_events.append(event)
 
             calls = _select_web_search_calls(tool_calls)
             if not calls:
                 # No tool call this round → the streamed content was the final
                 # answer. Done.
+                for event in round_events:
+                    yield event
                 break
 
             # Run each requested search, append ONE assistant tool-call turn
@@ -579,9 +574,7 @@ class OpenAIProvider:
                     label="Search web",
                     status="failed" if error else "succeeded",
                     summary=(
-                        error
-                        if error
-                        else f"{len(items)} source{'s' if len(items) != 1 else ''}"
+                        error if error else f"{len(items)} source{'s' if len(items) != 1 else ''}"
                     ),
                     output={
                         "query": query,
@@ -590,31 +583,36 @@ class OpenAIProvider:
                     error=error,
                 )
 
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": call_id,
-                            "type": "function",
-                            "function": {
-                                "name": "web_search",
-                                "arguments": call.arguments or "{}",
-                            },
-                        }
-                        for call, call_id, _query, _items, _error in results_by_call
-                    ],
-                }
+            assistant_content = "".join(
+                event.text for event in round_events if isinstance(event, AnswerDelta)
             )
+            assistant_reasoning = "".join(
+                event.text for event in round_events if isinstance(event, ReasoningDelta)
+            )
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": assistant_content or None,
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": call.arguments or "{}",
+                        },
+                    }
+                    for call, call_id, _query, _items, _error in results_by_call
+                ],
+            }
+            if assistant_reasoning:
+                assistant_message["reasoning_content"] = assistant_reasoning
+            messages.append(assistant_message)
             for _call, call_id, _query, items, _error in results_by_call:
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": json.dumps(
-                            {"results": [item.model_dump() for item in items]}
-                        ),
+                        "content": json.dumps({"results": [item.model_dump() for item in items]}),
                     }
                 )
 
@@ -690,11 +688,7 @@ class OpenAIProvider:
                         # Scrub any leaked tool-call markup from the answer
                         # stream (web-search safety net). `feed` may hold back a
                         # split-marker tail and returns only confirmed-clean text.
-                        emit = (
-                            sanitizer.feed(content)
-                            if sanitizer is not None
-                            else content
-                        )
+                        emit = sanitizer.feed(content) if sanitizer is not None else content
                         if emit:
                             # Close the reasoning block exactly once, just before
                             # the first answer text follows it.

@@ -10,8 +10,8 @@
 
 import path from "node:path";
 
-export const FE_PORT = 3000;
-export const BE_PORT = 8000;
+export const FE_PORT = Number(process.env.FE_PORT ?? 3000);
+export const BE_PORT = Number(process.env.BE_PORT ?? 8000);
 export const FE_URL = `http://localhost:${FE_PORT}`;
 export const BE_URL = `http://localhost:${BE_PORT}`;
 

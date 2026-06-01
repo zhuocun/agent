@@ -136,12 +136,12 @@ async def test_temporary_turn_creates_no_stream_row(
 # Stop endpoint ----------------------------------------------------------------
 
 
-async def test_stop_marks_active_stream_stopped(
+async def test_stop_signals_without_releasing_active_guard(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """POST /{id}/stop on a conversation with an active stream -> 204 and the
-    stream row is `stopped`."""
+    stream row remains `active` until the producer persists its terminal state."""
     await client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
@@ -161,7 +161,18 @@ async def test_stop_marks_active_stream_stopped(
         row = (
             await session.execute(select(Stream).where(Stream.id == stream_id))
         ).scalar_one()
-        assert row.status == "stopped"
+        assert row.status == "active"
+
+    second = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "second turn",
+        },
+    )
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "STREAM_IN_PROGRESS"
 
     # The in-process live signal was set for that stream id.
     assert is_stop_requested(stream_id) is True

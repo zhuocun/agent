@@ -37,11 +37,11 @@ async def test_put_byok_stores_encrypted_and_roundtrips_decrypt(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     await _upgrade_anonymous(client)
-    plaintext_key = "sk-ant-fake-12345678abcdef"
+    plaintext_key = "sk-deepseek-fake-12345678abcdef"
 
     response = await client.put(
         "/api/account/byok",
-        json={"provider": "anthropic", "apiKey": plaintext_key},
+        json={"provider": "deepseek", "apiKey": plaintext_key},
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -54,7 +54,7 @@ async def test_put_byok_stores_encrypted_and_roundtrips_decrypt(
         assert plaintext_key not in row.ciphertext
         # Repo-level decryption returns the plaintext.
         decrypted = await api_keys_repo.get_decrypted_for_user(
-            session, user_id=row.user_id, provider="anthropic"
+            session, user_id=row.user_id, provider="deepseek"
         )
         assert decrypted == plaintext_key
 
@@ -77,12 +77,12 @@ async def test_delete_byok_removes_row(
     await _upgrade_anonymous(client)
     await client.put(
         "/api/account/byok",
-        json={"provider": "anthropic", "apiKey": "sk-ant-fake-12345678"},
+        json={"provider": "deepseek", "apiKey": "sk-deepseek-fake-12345678"},
     )
     async with session_factory() as session:
         assert (await session.execute(select(ApiKey))).scalar_one_or_none() is not None
 
-    response = await client.delete("/api/account/byok/anthropic")
+    response = await client.delete("/api/account/byok/deepseek")
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["byokEnabled"] is False
@@ -109,10 +109,10 @@ async def test_byok_writes_audit_events(
 
     async with session_factory() as session:
         rows = (
-            await session.execute(
-                select(AuditEvent).order_by(AuditEvent.created_at.asc())
-            )
-        ).scalars().all()
+            (await session.execute(select(AuditEvent).order_by(AuditEvent.created_at.asc())))
+            .scalars()
+            .all()
+        )
     assert [row.event_type for row in rows] == ["byok.upsert", "byok.revoke"]
     assert [row.details["provider"] for row in rows] == ["anthropic", "anthropic"]
     assert rows[1].details["removed"] is True
@@ -170,7 +170,7 @@ async def test_bootstrap_reflects_byok_state(client: AsyncClient) -> None:
     # After PUT.
     await client.put(
         "/api/account/byok",
-        json={"provider": "anthropic", "apiKey": "sk-ant-fake-12345678abc"},
+        json={"provider": "deepseek", "apiKey": "sk-deepseek-fake-12345678abc"},
     )
     boot2 = await client.get("/api/bootstrap")
     account2 = boot2.json()["account"]
@@ -180,7 +180,7 @@ async def test_bootstrap_reflects_byok_state(client: AsyncClient) -> None:
     assert boot2.json()["usage"]["isByok"] is True
 
     # After DELETE.
-    await client.delete("/api/account/byok/anthropic")
+    await client.delete("/api/account/byok/deepseek")
     boot3 = await client.get("/api/bootstrap")
     account3 = boot3.json()["account"]
     assert account3["byokEnabled"] is False
@@ -212,13 +212,38 @@ async def test_put_byok_upsert_replaces_existing_row(
         assert decrypted == "sk-ant-fake-second5678"
 
 
+async def test_bootstrap_ignores_inactive_provider_byok(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A stored key for another provider is saveable but not active BYOK state."""
+    await _upgrade_anonymous(client)
+    response = await client.put(
+        "/api/account/byok",
+        json={"provider": "anthropic", "apiKey": "sk-ant-fake-12345678abc"},
+    )
+    assert response.status_code == 200
+    assert response.json()["byokEnabled"] is False
+    assert response.json().get("byokMaskedKey") is None
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.status_code == 200
+    assert boot.json()["account"]["byokEnabled"] is False
+    assert boot.json()["account"].get("byokMaskedKey") is None
+    assert boot.json()["usage"]["isByok"] is False
+
+    async with session_factory() as session:
+        row = (await session.execute(select(ApiKey))).scalar_one()
+        assert row.provider == "anthropic"
+
+
 async def test_non_sk_provider_uses_generic_mask(
     client: AsyncClient,
 ) -> None:
     await _upgrade_anonymous(client)
     response = await client.put(
         "/api/account/byok",
-        json={"provider": "custom", "apiKey": "abcdefghIJKL"},
+        json={"provider": "deepseek", "apiKey": "abcdefghIJKL"},
     )
     assert response.status_code == 200
     assert response.json()["byokMaskedKey"] == "...IJKL"
@@ -291,7 +316,7 @@ async def test_byok_decryption_failure_falls_back_silently(
     await _upgrade_anonymous(client)
     await client.put(
         "/api/account/byok",
-        json={"provider": "anthropic", "apiKey": "sk-ant-fake-12345678"},
+        json={"provider": "deepseek", "apiKey": "sk-deepseek-fake-12345678"},
     )
 
     # Tamper with the stored ciphertext.

@@ -435,22 +435,21 @@ export function ChatThread() {
     if (!assistantId) return;
 
     const parts: MessagePart[] = [];
-    // Persist the search status line first (mirrors `pendingMessage`). The
-    // search has finished by terminal time, so force `state: "done"` — the
-    // spinner stops, the label stays (e.g. "Searched the web").
-    if (result.searchStatus) {
-      parts.push({
-        type: "status",
-        label: result.searchStatus.label,
-        state: "done",
-      });
-    }
-    parts.push(...result.toolParts);
     if (result.reasoning) {
       parts.push({
         type: "reasoning",
         text: result.reasoning,
         durationSec: result.reasoningDurationSec,
+      });
+    }
+    parts.push(...result.toolParts);
+    // The search has finished by terminal time, so force `state: "done"` —
+    // the spinner stops, the label stays (e.g. "Searched the web").
+    if (result.searchStatus) {
+      parts.push({
+        type: "status",
+        label: result.searchStatus.label,
+        state: "done",
       });
     }
     if (result.answer) parts.push({ type: "text", text: result.answer });
@@ -647,21 +646,19 @@ export function ChatThread() {
   const pendingMessage: ChatMessage | null = useMemo(() => {
     if (!pendingId) return null;
     const parts: MessagePart[] = [];
-    // Web-search status line ("Searching the web…") sits at the TOP of the
-    // turn — it precedes reasoning + answer just as it does on the wire.
-    if (state.searchStatus) {
-      parts.push({
-        type: "status",
-        label: state.searchStatus.label,
-        state: state.searchStatus.state,
-      });
-    }
-    parts.push(...state.toolParts);
     if (state.reasoning) {
       parts.push({
         type: "reasoning",
         text: state.reasoning,
         durationSec: state.reasoningDurationSec,
+      });
+    }
+    parts.push(...state.toolParts);
+    if (state.searchStatus) {
+      parts.push({
+        type: "status",
+        label: state.searchStatus.label,
+        state: state.searchStatus.state,
       });
     }
     if (state.answer) parts.push({ type: "text", text: state.answer });
@@ -1327,9 +1324,8 @@ export function ChatThread() {
     ) {
       return null;
     }
-    const liveIds = new Set(conversations.map((c) => c.id));
-    return conversationSearchState.results.filter((c) => liveIds.has(c.id));
-  }, [conversationSearch, conversationSearchState, conversations]);
+    return conversationSearchState.results;
+  }, [conversationSearch, conversationSearchState]);
   const conversationSearchPending =
     conversationSearch.trim().length > 0 &&
     conversationSearchState?.query === conversationSearch.trim() &&

@@ -145,9 +145,7 @@ def test_list_tiers_carries_active_backend_model_label() -> None:
     # DeepSeek (canonical): friendly V4 names; auto blank.
     ds = {
         t.id: t.model_label
-        for t in list_tiers(
-            Settings(provider_backend="deepseek", deepseek_api_key="k")
-        )
+        for t in list_tiers(Settings(provider_backend="deepseek", deepseek_api_key="k"))
     }
     assert ds["fast"] == "DeepSeek V4 Flash"
     assert ds["pro"] == "DeepSeek V4 Pro"
@@ -155,18 +153,13 @@ def test_list_tiers_carries_active_backend_model_label() -> None:
     # Anthropic alternate: friendly Claude names; auto blank.
     an = {
         t.id: t.model_label
-        for t in list_tiers(
-            Settings(provider_backend="anthropic", anthropic_api_key="k")
-        )
+        for t in list_tiers(Settings(provider_backend="anthropic", anthropic_api_key="k"))
     }
     assert an["fast"] == "Claude Haiku 4.5"
     assert an["pro"] == "Claude Opus 4.7"
     assert an["auto"] == ""
     # OpenAI(-compatible): the operator-configured model id is the disclosure.
-    oa = {
-        t.id: t.model_label
-        for t in _openai_settings_tiers(openai_model_pro="deepseek-reasoner")
-    }
+    oa = {t.id: t.model_label for t in _openai_settings_tiers(openai_model_pro="deepseek-reasoner")}
     assert oa["pro"] == "deepseek-reasoner"
     assert oa["auto"] == ""
 
@@ -224,10 +217,7 @@ def test_get_binding_gemini_pending_route_is_none() -> None:
 def test_list_tiers_includes_provider_policy_metadata() -> None:
     """Bootstrap tiers carry active route metadata/data policy from the registry."""
     tiers = {
-        t.id: t
-        for t in list_tiers(
-            Settings(provider_backend="anthropic", anthropic_api_key="k")
-        )
+        t.id: t for t in list_tiers(Settings(provider_backend="anthropic", anthropic_api_key="k"))
     }
     fast = tiers["fast"]
     assert fast.provider_id == "anthropic"
@@ -374,3 +364,15 @@ def test_list_tiers_supports_web_search_false_when_tavily_key_missing() -> None:
         )
     )
     assert all(t.supports_web_search is False for t in tiers)
+
+
+def test_list_tiers_anthropic_hosted_web_search_ignores_search_backend() -> None:
+    """Anthropic uses hosted web search, so SEARCH_BACKEND is irrelevant."""
+    tiers = list_tiers(
+        Settings(  # type: ignore[call-arg]
+            provider_backend="anthropic",
+            anthropic_api_key="k",
+            SEARCH_BACKEND="none",
+        )
+    )
+    assert all(t.supports_web_search is True for t in tiers)

@@ -2,8 +2,8 @@
 
 Durable lifecycle of a streaming turn. One row per non-temporary streaming
 turn: created `active` when the turn starts, transitioned to `done` /
-`stopped` / `error` by the handler, and intent-marked `stopped` by the
-dedicated stop endpoint.
+`stopped` / `error` by the handler, and touched by the dedicated stop endpoint
+without releasing the active guard.
 
 The in-process stop *signal* lives in `app.streaming.stop_registry`; this
 module is the durable record. Keep the two in sync at the call sites (the
@@ -69,18 +69,28 @@ async def mark_status(
     stream_id: UUID,
     status: str,
     message_id: UUID | None = None,
+    release_active_guard: bool = False,
 ) -> None:
     """Set `status` (and optionally `message_id`) + bump `updated_at`. Flush.
 
     Silent no-op if the row is gone. `message_id` is only written when a
     non-None value is passed so a later status transition doesn't clobber a
     pointer set by an earlier one.
+
+    A stop request is not the same thing as producer termination. The stop
+    route records intent by calling `mark_status(..., status="stopped")` before
+    the provider task has flushed the partial assistant row. When that call has
+    no `message_id`, keep the row `active` so the single-active-stream guard
+    remains in force until the producer comes back through this repository with
+    the persisted assistant id. Shutdown/cancel paths that really own producer
+    termination can pass `release_active_guard=True`.
     """
     stmt = select(Stream).where(Stream.id == stream_id)
     row = (await db.execute(stmt)).scalar_one_or_none()
     if row is None:
         return
-    row.status = status
+    if status != "stopped" or message_id is not None or release_active_guard:
+        row.status = status
     if message_id is not None:
         row.message_id = message_id
     row.updated_at = datetime.now(UTC)
@@ -160,7 +170,13 @@ async def get_active_for_conversation(
     *,
     conversation_id: UUID,
 ) -> Stream | None:
-    """Return the newest `active` stream row for the conversation, else None."""
+    """Return the newest stream still guarding the conversation, else None.
+
+    The explicit-stop route calls `mark_status(status="stopped")` before the
+    producer has actually stopped; that repository call intentionally leaves
+    the row `active`, so the route can be wired safely without releasing the
+    guard early.
+    """
     stmt = (
         select(Stream)
         .where(

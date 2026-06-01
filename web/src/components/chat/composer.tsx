@@ -186,6 +186,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const slashListboxId = useId();
   const slashOptionPrefix = useId();
   const prevStreamingRef = useRef(isStreaming);
+  const supportsAttachmentsRef = useRef(supportsAttachments);
+
+  useEffect(() => {
+    supportsAttachmentsRef.current = supportsAttachments;
+  }, [supportsAttachments]);
 
   // Stop→Send settling pose: after a stream ends, hold the slot in a quiet
   // neutral state for a beat before reverting to rest, so the transition reads
@@ -316,6 +321,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const onPickFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    if (!supportsAttachmentsRef.current) {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
     const slots = Math.max(
       0,
       MAX_ATTACHMENTS - attachments.length - pendingAttachmentReads,
@@ -325,9 +334,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (selected.length === 0) return;
     setPendingAttachmentReads((current) => current + selected.length);
     void Promise.all(
-      selected.map((file) => attachmentFromFile(file).catch(() => null)),
+      selected.map((file) =>
+        supportsAttachmentsRef.current
+          ? attachmentFromFile(file).catch(() => null)
+          : Promise.resolve(null),
+      ),
     )
       .then((picked) => {
+        if (!supportsAttachmentsRef.current) return;
         setAttachments((current) => {
           const availableSlots = Math.max(0, MAX_ATTACHMENTS - current.length);
           const next = picked.filter(
@@ -494,35 +508,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         style={grown ? { borderRadius: "1.75rem" } : undefined}
         className="glass-capsule group flex items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
       >
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept="image/*,application/pdf,.pdf"
-          className="sr-only"
-          onChange={(e) => onPickFiles(e.target.files)}
-        />
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isStreaming}
-                aria-label="Attach image or PDF"
-                className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
-              >
-                <Paperclip className="size-4" />
-              </Button>
-            }
-          />
-          <TooltipContent>
-            {supportsAttachments
-              ? "Attach image or PDF"
-              : "Attachments are not supported by the current model"}
-          </TooltipContent>
-        </Tooltip>
+        {supportsAttachments ? (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,application/pdf,.pdf"
+              className="sr-only"
+              onChange={(e) => onPickFiles(e.target.files)}
+            />
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isStreaming}
+                    aria-label="Attach image or PDF"
+                    className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <Paperclip className="size-4" />
+                  </Button>
+                }
+              />
+              <TooltipContent>Attach image or PDF</TooltipContent>
+            </Tooltip>
+          </>
+        ) : null}
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>

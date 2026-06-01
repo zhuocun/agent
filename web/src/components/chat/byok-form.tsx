@@ -10,10 +10,11 @@ import { ApiError, ApiNetworkError } from "@/lib/apiClient";
 import { isAnonymousAccount, type AccountInfo } from "@/lib/types";
 
 // PRD 04 §5.2 — surface providers as user-facing labels; the canonical id list
-// is not yet exported from `lib/`, so the form hardcodes the two MVP providers
-// (Anthropic, OpenAI) with the same ids the gateway accepts. Replace with a
-// registry import once one lands.
+// is not yet exported from `lib/`, so the form hardcodes the MVP providers with
+// the same ids the gateway accepts. Replace with a registry import once one
+// lands.
 const PROVIDERS: ReadonlyArray<{ id: string; label: string; placeholder: string }> = [
+  { id: "deepseek", label: "DeepSeek", placeholder: "sk-deepseek-..." },
   { id: "anthropic", label: "Anthropic", placeholder: "sk-ant-..." },
   { id: "openai", label: "OpenAI", placeholder: "sk-..." },
 ];
@@ -66,7 +67,9 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
       showToast({
         severity: "success",
         title: "Key saved",
-        body: `${currentProvider.label} requests will bill to your key.`,
+        body: next.byokEnabled
+          ? `${currentProvider.label} requests will bill to your key.`
+          : `${currentProvider.label} key stored. The current route is still using platform credits.`,
       });
     } catch (cause) {
       handleReportError(cause, "Couldn't save key");

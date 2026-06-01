@@ -280,6 +280,17 @@ export function deleteConversation(
   );
 }
 
+export function postConversationStop(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.post<void>(
+    `/api/conversations/${encodeURIComponent(id)}/stop`,
+    undefined,
+    signal,
+  );
+}
+
 // Mint (or re-fetch — the BE is idempotent) a public share link for a
 // conversation. Returns a RELATIVE `sharePath`; the caller assembles the
 // absolute URL from `window.location.origin`. 404 when the conversation isn't

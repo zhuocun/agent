@@ -29,7 +29,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import path from "node:path";
 
-import { BE_ENV, BE_URL, FE_URL } from "./tests/e2e/shared-config";
+import { BE_ENV, BE_URL, FE_PORT, FE_URL } from "./tests/e2e/shared-config";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -99,6 +99,7 @@ export default defineConfig({
         // NEXT_PUBLIC_* is inlined at module load by Next; make sure the dev
         // server picks up the same value the tests will assert against.
         NEXT_PUBLIC_API_BASE_URL: BE_URL,
+        PORT: String(FE_PORT),
       },
       stdout: "pipe",
       stderr: "pipe",

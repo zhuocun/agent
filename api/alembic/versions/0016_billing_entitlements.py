@@ -126,7 +126,7 @@ def upgrade() -> None:
 
     op.create_table(
         "billing_webhook_event",
-        sa.Column("event_id", sa.String(), primary_key=True),
+        sa.Column("event_id", sa.String(), nullable=False),
         sa.Column("provider", sa.String(), nullable=False),
         sa.Column("event_type", sa.String(), nullable=False),
         sa.Column("payload", _jsonb(), nullable=False),
@@ -135,6 +135,11 @@ def upgrade() -> None:
             _timestamp_tz(),
             nullable=False,
             server_default=sa.func.now(),
+        ),
+        sa.PrimaryKeyConstraint(
+            "provider",
+            "event_id",
+            name="billing_webhook_event_pk",
         ),
     )
 

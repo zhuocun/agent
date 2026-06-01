@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.models import User
-from app.db.repositories import api_keys, users
+from app.db.repositories import api_keys, billing, usage, users
 from app.providers.tiers import (
     active_byok_provider_id,
     get_provider_route,
@@ -60,6 +60,13 @@ async def account_info_for_user(
     """Build AccountInfo with legacy fields scoped to the active provider."""
     s = settings if settings is not None else get_settings()
     byok_keys = await byok_key_metadata_for_user(db, user)
+    credit_balance_usd = await usage.get_credit_balance(db, user_id=user.id)
+    billing_state = await billing.get_billing_state(
+        db,
+        user=user,
+        settings=s,
+        credit_balance_usd=credit_balance_usd,
+    )
     active_provider = active_byok_provider_id(s)
     active_key = next(
         (
@@ -74,6 +81,7 @@ async def account_info_for_user(
         byok_enabled=active_key is not None,
         byok_masked_key=active_key.masked_key if active_key is not None else None,
         byok_keys=byok_keys,
+        billing=billing_state,
     )
 
 

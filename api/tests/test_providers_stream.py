@@ -248,6 +248,39 @@ async def test_stream_sends_attachment_bytes_as_multimodal_content() -> None:
 
 
 @respx.mock
+async def test_stream_sends_text_attachment_transcript_as_text_content() -> None:
+    """Text documents are sent as bounded transcripts, not native raw bytes."""
+    route = respx.post(_MESSAGES_URL).mock(
+        return_value=_sse_response(_stream_body(input_tokens=10, output_tokens=10))
+    )
+
+    provider = AnthropicProvider(api_key="sk-test")
+    async for _ in provider.stream(
+        model_id="test-model",
+        history=[],
+        user_text="summarize",
+        attachments=[
+            AttachmentPayload(
+                id="txt-1",
+                name="notes.txt",
+                media_type="text",
+                mime_type="text/plain",
+                size_bytes=16,
+                data=b"Alpha beta notes",
+                extracted_text="Alpha beta notes",
+            ),
+        ],
+    ):
+        pass
+
+    body = json.loads(route.calls.last.request.content)
+    content = body["messages"][-1]["content"]
+    assert isinstance(content, str)
+    assert "notes.txt (text/plain, 16 bytes)" in content
+    assert "Alpha beta notes" in content
+
+
+@respx.mock
 async def test_stream_maps_rate_limit_to_app_error() -> None:
     """A 429 stream open becomes RATE_LIMITED with retryAfterMs, no raw text."""
     respx.post(_MESSAGES_URL).mock(

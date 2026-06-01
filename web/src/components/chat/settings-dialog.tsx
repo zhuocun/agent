@@ -1,7 +1,7 @@
 "use client";
 
-import { useId, type JSX, type ReactNode } from "react";
-import { Gauge, Key, LogOut } from "lucide-react";
+import { useId, useState, type JSX, type ReactNode } from "react";
+import { CreditCard, Gauge, Key, LogOut, Receipt } from "lucide-react";
 
 import {
   Dialog,
@@ -21,6 +21,11 @@ import {
   UsageMeter,
 } from "@/components/chat/usage-meter";
 import { MODEL_TIERS } from "@/lib/model-tiers";
+import {
+  createBillingCheckout,
+  createBillingPortal,
+  type BillingCheckoutKind,
+} from "@/lib/apiClient";
 import {
   isAnonymousAccount,
   type AccountInfo,
@@ -319,7 +324,52 @@ export function SettingsDialog({
   const autoExpandId = useId();
   const temporaryId = useId();
   const trainingId = useId();
+  const telemetryId = useId();
   const anonymous = isAnonymousAccount(account);
+  const billing = account.billing ?? {
+    planId: account.planLabel === "Pro" ? "pro" : "free",
+    planLabel: account.planLabel,
+    proEnabled: account.planLabel === "Pro",
+    billingProvider: null,
+    checkoutAvailable: false,
+    proCheckoutAvailable: false,
+    creditCheckoutAvailable: false,
+    portalAvailable: false,
+    creditBalanceUsd: usage.creditBalanceUsd ?? 0,
+  };
+  const proCheckoutAvailable =
+    billing.proCheckoutAvailable ?? billing.checkoutAvailable;
+  const creditCheckoutAvailable =
+    billing.creditCheckoutAvailable ?? billing.checkoutAvailable;
+  const [billingBusy, setBillingBusy] = useState<
+    "pro" | "credits" | "portal" | null
+  >(null);
+  const [billingError, setBillingError] = useState<string | null>(null);
+
+  async function openCheckout(kind: BillingCheckoutKind): Promise<void> {
+    const busy = kind === "pro_subscription" ? "pro" : "credits";
+    setBillingBusy(busy);
+    setBillingError(null);
+    try {
+      const session = await createBillingCheckout({ kind });
+      window.location.assign(session.url);
+    } catch {
+      setBillingError("Billing could not be started.");
+      setBillingBusy(null);
+    }
+  }
+
+  async function openPortal(): Promise<void> {
+    setBillingBusy("portal");
+    setBillingError(null);
+    try {
+      const session = await createBillingPortal();
+      window.location.assign(session.url);
+    } catch {
+      setBillingError("Billing management is not available yet.");
+      setBillingBusy(null);
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -351,7 +401,7 @@ export function SettingsDialog({
                 <div className="flex items-center gap-2">
                   <p className="truncate text-sm font-medium">{account.name}</p>
                   <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
-                    {account.planLabel}
+                    {billing.planLabel}
                   </span>
                 </div>
                 <p className="truncate text-xs text-muted-foreground">
@@ -361,6 +411,59 @@ export function SettingsDialog({
             </div>
 
             <UsageDetails usage={usage} anonymous={anonymous} />
+
+            <div className="flex flex-wrap gap-2">
+              {!billing.proEnabled ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={
+                    anonymous ||
+                    !proCheckoutAvailable ||
+                    billingBusy !== null
+                  }
+                  onClick={() => void openCheckout("pro_subscription")}
+                >
+                  <CreditCard aria-hidden className="size-3.5" />
+                  <span>
+                    {anonymous
+                      ? "Sign in to upgrade"
+                      : billingBusy === "pro"
+                        ? "Opening..."
+                        : "Upgrade to Pro"}
+                  </span>
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={
+                  anonymous || !creditCheckoutAvailable || billingBusy !== null
+                }
+                onClick={() => void openCheckout("credit_purchase")}
+              >
+                <Receipt aria-hidden className="size-3.5" />
+                <span>{billingBusy === "credits" ? "Opening..." : "Buy credits"}</span>
+              </Button>
+              {billing.portalAvailable ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={billingBusy !== null}
+                  onClick={() => void openPortal()}
+                >
+                  <CreditCard aria-hidden className="size-3.5" />
+                  <span>
+                    {billingBusy === "portal" ? "Opening..." : "Manage billing"}
+                  </span>
+                </Button>
+              ) : null}
+            </div>
+            {billingError ? (
+              <p className="text-xs text-destructive">{billingError}</p>
+            ) : null}
 
             {!anonymous ? (
               <div className="pt-1">
@@ -384,7 +487,11 @@ export function SettingsDialog({
               are gated inside ByokForm with a sign-in CTA. */}
           <section className="space-y-3">
             <SectionHeading>Bring your own key</SectionHeading>
-            <ByokForm account={account} onAccountChange={onAccountChange} />
+            <ByokForm
+              account={account}
+              preferences={preferences}
+              onAccountChange={onAccountChange}
+            />
           </section>
 
           <Separator />
@@ -494,6 +601,23 @@ export function SettingsDialog({
                   checked={preferences.trainingOptIn}
                   onCheckedChange={(checked) =>
                     onPreferencesChange({ ...preferences, trainingOptIn: checked })
+                  }
+                />
+              }
+            />
+            <SettingRow
+              label="Product telemetry"
+              helper="Share content-free usage events that help improve launch reliability."
+              htmlFor={telemetryId}
+              control={
+                <Switch
+                  id={telemetryId}
+                  checked={preferences.telemetryEnabled}
+                  onCheckedChange={(checked) =>
+                    onPreferencesChange({
+                      ...preferences,
+                      telemetryEnabled: checked,
+                    })
                   }
                 />
               }

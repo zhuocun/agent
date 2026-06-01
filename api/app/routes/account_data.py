@@ -35,6 +35,7 @@ from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.db.models import User
 from app.db.repositories import (
+    analytics,
     api_keys,
     audit_events,
     conversations,
@@ -49,6 +50,7 @@ from app.schemas.account import (
     AccountDeleteRequest,
     AccountExport,
     AccountExportMetadata,
+    AnalyticsEventExport,
     AuditEventExport,
     ByokKeyMetadata,
     UsageRollupExport,
@@ -116,6 +118,7 @@ async def export_account(
             cutoff=datetime.now(UTC) - timedelta(days=prefs.retention_days),
         )
     audit_rows = await audit_events.list_for_user(db, user.id)
+    analytics_rows = await analytics.list_for_user(db, user.id)
 
     # Full conversations with messages. N+1 is acceptable for an export: list
     # the summaries to learn the ids, then load each full conversation.
@@ -164,13 +167,19 @@ async def export_account(
             )
             for row in audit_rows
         ],
+        analytics_events=[
+            AnalyticsEventExport(
+                event_type=row.event_type,
+                created_at=_iso(row.created_at),
+                properties=row.properties,
+            )
+            for row in analytics_rows
+        ],
         exported_at=datetime.now(UTC).isoformat(),
     )
     return JSONResponse(
         content=export.model_dump(by_alias=True),
-        headers={
-            "Content-Disposition": 'attachment; filename="account-export.json"'
-        },
+        headers={"Content-Disposition": 'attachment; filename="account-export.json"'},
     )
 
 

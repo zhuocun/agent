@@ -63,9 +63,10 @@ class AttachmentPart(CamelModel):
     type: Literal["attachment"] = "attachment"
     id: Annotated[str, StringConstraints(min_length=1, max_length=100)]
     name: Annotated[str, StringConstraints(min_length=1, max_length=255)]
-    media_type: Literal["image", "pdf"]
+    media_type: Literal["image", "pdf", "text"]
     mime_type: Annotated[str, StringConstraints(min_length=1, max_length=100)]
     size_bytes: int = Field(ge=0, le=25 * 1024 * 1024)
+    storage_policy: Literal["transient"] = "transient"
     data_url: Annotated[str, StringConstraints(max_length=7 * 1024 * 1024)] | None = Field(
         default=None,
         exclude=True,
@@ -80,6 +81,17 @@ class AttachmentPart(CamelModel):
             raise ValueError("image attachments must use an image/* MIME type")
         if self.media_type == "pdf" and self.mime_type != "application/pdf":
             raise ValueError("PDF attachments must use application/pdf")
+        if self.media_type == "text" and not (
+            self.mime_type.startswith("text/")
+            or self.mime_type
+            in {
+                "application/json",
+                "application/ld+json",
+                "application/xml",
+                "application/yaml",
+            }
+        ):
+            raise ValueError("text attachments must use a text MIME type")
         return self
 
 

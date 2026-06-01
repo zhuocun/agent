@@ -254,9 +254,11 @@ async def test_configure_stream_state_installs_redis_backed_stores(
         assert client._expirations[f"{replay_key_prefix}:seq"] == 30_000
 
         # Count-bounded Redis replay dropped the oldest event, so a full
-        # resumable replay is no longer available. Store lookup rejects the log
-        # instead of presenting the retained suffix as a successful replay.
-        assert await replay_registry.get_async(sid, ttl_seconds=30.0) is None
+        # resumable replay is no longer available. Store lookup raises a typed
+        # truncation error instead of presenting the retained suffix as a
+        # successful replay or collapsing it to a generic not-found.
+        with pytest.raises(ReplayLogTruncatedError):
+            await replay_registry.get_async(sid, ttl_seconds=30.0)
 
         # A handle acquired before trimming also detects the lost prefix when
         # subscribed, rather than yielding a suffix starting at seq 2.

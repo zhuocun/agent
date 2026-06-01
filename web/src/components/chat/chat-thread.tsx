@@ -69,6 +69,7 @@ import {
   type BootstrapResponse,
 } from "@/lib/apiClient";
 import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
+import { reportTelemetry } from "@/lib/telemetry";
 import { isAnonymousAccount } from "@/lib/types";
 import type {
   AccountInfo,
@@ -524,7 +525,7 @@ export function ChatThread() {
       setSelectedProviderId(nextProvider?.providerId);
       if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
       if (nextTier?.supportsAttachments !== true) {
-        composerRef.current?.clearAttachments();
+        composerRef.current?.clearAttachments("unsupported");
       }
     },
     [],
@@ -640,6 +641,7 @@ export function ChatThread() {
     pendingId !== null && (state.status === "submitted" || state.status === "streaming");
 
   const handleSelectTier = (id: ModelTierId): void => {
+    const previousTierId = selectedTierId;
     const nextBaseTier = baseModelTiers.find((tier) => tier.id === id);
     const nextProvider = providerOptionForTier(nextBaseTier, selectedProviderId);
     const nextTier = nextBaseTier
@@ -647,9 +649,16 @@ export function ChatThread() {
       : undefined;
     setSelectedTierId(id);
     setSelectedProviderId(nextProvider?.providerId);
+    if (id !== previousTierId) {
+      reportTelemetry(preferences, "tier.changed", {
+        fromTierId: previousTierId,
+        toTierId: id,
+        surface: "chat",
+      });
+    }
     if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
     if (nextTier?.supportsAttachments !== true) {
-      composerRef.current?.clearAttachments();
+      composerRef.current?.clearAttachments("unsupported");
     }
   };
 
@@ -658,14 +667,22 @@ export function ChatThread() {
       (option) => option.providerId === id && option.status === "available",
     );
     if (!nextProvider) return;
+    const previousProviderId = selectedProviderId;
     const nextTier = baseSelectedTier
       ? effectiveTierForProvider(baseSelectedTier, id)
       : undefined;
     setSelectedProviderId(id);
     storePreferredProviderId(id);
+    if (id !== previousProviderId) {
+      reportTelemetry(preferences, "provider.changed", {
+        fromProviderId: previousProviderId ?? null,
+        toProviderId: id,
+        tierId: selectedTierId,
+      });
+    }
     if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
     if (nextTier?.supportsAttachments !== true) {
-      composerRef.current?.clearAttachments();
+      composerRef.current?.clearAttachments("unsupported");
     }
   };
 
@@ -759,6 +776,7 @@ export function ChatThread() {
       mediaType: attachment.mediaType,
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
+      storagePolicy: "transient",
     }));
     tierAtSendRef.current = selectedTierId;
     providerAtSendRef.current = effectiveProviderId;
@@ -1267,12 +1285,35 @@ export function ChatThread() {
   const handlePreferencesChange = (next: UserPreferences) => {
     if (!bootstrap) return;
     const previous = bootstrap.preferences;
+    if (next.defaultTierId !== previous.defaultTierId) {
+      reportTelemetry(previous, "tier.changed", {
+        fromTierId: previous.defaultTierId,
+        toTierId: next.defaultTierId,
+        surface: "settings",
+      });
+    }
     setBootstrap({ ...bootstrap, preferences: next });
     void putPreferences(next).catch((cause) => {
       setBootstrap((prev) =>
         prev ? { ...prev, preferences: previous } : prev,
       );
       if (cause instanceof ApiError) setLiveMessage(cause.title);
+    });
+  };
+
+  const handleSettingsOpenChange = (open: boolean) => {
+    setSettingsOpen(open);
+    if (open) {
+      reportTelemetry(preferences, "settings.opened");
+      reportTelemetry(preferences, "usage.viewed", {
+        isByok: usage?.isByok ?? null,
+      });
+    }
+  };
+
+  const handleAttributionOpen = () => {
+    reportTelemetry(preferences, "attribution.opened", {
+      conversationId: activeConversationId,
     });
   };
 
@@ -1856,6 +1897,7 @@ export function ChatThread() {
                       }
                       onRegenerate={handleRegenerate}
                       onFeedback={(f) => setFeedback(m.id, f)}
+                      onAttributionOpen={handleAttributionOpen}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
                     />
@@ -1907,7 +1949,7 @@ export function ChatThread() {
 
       <SettingsDialog
         open={settingsOpen}
-        onOpenChange={setSettingsOpen}
+        onOpenChange={handleSettingsOpenChange}
         preferences={preferences}
         onPreferencesChange={handlePreferencesChange}
         account={account}

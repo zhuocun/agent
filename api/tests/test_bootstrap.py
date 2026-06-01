@@ -75,6 +75,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
         "trainingOptIn",
         "sendOnEnter",
         "autoExpandReasoning",
+        "telemetryEnabled",
         "retentionDays",
     ):
         assert key in prefs

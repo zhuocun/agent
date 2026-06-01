@@ -3,13 +3,19 @@
 import {
   Children,
   isValidElement,
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { ArrowDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  useVirtualMessageWindow,
+  type VirtualMessageItem,
+} from "@/lib/use-virtual-message-window";
 import { cn } from "@/lib/utils";
 
 // Pull the stable message id off a rendered child. UserMessage/AssistantMessage
@@ -28,6 +34,80 @@ function messageRoleOf(child: React.ReactNode): "assistant" | "user" | null {
   const props = child.props as { message?: { role?: unknown } };
   const role = props.message?.role;
   return role === "assistant" || role === "user" ? role : null;
+}
+
+const VIRTUALIZE_AFTER = 80;
+const MESSAGE_ROW_GAP_PX = 24;
+const VIRTUAL_OVERSCAN_PX = 1100;
+const USER_MESSAGE_ESTIMATE_PX = 96;
+const ASSISTANT_MESSAGE_ESTIMATE_PX = 220;
+
+interface RenderedMessageItem {
+  key: string;
+  id: string | null;
+  role: "assistant" | "user" | null;
+  child: React.ReactNode;
+  estimateSize: number;
+}
+
+function estimateSizeForRole(role: "assistant" | "user" | null): number {
+  return role === "user" ? USER_MESSAGE_ESTIMATE_PX : ASSISTANT_MESSAGE_ESTIMATE_PX;
+}
+
+function useMeasuredRow(
+  key: string,
+  onMeasure: (key: string, size: number) => void,
+) {
+  const rowRef = useRef<HTMLLIElement>(null);
+
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+
+    const measure = () => onMeasure(key, row.getBoundingClientRect().height);
+    measure();
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(row);
+    return () => ro.disconnect();
+  }, [key, onMeasure]);
+
+  return rowRef;
+}
+
+function MessageRow({
+  item,
+  index,
+  total,
+  isNew,
+  onMeasure,
+}: {
+  item: RenderedMessageItem;
+  index: number;
+  total: number;
+  isNew: boolean;
+  onMeasure: (key: string, size: number) => void;
+}) {
+  const rowRef = useMeasuredRow(item.key, onMeasure);
+  return (
+    // animate-message-in carries its own reduced-motion alternate
+    // (globals.css), so the class alone is the complete contract — no
+    // inline transform that would fight it or overflow-anchor.
+    <li
+      ref={rowRef}
+      data-message-role={item.role ?? undefined}
+      data-testid="message-list-row"
+      aria-posinset={index + 1}
+      aria-setsize={total}
+      className={cn(
+        "chat-message-row min-w-0 list-none",
+        index < total - 1 && "mb-6",
+        isNew && "animate-message-in",
+      )}
+    >
+      {item.child}
+    </li>
+  );
 }
 
 export function MessageList({
@@ -59,13 +139,22 @@ export function MessageList({
   // conversation switch so it can't leak the old thread's ids or grow unbounded.
   const [entered, setEntered] = useState<Set<string>>(() => new Set());
 
-  // Ids present this render. Use Children.map (not toArray) so the traversal
-  // matches the render loop and the post-commit effect exactly.
-  const ids: string[] = [];
-  Children.map(children, (child) => {
-    const id = messageIdOf(child);
-    if (id !== null) ids.push(id);
-  });
+  // Flatten once so the id traversal, virtual-window metadata, and render loop
+  // all agree on ordering.
+  const items = useMemo<RenderedMessageItem[]>(() => {
+    return Children.toArray(children).map((child, index) => {
+      const id = messageIdOf(child);
+      const role = messageRoleOf(child);
+      return {
+        key: id ?? `message-${index}`,
+        id,
+        role,
+        child,
+        estimateSize: estimateSizeForRole(role),
+      };
+    });
+  }, [children]);
+  const ids = items.flatMap((item) => (item.id === null ? [] : [item.id]));
   // A stable primitive view of `ids` for the effect's dependency array. `ids`
   // is rebuilt every render so it can't be a dep directly (referentially new
   // each time → behaves like no deps while falsely implying stability). The
@@ -86,6 +175,26 @@ export function MessageList({
   // the terminal placeholder→server-id same-length swap) renders static because
   // the effect below never adds those ids to the set.
   const isNew = (id: string | null): boolean => id !== null && entered.has(id);
+  const virtualItems = useMemo<VirtualMessageItem[]>(
+    () =>
+      items.map((item) => ({
+        key: item.key,
+        estimateSize: item.estimateSize,
+      })),
+    [items],
+  );
+  const virtualWindow = useVirtualMessageWindow({
+    enabled: items.length > VIRTUALIZE_AFTER,
+    items: virtualItems,
+    scrollRef,
+    gapPx: MESSAGE_ROW_GAP_PX,
+    overscanPx: VIRTUAL_OVERSCAN_PX,
+  });
+  const refreshVirtualViewport = virtualWindow.refreshViewport;
+  const visibleItems = items.slice(
+    virtualWindow.startIndex,
+    virtualWindow.endIndex,
+  );
 
   // Detect genuine appends AFTER paint (useEffect, not useLayoutEffect, so the
   // just-applied entrance class is allowed to paint before any bookkeeping).
@@ -147,20 +256,22 @@ export function MessageList({
     prevIdsRef.current = current;
   }, [idsKey]);
 
-  const recompute = () => {
+  const recompute = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     const next = distance < 80;
     atBottomRef.current = next;
     setAtBottom(next);
-  };
+    refreshVirtualViewport();
+  }, [refreshVirtualViewport]);
 
-  const scrollToBottom = (smooth: boolean) => {
+  const scrollToBottom = useCallback((smooth: boolean) => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
-  };
+    refreshVirtualViewport();
+  }, [refreshVirtualViewport]);
 
   useEffect(() => {
     scrollToBottom(false);
@@ -172,7 +283,7 @@ export function MessageList({
     });
     ro.observe(content);
     return () => ro.disconnect();
-  }, []);
+  }, [scrollToBottom]);
 
   return (
     <div className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden">
@@ -206,28 +317,37 @@ export function MessageList({
               // chrome strip, so clear it by the banner's full height (+3rem
               // over the non-temporary offset) — a +1.5rem bump still left the
               // first message tucked under the banner.
-              ? "mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+7rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+8.5rem)]"
-              : "mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5.5rem)]"
+              ? "mx-auto w-full max-w-3xl list-none px-4 pt-[calc(env(safe-area-inset-top)+7rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+8.5rem)]"
+              : "mx-auto w-full max-w-3xl list-none px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5.5rem)]"
           }
         >
-          {Children.map(children, (child) => {
-            const id = messageIdOf(child);
-            const role = messageRoleOf(child);
+          {virtualWindow.paddingTop > 0 ? (
+            <li
+              aria-hidden
+              className="list-none"
+              style={{ height: virtualWindow.paddingTop }}
+            />
+          ) : null}
+          {visibleItems.map((item, visibleIndex) => {
+            const index = virtualWindow.startIndex + visibleIndex;
             return (
-              // animate-message-in carries its own reduced-motion alternate
-              // (globals.css), so the class alone is the complete contract — no
-              // inline transform that would fight it or overflow-anchor.
-              <li
-                data-message-role={role ?? undefined}
-                className={cn(
-                  "chat-message-row min-w-0 list-none",
-                  isNew(id) && "animate-message-in",
-                )}
-              >
-                {child}
-              </li>
+              <MessageRow
+                key={item.key}
+                item={item}
+                index={index}
+                total={items.length}
+                isNew={isNew(item.id)}
+                onMeasure={virtualWindow.measureItem}
+              />
             );
           })}
+          {virtualWindow.paddingBottom > 0 ? (
+            <li
+              aria-hidden
+              className="list-none"
+              style={{ height: virtualWindow.paddingBottom }}
+            />
+          ) : null}
         </ol>
       </div>
 

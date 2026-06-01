@@ -32,6 +32,12 @@ export interface BootstrapResponse {
   conversations: ConversationSummary[];
 }
 
+export type BillingCheckoutKind = "pro_subscription" | "credit_purchase";
+
+export interface BillingSessionResponse {
+  url: string;
+}
+
 export type ErrorSeverity = "info" | "warning" | "error" | "fatal";
 export type ErrorActionKind = "retry" | "open_settings" | "dismiss";
 
@@ -342,6 +348,31 @@ export function postFeedback(
   );
 }
 
+export type TelemetryEventType =
+  | "settings.opened"
+  | "usage.viewed"
+  | "attribution.opened"
+  | "tier.changed"
+  | "provider.changed"
+  | "byok.form_opened"
+  | "byok.saved"
+  | "byok.deleted"
+  | "install_prompt.shown"
+  | "install_prompt.accepted"
+  | "install_prompt.dismissed";
+
+export function postTelemetryEvent(
+  eventType: TelemetryEventType,
+  properties?: Record<string, string | number | boolean | null>,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.post<void>(
+    "/api/analytics/events",
+    { eventType, properties: properties ?? {} },
+    signal,
+  );
+}
+
 export function putByok(
   body: { provider: string; apiKey: string },
   signal?: AbortSignal,
@@ -355,6 +386,27 @@ export function deleteByok(
 ): Promise<AccountInfo> {
   return apiClient.del<AccountInfo>(
     `/api/account/byok/${encodeURIComponent(provider)}`,
+    signal,
+  );
+}
+
+export function createBillingCheckout(
+  body: { kind: BillingCheckoutKind },
+  signal?: AbortSignal,
+): Promise<BillingSessionResponse> {
+  return apiClient.post<BillingSessionResponse>(
+    "/api/billing/checkout",
+    body,
+    signal,
+  );
+}
+
+export function createBillingPortal(
+  signal?: AbortSignal,
+): Promise<BillingSessionResponse> {
+  return apiClient.post<BillingSessionResponse>(
+    "/api/billing/portal",
+    undefined,
     signal,
   );
 }

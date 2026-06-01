@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
 
 from app.config import get_settings
+from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import streams as streams_repo
@@ -211,6 +212,7 @@ def _derive_session_factory(
         autoflush=False,
     )
 
+
 # Prompt used for title autogen. Kept short — the small/fast tier sees the
 # user's first turn plus this instruction and returns a 4-6 word title.
 # Phrased as the user side of a single turn (no system prompt seam in our
@@ -334,6 +336,7 @@ async def stream_and_persist(
         )
     )
     turn_started_at = time.monotonic()
+    first_answer_ms: int | None = None
 
     # Accumulators for parts + usage.
     reasoning_buf: list[str] = []
@@ -433,9 +436,7 @@ async def stream_and_persist(
             parts.append(
                 {
                     "type": "sources",
-                    "items": [
-                        it.model_dump(exclude_none=True) for it in search_items
-                    ],
+                    "items": [it.model_dump(exclude_none=True) for it in search_items],
                 }
             )
         return parts
@@ -504,24 +505,22 @@ async def stream_and_persist(
         cancelling the pump on disconnect, so `final_usage` reflects the
         latest cumulative usage even on stopped turns.
         """
-        nonlocal final_usage, sub_code, sub_provider, sub_model, sub_label
+        nonlocal final_usage, first_answer_ms, sub_code, sub_provider, sub_model, sub_label
         nonlocal latest_status, search_items
         if isinstance(ev, ReasoningDelta):
             reasoning_buf.append(ev.text)
         elif isinstance(ev, AnswerDelta):
+            if first_answer_ms is None:
+                first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
             answer_buf.append(ev.text)
         elif isinstance(ev, StatusUpdate):
             latest_status = (ev.label, ev.state)
         elif isinstance(ev, Sources):
             search_items = list(ev.items)
         elif isinstance(ev, ToolCall):
-            tool_parts.append(
-                _tool_call_part(ev).model_dump(by_alias=True, exclude_none=True)
-            )
+            tool_parts.append(_tool_call_part(ev).model_dump(by_alias=True, exclude_none=True))
         elif isinstance(ev, ToolResult):
-            tool_parts.append(
-                _tool_result_part(ev).model_dump(by_alias=True, exclude_none=True)
-            )
+            tool_parts.append(_tool_result_part(ev).model_dump(by_alias=True, exclude_none=True))
         elif isinstance(ev, UsageUpdate):
             final_usage = ev
         elif isinstance(ev, Complete):
@@ -531,11 +530,37 @@ async def stream_and_persist(
             # a `substitution is None` here must NOT clobber a router-side
             # `auto_downgrade` already in `sub_code`. Shared with both inline
             # streaming branches via `_fold_complete_substitution`.
-            sub_code, sub_provider, sub_model, sub_label = (
-                _fold_complete_substitution(
-                    ev, (sub_code, sub_provider, sub_model, sub_label)
-                )
+            sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
+                ev, (sub_code, sub_provider, sub_model, sub_label)
             )
+
+    def _terminal_properties(
+        *,
+        terminal_status: str,
+        attribution: ModelAttribution | None = None,
+        message_id: UUID | str | None = None,
+        cost_usd: float | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, Any]:
+        provider_value = attribution.provider_id if attribution is not None else runtime_provider_id
+        props: dict[str, Any] = {
+            "terminalStatus": terminal_status,
+            "conversationId": str(conversation_id) if conversation_id else None,
+            "messageId": str(message_id) if message_id is not None else None,
+            "requestedTierId": requested_tier_id,
+            "servedTierId": binding.tier.id,
+            "providerId": provider_value,
+            "isByok": is_byok_turn,
+            "ttftMs": first_answer_ms,
+            "turnMs": int((time.monotonic() - turn_started_at) * 1000),
+            "webSearch": web_search,
+            "attachmentCount": len(attachments or []),
+        }
+        if cost_usd is not None:
+            props["costUsd"] = cost_usd
+        if error_code is not None:
+            props["errorCode"] = error_code
+        return props
 
     try:
         while True:
@@ -597,11 +622,7 @@ async def stream_and_persist(
                     # Stopped turn still cost partial tokens -- bump the meter.
                     # `is_temporary` already gates persistence; only increment
                     # if we actually have a real user / conversation.
-                    if (
-                        not is_temporary
-                        and conversation_id is not None
-                        and user_id is not None
-                    ):
+                    if not is_temporary and conversation_id is not None and user_id is not None:
                         await usage_repo.increment_for_period(
                             fresh_db,
                             user_id=user_id,
@@ -613,6 +634,17 @@ async def stream_and_persist(
                                 str(stopped_assistant_id)
                                 if stopped_assistant_id is not None
                                 else None
+                            ),
+                        )
+                        await analytics_repo.record(
+                            fresh_db,
+                            user_id=user_id,
+                            event_type="response.terminal",
+                            properties=_terminal_properties(
+                                terminal_status="stopped",
+                                attribution=attribution,
+                                message_id=stopped_assistant_id,
+                                cost_usd=turn_cost,
                             ),
                         )
                     # Land the durable stream lifecycle in the SAME commit as the
@@ -682,9 +714,7 @@ async def stream_and_persist(
                 yield encode_sources(SourcesEvent(items=list(ev.items)))
             elif isinstance(ev, ToolCall):
                 call_part = _tool_call_part(ev)
-                tool_parts.append(
-                    call_part.model_dump(by_alias=True, exclude_none=True)
-                )
+                tool_parts.append(call_part.model_dump(by_alias=True, exclude_none=True))
                 yield encode_tool_call(
                     ToolCallEvent.model_validate(
                         call_part.model_dump(by_alias=True, exclude_none=True)
@@ -692,9 +722,7 @@ async def stream_and_persist(
                 )
             elif isinstance(ev, ToolResult):
                 result_part = _tool_result_part(ev)
-                tool_parts.append(
-                    result_part.model_dump(by_alias=True, exclude_none=True)
-                )
+                tool_parts.append(result_part.model_dump(by_alias=True, exclude_none=True))
                 yield encode_tool_result(
                     ToolResultEvent.model_validate(
                         result_part.model_dump(by_alias=True, exclude_none=True)
@@ -706,6 +734,8 @@ async def stream_and_persist(
                 if reasoning_buf and not emitted_reasoning_done:
                     yield encode_reasoning_done(ReasoningDoneEvent())
                     emitted_reasoning_done = True
+                if first_answer_ms is None:
+                    first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
                 answer_buf.append(ev.text)
                 yield encode_answer_delta(AnswerDeltaEvent(text=ev.text))
             elif isinstance(ev, UsageUpdate):
@@ -716,10 +746,8 @@ async def stream_and_persist(
                 # only when the provider ACTUALLY substituted; a `None` here
                 # must not clobber a router-side `auto_downgrade` seed. Shared
                 # with the drain branch via `_fold_complete_substitution`.
-                sub_code, sub_provider, sub_model, sub_label = (
-                    _fold_complete_substitution(
-                        ev, (sub_code, sub_provider, sub_model, sub_label)
-                    )
+                sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
+                    ev, (sub_code, sub_provider, sub_model, sub_label)
                 )
 
         # Provider finished cleanly. Compute attribution and emit terminal.
@@ -789,6 +817,33 @@ async def stream_and_persist(
                     status="done",
                     message_id=row.id,
                 )
+            if user_id is not None:
+                await analytics_repo.record(
+                    db,
+                    user_id=user_id,
+                    event_type="response.terminal",
+                    properties=_terminal_properties(
+                        terminal_status="done",
+                        attribution=attribution,
+                        message_id=row.id,
+                        cost_usd=turn_cost,
+                    ),
+                )
+                await analytics_repo.record_once_per_user(
+                    db,
+                    user_id=user_id,
+                    event_type="activation.first_successful_response",
+                    properties={
+                        "conversationId": str(conversation_id),
+                        "messageId": str(row.id),
+                        "requestedTierId": requested_tier_id,
+                        "servedTierId": binding.tier.id,
+                        "providerId": attribution.provider_id,
+                        "isByok": is_byok_turn,
+                        "costUsd": turn_cost,
+                        "ttftMs": first_answer_ms,
+                    },
+                )
             await db.commit()
             assistant_id = row.id
 
@@ -820,9 +875,7 @@ async def stream_and_persist(
         # so we mint a fresh uuid4 per turn — using a constant placeholder
         # would collide across consecutive temp turns in one tab and break
         # FE-side vote/copy actions that key off `messageId`.
-        terminal_message_id = (
-            str(assistant_id) if assistant_id is not None else str(uuid4())
-        )
+        terminal_message_id = str(assistant_id) if assistant_id is not None else str(uuid4())
         # M4: terminal-success turn log. Bound contextvars (request_id,
         # user_id) are merged in automatically; here we add per-turn keys.
         _struct_log.info(
@@ -912,9 +965,17 @@ async def stream_and_persist(
         if stream_id is not None:
             try:
                 async with _derive_session_factory(db)() as err_db:
-                    await streams_repo.mark_status(
-                        err_db, stream_id=stream_id, status="error"
-                    )
+                    await streams_repo.mark_status(err_db, stream_id=stream_id, status="error")
+                    if user_id is not None:
+                        await analytics_repo.record(
+                            err_db,
+                            user_id=user_id,
+                            event_type="response.terminal",
+                            properties=_terminal_properties(
+                                terminal_status="error",
+                                error_code=envelope.code,
+                            ),
+                        )
                     await err_db.commit()
             except Exception as mark_exc:  # pragma: no cover - defensive
                 log.warning("stream.mark_error.failed", exc_info=mark_exc)

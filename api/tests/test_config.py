@@ -61,6 +61,51 @@ def test_assert_prod_safe_no_op_for_fake_in_development() -> None:
     dev.assert_prod_safe()  # must not raise
 
 
+def test_assert_prod_safe_rejects_fake_billing_in_production() -> None:
+    """BILLING_BACKEND=fake is test-only and must fail production boot."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        BILLING_BACKEND="fake",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape("BILLING_BACKEND must not be 'fake' in production."),
+    ):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_rejects_stripe_billing_without_credit_price() -> None:
+    """Stripe credit purchase checkout needs its own configured price id."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        BILLING_BACKEND="stripe",
+        STRIPE_SECRET_KEY="sk_live_test",
+        STRIPE_WEBHOOK_SECRET="whsec_test",
+        STRIPE_PRO_PRICE_ID="price_pro",
+        STRIPE_CREDIT_PRICE_ID=None,
+    )
+    with pytest.raises(RuntimeError, match=re.escape("STRIPE_CREDIT_PRICE_ID required")):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_rejects_stripe_billing_with_nonpositive_credit_amount() -> None:
+    """The dollar amount credited after a successful payment must be positive."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        BILLING_BACKEND="stripe",
+        STRIPE_SECRET_KEY="sk_live_test",
+        STRIPE_WEBHOOK_SECRET="whsec_test",
+        STRIPE_PRO_PRICE_ID="price_pro",
+        STRIPE_CREDIT_PRICE_ID="price_credit",
+        STRIPE_CREDIT_AMOUNT_USD=0,
+    )
+    with pytest.raises(RuntimeError, match=re.escape("STRIPE_CREDIT_AMOUNT_USD")):
+        bad.assert_prod_safe()
+
+
 def test_assert_prod_safe_rejects_wildcard_cors_in_production() -> None:
     """A credentialed `*` origin must be refused in production."""
     bad = _prod_settings(

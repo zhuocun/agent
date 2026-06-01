@@ -104,9 +104,7 @@ class Settings(BaseSettings):
     # request, validated at the route boundary, passed transiently to providers,
     # and stripped before message persistence.
     attachment_max_count: int = Field(default=4, alias="ATTACHMENT_MAX_COUNT")
-    attachment_max_bytes: int = Field(
-        default=5 * 1024 * 1024, alias="ATTACHMENT_MAX_BYTES"
-    )
+    attachment_max_bytes: int = Field(default=5 * 1024 * 1024, alias="ATTACHMENT_MAX_BYTES")
 
     # BYOK key encryption KEK (base64-encoded 32 bytes). Required in M3 — the
     # default value is a known-bad dev sentinel that `assert_prod_safe()`
@@ -164,9 +162,10 @@ class Settings(BaseSettings):
     rate_limit_search: str = Field(default="30/minute", alias="RATE_LIMIT_SEARCH")
     # GDPR account deletion. Tight: destructive cascade across every table the
     # caller owns.
-    rate_limit_account_delete: str = Field(
-        default="5/minute", alias="RATE_LIMIT_ACCOUNT_DELETE"
-    )
+    rate_limit_account_delete: str = Field(default="5/minute", alias="RATE_LIMIT_ACCOUNT_DELETE")
+    # First-party telemetry endpoint. Payload validation keeps events small and
+    # content-free; this bounds accidental frontend loops.
+    rate_limit_analytics: str = Field(default="60/minute", alias="RATE_LIMIT_ANALYTICS")
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the
@@ -175,6 +174,34 @@ class Settings(BaseSettings):
     # and tests are unchanged. BYOK turns are always exempt (the user pays their
     # own provider) and never consult this cap.
     usage_budget_usd: float = Field(default=0.0, alias="USAGE_BUDGET_USD")
+
+    # Billing. `disabled` keeps local/dev behavior unchanged. `fake` is a
+    # deterministic no-network backend for tests and preview wiring. `stripe`
+    # speaks Stripe-compatible Checkout, Billing Portal, and webhook semantics
+    # through a tiny HTTP seam so the API remains testable without live secrets.
+    billing_backend: Literal["disabled", "fake", "stripe"] = Field(
+        default="disabled", alias="BILLING_BACKEND"
+    )
+    billing_success_url: str = Field(
+        default="http://localhost:3000/settings?billing=success",
+        alias="BILLING_SUCCESS_URL",
+    )
+    billing_cancel_url: str = Field(
+        default="http://localhost:3000/settings?billing=cancelled",
+        alias="BILLING_CANCEL_URL",
+    )
+    billing_portal_return_url: str = Field(
+        default="http://localhost:3000/settings",
+        alias="BILLING_PORTAL_RETURN_URL",
+    )
+    stripe_api_base_url: str = Field(
+        default="https://api.stripe.com", alias="STRIPE_API_BASE_URL"
+    )
+    stripe_secret_key: str | None = Field(default=None, alias="STRIPE_SECRET_KEY")
+    stripe_webhook_secret: str | None = Field(default=None, alias="STRIPE_WEBHOOK_SECRET")
+    stripe_pro_price_id: str | None = Field(default=None, alias="STRIPE_PRO_PRICE_ID")
+    stripe_credit_price_id: str | None = Field(default=None, alias="STRIPE_CREDIT_PRICE_ID")
+    stripe_credit_amount_usd: float = Field(default=10.0, alias="STRIPE_CREDIT_AMOUNT_USD")
 
     # Live stream coordination state. `memory` preserves the default
     # single-process behavior. `redis` stores resumable-stream replay logs and
@@ -208,16 +235,12 @@ class Settings(BaseSettings):
     # bulk UPDATE is idempotent and keyed on a shared DB column, but a
     # production-grade reaper belongs in a single coordinated job (cron /
     # Redis-locked worker) rather than every web process.
-    stream_reap_after_seconds: int = Field(
-        default=900, alias="STREAM_REAP_AFTER_SECONDS"
-    )
+    stream_reap_after_seconds: int = Field(default=900, alias="STREAM_REAP_AFTER_SECONDS")
     # Interval (seconds) between background reaper sweeps. The first sweep also
     # runs once at startup (a fresh process knows any `active` row it didn't
     # create is orphaned from a prior crash). `<= 0` on EITHER this or
     # `stream_reap_after_seconds` disables the background loop.
-    stream_reap_interval_seconds: int = Field(
-        default=300, alias="STREAM_REAP_INTERVAL_SECONDS"
-    )
+    stream_reap_interval_seconds: int = Field(default=300, alias="STREAM_REAP_INTERVAL_SECONDS")
 
     # Auto-tier routing. When True (default), an `auto` request runs the v0
     # complexity heuristic (`providers/router.py`) and is served by the routed
@@ -251,9 +274,7 @@ class Settings(BaseSettings):
     # worker than the producer 404s. With STREAM_STATE_BACKEND=redis, the replay
     # log is shared through Redis and bounded by the TTL/count/byte settings
     # below. The durable `stream` row remains the cross-worker lifecycle record.
-    resumable_streams_enabled: bool = Field(
-        default=False, alias="RESUMABLE_STREAMS_ENABLED"
-    )
+    resumable_streams_enabled: bool = Field(default=False, alias="RESUMABLE_STREAMS_ENABLED")
 
     # TTL (seconds) a finished ReplayBuffer is retained after the producer marks
     # it `done`, so a late same-device reconnect can still replay the full final
@@ -261,20 +282,14 @@ class Settings(BaseSettings):
     # `replay_registry.get` / `.create`) and a reconnect → 404. Default 60s:
     # long enough for a transient network blip + reconnect, short enough to bound
     # per-process memory. Only consulted when `resumable_streams_enabled`.
-    resumable_buffer_ttl_seconds: float = Field(
-        default=60.0, alias="RESUMABLE_BUFFER_TTL_SECONDS"
-    )
+    resumable_buffer_ttl_seconds: float = Field(default=60.0, alias="RESUMABLE_BUFFER_TTL_SECONDS")
     # Redis replay buffers are additionally bounded by event count and
     # serialized-byte budget. If the producer exceeds either bound, Redis drops
     # the oldest replay events first; live subscribers continue from the oldest
     # retained event. The memory backend intentionally keeps its historical
     # unbounded-in-flight behavior and only TTL-evicts after done.
-    resumable_buffer_max_events: int = Field(
-        default=1000, alias="RESUMABLE_BUFFER_MAX_EVENTS"
-    )
-    resumable_buffer_max_bytes: int = Field(
-        default=1_048_576, alias="RESUMABLE_BUFFER_MAX_BYTES"
-    )
+    resumable_buffer_max_events: int = Field(default=1000, alias="RESUMABLE_BUFFER_MAX_EVENTS")
+    resumable_buffer_max_bytes: int = Field(default=1_048_576, alias="RESUMABLE_BUFFER_MAX_BYTES")
 
     @property
     def deepseek_key(self) -> str | None:
@@ -340,13 +355,8 @@ class Settings(BaseSettings):
                     f"BYOK_KEK_VERSIONS entry for version {version} is invalid: {exc}"
                 ) from exc
         if self.byok_current_kek_version < 0:
-            raise RuntimeError(
-                "BYOK_CURRENT_KEK_VERSION must be >= 0"
-            )
-        if (
-            self.byok_current_kek_version >= 1
-            and self.byok_current_kek_version not in registry
-        ):
+            raise RuntimeError("BYOK_CURRENT_KEK_VERSION must be >= 0")
+        if self.byok_current_kek_version >= 1 and self.byok_current_kek_version not in registry:
             raise RuntimeError(
                 "BYOK_CURRENT_KEK_VERSION="
                 f"{self.byok_current_kek_version} but no matching entry in "
@@ -384,6 +394,23 @@ class Settings(BaseSettings):
             raise RuntimeError("ANTHROPIC_API_KEY required when PROVIDER_BACKEND=anthropic")
         if self.provider_backend == "openai" and not self.openai_api_key:
             raise RuntimeError("OPENAI_API_KEY required when PROVIDER_BACKEND=openai")
+        if self.billing_backend == "fake":
+            raise RuntimeError("BILLING_BACKEND must not be 'fake' in production.")
+        if self.billing_backend == "stripe":
+            if not self.stripe_secret_key:
+                raise RuntimeError("STRIPE_SECRET_KEY required when BILLING_BACKEND=stripe")
+            if not self.stripe_webhook_secret:
+                raise RuntimeError("STRIPE_WEBHOOK_SECRET required when BILLING_BACKEND=stripe")
+            if not self.stripe_pro_price_id:
+                raise RuntimeError("STRIPE_PRO_PRICE_ID required when BILLING_BACKEND=stripe")
+            if not self.stripe_credit_price_id:
+                raise RuntimeError(
+                    "STRIPE_CREDIT_PRICE_ID required when BILLING_BACKEND=stripe"
+                )
+            if self.stripe_credit_amount_usd <= 0:
+                raise RuntimeError(
+                    "STRIPE_CREDIT_AMOUNT_USD must be positive when BILLING_BACKEND=stripe"
+                )
 
 
 @lru_cache(maxsize=1)

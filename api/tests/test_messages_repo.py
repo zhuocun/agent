@@ -116,6 +116,7 @@ async def test_create_user_message_persists_attachment_metadata_and_history_igno
                 "mediaType": "image",
                 "mimeType": "image/png",
                 "sizeBytes": 4096,
+                "storagePolicy": "transient",
             },
         ]
 

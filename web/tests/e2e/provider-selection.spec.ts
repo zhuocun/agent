@@ -187,7 +187,7 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await expect(page.getByRole("button", { name: "Attach image or PDF" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Attach file" })).toBeVisible();
 
     await page.getByTestId("model-mode-trigger").click();
     await page.getByTestId("web-search-toggle").click();
@@ -198,7 +198,7 @@ test.describe("provider selection", () => {
     await expect(page.getByText("Gemini", { exact: true })).toBeVisible();
     await page.getByText("OpenAI", { exact: true }).click();
 
-    await expect(page.getByRole("button", { name: "Attach image or PDF" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Attach file" })).toHaveCount(0);
 
     await page.getByTestId("model-mode-trigger").click();
     await expect(page.getByTestId("web-search-toggle")).toHaveCount(0);
@@ -212,6 +212,89 @@ test.describe("provider selection", () => {
       .toMatchObject({ providerId: "openai" });
     expect(createdBody).toMatchObject({ providerId: "openai" });
     expect(sentBody?.webSearch).toBeUndefined();
+  });
+
+  test("attaches text file, sends transient payload, then clears on unsupported provider", async ({
+    page,
+  }) => {
+    await page.route(`${BE_URL}/api/bootstrap`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(bootstrapPayload()),
+      });
+    });
+
+    await page.route(`${BE_URL}/api/conversations`, async (route) => {
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "22222222-2222-4222-8222-222222222222",
+          title: "New chat",
+          messages: [],
+          selectedTierId: "auto",
+          isTemporary: false,
+        }),
+      });
+    });
+
+    let sentBody:
+      | {
+          text?: unknown;
+          attachments?: Array<{
+            name?: unknown;
+            mediaType?: unknown;
+            storagePolicy?: unknown;
+            dataUrl?: unknown;
+          }>;
+        }
+      | undefined;
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      sentBody = route.request().postDataJSON() as typeof sentBody;
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+        body:
+          'event: terminal\ndata: {"status":"done","messageId":"33333333-3333-4333-8333-333333333333","userMessageId":"44444444-4444-4444-8444-444444444444","attribution":{"requestedTierId":"auto","servedTierId":"smart","servedModelLabel":"Fake","providerId":"fake","providerLabel":"Fake","isByok":false,"costUsd":0,"costConfidence":"exact","breakdown":{"currency":"USD","listPriceInPerM":0,"listPriceOutPerM":0,"inputTokens":1,"outputTokens":1,"reasoningTokens":0,"cachedInputTokens":0,"longContext":{"flat":true},"promoApplied":false,"subtotalUsd":0,"sessionSurchargeUsd":0}}}\n\n',
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByTestId("composer-file-input").setInputFiles({
+      name: "notes.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("Alpha beta notes"),
+    });
+    await expect(page.getByText("notes.txt")).toBeVisible();
+    await page.getByTestId("composer-send").click();
+
+    await expect.poll(() => sentBody, { timeout: 5_000 }).toBeTruthy();
+    expect(sentBody?.text).toBe("");
+    expect(sentBody?.attachments?.[0]).toMatchObject({
+      name: "notes.txt",
+      mediaType: "text",
+      storagePolicy: "transient",
+    });
+    expect(sentBody?.attachments?.[0]?.dataUrl).toContain(
+      "data:text/plain;base64,",
+    );
+    await expect(page.getByText("Request only")).toBeVisible();
+
+    await page.getByTestId("composer-file-input").setInputFiles({
+      name: "draft.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("Draft"),
+    });
+    await expect(page.getByText("draft.txt")).toBeVisible();
+    await page.getByTestId("model-mode-trigger").click();
+    await page.getByText("OpenAI", { exact: true }).click();
+    await expect(
+      page.getByText("Attachments were removed because the current model does not support files."),
+    ).toBeVisible();
+    await expect(page.getByText("draft.txt")).toHaveCount(0);
   });
 
   test("keeps provider UI hidden when only one provider is available", async ({

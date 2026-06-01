@@ -18,11 +18,32 @@ class AccountByokKey(CamelModel):
     usable: bool
 
 
+class BillingState(CamelModel):
+    plan_id: Literal["free", "pro"]
+    plan_label: str
+    pro_enabled: bool
+    billing_provider: Literal["stripe", "fake"] | None = None
+    # Legacy alias for Pro checkout availability. Kept so stale clients that
+    # only know `checkoutAvailable` keep gating the upgrade action correctly.
+    checkout_available: bool = False
+    pro_checkout_available: bool = False
+    credit_checkout_available: bool = False
+    portal_available: bool = False
+    credit_balance_usd: float = 0.0
+
+
 class AccountInfo(CamelModel):
     name: str
     email: str
     is_anonymous: bool
     plan_label: str
+    billing: BillingState = Field(
+        default_factory=lambda: BillingState(
+            plan_id="free",
+            plan_label="Free",
+            pro_enabled=False,
+        )
+    )
     byok_enabled: bool
     byok_masked_key: str | None = None
     byok_keys: list[AccountByokKey] = Field(default_factory=list)
@@ -76,6 +97,12 @@ class AuditEventExport(CamelModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class AnalyticsEventExport(CamelModel):
+    event_type: str
+    created_at: str
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
 class AccountExport(CamelModel):
     """GDPR data-export envelope (PRD 05 §7.3).
 
@@ -95,6 +122,7 @@ class AccountExport(CamelModel):
     byok_keys: list[ByokKeyMetadata]
     conversations: list[Conversation]
     audit_events: list[AuditEventExport]
+    analytics_events: list[AnalyticsEventExport]
     exported_at: str
 
 

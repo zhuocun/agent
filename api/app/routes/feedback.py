@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependency import current_user
 from app.db.models import User
+from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import votes as votes_repo
 from app.db.session import get_db
 from app.errors import not_found
@@ -55,4 +56,10 @@ async def post_feedback(
         await votes_repo.clear(db, message_id)
     else:
         await votes_repo.upsert(db, message_id, body.feedback)
+        await analytics_repo.record(
+            db,
+            user_id=user.id,
+            event_type="feedback.submitted",
+            properties={"messageId": str(message_id), "feedback": body.feedback},
+        )
     return None

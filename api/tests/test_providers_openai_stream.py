@@ -474,6 +474,41 @@ async def test_stream_sends_attachment_bytes_as_multimodal_content() -> None:
     assert content[2]["text"].endswith("read these")
 
 
+@respx.mock
+async def test_stream_sends_text_attachment_transcript_as_text_content() -> None:
+    """Text documents are sent as bounded transcripts, not native raw bytes."""
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(prompt_tokens=10, completion_tokens=10, answer_chunks=("ok",))
+        )
+    )
+
+    provider = _provider()
+    async for _ in provider.stream(
+        model_id="gpt-4o",
+        history=[],
+        user_text="summarize",
+        attachments=[
+            AttachmentPayload(
+                id="txt-1",
+                name="notes.txt",
+                media_type="text",
+                mime_type="text/plain",
+                size_bytes=16,
+                data=b"Alpha beta notes",
+                extracted_text="Alpha beta notes",
+            ),
+        ],
+    ):
+        pass
+
+    body = json.loads(route.calls.last.request.content)
+    content = body["messages"][-1]["content"]
+    assert isinstance(content, str)
+    assert "notes.txt (text/plain, 16 bytes)" in content
+    assert "Alpha beta notes" in content
+
+
 # --- DeepSeek V4 dual-mode hints + reasoning_content + cache fallback ---------
 #
 # These exercise the provider-hint passthrough (thinking / reasoning_effort) and

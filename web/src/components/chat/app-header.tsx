@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import type {
   ModelTier,
   ModelTierId,
+  ProviderTierOption,
   ReasoningEffort,
   ReasoningEffortId,
 } from "@/lib/types";
@@ -43,6 +44,9 @@ interface AppHeaderProps {
   tiers: ModelTier[];
   selectedTierId: ModelTierId;
   onSelectTier: (id: ModelTierId) => void;
+  providerOptions: ProviderTierOption[];
+  selectedProviderId?: string;
+  onSelectProvider: (id: string) => void;
   efforts: ReasoningEffort[];
   selectedEffortId: ReasoningEffortId;
   onSelectEffort: (id: ReasoningEffortId) => void;
@@ -74,6 +78,9 @@ export function AppHeader({
   tiers,
   selectedTierId,
   onSelectTier,
+  providerOptions,
+  selectedProviderId,
+  onSelectProvider,
   efforts,
   selectedEffortId,
   onSelectEffort,
@@ -107,6 +114,9 @@ export function AppHeader({
           tiers={tiers}
           selectedTierId={selectedTierId}
           onSelectTier={onSelectTier}
+          providerOptions={providerOptions}
+          selectedProviderId={selectedProviderId}
+          onSelectProvider={onSelectProvider}
           efforts={efforts}
           selectedEffortId={selectedEffortId}
           onSelectEffort={onSelectEffort}

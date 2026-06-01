@@ -23,9 +23,16 @@ from app.providers.tiers import require_available_provider_route
 from app.search.factory import get_search_provider
 
 
-def build_provider(settings: Settings | None = None) -> Provider:
-    """Return a Provider matching the configured backend."""
+def build_provider(
+    settings: Settings | None = None,
+    *,
+    provider_id: str | None = None,
+    api_key: str | None = None,
+) -> Provider:
+    """Return a Provider matching the configured or per-request backend."""
     s = settings if settings is not None else get_settings()
+    if provider_id is not None:
+        s = s.model_copy(update={"provider_backend": provider_id})
     try:
         require_available_provider_route(s)
     except RuntimeError as exc:
@@ -47,7 +54,7 @@ def build_provider(settings: Settings | None = None) -> Provider:
         # API, so we reuse OpenAIProvider with DeepSeek's built-in default
         # base_url. The key may come from DEEPSEEK_API_KEY or fall back to
         # OPENAI_API_KEY.
-        key = s.deepseek_key
+        key = api_key or s.deepseek_key
         if not key:
             raise AppError(
                 ErrorEnvelope(
@@ -67,7 +74,8 @@ def build_provider(settings: Settings | None = None) -> Provider:
             search_provider=search_provider,
         )
     if s.provider_backend == "anthropic":
-        if not s.anthropic_api_key:
+        key = api_key or s.anthropic_api_key
+        if not key:
             # Surface a typed envelope so ops can grep for `MISCONFIGURED`
             # rather than the generic FATAL 500 that bare RuntimeError yields.
             raise AppError(
@@ -79,9 +87,10 @@ def build_provider(settings: Settings | None = None) -> Provider:
                 ),
                 status_code=500,
             )
-        return AnthropicProvider(api_key=s.anthropic_api_key)
+        return AnthropicProvider(api_key=key)
     if s.provider_backend == "openai":
-        if not s.openai_api_key:
+        key = api_key or s.openai_api_key
+        if not key:
             raise AppError(
                 ErrorEnvelope(
                     code="MISCONFIGURED",
@@ -92,7 +101,7 @@ def build_provider(settings: Settings | None = None) -> Provider:
                 status_code=500,
             )
         return OpenAIProvider(
-            api_key=s.openai_api_key,
+            api_key=key,
             base_url=s.openai_base_url,
             search_provider=search_provider,
         )

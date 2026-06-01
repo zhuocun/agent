@@ -302,6 +302,73 @@ async def test_byok_resolved_per_request_for_signed_in_user(
         assert row.is_byok is True
 
 
+async def test_byok_resolves_for_selected_provider_id(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-turn provider selection looks up BYOK by the selected binding."""
+    from uuid import uuid4
+
+    from app.db.models import Conversation, UsageRollup
+    from app.providers.fake import FakeProvider
+    from app.routes import conversations as conversation_routes
+
+    await _upgrade_anonymous(client)
+    plaintext_key = "sk-openai-fake-12345678"
+    await client.put(
+        "/api/account/byok",
+        json={"provider": "openai", "apiKey": plaintext_key},
+    )
+
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        convo = Conversation(
+            user_id=user.id,
+            title="t",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        conv_id = str(convo.id)
+
+    calls: list[dict[str, object]] = []
+
+    def _fake_build_provider(
+        settings: object | None = None,
+        *,
+        provider_id: str | None = None,
+        api_key: str | None = None,
+    ) -> FakeProvider:
+        calls.append({"settings": settings, "provider_id": provider_id, "api_key": api_key})
+        return FakeProvider(delay_ms=0)
+
+    monkeypatch.setattr(conversation_routes, "build_provider", _fake_build_provider)
+
+    async with client.stream(
+        "POST",
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "openai",
+            "text": "hi",
+        },
+        timeout=10.0,
+    ) as resp:
+        assert resp.status_code == 200
+        async for _ in resp.aiter_text():
+            pass
+
+    assert calls[0]["provider_id"] == "openai"
+    assert calls[0]["api_key"] == plaintext_key
+    async with session_factory() as session:
+        row = (await session.execute(select(UsageRollup))).scalar_one()
+        assert row.is_byok is True
+
+
 async def test_byok_decryption_failure_falls_back_silently(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

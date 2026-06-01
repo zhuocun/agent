@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import Field
+
 from app.schemas.common import CamelModel, CostHint, ModelTierId, SpeedHint
 
 
@@ -21,6 +23,19 @@ class ProviderDataPolicy(CamelModel):
     retention_days: int | None = None
     zero_data_retention_available: bool = False
     policy_label: str
+
+
+class ProviderRouteOption(CamelModel):
+    """Selectable provider route metadata for a single tier."""
+
+    provider_id: str
+    label: str
+    status: Literal["available", "pending", "unavailable"]
+    model_label: str = ""
+    supports_web_search: bool = False
+    supports_attachments: bool = False
+    default_route_eligible: bool = False
+    data_policy: ProviderDataPolicy | None = None
 
 
 class ModelTier(CamelModel):
@@ -54,6 +69,7 @@ class ModelTier(CamelModel):
     provider_route_status: Literal["available", "pending", "unavailable"] = "available"
     default_route_eligible: bool = False
     data_policy: ProviderDataPolicy | None = None
+    provider_options: list[ProviderRouteOption] = Field(default_factory=list)
 
 
 class PromptSuggestion(CamelModel):

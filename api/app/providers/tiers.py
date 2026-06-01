@@ -16,7 +16,7 @@ from typing import Literal
 
 from app.config import Settings, get_settings
 from app.schemas.common import CostHint, ModelTierId, SpeedHint
-from app.schemas.tier import ModelTier, ProviderDataPolicy
+from app.schemas.tier import ModelTier, ProviderDataPolicy, ProviderRouteOption
 from app.search.factory import search_enabled
 
 ProviderRouteStatus = Literal["available", "pending", "unavailable"]
@@ -126,6 +126,55 @@ def available_provider_backend_ids() -> tuple[str, ...]:
     )
 
 
+def platform_provider_usable(provider_id: str, settings: Settings | None = None) -> bool:
+    """Return whether the platform can call a provider without a user BYOK key."""
+    s = settings if settings is not None else get_settings()
+    if provider_id == "deepseek":
+        return bool(s.deepseek_key)
+    if provider_id == "openai":
+        return bool(s.openai_api_key)
+    if provider_id == "anthropic":
+        return bool(s.anthropic_api_key)
+    if provider_id == "fake":
+        return s.env != "production"
+    return False
+
+
+def provider_route_runtime_status(
+    provider_id: str,
+    settings: Settings | None = None,
+    *,
+    usable_provider_ids: set[str] | None = None,
+) -> ProviderRouteStatus:
+    """Return the operational status for a route under current runtime state.
+
+    The registry's `status` is static adapter/catalog state. This helper folds
+    in production fake-provider hardening plus key availability so bootstrap
+    does not advertise a route that will fail at send time. `usable_provider_ids`
+    may include user BYOK providers in addition to platform-key providers.
+    """
+    s = settings if settings is not None else get_settings()
+    route = get_provider_route(provider_id)
+    if route is None:
+        return "unavailable"
+    if route.status != "available" or route.adapter is None:
+        return route.status
+    if not route_adapter_available(provider_id, s):
+        return "unavailable"
+    if usable_provider_ids is not None:
+        return "available" if provider_id in usable_provider_ids else "unavailable"
+    return "available" if platform_provider_usable(provider_id, s) else "unavailable"
+
+
+def route_adapter_available(provider_id: str, settings: Settings | None = None) -> bool:
+    """Return whether a provider route has an adapter allowed in this runtime."""
+    s = settings if settings is not None else get_settings()
+    route = get_provider_route(provider_id)
+    if route is None or route.status != "available" or route.adapter is None:
+        return False
+    return not (provider_id == "fake" and s.env == "production")
+
+
 def require_available_provider_route(settings: Settings) -> ProviderRoute:
     """Fail fast if `PROVIDER_BACKEND` has no usable adapter.
 
@@ -142,6 +191,8 @@ def require_available_provider_route(settings: Settings) -> ProviderRoute:
             f"PROVIDER_BACKEND={provider_id!r} is registered as {route.status} "
             "and has no available adapter."
         )
+    if provider_id == "fake" and settings.env == "production":
+        raise RuntimeError("PROVIDER_BACKEND='fake' is not allowed in production.")
     return route
 
 
@@ -465,7 +516,88 @@ def web_search_available_for_binding(
     return search_enabled(s)
 
 
-def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
+def _binding_for_provider(
+    tier_id: ModelTierId,
+    *,
+    provider_id: str,
+    settings: Settings,
+    explicit_provider_override: bool,
+) -> TierBinding | None:
+    """Return a tier binding for a concrete provider route."""
+    if not route_adapter_available(provider_id, settings):
+        return None
+    if provider_id == "openai":
+        return _openai_binding(tier_id, settings)
+    if provider_id == "anthropic":
+        return _anthropic_binding(tier_id)
+    if provider_id == "fake":
+        for binding in TIER_BINDINGS:
+            if binding.tier.id == tier_id:
+                if explicit_provider_override:
+                    return replace(
+                        binding,
+                        provider_id="fake",
+                        model_id="fake",
+                        model_label="" if tier_id == "auto" else "Fake",
+                        supports_attachments=True,
+                    )
+                return replace(binding, supports_attachments=True)
+        return None
+    if provider_id == "deepseek":
+        for binding in TIER_BINDINGS:
+            if binding.tier.id == tier_id:
+                return binding
+        return None
+    return None
+
+
+def _provider_options_for_tier(
+    tier_id: ModelTierId,
+    settings: Settings,
+    usable_provider_ids: set[str] | None,
+) -> list[ProviderRouteOption]:
+    options: list[ProviderRouteOption] = []
+    for route in PROVIDER_ROUTES:
+        runtime_status = provider_route_runtime_status(
+            route.provider_id,
+            settings,
+            usable_provider_ids=usable_provider_ids,
+        )
+        binding = _binding_for_provider(
+            tier_id,
+            provider_id=route.provider_id,
+            settings=settings,
+            explicit_provider_override=True,
+        )
+        supports_search = (
+            web_search_available_for_binding(binding, settings=settings)
+            if binding is not None
+            else False
+        )
+        options.append(
+            ProviderRouteOption(
+                provider_id=route.provider_id,
+                label=route.label,
+                status=runtime_status,
+                model_label=binding.model_label if binding is not None else "",
+                supports_web_search=supports_search,
+                supports_attachments=(
+                    binding.supports_attachments if binding is not None else False
+                ),
+                default_route_eligible=(
+                    route.default_route_eligible and runtime_status == "available"
+                ),
+                data_policy=route.data_policy,
+            )
+        )
+    return options
+
+
+def list_tiers(
+    settings: Settings | None = None,
+    *,
+    usable_provider_ids: set[str] | None = None,
+) -> list[ModelTier]:
     """Public tier list for bootstrap.
 
     Tier ids/labels/hints are backend-independent, but each tier's
@@ -475,6 +607,11 @@ def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
     """
     s = settings if settings is not None else get_settings()
     route = get_provider_route(s.provider_backend)
+    active_status = provider_route_runtime_status(
+        s.provider_backend,
+        s,
+        usable_provider_ids=usable_provider_ids,
+    )
     tiers: list[ModelTier] = []
     for base in TIER_BINDINGS:
         binding = get_binding(base.tier.id, settings=s)
@@ -491,18 +628,29 @@ def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
                     "supports_attachments": supports_attachments,
                     "provider_id": route.provider_id if route is not None else "",
                     "provider_label": route.label if route is not None else "",
-                    "provider_route_status": (route.status if route is not None else "unavailable"),
+                    "provider_route_status": active_status,
                     "default_route_eligible": (
-                        route.default_route_eligible if route is not None else False
+                        route.default_route_eligible and active_status == "available"
+                        if route is not None
+                        else False
                     ),
                     "data_policy": route.data_policy if route is not None else None,
+                    "provider_options": _provider_options_for_tier(
+                        base.tier.id,
+                        s,
+                        usable_provider_ids,
+                    ),
                 }
             )
         )
     return tiers
 
 
-def get_binding(tier_id: ModelTierId, settings: Settings | None = None) -> TierBinding | None:
+def get_binding(
+    tier_id: ModelTierId,
+    settings: Settings | None = None,
+    provider_id: str | None = None,
+) -> TierBinding | None:
     """Return the binding for a tier id, or None if unknown.
 
     Backend-aware. The canonical `TIER_BINDINGS` table binds DeepSeek (the
@@ -513,26 +661,17 @@ def get_binding(tier_id: ModelTierId, settings: Settings | None = None) -> TierB
 
     `settings` is an optional override for tests / call sites that already hold
     a `Settings`; it defaults to the process-wide `get_settings()`.
+
+    `provider_id` is a per-request route override. When omitted, current
+    settings-based behavior is preserved exactly.
     """
     s = settings if settings is not None else get_settings()
-    route = get_provider_route(s.provider_backend)
-    if route is None or route.status != "available" or route.adapter is None:
-        return None
-    if s.provider_backend == "openai":
-        return _openai_binding(tier_id, s)
-    if s.provider_backend == "anthropic":
-        return _anthropic_binding(tier_id)
-    if s.provider_backend == "fake":
-        for binding in TIER_BINDINGS:
-            if binding.tier.id == tier_id:
-                return replace(binding, supports_attachments=True)
-        return None
-    if s.provider_backend != "deepseek":
-        return None
-    for binding in TIER_BINDINGS:
-        if binding.tier.id == tier_id:
-            return binding
-    return None
+    return _binding_for_provider(
+        tier_id,
+        provider_id=provider_id or s.provider_backend,
+        settings=s,
+        explicit_provider_override=provider_id is not None,
+    )
 
 
 def is_known_tier(tier_id: str) -> bool:

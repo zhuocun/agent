@@ -24,6 +24,8 @@ import { cn } from "@/lib/utils";
 import type {
   ModelTier,
   ModelTierId,
+  ProviderDataPolicy,
+  ProviderTierOption,
   ReasoningEffort,
   ReasoningEffortId,
 } from "@/lib/types";
@@ -32,6 +34,9 @@ export interface ModelModePickerProps {
   tiers: ModelTier[];
   selectedTierId: ModelTierId;
   onSelectTier: (id: ModelTierId) => void;
+  providerOptions: ProviderTierOption[];
+  selectedProviderId?: string;
+  onSelectProvider: (id: string) => void;
   efforts: ReasoningEffort[];
   selectedEffortId: ReasoningEffortId;
   onSelectEffort: (id: ReasoningEffortId) => void;
@@ -53,6 +58,9 @@ export function ModelModePicker({
   tiers,
   selectedTierId,
   onSelectTier,
+  providerOptions,
+  selectedProviderId,
+  onSelectProvider,
   efforts,
   selectedEffortId,
   onSelectEffort,
@@ -61,14 +69,27 @@ export function ModelModePicker({
   disabled,
 }: ModelModePickerProps): JSX.Element {
   const tier = tiers.find((t) => t.id === selectedTierId) ?? tiers[0];
+  const provider =
+    providerOptions.find((p) => p.providerId === selectedProviderId) ??
+    providerOptions.find((p) => p.status === "available") ??
+    providerOptions[0];
   const effort = efforts.find((e) => e.id === selectedEffortId) ?? efforts[0];
   const [sheetOpen, setSheetOpen] = useState(false);
   // The web-search section only exists for tiers that support it; the parent
   // also clears `searchEnabled` when switching to a non-supporting tier, so
   // this is a pure display gate.
   const showWebSearch = tier?.supportsWebSearch === true;
+  const availableProviderCount = providerOptions.filter(
+    (p) => p.status === "available",
+  ).length;
+  const showProviderPicker = availableProviderCount > 1;
+  const providerLabel =
+    showProviderPicker && provider?.providerId ? provider.label : undefined;
+  const dataPolicy = provider?.dataPolicy ?? tier?.dataPolicy ?? null;
 
-  const triggerLabel = `Model ${tier?.label}, reasoning ${effort?.label}. Change.`;
+  const triggerLabel = `Model ${tier?.label}${
+    providerLabel ? ` on ${providerLabel}` : ""
+  }, reasoning ${effort?.label}. Change.`;
 
   // Hide the reasoning-effort label when it duplicates the tier label (the
   // default "Auto"/"Auto" case, and any future collision) so the header states
@@ -78,6 +99,11 @@ export function ModelModePicker({
   const triggerInner = (
     <>
       <span className="truncate font-medium text-foreground">{tier?.label}</span>
+      {providerLabel ? (
+        <span className="hidden max-w-24 truncate text-muted-foreground sm:inline">
+          {providerLabel}
+        </span>
+      ) : null}
       {showEffort ? (
         <span className="text-muted-foreground">{effort.label}</span>
       ) : null}
@@ -87,6 +113,11 @@ export function ModelModePicker({
 
   const handleSelectTier = (id: ModelTierId): void => {
     onSelectTier(id);
+    setSheetOpen(false);
+  };
+
+  const handleSelectProvider = (id: string): void => {
+    onSelectProvider(id);
     setSheetOpen(false);
   };
 
@@ -119,6 +150,29 @@ export function ModelModePicker({
           sideOffset={8}
           className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl"
         >
+          {showProviderPicker ? (
+            <>
+              <DropdownMenuGroup>
+                <DropdownMenuLabel className="text-[11px] font-semibold">
+                  Provider
+                </DropdownMenuLabel>
+                {providerOptions.map((p) => {
+                  const available = p.status === "available";
+                  return (
+                    <DropdownRow
+                      key={p.providerId}
+                      label={p.label}
+                      description={providerDescription(p)}
+                      selected={p.providerId === provider?.providerId}
+                      disabled={!available}
+                      onSelect={() => handleSelectProvider(p.providerId)}
+                    />
+                  );
+                })}
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           <DropdownMenuGroup>
             <DropdownMenuLabel className="text-[11px] font-semibold">
               Model
@@ -128,11 +182,18 @@ export function ModelModePicker({
                 key={t.id}
                 label={t.label}
                 description={t.description}
+                meta={tierMeta(t)}
                 selected={t.id === selectedTierId}
-                onSelect={() => onSelectTier(t.id)}
+                onSelect={() => handleSelectTier(t.id)}
               />
             ))}
           </DropdownMenuGroup>
+          {dataPolicy ? (
+            <>
+              <DropdownMenuSeparator />
+              <DataPolicyRow policy={dataPolicy} />
+            </>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
             <DropdownMenuLabel className="text-[11px] font-semibold">
@@ -224,17 +285,45 @@ export function ModelModePicker({
             </DialogDescription>
           </DialogHeader>
           <div className="-mx-1 flex flex-col gap-4 overflow-y-auto">
+            {showProviderPicker ? (
+              <SheetSection title="Provider">
+                {providerOptions.map((p) => {
+                  const available = p.status === "available";
+                  return (
+                    <SheetRow
+                      key={p.providerId}
+                      label={p.label}
+                      description={providerDescription(p)}
+                      selected={p.providerId === provider?.providerId}
+                      disabled={!available}
+                      onSelect={() => handleSelectProvider(p.providerId)}
+                    />
+                  );
+                })}
+              </SheetSection>
+            ) : null}
             <SheetSection title="Model">
               {tiers.map((t) => (
                 <SheetRow
                   key={t.id}
                   label={t.label}
-                  description={t.description}
+                  description={[t.description, tierMeta(t)]
+                    .filter(Boolean)
+                    .join(" · ")}
                   selected={t.id === selectedTierId}
                   onSelect={() => handleSelectTier(t.id)}
                 />
               ))}
             </SheetSection>
+            {dataPolicy ? (
+              <SheetSection title="Data policy">
+                <li>
+                  <p className="px-4 py-2 text-xs leading-snug text-muted-foreground">
+                    {dataPolicy.policyLabel}
+                  </p>
+                </li>
+              </SheetSection>
+            ) : null}
             <SheetSection title="Reasoning effort">
               {efforts.map((e) => (
                 <SheetRow
@@ -269,19 +358,28 @@ export function ModelModePicker({
 function DropdownRow({
   label,
   description,
+  meta,
   selected,
+  disabled,
   onSelect,
 }: {
   label: string;
   description: string;
+  meta?: string;
   selected: boolean;
+  disabled?: boolean;
   onSelect: () => void;
 }): JSX.Element {
   return (
-    <DropdownMenuItem label={label} onClick={onSelect} className="py-2">
+    <DropdownMenuItem
+      label={label}
+      onClick={onSelect}
+      disabled={disabled}
+      className="py-2"
+    >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="font-medium">{label}</span>
+          <span className="truncate font-medium">{label}</span>
           {selected ? (
             <Check aria-hidden className="ml-auto size-4 text-foreground" />
           ) : null}
@@ -289,8 +387,26 @@ function DropdownRow({
         <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
           {description}
         </p>
+        {meta ? (
+          <p className="mt-0.5 truncate text-[11px] leading-snug text-muted-foreground/80 group-focus/dropdown-menu-item:text-accent-foreground/70">
+            {meta}
+          </p>
+        ) : null}
       </div>
     </DropdownMenuItem>
+  );
+}
+
+function DataPolicyRow({ policy }: { policy: ProviderDataPolicy }): JSX.Element {
+  return (
+    <div className="px-3 py-2">
+      <p className="text-[11px] font-semibold text-muted-foreground">
+        Data policy
+      </p>
+      <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+        {policy.policyLabel}
+      </p>
+    </div>
   );
 }
 
@@ -315,12 +431,14 @@ function SheetRow({
   label,
   description,
   selected,
+  disabled,
   onSelect,
   testId,
 }: {
   label: string;
   description: string;
   selected: boolean;
+  disabled?: boolean;
   onSelect: () => void;
   testId?: string;
 }): JSX.Element {
@@ -329,17 +447,21 @@ function SheetRow({
       <button
         type="button"
         onClick={onSelect}
+        disabled={disabled}
         aria-label={label}
         aria-pressed={selected}
         data-testid={testId}
         className={cn(
           "flex min-h-11 w-full items-start gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           selected && "bg-foreground/[0.06]",
+          disabled && "cursor-not-allowed opacity-50",
         )}
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-foreground">{label}</span>
+            <span className="min-w-0 truncate text-sm font-medium text-foreground">
+              {label}
+            </span>
           </div>
           <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
             {description}
@@ -354,4 +476,15 @@ function SheetRow({
       </button>
     </li>
   );
+}
+
+function providerDescription(provider: ProviderTierOption): string {
+  if (provider.status === "pending") return "Coming soon.";
+  if (provider.status === "unavailable") return "Unavailable.";
+  return provider.dataPolicy?.policyLabel ?? "Available for this turn.";
+}
+
+function tierMeta(tier: ModelTier): string {
+  const parts = [tier.modelLabel, tier.supportsAttachments ? "Attachments" : ""];
+  return parts.filter(Boolean).join(" · ");
 }

@@ -174,6 +174,35 @@ def test_get_binding_anthropic_backend_returns_anthropic_binding() -> None:
     assert b.list_price_in_per_m == 15.0
 
 
+def test_get_binding_provider_id_override_ignores_active_backend() -> None:
+    """A per-request provider override selects that provider's binding only."""
+    s = Settings(provider_backend="fake", openai_api_key="x")
+    b = get_binding("smart", settings=s, provider_id="openai")
+    assert b is not None
+    assert b.provider_id == "openai"
+    assert b.model_id == "gpt-4o"
+    # The Settings object itself stays process-level fake.
+    assert s.provider_backend == "fake"
+
+
+def test_get_binding_explicit_fake_route_has_fake_provider_id() -> None:
+    """Omitted fake keeps legacy DeepSeek BYOK semantics; explicit fake is fake."""
+    s = Settings(provider_backend="fake")
+    legacy = get_binding("smart", settings=s)
+    explicit = get_binding("smart", settings=s, provider_id="fake")
+    assert legacy is not None
+    assert explicit is not None
+    assert legacy.provider_id == "deepseek"
+    assert explicit.provider_id == "fake"
+    assert explicit.model_label == "Fake"
+
+
+def test_get_binding_explicit_fake_route_disabled_in_production() -> None:
+    """The dev/test fake adapter is not selectable in production."""
+    s = Settings(provider_backend="deepseek", deepseek_api_key="k", env="production")
+    assert get_binding("smart", settings=s, provider_id="fake") is None
+
+
 def test_provider_route_registry_lists_available_and_pending_routes() -> None:
     """The provider route registry is the backend/source-of-truth for route policy."""
     by_id = {route.provider_id: route for route in PROVIDER_ROUTES}
@@ -208,6 +237,17 @@ def test_require_available_provider_route_rejects_pending_gemini() -> None:
         raise AssertionError("gemini route unexpectedly available")
 
 
+def test_require_available_provider_route_rejects_fake_in_production() -> None:
+    """The production guard also applies when the factory validates routes."""
+    s = Settings(provider_backend="fake", env="production")
+    try:
+        require_available_provider_route(s)
+    except RuntimeError as exc:
+        assert "not allowed in production" in str(exc)
+    else:  # pragma: no cover - assertion branch only
+        raise AssertionError("fake route unexpectedly available in production")
+
+
 def test_get_binding_gemini_pending_route_is_none() -> None:
     """A pending provider must not silently reuse the DeepSeek binding table."""
     s = Settings(provider_backend="gemini")
@@ -227,6 +267,49 @@ def test_list_tiers_includes_provider_policy_metadata() -> None:
     assert fast.data_policy is not None
     assert fast.data_policy.training_default == "never"
     assert fast.data_policy.retention_days == 30
+    options = {option.provider_id: option for option in fast.provider_options}
+    assert set(options) == {"deepseek", "anthropic", "openai", "gemini", "fake"}
+    assert options["anthropic"].model_label == "Claude Haiku 4.5"
+    assert options["anthropic"].status == "available"
+    assert options["anthropic"].supports_attachments is True
+    assert options["openai"].status == "unavailable"
+    assert options["deepseek"].status == "unavailable"
+    assert options["fake"].status == "available"
+    assert options["gemini"].status == "pending"
+    assert options["gemini"].model_label == ""
+    assert options["gemini"].supports_web_search is False
+    assert options["gemini"].default_route_eligible is False
+
+
+def test_list_tiers_marks_byok_usable_provider_available() -> None:
+    """Bootstrap can pass user BYOK providers into the runtime route catalog."""
+    tiers = {
+        t.id: t
+        for t in list_tiers(
+            Settings(provider_backend="fake"),
+            usable_provider_ids={"fake", "openai"},
+        )
+    }
+    options = {option.provider_id: option for option in tiers["fast"].provider_options}
+    assert options["openai"].status == "available"
+    assert options["anthropic"].status == "unavailable"
+
+
+def test_list_tiers_marks_fake_unavailable_in_production() -> None:
+    """Fake remains registered but is not operationally selectable in prod."""
+    tiers = {
+        t.id: t
+        for t in list_tiers(
+            Settings(
+                provider_backend="deepseek",
+                deepseek_api_key="k",
+                env="production",
+            )
+        )
+    }
+    options = {option.provider_id: option for option in tiers["fast"].provider_options}
+    assert options["deepseek"].status == "available"
+    assert options["fake"].status == "unavailable"
 
 
 def test_get_binding_unknown_tier_is_none_under_openai() -> None:

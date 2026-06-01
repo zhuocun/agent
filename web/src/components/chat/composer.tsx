@@ -45,6 +45,7 @@ interface ComposerProps {
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
+  clearAttachments: () => void;
   focus: () => void;
 }
 
@@ -295,6 +296,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         ta.focus();
         requestAnimationFrame(autoGrow);
       }
+    },
+    clearAttachments: () => {
+      setAttachments([]);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     },
     focus: () => {
       ref.current?.focus();

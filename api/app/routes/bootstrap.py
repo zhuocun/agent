@@ -21,11 +21,47 @@ from app.config import get_settings
 from app.db.models import User
 from app.db.repositories import api_keys, conversations, preferences, usage, users
 from app.db.session import get_db
-from app.providers.tiers import active_byok_provider_id, list_tiers
+from app.providers.tiers import (
+    active_byok_provider_id,
+    list_tiers,
+    platform_provider_usable,
+)
 from app.schemas.bootstrap import BootstrapResponse
 from app.suggestions import list_suggestions
 
 router = APIRouter(prefix="/api", tags=["bootstrap"])
+
+_BYOK_ROUTABLE_PROVIDER_IDS = ("deepseek", "anthropic", "openai")
+_PLATFORM_ROUTABLE_PROVIDER_IDS = (*_BYOK_ROUTABLE_PROVIDER_IDS, "fake")
+
+
+async def _usable_provider_ids_for_user(
+    db: AsyncSession,
+    user: User,
+) -> set[str]:
+    """Providers currently callable by platform credentials or decryptable BYOK."""
+    settings = get_settings()
+    usable = {
+        provider_id
+        for provider_id in _PLATFORM_ROUTABLE_PROVIDER_IDS
+        if platform_provider_usable(provider_id, settings)
+    }
+    if user.is_anonymous:
+        return usable
+
+    for provider_id in _BYOK_ROUTABLE_PROVIDER_IDS:
+        if provider_id in usable:
+            continue
+        if (
+            await api_keys.get_decrypted_for_user(
+                db,
+                user_id=user.id,
+                provider=provider_id,
+            )
+            is not None
+        ):
+            usable.add(provider_id)
+    return usable
 
 
 @router.get("/bootstrap", response_model=BootstrapResponse)
@@ -39,6 +75,7 @@ async def bootstrap(
     # as BYOK or exempt usage from platform budget.
     active_provider = active_byok_provider_id(settings)
     byok_row = await api_keys.get_for_user(db, user_id=user.id, provider=active_provider)
+    usable_provider_ids = await _usable_provider_ids_for_user(db, user)
     has_byok_key = (not user.is_anonymous) and byok_row is not None
     masked = byok_row.masked_key if has_byok_key and byok_row is not None else None
     account = users.to_account_info(user, byok_enabled=has_byok_key, byok_masked_key=masked)
@@ -60,7 +97,7 @@ async def bootstrap(
         account=account,
         preferences=prefs,
         usage=budget,
-        model_tiers=list_tiers(),
+        model_tiers=list_tiers(settings, usable_provider_ids=usable_provider_ids),
         suggestions=list_suggestions(),
         conversations=summaries,
     )

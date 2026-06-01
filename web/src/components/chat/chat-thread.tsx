@@ -79,6 +79,7 @@ import type {
   MessagePart,
   ModelTier,
   ModelTierId,
+  ProviderTierOption,
   ReasoningEffortId,
   UsageBudget,
   UserPreferences,
@@ -233,6 +234,68 @@ type ConversationSearchState = {
 // bootstrap resolves.
 const DEFAULT_TIER_ID: ModelTierId = "auto";
 
+function activeProviderOptionForTier(tier: ModelTier): ProviderTierOption {
+  return {
+    providerId: tier.providerId,
+    label: tier.providerLabel,
+    status: tier.providerRouteStatus,
+    modelLabel: tier.modelLabel,
+    supportsWebSearch: tier.supportsWebSearch,
+    supportsAttachments: tier.supportsAttachments,
+    defaultRouteEligible: tier.defaultRouteEligible,
+    dataPolicy: tier.dataPolicy,
+  };
+}
+
+function providerOptionsForTier(tier: ModelTier | undefined): ProviderTierOption[] {
+  if (!tier) return [];
+  const nested = tier.providerOptions ?? [];
+  if (nested.some((option) => option.providerId === tier.providerId)) {
+    return nested;
+  }
+  return [activeProviderOptionForTier(tier), ...nested];
+}
+
+function providerOptionForTier(
+  tier: ModelTier | undefined,
+  preferredProviderId?: string,
+): ProviderTierOption | undefined {
+  const options = providerOptionsForTier(tier);
+  return (
+    options.find(
+      (option) =>
+        option.providerId === preferredProviderId && option.status === "available",
+    ) ??
+    options.find(
+      (option) => option.providerId === tier?.providerId && option.status === "available",
+    ) ??
+    options.find(
+      (option) => option.defaultRouteEligible && option.status === "available",
+    ) ??
+    options.find((option) => option.status === "available") ??
+    options[0]
+  );
+}
+
+function effectiveTierForProvider(
+  tier: ModelTier,
+  preferredProviderId?: string,
+): ModelTier {
+  const option = providerOptionForTier(tier, preferredProviderId);
+  if (!option) return tier;
+  return {
+    ...tier,
+    providerId: option.providerId,
+    providerLabel: option.label,
+    providerRouteStatus: option.status,
+    defaultRouteEligible: option.defaultRouteEligible,
+    dataPolicy: option.dataPolicy,
+    modelLabel: option.modelLabel,
+    supportsWebSearch: option.supportsWebSearch,
+    supportsAttachments: option.supportsAttachments,
+  };
+}
+
 export function ChatThread() {
   // Bootstrap-derived state. `null` until `fetchBootstrap()` resolves.
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
@@ -247,6 +310,9 @@ export function ChatThread() {
   const [messages, setMessages] = useState<LocalChatMessage[]>([]);
   const [selectedTierId, setSelectedTierId] =
     useState<ModelTierId>(DEFAULT_TIER_ID);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | undefined>(
+    undefined,
+  );
   const [selectedReasoningEffortId, setSelectedReasoningEffortId] =
     useState<ReasoningEffortId>("auto");
   // Composer web-search toggle. Only ever sent (and only ever togglable) when
@@ -259,6 +325,7 @@ export function ChatThread() {
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
+  const providerAtSendRef = useRef<string | undefined>(selectedProviderId);
   // The optimistic id of the user message we just sent — set on send, cleared
   // on terminal (after we replace it with the server-issued uuid). Reconciling
   // user + assistant ids happens together on the `terminal` callback so the
@@ -324,6 +391,11 @@ export function ChatThread() {
         setBootstrap(result);
         setBootstrapError(null);
         setSelectedTierId(result.preferences.defaultTierId);
+        setSelectedProviderId(
+          providerOptionForTier(
+            result.modelTiers.find((tier) => tier.id === result.preferences.defaultTierId),
+          )?.providerId,
+        );
         setIsTemporary(result.preferences.temporaryByDefault);
       } catch (cause) {
         if (controller.signal.aborted) return;
@@ -360,20 +432,32 @@ export function ChatThread() {
   const account: AccountInfo | null = bootstrap?.account ?? null;
   const preferences: UserPreferences | null = bootstrap?.preferences ?? null;
   const usage: UsageBudget | null = bootstrap?.usage ?? null;
-  const modelTiers: ModelTier[] = bootstrap?.modelTiers ?? [];
+  const baseModelTiers: ModelTier[] = bootstrap?.modelTiers ?? [];
+  const baseSelectedTier = baseModelTiers.find((t) => t.id === selectedTierId);
+  const selectedProviderOption = providerOptionForTier(
+    baseSelectedTier,
+    selectedProviderId,
+  );
+  const effectiveProviderId = selectedProviderOption?.providerId;
+  const providerOptions = providerOptionsForTier(baseSelectedTier);
+  const modelTiers: ModelTier[] = baseModelTiers.map((tier) =>
+    effectiveTierForProvider(tier, effectiveProviderId),
+  );
+  const selectedModelTier = modelTiers.find((t) => t.id === selectedTierId);
   // The selected tier's web-search capability. Drives the picker's toggle
   // visibility and gates whether `webSearch` is ever sent. Defaults to false
-  // while bootstrap is pending (the tier list is empty). Every read of
-  // `searchEnabled` is AND-gated on this flag (the picker prop, all send
-  // paths), so a stale `searchEnabled === true` left over from a tier switch
-  // is inert until the tier supports search again — no reconciling effect
-  // needed (and none allowed: setState-in-effect is a lint error here).
-  const selectedTierSupportsSearch =
-    modelTiers.find((t) => t.id === selectedTierId)?.supportsWebSearch === true;
+  // while bootstrap is pending. Selection handlers clear it when moving to a
+  // tier/provider that cannot search, and send paths still gate on this flag.
+  const selectedTierSupportsSearch = selectedModelTier?.supportsWebSearch === true;
   const selectedTierSupportsAttachments =
-    modelTiers.find((t) => t.id === selectedTierId)?.supportsAttachments === true;
+    selectedModelTier?.supportsAttachments === true;
   // Effective, gated view used by every consumer.
   const effectiveSearchEnabled = searchEnabled && selectedTierSupportsSearch;
+  const defaultProviderId = preferences
+    ? providerOptionForTier(
+        baseModelTiers.find((tier) => tier.id === preferences.defaultTierId),
+      )?.providerId
+    : undefined;
   const [conversations, setConversations] = useState<ConversationSummary[]>(
     [],
   );
@@ -496,6 +580,35 @@ export function ChatThread() {
   const isStreaming =
     pendingId !== null && (state.status === "submitted" || state.status === "streaming");
 
+  const handleSelectTier = (id: ModelTierId): void => {
+    const nextBaseTier = baseModelTiers.find((tier) => tier.id === id);
+    const nextProvider = providerOptionForTier(nextBaseTier, selectedProviderId);
+    const nextTier = nextBaseTier
+      ? effectiveTierForProvider(nextBaseTier, nextProvider?.providerId)
+      : undefined;
+    setSelectedTierId(id);
+    setSelectedProviderId(nextProvider?.providerId);
+    if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
+    if (nextTier?.supportsAttachments !== true) {
+      composerRef.current?.clearAttachments();
+    }
+  };
+
+  const handleSelectProvider = (id: string): void => {
+    const nextProvider = providerOptions.find(
+      (option) => option.providerId === id && option.status === "available",
+    );
+    if (!nextProvider) return;
+    const nextTier = baseSelectedTier
+      ? effectiveTierForProvider(baseSelectedTier, id)
+      : undefined;
+    setSelectedProviderId(id);
+    if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
+    if (nextTier?.supportsAttachments !== true) {
+      composerRef.current?.clearAttachments();
+    }
+  };
+
   // Begin (or continue) a streamed turn. Shared by send / regenerate / edit.
   // Creates the conversation lazily on the FIRST send when none is active.
   // Returns the conversation id used so callers can fall through their own
@@ -504,6 +617,7 @@ export function ChatThread() {
     async (args: {
       text: string;
       tierId: ModelTierId;
+      providerId?: string;
       regenerate?: boolean;
       editMessageId?: string;
       webSearch?: boolean;
@@ -515,6 +629,7 @@ export function ChatThread() {
           const created = await createConversation({
             selectedTierId: args.tierId,
             isTemporary,
+            providerId: args.providerId,
           });
           conversationId = created.id;
           setActiveConversationId(conversationId);
@@ -560,6 +675,7 @@ export function ChatThread() {
         conversationId,
         clientMessageId: crypto.randomUUID(),
         tierId: args.tierId,
+        providerId: args.providerId,
         text: args.text,
         isTemporary: isTemporary || undefined,
         regenerate: args.regenerate,
@@ -585,6 +701,7 @@ export function ChatThread() {
       sizeBytes: attachment.sizeBytes,
     }));
     tierAtSendRef.current = selectedTierId;
+    providerAtSendRef.current = effectiveProviderId;
     // Only ride web search along when the selected tier actually supports it —
     // the effect already keeps `searchEnabled` false off-tier, but gate here too
     // so a same-tick tier switch can't leak a stale flag.
@@ -607,6 +724,7 @@ export function ChatThread() {
       void beginTurn({
         text,
         tierId: tierAtSendRef.current,
+        providerId: providerAtSendRef.current,
         webSearch: searchAtSendRef.current || undefined,
         attachments,
       });
@@ -723,6 +841,7 @@ export function ChatThread() {
     assistantIdRef.current = regenId;
     pendingUserIdRef.current = null;
     tierAtSendRef.current = selectedTierId;
+    providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
@@ -740,6 +859,7 @@ export function ChatThread() {
     void beginTurn({
       text: lastUserText,
       tierId: tierAtSendRef.current,
+      providerId: providerAtSendRef.current,
       regenerate: true,
       webSearch: searchAtSendRef.current || undefined,
     });
@@ -756,6 +876,7 @@ export function ChatThread() {
     const userBubbleId = localId();
     const assistantPlaceholderId = localId();
     tierAtSendRef.current = selectedTierId;
+    providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
@@ -773,6 +894,7 @@ export function ChatThread() {
     void beginTurn({
       text: newText,
       tierId: tierAtSendRef.current,
+      providerId: providerAtSendRef.current,
       editMessageId: messageId,
       webSearch: searchAtSendRef.current || undefined,
     });
@@ -807,6 +929,7 @@ export function ChatThread() {
         setIsTemporary(false);
         setMessages(branched.messages);
         setSelectedTierId(branched.selectedTierId);
+        setSelectedProviderId(defaultProviderId);
         setMobileNavOpen(false);
         setConversations((prev) => {
           const summary: ConversationSummary = {
@@ -865,6 +988,7 @@ export function ChatThread() {
     setActiveConversationId(null);
     if (preferences) {
       setSelectedTierId(preferences.defaultTierId);
+      setSelectedProviderId(defaultProviderId);
       setIsTemporary(preferences.temporaryByDefault);
     }
     setSelectedReasoningEffortId("auto");
@@ -889,7 +1013,10 @@ export function ChatThread() {
     setLiveMessage("");
     reset();
     setActiveConversationId(null);
-    if (preferences) setSelectedTierId(preferences.defaultTierId);
+    if (preferences) {
+      setSelectedTierId(preferences.defaultTierId);
+      setSelectedProviderId(defaultProviderId);
+    }
     setSelectedReasoningEffortId("auto");
     setSearchEnabled(false);
     setIsTemporary(true);
@@ -935,6 +1062,7 @@ export function ChatThread() {
         if (selectConversationTokenRef.current !== id) return;
         setMessages(conversation.messages);
         setSelectedTierId(conversation.selectedTierId);
+        setSelectedProviderId(defaultProviderId);
       } catch (cause) {
         if (selectConversationTokenRef.current !== id) return;
         const title =
@@ -1530,7 +1658,10 @@ export function ChatThread() {
                 canShareConversation={canShareActiveConversation}
                 tiers={modelTiers}
                 selectedTierId={selectedTierId}
-                onSelectTier={setSelectedTierId}
+                onSelectTier={handleSelectTier}
+                providerOptions={providerOptions}
+                selectedProviderId={effectiveProviderId}
+                onSelectProvider={handleSelectProvider}
                 efforts={REASONING_EFFORTS}
                 selectedEffortId={selectedReasoningEffortId}
                 onSelectEffort={setSelectedReasoningEffortId}

@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.auth.dependency import current_user
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models import Message, User
 from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import conversations as conversations_repo
@@ -48,8 +48,16 @@ from app.providers.protocol import (
     ChatMessage as ProviderChatMessage,
 )
 from app.providers.router import route_auto
-from app.providers.tiers import get_binding, web_search_available_for_binding
-from app.schemas.common import SubstitutionReasonCode
+from app.providers.tiers import (
+    TierBinding,
+    get_binding,
+    get_provider_route,
+    is_known_tier,
+    platform_provider_usable,
+    route_adapter_available,
+    web_search_available_for_binding,
+)
+from app.schemas.common import ModelTierId, SubstitutionReasonCode
 from app.schemas.conversation import (
     BranchConversationRequest,
     ConversationSearchResult,
@@ -136,6 +144,66 @@ def _invalid_input(code: str, body: str) -> AppError:
         ),
         status.HTTP_400_BAD_REQUEST,
     )
+
+
+def _invalid_provider(provider_id: str) -> AppError:
+    return _invalid_input("INVALID_PROVIDER", f"Unknown provider id {provider_id!r}.")
+
+
+def _provider_unavailable(provider_id: str) -> AppError:
+    return _invalid_input(
+        "PROVIDER_UNAVAILABLE",
+        f"Provider {provider_id!r} is not available for message routing.",
+    )
+
+
+def _validate_provider_id(provider_id: str | None, settings: Settings) -> None:
+    if provider_id is None:
+        return
+    route = get_provider_route(provider_id)
+    if route is None:
+        raise _invalid_provider(provider_id)
+    if not route_adapter_available(provider_id, settings):
+        raise _provider_unavailable(provider_id)
+
+
+def _resolve_binding(
+    tier_id: ModelTierId,
+    provider_id: str | None,
+    settings: Settings,
+) -> TierBinding:
+    _validate_provider_id(provider_id, settings)
+    binding = get_binding(
+        tier_id,
+        settings=settings,
+        provider_id=provider_id,
+    )
+    if binding is not None:
+        return binding
+    if not is_known_tier(tier_id):
+        raise _invalid_input("INVALID_TIER", f"Unknown tier id {tier_id!r}.")
+    selected_provider = provider_id or get_settings().provider_backend
+    raise _provider_unavailable(selected_provider)
+
+
+def _selected_provider_id(provider_id: str | None, settings: Settings) -> str:
+    return provider_id or settings.provider_backend
+
+
+def _ensure_provider_usable(
+    *,
+    provider_id: str,
+    settings: Settings,
+    api_key: str | None,
+) -> None:
+    if provider_id == "fake":
+        if not platform_provider_usable(provider_id, settings):
+            raise _provider_unavailable(provider_id)
+        return
+    if api_key is not None:
+        return
+    if not platform_provider_usable(provider_id, settings):
+        raise _provider_unavailable(provider_id)
 
 
 def _stream_in_progress() -> AppError:
@@ -359,8 +427,7 @@ async def create_conversation(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationSchema:
-    if get_binding(body.selected_tier_id) is None:
-        raise _invalid_input("INVALID_TIER", f"Unknown tier id {body.selected_tier_id!r}.")
+    _resolve_binding(body.selected_tier_id, body.provider_id, get_settings())
 
     if body.is_temporary:
         synthetic_id = uuid4()
@@ -683,10 +750,10 @@ async def send_message(
     - Mutual exclusion: `regenerate=true` AND `editMessageId` set in the same
       body is 400 INVALID_INPUT (semantically incoherent).
     """
-    # Tier validation.
-    binding = get_binding(body.tier_id)
-    if binding is None:
-        raise _invalid_input("INVALID_TIER", f"Unknown tier id {body.tier_id!r}.")
+    settings = get_settings()
+    selected_provider_id = _selected_provider_id(body.provider_id, settings)
+    # Tier/provider validation.
+    binding = _resolve_binding(body.tier_id, body.provider_id, settings)
 
     # client_message_id must be a UUID.
     try:
@@ -760,7 +827,12 @@ async def send_message(
         # can push the period total past the cap before the NEXT turn is
         # refused), and concurrent in-flight turns can each pass the check then
         # accumulate, overshooting the cap (bounded by concurrency).
-        settings = get_settings()
+        _ensure_provider_usable(
+            provider_id=selected_provider_id,
+            settings=settings,
+            api_key=resolved_api_key,
+        )
+
         if settings.usage_budget_usd > 0 and resolved_api_key is None:
             has_allowance = await usage_repo.has_platform_allowance(
                 db,
@@ -769,10 +841,15 @@ async def send_message(
             )
             if not has_allowance:
                 raise _budget_exceeded()
+    else:
+        _ensure_provider_usable(
+            provider_id=selected_provider_id,
+            settings=settings,
+            api_key=resolved_api_key,
+        )
 
     provider_attachments: list[AttachmentPayload] = []
     if not body.regenerate:
-        settings = get_settings()
         if body.attachments and not binding.supports_attachments:
             raise _attachments_unsupported()
         provider_attachments = _decode_attachment_payloads(
@@ -844,7 +921,11 @@ async def send_message(
         user_message_id = user_msg_row.id
         provider_user_text = body.text
 
-    provider = build_provider()
+    provider = build_provider(
+        settings,
+        provider_id=body.provider_id,
+        api_key=resolved_api_key,
+    )
 
     # Auto-tier routing. When the user picked `auto`, run the v0 complexity
     # heuristic (providers/router.py) to choose the concrete tier that actually
@@ -865,10 +946,14 @@ async def send_message(
     # SEED; a real provider fallback overwrites it inside the handler (provider
     # fallback wins precedence).
     router_substitution: SubstitutionReasonCode | None = None
-    settings_for_routing = get_settings()
+    settings_for_routing = settings
     if body.tier_id == "auto" and settings_for_routing.auto_routing_enabled:
         routed = route_auto(provider_user_text, history)
-        routed_binding = get_binding(routed.tier_id, settings=settings_for_routing)
+        routed_binding = get_binding(
+            routed.tier_id,
+            settings=settings_for_routing,
+            provider_id=body.provider_id,
+        )
         # Defensive: a known concrete tier always has a binding; fall back to the
         # original `auto` binding rather than 500 if the registry ever diverges.
         if routed_binding is not None:
@@ -920,8 +1005,6 @@ async def send_message(
     # explicitly on "this is a fresh send" so the handler can require BOTH
     # conditions before scheduling the detached autogen task.
     is_initial = not body.regenerate and body.edit_message_id is None
-
-    settings = get_settings()
 
     # Effective web-search opt-in for this turn. Unsupported provider/config
     # combinations degrade silently: the turn still answers, just ungrounded.

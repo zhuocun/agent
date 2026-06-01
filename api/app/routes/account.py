@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependency import current_user
 from app.config import get_settings
 from app.db.models import User
-from app.db.repositories import api_keys, users
+from app.db.repositories import api_keys, audit_events, users
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
 from app.middleware.ratelimit import limiter
@@ -107,6 +107,12 @@ async def put_byok(
         provider=body.provider.strip(),
         raw_api_key=trimmed,
     )
+    await audit_events.record(
+        db,
+        user_id=user.id,
+        event_type="byok.upsert",
+        details={"provider": body.provider.strip()},
+    )
     return await _current_account_info(db, user)
 
 
@@ -127,5 +133,11 @@ async def delete_byok(
     """
     if user.is_anonymous:
         raise _anonymous_required()
-    await api_keys.delete(db, user_id=user.id, provider=provider.strip())
+    removed = await api_keys.delete(db, user_id=user.id, provider=provider.strip())
+    await audit_events.record(
+        db,
+        user_id=user.id,
+        event_type="byok.revoke",
+        details={"provider": provider.strip(), "removed": removed},
+    )
     return await _current_account_info(db, user)

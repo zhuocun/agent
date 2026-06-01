@@ -26,6 +26,11 @@ class ConversationSummary(CamelModel):
     pinned: bool | None = None
 
 
+class ConversationSearchResult(ConversationSummary):
+    match_snippet: str
+    matched_message_id: str | None = None
+
+
 class CreateConversationRequest(CamelModel):
     """Body for POST /api/conversations."""
 
@@ -82,7 +87,7 @@ class SendMessageRequest(CamelModel):
     # it to False (silently, no error) when the served binding doesn't support
     # search or no search backend is configured.
     web_search: bool = False
-    # Attachment metadata for the user turn. This is metadata-only: the current
-    # provider protocol is text-only, so routes reject non-empty attachment
-    # lists before any provider call.
+    # Attachment parts for the user turn. Requests may include transient
+    # payload bytes on each part; persistence strips those fields and stores
+    # metadata only.
     attachments: list[AttachmentPart] = Field(default_factory=list, max_length=10)

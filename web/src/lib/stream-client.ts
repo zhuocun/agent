@@ -12,6 +12,10 @@
 //   event: submitted          data: { messageId }
 //   event: reasoning_delta    data: { text }
 //   event: reasoning_done     data: {}
+//   event: status             data: { label, state }
+//   event: sources            data: { items }
+//   event: tool_call          data: tool-call part
+//   event: tool_result        data: tool-result part
 //   event: answer_delta       data: { text }
 //   event: terminal           data: { status: "done", messageId, attribution }
 //   event: error              data: ErrorEnvelope     (final on failure)
@@ -33,8 +37,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, type ApiErrorEnvelope } from "@/lib/apiClient";
 import type {
   AttachmentPart,
+  JsonValue,
   ModelAttribution,
   ModelTierId,
+  MessagePart,
   SourceItem,
   StreamStatus,
 } from "@/lib/types";
@@ -62,6 +68,8 @@ export interface ApiStreamState {
   // Web-search source cards, accumulated from `sources` SSE events. Empty until
   // the BE emits sources.
   sources: SourceItem[];
+  // Tool/function transcript parts emitted by the backend tool loop.
+  toolParts: ToolTranscriptPart[];
 }
 
 export interface TerminalResult {
@@ -74,6 +82,8 @@ export interface TerminalResult {
   searchStatus: SearchStatus | null;
   // Final web-search sources (if any) so finalized messages keep their cards.
   sources: SourceItem[];
+  // Final tool/function transcript parts.
+  toolParts: ToolTranscriptPart[];
   // From `submitted` — always present once the server sent the first frame.
   serverUserMessageId?: string;
   // From `terminal` — present on `done` only (never on stopped/error).
@@ -100,8 +110,8 @@ export interface StartArgs {
   // Toggled on in the composer; sent only when true (the BE treats absence as
   // false). Gated upstream on the selected tier's `supportsWebSearch`.
   webSearch?: boolean;
-  // Metadata-only attachments. The BE currently rejects non-empty lists before
-  // provider execution because adapters are text-only.
+  // Attachment metadata plus transient payload bytes for the current request.
+  // The BE strips payload bytes before message persistence.
   attachments?: AttachmentPart[];
 }
 
@@ -113,7 +123,13 @@ const INITIAL: ApiStreamState = {
   answer: "",
   searchStatus: null,
   sources: [],
+  toolParts: [],
 };
+
+type ToolTranscriptPart = Extract<
+  MessagePart,
+  { type: "tool_call" | "tool_result" }
+>;
 
 // --- Base URL --------------------------------------------------------------
 
@@ -257,6 +273,80 @@ function parseSources(value: unknown): SourceItem[] | null {
   return out;
 }
 
+function readToolStatus(value: unknown): ToolTranscriptPart["status"] | undefined {
+  if (
+    value === "pending" ||
+    value === "awaiting_approval" ||
+    value === "running" ||
+    value === "succeeded" ||
+    value === "failed" ||
+    value === "cancelled"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function readApprovalState(
+  value: unknown,
+): ToolTranscriptPart["approvalState"] | undefined {
+  if (
+    value === "not_required" ||
+    value === "pending" ||
+    value === "approved" ||
+    value === "rejected"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function asJsonRecord(value: unknown): Record<string, JsonValue> | undefined {
+  return isRecord(value) ? (value as Record<string, JsonValue>) : undefined;
+}
+
+function parseToolCall(value: unknown): ToolTranscriptPart | null {
+  if (!isRecord(value)) return null;
+  const id = readStringField(value, "id");
+  const name = readStringField(value, "name");
+  if (id === null || name === null) return null;
+  const label = readStringField(value, "label");
+  return {
+    type: "tool_call",
+    id,
+    name,
+    ...(label !== null ? { label } : {}),
+    ...(readToolStatus(value.status) ? { status: readToolStatus(value.status) } : {}),
+    ...(readApprovalState(value.approvalState)
+      ? { approvalState: readApprovalState(value.approvalState) }
+      : {}),
+    ...(asJsonRecord(value.input) ? { input: asJsonRecord(value.input) } : {}),
+  };
+}
+
+function parseToolResult(value: unknown): ToolTranscriptPart | null {
+  if (!isRecord(value)) return null;
+  const toolCallId = readStringField(value, "toolCallId");
+  const name = readStringField(value, "name");
+  if (toolCallId === null || name === null) return null;
+  const label = readStringField(value, "label");
+  const summary = readStringField(value, "summary");
+  const error = readStringField(value, "error");
+  return {
+    type: "tool_result",
+    toolCallId,
+    name,
+    ...(label !== null ? { label } : {}),
+    ...(readToolStatus(value.status) ? { status: readToolStatus(value.status) } : {}),
+    ...(readApprovalState(value.approvalState)
+      ? { approvalState: readApprovalState(value.approvalState) }
+      : {}),
+    ...(summary !== null ? { summary } : {}),
+    ...(asJsonRecord(value.output) ? { output: asJsonRecord(value.output) } : {}),
+    ...(error !== null ? { error } : {}),
+  };
+}
+
 // --- Hook ------------------------------------------------------------------
 
 export interface UseApiStreamResult {
@@ -287,6 +377,7 @@ export function useApiStream(
   // handlers read the authoritative latest value, never stale React state.
   const searchStatusRef = useRef<SearchStatus | null>(null);
   const sourcesRef = useRef<SourceItem[]>([]);
+  const toolPartsRef = useRef<ToolTranscriptPart[]>([]);
   const reasoningStartedAtRef = useRef<number | null>(null);
   // `submitted` lands the user message id; we keep it for the terminal so the
   // FE can replace its local `local-…` user id with the server uuid.
@@ -334,6 +425,7 @@ export function useApiStream(
         answer: answerRef.current,
         searchStatus: searchStatusRef.current,
         sources: sourcesRef.current,
+        toolParts: toolPartsRef.current,
         serverUserMessageId: serverUserIdRef.current,
         ...extras,
       });
@@ -348,6 +440,7 @@ export function useApiStream(
     reasoningStartedAtRef.current = null;
     searchStatusRef.current = null;
     sourcesRef.current = [];
+    toolPartsRef.current = [];
     serverUserIdRef.current = undefined;
     terminalEmittedRef.current = false;
   }, []);
@@ -499,6 +592,20 @@ export function useApiStream(
           if (parsed === null) return false;
           sourcesRef.current = parsed;
           setState((s) => ({ ...s, sources: parsed }));
+          return false;
+        }
+        case "tool_call": {
+          const parsed = parseToolCall(payload);
+          if (parsed === null) return false;
+          toolPartsRef.current = [...toolPartsRef.current, parsed];
+          setState((s) => ({ ...s, toolParts: toolPartsRef.current }));
+          return false;
+        }
+        case "tool_result": {
+          const parsed = parseToolResult(payload);
+          if (parsed === null) return false;
+          toolPartsRef.current = [...toolPartsRef.current, parsed];
+          setState((s) => ({ ...s, toolParts: toolPartsRef.current }));
           return false;
         }
         default: {

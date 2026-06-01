@@ -10,9 +10,10 @@ account:
   same byok-masked `AccountInfo` as bootstrap — it NEVER leaks the decrypted
   BYOK key, the ciphertext, or any session secret.
 
-- `DELETE /api/account` -> 204. Permanently deletes the caller's account and all
-  associated data, then clears the session cookie. The session row is gone, so
-  the next request mints a fresh anonymous user — the desired erasure behavior.
+- `DELETE /api/account` -> 204. Requires an explicit confirmation body, then
+  permanently deletes the caller's account and all associated data and clears
+  the session cookie. The session row is gone, so the next request mints a
+  fresh anonymous user — the desired erasure behavior.
 
 Kept in a sibling module to `account.py` so the BYOK concerns there stay
 untouched. Both routers share the `/api/account` prefix and are mounted in
@@ -32,13 +33,49 @@ from app.auth.cookies import COOKIE_NAME_DEFAULT, cookie_kwargs
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.db.models import User
-from app.db.repositories import api_keys, conversations, preferences, usage, users
+from app.db.repositories import (
+    api_keys,
+    audit_events,
+    conversations,
+    preferences,
+    usage,
+    users,
+)
 from app.db.session import get_db
+from app.errors import AppError, ErrorEnvelope
 from app.middleware.ratelimit import limiter
-from app.schemas.account import AccountExport
+from app.schemas.account import (
+    AccountDeleteRequest,
+    AccountExport,
+    AccountExportMetadata,
+    AuditEventExport,
+    ByokKeyMetadata,
+    UsageRollupExport,
+)
 from app.schemas.conversation import Conversation as ConversationSchema
 
 router = APIRouter(prefix="/api/account", tags=["account"])
+
+
+def _iso(value: datetime) -> str:
+    return value.isoformat()
+
+
+def _confirmation_required(expected: str) -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="CONFIRMATION_REQUIRED",
+            severity="error",
+            title="Confirmation required",
+            body="Type the required confirmation value to delete this account.",
+            meta={"expected": expected},
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _expected_delete_confirmation(user: User) -> str:
+    return user.email or "DELETE"
 
 
 @router.get("/export")
@@ -57,11 +94,24 @@ async def export_account(
     byok_rows = await api_keys.list_for_user(db, user.id)
     has_byok_key = (not user.is_anonymous) and len(byok_rows) > 0
     masked = byok_rows[0].masked_key if has_byok_key else None
+    await audit_events.record(
+        db,
+        user_id=user.id,
+        event_type="account.export",
+    )
     account = users.to_account_info(
         user, byok_enabled=has_byok_key, byok_masked_key=masked
     )
-    budget = await usage.get_current_budget(db, user.id, is_byok=has_byok_key)
+    settings = get_settings()
+    budget = await usage.get_current_budget(
+        db,
+        user.id,
+        is_byok=has_byok_key,
+        monthly_quota_usd=settings.usage_budget_usd,
+    )
+    rollups = await usage.list_rollups_for_user(db, user.id)
     prefs = await preferences.get_or_default(db, user.id)
+    audit_rows = await audit_events.list_for_user(db, user.id)
 
     # Full conversations with messages. N+1 is acceptable for an export: list
     # the summaries to learn the ids, then load each full conversation.
@@ -74,9 +124,41 @@ async def export_account(
 
     export = AccountExport(
         account=account,
+        account_metadata=AccountExportMetadata(
+            id=str(user.id),
+            created_at=_iso(user.created_at),
+            is_anonymous=user.is_anonymous,
+        ),
         preferences=prefs,
         usage=budget,
+        usage_rollups=[
+            UsageRollupExport(
+                period_start=_iso(row.period_start),
+                used=row.used,
+                limit=row.limit_value,
+                cost_usd=float(row.cost_usd),
+                is_byok=row.is_byok,
+            )
+            for row in rollups
+        ],
+        byok_keys=[
+            ByokKeyMetadata(
+                provider=row.provider,
+                masked_key=row.masked_key,
+                created_at=_iso(row.created_at),
+            )
+            for row in byok_rows
+            if not user.is_anonymous
+        ],
         conversations=full,
+        audit_events=[
+            AuditEventExport(
+                event_type=row.event_type,
+                created_at=_iso(row.created_at),
+                details=row.details,
+            )
+            for row in audit_rows
+        ],
         exported_at=datetime.now(UTC).isoformat(),
     )
     return JSONResponse(
@@ -90,6 +172,7 @@ async def export_account(
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit(lambda: get_settings().rate_limit_account_delete)
 async def delete_account(
+    body: AccountDeleteRequest,
     request: Request,
     response: Response,
     user: User = Depends(current_user),
@@ -113,6 +196,16 @@ async def delete_account(
     cleared with the same path/samesite/secure attrs the signout handler uses so
     the browser actually drops it.
     """
+    expected = _expected_delete_confirmation(user)
+    if body.confirmation.strip() != expected:
+        raise _confirmation_required(expected)
+
+    await audit_events.record(
+        db,
+        user_id=user.id,
+        event_type="account.delete",
+        details={"anonymous": user.is_anonymous},
+    )
     await users.delete_user_and_data(db, user_id=user.id)
     # Durably commit the cascade BEFORE signalling success. A failure here
     # propagates (the dependency rolls back) and the cookie is never cleared.

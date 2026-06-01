@@ -98,6 +98,17 @@ def test_build_provider_anthropic_returns_anthropic_provider() -> None:
     assert isinstance(p, AnthropicProvider)
 
 
+def test_build_provider_gemini_pending_route_fails_closed() -> None:
+    """Gemini is registered for roadmap visibility but has no adapter yet."""
+    with pytest.raises(AppError) as exc_info:
+        build_provider(Settings(provider_backend="gemini"))
+    err = exc_info.value
+    assert err.status_code == 500
+    assert err.envelope.code == "MISCONFIGURED"
+    assert "PROVIDER_BACKEND='gemini'" in err.envelope.body
+    assert "no available adapter" in err.envelope.body
+
+
 def test_build_provider_default_is_fake() -> None:
     """The default/fake backend -> FakeProvider (no key required)."""
     p = build_provider(Settings(provider_backend="fake"))

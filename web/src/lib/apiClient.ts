@@ -228,6 +228,17 @@ export function fetchConversation(
   );
 }
 
+export function searchConversations(
+  query: string,
+  signal?: AbortSignal,
+): Promise<ConversationSummary[]> {
+  const params = new URLSearchParams({ q: query });
+  return apiClient.get<ConversationSummary[]>(
+    `/api/conversations/search?${params.toString()}`,
+    signal,
+  );
+}
+
 export function createConversation(
   body: { selectedTierId: ModelTierId; isTemporary?: boolean },
   signal?: AbortSignal,

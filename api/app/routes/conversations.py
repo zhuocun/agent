@@ -14,13 +14,15 @@ cookie token (M2+). Documented as M1-only.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,18 +40,24 @@ from app.db.session import get_db
 from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
-from app.providers.protocol import ChatMessage as ProviderChatMessage
+from app.providers.protocol import (
+    AttachmentPayload,
+)
+from app.providers.protocol import (
+    ChatMessage as ProviderChatMessage,
+)
 from app.providers.router import route_auto
 from app.providers.tiers import get_binding
 from app.schemas.common import SubstitutionReasonCode
 from app.schemas.conversation import (
     BranchConversationRequest,
+    ConversationSearchResult,
     CreateConversationRequest,
     PatchConversationRequest,
     SendMessageRequest,
 )
 from app.schemas.conversation import Conversation as ConversationSchema
-from app.schemas.message import ModelAttribution
+from app.schemas.message import AttachmentPart, ModelAttribution
 from app.schemas.share import ShareLinkResponse
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
@@ -57,6 +65,8 @@ from app.schemas.stream_events import (
     StatusEvent,
     SubmittedEvent,
     TerminalEvent,
+    ToolCallEvent,
+    ToolResultEvent,
 )
 from app.search.factory import search_enabled
 from app.search.protocol import SourceItem
@@ -72,6 +82,8 @@ from app.streaming.sse import (
     encode_status,
     encode_submitted,
     encode_terminal,
+    encode_tool_call,
+    encode_tool_result,
 )
 from app.streaming.stop_registry import request_stop_async
 
@@ -139,12 +151,120 @@ def _attachments_unsupported() -> AppError:
         ErrorEnvelope(
             code="ATTACHMENTS_UNSUPPORTED",
             severity="warning",
-            title="Attachments are not supported yet",
-            body="The current model providers only receive text. Remove attachments "
+            title="Attachments are not supported by this model",
+            body="Choose a model tier that supports attachments, or remove the files "
             "and send the message again.",
         ),
         status.HTTP_400_BAD_REQUEST,
     )
+
+
+def _attachment_invalid(body: str) -> AppError:
+    return _invalid_input("INVALID_ATTACHMENT", body)
+
+
+def _decode_base64(value: str) -> bytes:
+    try:
+        return base64.b64decode(value.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, binascii.Error) as exc:
+        raise _attachment_invalid("Attachment payload must be valid base64.") from exc
+
+
+def _decode_attachment_payloads(
+    attachments: list[AttachmentPart],
+    *,
+    max_count: int,
+    max_bytes: int,
+) -> list[AttachmentPayload]:
+    """Validate request attachments and return transient provider payloads."""
+    if not attachments:
+        return []
+    if max_count < 0 or max_bytes < 1:
+        raise _attachment_invalid("Attachment limits are misconfigured.")
+    if len(attachments) > max_count:
+        raise _attachment_invalid(f"Attach at most {max_count} files.")
+
+    payloads: list[AttachmentPayload] = []
+    for attachment in attachments:
+        if attachment.size_bytes <= 0:
+            raise _attachment_invalid("Attachment payload cannot be empty.")
+        if attachment.size_bytes > max_bytes:
+            raise _attachment_invalid(
+                f"Each attachment must be {max_bytes} bytes or smaller."
+            )
+        if attachment.data_url is not None and attachment.content_base64 is not None:
+            raise _attachment_invalid(
+                "Send either dataUrl or contentBase64 for an attachment, not both."
+            )
+
+        encoded: str
+        if attachment.data_url is not None:
+            if (
+                not attachment.data_url.startswith("data:")
+                or "," not in attachment.data_url
+            ):
+                raise _attachment_invalid("Attachment dataUrl must be a base64 data URL.")
+            header, encoded = attachment.data_url.split(",", 1)
+            metadata = header[5:].split(";")
+            data_url_mime = metadata[0] if metadata else ""
+            if data_url_mime != attachment.mime_type:
+                raise _attachment_invalid(
+                    "Attachment dataUrl MIME type must match mimeType."
+                )
+            if "base64" not in metadata[1:]:
+                raise _attachment_invalid("Attachment dataUrl must be base64 encoded.")
+        elif attachment.content_base64 is not None:
+            encoded = attachment.content_base64
+        else:
+            raise _attachment_invalid("Attachment payload is required.")
+
+        data = _decode_base64(encoded)
+        if len(data) != attachment.size_bytes:
+            raise _attachment_invalid("Attachment sizeBytes must match payload size.")
+        if len(data) > max_bytes:
+            raise _attachment_invalid(
+                f"Each attachment must be {max_bytes} bytes or smaller."
+            )
+        payloads.append(
+            AttachmentPayload(
+                id=attachment.id,
+                name=attachment.name,
+                media_type=attachment.media_type,
+                mime_type=attachment.mime_type,
+                size_bytes=attachment.size_bytes,
+                data=data,
+            )
+        )
+    return payloads
+
+
+def _attachment_payloads_from_parts(parts: object) -> list[AttachmentPayload]:
+    """Recover metadata-only provider payloads from a persisted user message."""
+    if not isinstance(parts, list):
+        return []
+    payloads: list[AttachmentPayload] = []
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") != "attachment":
+            continue
+        raw_media_type = part.get("mediaType")
+        if raw_media_type not in ("image", "pdf"):
+            continue
+        media_type = cast(Literal["image", "pdf"], raw_media_type)
+        name = str(part.get("name") or "attachment")
+        mime_type = str(part.get("mimeType") or "")
+        size_raw = part.get("sizeBytes")
+        size_bytes = int(size_raw) if isinstance(size_raw, int) else 0
+        payloads.append(
+            AttachmentPayload(
+                id=str(part.get("id") or ""),
+                name=name,
+                media_type=media_type,
+                mime_type=mime_type,
+                size_bytes=size_bytes,
+                data=None,
+            )
+        )
+    return payloads
 
 
 def _ms_until_next_month(now: datetime | None = None) -> int:
@@ -177,6 +297,21 @@ def _budget_exceeded() -> AppError:
             actions=[ErrorAction(label="View usage", kind="open_settings")],
         ),
         status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
+@router.get("/search", response_model=list[ConversationSearchResult])
+async def search_conversations(
+    q: Annotated[str, Query(min_length=1, max_length=100)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 25,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[ConversationSearchResult]:
+    return await conversations_repo.search_for_user(
+        db,
+        user.id,
+        query=q,
+        limit=limit,
     )
 
 
@@ -464,6 +599,7 @@ async def _maybe_replay(
         texts: list[str] = []
         status_part: dict[str, object] | None = None
         sources_items: list[dict[str, object]] = []
+        tool_parts: list[dict[str, object]] = []
         for part in cast(list[dict[str, object]], assistant_row.parts or []):
             ptype = part.get("type")
             if ptype == "text":
@@ -474,6 +610,8 @@ async def _maybe_replay(
                 sources_items = cast(
                     list[dict[str, object]], part.get("items", []) or []
                 )
+            elif ptype in ("tool_call", "tool_result"):
+                tool_parts.append(part)
         return _replay_response(
             user_message_id=prior_user_msg.id,
             assistant_message_id=assistant_row.id,
@@ -481,6 +619,7 @@ async def _maybe_replay(
             attribution_dict=cast(dict[str, object], assistant_row.attribution),
             status_part=status_part,
             sources_items=sources_items,
+            tool_parts=tool_parts,
         )
     # User message exists but no completed assistant row: prior is in flight
     # (or crashed before persisting). Reject as duplicate.
@@ -569,8 +708,21 @@ async def send_message(
         if owner_row is None:
             raise not_found("conversation")
 
+        # Idempotency: prior user message for this client_message_id?
+        # Skipped for regenerate / edit paths — those use a fresh clientMessageId
+        # by FE contract; on the off chance an old id is reused, we still want
+        # the regen/edit semantics over a stale replay. This must run before the
+        # budget gate: replaying an already-billed response must not be blocked
+        # just because the original turn consumed the last allowance.
+        if not body.regenerate and body.edit_message_id is None:
+            replay = await _maybe_replay(db, conversation_id, client_uuid)
+            if replay is not None:
+                return replay
+
         # Cost-based budget enforcement. Only platform-key turns count against
         # the cap (BYOK turns are exempt — the user pays their own provider).
+        # A positive credit balance extends the monthly quota; once quota is
+        # consumed, terminal platform-key turns debit credits post-hoc.
         # `usage_budget_usd <= 0` disables the cap entirely (the default), so
         # existing behavior is unchanged. The cap is read against the current
         # period's accumulated cost ledger; reaching it refuses the next turn.
@@ -583,26 +735,24 @@ async def send_message(
         # accumulate, overshooting the cap (bounded by concurrency).
         settings = get_settings()
         if settings.usage_budget_usd > 0 and resolved_api_key is None:
-            period_cost = await usage_repo.get_period_cost(db, user_id=user.id)
-            if period_cost >= settings.usage_budget_usd:
+            has_allowance = await usage_repo.has_platform_allowance(
+                db,
+                user_id=user.id,
+                monthly_quota_usd=settings.usage_budget_usd,
+            )
+            if not has_allowance:
                 raise _budget_exceeded()
 
-    # Provider adapters are currently text-only. The shared schema/repository
-    # can round-trip attachment metadata, but a message carrying files must not
-    # enter the provider path until a concrete adapter supports multimodal
-    # payloads. Reject here, after ownership checks, before idempotency or any
-    # user-message insert.
-    if body.attachments:
-        raise _attachments_unsupported()
-
-    # Idempotency: prior user message for this client_message_id?
-    # Skipped for regenerate / edit paths — those use a fresh clientMessageId
-    # by FE contract; on the off chance an old id is reused, we still want
-    # the regen/edit semantics over a stale replay.
-    if not is_temp and not body.regenerate and body.edit_message_id is None:
-        replay = await _maybe_replay(db, conversation_id, client_uuid)
-        if replay is not None:
-            return replay
+    provider_attachments: list[AttachmentPayload] = []
+    if not body.regenerate:
+        settings = get_settings()
+        if body.attachments and not binding.supports_attachments:
+            raise _attachments_unsupported()
+        provider_attachments = _decode_attachment_payloads(
+            body.attachments,
+            max_count=settings.attachment_max_count,
+            max_bytes=settings.attachment_max_bytes,
+        )
 
     # Branch by mode:
     #   regenerate -> drop trailing assistant(s), reuse existing user message
@@ -613,7 +763,12 @@ async def send_message(
     provider_user_text: str
 
     if body.regenerate:
-        user_message_id, history, provider_user_text = await _prepare_regenerate(
+        (
+            user_message_id,
+            history,
+            provider_user_text,
+            provider_attachments,
+        ) = await _prepare_regenerate(
             db=db,
             conversation_id=conversation_id,
         )
@@ -624,6 +779,7 @@ async def send_message(
             edit_message_id_str=body.edit_message_id,
             client_uuid=client_uuid,
             new_text=body.text,
+            attachments=body.attachments,
         )
     elif is_temp:
         user_message_id = uuid4()
@@ -782,6 +938,7 @@ async def send_message(
             stream_id=stream_id,
             router_substitution=router_substitution,
             web_search=effective_web_search,
+            attachments=provider_attachments,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -817,6 +974,7 @@ async def send_message(
             stream_id=stream_id,
             router_substitution=router_substitution,
             web_search=effective_web_search,
+            attachments=provider_attachments,
         ):
             yield sse_event
 
@@ -957,14 +1115,14 @@ async def _prepare_regenerate(
     *,
     db: AsyncSession,
     conversation_id: UUID,
-) -> tuple[UUID, list[ProviderChatMessage], str]:
+) -> tuple[UUID, list[ProviderChatMessage], str, list[AttachmentPayload]]:
     """Drop trailing assistant(s) and reuse the existing trailing user message.
 
-    Returns `(user_message_id, history, user_text)` for the stream call. The
-    returned `user_message_id` is the EXISTING trailing user message's id —
-    `submitted` will echo it, the FE keeps the same user bubble. `user_text`
-    is the original user message text (the body's `text` is ignored on
-    regenerate per plan §"Behavior - Regenerate": user message not re-sent).
+    Returns `(user_message_id, history, user_text, attachments)` for the stream
+    call. The returned `user_message_id` is the EXISTING trailing user message's
+    id — `submitted` will echo it, the FE keeps the same user bubble.
+    `user_text` is the original user message text (the body's `text` is ignored
+    on regenerate per plan §"Behavior - Regenerate": user message not re-sent).
     """
     # Must have a trailing user message to regenerate against.
     last_user = await messages_repo.get_last_user_message(db, conversation_id)
@@ -999,7 +1157,8 @@ async def _prepare_regenerate(
             if part.get("type") == "text":
                 chunks.append(str(part.get("text", "")))
         user_text = "".join(chunks)
-    return last_user.id, full_history, user_text
+    attachments = _attachment_payloads_from_parts(last_user.parts)
+    return last_user.id, full_history, user_text, attachments
 
 
 async def _prepare_edit(
@@ -1009,6 +1168,7 @@ async def _prepare_edit(
     edit_message_id_str: str,
     client_uuid: UUID,
     new_text: str,
+    attachments: list[AttachmentPart] | None = None,
 ) -> tuple[UUID, list[ProviderChatMessage], str]:
     """Truncate at the edit target and insert a replacement user message.
 
@@ -1053,6 +1213,7 @@ async def _prepare_edit(
             conversation_id=conversation_id,
             client_message_id=client_uuid,
             text=new_text,
+            attachments=attachments,
         )
         # Edit-and-rerun accepts a new turn, so bump the conversation to the
         # top of the sidebar. Same session as the replacement user message;
@@ -1078,6 +1239,7 @@ def _replay_response(
     attribution_dict: dict[str, object],
     status_part: dict[str, object] | None = None,
     sources_items: list[dict[str, object]] | None = None,
+    tool_parts: list[dict[str, object]] | None = None,
 ) -> EventSourceResponse:
     """Replay a prior terminal as a single combined frame.
 
@@ -1085,15 +1247,15 @@ def _replay_response(
     message id, one `answer_delta` carrying the full prior answer text, then
     `terminal` with the stored attribution. No new DB writes.
 
-    Web-search turns also replay the `status` and `sources` frames
-    reconstructed from the persisted parts, in the same relative order the
-    original turn streamed them (status before the answer, sources after) so a
-    reconnecting client sees the grounded turn's citations. Non-search turns
-    pass neither and the sequence is the historical
+    Web-search turns also replay the `status`, `tool_*`, and `sources` frames
+    reconstructed from the persisted parts, so a reconnecting client sees the
+    grounded turn's citations and tool transcript. Non-search turns pass none
+    of those enrichments and the sequence is the historical
     submitted → answer_delta → terminal.
     """
     attribution = ModelAttribution.model_validate(attribution_dict)
     items = sources_items or []
+    tools = tool_parts or []
 
     async def _gen() -> AsyncIterator[ServerSentEvent]:
         yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
@@ -1106,6 +1268,12 @@ def _replay_response(
                     state="done",
                 )
             )
+        for part in tools:
+            ptype = part.get("type")
+            if ptype == "tool_call":
+                yield encode_tool_call(ToolCallEvent.model_validate(part))
+            elif ptype == "tool_result":
+                yield encode_tool_result(ToolResultEvent.model_validate(part))
         # Single answer_delta carrying the full final text (no mid-stream resume).
         yield encode_answer_delta(AnswerDeltaEvent(text=answer_text))
         # Persisted `sources` part replays after the answer, mirroring the live

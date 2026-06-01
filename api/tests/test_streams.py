@@ -332,6 +332,7 @@ class _BlockingProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        attachments: list[object] | None = None,
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,

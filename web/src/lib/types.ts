@@ -5,6 +5,15 @@
 
 export type ModelTierId = "fast" | "smart" | "pro" | "auto";
 
+export interface ProviderDataPolicy {
+  trainsOnData: boolean;
+  trainingDefault: "never" | "opt_in" | "opt_out" | "unknown";
+  dataResidency: string;
+  retentionDays?: number | null;
+  zeroDataRetentionAvailable: boolean;
+  policyLabel: string;
+}
+
 export interface ModelTier {
   id: ModelTierId;
   label: string; // user-facing: never a raw model ID (PRD 06 §5.6)
@@ -22,9 +31,15 @@ export interface ModelTier {
   // true. Filled by the BE from the active provider backend (the mock in
   // model-tiers.ts is a realistic stand-in for the loading frame).
   supportsWebSearch: boolean;
-  // Whether this tier can consume file attachments through the provider
-  // adapter. Current adapters are text-only, so bootstrap sends false.
+  // Whether this tier accepts file attachments for the current turn.
   supportsAttachments: boolean;
+  // Active backend route metadata. Mirrors api/app/schemas/tier.py and is
+  // populated from the provider registry in bootstrap.
+  providerId: string;
+  providerLabel: string;
+  providerRouteStatus: "available" | "pending" | "unavailable";
+  defaultRouteEligible: boolean;
+  dataPolicy: ProviderDataPolicy | null;
 }
 
 // Reasoning-effort / extended-thinking control surfaced in the composer
@@ -143,13 +158,12 @@ export type MessagePart =
   // `MessagePart` union so it auto-flows to the share surface (`PublicMessage`
   // reuses `MessagePart`) and round-trips via GET /api/conversations/:id.
   | { type: "sources"; items: SourceItem[] }
-  // User attachment metadata only. File bytes are not persisted in this slice;
-  // provider adapters do not receive attachments until a multimodal binding
-  // lands and reports `supportsAttachments=true`.
+  // User attachment metadata. Outgoing send requests may add transient payload
+  // fields; the server strips those before persistence.
   | AttachmentPart
-  // Tool/function calling foundation. These are transcript parts only: current
-  // streaming continues to use `status`/`sources` for web search, while future
-  // tools can add calls/results without changing the renderer or share model.
+  // Tool/function calling foundation. The backend streams and persists these
+  // around the web-search tool loop; future tools can reuse the same renderer
+  // and share model.
   | {
       type: "tool_call";
       id: string;
@@ -178,6 +192,8 @@ export interface AttachmentPart {
   mediaType: "image" | "pdf";
   mimeType: string;
   sizeBytes: number;
+  dataUrl?: string;
+  contentBase64?: string;
 }
 
 export type MessageRole = "user" | "assistant";
@@ -209,6 +225,21 @@ export interface UsageBudget {
   limit: number;
   periodLabel: string; // e.g. "this month"
   isByok: boolean;
+  monthlySpendUsd?: number;
+  monthlyQuotaUsd?: number;
+  creditBalanceUsd?: number;
+  platformRemainingUsd?: number | null;
+  recentLedgerEntries?: UsageLedgerEntry[];
+}
+
+export interface UsageLedgerEntry {
+  id: string;
+  entryType: "grant" | "platform_debit" | "adjustment";
+  amountUsd: number;
+  description?: string | null;
+  referenceType?: string | null;
+  referenceId?: string | null;
+  createdAt: string;
 }
 
 export interface Conversation {
@@ -228,6 +259,8 @@ export interface ConversationSummary {
   updatedAt: string; // ISO — used to bucket into Today / Yesterday / Previous 7 days …
   isTemporary?: boolean;
   pinned?: boolean;
+  matchSnippet?: string;
+  matchedMessageId?: string | null;
 }
 
 // User-editable preferences surfaced in the settings panel (PRD 06 §5.7 / PRD 05).
@@ -238,6 +271,7 @@ export interface UserPreferences {
   trainingOptIn: boolean; // default false — conversations are not used for training
   sendOnEnter: boolean;
   autoExpandReasoning: boolean;
+  retentionDays: 30 | 90 | null; // null = retain forever
 }
 
 // Account / billing identity for the sidebar footer + settings (PRD 05 / PRD 07 §5.8).

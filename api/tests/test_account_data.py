@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import (
     ApiKey,
+    AuditEvent,
     Conversation,
     Message,
     Preferences,
@@ -78,7 +79,28 @@ async def _seed_owned_data(
             role="assistant",
             parts=[{"type": "text", "text": "hi there"}],
             status="done",
-            attribution=None,
+            attribution={
+                "requestedTierId": "smart",
+                "servedTierId": "smart",
+                "servedModelLabel": "DeepSeek V4",
+                "isByok": False,
+                "costUsd": 0.012345,
+                "costConfidence": "exact",
+                "breakdown": {
+                    "currency": "USD",
+                    "listPriceInPerM": 0.2,
+                    "listPriceOutPerM": 0.8,
+                    "inputTokens": 100,
+                    "outputTokens": 50,
+                    "reasoningTokens": 0,
+                    "cachedInputTokens": 0,
+                    "longContext": {"flat": True},
+                    "promoApplied": False,
+                    "subtotalUsd": 0.012,
+                    "sessionSurchargeUsd": 0.000345,
+                },
+            },
+            cost_usd=0.012345,
             created_at=datetime(2026, 1, 1, 12, 0, 5, tzinfo=UTC),
         )
         s.add(m_user)
@@ -94,6 +116,7 @@ async def _seed_owned_data(
                 training_opt_in=True,
                 send_on_enter=True,
                 auto_expand_reasoning=False,
+                retention_days=30,
             )
         )
         s.add(
@@ -110,7 +133,15 @@ async def _seed_owned_data(
                 period_start=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
                 used=3,
                 limit_value=100,
+                cost_usd=0.012345,
                 is_byok=False,
+            )
+        )
+        s.add(
+            AuditEvent(
+                user_id=user_id,
+                event_type="byok.upsert",
+                details={"provider": "anthropic"},
             )
         )
         await s.commit()
@@ -122,6 +153,11 @@ async def test_export_returns_data_with_attachment_and_no_secrets(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     assert (await client.get("/api/bootstrap")).status_code == 200
+    upgrade = await client.post(
+        "/api/auth/upgrade",
+        json={"email": "export@example.com", "password": "hunter2hunter2"},
+    )
+    assert upgrade.status_code == 200
     user_id = await _current_user_id(session_factory)
     conv_id, _, _ = await _seed_owned_data(session_factory, user_id)
 
@@ -135,7 +171,17 @@ async def test_export_returns_data_with_attachment_and_no_secrets(
 
     body = response.json()
     # camelCase envelope shape.
-    for key in ("account", "preferences", "usage", "conversations", "exportedAt"):
+    for key in (
+        "account",
+        "accountMetadata",
+        "preferences",
+        "usage",
+        "usageRollups",
+        "byokKeys",
+        "conversations",
+        "auditEvents",
+        "exportedAt",
+    ):
         assert key in body, f"missing top-level key {key!r}"
 
     # exportedAt is an ISO-8601 timestamp.
@@ -149,9 +195,23 @@ async def test_export_returns_data_with_attachment_and_no_secrets(
     assert len(convos[0]["messages"]) == 2
     texts = {m["parts"][0]["text"] for m in convos[0]["messages"]}
     assert texts == {"hello world", "hi there"}
+    assistant = next(m for m in convos[0]["messages"] if m["role"] == "assistant")
+    assert assistant["attribution"]["costUsd"] == 0.012345
+    assert assistant["attribution"]["breakdown"]["subtotalUsd"] == 0.012
 
     # Preferences reflect the seeded row.
     assert body["preferences"]["trainingOptIn"] is True
+    assert body["preferences"]["retentionDays"] == 30
+    assert body["byokKeys"] == [
+        {
+            "provider": "anthropic",
+            "maskedKey": "sk-...abcd",
+            "createdAt": body["byokKeys"][0]["createdAt"],
+        }
+    ]
+    assert body["usageRollups"][0]["costUsd"] == 0.012345
+    event_types = {event["eventType"] for event in body["auditEvents"]}
+    assert {"byok.upsert", "account.export"}.issubset(event_types)
 
     # No secret material anywhere in the serialized payload.
     raw = json.dumps(body)
@@ -172,6 +232,47 @@ async def test_export_works_for_anonymous_user(
     assert body["account"]["email"] == ""
     assert body["account"]["byokEnabled"] is False
     assert body["conversations"] == []
+    assert body["byokKeys"] == []
+    assert {event["eventType"] for event in body["auditEvents"]} == {"account.export"}
+
+
+async def test_delete_requires_confirmation(
+    client: AsyncClient,
+) -> None:
+    assert (await client.get("/api/bootstrap")).status_code == 200
+
+    response = await client.request(
+        "DELETE",
+        "/api/account",
+        json={"confirmation": "wrong"},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CONFIRMATION_REQUIRED"
+
+
+async def test_delete_registered_account_requires_email_confirmation(
+    client: AsyncClient,
+) -> None:
+    assert (await client.get("/api/bootstrap")).status_code == 200
+    upgrade = await client.post(
+        "/api/auth/upgrade",
+        json={"email": "alice@example.com", "password": "hunter2hunter2"},
+    )
+    assert upgrade.status_code == 200
+
+    wrong = await client.request(
+        "DELETE",
+        "/api/account",
+        json={"confirmation": "DELETE"},
+    )
+    assert wrong.status_code == 400
+
+    ok = await client.request(
+        "DELETE",
+        "/api/account",
+        json={"confirmation": "alice@example.com"},
+    )
+    assert ok.status_code == 204
 
 
 async def test_delete_erases_all_data_and_clears_cookie(
@@ -211,7 +312,11 @@ async def test_delete_erases_all_data_and_clears_cookie(
     pre = await client.get(f"/api/conversations/{conv_id}")
     assert pre.status_code == 200
 
-    response = await client.delete("/api/account")
+    response = await client.request(
+        "DELETE",
+        "/api/account",
+        json={"confirmation": "DELETE"},
+    )
     assert response.status_code == 204
     assert response.content == b""
 
@@ -273,6 +378,11 @@ async def test_delete_erases_all_data_and_clears_cookie(
                 )
             )
         ).scalar_one() == 0
+        audit_rows = (
+            await s.execute(select(AuditEvent).where(AuditEvent.event_type == "account.delete"))
+        ).scalars().all()
+        assert len(audit_rows) == 1
+        assert audit_rows[0].user_id is None
         # The stream row(s) for the deleted user's (now-gone) conversation are
         # explicitly erased — right-to-erasure must not orphan stream rows on
         # SQLite (no PRAGMA foreign_keys=ON, so DB cascade does not fire).
@@ -308,7 +418,11 @@ async def test_delete_works_for_anonymous_user(
     user_id = await _current_user_id(session_factory)
 
     # Anonymous caller — no 403.
-    response = await client.delete("/api/account")
+    response = await client.request(
+        "DELETE",
+        "/api/account",
+        json={"confirmation": "DELETE"},
+    )
     assert response.status_code == 204
 
     async with session_factory() as s:

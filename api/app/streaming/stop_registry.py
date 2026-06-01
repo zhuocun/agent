@@ -11,14 +11,15 @@ Default backend is still single-process memory. Behind multiple uvicorn workers
 a memory-backed stop requested on worker A will NOT reach a stream running on
 worker B; the durable `stream.status="stopped"` row is still written, but the
 live generator on the other worker keeps going until its own disconnect check
-fires. The async store interface is the shared-state seam for a future Redis
-pub/sub (or similar) backend. The `stream` table remains the durable record;
-this store is the best-effort live cancel.
+fires. The Redis backend stores a TTL-bound live stop flag so all workers poll
+the same signal. The `stream` table remains the durable record; this store is
+the best-effort live cancel.
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+import math
+from typing import Any, Protocol
 from uuid import UUID
 
 _STOP_REQUESTS: set[UUID] = set()
@@ -54,6 +55,36 @@ class InMemoryStopSignalStore:
 
     async def clear_stop(self, stream_id: UUID) -> None:
         self._requests.discard(stream_id)
+
+
+class RedisStopSignalStore:
+    """Redis-backed TTL stop-signal store for cross-worker live cancellation."""
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        ttl_seconds: float,
+        key_prefix: str = "olune:stream",
+    ) -> None:
+        self._client = client
+        self._ttl_seconds = ttl_seconds
+        self._key_prefix = key_prefix
+
+    def _key(self, stream_id: UUID) -> str:
+        return f"{self._key_prefix}:stop:{stream_id}"
+
+    def _ttl_ms(self) -> int:
+        return max(1, math.ceil(self._ttl_seconds * 1000))
+
+    async def request_stop(self, stream_id: UUID) -> None:
+        await self._client.set(self._key(stream_id), "1", px=self._ttl_ms())
+
+    async def is_stop_requested(self, stream_id: UUID) -> bool:
+        return bool(await self._client.exists(self._key(stream_id)))
+
+    async def clear_stop(self, stream_id: UUID) -> None:
+        await self._client.delete(self._key(stream_id))
 
 
 _MEMORY_STORE = InMemoryStopSignalStore(_STOP_REQUESTS)

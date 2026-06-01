@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     ApiKey,
+    AuditEvent,
     Conversation,
     Message,
     Preferences,
     Session,
     Stream,
+    UsageCreditLedger,
     UsageRollup,
     User,
     Vote,
@@ -33,7 +35,7 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
 
     Order: vote (by message id) -> stream (by conversation id) ->
     message (by conversation id) -> conversation ->
-    api_key / usage_rollup / preferences / session -> user.
+    api_key / usage ledgers / preferences / session -> audit unlink -> user.
     Flush only; the caller (request dependency) owns the commit.
     """
     convo_id_stmt = select(Conversation.id).where(Conversation.user_id == user_id)
@@ -58,9 +60,17 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
         )
     await db.execute(delete(Conversation).where(Conversation.user_id == user_id))
     await db.execute(delete(ApiKey).where(ApiKey.user_id == user_id))
+    await db.execute(
+        delete(UsageCreditLedger).where(UsageCreditLedger.user_id == user_id)
+    )
     await db.execute(delete(UsageRollup).where(UsageRollup.user_id == user_id))
     await db.execute(delete(Preferences).where(Preferences.user_id == user_id))
     await db.execute(delete(Session).where(Session.user_id == user_id))
+    await db.execute(
+        update(AuditEvent)
+        .where(AuditEvent.user_id == user_id)
+        .values(user_id=None)
+    )
     await db.execute(delete(User).where(User.id == user_id))
     await db.flush()
 

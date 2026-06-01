@@ -16,7 +16,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import ApiKey, User
+from app.db.models import ApiKey, AuditEvent, User
 from app.db.repositories import api_keys as api_keys_repo
 
 pytestmark = pytest.mark.asyncio
@@ -91,6 +91,31 @@ async def test_delete_byok_removes_row(
 
     async with session_factory() as session:
         assert (await session.execute(select(ApiKey))).scalar_one_or_none() is None
+
+
+async def test_byok_writes_audit_events(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _upgrade_anonymous(client)
+
+    put = await client.put(
+        "/api/account/byok",
+        json={"provider": "anthropic", "apiKey": "sk-ant-fake-12345678"},
+    )
+    assert put.status_code == 200
+    delete = await client.delete("/api/account/byok/anthropic")
+    assert delete.status_code == 200
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(AuditEvent).order_by(AuditEvent.created_at.asc())
+            )
+        ).scalars().all()
+    assert [row.event_type for row in rows] == ["byok.upsert", "byok.revoke"]
+    assert [row.details["provider"] for row in rows] == ["anthropic", "anthropic"]
+    assert rows[1].details["removed"] is True
 
 
 async def test_delete_byok_anonymous_returns_403(client: AsyncClient) -> None:

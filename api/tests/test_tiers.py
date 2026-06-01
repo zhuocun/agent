@@ -15,10 +15,14 @@ from __future__ import annotations
 
 from app.config import Settings
 from app.providers.tiers import (
+    PROVIDER_ROUTES,
     TIER_BINDINGS,
+    available_provider_backend_ids,
     get_binding,
+    get_provider_route,
     is_known_tier,
     list_tiers,
+    require_available_provider_route,
     resolve_served_tier,
 )
 from app.schemas.tier import ModelTier
@@ -96,9 +100,10 @@ def test_get_binding_deepseek_backend_returns_canonical_deepseek_binding() -> No
     assert b is not None
     assert b.provider_id == "deepseek"
     assert b.model_id == "deepseek-v4-pro"
-    # DeepSeek V4 pro post-promo full price.
-    assert b.list_price_in_per_m == 1.74
-    assert b.list_price_out_per_m == 3.48
+    # DeepSeek V4 pro post-promo adjusted price.
+    assert b.list_price_in_per_m == 0.435
+    assert b.list_price_out_per_m == 0.87
+    assert b.cache_read_per_m == 0.003625
     assert b.thinking is True
     assert b.reasoning_effort == "high"
 
@@ -176,6 +181,64 @@ def test_get_binding_anthropic_backend_returns_anthropic_binding() -> None:
     assert b.list_price_in_per_m == 15.0
 
 
+def test_provider_route_registry_lists_available_and_pending_routes() -> None:
+    """The provider route registry is the backend/source-of-truth for route policy."""
+    by_id = {route.provider_id: route for route in PROVIDER_ROUTES}
+    assert set(by_id) == {"deepseek", "anthropic", "openai", "gemini", "fake"}
+    assert available_provider_backend_ids() == (
+        "deepseek",
+        "anthropic",
+        "openai",
+        "fake",
+    )
+    assert by_id["deepseek"].data_policy.trains_on_data is True
+    assert by_id["deepseek"].data_policy.training_default == "opt_out"
+    assert by_id["deepseek"].data_policy.policy_label == (
+        "May train unless opted out; China data residency"
+    )
+    assert by_id["gemini"].status == "pending"
+    assert by_id["gemini"].adapter is None
+    assert by_id["gemini"].default_route_eligible is False
+    assert by_id["gemini"].data_policy is None
+
+
+def test_require_available_provider_route_rejects_pending_gemini() -> None:
+    """Pending registry entries fail closed until a provider adapter is wired."""
+    s = Settings(provider_backend="gemini")
+    assert get_provider_route("gemini") is not None
+    try:
+        require_available_provider_route(s)
+    except RuntimeError as exc:
+        assert "PROVIDER_BACKEND='gemini'" in str(exc)
+        assert "no available adapter" in str(exc)
+    else:  # pragma: no cover - assertion branch only
+        raise AssertionError("gemini route unexpectedly available")
+
+
+def test_get_binding_gemini_pending_route_is_none() -> None:
+    """A pending provider must not silently reuse the DeepSeek binding table."""
+    s = Settings(provider_backend="gemini")
+    assert get_binding("fast", settings=s) is None
+
+
+def test_list_tiers_includes_provider_policy_metadata() -> None:
+    """Bootstrap tiers carry active route metadata/data policy from the registry."""
+    tiers = {
+        t.id: t
+        for t in list_tiers(
+            Settings(provider_backend="anthropic", anthropic_api_key="k")
+        )
+    }
+    fast = tiers["fast"]
+    assert fast.provider_id == "anthropic"
+    assert fast.provider_label == "Anthropic"
+    assert fast.provider_route_status == "available"
+    assert fast.default_route_eligible is True
+    assert fast.data_policy is not None
+    assert fast.data_policy.training_default == "never"
+    assert fast.data_policy.retention_days == 30
+
+
 def test_get_binding_unknown_tier_is_none_under_openai() -> None:
     """An unknown tier id returns None even under the openai backend."""
     s = _openai_settings()
@@ -245,6 +308,24 @@ def test_alternate_backend_bindings_support_web_search() -> None:
         ab = get_binding(tier_id, settings=an)  # type: ignore[arg-type]
         assert ab is not None
         assert ab.supports_web_search is True
+
+
+def test_attachment_support_tracks_native_provider_payload_support() -> None:
+    """Attachment support is only advertised when bytes reach the provider."""
+    deepseek = Settings(provider_backend="deepseek", deepseek_api_key="k")
+    assert all(
+        get_binding(tier_id, settings=deepseek).supports_attachments is False  # type: ignore[union-attr]
+        for tier_id in ("auto", "fast", "smart", "pro")
+    )
+
+    fake = Settings(provider_backend="fake")
+    assert get_binding("smart", settings=fake).supports_attachments is True  # type: ignore[union-attr]
+
+    openai = _openai_settings()
+    assert get_binding("smart", settings=openai).supports_attachments is True  # type: ignore[union-attr]
+
+    anthropic = Settings(provider_backend="anthropic", anthropic_api_key="k")
+    assert get_binding("smart", settings=anthropic).supports_attachments is True  # type: ignore[union-attr]
 
 
 def test_list_tiers_gates_supports_web_search_on_search_enabled() -> None:

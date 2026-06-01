@@ -1,24 +1,52 @@
 """Live stream-state backend configuration.
 
-The resumable-stream and stop-signal paths currently run on an in-memory store.
-This module centralizes backend selection so the route/handler code talks to
-async store interfaces instead of process-global data structures directly. That
-keeps default behavior unchanged while making a future Redis backend a local
-implementation swap rather than another route-level refactor.
+The resumable-stream and stop-signal paths talk to async store interfaces. This
+module wires those interfaces to either the default process-local memory stores
+or Redis-backed stores for cross-worker replay/stop coordination.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from app.config import Settings
 from app.streaming import replay_registry, stop_registry
 
 
+def _load_redis_modules() -> tuple[Any, Any]:
+    try:
+        import redis
+        from redis import asyncio as redis_async
+    except ImportError as exc:  # pragma: no cover - exercised only without deps
+        raise RuntimeError(
+            "STREAM_STATE_BACKEND=redis requires the 'redis' Python package"
+        ) from exc
+    return redis, redis_async
+
+
+def _ping_redis_url(redis_url: str) -> None:
+    redis, _redis_async = _load_redis_modules()
+    client = redis.Redis.from_url(
+        redis_url,
+        socket_connect_timeout=1,
+        socket_timeout=1,
+        decode_responses=False,
+    )
+    try:
+        client.ping()
+    except Exception as exc:
+        raise RuntimeError(
+            "STREAM_STATE_BACKEND=redis could not connect to REDIS_URL"
+        ) from exc
+    finally:
+        client.close()
+
+
 def configure_stream_state(settings: Settings) -> None:
     """Configure live stream-state stores for this process.
 
-    `memory` is the only implemented backend today. `redis` is intentionally a
-    fail-fast reserved value: the config/env contract exists, but Redis replay
-    log + pub/sub semantics are not implemented in this change.
+    `memory` preserves existing single-process behavior. `redis` validates the
+    URL at startup, then installs Redis-backed stop and replay stores.
     """
     if settings.stream_state_backend == "memory":
         stop_registry.use_memory_store()
@@ -27,7 +55,26 @@ def configure_stream_state(settings: Settings) -> None:
 
     if settings.redis_url is None:
         raise RuntimeError("REDIS_URL is required when STREAM_STATE_BACKEND=redis")
-    raise RuntimeError(
-        "STREAM_STATE_BACKEND=redis is reserved but not implemented yet; "
-        "use STREAM_STATE_BACKEND=memory"
+    _ping_redis_url(settings.redis_url)
+    _redis, redis_async = _load_redis_modules()
+    client = redis_async.Redis.from_url(settings.redis_url, decode_responses=False)
+    replay_live_ttl_seconds = max(
+        settings.resumable_buffer_ttl_seconds,
+        float(settings.stream_reap_after_seconds)
+        if settings.stream_reap_after_seconds > 0
+        else settings.resumable_buffer_ttl_seconds,
+    )
+    stop_registry.set_store(
+        stop_registry.RedisStopSignalStore(
+            client,
+            ttl_seconds=settings.stream_stop_ttl_seconds,
+        )
+    )
+    replay_registry.set_store(
+        replay_registry.RedisReplayLogStore(
+            client,
+            max_events=settings.resumable_buffer_max_events,
+            max_bytes=settings.resumable_buffer_max_bytes,
+            live_ttl_seconds=replay_live_ttl_seconds,
+        )
     )

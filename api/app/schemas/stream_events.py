@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Literal
 
 from app.schemas.common import CamelModel
-from app.schemas.message import ModelAttribution
+from app.schemas.message import ModelAttribution, ToolCallPart, ToolResultPart
 from app.search.protocol import SourceItem
 
 
@@ -41,6 +41,14 @@ class SourcesEvent(CamelModel):
     """
 
     items: list[SourceItem]
+
+
+class ToolCallEvent(ToolCallPart):
+    pass
+
+
+class ToolResultEvent(ToolResultPart):
+    pass
 
 
 class AnswerDeltaEvent(CamelModel):

@@ -99,6 +99,9 @@ class Preferences(Base):
     auto_expand_reasoning: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
+    # NULL means "retain forever"; non-NULL values are constrained by the API
+    # schema/repository to the currently supported short windows.
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -334,4 +337,68 @@ class UsageRollup(Base):
     limit_value: Mapped[int] = mapped_column(Integer, nullable=False)
     is_byok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    __table_args__ = (PrimaryKeyConstraint("user_id", "period_start", name="usage_rollup_pk"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("user_id", "period_start", name="usage_rollup_pk"),
+    )
+
+
+class UsageCreditLedger(Base):
+    __tablename__ = "usage_credit_ledger"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Signed USD amount. Grants and positive adjustments add credits; platform
+    # debits and negative adjustments consume them. Payment-provider state is
+    # deliberately absent from this primitive.
+    entry_type: Mapped[str] = mapped_column(String, nullable=False)
+    amount_usd: Mapped[float] = mapped_column(
+        Numeric(12, 6, asdecimal=False),
+        nullable=False,
+    )
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    reference_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    reference_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_usage_credit_ledger_user_created",
+            "user_id",
+            "created_at",
+        ),
+    )
+
+
+class AuditEvent(Base):
+    """Write-only audit trail for sensitive account events.
+
+    `user_id` is nullable with SET NULL so account deletion can retain a minimal
+    operational audit trail without keeping the deleted account row alive.
+    """
+
+    __tablename__ = "audit_event"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID | None] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JsonVariant, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_audit_event_user_created", "user_id", "created_at"),
+        Index("ix_audit_event_type_created", "event_type", "created_at"),
+    )

@@ -30,6 +30,7 @@ _VALID_BODY = {
     "trainingOptIn": True,
     "sendOnEnter": False,
     "autoExpandReasoning": True,
+    "retentionDays": 90,
 }
 
 
@@ -54,6 +55,7 @@ async def test_bootstrap_returns_defaults_when_no_row(
         "trainingOptIn": False,
         "sendOnEnter": True,
         "autoExpandReasoning": False,
+        "retentionDays": None,
     }
     # Bootstrap should NOT silently insert a row.
     assert await _row_count(session_factory) == 0
@@ -73,6 +75,30 @@ async def test_put_then_bootstrap_returns_new_values(
     boot = await client.get("/api/bootstrap")
     assert boot.status_code == 200
     assert boot.json()["preferences"] == _VALID_BODY
+
+
+async def test_put_accepts_retention_forever(
+    client: AsyncClient,
+) -> None:
+    await client.get("/api/bootstrap")
+    body = dict(_VALID_BODY)
+    body["retentionDays"] = None
+
+    put = await client.put("/api/preferences", json=body)
+    assert put.status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.json()["preferences"]["retentionDays"] is None
+
+
+async def test_put_rejects_unknown_retention_days(client: AsyncClient) -> None:
+    await client.get("/api/bootstrap")
+    bad = dict(_VALID_BODY)
+    bad["retentionDays"] = 7
+
+    response = await client.put("/api/preferences", json=bad)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INPUT"
 
 
 async def test_put_rejects_unknown_tier(

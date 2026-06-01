@@ -42,6 +42,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
 
+from app.config import get_settings
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import streams as streams_repo
@@ -52,6 +53,7 @@ from app.providers.factory import build_provider
 from app.providers.pricing import build_attribution, compute_cost_breakdown
 from app.providers.protocol import (
     AnswerDelta,
+    AttachmentPayload,
     ChatMessage,
     Complete,
     Provider,
@@ -60,11 +62,13 @@ from app.providers.protocol import (
     ReasoningDone,
     Sources,
     StatusUpdate,
+    ToolCall,
+    ToolResult,
     UsageUpdate,
 )
 from app.providers.tiers import TierBinding, get_binding
 from app.schemas.common import ModelTierId, SubstitutionReasonCode
-from app.schemas.message import ModelAttribution
+from app.schemas.message import ModelAttribution, ToolCallPart, ToolResultPart
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
     ReasoningDeltaEvent,
@@ -73,6 +77,8 @@ from app.schemas.stream_events import (
     StatusEvent,
     SubmittedEvent,
     TerminalEvent,
+    ToolCallEvent,
+    ToolResultEvent,
 )
 from app.search.protocol import SourceItem
 from app.streaming.replay_registry import ReplayLogBuffer
@@ -85,6 +91,8 @@ from app.streaming.sse import (
     encode_status,
     encode_submitted,
     encode_terminal,
+    encode_tool_call,
+    encode_tool_result,
 )
 from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
 
@@ -280,6 +288,7 @@ async def stream_and_persist(
     stream_id: UUID | None = None,
     router_substitution: SubstitutionReasonCode | None = None,
     web_search: bool = False,
+    attachments: list[AttachmentPayload] | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -328,6 +337,7 @@ async def stream_and_persist(
     # persist sites append no status/sources parts and the stream is unchanged.
     latest_status: tuple[str, str] | None = None
     search_items: list[SourceItem] = []
+    tool_parts: list[dict[str, Any]] = []
     is_byok_turn = api_key is not None
     # Substitution metadata threaded into build_attribution(...). Two sources
     # feed it, with provider-side winning (see below + the docstring):
@@ -351,6 +361,7 @@ async def stream_and_persist(
         model_id=binding.model_id,
         history=history,
         user_text=user_text,
+        attachments=attachments,
         api_key=api_key,
         # DeepSeek V4 dual-mode hints from the tier binding. None means
         # "provider default" (the Anthropic/OpenAI alternate bindings leave
@@ -388,18 +399,20 @@ async def stream_and_persist(
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
 
-        Order for a web-search turn: [reasoning?] [status(done)] [text]
-        [sources]. The status part is appended only if a `StatusUpdate` was
-        seen (recording the FINAL line — `state="done"` for a completed search),
-        and the sources part only if a `Sources` event was seen. On a
-        non-web-search turn neither is present, so the parts are exactly
-        [reasoning?] [text] as before — the regression-critical no-op invariant.
+        Order for a web-search turn: [reasoning?] [tool transcript*]
+        [status(done)] [text] [sources]. The status part is appended only if a
+        `StatusUpdate` was seen (recording the FINAL line — `state="done"` for
+        a completed search), and the sources part only if a `Sources` event was
+        seen. On a non-web-search turn none of those enrichment parts are
+        present, so the parts are exactly [reasoning?] [text] as before — the
+        regression-critical no-op invariant.
         Shared by the terminal-success and stop-path persist sites so they can
         never drift.
         """
         parts: list[dict[str, Any]] = []
         if reasoning_buf:
             parts.append({"type": "reasoning", "text": "".join(reasoning_buf)})
+        parts.extend(tool_parts)
         if latest_status is not None:
             label, _state = latest_status
             parts.append({"type": "status", "label": label, "state": "done"})
@@ -414,6 +427,28 @@ async def stream_and_persist(
                 }
             )
         return parts
+
+    def _tool_call_part(ev: ToolCall) -> ToolCallPart:
+        return ToolCallPart(
+            id=ev.id,
+            name=ev.name,
+            label=ev.label,
+            status=ev.status,
+            approval_state=ev.approval_state,
+            input=ev.input,
+        )
+
+    def _tool_result_part(ev: ToolResult) -> ToolResultPart:
+        return ToolResultPart(
+            tool_call_id=ev.tool_call_id,
+            name=ev.name,
+            label=ev.label,
+            status=ev.status,
+            approval_state=ev.approval_state,
+            summary=ev.summary,
+            output=ev.output,
+            error=ev.error,
+        )
 
     async def _persist_assistant(
         *,
@@ -467,6 +502,14 @@ async def stream_and_persist(
             latest_status = (ev.label, ev.state)
         elif isinstance(ev, Sources):
             search_items = list(ev.items)
+        elif isinstance(ev, ToolCall):
+            tool_parts.append(
+                _tool_call_part(ev).model_dump(by_alias=True, exclude_none=True)
+            )
+        elif isinstance(ev, ToolResult):
+            tool_parts.append(
+                _tool_result_part(ev).model_dump(by_alias=True, exclude_none=True)
+            )
         elif isinstance(ev, UsageUpdate):
             final_usage = ev
         elif isinstance(ev, Complete):
@@ -552,6 +595,13 @@ async def stream_and_persist(
                             user_id=user_id,
                             cost_usd_delta=turn_cost,
                             is_byok=is_byok_turn,
+                            monthly_quota_usd=get_settings().usage_budget_usd,
+                            reference_type="message",
+                            reference_id=(
+                                str(stopped_assistant_id)
+                                if stopped_assistant_id is not None
+                                else None
+                            ),
                         )
                     # Land the durable stream lifecycle in the SAME commit as the
                     # stopped assistant row + meter bump. `message_id` points at
@@ -616,6 +666,26 @@ async def stream_and_persist(
                 # text part at the persist sites).
                 search_items = list(ev.items)
                 yield encode_sources(SourcesEvent(items=list(ev.items)))
+            elif isinstance(ev, ToolCall):
+                call_part = _tool_call_part(ev)
+                tool_parts.append(
+                    call_part.model_dump(by_alias=True, exclude_none=True)
+                )
+                yield encode_tool_call(
+                    ToolCallEvent.model_validate(
+                        call_part.model_dump(by_alias=True, exclude_none=True)
+                    )
+                )
+            elif isinstance(ev, ToolResult):
+                result_part = _tool_result_part(ev)
+                tool_parts.append(
+                    result_part.model_dump(by_alias=True, exclude_none=True)
+                )
+                yield encode_tool_result(
+                    ToolResultEvent.model_validate(
+                        result_part.model_dump(by_alias=True, exclude_none=True)
+                    )
+                )
             elif isinstance(ev, AnswerDelta):
                 # Invariant: emit ReasoningDone before the first AnswerDelta,
                 # if any reasoning_delta has been seen but done hasn't fired.
@@ -691,6 +761,9 @@ async def stream_and_persist(
                     user_id=user_id,
                     cost_usd_delta=turn_cost,
                     is_byok=is_byok_turn,
+                    monthly_quota_usd=get_settings().usage_budget_usd,
+                    reference_type="message",
+                    reference_id=str(row.id),
                 )
             # Transition the durable stream lifecycle to `done` and point it at
             # the assistant row, within the SAME transaction as the assistant
@@ -865,6 +938,7 @@ async def run_detached_producer(
     stream_id: UUID | None = None,
     router_substitution: SubstitutionReasonCode | None = None,
     web_search: bool = False,
+    attachments: list[AttachmentPayload] | None = None,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 
@@ -910,6 +984,7 @@ async def run_detached_producer(
                 stream_id=stream_id,
                 router_substitution=router_substitution,
                 web_search=web_search,
+                attachments=attachments,
             ):
                 # Mirror the last frame kind so the buffer's terminal_kind is
                 # observable. `terminal`/`error` are the only closing frames;

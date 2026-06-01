@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -22,7 +23,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Conversation, UsageRollup, User
+from app.db.models import Conversation, UsageCreditLedger, UsageRollup, User
 from app.db.repositories import usage as usage_repo
 
 pytestmark = pytest.mark.asyncio
@@ -236,6 +237,239 @@ async def test_get_current_budget_returns_zero_when_no_row(
         assert budget.used == 0
         assert budget.limit == 1000
         assert budget.is_byok is False
+        assert budget.credit_balance_usd == 0
+        assert budget.recent_ledger_entries == []
+
+
+async def test_credit_grant_and_adjustment_update_balance(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        await usage_repo.grant_credits(
+            session,
+            user_id=user.id,
+            amount_usd=5.25,
+            description="Local grant",
+        )
+        await usage_repo.adjust_credits(
+            session,
+            user_id=user.id,
+            amount_usd=-1.0,
+            description="Correction",
+        )
+        await session.commit()
+
+        balance = await usage_repo.get_credit_balance(session, user_id=user.id)
+        entries = await usage_repo.list_recent_credit_entries(
+            session,
+            user_id=user.id,
+        )
+
+        assert balance == pytest.approx(4.25)
+        by_type = {entry.entry_type: entry for entry in entries}
+        assert set(by_type) == {"adjustment", "grant"}
+        assert by_type["adjustment"].amount_usd == pytest.approx(-1.0)
+
+
+async def test_platform_usage_debits_credits_only_after_monthly_quota(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        await usage_repo.grant_credits(session, user_id=user.id, amount_usd=3.0)
+        await usage_repo.increment_for_period(
+            session,
+            user_id=user.id,
+            cost_usd_delta=0.75,
+            monthly_quota_usd=1.0,
+        )
+        await usage_repo.increment_for_period(
+            session,
+            user_id=user.id,
+            cost_usd_delta=0.50,
+            monthly_quota_usd=1.0,
+        )
+        await session.commit()
+
+        balance = await usage_repo.get_credit_balance(session, user_id=user.id)
+        debits = (
+            await session.execute(
+                select(UsageCreditLedger).where(
+                    UsageCreditLedger.entry_type == "platform_debit"
+                )
+            )
+        ).scalars().all()
+
+        assert balance == pytest.approx(2.75)
+        assert len(debits) == 1
+        assert debits[0].amount_usd == pytest.approx(-0.25)
+
+
+async def test_byok_usage_does_not_debit_platform_credits(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        user = User(is_anonymous=False, name="Eve", email="eve@example.com")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        await usage_repo.grant_credits(session, user_id=user.id, amount_usd=2.0)
+        await usage_repo.increment_for_period(
+            session,
+            user_id=user.id,
+            cost_usd_delta=5.0,
+            is_byok=True,
+            monthly_quota_usd=1.0,
+        )
+        await session.commit()
+
+        balance = await usage_repo.get_credit_balance(session, user_id=user.id)
+        entries = (
+            await session.execute(
+                select(UsageCreditLedger).where(
+                    UsageCreditLedger.user_id == user.id
+                )
+            )
+        ).scalars().all()
+
+        assert balance == pytest.approx(2.0)
+        assert [entry.entry_type for entry in entries] == ["grant"]
+
+
+async def test_concurrent_platform_debits_cannot_overspend_credits(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        await usage_repo.grant_credits(session, user_id=user.id, amount_usd=1.0)
+        await session.commit()
+        user_id = user.id
+
+    async def _debit() -> None:
+        async with session_factory() as session:
+            await usage_repo.debit_platform_credits(
+                session,
+                user_id=user_id,
+                amount_usd=0.75,
+            )
+            await session.commit()
+
+    await asyncio.gather(_debit(), _debit())
+
+    async with session_factory() as session:
+        balance = await usage_repo.get_credit_balance(session, user_id=user_id)
+        rows = (
+            await session.execute(
+                select(UsageCreditLedger).where(
+                    UsageCreditLedger.user_id == user_id,
+                    UsageCreditLedger.entry_type == "platform_debit",
+                )
+            )
+        ).scalars().all()
+        ledger_total = (
+            await session.execute(
+                select(func.coalesce(func.sum(UsageCreditLedger.amount_usd), 0)).where(
+                    UsageCreditLedger.user_id == user_id
+                )
+            )
+        ).scalar_one()
+
+    assert balance == pytest.approx(0)
+    assert sum(float(row.amount_usd) for row in rows) == pytest.approx(-1.0)
+    assert float(ledger_total) == pytest.approx(0)
+
+
+async def test_concurrent_cross_quota_usage_debits_full_overage(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    period = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        await usage_repo.grant_credits(session, user_id=user.id, amount_usd=10.0)
+        await session.commit()
+        user_id = user.id
+
+    async def _record_usage() -> None:
+        async with session_factory() as session:
+            await usage_repo.increment_for_period(
+                session,
+                user_id=user_id,
+                cost_usd_delta=0.75,
+                monthly_quota_usd=1.0,
+                period_start=period,
+            )
+            await session.commit()
+
+    await asyncio.gather(_record_usage(), _record_usage())
+
+    async with session_factory() as session:
+        balance = await usage_repo.get_credit_balance(session, user_id=user_id)
+        rollup = (
+            await session.execute(
+                select(UsageRollup).where(UsageRollup.user_id == user_id)
+            )
+        ).scalar_one()
+        debits = (
+            await session.execute(
+                select(UsageCreditLedger).where(
+                    UsageCreditLedger.user_id == user_id,
+                    UsageCreditLedger.entry_type == "platform_debit",
+                )
+            )
+        ).scalars().all()
+
+    assert rollup.cost_usd == pytest.approx(1.5)
+    assert sum(float(row.amount_usd) for row in debits) == pytest.approx(-0.5)
+    assert balance == pytest.approx(9.5)
+
+
+async def test_get_current_budget_exposes_credit_read_model(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        await usage_repo.grant_credits(session, user_id=user.id, amount_usd=1.5)
+        await usage_repo.increment_for_period(
+            session,
+            user_id=user.id,
+            cost_usd_delta=0.25,
+            monthly_quota_usd=1.0,
+        )
+        await session.commit()
+
+        budget = await usage_repo.get_current_budget(
+            session,
+            user.id,
+            is_byok=False,
+            monthly_quota_usd=1.0,
+        )
+
+        assert budget.monthly_spend_usd == pytest.approx(0.25)
+        assert budget.monthly_quota_usd == pytest.approx(1.0)
+        assert budget.credit_balance_usd == pytest.approx(1.5)
+        assert budget.platform_remaining_usd == pytest.approx(2.25)
+        assert len(budget.recent_ledger_entries) == 1
+        assert budget.recent_ledger_entries[0].entry_type == "grant"
 
 
 async def test_stopped_flush_increments_usage(

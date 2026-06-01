@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
-from app.db.models import Conversation, Message, UsageRollup, User
+from app.db.models import Conversation, Message, UsageCreditLedger, UsageRollup, User
 from app.db.session import get_db
 
 pytestmark = pytest.mark.asyncio
@@ -287,9 +287,17 @@ async def test_budget_exceeded_returns_429(
 
     # Turn 1: ledger starts at 0 < cap, so the gate lets it through. It writes a
     # cost well above the tiny cap.
+    first_body = _send_body()
     await _collect_sse(
-        budget_client, f"/api/conversations/{conv_id}/messages", _send_body()
+        budget_client, f"/api/conversations/{conv_id}/messages", first_body
     )
+
+    # Retrying the same idempotency key after the first turn depleted allowance
+    # must replay the already-billed response, not consult budget again.
+    replay = await _collect_sse(
+        budget_client, f"/api/conversations/{conv_id}/messages", first_body
+    )
+    assert replay[-1][0] == "terminal"
 
     # Turn 2: pre-flight gate sees accumulated cost >= cap -> 429.
     resp = await budget_client.post(
@@ -360,6 +368,53 @@ async def test_byok_turn_exempt_from_budget(
     attribution = terminal["attribution"]
     assert isinstance(attribution, dict)
     assert attribution["isByok"] is True
+
+
+async def test_platform_credits_extend_budget_and_are_debited(
+    budget_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """When monthly spend is already over quota, a positive credit balance lets
+    the next platform-key turn start and records a platform debit afterward.
+    """
+    from app.db.repositories import usage as usage_repo
+
+    await budget_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+
+    async with session_factory() as session:
+        await usage_repo.grant_credits(
+            session,
+            user_id=user_id,  # type: ignore[arg-type]
+            amount_usd=1.0,
+            description="Test credit",
+        )
+        await usage_repo.increment_for_period(
+            session,
+            user_id=user_id,  # type: ignore[arg-type]
+            used_delta=1,
+            cost_usd_delta=1.0,
+        )
+        await session.commit()
+
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        budget_client, f"/api/conversations/{conv_id}/messages", _send_body()
+    )
+    assert frames[-1][0] == "terminal"
+
+    async with session_factory() as session:
+        debits = (
+            await session.execute(
+                select(UsageCreditLedger).where(
+                    UsageCreditLedger.entry_type == "platform_debit"
+                )
+            )
+        ).scalars().all()
+
+    assert len(debits) == 1
+    assert debits[0].amount_usd < 0
 
 
 async def _session_cookie_for(

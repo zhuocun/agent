@@ -79,8 +79,10 @@ class Settings(BaseSettings):
     deepseek_base_url: str = Field(default="https://api.deepseek.com")
 
     # Provider backend selection (M1). `fake` for dev/tests, `deepseek` is the
-    # main/prod provider; `anthropic`/`openai` are alternates.
-    provider_backend: Literal["deepseek", "anthropic", "openai", "fake"] = Field(
+    # main/prod provider; `anthropic`/`openai` are alternates. `gemini` is
+    # accepted only so the provider registry can represent the pending route;
+    # runtime construction fails closed until an adapter lands.
+    provider_backend: Literal["deepseek", "anthropic", "openai", "gemini", "fake"] = Field(
         default="fake"
     )
 
@@ -97,6 +99,14 @@ class Settings(BaseSettings):
     # Tavily API key. Only consulted when `search_backend == "tavily"`. Comes
     # from env / Fly secrets only — never commit it.
     tavily_api_key: str | None = Field(default=None, alias="TAVILY_API_KEY")
+
+    # User attachment intake. Payload bytes are accepted only on the current
+    # request, validated at the route boundary, passed transiently to providers,
+    # and stripped before message persistence.
+    attachment_max_count: int = Field(default=4, alias="ATTACHMENT_MAX_COUNT")
+    attachment_max_bytes: int = Field(
+        default=5 * 1024 * 1024, alias="ATTACHMENT_MAX_BYTES"
+    )
 
     # BYOK key encryption KEK (base64-encoded 32 bytes). Required in M3 — the
     # default value is a known-bad dev sentinel that `assert_prod_safe()`
@@ -163,15 +173,20 @@ class Settings(BaseSettings):
     # own provider) and never consult this cap.
     usage_budget_usd: float = Field(default=0.0, alias="USAGE_BUDGET_USD")
 
-    # Live stream coordination state. `memory` preserves the current
-    # single-process behavior. `redis` is reserved for the shared-state backend:
-    # settings accept the intended env shape now, but app startup fails fast
-    # until the Redis implementation is wired so operators cannot accidentally
-    # believe cross-worker replay/stop is active.
+    # Live stream coordination state. `memory` preserves the default
+    # single-process behavior. `redis` stores resumable-stream replay logs and
+    # live stop flags in Redis so multiple API workers can observe the same
+    # stream state. Redis startup validates `REDIS_URL` by pinging it; a missing
+    # or unreachable Redis fails boot loudly rather than silently falling back to
+    # process-local state.
     stream_state_backend: Literal["memory", "redis"] = Field(
         default="memory", alias="STREAM_STATE_BACKEND"
     )
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
+    # Redis-backed explicit stop signals are live coordination hints, not the
+    # durable lifecycle record (the `stream` row is durable). TTL bounds leaked
+    # stop keys if a worker dies before `clear_stop_async`.
+    stream_stop_ttl_seconds: float = Field(default=900.0, alias="STREAM_STOP_TTL_SECONDS")
 
     # Orphan-stream reaper TTL (seconds). A hard worker crash (SIGKILL / OOM /
     # power loss) runs no Python cleanup, so a `stream` row can strand at
@@ -228,12 +243,11 @@ class Settings(BaseSettings):
     # the producer. Cost / usage-rollup / attribution / persistence semantics are
     # unchanged — the producer runs the SAME code path, just detached.
     #
-    # In-process, NO REDIS (single-worker MVP compromise — same caveat as
-    # `stop_registry`, `_TEMP_IDS`, and the slowapi in-memory store). Behind
-    # multiple uvicorn workers a reconnect that lands on a different worker than
-    # the producer 404s (the buffer lives in the producer's process only);
-    # multi-worker resumable streams need a shared Redis replay log. The durable
-    # `stream` row remains the cross-worker record of the turn's lifecycle.
+    # With STREAM_STATE_BACKEND=memory this uses a process-local ReplayBuffer:
+    # behind multiple uvicorn workers, a reconnect that lands on a different
+    # worker than the producer 404s. With STREAM_STATE_BACKEND=redis, the replay
+    # log is shared through Redis and bounded by the TTL/count/byte settings
+    # below. The durable `stream` row remains the cross-worker lifecycle record.
     resumable_streams_enabled: bool = Field(
         default=False, alias="RESUMABLE_STREAMS_ENABLED"
     )
@@ -246,6 +260,17 @@ class Settings(BaseSettings):
     # per-process memory. Only consulted when `resumable_streams_enabled`.
     resumable_buffer_ttl_seconds: float = Field(
         default=60.0, alias="RESUMABLE_BUFFER_TTL_SECONDS"
+    )
+    # Redis replay buffers are additionally bounded by event count and
+    # serialized-byte budget. If the producer exceeds either bound, Redis drops
+    # the oldest replay events first; live subscribers continue from the oldest
+    # retained event. The memory backend intentionally keeps its historical
+    # unbounded-in-flight behavior and only TTL-evicts after done.
+    resumable_buffer_max_events: int = Field(
+        default=1000, alias="RESUMABLE_BUFFER_MAX_EVENTS"
+    )
+    resumable_buffer_max_bytes: int = Field(
+        default=1_048_576, alias="RESUMABLE_BUFFER_MAX_BYTES"
     )
 
     @property
@@ -340,6 +365,9 @@ class Settings(BaseSettings):
             )
         if self.provider_backend == "fake":
             raise RuntimeError("PROVIDER_BACKEND must not be 'fake' in production.")
+        from app.providers.tiers import require_available_provider_route
+
+        require_available_provider_route(self)
         if self.provider_backend == "deepseek" and not self.deepseek_key:
             raise RuntimeError(
                 "DEEPSEEK_API_KEY (or OPENAI_API_KEY) required when PROVIDER_BACKEND=deepseek"

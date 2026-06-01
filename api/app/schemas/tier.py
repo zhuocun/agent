@@ -7,6 +7,22 @@ from typing import Literal
 from app.schemas.common import CamelModel, CostHint, ModelTierId, SpeedHint
 
 
+class ProviderDataPolicy(CamelModel):
+    """Route-level data handling metadata surfaced with each tier.
+
+    This is intentionally provider-route metadata, not a user preference: it
+    tells the picker what the currently active backend's platform route does by
+    default so DeepSeek/Western/BYOK choices can be disclosed honestly.
+    """
+
+    trains_on_data: bool
+    training_default: Literal["never", "opt_in", "opt_out", "unknown"]
+    data_residency: str
+    retention_days: int | None = None
+    zero_data_retention_available: bool = False
+    policy_label: str
+
+
 class ModelTier(CamelModel):
     id: ModelTierId
     label: str
@@ -27,10 +43,17 @@ class ModelTier(CamelModel):
     # actually configured. Defaults to False as the backend-independent default
     # on the canonical tier objects.
     supports_web_search: bool = False
-    # Whether this tier can consume user file attachments through the provider
-    # adapter. Current adapters are text-only, so bootstrap sends false for all
-    # tiers and the FE disables attached sends instead of implying model access.
+    # Whether this tier accepts user attachments with native provider payloads.
+    # Metadata-only fallback is not advertised as attachment support.
     supports_attachments: bool = False
+    # Active provider route metadata. Populated by `list_tiers` from the backend
+    # registry so the FE can disclose the route/policy without hardcoded model
+    # facts. Empty defaults keep canonical tier objects backend-independent.
+    provider_id: str = ""
+    provider_label: str = ""
+    provider_route_status: Literal["available", "pending", "unavailable"] = "available"
+    default_route_eligible: bool = False
+    data_policy: ProviderDataPolicy | None = None
 
 
 class PromptSuggestion(CamelModel):

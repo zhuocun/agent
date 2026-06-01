@@ -44,9 +44,11 @@ expiry deterministically without wall-clock waits.
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import time
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from sse_starlette import ServerSentEvent
@@ -211,6 +213,232 @@ class ReplaySubscription:
                 yield event
 
 
+def _decode_redis_value(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
+
+
+def _redis_value_len(value: object) -> int:
+    if isinstance(value, bytes):
+        return len(value)
+    return len(str(value).encode("utf-8"))
+
+
+def _event_to_redis_json(seq: int, event: ServerSentEvent) -> str:
+    """Serialize the subset of ServerSentEvent fields this API emits."""
+    payload = {
+        "seq": seq,
+        "event": getattr(event, "event", None),
+        "data": getattr(event, "data", None),
+        "id": getattr(event, "id", None),
+        "retry": getattr(event, "retry", None),
+        "comment": getattr(event, "comment", None),
+    }
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+def _event_from_redis_json(raw: object) -> tuple[int, ServerSentEvent]:
+    payload = json.loads(_decode_redis_value(raw))
+    seq = int(payload["seq"])
+    event = ServerSentEvent(
+        event=payload.get("event"),
+        data=payload.get("data"),
+        id=payload.get("id"),
+        retry=payload.get("retry"),
+        comment=payload.get("comment"),
+    )
+    return seq, event
+
+
+class RedisReplayLogBuffer:
+    """Redis-backed replay log for one stream.
+
+    Events are stored in a Redis list as JSON envelopes carrying a monotonic
+    sequence number. Subscribers replay from the oldest retained sequence and
+    then wait on a pub/sub wakeup channel for new events or terminal state.
+    Redis trims the oldest events when the configured count or byte budget is
+    exceeded. Live keys carry a refreshed orphan TTL; once terminal, that is
+    replaced by the shorter replay TTL.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        stream_id: UUID,
+        *,
+        ttl_seconds: float,
+        live_ttl_seconds: float,
+        max_events: int,
+        max_bytes: int,
+        key_prefix: str,
+        done: bool = False,
+        terminal_kind: str | None = None,
+    ) -> None:
+        self._client = client
+        self._stream_id = stream_id
+        self._ttl_seconds = ttl_seconds
+        self._live_ttl_seconds = live_ttl_seconds
+        self._max_events = max(1, max_events)
+        self._max_bytes = max(1, max_bytes)
+        self._key_prefix = key_prefix
+        self._done = done
+        self._terminal_kind = terminal_kind
+
+    @property
+    def done(self) -> bool:
+        return self._done
+
+    @property
+    def terminal_kind(self) -> str | None:
+        return self._terminal_kind
+
+    @property
+    def _events_key(self) -> str:
+        return f"{self._key_prefix}:replay:{self._stream_id}:events"
+
+    @property
+    def _meta_key(self) -> str:
+        return f"{self._key_prefix}:replay:{self._stream_id}:meta"
+
+    @property
+    def _seq_key(self) -> str:
+        return f"{self._key_prefix}:replay:{self._stream_id}:seq"
+
+    @property
+    def _channel_key(self) -> str:
+        return f"{self._key_prefix}:replay:{self._stream_id}:wake"
+
+    def _ttl_ms(self) -> int:
+        return max(1, math.ceil(self._ttl_seconds * 1000))
+
+    def _live_ttl_ms(self) -> int:
+        return max(1, math.ceil(self._live_ttl_seconds * 1000))
+
+    async def _expire_keys(self, ttl_ms: int) -> None:
+        await self._client.pexpire(self._events_key, ttl_ms)
+        await self._client.pexpire(self._meta_key, ttl_ms)
+        await self._client.pexpire(self._seq_key, ttl_ms)
+
+    async def _expire_live_keys(self) -> None:
+        await self._expire_keys(self._live_ttl_ms())
+
+    async def _expire_terminal_keys(self) -> None:
+        await self._expire_keys(self._ttl_ms())
+
+    async def _meta_done(self) -> tuple[bool, str | None]:
+        meta = await self._client.hgetall(self._meta_key)
+        done_raw = meta.get(b"done") or meta.get("done")
+        terminal_raw = meta.get(b"terminal_kind") or meta.get("terminal_kind")
+        done = _decode_redis_value(done_raw) == "1" if done_raw is not None else False
+        terminal_kind = (
+            _decode_redis_value(terminal_raw) if terminal_raw is not None else None
+        )
+        if done:
+            self._done = True
+            self._terminal_kind = terminal_kind
+        return done, terminal_kind
+
+    async def _trim_bounds(self) -> None:
+        """Trim oldest retained events until count and byte budgets are met."""
+        while int(await self._client.llen(self._events_key)) > self._max_events:
+            raw = await self._client.lpop(self._events_key)
+            if raw is None:
+                break
+            await self._client.hincrby(self._meta_key, "bytes", -_redis_value_len(raw))
+
+        while True:
+            raw_total = await self._client.hget(self._meta_key, "bytes")
+            total = int(_decode_redis_value(raw_total)) if raw_total is not None else 0
+            if total <= self._max_bytes:
+                break
+            # Retain at least one event so an oversized single event is still
+            # replayable; subsequent appends will evict it if needed.
+            if int(await self._client.llen(self._events_key)) <= 1:
+                break
+            raw = await self._client.lpop(self._events_key)
+            if raw is None:
+                break
+            await self._client.hincrby(self._meta_key, "bytes", -_redis_value_len(raw))
+
+    async def append(self, event: ServerSentEvent) -> None:
+        done, _terminal_kind = await self._meta_done()
+        if done:
+            return
+        seq = int(await self._client.incr(self._seq_key))
+        payload = _event_to_redis_json(seq, event)
+        encoded_len = len(payload.encode("utf-8"))
+        await self._client.rpush(self._events_key, payload)
+        await self._client.hincrby(self._meta_key, "bytes", encoded_len)
+        await self._trim_bounds()
+        await self._expire_live_keys()
+        await self._client.publish(self._channel_key, "append")
+
+    async def mark_done(
+        self, *, terminal_kind: str, now: float | None = None
+    ) -> None:
+        done, _existing = await self._meta_done()
+        if done:
+            return
+        done_at = now if now is not None else time.monotonic()
+        await self._client.hset(
+            self._meta_key,
+            mapping={
+                "done": "1",
+                "terminal_kind": terminal_kind,
+                "done_at": str(done_at),
+            },
+        )
+        await self._expire_terminal_keys()
+        self._done = True
+        self._terminal_kind = terminal_kind
+        await self._client.publish(self._channel_key, "done")
+
+    async def subscribe(self) -> ReplaySubscriptionHandle:
+        return RedisReplaySubscription(self)
+
+
+class RedisReplaySubscription:
+    """Subscriber cursor for a Redis-backed replay buffer."""
+
+    def __init__(self, buffer: RedisReplayLogBuffer) -> None:
+        self._buffer = buffer
+        self._next_seq = 1
+
+    async def _pending(self) -> list[ServerSentEvent]:
+        raw_events = await self._buffer._client.lrange(self._buffer._events_key, 0, -1)
+        out: list[ServerSentEvent] = []
+        max_seen = self._next_seq - 1
+        for raw in raw_events:
+            seq, event = _event_from_redis_json(raw)
+            if seq >= self._next_seq:
+                out.append(event)
+                max_seen = max(max_seen, seq)
+        self._next_seq = max_seen + 1
+        return out
+
+    async def events(self) -> AsyncIterator[ServerSentEvent]:
+        pubsub = self._buffer._client.pubsub()
+        await pubsub.subscribe(self._buffer._channel_key)
+        try:
+            while True:
+                pending = await self._pending()
+                if pending:
+                    for event in pending:
+                        yield event
+                    continue
+                done, _terminal_kind = await self._buffer._meta_done()
+                if done:
+                    return
+                await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=1.0,
+                )
+        finally:
+            await pubsub.unsubscribe(self._buffer._channel_key)
+            await pubsub.close()
+
+
 def _evict_expired(
     buffers: dict[UUID, ReplayBuffer],
     ttl_seconds: float,
@@ -251,6 +479,83 @@ class InMemoryReplayLogStore:
 
     async def evict(self, stream_id: UUID) -> None:
         self._buffers.pop(stream_id, None)
+
+
+class RedisReplayLogStore:
+    """Redis replay-log store shared across API workers."""
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        max_events: int,
+        max_bytes: int,
+        live_ttl_seconds: float,
+        key_prefix: str = "olune:stream",
+    ) -> None:
+        self._client = client
+        self._max_events = max_events
+        self._max_bytes = max_bytes
+        self._live_ttl_seconds = live_ttl_seconds
+        self._key_prefix = key_prefix
+
+    def _buffer(self, stream_id: UUID, *, ttl_seconds: float) -> RedisReplayLogBuffer:
+        return RedisReplayLogBuffer(
+            self._client,
+            stream_id,
+            ttl_seconds=ttl_seconds,
+            live_ttl_seconds=self._live_ttl_seconds,
+            max_events=self._max_events,
+            max_bytes=self._max_bytes,
+            key_prefix=self._key_prefix,
+        )
+
+    def _events_key(self, stream_id: UUID) -> str:
+        return f"{self._key_prefix}:replay:{stream_id}:events"
+
+    def _meta_key(self, stream_id: UUID) -> str:
+        return f"{self._key_prefix}:replay:{stream_id}:meta"
+
+    def _seq_key(self, stream_id: UUID) -> str:
+        return f"{self._key_prefix}:replay:{stream_id}:seq"
+
+    async def create(
+        self, stream_id: UUID, *, ttl_seconds: float, now: float | None = None
+    ) -> ReplayLogBuffer:
+        del now  # Redis key expiry, not an injected monotonic clock, drives TTL.
+        await self._client.delete(
+            self._events_key(stream_id),
+            self._meta_key(stream_id),
+            self._seq_key(stream_id),
+        )
+        await self._client.hset(
+            self._meta_key(stream_id),
+            mapping={"done": "0", "bytes": "0"},
+        )
+        buffer = self._buffer(stream_id, ttl_seconds=ttl_seconds)
+        await self._client.set(buffer._seq_key, "0", px=buffer._live_ttl_ms())
+        await buffer._expire_live_keys()
+        return buffer
+
+    async def get(
+        self, stream_id: UUID, *, ttl_seconds: float, now: float | None = None
+    ) -> ReplayLogBuffer | None:
+        del now  # Redis key expiry, not an injected monotonic clock, drives TTL.
+        exists = await self._client.exists(
+            self._events_key(stream_id), self._meta_key(stream_id)
+        )
+        if not exists:
+            return None
+        buffer = self._buffer(stream_id, ttl_seconds=ttl_seconds)
+        await buffer._meta_done()
+        return buffer
+
+    async def evict(self, stream_id: UUID) -> None:
+        await self._client.delete(
+            self._events_key(stream_id),
+            self._meta_key(stream_id),
+            self._seq_key(stream_id),
+        )
 
 
 _MEMORY_STORE = InMemoryReplayLogStore(_BUFFERS)

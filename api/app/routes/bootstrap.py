@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependency import current_user
+from app.config import get_settings
 from app.db.models import User
 from app.db.repositories import api_keys, conversations, preferences, usage, users
 from app.db.session import get_db
@@ -39,7 +40,13 @@ async def bootstrap(
     account = users.to_account_info(
         user, byok_enabled=has_byok_key, byok_masked_key=masked
     )
-    budget = await usage.get_current_budget(db, user.id, is_byok=has_byok_key)
+    settings = get_settings()
+    budget = await usage.get_current_budget(
+        db,
+        user.id,
+        is_byok=has_byok_key,
+        monthly_quota_usd=settings.usage_budget_usd,
+    )
     summaries = await conversations.list_summaries_for_user(db, user.id)
     prefs = await preferences.get_or_default(db, user.id)
     return BootstrapResponse(

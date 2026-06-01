@@ -38,6 +38,7 @@ Notable differences from the Anthropic adapter:
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncIterator
 from typing import Any, cast
@@ -50,6 +51,7 @@ from app.errors import AppError, ErrorEnvelope
 from app.providers._tool_markup import ToolMarkupSanitizer
 from app.providers.protocol import (
     AnswerDelta,
+    AttachmentPayload,
     ChatMessage,
     Complete,
     ProviderEvent,
@@ -57,7 +59,10 @@ from app.providers.protocol import (
     ReasoningDone,
     Sources,
     StatusUpdate,
+    ToolCall,
+    ToolResult,
     UsageUpdate,
+    text_with_attachment_fallback,
 )
 from app.providers.steering import steer_user_text
 from app.search.protocol import SearchProvider, SourceItem
@@ -105,6 +110,67 @@ _MAX_SEARCH_ROUNDS = 4
 # model can emit an arbitrarily long `query` argument; bound it so a runaway
 # value can't bloat the upstream request.
 _MAX_SEARCH_QUERY_CHARS = 512
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def _openai_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | None:
+    """Map a transient attachment into Chat Completions multimodal content."""
+    if attachment.data is None:
+        return None
+    encoded = _b64(attachment.data)
+    if attachment.media_type == "image":
+        return {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{attachment.mime_type};base64,{encoded}",
+            },
+        }
+    if attachment.media_type == "pdf":
+        return {
+            "type": "file",
+            "file": {
+                "filename": attachment.name,
+                "file_data": f"data:{attachment.mime_type};base64,{encoded}",
+            },
+        }
+    return None
+
+
+def _openai_user_content(
+    user_text: str,
+    attachments: list[AttachmentPayload] | None,
+) -> str | list[dict[str, Any]]:
+    """Build the current user content, including native attachment bytes."""
+    if not attachments:
+        return steer_user_text(user_text)
+
+    content: list[dict[str, Any]] = []
+    metadata_only: list[AttachmentPayload] = []
+    for attachment in attachments:
+        part = _openai_attachment_part(attachment)
+        if part is None:
+            metadata_only.append(attachment)
+        else:
+            content.append(part)
+
+    text = (
+        text_with_attachment_fallback(user_text, metadata_only)
+        if metadata_only
+        else user_text
+    )
+    prompt = steer_user_text(text)
+    if not content:
+        return prompt
+    content.append(
+        {
+            "type": "text",
+            "text": prompt or "Please analyze the attached file(s).",
+        }
+    )
+    return content
 
 
 def _safe_int(value: Any) -> int:
@@ -366,6 +432,7 @@ class OpenAIProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        attachments: list[AttachmentPayload] | None = None,
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
@@ -376,7 +443,9 @@ class OpenAIProvider:
         messages: list[dict[str, Any]] = [{"role": m.role, "content": m.text} for m in history]
         # Steer ONLY the current user turn (real-provider, outgoing request,
         # never persisted). History stays verbatim. See app/providers/steering.py.
-        messages.append({"role": "user", "content": steer_user_text(user_text)})
+        messages.append(
+            {"role": "user", "content": _openai_user_content(user_text, attachments)}
+        )
 
         # Optional provider hints, built CONDITIONALLY so we never send a
         # `reasoning_effort=None` or an empty `extra_body` to stock OpenAI.
@@ -460,10 +529,24 @@ class OpenAIProvider:
 
             # Run each requested search, append ONE assistant tool-call turn
             # (carrying every call) plus one tool-result turn per call.
-            yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="active")
-            results_by_call: list[tuple[_ToolCallAccumulator, list[SourceItem]]] = []
-            for call in calls:
+            results_by_call: list[
+                tuple[_ToolCallAccumulator, str, str, list[SourceItem], str | None]
+            ] = []
+            for i, call in enumerate(calls):
+                call_id = call.id or f"web_search_{round_index}_{i}"
                 query = _parse_query(call.arguments)
+                yield ToolCall(
+                    id=call_id,
+                    name="web_search",
+                    label="Search web",
+                    status="running",
+                    input={"query": query},
+                )
+            yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="active")
+            for i, call in enumerate(calls):
+                call_id = call.id or f"web_search_{round_index}_{i}"
+                query = _parse_query(call.arguments)
+                error: str | None = None
                 if not query.strip():
                     # Malformed / empty tool arguments: there's nothing to
                     # search. Skip the live backend call and feed an empty
@@ -481,13 +564,31 @@ class OpenAIProvider:
                         # model answers from its own knowledge.
                         _log.warning("web_search.backend_failed", error=str(exc))
                         items = []
-                results_by_call.append((call, items))
+                        error = "Search backend unavailable."
+                results_by_call.append((call, call_id, query, items, error))
                 accumulated_sources.extend(items)
             yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="done")
             # Emit the running deduped/renumbered set so citation ids stay
             # coherent. The handler keeps only the latest Sources, so emitting
             # per round with the full accumulated set is correct.
             yield Sources(items=_dedupe_and_renumber(accumulated_sources))
+            for _call, call_id, query, items, error in results_by_call:
+                yield ToolResult(
+                    tool_call_id=call_id,
+                    name="web_search",
+                    label="Search web",
+                    status="failed" if error else "succeeded",
+                    summary=(
+                        error
+                        if error
+                        else f"{len(items)} source{'s' if len(items) != 1 else ''}"
+                    ),
+                    output={
+                        "query": query,
+                        "results": [item.model_dump() for item in items],
+                    },
+                    error=error,
+                )
 
             messages.append(
                 {
@@ -495,22 +596,22 @@ class OpenAIProvider:
                     "content": None,
                     "tool_calls": [
                         {
-                            "id": call.id or f"web_search_{round_index}_{i}",
+                            "id": call_id,
                             "type": "function",
                             "function": {
                                 "name": "web_search",
                                 "arguments": call.arguments or "{}",
                             },
                         }
-                        for i, (call, _items) in enumerate(results_by_call)
+                        for call, call_id, _query, _items, _error in results_by_call
                     ],
                 }
             )
-            for i, (call, items) in enumerate(results_by_call):
+            for _call, call_id, _query, items, _error in results_by_call:
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": call.id or f"web_search_{round_index}_{i}",
+                        "tool_call_id": call_id,
                         "content": json.dumps(
                             {"results": [item.model_dump() for item in items]}
                         ),

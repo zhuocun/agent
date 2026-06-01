@@ -20,6 +20,7 @@ dependencies = [
     "opentelemetry-sdk>=1.42.1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
+    "redis>=6.4.0",
     "sentry-sdk[fastapi]>=2.0",
     "slowapi>=0.1.9",
     "sqlalchemy[asyncio]>=2.0.50",

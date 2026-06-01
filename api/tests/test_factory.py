@@ -74,6 +74,32 @@ def test_build_provider_deepseek_falls_back_to_openai_key(
     assert isinstance(p, OpenAIProvider)
 
 
+def test_build_provider_deepseek_override_does_not_use_openai_platform_key() -> None:
+    """Explicit DeepSeek routing from an OpenAI deployment needs a DeepSeek key."""
+    with pytest.raises(AppError) as exc_info:
+        build_provider(
+            Settings(provider_backend="openai", openai_api_key="oa"),
+            provider_id="deepseek",
+        )
+    err = exc_info.value
+    assert err.status_code == 500
+    assert err.envelope.code == "MISCONFIGURED"
+    assert "DEEPSEEK_API_KEY" in err.envelope.body
+
+
+def test_build_provider_openai_override_does_not_use_legacy_deepseek_fallback_key() -> None:
+    """A DeepSeek legacy fallback key in OPENAI_API_KEY is not an OpenAI key."""
+    with pytest.raises(AppError) as exc_info:
+        build_provider(
+            Settings(provider_backend="deepseek", openai_api_key="legacy-deepseek"),
+            provider_id="openai",
+        )
+    err = exc_info.value
+    assert err.status_code == 500
+    assert err.envelope.code == "MISCONFIGURED"
+    assert "OPENAI_API_KEY" in err.envelope.body
+
+
 def test_build_provider_deepseek_missing_key_raises_misconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

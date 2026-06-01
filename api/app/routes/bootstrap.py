@@ -16,53 +16,17 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.account_info import account_info_for_user, usable_provider_ids_for_user
 from app.auth.dependency import current_user
 from app.config import get_settings
 from app.db.models import User
-from app.db.repositories import api_keys, conversations, preferences, usage, users
+from app.db.repositories import conversations, preferences, usage
 from app.db.session import get_db
-from app.providers.tiers import (
-    active_byok_provider_id,
-    list_tiers,
-    platform_provider_usable,
-)
+from app.providers.tiers import list_tiers
 from app.schemas.bootstrap import BootstrapResponse
 from app.suggestions import list_suggestions
 
 router = APIRouter(prefix="/api", tags=["bootstrap"])
-
-_BYOK_ROUTABLE_PROVIDER_IDS = ("deepseek", "anthropic", "openai")
-_PLATFORM_ROUTABLE_PROVIDER_IDS = (*_BYOK_ROUTABLE_PROVIDER_IDS, "fake")
-
-
-async def _usable_provider_ids_for_user(
-    db: AsyncSession,
-    user: User,
-) -> set[str]:
-    """Providers currently callable by platform credentials or decryptable BYOK."""
-    settings = get_settings()
-    usable = {
-        provider_id
-        for provider_id in _PLATFORM_ROUTABLE_PROVIDER_IDS
-        if platform_provider_usable(provider_id, settings)
-    }
-    if user.is_anonymous:
-        return usable
-
-    for provider_id in _BYOK_ROUTABLE_PROVIDER_IDS:
-        if provider_id in usable:
-            continue
-        if (
-            await api_keys.get_decrypted_for_user(
-                db,
-                user_id=user.id,
-                provider=provider_id,
-            )
-            is not None
-        ):
-            usable.add(provider_id)
-    return usable
-
 
 @router.get("/bootstrap", response_model=BootstrapResponse)
 async def bootstrap(
@@ -70,15 +34,8 @@ async def bootstrap(
     db: AsyncSession = Depends(get_db),
 ) -> BootstrapResponse:
     settings = get_settings()
-    # Surface BYOK state only for the provider the active backend will actually
-    # use. A stored key for some other provider should not mark the current route
-    # as BYOK or exempt usage from platform budget.
-    active_provider = active_byok_provider_id(settings)
-    byok_row = await api_keys.get_for_user(db, user_id=user.id, provider=active_provider)
-    usable_provider_ids = await _usable_provider_ids_for_user(db, user)
-    has_byok_key = (not user.is_anonymous) and byok_row is not None
-    masked = byok_row.masked_key if has_byok_key and byok_row is not None else None
-    account = users.to_account_info(user, byok_enabled=has_byok_key, byok_masked_key=masked)
+    account = await account_info_for_user(db, user, settings)
+    usable_provider_ids = await usable_provider_ids_for_user(db, user, settings)
     prefs = await preferences.get_or_default(db, user.id)
     if prefs.retention_days is not None:
         await conversations.delete_older_than_for_user(
@@ -89,7 +46,7 @@ async def bootstrap(
     budget = await usage.get_current_budget(
         db,
         user.id,
-        is_byok=has_byok_key,
+        is_byok=account.byok_enabled,
         monthly_quota_usd=settings.usage_budget_usd,
     )
     summaries = await conversations.list_summaries_for_user(db, user.id)

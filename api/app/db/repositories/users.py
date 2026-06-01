@@ -20,7 +20,7 @@ from app.db.models import (
     User,
     Vote,
 )
-from app.schemas.account import AccountInfo
+from app.schemas.account import AccountByokKey, AccountInfo
 
 
 async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
@@ -76,6 +76,7 @@ def to_account_info(
     *,
     byok_enabled: bool = False,
     byok_masked_key: str | None = None,
+    byok_keys: list[AccountByokKey] | None = None,
 ) -> AccountInfo:
     """Map ORM User -> wire AccountInfo.
 
@@ -94,4 +95,5 @@ def to_account_info(
         plan_label=user.plan_label,
         byok_enabled=byok_enabled,
         byok_masked_key=byok_masked_key if byok_enabled else None,
+        byok_keys=byok_keys or [],
     )

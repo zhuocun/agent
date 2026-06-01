@@ -108,6 +108,7 @@ async def create_user_message(
     client_message_id: UUID,
     text: str,
     attachments: list[AttachmentPart] | None = None,
+    request_fingerprint: dict[str, Any] | None = None,
 ) -> Message:
     """Persist a user turn. Returns the row with `id` and `created_at` set.
 
@@ -125,6 +126,7 @@ async def create_user_message(
     msg = Message(
         conversation_id=conversation_id,
         client_message_id=client_message_id,
+        request_fingerprint=request_fingerprint,
         role="user",
         parts=parts,
         status=None,

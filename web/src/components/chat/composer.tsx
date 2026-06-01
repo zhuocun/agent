@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useId,
   useImperativeHandle,
@@ -188,9 +189,24 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const slashOptionPrefix = useId();
   const prevStreamingRef = useRef(isStreaming);
   const supportsAttachmentsRef = useRef(supportsAttachments);
+  const attachmentReadGenerationRef = useRef(0);
+
+  const clearAttachments = useCallback(() => {
+    attachmentReadGenerationRef.current += 1;
+    setAttachments([]);
+    setPendingAttachmentReads(0);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
 
   useEffect(() => {
     supportsAttachmentsRef.current = supportsAttachments;
+    if (supportsAttachments) return;
+    attachmentReadGenerationRef.current += 1;
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    window.setTimeout(() => {
+      setAttachments([]);
+      setPendingAttachmentReads(0);
+    }, 0);
   }, [supportsAttachments]);
 
   // Stop→Send settling pose: after a stream ends, hold the slot in a quiet
@@ -297,10 +313,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         requestAnimationFrame(autoGrow);
       }
     },
-    clearAttachments: () => {
-      setAttachments([]);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    },
+    clearAttachments,
     focus: () => {
       ref.current?.focus();
     },
@@ -337,6 +350,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const selected = Array.from(files).slice(0, slots);
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (selected.length === 0) return;
+    const generation = attachmentReadGenerationRef.current;
     setPendingAttachmentReads((current) => current + selected.length);
     void Promise.all(
       selected.map((file) =>
@@ -346,6 +360,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       ),
     )
       .then((picked) => {
+        if (attachmentReadGenerationRef.current !== generation) return;
         if (!supportsAttachmentsRef.current) return;
         setAttachments((current) => {
           const availableSlots = Math.max(0, MAX_ATTACHMENTS - current.length);
@@ -356,6 +371,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         });
       })
       .finally(() => {
+        if (attachmentReadGenerationRef.current !== generation) return;
         setPendingAttachmentReads((current) =>
           Math.max(0, current - selected.length),
         );

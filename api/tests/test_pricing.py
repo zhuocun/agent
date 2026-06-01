@@ -227,6 +227,8 @@ def test_build_attribution_uses_substituted_label_when_provided() -> None:
         substituted_display_label="Fallback Model X",
     )
     assert attr.served_model_label == "Fallback Model X"
+    assert attr.provider_id == "openai"
+    assert attr.provider_label == "OpenAI"
     assert attr.served_model_label != binding.tier.label
     assert attr.substitution is not None
     assert attr.substitution.reason_code == "provider_fallback"
@@ -239,6 +241,7 @@ def test_build_attribution_uses_substituted_label_when_provided() -> None:
         cost_confidence="exact",
     )
     assert attr_default.served_model_label == binding.model_label
+    assert attr_default.provider_id == binding.provider_id
     # The model label is distinct from the tier label, so this is non-trivial.
     assert binding.model_label != binding.tier.label
 

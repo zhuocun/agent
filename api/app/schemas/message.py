@@ -203,6 +203,8 @@ class ModelAttribution(CamelModel):
     requested_tier_id: ModelTierId
     served_tier_id: ModelTierId
     served_model_label: str
+    provider_id: str | None = None
+    provider_label: str | None = None
     is_byok: bool
     cost_usd: float
     cost_confidence: CostConfidence

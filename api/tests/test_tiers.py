@@ -22,6 +22,7 @@ from app.providers.tiers import (
     get_provider_route,
     is_known_tier,
     list_tiers,
+    platform_provider_usable,
     require_available_provider_route,
     resolve_served_tier,
 )
@@ -106,6 +107,29 @@ def test_get_binding_deepseek_backend_returns_canonical_deepseek_binding() -> No
     assert b.cache_read_per_m == 0.003625
     assert b.thinking is True
     assert b.reasoning_effort == "high"
+
+
+def test_deepseek_platform_availability_fallback_is_active_backend_only() -> None:
+    assert platform_provider_usable(
+        "deepseek",
+        Settings(provider_backend="deepseek", openai_api_key="legacy-compatible"),
+    )
+    assert not platform_provider_usable(
+        "deepseek",
+        Settings(provider_backend="openai", openai_api_key="openai-platform-key"),
+    )
+    assert not platform_provider_usable(
+        "openai",
+        Settings(provider_backend="deepseek", openai_api_key="legacy-compatible"),
+    )
+    assert platform_provider_usable(
+        "openai",
+        Settings(
+            provider_backend="deepseek",
+            deepseek_api_key="deepseek-platform-key",
+            openai_api_key="openai-platform-key",
+        ),
+    )
 
 
 def test_deepseek_per_tier_thinking_and_effort_config() -> None:

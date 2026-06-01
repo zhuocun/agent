@@ -31,6 +31,9 @@ def build_provider(
 ) -> Provider:
     """Return a Provider matching the configured or per-request backend."""
     s = settings if settings is not None else get_settings()
+    original_settings = s
+    original_backend = s.provider_backend
+    explicit_provider_override = provider_id is not None
     if provider_id is not None:
         s = s.model_copy(update={"provider_backend": provider_id})
     try:
@@ -54,7 +57,12 @@ def build_provider(
         # API, so we reuse OpenAIProvider with DeepSeek's built-in default
         # base_url. The key may come from DEEPSEEK_API_KEY or fall back to
         # OPENAI_API_KEY.
-        key = api_key or s.deepseek_key
+        platform_key = (
+            s.deepseek_api_key
+            if explicit_provider_override and original_backend != "deepseek"
+            else s.deepseek_key
+        )
+        key = api_key or platform_key
         if not key:
             raise AppError(
                 ErrorEnvelope(
@@ -89,7 +97,16 @@ def build_provider(
             )
         return AnthropicProvider(api_key=key)
     if s.provider_backend == "openai":
-        key = api_key or s.openai_api_key
+        platform_key = (
+            None
+            if (
+                explicit_provider_override
+                and original_backend == "deepseek"
+                and not original_settings.deepseek_api_key
+            )
+            else s.openai_api_key
+        )
+        key = api_key or platform_key
         if not key:
             raise AppError(
                 ErrorEnvelope(

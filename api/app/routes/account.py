@@ -19,14 +19,14 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.account_info import account_info_for_user
 from app.auth.dependency import current_user
 from app.config import get_settings
 from app.db.models import User
-from app.db.repositories import api_keys, audit_events, users
+from app.db.repositories import api_keys, audit_events
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
 from app.middleware.ratelimit import limiter
-from app.providers.tiers import active_byok_provider_id
 from app.schemas.account import AccountInfo
 from app.schemas.common import CamelModel
 
@@ -77,11 +77,7 @@ async def _current_account_info(
     user: User,
 ) -> AccountInfo:
     """Recompute AccountInfo from current DB state -- shared by PUT/DELETE."""
-    active_provider = active_byok_provider_id(get_settings())
-    row = await api_keys.get_for_user(db, user_id=user.id, provider=active_provider)
-    byok_enabled = (not user.is_anonymous) and row is not None
-    masked = row.masked_key if byok_enabled and row is not None else None
-    return users.to_account_info(user, byok_enabled=byok_enabled, byok_masked_key=masked)
+    return await account_info_for_user(db, user, get_settings())
 
 
 @router.put("/byok", response_model=AccountInfo)

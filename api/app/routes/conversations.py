@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
+import json
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -231,6 +233,21 @@ def _duplicate_in_flight() -> AppError:
     )
 
 
+def _idempotency_mismatch() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="IDEMPOTENCY_MISMATCH",
+            severity="error",
+            title="Conflicting duplicate request",
+            body=(
+                "A prior submission used this clientMessageId with different "
+                "request parameters. Send a new clientMessageId for the changed request."
+            ),
+        ),
+        status.HTTP_409_CONFLICT,
+    )
+
+
 def _attachments_unsupported() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -242,6 +259,41 @@ def _attachments_unsupported() -> AppError:
         ),
         status.HTTP_400_BAD_REQUEST,
     )
+
+
+def _request_fingerprint(
+    body: SendMessageRequest,
+    *,
+    provider_id: str,
+) -> dict[str, object]:
+    """Stable replay guard for a normal user-message submission.
+
+    Store only a digest: the message text already lives in `parts`, and raw
+    attachment payload bytes must never be duplicated in an idempotency column.
+    """
+    payload = {
+        "tierId": body.tier_id,
+        "providerId": provider_id,
+        "text": body.text,
+        "webSearch": bool(body.web_search),
+        "regenerate": bool(body.regenerate),
+        "editMessageId": body.edit_message_id,
+        "attachments": [
+            {
+                "id": attachment.id,
+                "name": attachment.name,
+                "mediaType": attachment.media_type,
+                "mimeType": attachment.mime_type,
+                "sizeBytes": attachment.size_bytes,
+            }
+            for attachment in body.attachments
+        ],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return {
+        "v": 1,
+        "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
 
 
 def _attachment_invalid(body: str) -> AppError:
@@ -427,7 +479,19 @@ async def create_conversation(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationSchema:
-    _resolve_binding(body.selected_tier_id, body.provider_id, get_settings())
+    settings = get_settings()
+    selected_provider_id = _selected_provider_id(body.provider_id, settings)
+    binding = _resolve_binding(body.selected_tier_id, body.provider_id, settings)
+    resolved_api_key: str | None = None
+    if not user.is_anonymous:
+        resolved_api_key = await api_keys_repo.get_decrypted_for_user(
+            db, user_id=user.id, provider=binding.provider_id
+        )
+    _ensure_provider_usable(
+        provider_id=selected_provider_id,
+        settings=settings,
+        api_key=resolved_api_key,
+    )
 
     if body.is_temporary:
         synthetic_id = uuid4()
@@ -610,6 +674,7 @@ async def _maybe_replay(
     db: AsyncSession,
     conversation_id: UUID,
     client_uuid: UUID,
+    request_fingerprint: dict[str, object] | None = None,
 ) -> EventSourceResponse | None:
     """If a prior user message + completed assistant row exist, return a replay.
 
@@ -629,9 +694,19 @@ async def _maybe_replay(
        of "one assistant per user message" still holds for legacy data, so
        the fallback is reliable for those rows.
     """
-    prior_user_msg = await messages_repo.get_by_client_message_id(db, conversation_id, client_uuid)
+    prior_user_msg = await messages_repo.get_by_client_message_id(
+        db,
+        conversation_id,
+        client_uuid,
+    )
     if prior_user_msg is None:
         return None
+    if (
+        request_fingerprint is not None
+        and prior_user_msg.request_fingerprint is not None
+        and prior_user_msg.request_fingerprint != request_fingerprint
+    ):
+        raise _idempotency_mismatch()
 
     # Primary path: column-based lookup. Indexed; O(log n).
     assistant_row = await messages_repo.get_assistant_for_user_message(
@@ -754,6 +829,10 @@ async def send_message(
     selected_provider_id = _selected_provider_id(body.provider_id, settings)
     # Tier/provider validation.
     binding = _resolve_binding(body.tier_id, body.provider_id, settings)
+    request_fingerprint = _request_fingerprint(
+        body,
+        provider_id=selected_provider_id,
+    )
 
     # client_message_id must be a UUID.
     try:
@@ -803,13 +882,17 @@ async def send_message(
             raise not_found("conversation")
 
         # Idempotency: prior user message for this client_message_id?
-        # Skipped for regenerate / edit paths — those use a fresh clientMessageId
-        # by FE contract; on the off chance an old id is reused, we still want
-        # the regen/edit semantics over a stale replay. This must run before the
-        # budget gate: replaying an already-billed response must not be blocked
-        # just because the original turn consumed the last allowance.
-        if not body.regenerate and body.edit_message_id is None:
-            replay = await _maybe_replay(db, conversation_id, client_uuid)
+        # Regenerate reuses an existing user row and the FE mints a fresh id, so
+        # it has no persisted client_message_id row to replay. Normal sends and
+        # edits both insert a user row; exact fingerprint matches can safely
+        # replay before budget/provider gates, while mismatches get a 409.
+        if not body.regenerate:
+            replay = await _maybe_replay(
+                db,
+                conversation_id,
+                client_uuid,
+                request_fingerprint,
+            )
             if replay is not None:
                 return replay
 
@@ -875,6 +958,7 @@ async def send_message(
         ) = await _prepare_regenerate(
             db=db,
             conversation_id=conversation_id,
+            supports_attachments=binding.supports_attachments,
         )
     elif body.edit_message_id is not None:
         user_message_id, history, provider_user_text = await _prepare_edit(
@@ -884,6 +968,7 @@ async def send_message(
             client_uuid=client_uuid,
             new_text=body.text,
             attachments=body.attachments,
+            request_fingerprint=request_fingerprint,
         )
     elif is_temp:
         user_message_id = uuid4()
@@ -898,6 +983,7 @@ async def send_message(
                 client_message_id=client_uuid,
                 text=body.text,
                 attachments=body.attachments,
+                request_fingerprint=request_fingerprint,
             )
             # A new turn was accepted — bump the conversation so it rises in
             # the sidebar. Same session/transaction as the user message, so it
@@ -914,7 +1000,12 @@ async def send_message(
             # the replay path — if the winner has already produced an assistant
             # row, we replay it; otherwise return 409 DUPLICATE_IN_FLIGHT.
             await db.rollback()
-            replay = await _maybe_replay(db, conversation_id, client_uuid)
+            replay = await _maybe_replay(
+                db,
+                conversation_id,
+                client_uuid,
+                request_fingerprint,
+            )
             if replay is not None:
                 return replay
             raise _duplicate_in_flight() from None
@@ -1042,6 +1133,7 @@ async def send_message(
             is_initial=is_initial,
             user_id=user.id,
             api_key=resolved_api_key,
+            provider_id=selected_provider_id,
             stream_id=stream_id,
             router_substitution=router_substitution,
             web_search=effective_web_search,
@@ -1078,6 +1170,7 @@ async def send_message(
             is_initial=is_initial,
             user_id=user.id,
             api_key=resolved_api_key,
+            provider_id=selected_provider_id,
             stream_id=stream_id,
             router_substitution=router_substitution,
             web_search=effective_web_search,
@@ -1219,6 +1312,7 @@ async def _prepare_regenerate(
     *,
     db: AsyncSession,
     conversation_id: UUID,
+    supports_attachments: bool,
 ) -> tuple[UUID, list[ProviderChatMessage], str, list[AttachmentPayload]]:
     """Drop trailing assistant(s) and reuse the existing trailing user message.
 
@@ -1235,6 +1329,9 @@ async def _prepare_regenerate(
             "INVALID_INPUT",
             "Cannot regenerate: no prior user message in this conversation.",
         )
+    attachments = _attachment_payloads_from_parts(last_user.parts)
+    if attachments and not supports_attachments:
+        raise _attachments_unsupported()
     # Drop trailing assistant(s). Returns 0 if the last message is already a
     # user message (no assistant to drop) — that's still a valid regen (e.g.
     # a prior turn was stopped mid-stream and never persisted assistant).
@@ -1261,7 +1358,6 @@ async def _prepare_regenerate(
             if part.get("type") == "text":
                 chunks.append(str(part.get("text", "")))
         user_text = "".join(chunks)
-    attachments = _attachment_payloads_from_parts(last_user.parts)
     return last_user.id, full_history, user_text, attachments
 
 
@@ -1273,6 +1369,7 @@ async def _prepare_edit(
     client_uuid: UUID,
     new_text: str,
     attachments: list[AttachmentPart] | None = None,
+    request_fingerprint: dict[str, object] | None = None,
 ) -> tuple[UUID, list[ProviderChatMessage], str]:
     """Truncate at the edit target and insert a replacement user message.
 
@@ -1318,6 +1415,7 @@ async def _prepare_edit(
             client_message_id=client_uuid,
             text=new_text,
             attachments=attachments,
+            request_fingerprint=request_fingerprint,
         )
         # Edit-and-rerun accepts a new turn, so bump the conversation to the
         # top of the sidebar. Same session as the replacement user message;

@@ -179,6 +179,24 @@ async def test_get_invalid_uuid_returns_400(client: AsyncClient) -> None:
     assert body["error"]["code"] == "INVALID_INPUT"
 
 
+async def test_create_conversation_rejects_unavailable_provider_before_insert(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _bootstrap_user_id(client, session_factory)
+
+    response = await client.post(
+        "/api/conversations",
+        json={"selectedTierId": "smart", "providerId": "openai"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "PROVIDER_UNAVAILABLE"
+    async with session_factory() as session:
+        rows = (await session.execute(select(Conversation))).scalars().all()
+        assert rows == []
+
+
 async def test_search_conversations_matches_owned_title(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

@@ -60,6 +60,7 @@ export function AttributionRow({
   const isEstimate = attribution.costConfidence === "estimate";
   const { substitution, isByok, servedModelLabel } = attribution;
   const servedTierId = assertServedTier(attribution.servedTierId);
+  const providerLabel = attribution.providerLabel?.trim() || undefined;
 
   // The "<$0.0001" floor already reads as an upper bound, so don't stack a
   // "~" estimate marker on top of it ("~<$0.0001" parses as two operators).
@@ -72,6 +73,13 @@ export function AttributionRow({
   // the genuine-fallback case keeps a distinct model name and shows both.
   // Mirrors the model-mode-picker's showEffort dedupe.
   const showTier = tierLabel !== servedModelLabel;
+  const showProvider =
+    providerLabel !== undefined &&
+    providerLabel !== servedModelLabel &&
+    providerLabel !== tierLabel;
+  const byokLabel = providerLabel
+    ? `Your ${providerLabel} key`
+    : "Your API key";
 
   // Brief: byline reads as typography, not a stack of chips. Substitution
   // collapses into a leading muted clause ("substituted from Pro: …"), and the
@@ -84,9 +92,10 @@ export function AttributionRow({
 
   const triggerLabel = [
     `served by ${servedModelLabel}`,
+    providerLabel ? `provider ${providerLabel}` : null,
     `${tierLabel} tier`,
     costText,
-    isByok ? "billed to your API key" : null,
+    isByok ? `billed to ${byokLabel.toLowerCase()}` : null,
   ]
     .filter(Boolean)
     .join(", ");
@@ -115,6 +124,12 @@ export function AttributionRow({
             aria-hidden
             className="size-3.5 opacity-70 transition-transform data-[popup-open]:rotate-180"
           />
+          {showProvider ? (
+            <>
+              {Dot}
+              <span>{providerLabel}</span>
+            </>
+          ) : null}
           {showTier ? (
             <>
               {Dot}
@@ -144,13 +159,10 @@ export function AttributionRow({
         // Rendered INLINE (Key glyph + muted text, no filled background) so the
         // byline carries zero filled chrome at rest — matching the substitution
         // clause's treatment. A lone filled pill next to a bare typographic line
-        // was the regression to avoid (Opp 4). Brief asked for "Key icon +
-        // provider name"; `ModelAttribution` has no provider field today (see
-        // web/src/lib/types.ts), so the label degrades to the generic "Your API
-        // key" until that data is wired through.
+        // was the regression to avoid (Opp 4).
         <span className="inline-flex items-center gap-1 text-muted-foreground/80">
           <Key aria-hidden className="size-3" />
-          <span>Your API key</span>
+          <span>{byokLabel}</span>
         </span>
       ) : null}
     </div>

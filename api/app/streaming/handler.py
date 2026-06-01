@@ -227,6 +227,8 @@ async def _autogen_title(
     conversation_id: UUID,
     user_text: str,
     session_factory: async_sessionmaker[AsyncSession],
+    provider_id: str,
+    api_key: str | None,
 ) -> None:
     """Detached task: call the fast tier, write `conversation.title`.
 
@@ -240,16 +242,18 @@ async def _autogen_title(
     exception.
     """
     try:
-        binding = get_binding("fast")
+        settings = get_settings()
+        binding = get_binding("fast", settings=settings, provider_id=provider_id)
         if binding is None:
             # Registry misconfigured — log and bail. Title stays "New chat".
-            log.warning("autogen_title.no_fast_binding")
+            log.warning("autogen_title.no_fast_binding", extra={"provider_id": provider_id})
             return
-        provider = build_provider()
+        provider = build_provider(settings, provider_id=provider_id, api_key=api_key)
         title = await provider.complete(
             model_id=binding.model_id,
             history=[],
             user_text=_TITLE_AUTOGEN_PROMPT + user_text,
+            api_key=api_key,
         )
         # Strip surrounding whitespace/quotes/trailing period defensively —
         # providers sometimes ignore "no quotes" instructions.
@@ -285,6 +289,7 @@ async def stream_and_persist(
     is_initial: bool = True,
     user_id: UUID | None = None,
     api_key: str | None = None,
+    provider_id: str | None = None,
     stream_id: UUID | None = None,
     router_substitution: SubstitutionReasonCode | None = None,
     web_search: bool = False,
@@ -345,6 +350,7 @@ async def stream_and_persist(
     search_items: list[SourceItem] = []
     tool_parts: list[dict[str, Any]] = []
     is_byok_turn = api_key is not None
+    runtime_provider_id = provider_id or binding.provider_id
     # Substitution metadata threaded into build_attribution(...). Two sources
     # feed it, with provider-side winning (see below + the docstring):
     #  1. Router-side (auto-routing): seeded here from `router_substitution`.
@@ -638,6 +644,8 @@ async def stream_and_persist(
                     cost_confidence="estimate",
                     is_byok=is_byok_turn,
                     tier_id=binding.tier.id,
+                    provider_id=attribution.provider_id,
+                    provider_label=attribution.provider_label,
                 )
                 return  # No terminal on disconnect (socket closed).
 
@@ -801,6 +809,8 @@ async def stream_and_persist(
                         conversation_id=conversation_id,
                         user_text=user_text,
                         session_factory=_derive_session_factory(db),
+                        provider_id=runtime_provider_id,
+                        api_key=api_key,
                     )
                 )
                 _BG_TASKS.add(task)
@@ -827,6 +837,8 @@ async def stream_and_persist(
             cost_confidence="exact",
             is_byok=is_byok_turn,
             tier_id=binding.tier.id,
+            provider_id=attribution.provider_id,
+            provider_label=attribution.provider_label,
             message_id=terminal_message_id,
         )
         yield encode_terminal(
@@ -944,6 +956,7 @@ async def run_detached_producer(
     is_initial: bool = True,
     user_id: UUID | None = None,
     api_key: str | None = None,
+    provider_id: str | None = None,
     stream_id: UUID | None = None,
     router_substitution: SubstitutionReasonCode | None = None,
     web_search: bool = False,
@@ -990,6 +1003,7 @@ async def run_detached_producer(
                 is_initial=is_initial,
                 user_id=user_id,
                 api_key=api_key,
+                provider_id=provider_id,
                 stream_id=stream_id,
                 router_substitution=router_substitution,
                 web_search=web_search,

@@ -177,6 +177,43 @@ async def test_bootstrap_ignores_corrupt_byok_for_provider_availability(
     assert options["openai"]["status"] == "unavailable"
 
 
+async def test_bootstrap_active_byok_state_requires_decryptable_key(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    upgrade = await client.post(
+        "/api/auth/upgrade",
+        json={"email": "u@example.com", "password": "hunter2hunter2"},
+    )
+    assert upgrade.status_code == 200
+    put = await client.put(
+        "/api/account/byok",
+        json={"provider": "deepseek", "apiKey": "sk-deepseek-fake-12345678"},
+    )
+    assert put.status_code == 200
+
+    async with session_factory() as session:
+        row = (await session.execute(select(ApiKey))).scalar_one()
+        row.ciphertext = "not-valid-base64!!!"
+        await session.commit()
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.status_code == 200
+    account = boot.json()["account"]
+    assert account["byokEnabled"] is False
+    assert account.get("byokMaskedKey") is None
+    assert account["byokKeys"] == [
+        {
+            "providerId": "deepseek",
+            "providerLabel": "DeepSeek",
+            "maskedKey": "sk-...5678",
+            "usable": False,
+        }
+    ]
+    assert boot.json()["usage"]["isByok"] is False
+
+
 async def test_bootstrap_does_not_mark_fake_byok_available_in_production(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

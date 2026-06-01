@@ -63,6 +63,8 @@ def _b64(data: bytes) -> str:
 
 def _anthropic_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | None:
     """Map a transient attachment into Anthropic Messages content."""
+    if attachment.media_type == "text":
+        return None
     if attachment.data is None:
         return None
     source = {
@@ -74,8 +76,6 @@ def _anthropic_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] 
         return {"type": "image", "source": source}
     if attachment.media_type == "pdf":
         return {"type": "document", "source": source}
-    if attachment.media_type == "text":
-        return None
     return None
 
 
@@ -101,7 +101,11 @@ def _anthropic_user_content(
     text = (
         text_with_attachment_fallback(user_text, transcript_attachments)
         if transcript_attachments
-        else user_text
+        else (
+            user_text
+            if user_text.strip()
+            else "Please analyze the attached file(s)."
+        )
     )
     prompt = steer_user_text(text)
     if not content:

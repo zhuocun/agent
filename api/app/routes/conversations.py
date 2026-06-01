@@ -308,6 +308,7 @@ def _request_fingerprint(
     Store only a digest: the message text already lives in `parts`, and raw
     attachment payload bytes must never be duplicated in an idempotency column.
     """
+    payload_hashes = [_attachment_payload_sha256(attachment) for attachment in body.attachments]
     payload = {
         "tierId": body.tier_id,
         "providerId": provider_id,
@@ -330,7 +331,59 @@ def _request_fingerprint(
     return {
         "v": 1,
         "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        **(
+            {"attachmentPayloadSha256": payload_hashes}
+            if any(payload_hash is not None for payload_hash in payload_hashes)
+            else {}
+        ),
     }
+
+
+def _attachment_payload_sha256(attachment: AttachmentPart) -> str | None:
+    encoded: str | None
+    if attachment.data_url is not None:
+        encoded = (
+            attachment.data_url.split(",", 1)[1]
+            if attachment.data_url.startswith("data:") and "," in attachment.data_url
+            else attachment.data_url
+        )
+    else:
+        encoded = attachment.content_base64
+    if encoded is None:
+        return None
+    try:
+        material = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, binascii.Error):
+        material = encoded.encode("utf-8", errors="surrogatepass")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _request_fingerprints_match(
+    stored: dict[str, object],
+    incoming: dict[str, object],
+) -> bool:
+    if stored == incoming:
+        return True
+    if stored.get("v") != incoming.get("v") or stored.get("sha256") != incoming.get("sha256"):
+        return False
+
+    stored_hashes = stored.get("attachmentPayloadSha256")
+    incoming_hashes = incoming.get("attachmentPayloadSha256")
+    if not isinstance(stored_hashes, list) or not isinstance(incoming_hashes, list):
+        # Metadata-only retries omit transient payloads, and legacy stored
+        # fingerprints have no payload digest. The metadata digest above still
+        # has to match exactly.
+        return True
+    if len(stored_hashes) != len(incoming_hashes):
+        return False
+    for stored_hash, incoming_hash in zip(stored_hashes, incoming_hashes, strict=True):
+        if (
+            isinstance(stored_hash, str)
+            and isinstance(incoming_hash, str)
+            and stored_hash != incoming_hash
+        ):
+            return False
+    return True
 
 
 async def _replay_buffer_events(
@@ -426,6 +479,13 @@ def _decode_attachment_payloads(
             raise _attachment_invalid("Attachment sizeBytes must match payload size.")
         if len(data) > max_bytes:
             raise _attachment_invalid(f"Each attachment must be {max_bytes} bytes or smaller.")
+        extracted_text = extract_attachment_text(
+            media_type=attachment.media_type,
+            mime_type=attachment.mime_type,
+            data=data,
+        )
+        if attachment.media_type == "text" and extracted_text is None:
+            raise _attachment_invalid("Text attachment could not be decoded.")
         payloads.append(
             AttachmentPayload(
                 id=attachment.id,
@@ -434,11 +494,7 @@ def _decode_attachment_payloads(
                 mime_type=attachment.mime_type,
                 size_bytes=attachment.size_bytes,
                 data=data,
-                extracted_text=extract_attachment_text(
-                    media_type=attachment.media_type,
-                    mime_type=attachment.mime_type,
-                    data=data,
-                ),
+                extracted_text=extracted_text,
             )
         )
     return payloads
@@ -816,7 +872,10 @@ async def _maybe_replay(
     if (
         request_fingerprint is not None
         and prior_user_msg.request_fingerprint is not None
-        and prior_user_msg.request_fingerprint != request_fingerprint
+        and not _request_fingerprints_match(
+            prior_user_msg.request_fingerprint,
+            request_fingerprint,
+        )
     ):
         raise _idempotency_mismatch()
 
@@ -1121,6 +1180,40 @@ async def send_message(
             max_bytes=settings.attachment_max_bytes,
         )
 
+    provider = build_provider(
+        settings,
+        provider_id=body.provider_id,
+        api_key=resolved_api_key,
+    )
+
+    # Claim the single active stream BEFORE mutating message history. The row is
+    # still in the current transaction, so later validation/insert failures roll
+    # it back; successful non-temporary branches commit it together with the user
+    # message/history mutation below.
+    stream_id: UUID | None = None
+    if not is_temp:
+        existing_active = await streams_repo.get_active_for_conversation(
+            db, conversation_id=conversation_id
+        )
+        if existing_active is not None:
+            raise _stream_in_progress()
+        try:
+            stream_row = await streams_repo.create_stream(db, conversation_id=conversation_id)
+        except streams_repo.ActiveStreamExistsError as exc:
+            await db.rollback()
+            if not body.regenerate:
+                replay = await _maybe_replay(
+                    db,
+                    conversation_id,
+                    client_uuid,
+                    request_fingerprint,
+                    request,
+                )
+                if replay is not None:
+                    return replay
+            raise _stream_in_progress() from exc
+        stream_id = stream_row.id
+
     # Branch by mode:
     #   regenerate -> drop trailing assistant(s), reuse existing user message
     #   editMessageId -> truncate from that user message inclusive, insert new
@@ -1193,12 +1286,6 @@ async def send_message(
         user_message_id = user_msg_row.id
         provider_user_text = body.text
 
-    provider = build_provider(
-        settings,
-        provider_id=body.provider_id,
-        api_key=resolved_api_key,
-    )
-
     # Auto-tier routing. When the user picked `auto`, run the v0 complexity
     # heuristic (providers/router.py) to choose the concrete tier that actually
     # serves + bills this turn. We rebind `binding` to the routed tier so:
@@ -1240,38 +1327,10 @@ async def send_message(
         if routed.is_downgrade and routed_tier_id == routed.tier_id:
             router_substitution = "auto_downgrade"
 
-    # Durable stream lifecycle (PRD 04 §5.1). Persist an `active` stream row for
-    # every NON-temporary turn (default / regenerate / edit). The id is threaded
-    # into `stream_and_persist`, which transitions it to done / stopped / error
-    # and links the assistant `message_id`. Temporary chats persist nothing, so
-    # they get no stream row and pass `stream_id=None`. Committed now (its own
-    # statement on the request session) so the row is visible to a concurrent
-    # `POST /{id}/stop` before the turn finishes.
-    # Concurrency guard: at most ONE active stream per conversation. Covers all
-    # three non-temporary paths (default / regenerate / edit) since they all
-    # converge here before stream creation. Two layers:
-    #  1. Fast precheck — `get_active_for_conversation` rejects the common case
-    #     (a visibly in-flight turn) with 409 before doing any work. A turn that
-    #     completed / stopped / errored is no longer `active`, so the legitimate
-    #     sequential next turn passes.
-    #  2. Durable guard — the partial unique index
-    #     (`ix_stream_conversation_active_unique`) catches the true race where
-    #     two concurrent submits both pass the precheck; `create_stream` raises
-    #     `ActiveStreamExistsError`, which we map to the same 409.
-    stream_id: UUID | None = None
-    if not is_temp:
-        existing_active = await streams_repo.get_active_for_conversation(
-            db, conversation_id=conversation_id
-        )
-        if existing_active is not None:
-            raise _stream_in_progress()
-        try:
-            stream_row = await streams_repo.create_stream(db, conversation_id=conversation_id)
-        except streams_repo.ActiveStreamExistsError as exc:
-            await db.rollback()
-            raise _stream_in_progress() from exc
-        stream_id = stream_row.id
-        await db.commit()
+    # Durable stream lifecycle (PRD 04 §5.1). The active row was claimed before
+    # message-history mutation and committed by the accepted branch above. The id
+    # is threaded into `stream_and_persist`, which transitions it to done /
+    # stopped / error and links the assistant `message_id`.
 
     # `resolved_api_key` was resolved earlier (before the budget gate) so the
     # cost cap could distinguish platform-key vs BYOK turns; it is threaded

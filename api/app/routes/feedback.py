@@ -18,15 +18,17 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependency import current_user
+from app.config import get_settings
 from app.db.models import User
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import votes as votes_repo
 from app.db.session import get_db
 from app.errors import not_found
+from app.middleware.ratelimit import limiter
 from app.schemas.common import CamelModel, Feedback
 
 router = APIRouter(prefix="/api/messages", tags=["feedback"])
@@ -42,9 +44,12 @@ class FeedbackRequest(CamelModel):
 
 
 @router.post("/{message_id}/feedback", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(lambda: get_settings().rate_limit_messages)
 async def post_feedback(
     message_id: UUID,
     body: FeedbackRequest,
+    request: Request,
+    response: Response,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:

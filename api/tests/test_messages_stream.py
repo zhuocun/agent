@@ -9,16 +9,18 @@ the disconnect-detect path is exercised manually in dev.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Conversation, Message, User
+from app.db.models import Conversation, Message, Stream, User
+from app.db.repositories import streams as streams_repo
 from app.providers.protocol import (
     AnswerDelta,
     ChatMessage,
@@ -367,6 +369,66 @@ async def test_attachment_idempotent_replay_accepts_metadata_only_retry(
         assert len(rows) == 2
 
 
+async def test_attachment_idempotency_rejects_changed_payload_digest(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    client_msg_id = str(uuid4())
+    first = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": client_msg_id,
+            "tierId": "fast",
+            "text": "please read this",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-1",
+                    "name": "paper.pdf",
+                    "mediaType": "pdf",
+                    "mimeType": "application/pdf",
+                    "sizeBytes": 5,
+                    "dataUrl": "data:application/pdf;base64,aGVsbG8=",
+                }
+            ],
+        },
+    )
+    assert first[-1][0] == "terminal"
+
+    changed = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": client_msg_id,
+            "tierId": "fast",
+            "text": "please read this",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-1",
+                    "name": "paper.pdf",
+                    "mediaType": "pdf",
+                    "mimeType": "application/pdf",
+                    "sizeBytes": 5,
+                    "dataUrl": "data:application/pdf;base64,SEVMTE8=",
+                }
+            ],
+        },
+    )
+    assert changed.status_code == 409
+    assert changed.json()["error"]["code"] == "IDEMPOTENCY_MISMATCH"
+
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert len(rows) == 2
+        user_row = next(row for row in rows if row.role == "user")
+        assert "attachmentPayloadSha256" in (user_row.request_fingerprint or {})
+
+
 async def test_send_message_with_attachment_rejects_mismatched_payload_size(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
@@ -401,6 +463,155 @@ async def test_send_message_with_attachment_rejects_mismatched_payload_size(
     async with session_factory() as session:
         rows = (await session.execute(select(Message))).scalars().all()
         assert rows == []
+
+
+async def test_send_message_rejects_unextractable_text_attachment(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    binary_text = b"a\x00b\x00c\x00d\x00"
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "fast",
+            "text": "please read this",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-text-binary",
+                    "name": "notes.txt",
+                    "mediaType": "text",
+                    "mimeType": "text/plain",
+                    "sizeBytes": len(binary_text),
+                    "contentBase64": base64.b64encode(binary_text).decode("ascii"),
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "INVALID_ATTACHMENT"
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert rows == []
+
+
+async def test_send_message_rejects_unsupported_image_attachment_mime(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "fast",
+            "text": "please read this",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-svg",
+                    "name": "vector.svg",
+                    "mediaType": "image",
+                    "mimeType": "image/svg+xml",
+                    "sizeBytes": 11,
+                    "dataUrl": "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_ATTACHMENT"
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert rows == []
+
+
+async def test_active_stream_rejects_before_persisting_user_message(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    async with session_factory() as session:
+        await streams_repo.create_stream(session, conversation_id=UUID(conv_id))
+        await session.commit()
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"clientMessageId": str(uuid4()), "tierId": "smart", "text": "blocked"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "STREAM_IN_PROGRESS"
+    async with session_factory() as session:
+        messages = (await session.execute(select(Message))).scalars().all()
+        streams = (await session.execute(select(Stream))).scalars().all()
+        assert messages == []
+        assert len(streams) == 1
+
+
+async def test_active_stream_unique_loss_same_client_id_uses_idempotency_path(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.db.repositories import messages as messages_repo
+    from app.routes import conversations as conversation_routes
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    client_msg_id = str(uuid4())
+    original_create_stream = streams_repo.create_stream
+
+    async def _lose_to_matching_request(
+        db: AsyncSession,
+        *,
+        conversation_id: UUID,
+    ) -> Stream:
+        del db
+        async with session_factory() as winner_session:
+            await messages_repo.create_user_message(
+                db=winner_session,
+                conversation_id=conversation_id,
+                client_message_id=UUID(client_msg_id),
+                text="race",
+            )
+            await original_create_stream(winner_session, conversation_id=conversation_id)
+            await winner_session.commit()
+        raise streams_repo.ActiveStreamExistsError(str(conversation_id))
+
+    monkeypatch.setattr(
+        conversation_routes.streams_repo,
+        "create_stream",
+        _lose_to_matching_request,
+    )
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"clientMessageId": client_msg_id, "tierId": "smart", "text": "race"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "DUPLICATE_IN_FLIGHT"
+    async with session_factory() as session:
+        messages = (await session.execute(select(Message))).scalars().all()
+        streams = (await session.execute(select(Stream))).scalars().all()
+        assert [message.client_message_id for message in messages] == [UUID(client_msg_id)]
+        assert len(streams) == 1
 
 
 # Idempotency ------------------------------------------------------------------

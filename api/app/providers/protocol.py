@@ -58,8 +58,9 @@ def text_with_attachment_fallback(
     """Append provider-neutral attachment metadata/transcripts to a prompt."""
     if not attachments:
         return user_text
+    prompt_text = user_text if user_text.strip() else "Please analyze the attached file(s)."
     lines = [
-        user_text,
+        prompt_text,
         "",
         "Attached files for this turn "
         "(raw bytes are request-only and are not stored):",

@@ -61,7 +61,9 @@ def test_pdf_flate_stream_inflation_is_capped() -> None:
 
 def test_supported_attachment_type_matrix() -> None:
     assert is_supported_attachment_type("image", "image/png") is True
+    assert is_supported_attachment_type("image", "image/jpeg") is True
     assert is_supported_attachment_type("pdf", "application/pdf") is True
     assert is_supported_attachment_type("text", "text/markdown") is True
     assert is_supported_attachment_type("text", "application/json") is True
+    assert is_supported_attachment_type("image", "image/svg+xml") is False
     assert is_supported_attachment_type("pdf", "text/plain") is False

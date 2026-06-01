@@ -104,6 +104,7 @@ function PublicHeader() {
       <div className="ml-auto flex items-center gap-1">
         <ThemeToggle />
         <Button
+          nativeButton={false}
           render={<Link href="/" />}
           variant="secondary"
           className="h-9 rounded-full px-3.5 text-sm"
@@ -267,6 +268,7 @@ function EmptyState({ title, body }: { title: string; body: string }) {
         <p className="mx-auto max-w-sm text-sm text-muted-foreground">{body}</p>
       </div>
       <Button
+        nativeButton={false}
         render={<Link href="/" />}
         className="h-10 rounded-full px-4 text-sm"
       >

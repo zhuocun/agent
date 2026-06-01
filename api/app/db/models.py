@@ -24,6 +24,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     text,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -95,7 +96,7 @@ class Preferences(Base):
     send_on_enter: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     auto_expand_reasoning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     telemetry_enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default=text("1")
+        Boolean, nullable=False, default=True, server_default=true()
     )
     # NULL means "retain forever"; non-NULL values are constrained by the API
     # schema/repository to the currently supported short windows.

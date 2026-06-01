@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState, type JSX } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+} from "react";
 import { Key, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -104,16 +112,7 @@ export function ByokForm({
     setConfirmingDelete(false);
   };
 
-  const reportByokFormOpened = (action: "add" | "replace"): void => {
-    reportTelemetry(preferences, "byok.form_opened", {
-      providerId: currentProvider.id,
-      action,
-    });
-  };
-
-  useEffect(() => {
-    if (!showKeyRow) return;
-    const action = hasKeyForProvider ? "replace" : "add";
+  const reportByokFormOpened = useCallback((action: "add" | "replace"): void => {
     const key = `${currentProvider.id}:${action}`;
     if (reportedOpenKeysRef.current.has(key)) return;
     reportedOpenKeysRef.current.add(key);
@@ -121,7 +120,13 @@ export function ByokForm({
       providerId: currentProvider.id,
       action,
     });
-  }, [currentProvider.id, hasKeyForProvider, preferences, showKeyRow]);
+  }, [currentProvider.id, preferences]);
+
+  useEffect(() => {
+    if (!showKeyRow) return;
+    const action = hasKeyForProvider ? "replace" : "add";
+    reportByokFormOpened(action);
+  }, [hasKeyForProvider, reportByokFormOpened, showKeyRow]);
 
   const handleReportError = (cause: unknown, fallbackTitle: string) => {
     const title =

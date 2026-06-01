@@ -21,6 +21,7 @@ from app.schemas.common import (
     SubstitutionReasonCode,
 )
 from app.search.protocol import SourceItem
+from app.uploads import TEXT_MIME_TYPES
 
 
 class TextPart(CamelModel):
@@ -82,14 +83,7 @@ class AttachmentPart(CamelModel):
         if self.media_type == "pdf" and self.mime_type != "application/pdf":
             raise ValueError("PDF attachments must use application/pdf")
         if self.media_type == "text" and not (
-            self.mime_type.startswith("text/")
-            or self.mime_type
-            in {
-                "application/json",
-                "application/ld+json",
-                "application/xml",
-                "application/yaml",
-            }
+            self.mime_type.startswith("text/") or self.mime_type in TEXT_MIME_TYPES
         ):
             raise ValueError("text attachments must use a text MIME type")
         return self

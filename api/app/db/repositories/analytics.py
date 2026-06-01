@@ -16,12 +16,43 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AnalyticsEvent, Preferences
+from app.schemas.analytics import (
+    analytics_property_key_is_blocked,
+    analytics_value_looks_sensitive,
+)
+
+_MAX_PROPERTY_KEYS = 24
+_MAX_PROPERTY_KEY_LENGTH = 80
+_MAX_PROPERTY_VALUE_LENGTH = 160
 
 
 async def telemetry_enabled(db: AsyncSession, user_id: UUID) -> bool:
     stmt = select(Preferences.telemetry_enabled).where(Preferences.user_id == user_id)
     value = (await db.execute(stmt)).scalar_one_or_none()
     return True if value is None else bool(value)
+
+
+def clean_properties(properties: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop unsafe analytics properties rather than risking content retention."""
+    if not properties:
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, value in properties.items():
+        if len(cleaned) >= _MAX_PROPERTY_KEYS:
+            break
+        if not isinstance(key, str) or len(key) > _MAX_PROPERTY_KEY_LENGTH:
+            continue
+        if analytics_property_key_is_blocked(key):
+            continue
+        if not isinstance(value, (str, int, float, bool, type(None))):
+            continue
+        if isinstance(value, str):
+            if len(value) > _MAX_PROPERTY_VALUE_LENGTH:
+                continue
+            if analytics_value_looks_sensitive(value):
+                continue
+        cleaned[key] = value
+    return cleaned
 
 
 async def record(
@@ -37,7 +68,7 @@ async def record(
     row = AnalyticsEvent(
         user_id=user_id,
         event_type=event_type,
-        properties=properties or {},
+        properties=clean_properties(properties),
     )
     db.add(row)
     await db.flush()
@@ -58,7 +89,7 @@ async def record_once_per_user(
     row = AnalyticsEvent(
         user_id=user_id,
         event_type=event_type,
-        properties=properties or {},
+        properties=clean_properties(properties),
     )
     try:
         async with db.begin_nested():

@@ -118,6 +118,8 @@ def _b64(data: bytes) -> str:
 
 def _openai_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | None:
     """Map a transient attachment into Chat Completions multimodal content."""
+    if attachment.media_type == "text":
+        return None
     if attachment.data is None:
         return None
     encoded = _b64(attachment.data)
@@ -136,8 +138,6 @@ def _openai_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | N
                 "file_data": f"data:{attachment.mime_type};base64,{encoded}",
             },
         }
-    if attachment.media_type == "text":
-        return None
     return None
 
 
@@ -163,7 +163,11 @@ def _openai_user_content(
     text = (
         text_with_attachment_fallback(user_text, transcript_attachments)
         if transcript_attachments
-        else user_text
+        else (
+            user_text
+            if user_text.strip()
+            else "Please analyze the attached file(s)."
+        )
     )
     prompt = steer_user_text(text)
     if not content:

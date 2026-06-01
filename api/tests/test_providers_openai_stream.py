@@ -475,6 +475,40 @@ async def test_stream_sends_attachment_bytes_as_multimodal_content() -> None:
 
 
 @respx.mock
+async def test_stream_adds_instruction_for_attachment_only_send() -> None:
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(prompt_tokens=10, completion_tokens=10, answer_chunks=("ok",))
+        )
+    )
+
+    image_bytes = b"image-bytes"
+    provider = _provider()
+    async for _ in provider.stream(
+        model_id="gpt-4o",
+        history=[],
+        user_text="",
+        attachments=[
+            AttachmentPayload(
+                id="img-1",
+                name="sketch.png",
+                media_type="image",
+                mime_type="image/png",
+                size_bytes=len(image_bytes),
+                data=image_bytes,
+            ),
+        ],
+    ):
+        pass
+
+    body = json.loads(route.calls.last.request.content)
+    content = body["messages"][-1]["content"]
+    assert isinstance(content, list)
+    assert content[1]["type"] == "text"
+    assert "Please analyze the attached file(s)." in content[1]["text"]
+
+
+@respx.mock
 async def test_stream_sends_text_attachment_transcript_as_text_content() -> None:
     """Text documents are sent as bounded transcripts, not native raw bytes."""
     route = respx.post(_COMPLETIONS_URL).mock(

@@ -98,6 +98,7 @@ function bootstrapPayload(overrides: Record<string, unknown> = {}) {
       trainingOptIn: false,
       sendOnEnter: true,
       autoExpandReasoning: false,
+      telemetryEnabled: true,
       retentionDays: 30,
     },
     usage: {
@@ -135,6 +136,7 @@ test.describe("provider selection", () => {
             trainingOptIn: false,
             sendOnEnter: true,
             autoExpandReasoning: false,
+            telemetryEnabled: true,
             retentionDays: 30,
           },
           usage: {
@@ -318,6 +320,7 @@ test.describe("provider selection", () => {
             trainingOptIn: false,
             sendOnEnter: true,
             autoExpandReasoning: false,
+            telemetryEnabled: true,
             retentionDays: 30,
           },
           usage: {
@@ -465,6 +468,10 @@ test.describe("provider selection", () => {
     page,
   }) => {
     let bootstrapCount = 0;
+    const analyticsEvents: Array<{
+      eventType?: string;
+      properties?: Record<string, unknown>;
+    }> = [];
     await page.route(`${BE_URL}/api/bootstrap`, async (route) => {
       bootstrapCount += 1;
       const refreshed = bootstrapCount > 1;
@@ -509,6 +516,13 @@ test.describe("provider selection", () => {
         ),
       });
     });
+    await page.route(`${BE_URL}/api/analytics/events`, async (route) => {
+      analyticsEvents.push(route.request().postDataJSON() as {
+        eventType?: string;
+        properties?: Record<string, unknown>;
+      });
+      await route.fulfill({ status: 204 });
+    });
 
     let byokBody: { provider?: unknown; apiKey?: unknown } | undefined;
     await page.route(`${BE_URL}/api/account/byok`, async (route) => {
@@ -543,6 +557,21 @@ test.describe("provider selection", () => {
 
     await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByText("Settings", { exact: true }).click();
+    await expect
+      .poll(() =>
+        analyticsEvents.filter((event) => event.eventType === "settings.opened")
+          .length,
+      )
+      .toBe(1);
+    await expect
+      .poll(() =>
+        analyticsEvents.filter(
+          (event) =>
+            event.eventType === "usage.viewed" &&
+            event.properties?.isByok === false,
+        ).length,
+      )
+      .toBe(1);
     await page.getByLabel("Provider").selectOption("openai");
     await page.getByLabel("API key").fill("sk-test-1234");
     await page.getByRole("button", { name: "Add key" }).click();
@@ -553,6 +582,19 @@ test.describe("provider selection", () => {
     });
     await expect.poll(() => bootstrapCount, { timeout: 5_000 }).toBeGreaterThan(1);
     await expect(page.getByText("Billed to your OpenAI key")).toBeVisible();
+
+    await page.getByRole("button", { name: "Replace key" }).click();
+    await expect(page.getByLabel("API key")).toBeVisible();
+    await expect
+      .poll(() =>
+        analyticsEvents.filter(
+          (event) =>
+            event.eventType === "byok.form_opened" &&
+            event.properties?.providerId === "openai" &&
+            event.properties?.action === "replace",
+        ).length,
+      )
+      .toBe(1);
 
     await page.keyboard.press("Escape");
     await page.getByTestId("model-mode-trigger").click();

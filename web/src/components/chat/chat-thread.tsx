@@ -1301,14 +1301,26 @@ export function ChatThread() {
     });
   };
 
-  const handleSettingsOpenChange = (open: boolean) => {
-    setSettingsOpen(open);
-    if (open) {
+  const settingsOpenRef = useRef(settingsOpen);
+
+  const openSettings = () => {
+    if (!settingsOpenRef.current) {
+      settingsOpenRef.current = true;
       reportTelemetry(preferences, "settings.opened");
       reportTelemetry(preferences, "usage.viewed", {
         isByok: usage?.isByok ?? null,
       });
     }
+    setSettingsOpen(true);
+  };
+
+  const handleSettingsOpenChange = (open: boolean) => {
+    if (open) {
+      openSettings();
+      return;
+    }
+    settingsOpenRef.current = false;
+    setSettingsOpen(false);
   };
 
   const handleAttributionOpen = () => {
@@ -1551,7 +1563,7 @@ export function ChatThread() {
   };
 
   const handleOpenSettings = () => {
-    setSettingsOpen(true);
+    openSettings();
   };
 
   const handleOpenShare = () => {
@@ -1575,7 +1587,7 @@ export function ChatThread() {
   // Custom instructions live inside the settings dialog in MVP; wiring the
   // shortcut now so muscle memory transfers when a dedicated panel ships.
   const handleOpenCustomInstructions = () => {
-    setSettingsOpen(true);
+    openSettings();
   };
 
   // Routes through the same confirmation dialog the sidebar uses — never
@@ -1736,7 +1748,7 @@ export function ChatThread() {
             onDeleteConversation={handleDeleteConversation}
             onTogglePinConversation={handleTogglePinConversation}
             onCopyConversation={handleCopyConversationById}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={handleOpenSettings}
             onSignIn={() => setAuthOpen(true)}
             onSignOut={handleSignOut}
             onCollapse={() => {
@@ -1802,7 +1814,7 @@ export function ChatThread() {
                 onOpenMobileNav={() => setMobileNavOpen(true)}
                 onOpenSidebar={() => setSidebarOpen(true)}
                 onNewChat={handleNewChat}
-                onOpenSettings={() => setSettingsOpen(true)}
+                onOpenSettings={handleOpenSettings}
                 isTemporary={isTemporary}
                 onToggleTemporary={handleToggleTemporary}
                 onCopyConversation={handleCopyConversation}

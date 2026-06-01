@@ -59,6 +59,7 @@ function bootstrapPayload() {
       trainingOptIn: false,
       sendOnEnter: true,
       autoExpandReasoning: false,
+      telemetryEnabled: true,
       retentionDays: 30,
     },
     usage: {

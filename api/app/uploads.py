@@ -13,6 +13,13 @@ from typing import Literal
 
 AttachmentMediaType = Literal["image", "pdf", "text"]
 
+IMAGE_MIME_TYPES = {
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+
 TEXT_MIME_TYPES = {
     "application/json",
     "application/ld+json",
@@ -38,7 +45,7 @@ def is_supported_attachment_type(
 ) -> bool:
     """Return whether the declared attachment type is accepted."""
     if media_type == "image":
-        return mime_type.startswith("image/")
+        return mime_type in IMAGE_MIME_TYPES
     if media_type == "pdf":
         return mime_type == "application/pdf"
     if media_type == "text":

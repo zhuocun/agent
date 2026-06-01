@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.db.models import AnalyticsEvent, Preferences, User
+from app.db.repositories import analytics as analytics_repo
 from app.middleware.ratelimit import limiter
 
 pytestmark = pytest.mark.asyncio
@@ -113,6 +114,26 @@ async def test_frontend_event_endpoint_validates_event_name_and_payload(
     assert content_like.status_code == 400
     assert content_like.json()["error"]["code"] == "INVALID_INPUT"
 
+    secret_key = await client.post(
+        "/api/analytics/events",
+        json={
+            "eventType": "settings.opened",
+            "properties": {"authToken": "not allowed"},
+        },
+    )
+    assert secret_key.status_code == 400
+    assert secret_key.json()["error"]["code"] == "INVALID_INPUT"
+
+    secret_value = await client.post(
+        "/api/analytics/events",
+        json={
+            "eventType": "settings.opened",
+            "properties": {"surface": "prefix sk-test-secret-1234567890"},
+        },
+    )
+    assert secret_value.status_code == 400
+    assert secret_value.json()["error"]["code"] == "INVALID_INPUT"
+
 
 async def test_frontend_event_endpoint_is_rate_limited(
     client: AsyncClient,
@@ -171,6 +192,71 @@ async def test_telemetry_preference_skips_event_persistence(
         json={"eventType": "settings.opened", "properties": {}},
     )
     assert response.status_code == 204
+    assert await _analytics_rows(session_factory) == []
+
+
+async def test_server_side_analytics_drops_unsafe_properties(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    assert (await client.get("/api/bootstrap")).status_code == 200
+    user = await _current_user(session_factory)
+
+    async with session_factory() as session:
+        await analytics_repo.record(
+            session,
+            user_id=user.id,
+            event_type="internal.test",
+            properties={
+                "safe": "ok",
+                "promptText": "do not store this",
+                "apiKey": "sk-test-secret-1234567890",
+                "surface": "prefix sk-test-secret-1234567890",
+            },
+        )
+        await session.commit()
+
+    rows = await _analytics_rows(session_factory)
+    assert [(row.event_type, row.properties) for row in rows] == [
+        ("internal.test", {"safe": "ok"})
+    ]
+
+
+async def test_stream_analytics_respects_telemetry_opt_out(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    assert (await client.get("/api/bootstrap")).status_code == 200
+    user = await _current_user(session_factory)
+    async with session_factory() as session:
+        session.add(
+            Preferences(
+                user_id=user.id,
+                default_tier_id="auto",
+                temporary_by_default=False,
+                training_opt_in=False,
+                send_on_enter=True,
+                auto_expand_reasoning=False,
+                telemetry_enabled=False,
+            )
+        )
+        await session.commit()
+
+    created = await client.post(
+        "/api/conversations",
+        json={"selectedTierId": "smart"},
+    )
+    assert created.status_code == 201, created.text
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{created.json()['id']}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "hello analytics opt out",
+        },
+    )
+    assert frames[-1][0] == "terminal"
     assert await _analytics_rows(session_factory) == []
 
 

@@ -11,6 +11,13 @@ from app.schemas.conversation import Conversation
 from app.schemas.preferences import UserPreferences
 
 
+class AccountByokKey(CamelModel):
+    provider_id: str
+    provider_label: str
+    masked_key: str
+    usable: bool
+
+
 class AccountInfo(CamelModel):
     name: str
     email: str
@@ -18,6 +25,7 @@ class AccountInfo(CamelModel):
     plan_label: str
     byok_enabled: bool
     byok_masked_key: str | None = None
+    byok_keys: list[AccountByokKey] = Field(default_factory=list)
 
 
 class UsageLedgerEntry(CamelModel):

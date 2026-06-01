@@ -43,10 +43,18 @@ export function PublicAttributionRow({
   const { substitution, isByok, servedModelLabel } = attribution;
   const servedTierId = assertServedTier(attribution.servedTierId);
   const tierLabel = MODEL_TIERS_BY_ID[servedTierId].label;
+  const providerLabel = attribution.providerLabel?.trim() || undefined;
   // Drop the redundant tier segment when the served model label already equals
   // the tier label, so the byline doesn't stutter ("Fast · Fast"). Mirrors the
   // private row's dedupe.
   const showTier = tierLabel !== servedModelLabel;
+  const showProvider =
+    providerLabel !== undefined &&
+    providerLabel !== servedModelLabel &&
+    providerLabel !== tierLabel;
+  const byokLabel = providerLabel
+    ? `Your ${providerLabel} key`
+    : "Your API key";
   const substitutionPrefix = substitution
     ? `substituted from ${MODEL_TIERS_BY_ID[attribution.requestedTierId].label}: `
     : null;
@@ -64,6 +72,12 @@ export function PublicAttributionRow({
           </span>
         ) : null}
         <span>{servedModelLabel}</span>
+        {showProvider ? (
+          <>
+            {Dot}
+            <span>{providerLabel}</span>
+          </>
+        ) : null}
         {showTier ? (
           <>
             {Dot}
@@ -80,7 +94,7 @@ export function PublicAttributionRow({
           )}
         >
           <Key aria-hidden className="size-3" />
-          <span>Your API key</span>
+          <span>{byokLabel}</span>
         </span>
       ) : null}
     </div>

@@ -1,27 +1,65 @@
 "use client";
 
-import { useId, useState, type JSX } from "react";
+import { useId, useMemo, useState, type JSX } from "react";
 import { Key, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { showToast } from "@/components/ui/toast";
 import { deleteByok, putByok } from "@/lib/apiClient";
 import { ApiError, ApiNetworkError } from "@/lib/apiClient";
-import { isAnonymousAccount, type AccountInfo } from "@/lib/types";
+import {
+  isAnonymousAccount,
+  type AccountInfo,
+  type ByokKeyStatus,
+} from "@/lib/types";
 
 // PRD 04 §5.2 — surface providers as user-facing labels; the canonical id list
 // is not yet exported from `lib/`, so the form hardcodes the MVP providers with
 // the same ids the gateway accepts. Replace with a registry import once one
 // lands.
-const PROVIDERS: ReadonlyArray<{ id: string; label: string; placeholder: string }> = [
+type ProviderChoice = { id: string; label: string; placeholder: string };
+
+const PROVIDERS: ReadonlyArray<ProviderChoice> = [
   { id: "deepseek", label: "DeepSeek", placeholder: "sk-deepseek-..." },
   { id: "anthropic", label: "Anthropic", placeholder: "sk-ant-..." },
   { id: "openai", label: "OpenAI", placeholder: "sk-..." },
 ];
 
+function providerChoicesForAccount(account: AccountInfo): ProviderChoice[] {
+  const choices = new Map<string, ProviderChoice>();
+  for (const provider of PROVIDERS) choices.set(provider.id, provider);
+  for (const key of account.byokKeys ?? []) {
+    if (!choices.has(key.providerId)) {
+      choices.set(key.providerId, {
+        id: key.providerId,
+        label: key.providerLabel,
+        placeholder: "API key",
+      });
+    }
+  }
+  return Array.from(choices.values());
+}
+
+function keyStatusForProvider(
+  account: AccountInfo,
+  providerId: string,
+  providerLabel: string,
+): ByokKeyStatus | undefined {
+  if (account.byokKeys) {
+    return account.byokKeys.find((key) => key.providerId === providerId);
+  }
+  if (!account.byokEnabled) return undefined;
+  return {
+    providerId,
+    providerLabel,
+    maskedKey: account.byokMaskedKey ?? "",
+    usable: true,
+  };
+}
+
 export interface ByokFormProps {
   account: AccountInfo;
-  onAccountChange: (next: AccountInfo) => void;
+  onAccountChange: (next: AccountInfo) => void | Promise<void>;
 }
 
 export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Element {
@@ -35,8 +73,21 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
   const [removing, setRemoving] = useState(false);
 
   const anonymous = isAnonymousAccount(account);
-  const currentProvider = PROVIDERS.find((p) => p.id === provider) ?? PROVIDERS[0]!;
-  const hasKeyForProvider = account.byokEnabled;
+  const providerChoices = useMemo(
+    () => providerChoicesForAccount(account),
+    [account],
+  );
+  const currentProvider =
+    providerChoices.find((p) => p.id === provider) ??
+    providerChoices[0] ??
+    PROVIDERS[0]!;
+  const currentKey = keyStatusForProvider(
+    account,
+    currentProvider.id,
+    currentProvider.label,
+  );
+  const hasKeyForProvider = currentKey !== undefined;
+  const keyUsable = currentKey?.usable !== false;
 
   const reset = () => {
     setApiKey("");
@@ -62,14 +113,12 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
     setSaving(true);
     try {
       const next = await putByok({ provider, apiKey: trimmed });
-      onAccountChange(next);
+      await onAccountChange(next);
       reset();
       showToast({
         severity: "success",
         title: "Key saved",
-        body: next.byokEnabled
-          ? `${currentProvider.label} requests will bill to your key.`
-          : `${currentProvider.label} key stored. The current route is still using platform credits.`,
+        body: `${currentProvider.label} requests can bill to your key when that provider is selected.`,
       });
     } catch (cause) {
       handleReportError(cause, "Couldn't save key");
@@ -82,7 +131,7 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
     setRemoving(true);
     try {
       const next = await deleteByok(provider);
-      onAccountChange(next);
+      await onAccountChange(next);
       reset();
       showToast({
         severity: "success",
@@ -138,7 +187,7 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
             // it is the surface now.
             className="block h-11 w-full rounded-xl bg-transparent px-2.5 text-sm text-foreground outline-none focus-visible:shadow-[var(--focus-ring)]"
           >
-            {PROVIDERS.map((p) => (
+            {providerChoices.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
               </option>
@@ -188,12 +237,14 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Key aria-hidden className="size-3.5 shrink-0" />
             <span>
-              Billed to your key
-              {account.byokMaskedKey ? (
+              {keyUsable
+                ? `Billed to your ${currentProvider.label} key`
+                : `${currentProvider.label} key saved but not currently usable`}
+              {currentKey?.maskedKey ? (
                 <>
                   {" "}
                   <span className="font-mono text-foreground">
-                    {account.byokMaskedKey}
+                    {currentKey.maskedKey}
                   </span>
                 </>
               ) : null}

@@ -233,6 +233,30 @@ type ConversationSearchState = {
 // for the brief loading frame; replaced by `preferences.defaultTierId` once
 // bootstrap resolves.
 const DEFAULT_TIER_ID: ModelTierId = "auto";
+const PREFERRED_PROVIDER_STORAGE_KEY = "olune.preferredProviderId";
+
+function readStoredPreferredProviderId(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return window.localStorage.getItem(PREFERRED_PROVIDER_STORAGE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function storePreferredProviderId(providerId: string | undefined): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (providerId) {
+      window.localStorage.setItem(PREFERRED_PROVIDER_STORAGE_KEY, providerId);
+    } else {
+      window.localStorage.removeItem(PREFERRED_PROVIDER_STORAGE_KEY);
+    }
+  } catch {
+    // Storage can be disabled in private contexts; provider selection still
+    // works for the current session through React state.
+  }
+}
 
 function activeProviderOptionForTier(tier: ModelTier): ProviderTierOption {
   return {
@@ -296,6 +320,17 @@ function effectiveTierForProvider(
   };
 }
 
+function providerOptionForTierId(
+  tiers: ModelTier[],
+  tierId: ModelTierId,
+  preferredProviderId?: string,
+): ProviderTierOption | undefined {
+  return providerOptionForTier(
+    tiers.find((tier) => tier.id === tierId),
+    preferredProviderId,
+  );
+}
+
 export function ChatThread() {
   // Bootstrap-derived state. `null` until `fetchBootstrap()` resolves.
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
@@ -326,6 +361,8 @@ export function ChatThread() {
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
   const providerAtSendRef = useRef<string | undefined>(selectedProviderId);
+  const selectedTierIdRef = useRef<ModelTierId>(selectedTierId);
+  const selectedProviderIdRef = useRef<string | undefined>(selectedProviderId);
   // The optimistic id of the user message we just sent — set on send, cleared
   // on terminal (after we replace it with the server-issued uuid). Reconciling
   // user + assistant ids happens together on the `terminal` callback so the
@@ -374,6 +411,14 @@ export function ChatThread() {
   const welcomeSeamTimerRef = useRef<number | null>(null);
   const { theme, setTheme, resolvedTheme } = useTheme();
 
+  useEffect(() => {
+    selectedTierIdRef.current = selectedTierId;
+  }, [selectedTierId]);
+
+  useEffect(() => {
+    selectedProviderIdRef.current = selectedProviderId;
+  }, [selectedProviderId]);
+
   // Bootstrap fetch — single trip on mount (and on retry). The in-flight ref
   // short-circuits StrictMode's double-mount in dev: AbortController alone
   // doesn't help because the BE assigns an anonymous user on the cookieless
@@ -392,8 +437,10 @@ export function ChatThread() {
         setBootstrapError(null);
         setSelectedTierId(result.preferences.defaultTierId);
         setSelectedProviderId(
-          providerOptionForTier(
-            result.modelTiers.find((tier) => tier.id === result.preferences.defaultTierId),
+          providerOptionForTierId(
+            result.modelTiers,
+            result.preferences.defaultTierId,
+            selectedProviderIdRef.current ?? readStoredPreferredProviderId(),
           )?.providerId,
         );
         setIsTemporary(result.preferences.temporaryByDefault);
@@ -453,11 +500,6 @@ export function ChatThread() {
     selectedModelTier?.supportsAttachments === true;
   // Effective, gated view used by every consumer.
   const effectiveSearchEnabled = searchEnabled && selectedTierSupportsSearch;
-  const defaultProviderId = preferences
-    ? providerOptionForTier(
-        baseModelTiers.find((tier) => tier.id === preferences.defaultTierId),
-      )?.providerId
-    : undefined;
   const [conversations, setConversations] = useState<ConversationSummary[]>(
     [],
   );
@@ -470,6 +512,23 @@ export function ChatThread() {
       setConversations(bootstrap.conversations);
     }
   }, [bootstrap]);
+
+  const reconcileProviderAvailability = useCallback(
+    (tiers: ModelTier[], preferredProviderId?: string) => {
+      const tierId = selectedTierIdRef.current;
+      const nextBaseTier = tiers.find((tier) => tier.id === tierId);
+      const nextProvider = providerOptionForTier(nextBaseTier, preferredProviderId);
+      const nextTier = nextBaseTier
+        ? effectiveTierForProvider(nextBaseTier, nextProvider?.providerId)
+        : undefined;
+      setSelectedProviderId(nextProvider?.providerId);
+      if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
+      if (nextTier?.supportsAttachments !== true) {
+        composerRef.current?.clearAttachments();
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const query = conversationSearch.trim();
@@ -603,6 +662,7 @@ export function ChatThread() {
       ? effectiveTierForProvider(baseSelectedTier, id)
       : undefined;
     setSelectedProviderId(id);
+    storePreferredProviderId(id);
     if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
     if (nextTier?.supportsAttachments !== true) {
       composerRef.current?.clearAttachments();
@@ -929,7 +989,13 @@ export function ChatThread() {
         setIsTemporary(false);
         setMessages(branched.messages);
         setSelectedTierId(branched.selectedTierId);
-        setSelectedProviderId(defaultProviderId);
+        setSelectedProviderId(
+          providerOptionForTierId(
+            baseModelTiers,
+            branched.selectedTierId,
+            selectedProviderIdRef.current,
+          )?.providerId,
+        );
         setMobileNavOpen(false);
         setConversations((prev) => {
           const summary: ConversationSummary = {
@@ -988,7 +1054,13 @@ export function ChatThread() {
     setActiveConversationId(null);
     if (preferences) {
       setSelectedTierId(preferences.defaultTierId);
-      setSelectedProviderId(defaultProviderId);
+      setSelectedProviderId(
+        providerOptionForTierId(
+          baseModelTiers,
+          preferences.defaultTierId,
+          selectedProviderIdRef.current ?? readStoredPreferredProviderId(),
+        )?.providerId,
+      );
       setIsTemporary(preferences.temporaryByDefault);
     }
     setSelectedReasoningEffortId("auto");
@@ -1015,7 +1087,13 @@ export function ChatThread() {
     setActiveConversationId(null);
     if (preferences) {
       setSelectedTierId(preferences.defaultTierId);
-      setSelectedProviderId(defaultProviderId);
+      setSelectedProviderId(
+        providerOptionForTierId(
+          baseModelTiers,
+          preferences.defaultTierId,
+          selectedProviderIdRef.current ?? readStoredPreferredProviderId(),
+        )?.providerId,
+      );
     }
     setSelectedReasoningEffortId("auto");
     setSearchEnabled(false);
@@ -1062,7 +1140,13 @@ export function ChatThread() {
         if (selectConversationTokenRef.current !== id) return;
         setMessages(conversation.messages);
         setSelectedTierId(conversation.selectedTierId);
-        setSelectedProviderId(defaultProviderId);
+        setSelectedProviderId(
+          providerOptionForTierId(
+            baseModelTiers,
+            conversation.selectedTierId,
+            selectedProviderIdRef.current,
+          )?.providerId,
+        );
       } catch (cause) {
         if (selectConversationTokenRef.current !== id) return;
         const title =
@@ -1192,8 +1276,36 @@ export function ChatThread() {
     });
   };
 
-  const handleAccountChange = (next: AccountInfo) => {
+  const handleAccountChange = async (next: AccountInfo) => {
     setBootstrap((prev) => (prev ? { ...prev, account: next } : prev));
+    try {
+      const refreshed = await fetchBootstrap();
+      setBootstrap((prev) =>
+        prev
+          ? {
+              ...prev,
+              account: refreshed.account,
+              usage: refreshed.usage,
+              modelTiers: refreshed.modelTiers,
+            }
+          : refreshed,
+      );
+      reconcileProviderAvailability(
+        refreshed.modelTiers,
+        selectedProviderIdRef.current ?? readStoredPreferredProviderId(),
+      );
+    } catch (cause) {
+      showToast({
+        severity: "warning",
+        title: "Availability not refreshed",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : "Reload to refresh provider availability.",
+      });
+    }
   };
 
   // Sign-out + full reload so bootstrap re-runs against the fresh anonymous

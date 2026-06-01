@@ -13,7 +13,7 @@ fall back to 10% of the input rate (the Anthropic cache-read convention).
 from __future__ import annotations
 
 from app.providers.protocol import UsageUpdate
-from app.providers.tiers import TierBinding, resolve_served_tier
+from app.providers.tiers import TierBinding, get_provider_route, resolve_served_tier
 from app.schemas.common import CostConfidence, ModelTierId
 from app.schemas.message import (
     CostBreakdown,
@@ -108,10 +108,10 @@ def build_attribution(
     otherwise the served binding's `model_label` (e.g. "DeepSeek V4 Flash")
     is used, falling back to the tier label only when the binding carries no
     model label (the unrouted `auto` safety-net path).
-    `substituted_provider`/`substituted_model` are not fields on the FE's
-    `Substitution` shape today (the wire only carries `reasonCode` +
-    `reasonText`) but are accepted so the call site can read them out of the
-    same plumbing if needed later.
+    `substituted_provider`, when present, becomes the served provider identity
+    on the attribution so persisted messages and logs disclose provider-side
+    fallback. `substituted_model` is still bookkeeping only; the user-visible
+    model name comes from `substituted_display_label`.
     """
     sub_obj: Substitution | None = None
     if substitution is not None:
@@ -134,13 +134,17 @@ def build_attribution(
         if substituted_display_label is not None
         else (binding.model_label or served_tier_label)
     )
-    # `substituted_provider`/`substituted_model` have no wire field today;
-    # reference them so unused-warning tooling stays quiet.
-    _ = (substituted_provider, substituted_model)
+    served_provider_id = substituted_provider or binding.provider_id
+    route = get_provider_route(served_provider_id)
+    # `substituted_model` has no wire field today; reference it so
+    # unused-warning tooling stays quiet.
+    _ = substituted_model
     return ModelAttribution(
         requested_tier_id=requested_tier_id,
         served_tier_id=served_tier_id,
         served_model_label=served_model_label,
+        provider_id=served_provider_id,
+        provider_label=route.label if route is not None else served_provider_id,
         is_byok=is_byok,
         cost_usd=breakdown.subtotal_usd + breakdown.session_surcharge_usd,
         cost_confidence=cost_confidence,

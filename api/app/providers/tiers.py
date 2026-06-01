@@ -130,9 +130,18 @@ def platform_provider_usable(provider_id: str, settings: Settings | None = None)
     """Return whether the platform can call a provider without a user BYOK key."""
     s = settings if settings is not None else get_settings()
     if provider_id == "deepseek":
-        return bool(s.deepseek_key)
+        return bool(
+            s.deepseek_api_key
+            or (s.provider_backend == "deepseek" and s.openai_api_key)
+        )
     if provider_id == "openai":
-        return bool(s.openai_api_key)
+        # Legacy DeepSeek deployments may store a DeepSeek-compatible key in
+        # OPENAI_API_KEY. Until a dedicated DEEPSEEK_API_KEY is present, do not
+        # also advertise that fallback key as a platform OpenAI route.
+        return bool(
+            s.openai_api_key
+            and not (s.provider_backend == "deepseek" and not s.deepseek_api_key)
+        )
     if provider_id == "anthropic":
         return bool(s.anthropic_api_key)
     if provider_id == "fake":

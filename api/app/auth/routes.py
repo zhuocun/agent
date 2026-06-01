@@ -37,6 +37,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.account_info import account_info_for_user
 from app.auth.cookies import (
     COOKIE_NAME_DEFAULT,
     build_signer,
@@ -47,7 +48,7 @@ from app.auth.dependency import current_session, current_user
 from app.config import Settings, get_settings
 from app.db.models import Session as DbSession
 from app.db.models import User
-from app.db.repositories import api_keys, users
+from app.db.repositories import users
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
 from app.middleware.ratelimit import limiter
@@ -344,12 +345,7 @@ async def upgrade(
         _resign_session_cookie(response, settings, session)
 
     # Synthesize the updated AccountInfo from the post-upgrade row.
-    byok_rows = await api_keys.list_for_user(db, user.id)
-    has_byok = len(byok_rows) > 0
-    masked = byok_rows[0].masked_key if has_byok else None
-    return users.to_account_info(
-        user, byok_enabled=has_byok, byok_masked_key=masked
-    )
+    return await account_info_for_user(db, user, settings)
 
 
 # A throwaway argon2id digest used purely to spend a verify cycle when the
@@ -443,12 +439,7 @@ async def login(
     # than relying solely on the request dependency's end-of-request commit.
     await db.commit()
 
-    byok_rows = await api_keys.list_for_user(db, target.id)
-    has_byok = len(byok_rows) > 0
-    masked = byok_rows[0].masked_key if has_byok else None
-    return users.to_account_info(
-        target, byok_enabled=has_byok, byok_masked_key=masked
-    )
+    return await account_info_for_user(db, target, settings)
 
 
 @router.post(

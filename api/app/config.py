@@ -278,13 +278,18 @@ class Settings(BaseSettings):
 
     @property
     def deepseek_key(self) -> str | None:
-        """Effective DeepSeek key: `DEEPSEEK_API_KEY`, else `OPENAI_API_KEY`.
+        """Effective DeepSeek key for the active DeepSeek backend.
 
-        DeepSeek is OpenAI-compatible, so a single OpenAI-compatible key set as
-        either env var works. The dedicated `DEEPSEEK_API_KEY` wins when both
-        are present.
+        Legacy deployments may have put the DeepSeek-compatible key in
+        `OPENAI_API_KEY`; keep that fallback only when the configured backend is
+        DeepSeek. Explicit DeepSeek routing from another active backend must not
+        silently spend an OpenAI platform key against DeepSeek.
         """
-        return self.deepseek_api_key or self.openai_api_key
+        if self.deepseek_api_key:
+            return self.deepseek_api_key
+        if self.provider_backend == "deepseek":
+            return self.openai_api_key
+        return None
 
     @cached_property
     def cors_allowed_origins(self) -> list[str]:

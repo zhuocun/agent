@@ -83,6 +83,36 @@ function singleAvailableProviderTier(id: "auto" | "fast", label: string) {
   };
 }
 
+function bootstrapPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    account: {
+      name: "Guest",
+      email: "",
+      planLabel: "Free",
+      byokEnabled: false,
+      isAnonymous: true,
+    },
+    preferences: {
+      defaultTierId: "auto",
+      temporaryByDefault: false,
+      trainingOptIn: false,
+      sendOnEnter: true,
+      autoExpandReasoning: false,
+      retentionDays: 30,
+    },
+    usage: {
+      used: 0,
+      limit: 1000,
+      periodLabel: "this month",
+      isByok: false,
+    },
+    modelTiers: [tier("auto", "Auto"), tier("fast", "Fast")],
+    suggestions: [],
+    conversations: [],
+    ...overrides,
+  };
+}
+
 test.describe("provider selection", () => {
   test("nested providerOptions drive capabilities and message providerId", async ({
     page,
@@ -232,5 +262,244 @@ test.describe("provider selection", () => {
     await page.getByTestId("model-mode-trigger").click();
     await expect(page.getByText("OpenAI", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Gemini", { exact: true })).toHaveCount(0);
+  });
+
+  test("restores the stored provider preference on reload when available", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem("olune.preferredProviderId", "openai");
+    });
+    await page.route(`${BE_URL}/api/bootstrap`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(bootstrapPayload()),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+  });
+
+  test("new chat does not overwrite the stored provider preference", async ({
+    page,
+  }) => {
+    await page.route(`${BE_URL}/api/bootstrap`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(bootstrapPayload()),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByTestId("model-mode-trigger").click();
+    await page.getByText("OpenAI", { exact: true }).click();
+    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+
+    await page.getByTestId("sidebar-new-chat").click();
+    await page.reload();
+    await waitForBootstrap(page);
+
+    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+  });
+
+  test("preserves selected provider when loading another conversation", async ({
+    page,
+  }) => {
+    const conversationId = "22222222-2222-4222-8222-222222222222";
+    await page.route(`${BE_URL}/api/bootstrap`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          bootstrapPayload({
+            conversations: [
+              {
+                id: conversationId,
+                title: "Saved provider chat",
+                updatedAt: new Date().toISOString(),
+                pinned: false,
+              },
+            ],
+          }),
+        ),
+      });
+    });
+
+    await page.route(`${BE_URL}/api/conversations/${conversationId}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: conversationId,
+          title: "Saved provider chat",
+          selectedTierId: "fast",
+          isTemporary: false,
+          messages: [],
+        }),
+      });
+    });
+
+    let sentBody: { providerId?: unknown } | undefined;
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      sentBody = route.request().postDataJSON() as { providerId?: unknown };
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+        body:
+          'event: error\ndata: {"code":"TEST","severity":"error","title":"Done","body":"Test complete."}\n\n',
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByTestId("model-mode-trigger").click();
+    await page.getByText("OpenAI", { exact: true }).click();
+    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+
+    await page
+      .getByTestId("sidebar-conversation-link")
+      .filter({ hasText: "Saved provider chat" })
+      .click();
+    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+
+    await page.getByTestId("composer-textarea").fill("Still OpenAI");
+    await page.getByTestId("composer-send").click();
+
+    await expect
+      .poll(() => sentBody, { timeout: 5_000 })
+      .toMatchObject({ providerId: "openai" });
+  });
+
+  test("refreshes bootstrap-derived provider availability after saving BYOK", async ({
+    page,
+  }) => {
+    let bootstrapCount = 0;
+    await page.route(`${BE_URL}/api/bootstrap`, async (route) => {
+      bootstrapCount += 1;
+      const refreshed = bootstrapCount > 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          bootstrapPayload({
+            account: {
+              name: "Ada Lovelace",
+              email: "ada@example.com",
+              planLabel: "Free",
+              byokEnabled: refreshed,
+              byokMaskedKey: refreshed ? "sk-...1234" : undefined,
+              byokKeys: refreshed
+                ? [
+                    {
+                      providerId: "openai",
+                      providerLabel: "OpenAI",
+                      maskedKey: "sk-...1234",
+                      usable: true,
+                    },
+                  ]
+                : [],
+              isAnonymous: false,
+            },
+            usage: {
+              used: 0,
+              limit: 1000,
+              periodLabel: "this month",
+              isByok: refreshed,
+            },
+            modelTiers: [
+              refreshed
+                ? tier("auto", "Auto")
+                : singleAvailableProviderTier("auto", "Auto"),
+              refreshed
+                ? tier("fast", "Fast")
+                : singleAvailableProviderTier("fast", "Fast"),
+            ],
+          }),
+        ),
+      });
+    });
+
+    let byokBody: { provider?: unknown; apiKey?: unknown } | undefined;
+    await page.route(`${BE_URL}/api/account/byok`, async (route) => {
+      byokBody = route.request().postDataJSON() as {
+        provider?: unknown;
+        apiKey?: unknown;
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          name: "Ada Lovelace",
+          email: "ada@example.com",
+          planLabel: "Free",
+          byokEnabled: true,
+          byokMaskedKey: "sk-...1234",
+          byokKeys: [
+            {
+              providerId: "openai",
+              providerLabel: "OpenAI",
+              maskedKey: "sk-...1234",
+              usable: true,
+            },
+          ],
+          isAnonymous: false,
+        }),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByRole("button", { name: "Account menu" }).click();
+    await page.getByText("Settings", { exact: true }).click();
+    await page.getByLabel("Provider").selectOption("openai");
+    await page.getByLabel("API key").fill("sk-test-1234");
+    await page.getByRole("button", { name: "Add key" }).click();
+
+    await expect.poll(() => byokBody, { timeout: 5_000 }).toMatchObject({
+      provider: "openai",
+      apiKey: "sk-test-1234",
+    });
+    await expect.poll(() => bootstrapCount, { timeout: 5_000 }).toBeGreaterThan(1);
+    await expect(page.getByText("Billed to your OpenAI key")).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await page.getByTestId("model-mode-trigger").click();
+    await expect(page.getByText("OpenAI", { exact: true })).toBeVisible();
+  });
+
+  test("renders the mobile provider picker without horizontal overflow", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route(`${BE_URL}/api/bootstrap`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(bootstrapPayload()),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByRole("button", { name: /Model Auto/ }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Provider");
+    await expect(dialog.getByText("OpenAI", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Gemini", { exact: true })).toBeVisible();
+
+    const hasHorizontalOverflow = await dialog.evaluate(
+      (node) => node.scrollWidth > node.clientWidth + 1,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
   });
 });

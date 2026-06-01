@@ -122,6 +122,8 @@ export interface ModelAttribution {
   requestedTierId: ModelTierId;
   servedTierId: ModelTierId;
   servedModelLabel: string; // e.g. "DeepSeek Chat"
+  providerId?: string;
+  providerLabel?: string;
   isByok: boolean;
   costUsd: number;
   costConfidence: "exact" | "estimate";
@@ -295,10 +297,18 @@ export interface AccountInfo {
   planLabel: string; // e.g. "Pro" — never a raw SKU
   byokEnabled: boolean;
   byokMaskedKey?: string; // e.g. "sk-…4f2a", shown only when byokEnabled
+  byokKeys?: ByokKeyStatus[];
   // Guest vs. registered discriminator (camelCase wire field). Authoritative
   // signal for gating the sign-in CTA, BYOK, and the sign-out row. Guests are
   // minted server-side without an email; registered accounts carry one.
   isAnonymous: boolean;
+}
+
+export interface ByokKeyStatus {
+  providerId: string;
+  providerLabel: string;
+  maskedKey: string;
+  usable: boolean;
 }
 
 // Single source of truth for the guest/registered split. Prefer the
@@ -363,6 +373,8 @@ export interface PublicAttribution {
   requestedTierId: ModelTierId;
   servedTierId: ModelTierId;
   servedModelLabel: string; // e.g. "DeepSeek Chat"
+  providerId?: string;
+  providerLabel?: string;
   isByok: boolean;
   // Present only when served != requested. Same shape as the private surface.
   substitution?: Substitution;

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -647,6 +647,49 @@ async def test_idempotent_replay_does_not_rebump_updated_at(
 
     # No further bump from the replay.
     assert after_replay == after_send
+
+
+async def test_idempotent_replay_rejects_same_client_id_with_changed_body(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _current_user_id(client, session_factory)
+    conv_id = await _seed_owned_conversation_at(
+        session_factory,
+        user_id=user_id,
+        title="Convo",
+        updated_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+    )
+
+    cmid = str(uuid4())
+    first = await _send_message(client, conv_id, text="original", client_message_id=cmid)
+    assert first[-1][0] == "terminal"
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": cmid,
+            "tierId": "smart",
+            "text": "changed",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "IDEMPOTENCY_MISMATCH"
+    async with session_factory() as session:
+        user_rows = (
+            await session.execute(
+                select(Message).where(
+                    Message.role == "user",
+                    Message.conversation_id == UUID(conv_id),
+                )
+            )
+        ).scalars().all()
+        assert len(user_rows) == 1
+        user_row = user_rows[0]
+        assert user_row.client_message_id == UUID(cmid)
+        assert set(user_row.request_fingerprint or {}) == {"v", "sha256"}
+        assert "original" not in str(user_row.request_fingerprint)
 
 
 async def test_touch_updated_at_advances_and_is_noop_when_missing(

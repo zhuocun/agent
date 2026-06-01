@@ -163,6 +163,9 @@ class Message(Base):
         nullable=False,
     )
     client_message_id: Mapped[UUID | None] = mapped_column(UuidVariant, nullable=True)
+    request_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(
+        JsonVariant, nullable=True
+    )
     role: Mapped[str] = mapped_column(String, nullable=False)
     parts: Mapped[list[dict[str, Any]]] = mapped_column(JsonVariant, nullable=False)
     status: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -595,6 +595,8 @@ async def test_send_message_provider_id_selects_alternate_binding(
     assert calls[0]["provider_id"] == "openai"
     terminal = next(payload for name, payload in frames if name == "terminal")
     assert terminal["attribution"]["servedModelLabel"] == "gpt-4o"
+    assert terminal["attribution"]["providerId"] == "openai"
+    assert terminal["attribution"]["providerLabel"] == "OpenAI"
 
 
 async def test_send_message_provider_id_missing_credentials_returns_400_before_insert(
@@ -813,6 +815,110 @@ async def test_regenerate_with_no_trailing_assistant_errors(
     assert body["error"]["code"] == "INVALID_INPUT"
 
 
+async def test_regenerate_rejects_persisted_attachments_for_unsupported_provider(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.db.repositories import api_keys as api_keys_repo
+
+    await client.get("/api/bootstrap")
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        user.is_anonymous = False
+        await api_keys_repo.upsert(
+            session,
+            user_id=user.id,
+            provider="deepseek",
+            raw_api_key="sk-deepseek-test-byok-12345678",
+        )
+        convo = Conversation(
+            user_id=user.id,
+            title="Attachment regen",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.flush()
+        user_msg = Message(
+            conversation_id=convo.id,
+            client_message_id=uuid4(),
+            role="user",
+            parts=[
+                {"type": "text", "text": "inspect this"},
+                {
+                    "type": "attachment",
+                    "id": "att-1",
+                    "name": "diagram.png",
+                    "mediaType": "image",
+                    "mimeType": "image/png",
+                    "sizeBytes": 1234,
+                },
+            ],
+            status=None,
+            attribution=None,
+            created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        )
+        session.add(user_msg)
+        await session.flush()
+        assistant = Message(
+            conversation_id=convo.id,
+            client_message_id=None,
+            role="assistant",
+            parts=[{"type": "text", "text": "ok"}],
+            status="done",
+            attribution={
+                "requestedTierId": "smart",
+                "servedTierId": "smart",
+                "servedModelLabel": "Fake",
+                "providerId": "fake",
+                "providerLabel": "Fake",
+                "isByok": False,
+                "costUsd": 0.0,
+                "costConfidence": "exact",
+                "breakdown": {
+                    "currency": "USD",
+                    "listPriceInPerM": 0,
+                    "listPriceOutPerM": 0,
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "reasoningTokens": 0,
+                    "cachedInputTokens": 0,
+                    "longContext": {"flat": True, "tokensRepriced": "none"},
+                    "promoApplied": False,
+                    "subtotalUsd": 0,
+                    "sessionSurchargeUsd": 0,
+                },
+            },
+            responds_to_message_id=user_msg.id,
+            created_at=datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+        )
+        session.add(assistant)
+        await session.commit()
+        conv_id = str(convo.id)
+        assistant_id = assistant.id
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "deepseek",
+            "text": "ignored",
+            "regenerate": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "ATTACHMENTS_UNSUPPORTED"
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(Message).where(Message.id == assistant_id))
+        ).scalar_one_or_none()
+        assert row is not None
+
+
 # M2: edit path ---------------------------------------------------------------
 
 
@@ -861,18 +967,30 @@ async def test_edit_truncates_and_re_streams(
         assert len(rows) == 6  # 3 user + 3 assistant
 
     # Edit turn-2 user message: truncate it + everything after.
+    edit_client_id = str(uuid4())
+    edit_body = {
+        "clientMessageId": edit_client_id,
+        "tierId": "smart",
+        "text": "edited turn 2",
+        "editMessageId": t2_user_id,
+    }
     edit_resp = await _collect_sse(
         client,
         f"/api/conversations/{conv_id}/messages",
-        {
-            "clientMessageId": str(uuid4()),
-            "tierId": "smart",
-            "text": "edited turn 2",
-            "editMessageId": t2_user_id,
-        },
+        edit_body,
     )
     edit_user_id = next(p for n, p in edit_resp if n == "submitted")["messageId"]
     edit_assistant_id = next(p for n, p in edit_resp if n == "terminal")["messageId"]
+
+    retry_resp = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        edit_body,
+    )
+    retry_submitted = next(p for n, p in retry_resp if n == "submitted")["messageId"]
+    retry_terminal = next(p for n, p in retry_resp if n == "terminal")["messageId"]
+    assert retry_submitted == edit_user_id
+    assert retry_terminal == edit_assistant_id
 
     # submitted carries a NEW user message id (not the edited one).
     assert edit_user_id != t2_user_id
@@ -891,6 +1009,7 @@ async def test_edit_truncates_and_re_streams(
                 .order_by(Message.created_at.asc(), Message.id.asc())
             )
         ).scalars().all()
+        assert len(rows) == 4
         ids = {str(r.id) for r in rows}
         # Turn 1 preserved.
         assert t1_user_id in ids
@@ -1006,6 +1125,108 @@ async def test_title_autogen_updates_title_on_first_terminal(
 
     assert final_title != "New chat"
     assert final_title.strip() != ""
+
+
+async def test_title_autogen_uses_selected_provider_context(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import UUID
+
+    from app.db.repositories import api_keys as api_keys_repo
+    from app.providers.fake import FakeProvider
+    from app.routes import conversations as conversation_routes
+    from app.streaming import handler as streaming_handler
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    plaintext_key = "sk-openai-test-byok-12345678"
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        user.is_anonymous = False
+        await api_keys_repo.upsert(
+            session,
+            user_id=user.id,
+            provider="openai",
+            raw_api_key=plaintext_key,
+        )
+        await session.commit()
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    def _main_provider(
+        settings: object | None = None,
+        *,
+        provider_id: str | None = None,
+        api_key: str | None = None,
+    ) -> FakeProvider:
+        return FakeProvider(delay_ms=0)
+
+    title_calls: list[dict[str, object]] = []
+
+    class TitleProvider(FakeProvider):
+        async def complete(
+            self,
+            *,
+            model_id: str,
+            history: list[ChatMessage],
+            user_text: str,
+            api_key: str | None = None,
+        ) -> str:
+            title_calls.append(
+                {
+                    "model_id": model_id,
+                    "history": history,
+                    "api_key": api_key,
+                }
+            )
+            return "Selected Provider Title"
+
+    def _title_provider(
+        settings: object | None = None,
+        *,
+        provider_id: str | None = None,
+        api_key: str | None = None,
+    ) -> TitleProvider:
+        title_calls.append({"provider_id": provider_id, "api_key": api_key})
+        return TitleProvider(delay_ms=0)
+
+    monkeypatch.setattr(conversation_routes, "build_provider", _main_provider)
+    monkeypatch.setattr(streaming_handler, "build_provider", _title_provider)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "openai",
+            "text": "first turn",
+        },
+    )
+    assert frames[-1][0] == "terminal"
+
+    deadline = 2.0
+    interval = 0.05
+    elapsed = 0.0
+    final_title = "New chat"
+    while elapsed < deadline:
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    select(Conversation).where(Conversation.id == UUID(conv_id))
+                )
+            ).scalar_one()
+            final_title = row.title
+        if final_title == "Selected Provider Title":
+            break
+        await asyncio.sleep(interval)
+        elapsed += interval
+
+    assert title_calls[0] == {"provider_id": "openai", "api_key": plaintext_key}
+    assert title_calls[1]["model_id"] == "gpt-4o-mini"
+    assert title_calls[1]["api_key"] == plaintext_key
+    assert final_title == "Selected Provider Title"
 
 
 async def test_title_autogen_does_not_re_fire_on_second_terminal(

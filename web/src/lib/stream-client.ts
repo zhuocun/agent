@@ -32,6 +32,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, type ApiErrorEnvelope } from "@/lib/apiClient";
 import type {
+  AttachmentPart,
   ModelAttribution,
   ModelTierId,
   SourceItem,
@@ -99,6 +100,9 @@ export interface StartArgs {
   // Toggled on in the composer; sent only when true (the BE treats absence as
   // false). Gated upstream on the selected tier's `supportsWebSearch`.
   webSearch?: boolean;
+  // Metadata-only attachments. The BE currently rejects non-empty lists before
+  // provider execution because adapters are text-only.
+  attachments?: AttachmentPart[];
 }
 
 const INITIAL: ApiStreamState = {
@@ -626,6 +630,9 @@ export function useApiStream(
       // Send `webSearch` only when on — the BE treats absence as false, so the
       // off path is a no-op vs today's wire shape.
       if (args.webSearch) body.webSearch = true;
+      if (args.attachments && args.attachments.length > 0) {
+        body.attachments = args.attachments;
+      }
 
       let response: Response;
       try {

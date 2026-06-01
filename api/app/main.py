@@ -45,6 +45,7 @@ from app.routes.preferences import router as preferences_router
 from app.routes.share import router as share_router
 from app.streaming.handler import cancel_all_producers
 from app.streaming.reaper import reap_once, run_reaper_loop
+from app.streaming.state import configure_stream_state
 
 _log = structlog.get_logger(__name__)
 
@@ -114,6 +115,7 @@ def _build_lifespan(settings: Settings) -> Any:
 def create_app() -> FastAPI:
     settings = get_settings()
     settings.assert_prod_safe()
+    configure_stream_state(settings)
 
     # [observability] Sentry init — must run BEFORE any middleware is added so
     # the SDK's request-scope hooks see the full ASGI chain. No-op when

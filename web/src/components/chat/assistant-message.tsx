@@ -5,6 +5,7 @@ import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import { SourcesPanel } from "@/components/chat/sources-panel";
+import { ToolPartView } from "@/components/chat/tool-part";
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
 import { AttributionRow } from "@/components/chat/attribution-row";
 import { MessageActions } from "@/components/chat/message-actions";
@@ -23,7 +24,10 @@ interface AssistantMessageProps {
   message: ChatMessage;
   status: StreamStatus;
   reasoningStreaming?: boolean;
+  canBranch?: boolean;
+  isBranching?: boolean;
   canRegenerate?: boolean;
+  onBranch?: () => void;
   onRegenerate?: () => void;
   onFeedback?: (next: Feedback) => void;
   defaultReasoningOpen?: boolean;
@@ -41,7 +45,10 @@ export function AssistantMessage({
   message,
   status,
   reasoningStreaming,
+  canBranch,
+  isBranching,
   canRegenerate,
+  onBranch,
   onRegenerate,
   onFeedback,
   defaultReasoningOpen = false,
@@ -109,6 +116,9 @@ export function AssistantMessage({
           // sources — is established upstream in chat-thread.tsx).
           return <SourcesPanel key={idx} items={part.items} />;
         }
+        if (part.type === "tool_call" || part.type === "tool_result") {
+          return <ToolPartView key={idx} part={part} />;
+        }
         return null;
       })}
 
@@ -130,7 +140,10 @@ export function AssistantMessage({
             <MessageActions
               text={answerText}
               feedback={message.feedback ?? null}
+              canBranch={canBranch}
+              isBranching={isBranching}
               canRegenerate={canRegenerate}
+              onBranch={onBranch}
               onRegenerate={onRegenerate}
               onFeedback={onFeedback}
             />

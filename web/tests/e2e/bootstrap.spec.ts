@@ -89,6 +89,26 @@ test.describe("bootstrap", () => {
     expect(tierIds).toEqual(["auto", "fast", "pro", "smart"]);
   });
 
+  test("settings surfaces actionable platform usage details", async ({ page }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByRole("button", { name: "Account menu" }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("Platform credits")).toBeVisible();
+    await expect(dialog.getByText("1,000 left")).toBeVisible();
+    await expect(
+      dialog.getByText("Platform-key requests count toward this monthly cap."),
+    ).toBeVisible();
+    await expect(dialog.getByText("Used", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Remaining", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Limit", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Period", { exact: true })).toBeVisible();
+  });
+
   test("second visit in the same context reuses the same anonymous user", async ({
     page,
     context,

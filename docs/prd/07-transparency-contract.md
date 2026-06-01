@@ -166,6 +166,8 @@ Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible 
 
 ### 6.3 Usage meter **[P0]**
 - Platform-key users: period spend/usage vs cap.
+- The compact meter should make remaining quota legible and call out near-limit
+  or exhausted states before a request fails.
 - BYOK users: "Billed to your key"; no platform token markup.
 - Guest users: stricter cap and sign-up CTA.
 

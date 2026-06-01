@@ -42,12 +42,13 @@ from app.providers.protocol import ChatMessage as ProviderChatMessage
 from app.providers.router import route_auto
 from app.providers.tiers import get_binding
 from app.schemas.common import SubstitutionReasonCode
-from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.conversation import (
+    BranchConversationRequest,
     CreateConversationRequest,
     PatchConversationRequest,
     SendMessageRequest,
 )
+from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.message import ModelAttribution
 from app.schemas.share import ShareLinkResponse
 from app.schemas.stream_events import (
@@ -72,7 +73,7 @@ from app.streaming.sse import (
     encode_submitted,
     encode_terminal,
 )
-from app.streaming.stop_registry import request_stop
+from app.streaming.stop_registry import request_stop_async
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -130,6 +131,19 @@ def _duplicate_in_flight() -> AppError:
             body="A prior submission with this clientMessageId is still in flight.",
         ),
         status.HTTP_409_CONFLICT,
+    )
+
+
+def _attachments_unsupported() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="ATTACHMENTS_UNSUPPORTED",
+            severity="warning",
+            title="Attachments are not supported yet",
+            body="The current model providers only receive text. Remove attachments "
+            "and send the message again.",
+        ),
+        status.HTTP_400_BAD_REQUEST,
     )
 
 
@@ -214,6 +228,39 @@ async def create_conversation(
         selected_tier_id=body.selected_tier_id,
         is_temporary=False,
     )
+
+
+@router.post(
+    "/{conversation_id}/branch",
+    response_model=ConversationSchema,
+    status_code=status.HTTP_201_CREATED,
+)
+async def branch_conversation(
+    conversation_id: UUID,
+    body: BranchConversationRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ConversationSchema:
+    """Create a new owned conversation copied through `messageId`.
+
+    The source remains unchanged. The repository copies message content and
+    attribution only; usage rollups are not touched and copied messages do not
+    carry `message.cost_usd`, so branching cannot re-bill historical turns.
+    """
+    try:
+        message_id = UUID(body.message_id)
+    except ValueError as exc:
+        raise _invalid_input("INVALID_INPUT", "messageId must be a UUID.") from exc
+
+    branched = await conversations_repo.branch_for_user(
+        db,
+        source_conversation_id=conversation_id,
+        user_id=user.id,
+        through_message_id=message_id,
+    )
+    if branched is None:
+        raise not_found("conversation")
+    return branched
 
 
 @router.patch("/{conversation_id}", response_model=ConversationSchema)
@@ -540,6 +587,14 @@ async def send_message(
             if period_cost >= settings.usage_budget_usd:
                 raise _budget_exceeded()
 
+    # Provider adapters are currently text-only. The shared schema/repository
+    # can round-trip attachment metadata, but a message carrying files must not
+    # enter the provider path until a concrete adapter supports multimodal
+    # payloads. Reject here, after ownership checks, before idempotency or any
+    # user-message insert.
+    if body.attachments:
+        raise _attachments_unsupported()
+
     # Idempotency: prior user message for this client_message_id?
     # Skipped for regenerate / edit paths — those use a fresh clientMessageId
     # by FE contract; on the off chance an old id is reused, we still want
@@ -582,6 +637,7 @@ async def send_message(
                 conversation_id=conversation_id,
                 client_message_id=client_uuid,
                 text=body.text,
+                attachments=body.attachments,
             )
             # A new turn was accepted — bump the conversation so it rises in
             # the sidebar. Same session/transaction as the user message, so it
@@ -704,7 +760,7 @@ async def send_message(
     # even with the flag on.
     if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
         ttl = settings.resumable_buffer_ttl_seconds
-        buffer = replay_registry.create(stream_id, ttl_seconds=ttl)
+        buffer = await replay_registry.create_async(stream_id, ttl_seconds=ttl)
         # The detached producer owns a FRESH session derived from THIS request's
         # engine (the request session closes when the POST returns). Using
         # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite
@@ -819,7 +875,7 @@ async def reconnect_stream(
         raise not_found("stream")
 
     # Live (or within-TTL done) buffer for this stream on this worker?
-    buffer = replay_registry.get(
+    buffer = await replay_registry.get_async(
         stream_id, ttl_seconds=settings.resumable_buffer_ttl_seconds
     )
     if buffer is None:
@@ -889,7 +945,7 @@ async def stop_stream(
         # persist the partial assistant row, and transition the same stream row
         # to `stopped` itself — `mark_status` here records the intent up front
         # so a stop is durable even if the generator never sees the signal.
-        request_stop(active.id)
+        await request_stop_async(active.id)
         await streams_repo.mark_status(
             db, stream_id=active.id, status="stopped"
         )

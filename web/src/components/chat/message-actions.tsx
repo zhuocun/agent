@@ -1,7 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
+import {
+  Check,
+  Copy,
+  GitBranch,
+  Loader2,
+  RotateCcw,
+  ThumbsDown,
+  ThumbsUp,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -15,7 +23,10 @@ import type { Feedback } from "@/lib/types";
 interface MessageActionsProps {
   text: string;
   feedback: Feedback;
+  canBranch?: boolean;
+  isBranching?: boolean;
   canRegenerate?: boolean;
+  onBranch?: () => void;
   onRegenerate?: () => void;
   onFeedback?: (next: Feedback) => void;
 }
@@ -23,7 +34,10 @@ interface MessageActionsProps {
 export function MessageActions({
   text,
   feedback,
+  canBranch,
+  isBranching,
   canRegenerate,
+  onBranch,
   onRegenerate,
   onFeedback,
 }: MessageActionsProps) {
@@ -55,6 +69,20 @@ export function MessageActions({
         </IconAction>
       ) : null}
 
+      {onBranch ? (
+        <IconAction
+          label={isBranching ? "Branching" : "Branch in new chat"}
+          disabled={!canBranch || isBranching}
+          onClick={onBranch}
+        >
+          {isBranching ? (
+            <Loader2 className="size-4 motion-safe:animate-spin" />
+          ) : (
+            <GitBranch className="size-4" />
+          )}
+        </IconAction>
+      ) : null}
+
       <IconAction
         label="Helpful"
         pressed={feedback === "up"}
@@ -77,11 +105,13 @@ export function MessageActions({
 function IconAction({
   label,
   pressed,
+  disabled,
   onClick,
   children,
 }: {
   label: string;
   pressed?: boolean;
+  disabled?: boolean;
   onClick?: () => void;
   children: React.ReactNode;
 }) {
@@ -93,6 +123,7 @@ function IconAction({
             type="button"
             variant="ghost"
             onClick={onClick}
+            disabled={disabled}
             aria-label={label}
             aria-pressed={typeof pressed === "boolean" ? pressed : undefined}
             className={cn(

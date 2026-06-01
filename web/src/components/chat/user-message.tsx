@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Copy, Pencil } from "lucide-react";
+import {
+  Check,
+  Copy,
+  FileText,
+  GitBranch,
+  Image as ImageIcon,
+  Loader2,
+  Pencil,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -14,16 +22,35 @@ import type { ChatMessage, MessagePart } from "@/lib/types";
 interface UserMessageProps {
   message: ChatMessage;
   onEdit?: (newText: string) => void;
+  onBranch?: () => void;
   canEdit?: boolean;
+  canBranch?: boolean;
+  isBranching?: boolean;
 }
 
 const MAX_EDIT_HEIGHT = 320;
 
-export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function UserMessage({
+  message,
+  onEdit,
+  onBranch,
+  canEdit,
+  canBranch,
+  isBranching,
+}: UserMessageProps) {
   const text = message.parts
     .filter((p): p is Extract<MessagePart, { type: "text" }> => p.type === "text")
     .map((p) => p.text)
     .join("\n\n");
+  const attachments = message.parts.filter(
+    (p): p is Extract<MessagePart, { type: "attachment" }> =>
+      p.type === "attachment",
+  );
 
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(text);
@@ -158,9 +185,31 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
           a saturated blue bubble. */}
       <div
         data-testid="user-message-text"
-        className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground shadow-[var(--glass-highlight),inset_0_0_0_1px_var(--glass-border)] md:text-[0.9375rem]"
+        className="max-w-[85%] space-y-3 rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground shadow-[var(--glass-highlight),inset_0_0_0_1px_var(--glass-border)] md:text-[0.9375rem]"
       >
-        {text}
+        {text ? <div className="whitespace-pre-wrap break-words">{text}</div> : null}
+        {attachments.length > 0 ? (
+          <div className="flex flex-wrap justify-end gap-2">
+            {attachments.map((attachment) => (
+              <span
+                key={attachment.id}
+                className="inline-flex h-8 max-w-full items-center gap-2 rounded-full bg-background/45 px-3 text-xs leading-none text-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]"
+              >
+                {attachment.mediaType === "pdf" ? (
+                  <FileText aria-hidden className="size-3.5 shrink-0" />
+                ) : (
+                  <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+                )}
+                <span className="min-w-0 max-w-[12rem] truncate">
+                  {attachment.name}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {formatAttachmentSize(attachment.sizeBytes)}
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 [@media(hover:none)]:opacity-100">
         <Tooltip>
@@ -200,6 +249,32 @@ export function UserMessage({ message, onEdit, canEdit }: UserMessageProps) {
               }
             />
             <TooltipContent>Edit</TooltipContent>
+          </Tooltip>
+        ) : null}
+
+        {onBranch ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={onBranch}
+                  disabled={!canBranch || isBranching}
+                  aria-label={isBranching ? "Branching" : "Branch in new chat"}
+                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
+                >
+                  {isBranching ? (
+                    <Loader2 className="size-4 motion-safe:animate-spin" />
+                  ) : (
+                    <GitBranch className="size-4" />
+                  )}
+                </Button>
+              }
+            />
+            <TooltipContent>
+              {isBranching ? "Branching" : "Branch in new chat"}
+            </TooltipContent>
           </Tooltip>
         ) : null}
       </div>

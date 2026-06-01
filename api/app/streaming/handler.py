@@ -75,7 +75,7 @@ from app.schemas.stream_events import (
     TerminalEvent,
 )
 from app.search.protocol import SourceItem
-from app.streaming.replay_registry import ReplayBuffer
+from app.streaming.replay_registry import ReplayLogBuffer
 from app.streaming.sse import (
     encode_answer_delta,
     encode_error,
@@ -86,7 +86,7 @@ from app.streaming.sse import (
     encode_submitted,
     encode_terminal,
 )
-from app.streaming.stop_registry import clear_stop, is_stop_requested
+from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
 
 log = logging.getLogger(__name__)
 _struct_log = structlog.get_logger(__name__)
@@ -489,7 +489,7 @@ async def stream_and_persist(
             # client closing the socket (disconnect, per plan §"Streaming" rule
             # 6). Both persist the same `status="stopped"` row.
             if (
-                stream_id is not None and is_stop_requested(stream_id)
+                stream_id is not None and await is_stop_requested_async(stream_id)
             ) or await request.is_disconnected():
                 pump_task.cancel()
                 # Suppress ONLY the CancelledError from the cancel we just
@@ -568,7 +568,7 @@ async def stream_and_persist(
                     await fresh_db.commit()
                 # Drop the live signal now that the turn is fully torn down.
                 if stream_id is not None:
-                    clear_stop(stream_id)
+                    await clear_stop_async(stream_id)
                 # M4: stop-path turn log at warn level with cost_confidence=estimate.
                 _struct_log.warning(
                     "turn.stopped",
@@ -781,7 +781,7 @@ async def stream_and_persist(
                     )
                     await cancel_db.commit()
             with contextlib.suppress(Exception):
-                clear_stop(stream_id)
+                await clear_stop_async(stream_id)
         # Re-raise so the event loop sees the cancellation rather than
         # swallowing it into a fake `error` envelope. The cleanup above must
         # NEVER suppress the cancellation. The `finally` clause still cancels
@@ -825,7 +825,7 @@ async def stream_and_persist(
             except Exception as mark_exc:  # pragma: no cover - defensive
                 log.warning("stream.mark_error.failed", exc_info=mark_exc)
             with contextlib.suppress(Exception):
-                clear_stop(stream_id)
+                await clear_stop_async(stream_id)
         return
     finally:
         if not pump_task.done():
@@ -844,12 +844,12 @@ async def stream_and_persist(
         # already cleared and closes the leak on the `done` path. Guarded on a
         # non-None stream_id (temporary turns never register a stream).
         if stream_id is not None:
-            clear_stop(stream_id)
+            await clear_stop_async(stream_id)
 
 
 async def run_detached_producer(
     *,
-    buffer: ReplayBuffer,
+    buffer: ReplayLogBuffer,
     session_factory: async_sessionmaker[AsyncSession],
     provider: Provider,
     binding: TierBinding,

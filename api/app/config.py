@@ -163,6 +163,16 @@ class Settings(BaseSettings):
     # own provider) and never consult this cap.
     usage_budget_usd: float = Field(default=0.0, alias="USAGE_BUDGET_USD")
 
+    # Live stream coordination state. `memory` preserves the current
+    # single-process behavior. `redis` is reserved for the shared-state backend:
+    # settings accept the intended env shape now, but app startup fails fast
+    # until the Redis implementation is wired so operators cannot accidentally
+    # believe cross-worker replay/stop is active.
+    stream_state_backend: Literal["memory", "redis"] = Field(
+        default="memory", alias="STREAM_STATE_BACKEND"
+    )
+    redis_url: str | None = Field(default=None, alias="REDIS_URL")
+
     # Orphan-stream reaper TTL (seconds). A hard worker crash (SIGKILL / OOM /
     # power loss) runs no Python cleanup, so a `stream` row can strand at
     # `status="active"` forever (PRD 04 §5.1). The reaper sweeps `active` rows

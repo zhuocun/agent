@@ -15,6 +15,7 @@ export const MODEL_TIERS: ModelTier[] = [
     contextHint: "auto",
     modelLabel: "", // varies per message via the router
     supportsWebSearch: true,
+    supportsAttachments: false,
   },
   {
     id: "fast",
@@ -25,6 +26,7 @@ export const MODEL_TIERS: ModelTier[] = [
     contextHint: "1M",
     modelLabel: "DeepSeek V4 Flash",
     supportsWebSearch: true,
+    supportsAttachments: false,
   },
   {
     id: "smart",
@@ -35,6 +37,7 @@ export const MODEL_TIERS: ModelTier[] = [
     contextHint: "1M",
     modelLabel: "DeepSeek V4 Flash",
     supportsWebSearch: true,
+    supportsAttachments: false,
   },
   {
     id: "pro",
@@ -45,6 +48,7 @@ export const MODEL_TIERS: ModelTier[] = [
     contextHint: "1M",
     modelLabel: "DeepSeek V4 Pro",
     supportsWebSearch: true,
+    supportsAttachments: false,
   },
 ];
 

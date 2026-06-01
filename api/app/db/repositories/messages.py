@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Message, Vote
 from app.providers.protocol import ChatMessage as ProviderChatMessage
+from app.schemas.message import AttachmentPart
 
 # Cap on how many of the most-recent messages `load_history` replays to the
 # provider. Every turn re-sends the whole prior conversation as context, so an
@@ -106,6 +107,7 @@ async def create_user_message(
     conversation_id: UUID,
     client_message_id: UUID,
     text: str,
+    attachments: list[AttachmentPart] | None = None,
 ) -> Message:
     """Persist a user turn. Returns the row with `id` and `created_at` set.
 
@@ -115,11 +117,16 @@ async def create_user_message(
     which makes within-turn ties and regen/edit truncation order
     unreliable.
     """
+    parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    parts.extend(
+        attachment.model_dump(mode="json", by_alias=True)
+        for attachment in (attachments or [])
+    )
     msg = Message(
         conversation_id=conversation_id,
         client_message_id=client_message_id,
         role="user",
-        parts=[{"type": "text", "text": text}],
+        parts=parts,
         status=None,
         attribution=None,
         created_at=_now(),

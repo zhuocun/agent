@@ -22,6 +22,9 @@ export interface ModelTier {
   // true. Filled by the BE from the active provider backend (the mock in
   // model-tiers.ts is a realistic stand-in for the loading frame).
   supportsWebSearch: boolean;
+  // Whether this tier can consume file attachments through the provider
+  // adapter. Current adapters are text-only, so bootstrap sends false.
+  supportsAttachments: boolean;
 }
 
 // Reasoning-effort / extended-thinking control surfaced in the composer
@@ -110,6 +113,28 @@ export interface SourceItem {
   domain?: string;
 }
 
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type ToolApprovalState =
+  | "not_required"
+  | "pending"
+  | "approved"
+  | "rejected";
+
+export type ToolRunStatus =
+  | "pending"
+  | "awaiting_approval"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
 export type MessagePart =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string; durationSec?: number }
@@ -117,7 +142,43 @@ export type MessagePart =
   // Web-search sources, rendered AFTER the answer text. Added to the shared
   // `MessagePart` union so it auto-flows to the share surface (`PublicMessage`
   // reuses `MessagePart`) and round-trips via GET /api/conversations/:id.
-  | { type: "sources"; items: SourceItem[] };
+  | { type: "sources"; items: SourceItem[] }
+  // User attachment metadata only. File bytes are not persisted in this slice;
+  // provider adapters do not receive attachments until a multimodal binding
+  // lands and reports `supportsAttachments=true`.
+  | AttachmentPart
+  // Tool/function calling foundation. These are transcript parts only: current
+  // streaming continues to use `status`/`sources` for web search, while future
+  // tools can add calls/results without changing the renderer or share model.
+  | {
+      type: "tool_call";
+      id: string;
+      name: string;
+      label?: string;
+      status?: ToolRunStatus;
+      approvalState?: ToolApprovalState;
+      input?: Record<string, JsonValue>;
+    }
+  | {
+      type: "tool_result";
+      toolCallId: string;
+      name: string;
+      label?: string;
+      status?: ToolRunStatus;
+      approvalState?: ToolApprovalState;
+      summary?: string;
+      output?: Record<string, JsonValue>;
+      error?: string;
+    };
+
+export interface AttachmentPart {
+  type: "attachment";
+  id: string;
+  name: string;
+  mediaType: "image" | "pdf";
+  mimeType: string;
+  sizeBytes: number;
+}
 
 export type MessageRole = "user" | "assistant";
 

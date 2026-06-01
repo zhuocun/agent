@@ -1,15 +1,15 @@
 """Message parts, attribution, cost breakdown, ChatMessage.
 
 Mirrors `web/src/lib/types.ts` exactly. `MessagePart` is a discriminated union
-of the variants the FE renders (`text` | `reasoning` | `status` | `sources`).
-The wider PRD-04 §6 schema (e.g. `tool-call`) is deliberately not in M0.
+of the variants the FE renders (`text` | `reasoning` | `status` | `sources` |
+`attachment` | `tool_call` | `tool_result`).
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, StringConstraints, model_validator
 
 from app.schemas.common import (
     CamelModel,
@@ -52,8 +52,86 @@ class SourcesPart(CamelModel):
     items: list[SourceItem]
 
 
+class AttachmentPart(CamelModel):
+    """User-provided attachment metadata.
+
+    The first attachment slice stores metadata only. File bytes/object storage
+    and multimodal provider payloads are separate concerns; until those land,
+    routes reject provider execution for turns carrying attachments.
+    """
+
+    type: Literal["attachment"] = "attachment"
+    id: Annotated[str, StringConstraints(min_length=1, max_length=100)]
+    name: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    media_type: Literal["image", "pdf"]
+    mime_type: Annotated[str, StringConstraints(min_length=1, max_length=100)]
+    size_bytes: int = Field(ge=0, le=25 * 1024 * 1024)
+
+    @model_validator(mode="after")
+    def _mime_matches_media_type(self) -> AttachmentPart:
+        if self.media_type == "image" and not self.mime_type.startswith("image/"):
+            raise ValueError("image attachments must use an image/* MIME type")
+        if self.media_type == "pdf" and self.mime_type != "application/pdf":
+            raise ValueError("PDF attachments must use application/pdf")
+        return self
+
+
+ToolApprovalState = Literal[
+    "not_required",
+    "pending",
+    "approved",
+    "rejected",
+]
+
+ToolRunStatus = Literal[
+    "pending",
+    "awaiting_approval",
+    "running",
+    "succeeded",
+    "failed",
+    "cancelled",
+]
+
+
+class ToolCallPart(CamelModel):
+    """A model-requested tool/function call.
+
+    This is intentionally only a persisted/rendered part, not an agent loop.
+    `approval_state` is explicit now so a future human-in-the-loop flow can
+    add approval endpoints without changing the transcript shape.
+    """
+
+    type: Literal["tool_call"] = "tool_call"
+    id: str
+    name: str
+    label: str | None = None
+    status: ToolRunStatus = "pending"
+    approval_state: ToolApprovalState = "not_required"
+    input: dict[str, Any] | None = None
+
+
+class ToolResultPart(CamelModel):
+    """The result produced for a prior `tool_call` part."""
+
+    type: Literal["tool_result"] = "tool_result"
+    tool_call_id: str
+    name: str
+    label: str | None = None
+    status: ToolRunStatus = "succeeded"
+    approval_state: ToolApprovalState = "not_required"
+    summary: str | None = None
+    output: dict[str, Any] | None = None
+    error: str | None = None
+
+
 MessagePart = Annotated[
-    TextPart | ReasoningPart | StatusPart | SourcesPart,
+    TextPart
+    | ReasoningPart
+    | StatusPart
+    | SourcesPart
+    | AttachmentPart
+    | ToolCallPart
+    | ToolResultPart,
     Field(discriminator="type"),
 ]
 

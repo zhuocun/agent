@@ -23,6 +23,13 @@ function messageIdOf(child: React.ReactNode): string | null {
   return typeof id === "string" ? id : null;
 }
 
+function messageRoleOf(child: React.ReactNode): "assistant" | "user" | null {
+  if (!isValidElement(child)) return null;
+  const props = child.props as { message?: { role?: unknown } };
+  const role = props.message?.role;
+  return role === "assistant" || role === "user" ? role : null;
+}
+
 export function MessageList({
   children,
   isTemporary = false,
@@ -203,20 +210,24 @@ export function MessageList({
               : "mx-auto flex w-full max-w-3xl list-none flex-col gap-6 px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5.5rem)]"
           }
         >
-          {Children.map(children, (child) => (
-            // animate-message-in carries its own reduced-motion alternate
-            // (globals.css), so the class alone is the complete contract — no
-            // inline transform that would fight it or overflow-anchor.
-            <li
-              className={
-                isNew(messageIdOf(child))
-                  ? "min-w-0 list-none animate-message-in"
-                  : "min-w-0 list-none"
-              }
-            >
-              {child}
-            </li>
-          ))}
+          {Children.map(children, (child) => {
+            const id = messageIdOf(child);
+            const role = messageRoleOf(child);
+            return (
+              // animate-message-in carries its own reduced-motion alternate
+              // (globals.css), so the class alone is the complete contract — no
+              // inline transform that would fight it or overflow-anchor.
+              <li
+                data-message-role={role ?? undefined}
+                className={cn(
+                  "chat-message-row min-w-0 list-none",
+                  isNew(id) && "animate-message-in",
+                )}
+              >
+                {child}
+              </li>
+            );
+          })}
         </ol>
       </div>
 

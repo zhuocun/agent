@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, Message, User
 from app.db.repositories import messages as messages_repo
+from app.schemas.message import AttachmentPart
 
 pytestmark = pytest.mark.asyncio
 
@@ -81,6 +82,45 @@ async def _all_message_ids(
             .order_by(Message.created_at.asc(), Message.id.asc())
         )
         return list((await session.execute(stmt)).scalars().all())
+
+
+# -- create_user_message ------------------------------------------------------
+
+
+async def test_create_user_message_persists_attachment_metadata_and_history_ignores_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    conv_id = await _seed_user_and_conversation(session_factory)
+    attachment = AttachmentPart(
+        id="att-1",
+        name="figure.png",
+        media_type="image",
+        mime_type="image/png",
+        size_bytes=4096,
+    )
+
+    async with session_factory() as session:
+        row = await messages_repo.create_user_message(
+            session,
+            conversation_id=conv_id,
+            client_message_id=uuid4(),
+            text="describe this",
+            attachments=[attachment],
+        )
+        assert row.parts == [
+            {"type": "text", "text": "describe this"},
+            {
+                "type": "attachment",
+                "id": "att-1",
+                "name": "figure.png",
+                "mediaType": "image",
+                "mimeType": "image/png",
+                "sizeBytes": 4096,
+            },
+        ]
+
+        history = await messages_repo.load_history(session, conv_id)
+        assert [(m.role, m.text) for m in history] == [("user", "describe this")]
 
 
 # -- truncate_from ------------------------------------------------------------

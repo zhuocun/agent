@@ -22,7 +22,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Conversation, Message, User
+from app.db.models import Conversation, Message, UsageRollup, User
 from app.db.repositories import conversations as conversations_repo
 
 pytestmark = pytest.mark.asyncio
@@ -129,6 +129,129 @@ async def _make_other_user(
         return user.id
 
 
+async def _seed_branch_source(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: object,
+) -> tuple[str, list[str]]:
+    async with session_factory() as session:
+        conversation = Conversation(
+            user_id=user_id,
+            title="Branchable chat",
+            selected_tier_id="smart",
+            pinned=True,
+            created_at=datetime(2026, 1, 1, 11, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 1, 1, 11, 0, 0, tzinfo=UTC),
+        )
+        session.add(conversation)
+        await session.flush()
+
+        base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        user_1_id = uuid4()
+        assistant_1_id = uuid4()
+        user_2_id = uuid4()
+        assistant_2_id = uuid4()
+        rows = [
+            Message(
+                id=user_1_id,
+                conversation_id=conversation.id,
+                client_message_id=uuid4(),
+                role="user",
+                parts=[{"type": "text", "text": "first prompt"}],
+                status=None,
+                attribution=None,
+                created_at=base,
+            ),
+            Message(
+                id=assistant_1_id,
+                conversation_id=conversation.id,
+                client_message_id=None,
+                role="assistant",
+                parts=[{"type": "text", "text": "first answer"}],
+                status="done",
+                attribution={
+                    "requestedTierId": "smart",
+                    "servedTierId": "smart",
+                    "servedModelLabel": "Claude Sonnet 4.6",
+                    "isByok": False,
+                    "costUsd": 0.001,
+                    "costConfidence": "exact",
+                    "breakdown": {
+                        "currency": "USD",
+                        "listPriceInPerM": 3,
+                        "listPriceOutPerM": 15,
+                        "inputTokens": 10,
+                        "outputTokens": 20,
+                        "reasoningTokens": 0,
+                        "cachedInputTokens": 0,
+                        "longContext": {"flat": True, "tokensRepriced": "none"},
+                        "promoApplied": False,
+                        "subtotalUsd": 0.001,
+                        "sessionSurchargeUsd": 0,
+                    },
+                },
+                cost_usd=0.001,
+                responds_to_message_id=user_1_id,
+                created_at=base + timedelta(seconds=1),
+            ),
+            Message(
+                id=user_2_id,
+                conversation_id=conversation.id,
+                client_message_id=uuid4(),
+                role="user",
+                parts=[{"type": "text", "text": "second prompt"}],
+                status=None,
+                attribution=None,
+                created_at=base + timedelta(seconds=2),
+            ),
+            Message(
+                id=assistant_2_id,
+                conversation_id=conversation.id,
+                client_message_id=None,
+                role="assistant",
+                parts=[{"type": "text", "text": "second answer"}],
+                status="done",
+                attribution={
+                    "requestedTierId": "smart",
+                    "servedTierId": "smart",
+                    "servedModelLabel": "Claude Sonnet 4.6",
+                    "isByok": False,
+                    "costUsd": 0.002,
+                    "costConfidence": "exact",
+                    "breakdown": {
+                        "currency": "USD",
+                        "listPriceInPerM": 3,
+                        "listPriceOutPerM": 15,
+                        "inputTokens": 11,
+                        "outputTokens": 21,
+                        "reasoningTokens": 0,
+                        "cachedInputTokens": 0,
+                        "longContext": {"flat": True, "tokensRepriced": "none"},
+                        "promoApplied": False,
+                        "subtotalUsd": 0.002,
+                        "sessionSurchargeUsd": 0,
+                    },
+                },
+                cost_usd=0.002,
+                responds_to_message_id=user_2_id,
+                created_at=base + timedelta(seconds=3),
+            ),
+        ]
+        session.add_all(rows)
+        session.add(
+            UsageRollup(
+                user_id=user_id,
+                period_start=datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC),
+                used=7,
+                cost_usd=1.23,
+                limit_value=1000,
+                is_byok=False,
+            )
+        )
+        await session.commit()
+        return str(conversation.id), [str(row.id) for row in rows]
+
+
 async def _current_user_id(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
@@ -138,6 +261,115 @@ async def _current_user_id(
     async with session_factory() as s:
         user = (await s.execute(select(User))).scalar_one()
         return user.id
+
+
+# -- BRANCH -------------------------------------------------------------------
+
+
+async def test_branch_conversation_copies_messages_through_selected_message(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from uuid import UUID as _UUID
+
+    user_id = await _current_user_id(client, session_factory)
+    source_id, message_ids = await _seed_branch_source(
+        session_factory, user_id=user_id
+    )
+
+    response = await client.post(
+        f"/api/conversations/{source_id}/branch",
+        json={"messageId": message_ids[2]},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["id"] != source_id
+    assert body["title"] == "Branchable chat"
+    assert body["selectedTierId"] == "smart"
+    assert body["isTemporary"] is False
+    assert [m["role"] for m in body["messages"]] == ["user", "assistant", "user"]
+    assert [m["parts"][0]["text"] for m in body["messages"]] == [
+        "first prompt",
+        "first answer",
+        "second prompt",
+    ]
+    assert body["messages"][1]["attribution"]["costUsd"] == 0.001
+
+    async with session_factory() as session:
+        branch_messages = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == _UUID(body["id"]))
+                .order_by(Message.created_at.asc(), Message.id.asc())
+            )
+        ).scalars().all()
+        assert len(branch_messages) == 3
+        assert all(message.cost_usd is None for message in branch_messages)
+        assert all(message.client_message_id is None for message in branch_messages)
+        assert branch_messages[1].responds_to_message_id == branch_messages[0].id
+        assert branch_messages[1].responds_to_message_id != _UUID(message_ids[0])
+
+        source_assistants = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == _UUID(source_id))
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.asc(), Message.id.asc())
+            )
+        ).scalars().all()
+        assert [message.cost_usd for message in source_assistants] == [0.001, 0.002]
+
+        rollup = (await session.execute(select(UsageRollup))).scalar_one()
+        assert rollup.used == 7
+        assert rollup.cost_usd == 1.23
+
+
+async def test_branch_conversation_not_owned_returns_404(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    other_user_id = await _make_other_user(session_factory)
+    source_id, message_ids = await _seed_branch_source(
+        session_factory, user_id=other_user_id
+    )
+
+    response = await client.post(
+        f"/api/conversations/{source_id}/branch",
+        json={"messageId": message_ids[0]},
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+
+
+async def test_branch_conversation_unknown_message_returns_404(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _current_user_id(client, session_factory)
+    source_id, _ = await _seed_branch_source(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{source_id}/branch",
+        json={"messageId": str(uuid4())},
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+
+
+async def test_branch_conversation_invalid_message_id_returns_400(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _current_user_id(client, session_factory)
+    source_id, _ = await _seed_branch_source(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{source_id}/branch",
+        json={"messageId": "not-a-uuid"},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INPUT"
 
 
 # -- PATCH --------------------------------------------------------------------

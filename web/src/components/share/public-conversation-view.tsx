@@ -7,6 +7,7 @@ import { Loader2, MessageSquareText } from "lucide-react";
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import { SourcesPanel } from "@/components/chat/sources-panel";
+import { ToolPartView } from "@/components/chat/tool-part";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { PublicAttributionRow } from "@/components/share/public-attribution-row";
 import { Button } from "@/components/ui/button";
@@ -204,6 +205,9 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
           // render with the same primitive as the private thread — a shared
           // grounded answer keeps its sources.
           return <SourcesPanel key={idx} items={part.items} />;
+        }
+        if (part.type === "tool_call" || part.type === "tool_result") {
+          return <ToolPartView key={idx} part={part} />;
         }
         // `status` parts are an in-flight streaming affordance; a static
         // snapshot has no live status, so they're intentionally omitted.

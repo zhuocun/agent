@@ -235,6 +235,18 @@ export function createConversation(
   return apiClient.post<Conversation>("/api/conversations", body, signal);
 }
 
+export function branchConversation(
+  id: string,
+  body: { messageId: string },
+  signal?: AbortSignal,
+): Promise<Conversation> {
+  return apiClient.post<Conversation>(
+    `/api/conversations/${encodeURIComponent(id)}/branch`,
+    body,
+    signal,
+  );
+}
+
 export function patchConversation(
   id: string,
   body: { title?: string; pinned?: boolean },

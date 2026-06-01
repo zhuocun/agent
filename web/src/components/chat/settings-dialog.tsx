@@ -24,8 +24,8 @@ import { MODEL_TIERS } from "@/lib/model-tiers";
 import {
   isAnonymousAccount,
   type AccountInfo,
-  type UsageBudget,
   type UserPreferences,
+  type UsageBudget,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -88,6 +88,55 @@ function SectionHeading({ children }: { children: ReactNode }): JSX.Element {
     <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
       {children}
     </h3>
+  );
+}
+
+type RetentionDays = UserPreferences["retentionDays"];
+
+const RETENTION_OPTIONS: Array<{
+  value: RetentionDays;
+  label: string;
+  description: string;
+}> = [
+  { value: 30, label: "30 days", description: "Delete saved chats after 30 days." },
+  { value: 90, label: "90 days", description: "Delete saved chats after 90 days." },
+  { value: null, label: "Forever", description: "Keep saved chats until you delete them." },
+];
+
+function RetentionPicker({
+  value,
+  onChange,
+}: {
+  value: RetentionDays;
+  onChange: (value: RetentionDays) => void;
+}): JSX.Element {
+  return (
+    <div
+      className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5"
+      role="group"
+      aria-label="Chat retention"
+    >
+      {RETENTION_OPTIONS.map((option) => {
+        const selected = value === option.value;
+        return (
+          <button
+            key={option.label}
+            type="button"
+            aria-pressed={selected}
+            title={option.description}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "min-w-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+              selected
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -419,6 +468,18 @@ export function SettingsDialog({
                       ...preferences,
                       temporaryByDefault: checked,
                     })
+                  }
+                />
+              }
+            />
+            <SettingRow
+              label="Saved chat retention"
+              helper="Temporary chats are still never saved."
+              control={
+                <RetentionPicker
+                  value={preferences.retentionDays}
+                  onChange={(retentionDays) =>
+                    onPreferencesChange({ ...preferences, retentionDays })
                   }
                 />
               }

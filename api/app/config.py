@@ -159,6 +159,9 @@ class Settings(BaseSettings):
     # GDPR export. Tight: the handler does an N+1 over every conversation +
     # message, so it is the most expensive read on the surface.
     rate_limit_export: str = Field(default="5/minute", alias="RATE_LIMIT_EXPORT")
+    # Conversation search is a simple per-user LIKE scan over title/message JSON
+    # until a proper indexed search lands; keep typeahead bounded.
+    rate_limit_search: str = Field(default="30/minute", alias="RATE_LIMIT_SEARCH")
     # GDPR account deletion. Tight: destructive cascade across every table the
     # caller owns.
     rate_limit_account_delete: str = Field(

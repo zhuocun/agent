@@ -22,6 +22,7 @@ the conversation; that divergence is intentional.
 from __future__ import annotations
 
 import asyncio
+import weakref
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Literal, cast
@@ -43,7 +44,9 @@ _DEFAULT_PERIOD = "this month"
 _LEDGER_RECENT_LIMIT = 10
 LedgerEntryType = Literal["grant", "platform_debit", "adjustment"]
 _ENTRY_TYPES: set[LedgerEntryType] = {"grant", "platform_debit", "adjustment"}
-_USAGE_LOCKS: dict[UUID, asyncio.Lock] = {}
+_USAGE_LOCKS: weakref.WeakValueDictionary[UUID, asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
 
 
 def _month_start(now: datetime | None = None) -> datetime:
@@ -186,6 +189,21 @@ async def list_recent_credit_entries(
         .where(UsageCreditLedger.user_id == user_id)
         .order_by(desc(UsageCreditLedger.created_at), desc(UsageCreditLedger.id))
         .limit(max(0, limit))
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return [_to_ledger_entry(row) for row in rows]
+
+
+async def list_credit_entries_for_user(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+) -> list[UsageLedgerEntry]:
+    """Return the full signed credit ledger for account export."""
+    stmt = (
+        select(UsageCreditLedger)
+        .where(UsageCreditLedger.user_id == user_id)
+        .order_by(UsageCreditLedger.created_at.asc(), UsageCreditLedger.id.asc())
     )
     rows = (await db.execute(stmt)).scalars().all()
     return [_to_ledger_entry(row) for row in rows]

@@ -26,6 +26,7 @@ from app.db.repositories import api_keys, audit_events, users
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
 from app.middleware.ratelimit import limiter
+from app.providers.tiers import active_byok_provider_id
 from app.schemas.account import AccountInfo
 from app.schemas.common import CamelModel
 
@@ -76,12 +77,11 @@ async def _current_account_info(
     user: User,
 ) -> AccountInfo:
     """Recompute AccountInfo from current DB state -- shared by PUT/DELETE."""
-    rows = await api_keys.list_for_user(db, user.id)
-    byok_enabled = (not user.is_anonymous) and len(rows) > 0
-    masked = rows[0].masked_key if byok_enabled else None
-    return users.to_account_info(
-        user, byok_enabled=byok_enabled, byok_masked_key=masked
-    )
+    active_provider = active_byok_provider_id(get_settings())
+    row = await api_keys.get_for_user(db, user_id=user.id, provider=active_provider)
+    byok_enabled = (not user.is_anonymous) and row is not None
+    masked = row.masked_key if byok_enabled and row is not None else None
+    return users.to_account_info(user, byok_enabled=byok_enabled, byok_masked_key=masked)
 
 
 @router.put("/byok", response_model=AccountInfo)
@@ -98,9 +98,7 @@ async def put_byok(
         raise _anonymous_required()
     trimmed = body.api_key.strip()
     if len(trimmed) < _MIN_API_KEY_LEN:
-        raise _invalid_input(
-            f"apiKey must be at least {_MIN_API_KEY_LEN} characters."
-        )
+        raise _invalid_input(f"apiKey must be at least {_MIN_API_KEY_LEN} characters.")
     await api_keys.upsert(
         db,
         user_id=user.id,

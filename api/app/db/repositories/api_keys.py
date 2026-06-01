@@ -133,6 +133,20 @@ async def get_decrypted_for_user(
         return None
 
 
+async def get_for_user(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    provider: str,
+) -> ApiKey | None:
+    """Return the BYOK row for `(user_id, provider)`, or None."""
+    stmt = select(ApiKey).where(
+        ApiKey.user_id == user_id,
+        ApiKey.provider == provider,
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 async def list_for_user(
     db: AsyncSession,
     user_id: UUID,

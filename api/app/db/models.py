@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -367,6 +368,20 @@ class UsageCreditLedger(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "entry_type IN ('grant', 'platform_debit', 'adjustment')",
+            name="ck_usage_credit_ledger_entry_type",
+        ),
+        CheckConstraint(
+            "("
+            "entry_type = 'grant' AND amount_usd > 0"
+            ") OR ("
+            "entry_type = 'platform_debit' AND amount_usd < 0"
+            ") OR ("
+            "entry_type = 'adjustment' AND amount_usd <> 0"
+            ")",
+            name="ck_usage_credit_ledger_amount_sign",
+        ),
         Index(
             "ix_usage_credit_ledger_user_created",
             "user_id",

@@ -22,7 +22,7 @@ untouched. Both routers share the `/api/account` prefix and are mounted in
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -44,6 +44,7 @@ from app.db.repositories import (
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
 from app.middleware.ratelimit import limiter
+from app.providers.tiers import active_byok_provider_id
 from app.schemas.account import (
     AccountDeleteRequest,
     AccountExport,
@@ -91,9 +92,12 @@ async def export_account(
     reuses the byok-masked `AccountInfo` (no ciphertext, no decrypted key) and
     carries no session-secret material — it must not leak secrets.
     """
+    settings = get_settings()
     byok_rows = await api_keys.list_for_user(db, user.id)
-    has_byok_key = (not user.is_anonymous) and len(byok_rows) > 0
-    masked = byok_rows[0].masked_key if has_byok_key else None
+    active_provider = active_byok_provider_id(settings)
+    byok_row = await api_keys.get_for_user(db, user_id=user.id, provider=active_provider)
+    has_byok_key = (not user.is_anonymous) and byok_row is not None
+    masked = byok_row.masked_key if has_byok_key and byok_row is not None else None
     await audit_events.record(
         db,
         user_id=user.id,
@@ -102,15 +106,21 @@ async def export_account(
     account = users.to_account_info(
         user, byok_enabled=has_byok_key, byok_masked_key=masked
     )
-    settings = get_settings()
     budget = await usage.get_current_budget(
         db,
         user.id,
         is_byok=has_byok_key,
         monthly_quota_usd=settings.usage_budget_usd,
     )
+    credit_ledger = await usage.list_credit_entries_for_user(db, user_id=user.id)
     rollups = await usage.list_rollups_for_user(db, user.id)
     prefs = await preferences.get_or_default(db, user.id)
+    if prefs.retention_days is not None:
+        await conversations.delete_older_than_for_user(
+            db,
+            user_id=user.id,
+            cutoff=datetime.now(UTC) - timedelta(days=prefs.retention_days),
+        )
     audit_rows = await audit_events.list_for_user(db, user.id)
 
     # Full conversations with messages. N+1 is acceptable for an export: list
@@ -131,6 +141,7 @@ async def export_account(
         ),
         preferences=prefs,
         usage=budget,
+        usage_credit_ledger=credit_ledger,
         usage_rollups=[
             UsageRollupExport(
                 period_start=_iso(row.period_start),
@@ -200,13 +211,12 @@ async def delete_account(
     if body.confirmation.strip() != expected:
         raise _confirmation_required(expected)
 
+    await users.delete_user_and_data(db, user_id=user.id)
     await audit_events.record(
         db,
-        user_id=user.id,
+        user_id=None,
         event_type="account.delete",
-        details={"anonymous": user.is_anonymous},
     )
-    await users.delete_user_and_data(db, user_id=user.id)
     # Durably commit the cascade BEFORE signalling success. A failure here
     # propagates (the dependency rolls back) and the cookie is never cleared.
     await db.commit()

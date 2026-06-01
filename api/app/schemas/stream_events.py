@@ -16,6 +16,7 @@ from app.search.protocol import SourceItem
 
 class SubmittedEvent(CamelModel):
     message_id: str
+    stream_id: str | None = None
 
 
 class ReasoningDeltaEvent(CamelModel):

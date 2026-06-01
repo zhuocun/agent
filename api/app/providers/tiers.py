@@ -179,10 +179,9 @@ class TierBinding:
     # `auto` router), so the picker shows no single model for them.
     model_label: str = ""
     # Whether this binding's provider can ground a turn with web search (via the
-    # tool loop / server tool). True on all real providers (DeepSeek, Anthropic,
-    # OpenAI, fake). The FE-facing flag is gated additionally on a configured
-    # search backend in `list_tiers` (`... AND search_enabled(settings)`); this
-    # binding-level flag is the provider-capability half.
+    # tool loop / server tool). The FE-facing flag is resolved in `list_tiers`:
+    # OpenAI-compatible routes also need a configured search backend, while
+    # Anthropic's hosted server tool does not.
     supports_web_search: bool = False
     # Whether this binding can accept user attachments for a turn using native
     # provider payloads. Metadata-only fallback is intentionally not enough to
@@ -431,6 +430,41 @@ def _openai_binding(tier_id: ModelTierId, s: Settings) -> TierBinding | None:
     )
 
 
+def active_byok_provider_id(settings: Settings | None = None) -> str:
+    """Provider id used for BYOK lookup under the active backend.
+
+    The request path resolves BYOK keys by `TierBinding.provider_id`; for the
+    dev/test `fake` backend that is intentionally still `deepseek`, because the
+    canonical tier table represents the real production route. Account/bootstrap
+    state should mirror that same lookup instead of treating any stored key row
+    as active.
+    """
+    s = settings if settings is not None else get_settings()
+    binding = get_binding("smart", settings=s)
+    if binding is not None:
+        return binding.provider_id
+    return s.provider_backend
+
+
+def web_search_available_for_binding(
+    binding: TierBinding,
+    settings: Settings | None = None,
+) -> bool:
+    """Return whether a `web_search=True` turn can run for this binding.
+
+    OpenAI-compatible routes need an injected search backend. Anthropic uses its
+    hosted server-side search tool, so tier metadata must not depend on
+    `SEARCH_BACKEND` for that provider. Kept exported so the route orchestrator
+    can use the same gate when it wires provider-specific search dispatch.
+    """
+    if not binding.supports_web_search:
+        return False
+    if binding.provider_id == "anthropic":
+        return True
+    s = settings if settings is not None else get_settings()
+    return search_enabled(s)
+
+
 def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
     """Public tier list for bootstrap.
 
@@ -441,21 +475,14 @@ def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
     """
     s = settings if settings is not None else get_settings()
     route = get_provider_route(s.provider_backend)
-    # Web search is usable only when a search backend is configured; the
-    # per-tier capability also requires the active binding's provider to support
-    # it. Gate the wire flag on BOTH so the FE shows the affordance only when a
-    # turn could actually ground.
-    search_on = search_enabled(s)
     tiers: list[ModelTier] = []
     for base in TIER_BINDINGS:
         binding = get_binding(base.tier.id, settings=s)
         label = binding.model_label if binding is not None else ""
         supports_search = (
-            binding.supports_web_search if binding is not None else False
-        ) and search_on
-        supports_attachments = (
-            binding.supports_attachments if binding is not None else False
+            web_search_available_for_binding(binding, settings=s) if binding is not None else False
         )
+        supports_attachments = binding.supports_attachments if binding is not None else False
         tiers.append(
             base.tier.model_copy(
                 update={
@@ -464,9 +491,7 @@ def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
                     "supports_attachments": supports_attachments,
                     "provider_id": route.provider_id if route is not None else "",
                     "provider_label": route.label if route is not None else "",
-                    "provider_route_status": (
-                        route.status if route is not None else "unavailable"
-                    ),
+                    "provider_route_status": (route.status if route is not None else "unavailable"),
                     "default_route_eligible": (
                         route.default_route_eligible if route is not None else False
                     ),

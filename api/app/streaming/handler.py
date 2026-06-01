@@ -320,8 +320,14 @@ async def stream_and_persist(
     overwrites the router-side seed (it carries the actual served model label).
     When neither side substitutes, no `substitution` is emitted.
     """
-    # Emit `submitted` immediately.
-    yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
+    # Emit `submitted` immediately. Resumable clients need the durable stream
+    # id in-band so they can reconnect to the exact producer they just started.
+    yield encode_submitted(
+        SubmittedEvent(
+            message_id=str(user_message_id),
+            stream_id=str(stream_id) if stream_id is not None else None,
+        )
+    )
     turn_started_at = time.monotonic()
 
     # Accumulators for parts + usage.
@@ -850,7 +856,10 @@ async def stream_and_persist(
             with contextlib.suppress(Exception):
                 async with _derive_session_factory(db)() as cancel_db:
                     await streams_repo.mark_status(
-                        cancel_db, stream_id=stream_id, status="stopped"
+                        cancel_db,
+                        stream_id=stream_id,
+                        status="stopped",
+                        release_active_guard=True,
                     )
                     await cancel_db.commit()
             with contextlib.suppress(Exception):

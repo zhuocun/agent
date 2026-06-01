@@ -21,6 +21,7 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, UsageCreditLedger, UsageRollup, User
@@ -274,6 +275,39 @@ async def test_credit_grant_and_adjustment_update_balance(
         by_type = {entry.entry_type: entry for entry in entries}
         assert set(by_type) == {"adjustment", "grant"}
         assert by_type["adjustment"].amount_usd == pytest.approx(-1.0)
+
+
+@pytest.mark.parametrize(
+    ("entry_type", "amount_usd"),
+    [
+        ("refund", 1.0),
+        ("grant", -1.0),
+        ("grant", 0.0),
+        ("platform_debit", 1.0),
+        ("platform_debit", 0.0),
+        ("adjustment", 0.0),
+    ],
+)
+async def test_credit_ledger_db_constraints_reject_invalid_entries(
+    session_factory: async_sessionmaker[AsyncSession],
+    entry_type: str,
+    amount_usd: float,
+) -> None:
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        session.add(
+            UsageCreditLedger(
+                user_id=user.id,
+                entry_type=entry_type,
+                amount_usd=amount_usd,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()
 
 
 async def test_platform_usage_debits_credits_only_after_monthly_quota(

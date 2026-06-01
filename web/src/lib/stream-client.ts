@@ -9,7 +9,7 @@
 //
 // Wire protocol (matches api/app/streaming/sse.py + handler.py):
 //
-//   event: submitted          data: { messageId }
+//   event: submitted          data: { messageId, streamId? }
 //   event: reasoning_delta    data: { text }
 //   event: reasoning_done     data: {}
 //   event: status             data: { label, state }
@@ -34,7 +34,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, type ApiErrorEnvelope } from "@/lib/apiClient";
+import {
+  ApiError,
+  postConversationStop,
+  type ApiErrorEnvelope,
+} from "@/lib/apiClient";
 import type {
   AttachmentPart,
   JsonValue,
@@ -382,6 +386,9 @@ export function useApiStream(
   // `submitted` lands the user message id; we keep it for the terminal so the
   // FE can replace its local `local-…` user id with the server uuid.
   const serverUserIdRef = useRef<string | undefined>(undefined);
+  const streamIdRef = useRef<string | undefined>(undefined);
+  const conversationIdRef = useRef<string | undefined>(undefined);
+  const reconnectAttemptedRef = useRef(false);
   // True once `onTerminal` has fired for the current turn. The terminal can
   // fire from three places (server `terminal`, server `error`, client
   // `stop()` / abort) — we never want to deliver twice.
@@ -442,7 +449,22 @@ export function useApiStream(
     sourcesRef.current = [];
     toolPartsRef.current = [];
     serverUserIdRef.current = undefined;
+    streamIdRef.current = undefined;
     terminalEmittedRef.current = false;
+  }, []);
+
+  const resetForReplay = useCallback((): void => {
+    const streamId = streamIdRef.current;
+    reasoningRef.current = "";
+    answerRef.current = "";
+    durationRef.current = 0;
+    reasoningStartedAtRef.current = null;
+    searchStatusRef.current = null;
+    sourcesRef.current = [];
+    toolPartsRef.current = [];
+    serverUserIdRef.current = undefined;
+    streamIdRef.current = streamId;
+    setState({ ...INITIAL, status: "submitted" });
   }, []);
 
   // Handle a single parsed SSE frame. Returns true if this frame ends the
@@ -477,6 +499,8 @@ export function useApiStream(
           if (isRecord(payload)) {
             const id = readStringField(payload, "messageId");
             if (id) serverUserIdRef.current = id;
+            const streamId = readStringField(payload, "streamId");
+            if (streamId) streamIdRef.current = streamId;
           }
           setState((s) => ({ ...s, status: "streaming" }));
           return false;
@@ -675,7 +699,7 @@ export function useApiStream(
         }
         // Stream ended without a terminal frame. Treat as a protocol error.
         if (!terminalEmittedRef.current) {
-          const err = new ApiError(
+          throw new ApiError(
             {
               code: "PROTOCOL",
               severity: "error",
@@ -684,8 +708,6 @@ export function useApiStream(
             },
             response.status,
           );
-          setState((s) => ({ ...s, status: "error" }));
-          emitTerminal("error", { error: err });
         }
       } finally {
         try {
@@ -807,25 +829,60 @@ export function useApiStream(
         await consumeStream(response);
       } catch (cause) {
         if (controller.signal.aborted) return;
-        const err = new ApiError(
-          {
-            code: "NETWORK",
-            severity: "error",
-            title: "Stream read failed",
-            body:
-              cause instanceof Error
-                ? cause.message
-                : "The connection dropped while reading the stream.",
-          },
-          0,
-        );
+        const streamId = streamIdRef.current;
+        if (
+          streamId &&
+          !reconnectAttemptedRef.current &&
+          !terminalEmittedRef.current
+        ) {
+          reconnectAttemptedRef.current = true;
+          let reconnectUrl: string;
+          try {
+            reconnectUrl = `${getApiBase()}/api/conversations/${encodeURIComponent(
+              args.conversationId,
+            )}/stream/${encodeURIComponent(streamId)}`;
+          } catch {
+            reconnectUrl = "";
+          }
+          if (reconnectUrl) {
+            try {
+              const replay = await fetch(reconnectUrl, {
+                method: "GET",
+                credentials: "include",
+                signal: controller.signal,
+              });
+              if (replay.ok) {
+                resetForReplay();
+                await consumeStream(replay);
+                return;
+              }
+            } catch {
+              if (controller.signal.aborted) return;
+            }
+          }
+        }
+        const err =
+          cause instanceof ApiError
+            ? cause
+            : new ApiError(
+                {
+                  code: "NETWORK",
+                  severity: "error",
+                  title: "Stream read failed",
+                  body:
+                    cause instanceof Error
+                      ? cause.message
+                      : "The connection dropped while reading the stream.",
+                },
+                0,
+              );
         if (!terminalEmittedRef.current) {
           setState((s) => ({ ...s, status: "error" }));
           emitTerminal("error", { error: err });
         }
       }
     },
-    [consumeStream, emitTerminal],
+    [consumeStream, emitTerminal, resetForReplay],
   );
 
   const start = useCallback(
@@ -838,6 +895,8 @@ export function useApiStream(
       controllerRef.current = null;
 
       resetAccumulators();
+      reconnectAttemptedRef.current = false;
+      conversationIdRef.current = args.conversationId;
       setState({ ...INITIAL, status: "submitted" });
 
       const controller = new AbortController();
@@ -852,6 +911,13 @@ export function useApiStream(
     const controller = controllerRef.current;
     if (!controller) return;
     controllerRef.current = null;
+    const conversationId = conversationIdRef.current;
+    const hadStreamId = Boolean(streamIdRef.current);
+    if (conversationId) {
+      void postConversationStop(conversationId).catch(() => {
+        // Best-effort: local abort below still gives immediate UI feedback.
+      });
+    }
     // Aborting the fetch tears down the SSE reader; that read loop sees
     // `signal.aborted` and exits without emitting. We synthesize the local
     // `stopped` terminal so the caller can commit the partial message — the
@@ -871,11 +937,25 @@ export function useApiStream(
       reasoningStreaming: false,
     }));
     emitTerminal("stopped");
+    if (conversationId && !hadStreamId) {
+      window.setTimeout(() => {
+        if (
+          controllerRef.current !== null ||
+          conversationIdRef.current !== conversationId
+        ) {
+          return;
+        }
+        void postConversationStop(conversationId).catch(() => {
+          // Best-effort retry for Stop clicks before the submitted frame arrives.
+        });
+      }, 250);
+    }
   }, [emitTerminal, freezeReasoningDuration]);
 
   const reset = useCallback((): void => {
     controllerRef.current?.abort();
     controllerRef.current = null;
+    conversationIdRef.current = undefined;
     // `reset()` blows away the turn unconditionally — no terminal is fired,
     // and any in-flight callback that would have fired one is suppressed by
     // the `terminalEmittedRef` flip below.

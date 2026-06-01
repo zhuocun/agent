@@ -18,7 +18,7 @@ import base64
 import binascii
 from collections import defaultdict
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -34,6 +34,7 @@ from app.db.models import Message, User
 from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
+from app.db.repositories import preferences as preferences_repo
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
 from app.db.session import get_db
@@ -47,7 +48,7 @@ from app.providers.protocol import (
     ChatMessage as ProviderChatMessage,
 )
 from app.providers.router import route_auto
-from app.providers.tiers import get_binding
+from app.providers.tiers import get_binding, web_search_available_for_binding
 from app.schemas.common import SubstitutionReasonCode
 from app.schemas.conversation import (
     BranchConversationRequest,
@@ -61,6 +62,8 @@ from app.schemas.message import AttachmentPart, ModelAttribution
 from app.schemas.share import ShareLinkResponse
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
+    ReasoningDeltaEvent,
+    ReasoningDoneEvent,
     SourcesEvent,
     StatusEvent,
     SubmittedEvent,
@@ -68,7 +71,6 @@ from app.schemas.stream_events import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from app.search.factory import search_enabled
 from app.search.protocol import SourceItem
 from app.streaming import replay_registry
 from app.streaming.handler import (
@@ -78,6 +80,8 @@ from app.streaming.handler import (
 )
 from app.streaming.sse import (
     encode_answer_delta,
+    encode_reasoning_delta,
+    encode_reasoning_done,
     encode_sources,
     encode_status,
     encode_submitted,
@@ -94,6 +98,19 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 # uvicorn workers, a temporary chat created on worker A and posted to from
 # worker B will 404. M2 may swap this for Redis or a signed-cookie token.
 _TEMP_IDS: dict[UUID, set[UUID]] = defaultdict(set)
+
+
+async def _enforce_retention(db: AsyncSession, user_id: UUID) -> None:
+    """Apply the caller's finite retention preference before reading history."""
+    prefs = await preferences_repo.get_or_default(db, user_id)
+    if prefs.retention_days is None:
+        return
+    cutoff = datetime.now(UTC) - timedelta(days=prefs.retention_days)
+    await conversations_repo.delete_older_than_for_user(
+        db,
+        user_id=user_id,
+        cutoff=cutoff,
+    )
 
 
 def _eventsource_response(*args: Any, **kwargs: Any) -> EventSourceResponse:
@@ -301,12 +318,16 @@ def _budget_exceeded() -> AppError:
 
 
 @router.get("/search", response_model=list[ConversationSearchResult])
+@limiter.limit(lambda: get_settings().rate_limit_search)
 async def search_conversations(
     q: Annotated[str, Query(min_length=1, max_length=100)],
+    request: Request,
+    response: Response,
     limit: Annotated[int, Query(ge=1, le=50)] = 25,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[ConversationSearchResult]:
+    await _enforce_retention(db, user.id)
     return await conversations_repo.search_for_user(
         db,
         user.id,
@@ -321,6 +342,7 @@ async def get_conversation(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationSchema:
+    await _enforce_retention(db, user.id)
     convo = await conversations_repo.get_for_user(db, conversation_id, user.id)
     if convo is None:
         raise not_found("conversation")
@@ -596,13 +618,16 @@ async def _maybe_replay(
         # (status / sources) from the persisted parts, so a reconnecting client
         # sees the SAME sequence the original turn streamed: a grounded turn
         # replays its `status` and `sources` frames, not just the answer.
+        reasoning_texts: list[str] = []
         texts: list[str] = []
         status_part: dict[str, object] | None = None
         sources_items: list[dict[str, object]] = []
         tool_parts: list[dict[str, object]] = []
         for part in cast(list[dict[str, object]], assistant_row.parts or []):
             ptype = part.get("type")
-            if ptype == "text":
+            if ptype == "reasoning":
+                reasoning_texts.append(str(part.get("text", "")))
+            elif ptype == "text":
                 texts.append(str(part.get("text", "")))
             elif ptype == "status":
                 status_part = part
@@ -615,6 +640,7 @@ async def _maybe_replay(
         return _replay_response(
             user_message_id=prior_user_msg.id,
             assistant_message_id=assistant_row.id,
+            reasoning_text="".join(reasoning_texts),
             answer_text="".join(texts),
             attribution_dict=cast(dict[str, object], assistant_row.attribution),
             status_part=status_part,
@@ -704,6 +730,7 @@ async def send_message(
 
     # Ownership / existence check.
     if not is_temp:
+        await _enforce_retention(db, user.id)
         owner_row = await conversations_repo.owned_by(db, conversation_id, user.id)
         if owner_row is None:
             raise not_found("conversation")
@@ -896,14 +923,11 @@ async def send_message(
 
     settings = get_settings()
 
-    # Effective web-search opt-in for this turn. The requested flag is honored
-    # ONLY when both the served binding's provider supports search AND a search
-    # backend is configured (`search_enabled`). When unsupported we degrade to
-    # False SILENTLY (no error) — the turn still answers, just ungrounded. Uses
-    # the (possibly auto-routed) `binding` so the served provider's capability
-    # is what gates it.
-    effective_web_search = (
-        body.web_search and binding.supports_web_search and search_enabled(settings)
+    # Effective web-search opt-in for this turn. Unsupported provider/config
+    # combinations degrade silently: the turn still answers, just ungrounded.
+    effective_web_search = body.web_search and web_search_available_for_binding(
+        binding,
+        settings=settings,
     )
 
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
@@ -1072,8 +1096,8 @@ async def stop_stream(
     durable so a stop survives independent of the streaming connection.
 
     Mechanism (two halves, both best-effort):
-    - Durable intent: mark the conversation's active `stream` row `stopped` so
-      the lifecycle is observable even if the live signal never lands.
+    - Durable intent: touch the conversation's active `stream` row so the stop
+      intent is observable without releasing the single-active-stream guard.
     - Live cancel: set the in-process stop signal (`request_stop`) so the
       running generator tears the turn down at its next poll. Single-worker
       only — behind multiple uvicorn workers a stop on worker A won't reach a
@@ -1098,16 +1122,13 @@ async def stop_stream(
         db, conversation_id=conversation_id
     )
     if active is not None:
-        # Durable intent first, then the live signal. The running generator
-        # (if on this worker) will observe `request_stop` at its next poll,
-        # persist the partial assistant row, and transition the same stream row
-        # to `stopped` itself — `mark_status` here records the intent up front
-        # so a stop is durable even if the generator never sees the signal.
+        # Keep the durable row `active` until the producer actually observes the
+        # stop signal and persists the partial assistant. If we marked it stopped
+        # here, the active-stream guard would allow a second turn to start while
+        # the old producer was still winding down. The repository call below
+        # records stop intent by bumping `updated_at` without releasing that guard.
         await request_stop_async(active.id)
-        await streams_repo.mark_status(
-            db, stream_id=active.id, status="stopped"
-        )
-        await db.commit()
+        await streams_repo.mark_status(db, stream_id=active.id, status="stopped")
     return None
 
 
@@ -1235,6 +1256,7 @@ def _replay_response(
     *,
     user_message_id: UUID,
     assistant_message_id: UUID,
+    reasoning_text: str,
     answer_text: str,
     attribution_dict: dict[str, object],
     status_part: dict[str, object] | None = None,
@@ -1244,14 +1266,9 @@ def _replay_response(
     """Replay a prior terminal as a single combined frame.
 
     Plan §"Behavior - Idempotency": yields `submitted` with the prior user
-    message id, one `answer_delta` carrying the full prior answer text, then
-    `terminal` with the stored attribution. No new DB writes.
-
-    Web-search turns also replay the `status`, `tool_*`, and `sources` frames
-    reconstructed from the persisted parts, so a reconnecting client sees the
-    grounded turn's citations and tool transcript. Non-search turns pass none
-    of those enrichments and the sequence is the historical
-    submitted → answer_delta → terminal.
+    message id, replays persisted reasoning/tool/status/text/source frames in
+    canonical part order, then `terminal` with the stored attribution. No new
+    DB writes.
     """
     attribution = ModelAttribution.model_validate(attribution_dict)
     items = sources_items or []
@@ -1259,8 +1276,17 @@ def _replay_response(
 
     async def _gen() -> AsyncIterator[ServerSentEvent]:
         yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
-        # Persisted `status` part (a completed search line) replays before the
-        # answer, mirroring the live order [status(done)] [text].
+        if reasoning_text:
+            yield encode_reasoning_delta(ReasoningDeltaEvent(text=reasoning_text))
+            yield encode_reasoning_done(ReasoningDoneEvent())
+        for part in tools:
+            ptype = part.get("type")
+            if ptype == "tool_call":
+                yield encode_tool_call(ToolCallEvent.model_validate(part))
+            elif ptype == "tool_result":
+                yield encode_tool_result(ToolResultEvent.model_validate(part))
+        # Persisted `status` part (a completed search line) replays after the tool
+        # transcript, matching the canonical persisted part order.
         if status_part is not None:
             yield encode_status(
                 StatusEvent(
@@ -1268,12 +1294,6 @@ def _replay_response(
                     state="done",
                 )
             )
-        for part in tools:
-            ptype = part.get("type")
-            if ptype == "tool_call":
-                yield encode_tool_call(ToolCallEvent.model_validate(part))
-            elif ptype == "tool_result":
-                yield encode_tool_result(ToolResultEvent.model_validate(part))
         # Single answer_delta carrying the full final text (no mid-stream resume).
         yield encode_answer_delta(AnswerDeltaEvent(text=answer_text))
         # Persisted `sources` part replays after the answer, mirroring the live

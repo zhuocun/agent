@@ -11,11 +11,14 @@ hit (see `app.routes.bootstrap`).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependency import current_user
 from app.db.models import User
+from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import preferences as preferences_repo
 from app.db.session import get_db
 from app.schemas.preferences import UserPreferences
@@ -36,4 +39,10 @@ async def put_preferences(
     standard `INVALID_INPUT` envelope from `validation_error_handler`.
     """
     await preferences_repo.upsert(db, user.id, body)
+    if body.retention_days is not None:
+        await conversations_repo.delete_older_than_for_user(
+            db,
+            user_id=user.id,
+            cutoff=datetime.now(UTC) - timedelta(days=body.retention_days),
+        )
     return None

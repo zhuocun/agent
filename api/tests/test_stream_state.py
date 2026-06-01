@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import defaultdict
-from collections.abc import Iterable
 from uuid import uuid4
 
 import pytest
@@ -13,8 +12,9 @@ import pytest
 from app.config import Settings
 from app.schemas.stream_events import SubmittedEvent
 from app.streaming import replay_registry, stop_registry
+from app.streaming.replay_registry import ReplayLogTruncatedError
 from app.streaming.sse import encode_submitted
-from app.streaming.state import configure_stream_state
+from app.streaming.state import close_stream_state, configure_stream_state
 
 
 class _FakePubSub:
@@ -48,6 +48,7 @@ class _FakeRedis:
         self._lists: dict[str, list[str]] = defaultdict(list)
         self._expirations: dict[str, int] = {}
         self._cond = asyncio.Condition()
+        self.closed = False
 
     async def delete(self, *keys: str) -> int:
         removed = 0
@@ -65,6 +66,9 @@ class _FakeRedis:
         self._values[key] = value
         self._expirations[key] = px
         return True
+
+    async def get(self, key: str) -> str | None:
+        return self._values.get(key)
 
     async def exists(self, *keys: str) -> int:
         return sum(
@@ -132,6 +136,9 @@ class _FakeRedis:
     def pubsub(self) -> _FakePubSub:
         return _FakePubSub(self)
 
+    async def aclose(self) -> None:
+        self.closed = True
+
 
 class _FakeRedisAsyncModule:
     def __init__(self, client: _FakeRedis) -> None:
@@ -141,10 +148,6 @@ class _FakeRedisAsyncModule:
     def from_url(self, url: str, *, decode_responses: bool = False) -> _FakeRedis:
         del url, decode_responses
         return self._client
-
-
-def _event_names(events: Iterable[object]) -> list[str]:
-    return [getattr(event, "event", None) or "" for event in events]
 
 
 @pytest.mark.asyncio
@@ -250,13 +253,45 @@ async def test_configure_stream_state_installs_redis_backed_stores(
         assert client._expirations[f"{replay_key_prefix}:meta"] == 30_000
         assert client._expirations[f"{replay_key_prefix}:seq"] == 30_000
 
-        retained = await replay_registry.get_async(sid, ttl_seconds=30.0)
-        assert retained is not None
-        subscription = await retained.subscribe()
-        events = [event async for event in subscription.events()]
-        # Count-bounded Redis replay drops the oldest event first.
-        assert _event_names(events) == ["submitted", "submitted"]
-        assert '"third"' in str(getattr(events[-1], "data", ""))
+        # Count-bounded Redis replay dropped the oldest event, so a full
+        # resumable replay is no longer available. Store lookup rejects the log
+        # instead of presenting the retained suffix as a successful replay.
+        assert await replay_registry.get_async(sid, ttl_seconds=30.0) is None
+
+        # A handle acquired before trimming also detects the lost prefix when
+        # subscribed, rather than yielding a suffix starting at seq 2.
+        subscription = await buffer.subscribe()
+        with pytest.raises(ReplayLogTruncatedError):
+            [event async for event in subscription.events()]
     finally:
         stop_registry.use_memory_store()
         replay_registry.use_memory_store()
+
+
+@pytest.mark.asyncio
+async def test_close_stream_state_closes_redis_client_and_restores_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRedis()
+
+    monkeypatch.setattr("app.streaming.state._ping_redis_url", lambda _url: None)
+    monkeypatch.setattr(
+        "app.streaming.state._load_redis_modules",
+        lambda: (object(), _FakeRedisAsyncModule(client)),
+    )
+    settings = Settings(
+        STREAM_STATE_BACKEND="redis",
+        REDIS_URL="redis://localhost:6379/0",
+    )
+
+    configure_stream_state(settings)
+    await close_stream_state()
+
+    assert client.closed is True
+    sid = uuid4()
+    try:
+        buf = await replay_registry.create_async(sid, ttl_seconds=60.0, now=0.0)
+        await buf.append(encode_submitted(SubmittedEvent(message_id="u")))
+        assert await replay_registry.get_async(sid, ttl_seconds=60.0, now=1.0) is buf
+    finally:
+        replay_registry.evict(sid)

@@ -298,7 +298,13 @@ async def test_attachment_idempotent_replay_accepts_metadata_only_retry(
         },
     )
 
-    assert [name for name, _ in second] == ["submitted", "answer_delta", "terminal"]
+    assert [name for name, _ in second] == [
+        "submitted",
+        "reasoning_delta",
+        "reasoning_done",
+        "answer_delta",
+        "terminal",
+    ]
     assert second[-1][1]["messageId"] == first_terminal["messageId"]
     async with session_factory() as session:
         rows = (await session.execute(select(Message))).scalars().all()
@@ -376,13 +382,19 @@ async def test_idempotent_replay_returns_prior_terminal(
         },
     )
 
-    # Replay: submitted + exactly one answer_delta + terminal. No reasoning frames.
+    # Replay reconstructs persisted reasoning before the final answer.
     event_names = [name for name, _ in second]
-    assert event_names == ["submitted", "answer_delta", "terminal"]
+    assert event_names == [
+        "submitted",
+        "reasoning_delta",
+        "reasoning_done",
+        "answer_delta",
+        "terminal",
+    ]
 
     # The answer_delta payload carries the full prior answer text.
-    second_answer = second[1][1]
-    second_terminal = second[2][1]
+    second_answer = next(payload for name, payload in second if name == "answer_delta")
+    second_terminal = next(payload for name, payload in second if name == "terminal")
     assert isinstance(second_answer.get("text"), str)
     assert len(second_answer["text"]) > 0
     # Terminal message id matches the persisted assistant message id (replay).
@@ -1464,12 +1476,15 @@ async def test_web_search_replay_reconstructs_status_and_sources(
         client, f"/api/conversations/{conv_id}/messages", body
     )
     replay_names = [name for name, _ in replay]
-    # Replay sequence: submitted -> status -> tools -> answer -> sources -> terminal.
+    # Replay sequence mirrors persisted part ordering:
+    # reasoning -> tools -> status -> answer -> sources -> terminal.
     assert replay_names == [
         "submitted",
-        "status",
+        "reasoning_delta",
+        "reasoning_done",
         "tool_call",
         "tool_result",
+        "status",
         "answer_delta",
         "sources",
         "terminal",

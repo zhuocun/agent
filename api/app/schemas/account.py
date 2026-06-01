@@ -82,6 +82,7 @@ class AccountExport(CamelModel):
     account_metadata: AccountExportMetadata
     preferences: UserPreferences
     usage: UsageBudget
+    usage_credit_ledger: list[UsageLedgerEntry]
     usage_rollups: list[UsageRollupExport]
     byok_keys: list[ByokKeyMetadata]
     conversations: list[Conversation]

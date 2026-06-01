@@ -58,6 +58,10 @@ from sse_starlette import ServerSentEvent
 _BUFFERS: dict[UUID, ReplayBuffer] = {}
 
 
+class ReplayLogTruncatedError(RuntimeError):
+    """Raised when a replay log no longer has its prefix from sequence 1."""
+
+
 class ReplaySubscriptionHandle(Protocol):
     """Cursor over a replay log."""
 
@@ -339,6 +343,25 @@ class RedisReplayLogBuffer:
             self._terminal_kind = terminal_kind
         return done, terminal_kind
 
+    async def _last_sequence(self) -> int | None:
+        raw = await self._client.get(self._seq_key)
+        return int(_decode_redis_value(raw)) if raw is not None else None
+
+    async def has_retained_prefix(self) -> bool:
+        """Whether Redis still has a replayable prefix starting at seq 1."""
+        done, _terminal_kind = await self._meta_done()
+        raw_events = await self._client.lrange(self._events_key, 0, 0)
+        if raw_events:
+            first_seq, _event = _event_from_redis_json(raw_events[0])
+            return first_seq == 1
+        # An empty list is valid only before the producer has appended anything.
+        # If seq advanced but the list is empty, Redis trimmed/expired the prefix.
+        last_seq = await self._last_sequence()
+        if not done:
+            # Avoid rejecting during the small INCR -> RPUSH append window.
+            return True
+        return last_seq == 0
+
     async def _trim_bounds(self) -> None:
         """Trim oldest retained events until count and byte budgets are met."""
         while int(await self._client.llen(self._events_key)) > self._max_events:
@@ -408,13 +431,29 @@ class RedisReplaySubscription:
     async def _pending(self) -> list[ServerSentEvent]:
         raw_events = await self._buffer._client.lrange(self._buffer._events_key, 0, -1)
         out: list[ServerSentEvent] = []
-        max_seen = self._next_seq - 1
+        seen_next = self._next_seq
+        if not raw_events:
+            done, _terminal_kind = await self._buffer._meta_done()
+            last_seq = await self._buffer._last_sequence()
+            if done and last_seq is not None and last_seq >= self._next_seq:
+                raise ReplayLogTruncatedError(
+                    f"replay log for stream {self._buffer._stream_id} lost "
+                    f"sequence {self._next_seq}"
+                )
+            return out
         for raw in raw_events:
             seq, event = _event_from_redis_json(raw)
+            if seq < seen_next:
+                continue
+            if seq != seen_next:
+                raise ReplayLogTruncatedError(
+                    f"replay log for stream {self._buffer._stream_id} lost "
+                    f"sequence {seen_next}"
+                )
             if seq >= self._next_seq:
                 out.append(event)
-                max_seen = max(max_seen, seq)
-        self._next_seq = max_seen + 1
+                seen_next = seq + 1
+        self._next_seq = seen_next
         return out
 
     async def events(self) -> AsyncIterator[ServerSentEvent]:
@@ -541,12 +580,11 @@ class RedisReplayLogStore:
         self, stream_id: UUID, *, ttl_seconds: float, now: float | None = None
     ) -> ReplayLogBuffer | None:
         del now  # Redis key expiry, not an injected monotonic clock, drives TTL.
-        exists = await self._client.exists(
-            self._events_key(stream_id), self._meta_key(stream_id)
-        )
-        if not exists:
+        if not await self._client.exists(self._meta_key(stream_id)):
             return None
         buffer = self._buffer(stream_id, ttl_seconds=ttl_seconds)
+        if not await buffer.has_retained_prefix():
+            return None
         await buffer._meta_done()
         return buffer
 

@@ -73,9 +73,7 @@ class Session(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -92,13 +90,12 @@ class Preferences(Base):
         primary_key=True,
     )
     default_tier_id: Mapped[str] = mapped_column(String, nullable=False, default="auto")
-    temporary_by_default: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
+    temporary_by_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     training_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     send_on_enter: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    auto_expand_reasoning: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
+    auto_expand_reasoning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    telemetry_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("1")
     )
     # NULL means "retain forever"; non-NULL values are constrained by the API
     # schema/repository to the currently supported short windows.
@@ -163,9 +160,7 @@ class Message(Base):
         nullable=False,
     )
     client_message_id: Mapped[UUID | None] = mapped_column(UuidVariant, nullable=True)
-    request_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(
-        JsonVariant, nullable=True
-    )
+    request_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JsonVariant, nullable=True)
     role: Mapped[str] = mapped_column(String, nullable=False)
     parts: Mapped[list[dict[str, Any]]] = mapped_column(JsonVariant, nullable=False)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -181,9 +176,7 @@ class Message(Base):
     # returning Python floats (no Decimal ripple through pricing/handler/tests).
     # SQLite (tests) stores NUMERIC as REAL, so tests don't get exactness; that
     # is fine because prod is Postgres.
-    cost_usd: Mapped[float | None] = mapped_column(
-        Numeric(12, 6, asdecimal=False), nullable=True
-    )
+    cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 6, asdecimal=False), nullable=True)
     # Post-M4: explicit reply pairing. On assistant rows this points at the
     # user message whose reply this is, so `_maybe_replay` can resolve via a
     # single indexed lookup instead of pair-by-index. NULL on legacy rows
@@ -304,9 +297,7 @@ class ApiKey(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    __table_args__ = (
-        UniqueConstraint("user_id", "provider", name="api_key_user_provider_uniq"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="api_key_user_provider_uniq"),)
 
 
 class UsageRollup(Base):
@@ -317,9 +308,7 @@ class UsageRollup(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    period_start: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # Accumulated USD cost for the period. Parallel to `used` (the integer
     # per-turn counter the FE meter renders raw); `cost_usd` is the
@@ -341,9 +330,7 @@ class UsageRollup(Base):
     limit_value: Mapped[int] = mapped_column(Integer, nullable=False)
     is_byok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    __table_args__ = (
-        PrimaryKeyConstraint("user_id", "period_start", name="usage_rollup_pk"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("user_id", "period_start", name="usage_rollup_pk"),)
 
 
 class UsageCreditLedger(Base):
@@ -393,6 +380,148 @@ class UsageCreditLedger(Base):
     )
 
 
+class BillingCustomer(Base):
+    __tablename__ = "billing_customer"
+
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    provider: Mapped[str] = mapped_column(String, primary_key=True)
+    external_customer_id: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "external_customer_id",
+            name="billing_customer_provider_external_uniq",
+        ),
+        Index("ix_billing_customer_external", "provider", "external_customer_id"),
+    )
+
+
+class BillingEntitlement(Base):
+    __tablename__ = "billing_entitlement"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    plan_id: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    external_subscription_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    external_customer_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    current_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    external_event_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("plan_id IN ('pro')", name="ck_billing_entitlement_plan"),
+        CheckConstraint(
+            "status IN ("
+            "'active', 'trialing', 'past_due', 'canceled', 'incomplete', "
+            "'incomplete_expired', 'unpaid', 'paused'"
+            ")",
+            name="ck_billing_entitlement_status",
+        ),
+        Index("ix_billing_entitlement_user", "user_id", "plan_id", "status"),
+        Index(
+            "ix_billing_entitlement_external_subscription",
+            "provider",
+            "external_subscription_id",
+            unique=True,
+        ),
+    )
+
+
+class BillingWebhookEvent(Base):
+    __tablename__ = "billing_webhook_event"
+
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JsonVariant, nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AnalyticsEvent(Base):
+    """First-party product telemetry owned by the user.
+
+    This is intentionally separate from `audit_event`: analytics rows are
+    exportable and erased with the account, while audit rows cover sensitive
+    account operations and may retain minimal non-user operational records.
+    """
+
+    __tablename__ = "analytics_event"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    properties: Mapped[dict[str, Any]] = mapped_column(JsonVariant, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_analytics_event_user_created", "user_id", "created_at"),
+        Index("ix_analytics_event_type_created", "event_type", "created_at"),
+        Index(
+            "ix_analytics_first_success_user_unique",
+            "user_id",
+            unique=True,
+            postgresql_where=text("event_type = 'activation.first_successful_response'"),
+            sqlite_where=text("event_type = 'activation.first_successful_response'"),
+        ),
+    )
+
+
+class BillingFulfillment(Base):
+    __tablename__ = "billing_fulfillment"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    fulfillment_type: Mapped[str] = mapped_column(String, nullable=False)
+    object_id: Mapped[str] = mapped_column(String, nullable=False)
+    event_id: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "fulfillment_type",
+            "object_id",
+            name="billing_fulfillment_provider_type_object_uniq",
+        ),
+    )
+
+
 class AuditEvent(Base):
     """Write-only audit trail for sensitive account events.
 
@@ -409,9 +538,7 @@ class AuditEvent(Base):
         nullable=True,
     )
     event_type: Mapped[str] = mapped_column(String, nullable=False)
-    details: Mapped[dict[str, Any]] = mapped_column(
-        JsonVariant, nullable=False, default=dict
-    )
+    details: Mapped[dict[str, Any]] = mapped_column(JsonVariant, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

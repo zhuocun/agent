@@ -35,6 +35,10 @@ function formatAttachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function attachmentIconType(mediaType: Extract<MessagePart, { type: "attachment" }>["mediaType"]) {
+  return mediaType === "image" ? "image" : "file";
+}
+
 export function UserMessage({
   message,
   onEdit,
@@ -194,11 +198,15 @@ export function UserMessage({
               <span
                 key={attachment.id}
                 className="inline-flex h-8 max-w-full items-center gap-2 rounded-full bg-background/45 px-3 text-xs leading-none text-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]"
+                title="File content was used for this request only and is not stored."
+                aria-label={`${attachment.name}, ${formatAttachmentSize(
+                  attachment.sizeBytes,
+                )}, request only`}
               >
-                {attachment.mediaType === "pdf" ? (
-                  <FileText aria-hidden className="size-3.5 shrink-0" />
-                ) : (
+                {attachmentIconType(attachment.mediaType) === "image" ? (
                   <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+                ) : (
+                  <FileText aria-hidden className="size-3.5 shrink-0" />
                 )}
                 <span className="min-w-0 max-w-[12rem] truncate">
                   {attachment.name}
@@ -206,6 +214,7 @@ export function UserMessage({
                 <span className="shrink-0 text-muted-foreground">
                   {formatAttachmentSize(attachment.sizeBytes)}
                 </span>
+                <span className="shrink-0 text-muted-foreground">Request only</span>
               </span>
             ))}
           </div>

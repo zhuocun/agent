@@ -11,7 +11,7 @@ Wires:
 - exception handlers for `AppError`, Pydantic `RequestValidationError`, and a
   catch-all for unhandled exceptions (envelope serialized `by_alias=True`).
 - routes: bootstrap, conversations, auth, account/BYOK, account export/delete,
-  preferences, feedback, and public share reads.
+  preferences, feedback, first-party analytics, and public share reads.
 """
 
 from __future__ import annotations
@@ -38,6 +38,8 @@ from app.middleware.request_id import RequestIDMiddleware
 from app.observability import init_sentry, instrument_fastapi
 from app.routes.account import router as account_router
 from app.routes.account_data import router as account_data_router
+from app.routes.analytics import router as analytics_router
+from app.routes.billing import router as billing_router
 from app.routes.bootstrap import router as bootstrap_router
 from app.routes.conversations import router as conversations_router
 from app.routes.feedback import router as feedback_router
@@ -191,6 +193,8 @@ def create_app() -> FastAPI:
     app.include_router(preferences_router)
     app.include_router(account_router)
     app.include_router(account_data_router)
+    app.include_router(analytics_router)
+    app.include_router(billing_router)
     app.include_router(auth_router)
     # Public-by-link share read. Distinct prefix (/api/share), NO current_user
     # dependency — it's the one unauthenticated read in the API.

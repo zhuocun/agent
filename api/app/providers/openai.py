@@ -136,6 +136,8 @@ def _openai_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | N
                 "file_data": f"data:{attachment.mime_type};base64,{encoded}",
             },
         }
+    if attachment.media_type == "text":
+        return None
     return None
 
 
@@ -148,15 +150,21 @@ def _openai_user_content(
         return steer_user_text(user_text)
 
     content: list[dict[str, Any]] = []
-    metadata_only: list[AttachmentPayload] = []
+    transcript_attachments: list[AttachmentPayload] = []
     for attachment in attachments:
         part = _openai_attachment_part(attachment)
         if part is None:
-            metadata_only.append(attachment)
+            transcript_attachments.append(attachment)
         else:
             content.append(part)
+            if attachment.extracted_text:
+                transcript_attachments.append(attachment)
 
-    text = text_with_attachment_fallback(user_text, metadata_only) if metadata_only else user_text
+    text = (
+        text_with_attachment_fallback(user_text, transcript_attachments)
+        if transcript_attachments
+        else user_text
+    )
     prompt = steer_user_text(text)
     if not content:
         return prompt

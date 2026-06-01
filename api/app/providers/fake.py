@@ -159,6 +159,14 @@ class FakeProvider:
             names = ", ".join(attachment.name for attachment in attachments)
             await asyncio.sleep(self._delay)
             yield AnswerDelta(text=f"Received attachments: {names}. ")
+            extracted = [
+                attachment.extracted_text
+                for attachment in attachments
+                if attachment.extracted_text
+            ]
+            if extracted:
+                await asyncio.sleep(self._delay)
+                yield AnswerDelta(text=f"Extracted text: {extracted[0][:120]}. ")
         chunks = _pick_template(user_text)
         for i, chunk in enumerate(chunks):
             await asyncio.sleep(self._delay)

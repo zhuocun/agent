@@ -525,6 +525,11 @@ def web_search_available_for_binding(
     return search_enabled(s)
 
 
+def tier_requires_pro(tier_id: ModelTierId) -> bool:
+    """Whether platform-paid usage of a tier requires a Pro entitlement."""
+    return tier_id == "pro"
+
+
 def _binding_for_provider(
     tier_id: ModelTierId,
     *,

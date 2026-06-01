@@ -204,7 +204,7 @@ async def test_send_message_with_attachment_streams_persists_metadata_only(
         f"/api/conversations/{conv_id}/messages",
         {
             "clientMessageId": str(uuid4()),
-            "tierId": "smart",
+            "tierId": "fast",
             "text": "please read this",
             "attachments": [
                 {
@@ -243,6 +243,62 @@ async def test_send_message_with_attachment_streams_persists_metadata_only(
                 "mediaType": "pdf",
                 "mimeType": "application/pdf",
                 "sizeBytes": 5,
+                "storagePolicy": "transient",
+            },
+        ]
+
+
+async def test_send_message_with_text_attachment_extracts_transcript_metadata_only(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "fast",
+            "text": "summarize",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-text-1",
+                    "name": "notes.txt",
+                    "mediaType": "text",
+                    "mimeType": "text/plain",
+                    "sizeBytes": 16,
+                    "contentBase64": "QWxwaGEgYmV0YSBub3Rlcw==",
+                }
+            ],
+        },
+    )
+
+    answer = "".join(
+        str(payload.get("text", ""))
+        for name, payload in frames
+        if name == "answer_delta"
+    )
+    assert "Received attachments: notes.txt." in answer
+    assert "Extracted text: Alpha beta notes." in answer
+
+    async with session_factory() as session:
+        user_msg = (
+            await session.execute(select(Message).where(Message.role == "user"))
+        ).scalar_one()
+        assert user_msg.parts == [
+            {"type": "text", "text": "summarize"},
+            {
+                "type": "attachment",
+                "id": "att-text-1",
+                "name": "notes.txt",
+                "mediaType": "text",
+                "mimeType": "text/plain",
+                "sizeBytes": 16,
+                "storagePolicy": "transient",
             },
         ]
 
@@ -261,7 +317,7 @@ async def test_attachment_idempotent_replay_accepts_metadata_only_retry(
         f"/api/conversations/{conv_id}/messages",
         {
             "clientMessageId": client_msg_id,
-            "tierId": "smart",
+            "tierId": "fast",
             "text": "please read this",
             "attachments": [
                 {
@@ -283,7 +339,7 @@ async def test_attachment_idempotent_replay_accepts_metadata_only_retry(
         f"/api/conversations/{conv_id}/messages",
         {
             "clientMessageId": client_msg_id,
-            "tierId": "smart",
+            "tierId": "fast",
             "text": "please read this",
             "attachments": [
                 {
@@ -323,7 +379,7 @@ async def test_send_message_with_attachment_rejects_mismatched_payload_size(
         f"/api/conversations/{conv_id}/messages",
         json={
             "clientMessageId": str(uuid4()),
-            "tierId": "smart",
+            "tierId": "fast",
             "text": "please read this",
             "attachments": [
                 {

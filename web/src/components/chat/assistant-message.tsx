@@ -30,6 +30,7 @@ interface AssistantMessageProps {
   onBranch?: () => void;
   onRegenerate?: () => void;
   onFeedback?: (next: Feedback) => void;
+  onAttributionOpen?: () => void;
   defaultReasoningOpen?: boolean;
   // Set only when `status === "error"` — the canonical ApiErrorEnvelope from
   // the terminal frame. Drives the inline chip + Details + Retry.
@@ -51,6 +52,7 @@ export function AssistantMessage({
   onBranch,
   onRegenerate,
   onFeedback,
+  onAttributionOpen,
   defaultReasoningOpen = false,
   error,
 }: AssistantMessageProps) {
@@ -131,7 +133,10 @@ export function AssistantMessage({
           {message.attribution || isStopped ? (
             <div className="flex flex-wrap items-center gap-2">
               {message.attribution ? (
-                <AttributionRow attribution={message.attribution} />
+                <AttributionRow
+                  attribution={message.attribution}
+                  onOpen={onAttributionOpen}
+                />
               ) : null}
               {isStopped ? <StoppedChip /> : null}
             </div>

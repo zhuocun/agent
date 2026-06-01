@@ -38,35 +38,44 @@ class AttachmentPayload:
 
     `data` is intentionally provider-only and must never be persisted in message
     history. Regenerated turns may have metadata but no bytes because historical
-    raw payloads are stripped before storage.
+    raw payloads are stripped before storage. `extracted_text` is also transient:
+    it is derived from the current request payload and is never persisted.
     """
 
     id: str
     name: str
-    media_type: Literal["image", "pdf"]
+    media_type: Literal["image", "pdf", "text"]
     mime_type: str
     size_bytes: int
     data: bytes | None = None
+    extracted_text: str | None = None
 
 
 def text_with_attachment_fallback(
     user_text: str,
     attachments: list[AttachmentPayload] | None,
 ) -> str:
-    """Append provider-neutral attachment metadata to a text-only prompt."""
+    """Append provider-neutral attachment metadata/transcripts to a prompt."""
     if not attachments:
         return user_text
     lines = [
         user_text,
         "",
         "Attached files for this turn "
-        "(metadata only; this provider path cannot read file bytes directly):",
+        "(raw bytes are request-only and are not stored):",
     ]
     for attachment in attachments:
         lines.append(
             f"- {attachment.name} ({attachment.mime_type}, "
             f"{attachment.size_bytes} bytes)"
         )
+        if attachment.extracted_text:
+            lines.extend(
+                [
+                    f"  Extracted text from {attachment.name}:",
+                    attachment.extracted_text,
+                ]
+            )
     return "\n".join(lines)
 
 

@@ -46,7 +46,7 @@ interface ComposerProps {
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
-  clearAttachments: () => void;
+  clearAttachments: (reason?: "unsupported" | "manual") => void;
   focus: () => void;
 }
 
@@ -58,6 +58,8 @@ const ONE_LINE_THRESHOLD = 60;
 const STOP_SETTLE_MS = 600;
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ACCEPTED_ATTACHMENT_TYPES =
+  "image/*,application/pdf,text/*,.pdf,.txt,.md,.markdown,.csv,.json,.log";
 const BUTTON_BASE =
   "inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0 transition-[background-color,color,box-shadow] duration-300 ease-out";
 
@@ -86,10 +88,26 @@ async function attachmentFromFile(file: File): Promise<AttachmentPart | null> {
   if (file.size <= 0) return null;
   if (file.size > MAX_ATTACHMENT_BYTES) return null;
   const name = file.name || "Attachment";
+  const lowerName = name.toLowerCase();
   const pdf = file.type === "application/pdf" || name.toLowerCase().endsWith(".pdf");
   const image = file.type.startsWith("image/");
-  if (!pdf && !image) return null;
-  const mimeType = pdf ? "application/pdf" : file.type;
+  const text =
+    file.type.startsWith("text/") ||
+    file.type === "application/json" ||
+    file.type === "application/xml" ||
+    [".txt", ".md", ".markdown", ".csv", ".json", ".log"].some((suffix) =>
+      lowerName.endsWith(suffix),
+    );
+  if (!pdf && !image && !text) return null;
+  const textMimeSupported =
+    file.type.startsWith("text/") ||
+    file.type === "application/json" ||
+    file.type === "application/xml";
+  const mimeType = pdf
+    ? "application/pdf"
+    : text && !textMimeSupported
+      ? "text/plain"
+      : file.type;
   const rawDataUrl = await readFileAsDataUrl(file);
   const encoded = rawDataUrl.split(",", 2)[1];
   if (!encoded) return null;
@@ -97,11 +115,16 @@ async function attachmentFromFile(file: File): Promise<AttachmentPart | null> {
     type: "attachment",
     id: attachmentId(),
     name,
-    mediaType: pdf ? "pdf" : "image",
+    mediaType: pdf ? "pdf" : image ? "image" : "text",
     mimeType,
     sizeBytes: file.size,
+    storagePolicy: "transient",
     dataUrl: `data:${mimeType};base64,${encoded}`,
   };
+}
+
+function attachmentIconType(mediaType: AttachmentPart["mediaType"]): "image" | "file" {
+  return mediaType === "image" ? "image" : "file";
 }
 
 function formatAttachmentSize(bytes: number): string {
@@ -165,6 +188,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<AttachmentPart[]>([]);
   const [pendingAttachmentReads, setPendingAttachmentReads] = useState(0);
+  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
   const [justStopped, setJustStopped] = useState(false);
   // True once the textarea has grown past a single line. A perfect 9999px pill
   // looks wrong at 4–6 lines, so the capsule swaps to a large continuous radius
@@ -191,10 +215,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const supportsAttachmentsRef = useRef(supportsAttachments);
   const attachmentReadGenerationRef = useRef(0);
 
-  const clearAttachments = useCallback(() => {
+  const clearAttachments = useCallback((reason: "unsupported" | "manual" = "manual") => {
     attachmentReadGenerationRef.current += 1;
     setAttachments([]);
     setPendingAttachmentReads(0);
+    setAttachmentNotice(
+      reason === "unsupported"
+        ? "Attachments were removed because the current model does not support files."
+        : null,
+    );
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
@@ -204,8 +233,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     attachmentReadGenerationRef.current += 1;
     if (fileInputRef.current) fileInputRef.current.value = "";
     window.setTimeout(() => {
-      setAttachments([]);
-      setPendingAttachmentReads(0);
+      setAttachments((current) => {
+        if (current.length > 0) {
+          setAttachmentNotice(
+            "Attachments were removed because the current model does not support files.",
+          );
+        }
+        return [];
+      });
+      setPendingAttachmentReads((current) => {
+        if (current > 0) {
+          setAttachmentNotice(
+            "Attachments were removed because the current model does not support files.",
+          );
+        }
+        return 0;
+      });
     }, 0);
   }, [supportsAttachments]);
 
@@ -321,13 +364,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const submit = () => {
     const text = value.trim();
-    if (!text || isStreaming) return;
+    if ((text.length === 0 && attachments.length === 0) || isStreaming) return;
     if (pendingAttachmentReads > 0) return;
     if (attachments.length > 0 && !supportsAttachments) return;
     onSend(text, attachments);
     prevValueRef.current = "";
     setValue("");
     setAttachments([]);
+    setAttachmentNotice(null);
     // The textarea collapses back to one line on send, so drop the grown radius
     // in lockstep — otherwise the empty pill would briefly keep its large
     // multi-line corners.
@@ -340,6 +384,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const onPickFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
     if (!supportsAttachmentsRef.current) {
+      setAttachmentNotice("The current model does not support files.");
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -347,9 +392,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       0,
       MAX_ATTACHMENTS - attachments.length - pendingAttachmentReads,
     );
-    const selected = Array.from(files).slice(0, slots);
+    const allSelected = Array.from(files);
+    const selected = allSelected.slice(0, slots);
     if (fileInputRef.current) fileInputRef.current.value = "";
-    if (selected.length === 0) return;
+    if (selected.length === 0) {
+      setAttachmentNotice(`Attach at most ${MAX_ATTACHMENTS} files.`);
+      return;
+    }
+    if (allSelected.length > selected.length) {
+      setAttachmentNotice(`Attach at most ${MAX_ATTACHMENTS} files.`);
+    } else {
+      setAttachmentNotice(null);
+    }
     const generation = attachmentReadGenerationRef.current;
     setPendingAttachmentReads((current) => current + selected.length);
     void Promise.all(
@@ -367,6 +421,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           const next = picked.filter(
             (attachment): attachment is AttachmentPart => attachment !== null,
           );
+          if (next.length < picked.length) {
+            setAttachmentNotice(
+              `Only images, PDFs, and text files up to ${formatAttachmentSize(
+                MAX_ATTACHMENT_BYTES,
+              )} can be attached.`,
+            );
+          }
           return [...current, ...next.slice(0, availableSlots)];
         });
       })
@@ -380,12 +441,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const removeAttachment = (id: string) => {
     setAttachments((current) => current.filter((attachment) => attachment.id !== id));
+    setAttachmentNotice(null);
   };
 
   const attachedSendBlocked = attachments.length > 0 && !supportsAttachments;
   const attachmentReadPending = pendingAttachmentReads > 0;
   const canSubmit =
-    value.trim().length > 0 && !attachedSendBlocked && !attachmentReadPending;
+    (value.trim().length > 0 || attachments.length > 0) &&
+    !attachedSendBlocked &&
+    !attachmentReadPending;
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // IME-safe: leave Esc/Enter to the composition layer (CJK).
@@ -467,8 +531,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         optionIdPrefix={slashOptionPrefix}
         anchorRef={capsuleRef}
       />
-      {attachments.length > 0 || attachmentReadPending ? (
-        <div className="mb-2 flex flex-wrap justify-end gap-2">
+      {attachments.length > 0 || attachmentReadPending || attachmentNotice ? (
+        <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
+          {attachmentNotice ? (
+            <span className="max-w-full rounded-full bg-background/75 px-3 py-1.5 text-xs text-muted-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]">
+              {attachmentNotice}
+            </span>
+          ) : null}
           {attachments.map((attachment) => (
             <span
               key={attachment.id}
@@ -477,11 +546,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 (attachedSendBlocked || attachmentReadPending) &&
                   "text-muted-foreground",
               )}
+              title="File content is used for this request only and is not stored."
             >
-              {attachment.mediaType === "pdf" ? (
-                <FileText aria-hidden className="size-3.5 shrink-0" />
-              ) : (
+              {attachmentIconType(attachment.mediaType) === "image" ? (
                 <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+              ) : (
+                <FileText aria-hidden className="size-3.5 shrink-0" />
               )}
               <span className="min-w-0 max-w-[12rem] truncate">
                 {attachment.name}
@@ -510,6 +580,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   ? "Reading file"
                   : `Reading ${pendingAttachmentReads} files`}
               </span>
+              <button
+                type="button"
+                aria-label="Cancel attachment read"
+                onClick={() => clearAttachments("manual")}
+                className="ml-0.5 inline-flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              >
+                <X className="size-3" />
+              </button>
             </span>
           ) : null}
         </div>
@@ -535,7 +613,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/*,application/pdf,.pdf"
+              accept={ACCEPTED_ATTACHMENT_TYPES}
+              data-testid="composer-file-input"
               className="sr-only"
               onChange={(e) => onPickFiles(e.target.files)}
             />
@@ -547,14 +626,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                     variant="ghost"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isStreaming}
-                    aria-label="Attach image or PDF"
+                    aria-label="Attach file"
                     className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
                   >
                     <Paperclip className="size-4" />
                   </Button>
                 }
               />
-              <TooltipContent>Attach image or PDF</TooltipContent>
+              <TooltipContent>Attach image, PDF, or text file</TooltipContent>
             </Tooltip>
           </>
         ) : null}

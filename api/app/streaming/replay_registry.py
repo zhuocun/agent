@@ -584,7 +584,9 @@ class RedisReplayLogStore:
             return None
         buffer = self._buffer(stream_id, ttl_seconds=ttl_seconds)
         if not await buffer.has_retained_prefix():
-            return None
+            raise ReplayLogTruncatedError(
+                f"replay log for stream {stream_id} no longer has its prefix"
+            )
         await buffer._meta_done()
         return buffer
 

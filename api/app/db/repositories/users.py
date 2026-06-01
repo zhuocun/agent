@@ -8,8 +8,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    AnalyticsEvent,
     ApiKey,
     AuditEvent,
+    BillingCustomer,
+    BillingEntitlement,
     Conversation,
     Message,
     Preferences,
@@ -20,7 +23,7 @@ from app.db.models import (
     User,
     Vote,
 )
-from app.schemas.account import AccountByokKey, AccountInfo
+from app.schemas.account import AccountByokKey, AccountInfo, BillingState
 
 
 async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
@@ -34,16 +37,14 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
     deletes here are idempotent there too.
 
     Order: vote (by message id) -> stream (by conversation id) ->
-    message (by conversation id) -> conversation ->
+    message (by conversation id) -> conversation -> analytics_event ->
     api_key / usage ledgers / preferences / session -> audit purge -> user.
     Flush only; the caller (request dependency) owns the commit.
     """
     convo_id_stmt = select(Conversation.id).where(Conversation.user_id == user_id)
     convo_ids = (await db.execute(convo_id_stmt)).scalars().all()
     if convo_ids:
-        msg_id_stmt = select(Message.id).where(
-            Message.conversation_id.in_(convo_ids)
-        )
+        msg_id_stmt = select(Message.id).where(Message.conversation_id.in_(convo_ids))
         msg_ids = (await db.execute(msg_id_stmt)).scalars().all()
         if msg_ids:
             await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
@@ -52,17 +53,14 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
         # `conversation_id` is ON DELETE CASCADE, but we deliberately do NOT
         # rely on DB cascade (SQLite tests have no `PRAGMA foreign_keys=ON`),
         # so it must be removed explicitly or rows orphan on SQLite.
-        await db.execute(
-            delete(Stream).where(Stream.conversation_id.in_(convo_ids))
-        )
-        await db.execute(
-            delete(Message).where(Message.conversation_id.in_(convo_ids))
-        )
+        await db.execute(delete(Stream).where(Stream.conversation_id.in_(convo_ids)))
+        await db.execute(delete(Message).where(Message.conversation_id.in_(convo_ids)))
     await db.execute(delete(Conversation).where(Conversation.user_id == user_id))
+    await db.execute(delete(AnalyticsEvent).where(AnalyticsEvent.user_id == user_id))
     await db.execute(delete(ApiKey).where(ApiKey.user_id == user_id))
-    await db.execute(
-        delete(UsageCreditLedger).where(UsageCreditLedger.user_id == user_id)
-    )
+    await db.execute(delete(BillingEntitlement).where(BillingEntitlement.user_id == user_id))
+    await db.execute(delete(BillingCustomer).where(BillingCustomer.user_id == user_id))
+    await db.execute(delete(UsageCreditLedger).where(UsageCreditLedger.user_id == user_id))
     await db.execute(delete(UsageRollup).where(UsageRollup.user_id == user_id))
     await db.execute(delete(Preferences).where(Preferences.user_id == user_id))
     await db.execute(delete(Session).where(Session.user_id == user_id))
@@ -77,6 +75,7 @@ def to_account_info(
     byok_enabled: bool = False,
     byok_masked_key: str | None = None,
     byok_keys: list[AccountByokKey] | None = None,
+    billing: BillingState | None = None,
 ) -> AccountInfo:
     """Map ORM User -> wire AccountInfo.
 
@@ -93,6 +92,12 @@ def to_account_info(
         email=user.email or "",
         is_anonymous=user.is_anonymous,
         plan_label=user.plan_label,
+        billing=billing
+        or BillingState(
+            plan_id="pro" if user.plan_label == "Pro" else "free",
+            plan_label=user.plan_label,
+            pro_enabled=user.plan_label == "Pro",
+        ),
         byok_enabled=byok_enabled,
         byok_masked_key=byok_masked_key if byok_enabled else None,
         byok_keys=byok_keys or [],

@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useState, type JSX } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type JSX } from "react";
 import { Key, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,9 @@ import {
   isAnonymousAccount,
   type AccountInfo,
   type ByokKeyStatus,
+  type UserPreferences,
 } from "@/lib/types";
+import { reportTelemetry } from "@/lib/telemetry";
 
 // PRD 04 §5.2 — surface providers as user-facing labels; the canonical id list
 // is not yet exported from `lib/`, so the form hardcodes the MVP providers with
@@ -59,10 +61,15 @@ function keyStatusForProvider(
 
 export interface ByokFormProps {
   account: AccountInfo;
+  preferences: Pick<UserPreferences, "telemetryEnabled">;
   onAccountChange: (next: AccountInfo) => void | Promise<void>;
 }
 
-export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Element {
+export function ByokForm({
+  account,
+  preferences,
+  onAccountChange,
+}: ByokFormProps): JSX.Element {
   const providerId = useId();
   const keyId = useId();
   const [provider, setProvider] = useState<string>(PROVIDERS[0]!.id);
@@ -71,6 +78,7 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const reportedOpenKeysRef = useRef<Set<string>>(new Set());
 
   const anonymous = isAnonymousAccount(account);
   const providerChoices = useMemo(
@@ -88,12 +96,32 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
   );
   const hasKeyForProvider = currentKey !== undefined;
   const keyUsable = currentKey?.usable !== false;
+  const showKeyRow = !hasKeyForProvider || editing;
 
   const reset = () => {
     setApiKey("");
     setEditing(false);
     setConfirmingDelete(false);
   };
+
+  const reportByokFormOpened = (action: "add" | "replace"): void => {
+    reportTelemetry(preferences, "byok.form_opened", {
+      providerId: currentProvider.id,
+      action,
+    });
+  };
+
+  useEffect(() => {
+    if (!showKeyRow) return;
+    const action = hasKeyForProvider ? "replace" : "add";
+    const key = `${currentProvider.id}:${action}`;
+    if (reportedOpenKeysRef.current.has(key)) return;
+    reportedOpenKeysRef.current.add(key);
+    reportTelemetry(preferences, "byok.form_opened", {
+      providerId: currentProvider.id,
+      action,
+    });
+  }, [currentProvider.id, hasKeyForProvider, preferences, showKeyRow]);
 
   const handleReportError = (cause: unknown, fallbackTitle: string) => {
     const title =
@@ -114,6 +142,10 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
     try {
       const next = await putByok({ provider, apiKey: trimmed });
       await onAccountChange(next);
+      reportTelemetry(preferences, "byok.saved", {
+        providerId: provider,
+        result: "success",
+      });
       reset();
       showToast({
         severity: "success",
@@ -121,6 +153,10 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
         body: `${currentProvider.label} requests can bill to your key when that provider is selected.`,
       });
     } catch (cause) {
+      reportTelemetry(preferences, "byok.saved", {
+        providerId: provider,
+        result: "error",
+      });
       handleReportError(cause, "Couldn't save key");
     } finally {
       setSaving(false);
@@ -132,6 +168,10 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
     try {
       const next = await deleteByok(provider);
       await onAccountChange(next);
+      reportTelemetry(preferences, "byok.deleted", {
+        providerId: provider,
+        result: "success",
+      });
       reset();
       showToast({
         severity: "success",
@@ -139,6 +179,10 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
         body: `${currentProvider.label} requests revert to platform credits.`,
       });
     } catch (cause) {
+      reportTelemetry(preferences, "byok.deleted", {
+        providerId: provider,
+        result: "error",
+      });
       handleReportError(cause, "Couldn't remove key");
     } finally {
       setRemoving(false);
@@ -155,11 +199,6 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
       </div>
     );
   }
-
-  // The key-entry row shares the inset-grouped card with the provider row
-  // (mirrors the welcome-list pattern), so compute its visibility once: shown
-  // when there's no stored key, or when the user is explicitly replacing one.
-  const showKeyRow = !hasKeyForProvider || editing;
 
   return (
     <div className="space-y-3">
@@ -282,7 +321,10 @@ export function ByokForm({ account, onAccountChange }: ByokFormProps): JSX.Eleme
                 type="button"
                 variant="secondary"
                 size="sm"
-                onClick={() => setEditing(true)}
+                onClick={() => {
+                  setEditing(true);
+                  reportByokFormOpened("replace");
+                }}
                 className="rounded-full"
               >
                 Replace key

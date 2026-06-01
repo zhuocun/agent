@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import (
+    AnalyticsEvent,
     ApiKey,
     AuditEvent,
     Conversation,
@@ -117,6 +118,7 @@ async def _seed_owned_data(
                 training_opt_in=True,
                 send_on_enter=True,
                 auto_expand_reasoning=False,
+                telemetry_enabled=True,
                 retention_days=30,
             )
         )
@@ -167,6 +169,13 @@ async def _seed_owned_data(
                 details={"provider": "anthropic"},
             )
         )
+        s.add(
+            AnalyticsEvent(
+                user_id=user_id,
+                event_type="settings.opened",
+                properties={"surface": "settings"},
+            )
+        )
         await s.commit()
         return str(convo.id), str(m_user.id), str(m_asst.id)
 
@@ -204,6 +213,7 @@ async def test_export_returns_data_with_attachment_and_no_secrets(
         "byokKeys",
         "conversations",
         "auditEvents",
+        "analyticsEvents",
         "exportedAt",
     ):
         assert key in body, f"missing top-level key {key!r}"
@@ -237,14 +247,23 @@ async def test_export_returns_data_with_attachment_and_no_secrets(
     assert len(body["usageCreditLedger"]) == 12
     assert body["usageCreditLedger"][0]["description"] == "Ledger entry 0"
     assert body["usageCreditLedger"][-1]["description"] == "Ledger entry 11"
-    assert {
-        entry["entryType"] for entry in body["usageCreditLedger"]
-    } == {"grant", "platform_debit", "adjustment"}
+    assert {entry["entryType"] for entry in body["usageCreditLedger"]} == {
+        "grant",
+        "platform_debit",
+        "adjustment",
+    }
     assert any(entry["amountUsd"] < 0 for entry in body["usageCreditLedger"])
     assert any(entry["amountUsd"] > 0 for entry in body["usageCreditLedger"])
     assert body["usageRollups"][0]["costUsd"] == 0.012345
     event_types = {event["eventType"] for event in body["auditEvents"]}
     assert {"byok.upsert", "account.export"}.issubset(event_types)
+    assert body["analyticsEvents"] == [
+        {
+            "eventType": "settings.opened",
+            "createdAt": body["analyticsEvents"][0]["createdAt"],
+            "properties": {"surface": "settings"},
+        }
+    ]
 
     # No secret material anywhere in the serialized payload.
     raw = json.dumps(body)
@@ -267,6 +286,7 @@ async def test_export_works_for_anonymous_user(
     assert body["conversations"] == []
     assert body["byokKeys"] == []
     assert {event["eventType"] for event in body["auditEvents"]} == {"account.export"}
+    assert body["analyticsEvents"] == []
 
 
 async def test_delete_requires_confirmation(
@@ -334,9 +354,9 @@ async def test_delete_erases_all_data_and_clears_cookie(
     async with session_factory() as s:
         stream_count = (
             await s.execute(
-                select(func.count()).select_from(Stream).where(
-                    Stream.conversation_id == UUID(conv_id)
-                )
+                select(func.count())
+                .select_from(Stream)
+                .where(Stream.conversation_id == UUID(conv_id))
             )
         ).scalar_one()
         assert stream_count >= 1
@@ -364,58 +384,55 @@ async def test_delete_erases_all_data_and_clears_cookie(
         ).scalar_one() == 0
         assert (
             await s.execute(
-                select(func.count()).select_from(Conversation).where(
-                    Conversation.user_id == user_id
-                )
+                select(func.count())
+                .select_from(Conversation)
+                .where(Conversation.user_id == user_id)
             )
         ).scalar_one() == 0
         assert (
             await s.execute(
-                select(func.count()).select_from(Message).where(
-                    Message.conversation_id == UUID(conv_id)
-                )
+                select(func.count())
+                .select_from(Message)
+                .where(Message.conversation_id == UUID(conv_id))
             )
         ).scalar_one() == 0
         assert (
             await s.execute(
-                select(func.count()).select_from(Vote).where(
-                    Vote.message_id == UUID(asst_id)
-                )
+                select(func.count()).select_from(Vote).where(Vote.message_id == UUID(asst_id))
             )
         ).scalar_one() == 0
         assert (
             await s.execute(
-                select(func.count()).select_from(Preferences).where(
-                    Preferences.user_id == user_id
-                )
+                select(func.count()).select_from(Preferences).where(Preferences.user_id == user_id)
             )
         ).scalar_one() == 0
         assert (
             await s.execute(
-                select(func.count()).select_from(ApiKey).where(
-                    ApiKey.user_id == user_id
-                )
+                select(func.count()).select_from(ApiKey).where(ApiKey.user_id == user_id)
             )
         ).scalar_one() == 0
         assert (
             await s.execute(
-                select(func.count()).select_from(UsageRollup).where(
-                    UsageRollup.user_id == user_id
-                )
+                select(func.count()).select_from(UsageRollup).where(UsageRollup.user_id == user_id)
             )
         ).scalar_one() == 0
         assert (
             await s.execute(
-                select(func.count()).select_from(UsageCreditLedger).where(
-                    UsageCreditLedger.user_id == user_id
-                )
+                select(func.count())
+                .select_from(UsageCreditLedger)
+                .where(UsageCreditLedger.user_id == user_id)
             )
         ).scalar_one() == 0
         assert (
             await s.execute(
-                select(func.count()).select_from(DbSession).where(
-                    DbSession.user_id == user_id
-                )
+                select(func.count())
+                .select_from(AnalyticsEvent)
+                .where(AnalyticsEvent.user_id == user_id)
+            )
+        ).scalar_one() == 0
+        assert (
+            await s.execute(
+                select(func.count()).select_from(DbSession).where(DbSession.user_id == user_id)
             )
         ).scalar_one() == 0
         audit_rows = (await s.execute(select(AuditEvent))).scalars().all()
@@ -428,9 +445,9 @@ async def test_delete_erases_all_data_and_clears_cookie(
         # SQLite (no PRAGMA foreign_keys=ON, so DB cascade does not fire).
         assert (
             await s.execute(
-                select(func.count()).select_from(Stream).where(
-                    Stream.conversation_id == UUID(conv_id)
-                )
+                select(func.count())
+                .select_from(Stream)
+                .where(Stream.conversation_id == UUID(conv_id))
             )
         ).scalar_one() == 0
 
@@ -467,7 +484,5 @@ async def test_delete_works_for_anonymous_user(
 
     async with session_factory() as s:
         assert (
-            await s.execute(
-                select(func.count()).select_from(User).where(User.id == user_id)
-            )
+            await s.execute(select(func.count()).select_from(User).where(User.id == user_id))
         ).scalar_one() == 0

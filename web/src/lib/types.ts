@@ -41,6 +41,8 @@ export interface ModelTier {
   defaultRouteEligible: boolean;
   dataPolicy: ProviderDataPolicy | null;
   providerOptions?: ProviderTierOption[];
+  requiresPro?: boolean;
+  platformAccess?: "free" | "pro";
 }
 
 export type ProviderRouteStatus = "available" | "pending" | "unavailable";
@@ -205,9 +207,10 @@ export interface AttachmentPart {
   type: "attachment";
   id: string;
   name: string;
-  mediaType: "image" | "pdf";
+  mediaType: "image" | "pdf" | "text";
   mimeType: string;
   sizeBytes: number;
+  storagePolicy?: "transient";
   dataUrl?: string;
   contentBase64?: string;
 }
@@ -287,6 +290,7 @@ export interface UserPreferences {
   trainingOptIn: boolean; // default false — conversations are not used for training
   sendOnEnter: boolean;
   autoExpandReasoning: boolean;
+  telemetryEnabled: boolean; // first-party product telemetry only
   retentionDays: 30 | 90 | null; // null = retain forever
 }
 
@@ -295,6 +299,7 @@ export interface AccountInfo {
   name: string;
   email: string;
   planLabel: string; // e.g. "Pro" — never a raw SKU
+  billing?: BillingState;
   byokEnabled: boolean;
   byokMaskedKey?: string; // e.g. "sk-…4f2a", shown only when byokEnabled
   byokKeys?: ByokKeyStatus[];
@@ -302,6 +307,19 @@ export interface AccountInfo {
   // signal for gating the sign-in CTA, BYOK, and the sign-out row. Guests are
   // minted server-side without an email; registered accounts carry one.
   isAnonymous: boolean;
+}
+
+export interface BillingState {
+  planId: "free" | "pro";
+  planLabel: string;
+  proEnabled: boolean;
+  billingProvider?: "stripe" | "fake" | null;
+  // Legacy Pro-checkout flag. New surfaces should use the per-kind flags below.
+  checkoutAvailable: boolean;
+  proCheckoutAvailable?: boolean;
+  creditCheckoutAvailable?: boolean;
+  portalAvailable: boolean;
+  creditBalanceUsd: number;
 }
 
 export interface ByokKeyStatus {

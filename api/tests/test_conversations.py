@@ -136,6 +136,7 @@ async def test_get_owned_conversation_returns_body(
         "mediaType": "image",
         "mimeType": "image/png",
         "sizeBytes": 1234,
+        "storagePolicy": "transient",
     }
     assert asst_msg["role"] == "assistant"
     assert asst_msg["status"] == "done"

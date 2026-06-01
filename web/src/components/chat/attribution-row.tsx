@@ -11,6 +11,7 @@ import { CostBreakdownDetails } from "@/components/chat/cost-breakdown";
 
 export interface AttributionRowProps {
   attribution: ModelAttribution;
+  onOpen?: () => void;
 }
 
 function formatCostSummary(n: number): string {
@@ -56,6 +57,7 @@ const Dot = (
 
 export function AttributionRow({
   attribution,
+  onOpen,
 }: AttributionRowProps): React.JSX.Element {
   const isEstimate = attribution.costConfidence === "estimate";
   const { substitution, isByok, servedModelLabel } = attribution;
@@ -102,7 +104,11 @@ export function AttributionRow({
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-xs text-muted-foreground">
-      <Popover.Root>
+      <Popover.Root
+        onOpenChange={(open) => {
+          if (open) onOpen?.();
+        }}
+      >
         <Popover.Trigger
           aria-label={triggerLabel}
           className={cn(

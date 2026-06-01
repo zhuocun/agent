@@ -4,7 +4,7 @@ Covers:
 - Bootstrap returns the defaults when no preferences row exists.
 - PUT replaces the row; subsequent bootstrap reflects the new values.
 - PUT validates: an unknown `defaultTierId` is rejected as INVALID_INPUT.
-- PUT requires all five fields (camelCase). Missing field -> 400.
+- PUT requires all original fields; `telemetryEnabled` may be omitted.
 - Anonymous users can PUT preferences.
 - PUT twice with different bodies persists the second body (replacement).
 """
@@ -31,15 +31,14 @@ _VALID_BODY = {
     "trainingOptIn": True,
     "sendOnEnter": False,
     "autoExpandReasoning": True,
+    "telemetryEnabled": True,
     "retentionDays": 90,
 }
 
 
 async def _row_count(session_factory: async_sessionmaker[AsyncSession]) -> int:
     async with session_factory() as s:
-        return int(
-            (await s.execute(select(func.count()).select_from(Preferences))).scalar_one()
-        )
+        return int((await s.execute(select(func.count()).select_from(Preferences))).scalar_one())
 
 
 async def test_bootstrap_returns_defaults_when_no_row(
@@ -56,6 +55,7 @@ async def test_bootstrap_returns_defaults_when_no_row(
         "trainingOptIn": False,
         "sendOnEnter": True,
         "autoExpandReasoning": False,
+        "telemetryEnabled": True,
         "retentionDays": None,
     }
     # Bootstrap should NOT silently insert a row.
@@ -90,6 +90,26 @@ async def test_put_accepts_retention_forever(
 
     boot = await client.get("/api/bootstrap")
     assert boot.json()["preferences"]["retentionDays"] is None
+
+
+async def test_put_omitted_telemetry_preserves_existing_opt_out(
+    client: AsyncClient,
+) -> None:
+    await client.get("/api/bootstrap")
+    opted_out = dict(_VALID_BODY)
+    opted_out["telemetryEnabled"] = False
+    assert (await client.put("/api/preferences", json=opted_out)).status_code == 204
+
+    stale_client_body = dict(_VALID_BODY)
+    stale_client_body.pop("telemetryEnabled")
+    stale_client_body["defaultTierId"] = "fast"
+    response = await client.put("/api/preferences", json=stale_client_body)
+    assert response.status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    prefs = boot.json()["preferences"]
+    assert prefs["defaultTierId"] == "fast"
+    assert prefs["telemetryEnabled"] is False
 
 
 async def test_put_finite_retention_erases_expired_conversations(
@@ -234,12 +254,8 @@ async def test_put_persists_per_user(
 
     # Two users, two preferences rows.
     async with session_factory() as s:
-        n_users = int(
-            (await s.execute(select(func.count()).select_from(User))).scalar_one()
-        )
-        n_prefs = int(
-            (await s.execute(select(func.count()).select_from(Preferences))).scalar_one()
-        )
+        n_users = int((await s.execute(select(func.count()).select_from(User))).scalar_one())
+        n_prefs = int((await s.execute(select(func.count()).select_from(Preferences))).scalar_one())
         assert n_users == 2
         assert n_prefs == 2
 

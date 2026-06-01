@@ -33,7 +33,9 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.db.models import Message, User
+from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import api_keys as api_keys_repo
+from app.db.repositories import billing as billing_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import preferences as preferences_repo
@@ -57,6 +59,7 @@ from app.providers.tiers import (
     is_known_tier,
     platform_provider_usable,
     route_adapter_available,
+    tier_requires_pro,
     web_search_available_for_binding,
 )
 from app.schemas.common import ModelTierId, SubstitutionReasonCode
@@ -88,8 +91,10 @@ from app.streaming.handler import (
     spawn_detached_producer,
     stream_and_persist,
 )
+from app.streaming.replay_registry import ReplayLogBuffer, ReplayLogTruncatedError
 from app.streaming.sse import (
     encode_answer_delta,
+    encode_error,
     encode_reasoning_delta,
     encode_reasoning_done,
     encode_sources,
@@ -100,6 +105,7 @@ from app.streaming.sse import (
     encode_tool_result,
 )
 from app.streaming.stop_registry import request_stop_async
+from app.uploads import extract_attachment_text, is_supported_attachment_type
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -233,6 +239,37 @@ def _duplicate_in_flight() -> AppError:
     )
 
 
+def _stream_replay_truncated_envelope() -> ErrorEnvelope:
+    return ErrorEnvelope(
+        code="STREAM_REPLAY_TRUNCATED",
+        severity="error",
+        title="Stream replay expired",
+        body=(
+            "This stream's replay buffer no longer has the full event history. "
+            "Start a new message to continue."
+        ),
+    )
+
+
+def _stream_replay_truncated() -> AppError:
+    return AppError(
+        _stream_replay_truncated_envelope(),
+        status.HTTP_410_GONE,
+    )
+
+
+def _stream_replay_unavailable_envelope() -> ErrorEnvelope:
+    return ErrorEnvelope(
+        code="STREAM_REPLAY_UNAVAILABLE",
+        severity="error",
+        title="Stream replay unavailable",
+        body=(
+            "The prior message is still in flight, but its live replay buffer "
+            "is not available. Try reconnecting in a moment."
+        ),
+    )
+
+
 def _idempotency_mismatch() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -296,6 +333,40 @@ def _request_fingerprint(
     }
 
 
+async def _replay_buffer_events(
+    *,
+    request: Request | None,
+    buffer: ReplayLogBuffer,
+    expected_user_message_id: UUID | None = None,
+) -> AsyncIterator[ServerSentEvent]:
+    """Replay one live buffer and surface truncation as an SSE error frame."""
+    try:
+        subscription = await buffer.subscribe()
+        first_event = True
+        async for sse_event in subscription.events():
+            if first_event and expected_user_message_id is not None:
+                first_event = False
+                if _submitted_message_id(sse_event) != expected_user_message_id:
+                    yield encode_error(_stream_replay_unavailable_envelope())
+                    return
+            if request is not None and await request.is_disconnected():
+                return
+            yield sse_event
+    except ReplayLogTruncatedError:
+        yield encode_error(_stream_replay_truncated_envelope())
+
+
+def _submitted_message_id(event: ServerSentEvent) -> UUID | None:
+    if event.event != "submitted" or not isinstance(event.data, str):
+        return None
+    try:
+        payload = json.loads(event.data)
+        raw_message_id = payload.get("messageId")
+        return UUID(raw_message_id) if isinstance(raw_message_id, str) else None
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
 def _attachment_invalid(body: str) -> AppError:
     return _invalid_input("INVALID_ATTACHMENT", body)
 
@@ -323,12 +394,12 @@ def _decode_attachment_payloads(
 
     payloads: list[AttachmentPayload] = []
     for attachment in attachments:
+        if not is_supported_attachment_type(attachment.media_type, attachment.mime_type):
+            raise _attachment_invalid("Attachment type is not supported.")
         if attachment.size_bytes <= 0:
             raise _attachment_invalid("Attachment payload cannot be empty.")
         if attachment.size_bytes > max_bytes:
-            raise _attachment_invalid(
-                f"Each attachment must be {max_bytes} bytes or smaller."
-            )
+            raise _attachment_invalid(f"Each attachment must be {max_bytes} bytes or smaller.")
         if attachment.data_url is not None and attachment.content_base64 is not None:
             raise _attachment_invalid(
                 "Send either dataUrl or contentBase64 for an attachment, not both."
@@ -336,18 +407,13 @@ def _decode_attachment_payloads(
 
         encoded: str
         if attachment.data_url is not None:
-            if (
-                not attachment.data_url.startswith("data:")
-                or "," not in attachment.data_url
-            ):
+            if not attachment.data_url.startswith("data:") or "," not in attachment.data_url:
                 raise _attachment_invalid("Attachment dataUrl must be a base64 data URL.")
             header, encoded = attachment.data_url.split(",", 1)
             metadata = header[5:].split(";")
             data_url_mime = metadata[0] if metadata else ""
             if data_url_mime != attachment.mime_type:
-                raise _attachment_invalid(
-                    "Attachment dataUrl MIME type must match mimeType."
-                )
+                raise _attachment_invalid("Attachment dataUrl MIME type must match mimeType.")
             if "base64" not in metadata[1:]:
                 raise _attachment_invalid("Attachment dataUrl must be base64 encoded.")
         elif attachment.content_base64 is not None:
@@ -359,9 +425,7 @@ def _decode_attachment_payloads(
         if len(data) != attachment.size_bytes:
             raise _attachment_invalid("Attachment sizeBytes must match payload size.")
         if len(data) > max_bytes:
-            raise _attachment_invalid(
-                f"Each attachment must be {max_bytes} bytes or smaller."
-            )
+            raise _attachment_invalid(f"Each attachment must be {max_bytes} bytes or smaller.")
         payloads.append(
             AttachmentPayload(
                 id=attachment.id,
@@ -370,6 +434,11 @@ def _decode_attachment_payloads(
                 mime_type=attachment.mime_type,
                 size_bytes=attachment.size_bytes,
                 data=data,
+                extracted_text=extract_attachment_text(
+                    media_type=attachment.media_type,
+                    mime_type=attachment.mime_type,
+                    data=data,
+                ),
             )
         )
     return payloads
@@ -384,9 +453,9 @@ def _attachment_payloads_from_parts(parts: object) -> list[AttachmentPayload]:
         if not isinstance(part, dict) or part.get("type") != "attachment":
             continue
         raw_media_type = part.get("mediaType")
-        if raw_media_type not in ("image", "pdf"):
+        if raw_media_type not in ("image", "pdf", "text"):
             continue
-        media_type = cast(Literal["image", "pdf"], raw_media_type)
+        media_type = cast(Literal["image", "pdf", "text"], raw_media_type)
         name = str(part.get("name") or "attachment")
         mime_type = str(part.get("mimeType") or "")
         size_raw = part.get("sizeBytes")
@@ -417,9 +486,7 @@ def _ms_until_next_month(now: datetime | None = None) -> int:
             year=ref.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0
         )
     else:
-        nxt = ref.replace(
-            month=ref.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0
-        )
+        nxt = ref.replace(month=ref.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
     return max(0, int((nxt - ref).total_seconds() * 1000))
 
 
@@ -435,6 +502,46 @@ def _budget_exceeded() -> AppError:
         ),
         status.HTTP_429_TOO_MANY_REQUESTS,
     )
+
+
+def _pro_required() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="PRO_REQUIRED",
+            severity="warning",
+            title="Upgrade required",
+            body=(
+                "This platform-paid route requires Pro. Bring your own key or upgrade to continue."
+            ),
+            actions=[ErrorAction(label="View billing", kind="open_settings")],
+        ),
+        status.HTTP_402_PAYMENT_REQUIRED,
+    )
+
+
+async def _enforce_platform_entitlement(
+    db: AsyncSession,
+    *,
+    user: User,
+    tier_id: ModelTierId,
+    api_key: str | None,
+) -> None:
+    if api_key is not None or not tier_requires_pro(tier_id):
+        return
+    if await _has_platform_pro_access(db, user=user, api_key=api_key):
+        return
+    raise _pro_required()
+
+
+async def _has_platform_pro_access(
+    db: AsyncSession,
+    *,
+    user: User,
+    api_key: str | None,
+) -> bool:
+    if api_key is not None:
+        return True
+    return await billing_repo.has_active_pro_entitlement(db, user_id=user.id)
 
 
 @router.get("/search", response_model=list[ConversationSearchResult])
@@ -490,6 +597,12 @@ async def create_conversation(
     _ensure_provider_usable(
         provider_id=selected_provider_id,
         settings=settings,
+        api_key=resolved_api_key,
+    )
+    await _enforce_platform_entitlement(
+        db,
+        user=user,
+        tier_id=body.selected_tier_id,
         api_key=resolved_api_key,
     )
 
@@ -643,9 +756,7 @@ async def create_share_link(
     return ShareLinkResponse(share_token=token, share_path=f"/share/{token}")
 
 
-@router.delete(
-    "/{conversation_id}/share", status_code=status.HTTP_204_NO_CONTENT
-)
+@router.delete("/{conversation_id}/share", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_share_link(
     conversation_id: UUID,
     user: User = Depends(current_user),
@@ -675,6 +786,7 @@ async def _maybe_replay(
     conversation_id: UUID,
     client_uuid: UUID,
     request_fingerprint: dict[str, object] | None = None,
+    request: Request | None = None,
 ) -> EventSourceResponse | None:
     """If a prior user message + completed assistant row exist, return a replay.
 
@@ -709,9 +821,7 @@ async def _maybe_replay(
         raise _idempotency_mismatch()
 
     # Primary path: column-based lookup. Indexed; O(log n).
-    assistant_row = await messages_repo.get_assistant_for_user_message(
-        db, prior_user_msg.id
-    )
+    assistant_row = await messages_repo.get_assistant_for_user_message(db, prior_user_msg.id)
 
     # Fallback for legacy rows whose responds_to_message_id is NULL (data
     # written before the 0005 migration). Pair-by-index on the i-th user/i-th
@@ -728,9 +838,7 @@ async def _maybe_replay(
         # mixed conversation (some rows migrated, some not) doesn't double-
         # count an assistant we already failed to match above.
         asst_msgs = [
-            m
-            for m in all_msgs
-            if m.role == "assistant" and m.responds_to_message_id is None
+            m for m in all_msgs if m.role == "assistant" and m.responds_to_message_id is None
         ]
         user_index = next(
             (i for i, m in enumerate(user_msgs) if m.id == prior_user_msg.id),
@@ -774,9 +882,7 @@ async def _maybe_replay(
             elif ptype == "status":
                 status_part = part
             elif ptype == "sources":
-                sources_items = cast(
-                    list[dict[str, object]], part.get("items", []) or []
-                )
+                sources_items = cast(list[dict[str, object]], part.get("items", []) or [])
             elif ptype in ("tool_call", "tool_result"):
                 tool_parts.append(part)
         return _replay_response(
@@ -790,7 +896,56 @@ async def _maybe_replay(
             tool_parts=tool_parts,
         )
     # User message exists but no completed assistant row: prior is in flight
-    # (or crashed before persisting). Reject as duplicate.
+    # (or crashed before persisting). With resumable streams enabled, an
+    # idempotent retry can rejoin the active stream instead of receiving a
+    # stream-id-less 409. This is intentionally keyed through the durable active
+    # stream row: there can be at most one per conversation, and it corresponds
+    # to the in-flight user message protected by this idempotency check.
+    settings = get_settings()
+    if settings.resumable_streams_enabled:
+        latest_user_msg = await messages_repo.get_last_user_message(db, conversation_id)
+        active_stream = await streams_repo.get_active_for_conversation(
+            db, conversation_id=conversation_id
+        )
+        if (
+            active_stream is not None
+            and latest_user_msg is not None
+            and latest_user_msg.id == prior_user_msg.id
+        ):
+            active_stream_id = active_stream.id
+            prior_user_msg_id = prior_user_msg.id
+            try:
+                buffer = await replay_registry.get_async(
+                    active_stream_id,
+                    ttl_seconds=settings.resumable_buffer_ttl_seconds,
+                )
+            except ReplayLogTruncatedError as exc:
+                raise _stream_replay_truncated() from exc
+            if buffer is not None:
+                return _eventsource_response(
+                    _replay_buffer_events(
+                        request=request,
+                        buffer=buffer,
+                        expected_user_message_id=prior_user_msg_id,
+                    ),
+                    media_type="text/event-stream",
+                )
+
+            async def _unavailable_stream() -> AsyncIterator[ServerSentEvent]:
+                yield encode_submitted(
+                    SubmittedEvent(
+                        message_id=str(prior_user_msg_id),
+                        stream_id=str(active_stream_id),
+                    )
+                )
+                yield encode_error(_stream_replay_unavailable_envelope())
+
+            return _eventsource_response(
+                _unavailable_stream(),
+                media_type="text/event-stream",
+            )
+
+    # No resumable reattach path is available. Reject as duplicate.
     raise _duplicate_in_flight()
 
 
@@ -892,6 +1047,7 @@ async def send_message(
                 conversation_id,
                 client_uuid,
                 request_fingerprint,
+                request,
             )
             if replay is not None:
                 return replay
@@ -915,6 +1071,12 @@ async def send_message(
             settings=settings,
             api_key=resolved_api_key,
         )
+        await _enforce_platform_entitlement(
+            db,
+            user=user,
+            tier_id=body.tier_id,
+            api_key=resolved_api_key,
+        )
 
         if settings.usage_budget_usd > 0 and resolved_api_key is None:
             has_allowance = await usage_repo.has_platform_allowance(
@@ -923,11 +1085,29 @@ async def send_message(
                 monthly_quota_usd=settings.usage_budget_usd,
             )
             if not has_allowance:
+                async with _derive_session_factory(db)() as event_db:
+                    await analytics_repo.record(
+                        event_db,
+                        user_id=user.id,
+                        event_type="budget.exceeded",
+                        properties={
+                            "conversationId": str(conversation_id),
+                            "requestedTierId": body.tier_id,
+                            "providerId": selected_provider_id,
+                        },
+                    )
+                    await event_db.commit()
                 raise _budget_exceeded()
     else:
         _ensure_provider_usable(
             provider_id=selected_provider_id,
             settings=settings,
+            api_key=resolved_api_key,
+        )
+        await _enforce_platform_entitlement(
+            db,
+            user=user,
+            tier_id=body.tier_id,
             api_key=resolved_api_key,
         )
 
@@ -1005,6 +1185,7 @@ async def send_message(
                 conversation_id,
                 client_uuid,
                 request_fingerprint,
+                request,
             )
             if replay is not None:
                 return replay
@@ -1040,8 +1221,15 @@ async def send_message(
     settings_for_routing = settings
     if body.tier_id == "auto" and settings_for_routing.auto_routing_enabled:
         routed = route_auto(provider_user_text, history)
+        routed_tier_id = routed.tier_id
+        if routed_tier_id == "pro" and not await _has_platform_pro_access(
+            db,
+            user=user,
+            api_key=resolved_api_key,
+        ):
+            routed_tier_id = "smart"
         routed_binding = get_binding(
-            routed.tier_id,
+            routed_tier_id,
             settings=settings_for_routing,
             provider_id=body.provider_id,
         )
@@ -1049,7 +1237,7 @@ async def send_message(
         # original `auto` binding rather than 500 if the registry ever diverges.
         if routed_binding is not None:
             binding = routed_binding
-        if routed.is_downgrade:
+        if routed.is_downgrade and routed_tier_id == routed.tier_id:
             router_substitution = "auto_downgrade"
 
     # Durable stream lifecycle (PRD 04 §5.1). Persist an `active` stream row for
@@ -1078,9 +1266,7 @@ async def send_message(
         if existing_active is not None:
             raise _stream_in_progress()
         try:
-            stream_row = await streams_repo.create_stream(
-                db, conversation_id=conversation_id
-            )
+            stream_row = await streams_repo.create_stream(db, conversation_id=conversation_id)
         except streams_repo.ActiveStreamExistsError as exc:
             await db.rollback()
             raise _stream_in_progress() from exc
@@ -1103,6 +1289,53 @@ async def send_message(
         binding,
         settings=settings,
     )
+    if not is_temp:
+        event_props = {
+            "conversationId": str(conversation_id),
+            "requestedTierId": body.tier_id,
+            "servedTierId": binding.tier.id,
+            "providerId": selected_provider_id,
+        }
+        if body.regenerate:
+            await analytics_repo.record(
+                db,
+                user_id=user.id,
+                event_type="message.regenerated",
+                properties=event_props,
+            )
+        if body.edit_message_id is not None:
+            await analytics_repo.record(
+                db,
+                user_id=user.id,
+                event_type="message.edited",
+                properties=event_props,
+            )
+        if effective_web_search:
+            await analytics_repo.record(
+                db,
+                user_id=user.id,
+                event_type="search.used",
+                properties=event_props,
+            )
+        if provider_attachments:
+            await analytics_repo.record(
+                db,
+                user_id=user.id,
+                event_type="attachments.used",
+                properties={
+                    **event_props,
+                    "attachmentCount": len(provider_attachments),
+                    "imageCount": sum(
+                        1 for attachment in provider_attachments if attachment.media_type == "image"
+                    ),
+                    "pdfCount": sum(
+                        1 for attachment in provider_attachments if attachment.media_type == "pdf"
+                    ),
+                    "textCount": sum(
+                        1 for attachment in provider_attachments if attachment.media_type == "text"
+                    ),
+                },
+            )
 
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
@@ -1144,10 +1377,11 @@ async def send_message(
             # Subscribe at offset 0 and tail. On client disconnect we simply
             # stop iterating (the generator is GC'd / aclosed) — the producer
             # keeps running and persisting. Subscribers NEVER persist.
-            subscription = await buffer.subscribe()
-            async for sse_event in subscription.events():
-                if await request.is_disconnected():
-                    return
+            async for sse_event in _replay_buffer_events(
+                request=request,
+                buffer=buffer,
+                expected_user_message_id=user_message_id,
+            ):
                 yield sse_event
 
         return _eventsource_response(
@@ -1233,9 +1467,12 @@ async def reconnect_stream(
         raise not_found("stream")
 
     # Live (or within-TTL done) buffer for this stream on this worker?
-    buffer = await replay_registry.get_async(
-        stream_id, ttl_seconds=settings.resumable_buffer_ttl_seconds
-    )
+    try:
+        buffer = await replay_registry.get_async(
+            stream_id, ttl_seconds=settings.resumable_buffer_ttl_seconds
+        )
+    except ReplayLogTruncatedError as exc:
+        raise _stream_replay_truncated() from exc
     if buffer is None:
         raise not_found("stream")
 
@@ -1243,10 +1480,7 @@ async def reconnect_stream(
         # Replay from offset 0 then tail. Disconnect just stops tailing; the
         # producer (and any other subscribers) are unaffected. This subscriber
         # NEVER persists.
-        subscription = await buffer.subscribe()
-        async for sse_event in subscription.events():
-            if await request.is_disconnected():
-                return
+        async for sse_event in _replay_buffer_events(request=request, buffer=buffer):
             yield sse_event
 
     return _eventsource_response(
@@ -1294,9 +1528,7 @@ async def stop_stream(
     if owner_row is None:
         raise not_found("conversation")
 
-    active = await streams_repo.get_active_for_conversation(
-        db, conversation_id=conversation_id
-    )
+    active = await streams_repo.get_active_for_conversation(db, conversation_id=conversation_id)
     if active is not None:
         # Keep the durable row `active` until the producer actually observes the
         # stop signal and persists the partial assistant. If we marked it stopped
@@ -1482,9 +1714,7 @@ def _replay_response(
         # stored dicts so a malformed row can't emit a broken wire frame.
         if items:
             yield encode_sources(
-                SourcesEvent(
-                    items=[SourceItem.model_validate(it) for it in items]
-                )
+                SourcesEvent(items=[SourceItem.model_validate(it) for it in items])
             )
         yield encode_terminal(
             TerminalEvent(

@@ -36,6 +36,7 @@ _DEFAULTS = UserPreferences(
     training_opt_in=False,
     send_on_enter=True,
     auto_expand_reasoning=False,
+    telemetry_enabled=True,
     retention_days=None,
 )
 
@@ -53,6 +54,7 @@ def _row_to_schema(row: Preferences) -> UserPreferences:
         training_opt_in=row.training_opt_in,
         send_on_enter=row.send_on_enter,
         auto_expand_reasoning=row.auto_expand_reasoning,
+        telemetry_enabled=row.telemetry_enabled,
         retention_days=retention_days,
     )
 
@@ -83,6 +85,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
                 training_opt_in=prefs.training_opt_in,
                 send_on_enter=prefs.send_on_enter,
                 auto_expand_reasoning=prefs.auto_expand_reasoning,
+                telemetry_enabled=prefs.telemetry_enabled,
                 retention_days=prefs.retention_days,
             )
         )
@@ -92,6 +95,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
         row.training_opt_in = prefs.training_opt_in
         row.send_on_enter = prefs.send_on_enter
         row.auto_expand_reasoning = prefs.auto_expand_reasoning
+        row.telemetry_enabled = prefs.telemetry_enabled
         row.retention_days = prefs.retention_days
         # `updated_at` has no onupdate hook; touch it explicitly so the column
         # reflects the actual mutation time.

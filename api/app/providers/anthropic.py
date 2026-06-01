@@ -18,6 +18,7 @@ FakeProvider only. Cache token counts map cleanly.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any, cast
@@ -28,6 +29,7 @@ from anthropic import AsyncAnthropic
 from app.errors import AppError, ErrorEnvelope
 from app.providers.protocol import (
     AnswerDelta,
+    AttachmentPayload,
     ChatMessage,
     Complete,
     ProviderEvent,
@@ -35,7 +37,10 @@ from app.providers.protocol import (
     ReasoningDone,
     Sources,
     StatusUpdate,
+    ToolCall,
+    ToolResult,
     UsageUpdate,
+    text_with_attachment_fallback,
 )
 from app.providers.steering import steer_user_text
 from app.search.protocol import SourceItem
@@ -50,6 +55,60 @@ _ANTHROPIC_WEB_SEARCH_TOOL: dict[str, Any] = {
     "max_uses": 3,
 }
 _SEARCH_STATUS_LABEL = "Searching the web…"
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def _anthropic_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | None:
+    """Map a transient attachment into Anthropic Messages content."""
+    if attachment.data is None:
+        return None
+    source = {
+        "type": "base64",
+        "media_type": attachment.mime_type,
+        "data": _b64(attachment.data),
+    }
+    if attachment.media_type == "image":
+        return {"type": "image", "source": source}
+    if attachment.media_type == "pdf":
+        return {"type": "document", "source": source}
+    return None
+
+
+def _anthropic_user_content(
+    user_text: str,
+    attachments: list[AttachmentPayload] | None,
+) -> str | list[dict[str, Any]]:
+    """Build the current user content, including native attachment bytes."""
+    if not attachments:
+        return steer_user_text(user_text)
+
+    content: list[dict[str, Any]] = []
+    metadata_only: list[AttachmentPayload] = []
+    for attachment in attachments:
+        part = _anthropic_attachment_part(attachment)
+        if part is None:
+            metadata_only.append(attachment)
+        else:
+            content.append(part)
+
+    text = (
+        text_with_attachment_fallback(user_text, metadata_only)
+        if metadata_only
+        else user_text
+    )
+    prompt = steer_user_text(text)
+    if not content:
+        return prompt
+    content.append(
+        {
+            "type": "text",
+            "text": prompt or "Please analyze the attached file(s).",
+        }
+    )
+    return content
 
 
 @lru_cache(maxsize=256)
@@ -137,6 +196,12 @@ def _parse_web_search_result(block: Any) -> list[SourceItem]:
             )
         )
     return items
+
+
+def _block_value(block: Any, key: str) -> Any:
+    if isinstance(block, dict):
+        return block.get(key)
+    return getattr(block, key, None)
 
 
 def _retry_after_ms(exc: anthropic.APIStatusError) -> int | None:
@@ -232,6 +297,7 @@ class AnthropicProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        attachments: list[AttachmentPayload] | None = None,
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
@@ -245,7 +311,9 @@ class AnthropicProvider:
         ]
         # Steer ONLY the current user turn (real-provider, outgoing request,
         # never persisted). History stays verbatim. See app/providers/steering.py.
-        messages.append({"role": "user", "content": steer_user_text(user_text)})
+        messages.append(
+            {"role": "user", "content": _anthropic_user_content(user_text, attachments)}
+        )
 
         # Anthropic server-side web search (hosted tool). Advertise the tool only
         # when opted in; the model runs the search itself and streams
@@ -277,12 +345,26 @@ class AnthropicProvider:
 
                     if etype == "content_block_start":
                         block = getattr(event, "content_block", None)
-                        block_type = getattr(block, "type", None)
+                        block_type = _block_value(block, "type")
                         if block_type == "thinking":
                             in_thinking = True
                         elif block_type == "server_tool_use":
                             # The model dispatched a server-side web search.
                             # Surface the "Searching the web…" status once.
+                            tool_id = str(_block_value(block, "id") or "web_search")
+                            tool_name = str(_block_value(block, "name") or "web_search")
+                            tool_input = _block_value(block, "input")
+                            yield ToolCall(
+                                id=tool_id,
+                                name=tool_name,
+                                label="Search web",
+                                status="running",
+                                input=(
+                                    tool_input
+                                    if isinstance(tool_input, dict)
+                                    else None
+                                ),
+                            )
                             if not search_active_emitted:
                                 yield StatusUpdate(
                                     label=_SEARCH_STATUS_LABEL, state="active"
@@ -290,11 +372,29 @@ class AnthropicProvider:
                                 search_active_emitted = True
                         elif block_type == "web_search_tool_result":
                             # Results returned: close the status and emit sources.
+                            tool_use_id = str(
+                                _block_value(block, "tool_use_id") or "web_search"
+                            )
+                            items = _parse_web_search_result(block)
+                            yield ToolResult(
+                                tool_call_id=tool_use_id,
+                                name="web_search",
+                                label="Search web",
+                                status="succeeded",
+                                summary=(
+                                    f"{len(items)} source"
+                                    f"{'s' if len(items) != 1 else ''}"
+                                ),
+                                output={
+                                    "results": [
+                                        item.model_dump() for item in items
+                                    ]
+                                },
+                            )
                             if search_active_emitted:
                                 yield StatusUpdate(
                                     label=_SEARCH_STATUS_LABEL, state="done"
                                 )
-                            items = _parse_web_search_result(block)
                             if items:
                                 yield Sources(items=items)
 

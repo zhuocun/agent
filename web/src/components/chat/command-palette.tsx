@@ -5,6 +5,7 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { MessageSquare, Search, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { searchConversations } from "@/lib/apiClient";
 import { useSwipeDismiss } from "@/lib/use-swipe-dismiss";
 import { useVisualViewport } from "@/lib/use-visual-viewport";
 import { KeyCaps } from "@/components/chat/key-caps";
@@ -38,6 +39,10 @@ export interface CommandPaletteProps {
 type Item =
   | { kind: "action"; section: "Actions" | "Settings"; action: CommandAction; flatIndex: number }
   | { kind: "conversation"; conversation: ConversationSummary; isActive: boolean; flatIndex: number };
+type RemoteConversationState = {
+  query: string;
+  results: ConversationSummary[];
+};
 
 // Cap for the "Recent" section when there's no query. Searching a non-empty
 // query spans all conversations per PRD §4.9.
@@ -48,19 +53,27 @@ function buildItems(
   actions: CommandAction[],
   conversations: ConversationSummary[],
   activeId: string | null,
+  remoteConversations: ConversationSummary[] | null,
 ): { sections: { heading: string; items: Item[] }[]; flat: Item[] } {
   const q = query.trim().toLowerCase();
   const match = (s: string): boolean => (q ? s.toLowerCase().includes(q) : true);
 
   const actionItems = actions.filter((a) => match(a.label));
 
-  // Newest first. Sort a copy so the parent's array stays untouched.
-  const sortedConversations = [...conversations].sort((a, b) =>
-    a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0,
-  );
-  const filteredConversations = sortedConversations.filter((c) =>
-    match(c.title),
-  );
+  const useRemoteConversations = q.length > 0 && remoteConversations !== null;
+  // Newest first. Sort a copy so the parent's array stays untouched. Remote
+  // search results are already filtered by the backend and may match snippets
+  // rather than titles, so preserve them as-is.
+  const sortedConversations = useRemoteConversations
+    ? remoteConversations
+    : [...conversations].sort((a, b) =>
+        a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0,
+      );
+  const filteredConversations = useRemoteConversations
+    ? sortedConversations
+    : sortedConversations.filter(
+        (c) => match(c.title) || match(c.matchSnippet ?? ""),
+      );
   const visibleConversations = q
     ? filteredConversations
     : filteredConversations.slice(0, RECENT_CAP);
@@ -111,6 +124,8 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
+  const [remoteConversationState, setRemoteConversationState] =
+    useState<RemoteConversationState | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
   const optionIdPrefix = useId();
@@ -125,6 +140,27 @@ export function CommandPalette({
     mq.addEventListener("change", sync);
     return () => mq.removeEventListener("change", sync);
   }, []);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (!open || q.length === 0) return;
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void searchConversations(q, controller.signal)
+        .then((results) => {
+          if (!controller.signal.aborted) {
+            setRemoteConversationState({ query: q, results });
+          }
+        })
+        .catch(() => undefined);
+    }, 150);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [open, query]);
 
   const { sheetRef, handleProps, contentProps } = useSwipeDismiss({
     enabled: isMobile,
@@ -148,9 +184,23 @@ export function CommandPalette({
         }
       : undefined;
 
+  const activeRemoteConversations =
+    open &&
+    remoteConversationState !== null &&
+    remoteConversationState.query === query.trim()
+      ? remoteConversationState.results
+      : null;
+
   const { sections, flat } = useMemo(
-    () => buildItems(query, actions, conversations, activeId),
-    [query, actions, conversations, activeId],
+    () =>
+      buildItems(
+        query,
+        actions,
+        conversations,
+        activeId,
+        activeRemoteConversations,
+      ),
+    [query, actions, conversations, activeId, activeRemoteConversations],
   );
 
   const clampedIndex =
@@ -342,6 +392,7 @@ export function CommandPalette({
                             </li>
                           );
                         }
+                        const matchSnippet = item.conversation.matchSnippet?.trim();
                         return (
                           <li
                             key={item.conversation.id}
@@ -364,8 +415,15 @@ export function CommandPalette({
                               aria-hidden
                               className="size-4 shrink-0 text-muted-foreground"
                             />
-                            <span className="min-w-0 flex-1 truncate">
-                              {item.conversation.title}
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate">
+                                {item.conversation.title}
+                              </span>
+                              {matchSnippet ? (
+                                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                  {matchSnippet}
+                                </span>
+                              ) : null}
                             </span>
                             {item.isActive ? (
                               <span className="ml-3 shrink-0 text-xs text-muted-foreground">

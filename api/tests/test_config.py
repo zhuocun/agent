@@ -133,6 +133,13 @@ def test_assert_prod_safe_accepts_openai_provider_in_production() -> None:
     good.assert_prod_safe()  # must not raise
 
 
+def test_assert_prod_safe_rejects_pending_gemini_route_in_production() -> None:
+    """A registry-only provider route must not silently boot as DeepSeek."""
+    bad = _prod_settings(provider_backend="gemini")
+    with pytest.raises(RuntimeError, match=re.escape("PROVIDER_BACKEND='gemini'")):
+        bad.assert_prod_safe()
+
+
 def test_assert_prod_safe_accepts_well_formed_prod_env() -> None:
     """A fully-formed prod env (secure cookies, samesite=none, long secret,
     valid KEK, non-wildcard origin, anthropic backend + key) must not raise."""

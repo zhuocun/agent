@@ -58,6 +58,8 @@ export interface SidebarProps {
   activeId: string | null;
   account: AccountInfo;
   search: string;
+  searchResults?: ConversationSummary[] | null;
+  searchPending?: boolean;
   onSearchChange: (next: string) => void;
   onSelect: (id: string) => void;
   onNewChat: () => void;
@@ -275,6 +277,7 @@ function ConversationRow({
   };
 
   const pinAction = conversation.pinned ? "Unpin" : "Pin";
+  const matchSnippet = conversation.matchSnippet?.trim();
 
   // Reduced motion → snap instantly; otherwise ease the reveal/settle. While
   // actively dragging we never transition (the finger is the clock).
@@ -426,13 +429,20 @@ function ConversationRow({
           {conversation.pinned ? (
             <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
-          <span
-            // E2E target: reads the rendered title text without depending on
-            // the aria-label format (which appends ", pinned" for pinned rows).
-            data-testid="sidebar-conversation-title"
-            className="min-w-0 flex-1 truncate"
-          >
-            {conversation.title}
+          <span className="min-w-0 flex-1">
+            <span
+              // E2E target: reads the rendered title text without depending on
+              // the aria-label format (which appends ", pinned" for pinned rows).
+              data-testid="sidebar-conversation-title"
+              className="block truncate"
+            >
+              {conversation.title}
+            </span>
+            {matchSnippet ? (
+              <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                {matchSnippet}
+              </span>
+            ) : null}
           </span>
         </button>
       )}
@@ -743,6 +753,8 @@ export function Sidebar({
   activeId,
   account,
   search,
+  searchResults,
+  searchPending = false,
   onSearchChange,
   onSelect,
   onNewChat,
@@ -759,6 +771,8 @@ export function Sidebar({
   const anonymous = isAnonymousAccount(account);
   const trimmedSearch = search.trim();
   const isSearching = trimmedSearch.length > 0;
+  const hasRemoteSearchResults =
+    isSearching && searchResults !== undefined && searchResults !== null;
 
   // Merge in enter/exit transition bookkeeping. `displayConversations` is the
   // live list plus any rows still collapsing out; `phaseById` tags which of
@@ -775,7 +789,9 @@ export function Sidebar({
   // longer matches the query — otherwise its RowWrapper never mounts and the
   // collapse falls back to the (silent) unmount timer.
   const filteredConversations = isSearching
-    ? displayRows
+    ? hasRemoteSearchResults
+      ? searchResults
+      : displayRows
         .filter(
           (r) =>
             r.phase === "exit" ||
@@ -890,7 +906,10 @@ export function Sidebar({
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="px-2 pb-2">
+        <div
+          className="px-2 pb-2"
+          aria-busy={isSearching && searchPending ? true : undefined}
+        >
           {isSearching ? (
             filteredConversations.length === 0 ? (
               <div className="px-2 py-6 text-center text-sm text-muted-foreground">

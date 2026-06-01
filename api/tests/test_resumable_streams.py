@@ -289,6 +289,7 @@ async def test_stop_during_resumable_persists_stopped_and_marks_done(
             model_id: str,
             history: list[ChatMessage],
             user_text: str,
+            attachments: list[object] | None = None,
             api_key: str | None = None,
             thinking: bool | None = None,
             reasoning_effort: str | None = None,

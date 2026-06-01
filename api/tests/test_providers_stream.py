@@ -14,6 +14,7 @@ Also covers SDK error mapping: a 429 becomes a typed `RATE_LIMITED` AppError
 
 from __future__ import annotations
 
+import base64
 import json
 
 import httpx
@@ -25,6 +26,7 @@ from app.providers.anthropic import AnthropicProvider
 from app.providers.pricing import compute_cost_breakdown
 from app.providers.protocol import (
     AnswerDelta,
+    AttachmentPayload,
     Complete,
     Sources,
     StatusUpdate,
@@ -185,6 +187,64 @@ async def test_stream_cache_creation_not_pooled_into_cache_read() -> None:
     assert final_usage is not None
     # Only cache_read (40) — NOT 40 + 999.
     assert final_usage.cached_input_tokens == 40
+
+
+@respx.mock
+async def test_stream_sends_attachment_bytes_as_multimodal_content() -> None:
+    """Current-turn image/PDF bytes are sent to Anthropic, not metadata-only."""
+    route = respx.post(_MESSAGES_URL).mock(
+        return_value=_sse_response(_stream_body(input_tokens=10, output_tokens=10))
+    )
+
+    image_bytes = b"image-bytes"
+    pdf_bytes = b"%PDF-bytes"
+    provider = AnthropicProvider(api_key="sk-test")
+    async for _ in provider.stream(
+        model_id="test-model",
+        history=[],
+        user_text="read these",
+        attachments=[
+            AttachmentPayload(
+                id="img-1",
+                name="sketch.png",
+                media_type="image",
+                mime_type="image/png",
+                size_bytes=len(image_bytes),
+                data=image_bytes,
+            ),
+            AttachmentPayload(
+                id="pdf-1",
+                name="paper.pdf",
+                media_type="pdf",
+                mime_type="application/pdf",
+                size_bytes=len(pdf_bytes),
+                data=pdf_bytes,
+            ),
+        ],
+    ):
+        pass
+
+    body = json.loads(route.calls.last.request.content)
+    content = body["messages"][-1]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": base64.b64encode(image_bytes).decode("ascii"),
+        },
+    }
+    assert content[1] == {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": base64.b64encode(pdf_bytes).decode("ascii"),
+        },
+    }
+    assert content[2]["type"] == "text"
+    assert content[2]["text"].endswith("read these")
 
 
 @respx.mock

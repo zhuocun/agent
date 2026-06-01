@@ -55,9 +55,9 @@ class SourcesPart(CamelModel):
 class AttachmentPart(CamelModel):
     """User-provided attachment metadata.
 
-    The first attachment slice stores metadata only. File bytes/object storage
-    and multimodal provider payloads are separate concerns; until those land,
-    routes reject provider execution for turns carrying attachments.
+    Persisted message parts store metadata only. Incoming send requests may add
+    a transient `dataUrl` or `contentBase64` payload; those fields are excluded
+    from `model_dump(...)` so raw bytes never enter message history.
     """
 
     type: Literal["attachment"] = "attachment"
@@ -66,6 +66,13 @@ class AttachmentPart(CamelModel):
     media_type: Literal["image", "pdf"]
     mime_type: Annotated[str, StringConstraints(min_length=1, max_length=100)]
     size_bytes: int = Field(ge=0, le=25 * 1024 * 1024)
+    data_url: Annotated[str, StringConstraints(max_length=7 * 1024 * 1024)] | None = Field(
+        default=None,
+        exclude=True,
+    )
+    content_base64: Annotated[
+        str, StringConstraints(max_length=7 * 1024 * 1024)
+    ] | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _mime_matches_media_type(self) -> AttachmentPart:
@@ -96,9 +103,8 @@ ToolRunStatus = Literal[
 class ToolCallPart(CamelModel):
     """A model-requested tool/function call.
 
-    This is intentionally only a persisted/rendered part, not an agent loop.
-    `approval_state` is explicit now so a future human-in-the-loop flow can
-    add approval endpoints without changing the transcript shape.
+    `approval_state` is explicit so a future human-in-the-loop flow can add
+    approval endpoints without changing the transcript shape.
     """
 
     type: Literal["tool_call"] = "tool_call"

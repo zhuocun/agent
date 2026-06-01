@@ -19,6 +19,7 @@ reasoning-text events (zero `ReasoningDelta`/`ReasoningDone`).
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 from unittest.mock import AsyncMock
@@ -33,6 +34,7 @@ from app.providers.openai import OpenAIProvider
 from app.providers.pricing import compute_cost_breakdown
 from app.providers.protocol import (
     AnswerDelta,
+    AttachmentPayload,
     Complete,
     ReasoningDelta,
     ReasoningDone,
@@ -411,6 +413,69 @@ async def test_client_for_byok_selects_fresh_client_with_same_base_url() -> None
     byok_client = provider._client_for("byok-other-key")
     assert byok_client is not provider._client
     assert byok_client.base_url == provider._client.base_url
+
+
+@respx.mock
+async def test_stream_sends_attachment_bytes_as_multimodal_content() -> None:
+    """Current-turn image/PDF bytes are sent to Chat Completions, not metadata-only."""
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(prompt_tokens=10, completion_tokens=10, answer_chunks=("ok",))
+        )
+    )
+
+    image_bytes = b"image-bytes"
+    pdf_bytes = b"%PDF-bytes"
+    provider = _provider()
+    async for _ in provider.stream(
+        model_id="gpt-4o",
+        history=[],
+        user_text="read these",
+        attachments=[
+            AttachmentPayload(
+                id="img-1",
+                name="sketch.png",
+                media_type="image",
+                mime_type="image/png",
+                size_bytes=len(image_bytes),
+                data=image_bytes,
+            ),
+            AttachmentPayload(
+                id="pdf-1",
+                name="paper.pdf",
+                media_type="pdf",
+                mime_type="application/pdf",
+                size_bytes=len(pdf_bytes),
+                data=pdf_bytes,
+            ),
+        ],
+    ):
+        pass
+
+    body = json.loads(route.calls.last.request.content)
+    content = body["messages"][-1]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {
+        "type": "image_url",
+        "image_url": {
+            "url": (
+                "data:image/png;base64,"
+                + base64.b64encode(image_bytes).decode("ascii")
+            )
+        },
+    }
+    assert content[1] == {
+        "type": "file",
+        "file": {
+            "filename": "paper.pdf",
+            "file_data": (
+                "data:application/pdf;base64,"
+                + base64.b64encode(pdf_bytes).decode("ascii")
+            ),
+        },
+    }
+    assert content[2]["type"] == "text"
+    assert content[2]["text"].endswith("read these")
 
 
 # --- DeepSeek V4 dual-mode hints + reasoning_content + cache fallback ---------

@@ -4,19 +4,145 @@ Mirrors `web/src/lib/model-tiers.ts` exactly on the wire, but is BE-owned.
 Bootstrap returns this list so the FE can stop carrying its own copy once it
 consumes `bootstrap.modelTiers`.
 
-The shape `ModelTier` is the FE-facing slice. Internal extras (provider id,
-model id, pricing) live as private fields used by `providers/pricing.py` and
-the streaming handler — they are NOT serialized to the wire.
+`ModelTier` is the FE-facing slice. Route metadata and data-policy fields are
+serialized for disclosure; concrete model ids, pricing, and provider knobs stay
+private in `TierBinding` for `providers/pricing.py` and the streaming handler.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Literal
 
 from app.config import Settings, get_settings
 from app.schemas.common import CostHint, ModelTierId, SpeedHint
-from app.schemas.tier import ModelTier
+from app.schemas.tier import ModelTier, ProviderDataPolicy
 from app.search.factory import search_enabled
+
+ProviderRouteStatus = Literal["available", "pending", "unavailable"]
+
+
+@dataclass(frozen=True)
+class ProviderRoute:
+    """Backend/provider route metadata independent of tier bindings."""
+
+    provider_id: str
+    label: str
+    status: ProviderRouteStatus
+    adapter: Literal["openai_compatible", "anthropic", "fake"] | None
+    default_route_eligible: bool
+    data_policy: ProviderDataPolicy | None
+    notes: str = ""
+
+
+PROVIDER_ROUTES: tuple[ProviderRoute, ...] = (
+    ProviderRoute(
+        provider_id="deepseek",
+        label="DeepSeek",
+        status="available",
+        adapter="openai_compatible",
+        default_route_eligible=True,
+        data_policy=ProviderDataPolicy(
+            trains_on_data=True,
+            training_default="opt_out",
+            data_residency="China",
+            retention_days=None,
+            zero_data_retention_available=False,
+            policy_label="May train unless opted out; China data residency",
+        ),
+        notes="Canonical cost-leading production route via OpenAI-compatible API.",
+    ),
+    ProviderRoute(
+        provider_id="anthropic",
+        label="Anthropic",
+        status="available",
+        adapter="anthropic",
+        default_route_eligible=True,
+        data_policy=ProviderDataPolicy(
+            trains_on_data=False,
+            training_default="never",
+            data_residency="US/EU",
+            retention_days=30,
+            zero_data_retention_available=True,
+            policy_label="No training; API retention up to 30 days",
+        ),
+        notes="Direct Anthropic Messages API adapter.",
+    ),
+    ProviderRoute(
+        provider_id="openai",
+        label="OpenAI",
+        status="available",
+        adapter="openai_compatible",
+        default_route_eligible=True,
+        data_policy=ProviderDataPolicy(
+            trains_on_data=False,
+            training_default="never",
+            data_residency="US/EU",
+            retention_days=30,
+            zero_data_retention_available=True,
+            policy_label="No training; standard API retention",
+        ),
+        notes="Direct OpenAI or operator-supplied OpenAI-compatible endpoint.",
+    ),
+    ProviderRoute(
+        provider_id="gemini",
+        label="Gemini",
+        status="pending",
+        adapter=None,
+        default_route_eligible=False,
+        data_policy=None,
+        notes="Registered for roadmap visibility only; no provider adapter is wired.",
+    ),
+    ProviderRoute(
+        provider_id="fake",
+        label="Fake",
+        status="available",
+        adapter="fake",
+        default_route_eligible=False,
+        data_policy=ProviderDataPolicy(
+            trains_on_data=False,
+            training_default="never",
+            data_residency="local",
+            retention_days=0,
+            zero_data_retention_available=True,
+            policy_label="Local deterministic test route",
+        ),
+        notes="Deterministic in-process provider for dev/tests.",
+    ),
+)
+
+
+def get_provider_route(provider_id: str) -> ProviderRoute | None:
+    """Return provider route metadata for a configured backend id."""
+    return next((route for route in PROVIDER_ROUTES if route.provider_id == provider_id), None)
+
+
+def available_provider_backend_ids() -> tuple[str, ...]:
+    """Provider backend ids that have a real runtime adapter."""
+    return tuple(
+        route.provider_id
+        for route in PROVIDER_ROUTES
+        if route.status == "available" and route.adapter is not None
+    )
+
+
+def require_available_provider_route(settings: Settings) -> ProviderRoute:
+    """Fail fast if `PROVIDER_BACKEND` has no usable adapter.
+
+    This is the registry hardening guardrail: a backend may be present in the
+    route registry as pending (e.g. Gemini) without becoming silently served by
+    the canonical DeepSeek binding.
+    """
+    provider_id = settings.provider_backend
+    route = get_provider_route(provider_id)
+    if route is None:
+        raise RuntimeError(f"PROVIDER_BACKEND={provider_id!r} is not registered.")
+    if route.status != "available" or route.adapter is None:
+        raise RuntimeError(
+            f"PROVIDER_BACKEND={provider_id!r} is registered as {route.status} "
+            "and has no available adapter."
+        )
+    return route
 
 
 @dataclass(frozen=True)
@@ -58,8 +184,9 @@ class TierBinding:
     # search backend in `list_tiers` (`... AND search_enabled(settings)`); this
     # binding-level flag is the provider-capability half.
     supports_web_search: bool = False
-    # Whether this binding can consume user file attachments through its
-    # provider adapter. Current adapters are text-only, so this remains false.
+    # Whether this binding can accept user attachments for a turn using native
+    # provider payloads. Metadata-only fallback is intentionally not enough to
+    # advertise this capability.
     supports_attachments: bool = False
 
 
@@ -93,15 +220,15 @@ def _tier(
 # default + non-thinking):
 #   - deepseek-v4-flash: cheap, standing price — input(cache-miss) $0.14,
 #     output $0.28, input(cache-hit) $0.0028 per 1M tokens.
-#   - deepseek-v4-pro: frontier — POST-PROMO full price (the launch promo
-#     expires 2026-05-31; we deploy at the cutover, so use full price):
-#     input(cache-miss) $1.74, output $3.48, input(cache-hit) $0.0145 per 1M.
+#   - deepseek-v4-pro: frontier — quarter-rate adjusted price after the
+#     2026-05-31 promo cutover: input(cache-miss) $0.435, output $0.87,
+#     input(cache-hit) $0.003625 per 1M.
 # These models REPLACE the legacy `deepseek-chat` / `deepseek-reasoner` aliases,
 # which retire 2026-07-24. Thinking mode is a per-request param (the provider
 # call path applies it); the per-tier default intent lives here on `thinking` /
 # `reasoning_effort`. DeepSeek is flat-rate (no context-length pricing tiers for
 # V4), so `long_context_flat=True` for all. `cache_read_per_m` values are the
-# REAL documented DeepSeek cache-hit rates (flash 0.0028, pro 0.0145) — no
+# REAL documented DeepSeek cache-hit rates (flash 0.0028, pro 0.003625) — no
 # longer placeholders.
 TIER_BINDINGS: tuple[TierBinding, ...] = (
     TierBinding(
@@ -171,10 +298,10 @@ TIER_BINDINGS: tuple[TierBinding, ...] = (
         ),
         provider_id="deepseek",
         model_id="deepseek-v4-pro",
-        list_price_in_per_m=1.74,
-        list_price_out_per_m=3.48,
+        list_price_in_per_m=0.435,
+        list_price_out_per_m=0.87,
         long_context_flat=True,
-        cache_read_per_m=0.0145,
+        cache_read_per_m=0.003625,
         thinking=True,
         reasoning_effort="high",
         model_label="DeepSeek V4 Pro",
@@ -239,6 +366,7 @@ def _anthropic_binding(tier_id: ModelTierId) -> TierBinding | None:
         cache_read_per_m=cache_read_per_m,
         model_label=_ANTHROPIC_LABEL_FOR.get(tier_id, ""),
         supports_web_search=True,
+        supports_attachments=True,
     )
 
 
@@ -299,6 +427,7 @@ def _openai_binding(tier_id: ModelTierId, s: Settings) -> TierBinding | None:
         # `auto` stays blank (router picks per message).
         model_label="" if tier_id == "auto" else model_id,
         supports_web_search=True,
+        supports_attachments=True,
     )
 
 
@@ -311,6 +440,7 @@ def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
     model varies per message via the router.
     """
     s = settings if settings is not None else get_settings()
+    route = get_provider_route(s.provider_backend)
     # Web search is usable only when a search backend is configured; the
     # per-tier capability also requires the active binding's provider to support
     # it. Gate the wire flag on BOTH so the FE shows the affordance only when a
@@ -332,6 +462,15 @@ def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
                     "model_label": label,
                     "supports_web_search": supports_search,
                     "supports_attachments": supports_attachments,
+                    "provider_id": route.provider_id if route is not None else "",
+                    "provider_label": route.label if route is not None else "",
+                    "provider_route_status": (
+                        route.status if route is not None else "unavailable"
+                    ),
+                    "default_route_eligible": (
+                        route.default_route_eligible if route is not None else False
+                    ),
+                    "data_policy": route.data_policy if route is not None else None,
                 }
             )
         )
@@ -351,10 +490,20 @@ def get_binding(tier_id: ModelTierId, settings: Settings | None = None) -> TierB
     a `Settings`; it defaults to the process-wide `get_settings()`.
     """
     s = settings if settings is not None else get_settings()
+    route = get_provider_route(s.provider_backend)
+    if route is None or route.status != "available" or route.adapter is None:
+        return None
     if s.provider_backend == "openai":
         return _openai_binding(tier_id, s)
     if s.provider_backend == "anthropic":
         return _anthropic_binding(tier_id)
+    if s.provider_backend == "fake":
+        for binding in TIER_BINDINGS:
+            if binding.tier.id == tier_id:
+                return replace(binding, supports_attachments=True)
+        return None
+    if s.provider_backend != "deepseek":
+        return None
     for binding in TIER_BINDINGS:
         if binding.tier.id == tier_id:
             return binding

@@ -17,18 +17,20 @@ M2 adds:
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterable
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import String, delete, func, or_, select
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Message, Vote
 from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
-from app.schemas.conversation import ConversationSummary
+from app.schemas.conversation import ConversationSearchResult, ConversationSummary
 from app.schemas.message import ChatMessage, MessagePart
 from app.schemas.share import PublicAttribution, PublicConversation, PublicMessage
 
@@ -37,6 +39,8 @@ from app.schemas.share import PublicAttribution, PublicConversation, PublicMessa
 # by brute force; the UNIQUE index on `conversation.share_token` is belt-and-
 # braces against the astronomically unlikely collision.
 _SHARE_TOKEN_BYTES = 24
+_SEARCH_SNIPPET_RADIUS = 64
+_SEARCH_PAGE_SIZE = 100
 
 
 def _iso(dt: datetime) -> str:
@@ -49,6 +53,86 @@ def _coerce_tier(tier_id: str) -> ModelTierId:
         # somehow holds an unknown tier id (defensive — M1 inserts validate).
         return "auto"
     return cast(ModelTierId, tier_id)
+
+
+def _escape_like(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+def _string_field(part: dict[str, object], key: str) -> str | None:
+    value = part.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _iter_source_strings(items: object) -> Iterable[str]:
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in ("title", "snippet", "url"):
+            value = item.get(key)
+            if isinstance(value, str):
+                yield value
+
+
+def _iter_searchable_part_strings(parts: object) -> Iterable[str]:
+    if not isinstance(parts, list):
+        return
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        match part.get("type"):
+            case "text" | "reasoning":
+                text = _string_field(part, "text")
+                if text is not None:
+                    yield text
+            case "status":
+                label = _string_field(part, "label")
+                if label is not None:
+                    yield label
+            case "sources":
+                yield from _iter_source_strings(part.get("items"))
+            case "attachment":
+                name = _string_field(part, "name")
+                if name is not None:
+                    yield name
+            case "tool_call":
+                for key in ("label", "name"):
+                    value = _string_field(part, key)
+                    if value is not None:
+                        yield value
+            case "tool_result":
+                for key in ("label", "name", "summary", "error"):
+                    value = _string_field(part, key)
+                    if value is not None:
+                        yield value
+
+
+def _snippet_for(text: str, query: str) -> str | None:
+    needle = query.casefold()
+    index = text.casefold().find(needle)
+    if index < 0:
+        return None
+
+    start = max(0, index - _SEARCH_SNIPPET_RADIUS)
+    end = min(len(text), index + len(query) + _SEARCH_SNIPPET_RADIUS)
+    body = text[start:end].strip()
+    prefix = "... " if start > 0 else ""
+    suffix = " ..." if end < len(text) else ""
+    return f"{prefix}{body}{suffix}"
+
+
+def _message_snippet(parts: object, query: str) -> str | None:
+    for text in _iter_searchable_part_strings(parts):
+        snippet = _snippet_for(text, query)
+        if snippet is not None:
+            return snippet
+    return None
 
 
 async def list_summaries_for_user(
@@ -71,6 +155,100 @@ async def list_summaries_for_user(
         )
         for row in rows
     ]
+
+
+async def search_for_user(
+    db: AsyncSession,
+    user_id: UUID,
+    *,
+    query: str,
+    limit: int = 25,
+) -> list[ConversationSearchResult]:
+    """Search owned conversation titles and message JSON text.
+
+    The SQL predicate intentionally stays dialect-portable: title uses LIKE,
+    and message parts are cast to text for both SQLite local/tests and
+    Postgres prod. It is a broad candidate filter; final matching and the
+    public limit happen after snippets are generated from user-visible fields.
+    """
+    stripped = query.strip()
+    if not stripped or limit <= 0:
+        return []
+
+    pattern = f"%{_escape_like(stripped.casefold())}%"
+    title_match = func.lower(Conversation.title).like(pattern, escape="\\")
+    message_match = func.lower(sa_cast(Message.parts, String)).like(
+        pattern, escape="\\"
+    )
+    results: list[ConversationSearchResult] = []
+    offset = 0
+    while len(results) < limit:
+        stmt = (
+            select(Conversation)
+            .outerjoin(Message, Message.conversation_id == Conversation.id)
+            .where(
+                Conversation.user_id == user_id,
+                or_(title_match, message_match),
+            )
+            .distinct()
+            .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
+            .offset(offset)
+            .limit(_SEARCH_PAGE_SIZE)
+        )
+        conversations = (await db.execute(stmt)).scalars().all()
+        if not conversations:
+            break
+
+        offset += len(conversations)
+        conversation_ids = [row.id for row in conversations]
+        messages_stmt = (
+            select(Message)
+            .where(
+                Message.conversation_id.in_(conversation_ids),
+                func.lower(sa_cast(Message.parts, String)).like(pattern, escape="\\"),
+            )
+            .order_by(Message.created_at.asc(), Message.id.asc())
+        )
+        matching_messages = (await db.execute(messages_stmt)).scalars().all()
+
+        messages_by_conversation: dict[UUID, list[Message]] = {}
+        for message in matching_messages:
+            messages_by_conversation.setdefault(message.conversation_id, []).append(
+                message
+            )
+
+        for row in conversations:
+            title_snippet = _snippet_for(row.title, stripped)
+            matched_message_id: str | None = None
+            snippet = title_snippet
+
+            if snippet is None:
+                for message in messages_by_conversation.get(row.id, []):
+                    message_snippet = _message_snippet(message.parts, stripped)
+                    if message_snippet is None:
+                        continue
+                    snippet = message_snippet
+                    matched_message_id = str(message.id)
+                    break
+
+            if snippet is None:
+                continue
+
+            results.append(
+                ConversationSearchResult(
+                    id=str(row.id),
+                    title=row.title,
+                    updated_at=_iso(row.updated_at),
+                    is_temporary=False,
+                    pinned=row.pinned,
+                    match_snippet=snippet,
+                    matched_message_id=matched_message_id,
+                )
+            )
+            if len(results) >= limit:
+                break
+
+    return results
 
 
 async def create_for_user(

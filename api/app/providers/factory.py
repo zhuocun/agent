@@ -19,12 +19,25 @@ from app.providers.anthropic import AnthropicProvider
 from app.providers.fake import FakeProvider
 from app.providers.openai import OpenAIProvider
 from app.providers.protocol import Provider
+from app.providers.tiers import require_available_provider_route
 from app.search.factory import get_search_provider
 
 
 def build_provider(settings: Settings | None = None) -> Provider:
     """Return a Provider matching the configured backend."""
     s = settings if settings is not None else get_settings()
+    try:
+        require_available_provider_route(s)
+    except RuntimeError as exc:
+        raise AppError(
+            ErrorEnvelope(
+                code="MISCONFIGURED",
+                severity="fatal",
+                title="Provider misconfigured",
+                body=str(exc),
+            ),
+            status_code=500,
+        ) from exc
     # Web-search backend (None when SEARCH_BACKEND=none/unset, or tavily with no
     # key). Injected into the OpenAI-compatible provider so a `web_search=True`
     # turn can run a real search mid-stream. None makes `web_search=True` a no-op.

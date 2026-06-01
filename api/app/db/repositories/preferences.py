@@ -36,6 +36,7 @@ _DEFAULTS = UserPreferences(
     training_opt_in=False,
     send_on_enter=True,
     auto_expand_reasoning=False,
+    retention_days=None,
 )
 
 
@@ -45,12 +46,14 @@ def _row_to_schema(row: Preferences) -> UserPreferences:
     # the conversations repo uses.
     tier_value = row.default_tier_id
     tier: ModelTierId = tier_value if tier_value in _VALID_TIERS else "auto"
+    retention_days = row.retention_days if row.retention_days in (30, 90) else None
     return UserPreferences(
         default_tier_id=tier,
         temporary_by_default=row.temporary_by_default,
         training_opt_in=row.training_opt_in,
         send_on_enter=row.send_on_enter,
         auto_expand_reasoning=row.auto_expand_reasoning,
+        retention_days=retention_days,
     )
 
 
@@ -80,6 +83,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
                 training_opt_in=prefs.training_opt_in,
                 send_on_enter=prefs.send_on_enter,
                 auto_expand_reasoning=prefs.auto_expand_reasoning,
+                retention_days=prefs.retention_days,
             )
         )
     else:
@@ -88,6 +92,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
         row.training_opt_in = prefs.training_opt_in
         row.send_on_enter = prefs.send_on_enter
         row.auto_expand_reasoning = prefs.auto_expand_reasoning
+        row.retention_days = prefs.retention_days
         # `updated_at` has no onupdate hook; touch it explicitly so the column
         # reflects the actual mutation time.
         row.updated_at = datetime.now(UTC)

@@ -8,8 +8,8 @@ Wire format (plan §"Streaming"):
 
 Event names use the names in the plan §"POST /api/conversations/:id/messages"
 (`submitted`, `reasoning_delta`, `reasoning_done`, `status`, `answer_delta`,
-`terminal`, `error`). Payloads serialize via `model_dump(by_alias=True)` so
-field names land as camelCase on the wire.
+`tool_call`, `tool_result`, `terminal`, `error`). Payloads serialize via
+`model_dump(by_alias=True)` so field names land as camelCase on the wire.
 
 `sse-starlette`'s `ServerSentEvent` handles the framing — we hand it
 `{event, data}` and it produces the correctly-formatted bytes.
@@ -28,6 +28,8 @@ from app.schemas.stream_events import (
     StatusEvent,
     SubmittedEvent,
     TerminalEvent,
+    ToolCallEvent,
+    ToolResultEvent,
 )
 
 
@@ -62,6 +64,20 @@ def encode_status(payload: StatusEvent) -> ServerSentEvent:
 def encode_sources(payload: SourcesEvent) -> ServerSentEvent:
     return ServerSentEvent(
         event="sources",
+        data=payload.model_dump_json(by_alias=True, exclude_none=True),
+    )
+
+
+def encode_tool_call(payload: ToolCallEvent) -> ServerSentEvent:
+    return ServerSentEvent(
+        event="tool_call",
+        data=payload.model_dump_json(by_alias=True, exclude_none=True),
+    )
+
+
+def encode_tool_result(payload: ToolResultEvent) -> ServerSentEvent:
+    return ServerSentEvent(
+        event="tool_result",
         data=payload.model_dump_json(by_alias=True, exclude_none=True),
     )
 

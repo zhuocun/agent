@@ -35,6 +35,7 @@ from collections.abc import AsyncIterator
 from app.errors import AppError, ErrorEnvelope
 from app.providers.protocol import (
     AnswerDelta,
+    AttachmentPayload,
     ChatMessage,
     Complete,
     ProviderEvent,
@@ -42,6 +43,8 @@ from app.providers.protocol import (
     ReasoningDone,
     Sources,
     StatusUpdate,
+    ToolCall,
+    ToolResult,
     UsageUpdate,
 )
 from app.search.fake import FakeSearchProvider
@@ -101,6 +104,7 @@ class FakeProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        attachments: list[AttachmentPayload] | None = None,
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
@@ -125,17 +129,36 @@ class FakeProvider:
         search_items: list[SourceItem] = []
         if web_search:
             await asyncio.sleep(self._delay)
+            yield ToolCall(
+                id="fake_web_search_1",
+                name="web_search",
+                label="Search web",
+                status="running",
+                input={"query": user_text},
+            )
             yield StatusUpdate(label="Searching the web…", state="active")
             search_items = await FakeSearchProvider().search(user_text, max_results=3)
             await asyncio.sleep(self._delay)
             yield StatusUpdate(label="Searching the web…", state="done")
             yield Sources(items=search_items)
+            yield ToolResult(
+                tool_call_id="fake_web_search_1",
+                name="web_search",
+                label="Search web",
+                status="succeeded",
+                summary=f"{len(search_items)} sources",
+                output={"results": [item.model_dump() for item in search_items]},
+            )
 
         # Four answer deltas varying by input. On a web_search turn, prepend a
         # citation-bearing delta so the grounded answer references the sources.
         if web_search and search_items:
             await asyncio.sleep(self._delay)
             yield AnswerDelta(text="Based on the sources [1][2], ")
+        if attachments:
+            names = ", ".join(attachment.name for attachment in attachments)
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text=f"Received attachments: {names}. ")
         chunks = _pick_template(user_text)
         for i, chunk in enumerate(chunks):
             await asyncio.sleep(self._delay)

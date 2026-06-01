@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Session as DbSession
 from app.db.models import User
+from app.db.repositories import usage as usage_repo
 
 pytestmark = pytest.mark.asyncio
 
@@ -71,6 +72,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
         "trainingOptIn",
         "sendOnEnter",
         "autoExpandReasoning",
+        "retentionDays",
     ):
         assert key in prefs
 
@@ -94,6 +96,11 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
             "modelLabel",
             "supportsWebSearch",
             "supportsAttachments",
+            "providerId",
+            "providerLabel",
+            "providerRouteStatus",
+            "defaultRouteEligible",
+            "dataPolicy",
         ):
             assert key in tier
     # The picker discloses each tier's model (friendly label, never a raw id);
@@ -102,13 +109,18 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     assert by_id["fast"]["modelLabel"] == "DeepSeek V4 Flash"
     assert by_id["pro"]["modelLabel"] == "DeepSeek V4 Pro"
     assert by_id["auto"]["modelLabel"] == ""
+    assert by_id["fast"]["providerId"] == "fake"
+    assert by_id["fast"]["providerLabel"] == "Fake"
+    assert by_id["fast"]["providerRouteStatus"] == "available"
+    assert by_id["fast"]["defaultRouteEligible"] is False
+    assert by_id["fast"]["dataPolicy"]["policyLabel"] == "Local deterministic test route"
     # Test config sets SEARCH_BACKEND=fake, so search is enabled and every real
     # tier (including `auto`, whose binding supports search via the tool loop)
     # reports the capability. The wire flag = binding.supports_web_search AND
     # search_enabled(settings); with the fake backend that's True for all.
     for tier_id in ("auto", "fast", "smart", "pro"):
         assert by_id[tier_id]["supportsWebSearch"] is True
-        assert by_id[tier_id]["supportsAttachments"] is False
+        assert by_id[tier_id]["supportsAttachments"] is True
 
     suggestions = body["suggestions"]
     assert isinstance(suggestions, list) and len(suggestions) >= 1
@@ -144,3 +156,27 @@ async def test_bootstrap_missing_cookie_returns_200_with_fresh_user(
     assert response.status_code == 200
     assert "set-cookie" in {k.lower() for k in response.headers}
     assert await _user_count(session_factory) == 1
+
+
+async def test_bootstrap_exposes_credit_balance_and_recent_ledger(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        await usage_repo.grant_credits(
+            session,
+            user_id=user.id,
+            amount_usd=7.5,
+            description="Test grant",
+        )
+        await session.commit()
+
+    response = await client.get("/api/bootstrap")
+    assert response.status_code == 200
+    usage = response.json()["usage"]
+    assert usage["creditBalanceUsd"] == pytest.approx(7.5)
+    assert usage["recentLedgerEntries"][0]["entryType"] == "grant"
+    assert usage["recentLedgerEntries"][0]["amountUsd"] == pytest.approx(7.5)
+    assert usage["recentLedgerEntries"][0]["description"] == "Test grant"

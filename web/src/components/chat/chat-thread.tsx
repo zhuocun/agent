@@ -65,6 +65,7 @@ import {
   postFeedback,
   postAuthSignout,
   putPreferences,
+  searchConversations,
   type BootstrapResponse,
 } from "@/lib/apiClient";
 import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
@@ -221,6 +222,11 @@ const localId = (): string => `local-${Date.now()}-${localIdCounter++}`;
 // `error` is FE-only state from a stream-terminal error frame and never
 // round-trips to the server.
 type LocalChatMessage = ChatMessage & { error?: ApiError };
+type ConversationSearchState = {
+  query: string;
+  results: ConversationSummary[] | null;
+  pending: boolean;
+};
 
 // Default tier when bootstrap is still pending — only used to seed the picker
 // for the brief loading frame; replaced by `preferences.defaultTierId` once
@@ -276,6 +282,8 @@ export function ChatThread() {
     string | null
   >(null);
   const [conversationSearch, setConversationSearch] = useState("");
+  const [conversationSearchState, setConversationSearchState] =
+    useState<ConversationSearchState | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
   // Both the shortcut and the palette's "Delete current chat" route through
@@ -379,6 +387,32 @@ export function ChatThread() {
     }
   }, [bootstrap]);
 
+  useEffect(() => {
+    const query = conversationSearch.trim();
+    if (query.length === 0) return;
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setConversationSearchState({ query, results: null, pending: true });
+      void searchConversations(query, controller.signal)
+        .then((results) => {
+          if (!controller.signal.aborted) {
+            setConversationSearchState({ query, results, pending: false });
+          }
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setConversationSearchState({ query, results: null, pending: false });
+          }
+        });
+    }, 150);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [conversationSearch]);
+
   const firstName = useMemo(() => {
     if (!account?.name) return undefined;
     // Anonymous accounts carry a server-minted placeholder name ("Guest").
@@ -411,6 +445,7 @@ export function ChatThread() {
         state: "done",
       });
     }
+    parts.push(...result.toolParts);
     if (result.reasoning) {
       parts.push({
         type: "reasoning",
@@ -542,6 +577,14 @@ export function ChatThread() {
   const handleSend = (text: string, attachments: AttachmentPart[]) => {
     const userBubbleId = localId();
     const assistantPlaceholderId = localId();
+    const visibleAttachments: AttachmentPart[] = attachments.map((attachment) => ({
+      type: "attachment",
+      id: attachment.id,
+      name: attachment.name,
+      mediaType: attachment.mediaType,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+    }));
     tierAtSendRef.current = selectedTierId;
     // Only ride web search along when the selected tier actually supports it —
     // the effect already keeps `searchEnabled` false off-tier, but gate here too
@@ -557,7 +600,7 @@ export function ChatThread() {
           id: userBubbleId,
           role: "user",
           createdAt: new Date().toISOString(),
-          parts: [{ type: "text", text }, ...attachments],
+          parts: [{ type: "text", text }, ...visibleAttachments],
         },
       ]);
       setPendingId(assistantPlaceholderId);
@@ -613,6 +656,7 @@ export function ChatThread() {
         state: state.searchStatus.state,
       });
     }
+    parts.push(...state.toolParts);
     if (state.reasoning) {
       parts.push({
         type: "reasoning",
@@ -1273,6 +1317,24 @@ export function ChatThread() {
     ? conversations.find((c) => c.id === pendingDeleteConversationId) ?? null
     : null;
 
+  const visibleConversationSearchResults = useMemo(() => {
+    const query = conversationSearch.trim();
+    if (
+      query.length === 0 ||
+      conversationSearchState === null ||
+      conversationSearchState.query !== query ||
+      conversationSearchState.results === null
+    ) {
+      return null;
+    }
+    const liveIds = new Set(conversations.map((c) => c.id));
+    return conversationSearchState.results.filter((c) => liveIds.has(c.id));
+  }, [conversationSearch, conversationSearchState, conversations]);
+  const conversationSearchPending =
+    conversationSearch.trim().length > 0 &&
+    conversationSearchState?.query === conversationSearch.trim() &&
+    conversationSearchState.pending;
+
   // The hook syncs `boundShortcuts` to a ref each render, so we can build a
   // fresh array (and a fresh `runAction`) every render without re-binding the
   // keydown listener or capturing stale state.
@@ -1388,6 +1450,8 @@ export function ChatThread() {
             activeId={activeConversationId}
             account={account}
             search={conversationSearch}
+            searchResults={visibleConversationSearchResults}
+            searchPending={conversationSearchPending}
             onSearchChange={setConversationSearch}
             onSelect={handleSelectConversation}
             onNewChat={handleNewChat}

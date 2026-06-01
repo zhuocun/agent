@@ -13,10 +13,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from app.schemas.common import SubstitutionReasonCode
 from app.search.protocol import SourceItem
+from app.tools.protocol import ToolApprovalState, ToolRunStatus
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,44 @@ class ChatMessage:
 
     role: Literal["user", "assistant"]
     text: str
+
+
+@dataclass(frozen=True)
+class AttachmentPayload:
+    """Transient user attachment passed to providers for the current turn.
+
+    `data` is intentionally provider-only and must never be persisted in message
+    history. Regenerated turns may have metadata but no bytes because historical
+    raw payloads are stripped before storage.
+    """
+
+    id: str
+    name: str
+    media_type: Literal["image", "pdf"]
+    mime_type: str
+    size_bytes: int
+    data: bytes | None = None
+
+
+def text_with_attachment_fallback(
+    user_text: str,
+    attachments: list[AttachmentPayload] | None,
+) -> str:
+    """Append provider-neutral attachment metadata to a text-only prompt."""
+    if not attachments:
+        return user_text
+    lines = [
+        user_text,
+        "",
+        "Attached files for this turn "
+        "(metadata only; this provider path cannot read file bytes directly):",
+    ]
+    for attachment in attachments:
+        lines.append(
+            f"- {attachment.name} ({attachment.mime_type}, "
+            f"{attachment.size_bytes} bytes)"
+        )
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -76,6 +115,34 @@ class Sources:
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """A provider/tool loop requested a tool call."""
+
+    id: str
+    name: str
+    label: str | None = None
+    status: ToolRunStatus = "running"
+    approval_state: ToolApprovalState = "not_required"
+    input: dict[str, Any] | None = None
+    type: Literal["tool_call"] = "tool_call"
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    """A provider/tool loop completed a tool call."""
+
+    tool_call_id: str
+    name: str
+    label: str | None = None
+    status: ToolRunStatus = "succeeded"
+    approval_state: ToolApprovalState = "not_required"
+    summary: str | None = None
+    output: dict[str, Any] | None = None
+    error: str | None = None
+    type: Literal["tool_result"] = "tool_result"
+
+
+@dataclass(frozen=True)
 class UsageUpdate:
     """Final accumulated usage from the provider.
 
@@ -117,6 +184,8 @@ ProviderEvent = (
     | AnswerDelta
     | StatusUpdate
     | Sources
+    | ToolCall
+    | ToolResult
     | UsageUpdate
     | Complete
 )
@@ -164,6 +233,7 @@ class Provider(Protocol):
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        attachments: list[AttachmentPayload] | None = None,
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,

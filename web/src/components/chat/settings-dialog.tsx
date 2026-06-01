@@ -91,6 +91,22 @@ function SectionHeading({ children }: { children: ReactNode }): JSX.Element {
   );
 }
 
+function formatUsd(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "n/a";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  }).format(value);
+}
+
+function ledgerEntryLabel(entryType: string): string {
+  if (entryType === "platform_debit") return "Usage debit";
+  if (entryType === "grant") return "Grant";
+  return "Adjustment";
+}
+
 function UsageDetails({
   usage,
   anonymous,
@@ -114,6 +130,12 @@ function UsageDetails({
             <p className="text-xs leading-snug text-muted-foreground">
               Model token charges bill to your provider key. Platform credits
               remain available if you remove the key.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Credit balance:{" "}
+              <span className="font-mono tabular-nums text-foreground">
+                {formatUsd(usage.creditBalanceUsd)}
+              </span>
             </p>
           </div>
         </div>
@@ -196,7 +218,38 @@ function UsageDetails({
           <dt className="text-muted-foreground">Period</dt>
           <dd className="mt-0.5">{usage.periodLabel}</dd>
         </div>
+        <div>
+          <dt className="text-muted-foreground">Spend</dt>
+          <dd className="mt-0.5 font-mono tabular-nums">
+            {formatUsd(usage.monthlySpendUsd)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Credits</dt>
+          <dd className="mt-0.5 font-mono tabular-nums">
+            {formatUsd(usage.creditBalanceUsd)}
+          </dd>
+        </div>
       </dl>
+      {usage.recentLedgerEntries && usage.recentLedgerEntries.length > 0 ? (
+        <div className="space-y-1 border-t border-border/50 pt-2 text-xs">
+          {usage.recentLedgerEntries.slice(0, 3).map((entry) => (
+            <div key={entry.id} className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate text-muted-foreground">
+                {entry.description ?? ledgerEntryLabel(entry.entryType)}
+              </span>
+              <span
+                className={cn(
+                  "shrink-0 font-mono tabular-nums",
+                  entry.amountUsd < 0 ? "text-muted-foreground" : "text-foreground",
+                )}
+              >
+                {formatUsd(entry.amountUsd)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -1,4 +1,13 @@
-import type { ModelTier, ModelTierId } from "@/lib/types";
+import type { ModelTier, ModelTierId, ProviderDataPolicy } from "@/lib/types";
+
+const DEEPSEEK_DATA_POLICY = {
+  trainsOnData: true,
+  trainingDefault: "opt_out",
+  dataResidency: "China",
+  retentionDays: null,
+  zeroDataRetentionAvailable: false,
+  policyLabel: "May train unless opted out; China data residency",
+} satisfies ProviderDataPolicy;
 
 // Capability tiers shown in the picker (PRD 06 §5.6) — never raw model IDs.
 // Hints are sourced from the registry (PRD 02); values here are mock.
@@ -16,6 +25,11 @@ export const MODEL_TIERS: ModelTier[] = [
     modelLabel: "", // varies per message via the router
     supportsWebSearch: true,
     supportsAttachments: false,
+    providerId: "deepseek",
+    providerLabel: "DeepSeek",
+    providerRouteStatus: "available",
+    defaultRouteEligible: true,
+    dataPolicy: DEEPSEEK_DATA_POLICY,
   },
   {
     id: "fast",
@@ -27,6 +41,11 @@ export const MODEL_TIERS: ModelTier[] = [
     modelLabel: "DeepSeek V4 Flash",
     supportsWebSearch: true,
     supportsAttachments: false,
+    providerId: "deepseek",
+    providerLabel: "DeepSeek",
+    providerRouteStatus: "available",
+    defaultRouteEligible: true,
+    dataPolicy: DEEPSEEK_DATA_POLICY,
   },
   {
     id: "smart",
@@ -38,6 +57,11 @@ export const MODEL_TIERS: ModelTier[] = [
     modelLabel: "DeepSeek V4 Flash",
     supportsWebSearch: true,
     supportsAttachments: false,
+    providerId: "deepseek",
+    providerLabel: "DeepSeek",
+    providerRouteStatus: "available",
+    defaultRouteEligible: true,
+    dataPolicy: DEEPSEEK_DATA_POLICY,
   },
   {
     id: "pro",
@@ -49,6 +73,11 @@ export const MODEL_TIERS: ModelTier[] = [
     modelLabel: "DeepSeek V4 Pro",
     supportsWebSearch: true,
     supportsAttachments: false,
+    providerId: "deepseek",
+    providerLabel: "DeepSeek",
+    providerRouteStatus: "available",
+    defaultRouteEligible: true,
+    dataPolicy: DEEPSEEK_DATA_POLICY,
   },
 ];
 

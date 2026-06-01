@@ -92,8 +92,17 @@ deploy.
 
 ## Provider modes
 
+Provider route metadata lives in `app/providers/tiers.py`:
+`PROVIDER_ROUTES` records the selectable backend id, runtime adapter status,
+default-route eligibility, and route-level data policy shown in bootstrap
+`modelTiers[*].dataPolicy`. `TIER_BINDINGS` records tier → model/pricing facts
+for the active backend. A backend can be registered as `pending` without being
+usable; runtime construction fails closed instead of silently substituting
+DeepSeek.
+
 `PROVIDER_BACKEND=fake` (default) — deterministic in-process provider; no API
-key needed; what every test runs against.
+key needed; what every test runs against. The fake route is dev/test only and
+is rejected by `Settings.assert_prod_safe()` in production.
 
 `PROVIDER_BACKEND=deepseek` — canonical production provider. DeepSeek speaks the
 OpenAI-compatible API, so this uses the shared OpenAI-compatible adapter pointed
@@ -112,9 +121,37 @@ to OpenAI's endpoint; override it for another OpenAI-compatible endpoint. This
 backend uses the OpenAI tier binding table in `app/providers/tiers.py`, not the
 DeepSeek production registry.
 
+`PROVIDER_BACKEND=gemini` — registry placeholder only. The route is present so
+docs/config can name the pending provider and its data-policy posture, but no
+adapter exists. `build_provider()` and production startup reject it with
+`MISCONFIGURED` / `RuntimeError` until a tested Gemini adapter and tier binding
+table are added.
+
 `Settings.assert_prod_safe()` runs at boot and rejects `PROVIDER_BACKEND=fake`
-when `ENV=production`, and requires the matching API key for the selected
-backend, so a misconfigured prod deploy fast-fails.
+when `ENV=production`, rejects registered-but-unavailable routes such as Gemini,
+and requires the matching API key for the selected backend, so a misconfigured
+prod deploy fast-fails.
+
+Switching provider routes:
+
+```
+# DeepSeek production route
+PROVIDER_BACKEND=deepseek
+DEEPSEEK_API_KEY=...
+
+# Anthropic route
+PROVIDER_BACKEND=anthropic
+ANTHROPIC_API_KEY=...
+
+# OpenAI or another OpenAI-compatible endpoint
+PROVIDER_BACKEND=openai
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://api.openai.com/v1  # optional; omit for SDK default
+OPENAI_MODEL_FAST=gpt-4o-mini
+OPENAI_MODEL_SMART=gpt-4o
+OPENAI_MODEL_PRO=o1
+OPENAI_MODEL_AUTO=gpt-4o
+```
 
 ## BYOK
 
@@ -155,6 +192,19 @@ default `30/minute`) and `POST /api/auth/upgrade` (`RATE_LIMIT_UPGRADE`, default
 `5/minute`). Per-IP, in-process storage (single-uvicorn-worker assumption — swap
 to Redis when a multi-worker prod arrives). `app/middleware/ratelimit.py`
 exposes the `limiter` singleton.
+
+## Stream State
+
+`STREAM_STATE_BACKEND=memory` is the default: resumable replay buffers and live
+stop flags are process-local. `STREAM_STATE_BACKEND=redis` uses `REDIS_URL` for
+cross-worker replay and stop coordination; startup pings Redis and fails fast if
+the URL is missing or unreachable.
+
+Redis replay keys use the stream reaper window while live, refresh on every
+append, then expire after `RESUMABLE_BUFFER_TTL_SECONDS` once terminal. Replay
+content is bounded by `RESUMABLE_BUFFER_MAX_EVENTS` and
+`RESUMABLE_BUFFER_MAX_BYTES` (oldest events drop first). Redis stop flags use
+`STREAM_STOP_TTL_SECONDS` so leaked live-stop keys self-clear.
 
 ## Observability
 
@@ -231,15 +281,20 @@ rollback).
   active stream.
 - `GET /api/share/:token` — unauthenticated cost-stripped public share read.
 - `POST /api/messages/:id/feedback` — thumbs up/down + optional reason.
-- `PUT /api/preferences` — write user preferences.
+- `PUT /api/preferences` — write user preferences, including optional
+  `retentionDays` (`null`, `30`, or `90`).
 - `PUT /api/account/byok` — set or replace the per-user key for the provider in the request body.
 - `DELETE /api/account/byok/:provider` — clear the per-user key for a provider.
 - `POST /api/auth/upgrade` — promote anonymous → email/password.
 - `POST /api/auth/login` — sign in to an existing email/password account.
 - `POST /api/auth/signout` — clear cookie, revoke session row.
-- `GET /api/account/export` — export account, preferences, usage, and
-  conversations as JSON.
+- `GET /api/account/export` — export account metadata, preferences, BYOK
+  metadata (masked only), usage rollups, conversations/messages with private
+  attribution/cost, and the caller's audit events as JSON.
 - `DELETE /api/account` — permanently delete the caller's account and data.
+  Body must include `confirmation`: the account email for registered users, or
+  `"DELETE"` for anonymous users. The active session cookie is cleared on
+  success.
 
 ## Pointers
 

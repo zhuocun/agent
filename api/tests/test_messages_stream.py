@@ -191,7 +191,121 @@ async def test_send_message_happy_path_streams_and_persists(
     assert len(body["messages"]) == 2
 
 
-async def test_send_message_with_attachments_rejects_before_provider_or_persist(
+async def test_send_message_with_attachment_streams_persists_metadata_only(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "please read this",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-1",
+                    "name": "paper.pdf",
+                    "mediaType": "pdf",
+                    "mimeType": "application/pdf",
+                    "sizeBytes": 5,
+                    "dataUrl": "data:application/pdf;base64,aGVsbG8=",
+                }
+            ],
+        },
+    )
+
+    event_names = [name for name, _ in frames]
+    assert event_names[0] == "submitted"
+    assert event_names[-1] == "terminal"
+    answer = "".join(
+        str(payload.get("text", ""))
+        for name, payload in frames
+        if name == "answer_delta"
+    )
+    assert "Received attachments: paper.pdf." in answer
+
+    async with session_factory() as session:
+        user_msg = (
+            await session.execute(select(Message).where(Message.role == "user"))
+        ).scalar_one()
+        assert user_msg.parts == [
+            {"type": "text", "text": "please read this"},
+            {
+                "type": "attachment",
+                "id": "att-1",
+                "name": "paper.pdf",
+                "mediaType": "pdf",
+                "mimeType": "application/pdf",
+                "sizeBytes": 5,
+            },
+        ]
+
+
+async def test_attachment_idempotent_replay_accepts_metadata_only_retry(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    client_msg_id = str(uuid4())
+    first = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": client_msg_id,
+            "tierId": "smart",
+            "text": "please read this",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-1",
+                    "name": "paper.pdf",
+                    "mediaType": "pdf",
+                    "mimeType": "application/pdf",
+                    "sizeBytes": 5,
+                    "dataUrl": "data:application/pdf;base64,aGVsbG8=",
+                }
+            ],
+        },
+    )
+    first_terminal = next(payload for name, payload in first if name == "terminal")
+
+    second = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": client_msg_id,
+            "tierId": "smart",
+            "text": "please read this",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-1",
+                    "name": "paper.pdf",
+                    "mediaType": "pdf",
+                    "mimeType": "application/pdf",
+                    "sizeBytes": 5,
+                }
+            ],
+        },
+    )
+
+    assert [name for name, _ in second] == ["submitted", "answer_delta", "terminal"]
+    assert second[-1][1]["messageId"] == first_terminal["messageId"]
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert len(rows) == 2
+
+
+async def test_send_message_with_attachment_rejects_mismatched_payload_size(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -212,7 +326,8 @@ async def test_send_message_with_attachments_rejects_before_provider_or_persist(
                     "name": "paper.pdf",
                     "mediaType": "pdf",
                     "mimeType": "application/pdf",
-                    "sizeBytes": 2048,
+                    "sizeBytes": 6,
+                    "dataUrl": "data:application/pdf;base64,aGVsbG8=",
                 }
             ],
         },
@@ -220,7 +335,7 @@ async def test_send_message_with_attachments_rejects_before_provider_or_persist(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["error"]["code"] == "ATTACHMENTS_UNSUPPORTED"
+    assert body["error"]["code"] == "INVALID_ATTACHMENT"
     async with session_factory() as session:
         rows = (await session.execute(select(Message))).scalars().all()
         assert rows == []
@@ -315,10 +430,27 @@ async def test_temporary_conversation_streams_but_persists_nothing(
             "tierId": "smart",
             "text": "temp hello",
             "isTemporary": True,
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-temp",
+                    "name": "sketch.png",
+                    "mediaType": "image",
+                    "mimeType": "image/png",
+                    "sizeBytes": 5,
+                    "dataUrl": "data:image/png;base64,aGVsbG8=",
+                }
+            ],
         },
     )
     assert frames[0][0] == "submitted"
     assert frames[-1][0] == "terminal"
+    answer = "".join(
+        str(payload.get("text", ""))
+        for name, payload in frames
+        if name == "answer_delta"
+    )
+    assert "Received attachments: sketch.png." in answer
 
     # Confirm NO conversation or message rows.
     async with session_factory() as session:
@@ -1165,10 +1297,7 @@ async def test_web_search_emits_status_sources_and_persists_parts(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """`webSearch=true` (fake search backend) -> the stream carries `status`
-    then `sources` (status before the answer, sources after), and the persisted
-    assistant row gains a `status` part and a `sources` part in canonical order
-    [reasoning] [status] [text] [sources]."""
+    """`webSearch=true` -> status/sources plus persisted tool transcript parts."""
     await client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
@@ -1184,20 +1313,35 @@ async def test_web_search_emits_status_sources_and_persists_parts(
         },
     )
     event_names = [name for name, _ in frames]
-    # Both new wire events appear, in the right relative order.
+    # Search/tool wire events appear in the right relative order.
+    assert "tool_call" in event_names
+    assert "tool_result" in event_names
     assert "status" in event_names
     assert "sources" in event_names
+    tool_call_idx = event_names.index("tool_call")
     status_idx = event_names.index("status")
     sources_idx = event_names.index("sources")
+    tool_result_idx = event_names.index("tool_result")
     first_answer_idx = event_names.index("answer_delta")
     terminal_idx = event_names.index("terminal")
-    # LIVE wire order follows the provider emission: status -> sources ->
-    # answer deltas (the grounded answer references the just-resolved sources),
-    # all before terminal. (The PERSISTED parts order is different — sources
-    # land AFTER the text part there; asserted below.)
+    # LIVE wire order follows the provider emission: tool call -> status ->
+    # sources/result -> answer, all before terminal.
+    assert tool_call_idx < status_idx
     assert status_idx < sources_idx
+    assert sources_idx < tool_result_idx
+    assert tool_result_idx < first_answer_idx
     assert sources_idx < first_answer_idx
     assert first_answer_idx < terminal_idx
+
+    tool_call_payload = next(p for n, p in frames if n == "tool_call")
+    assert tool_call_payload["name"] == "web_search"
+    assert tool_call_payload["status"] == "running"
+    assert tool_call_payload["input"]["query"] == "what is rust"
+
+    tool_result_payload = next(p for n, p in frames if n == "tool_result")
+    assert tool_result_payload["toolCallId"] == tool_call_payload["id"]
+    assert tool_result_payload["status"] == "succeeded"
+    assert tool_result_payload["output"]["results"]
 
     # The `sources` payload carries the deterministic fake citations (ids 1..3).
     sources_payload = next(p for n, p in frames if n == "sources")
@@ -1212,7 +1356,7 @@ async def test_web_search_emits_status_sources_and_persists_parts(
     status_payloads = [p for n, p in frames if n == "status"]
     assert status_payloads[-1]["state"] == "done"
 
-    # Persisted assistant parts: [reasoning] [status] [text] [sources].
+    # Persisted assistant parts include the durable tool transcript.
     async with session_factory() as session:
         asst = (
             await session.execute(
@@ -1220,7 +1364,18 @@ async def test_web_search_emits_status_sources_and_persists_parts(
             )
         ).scalar_one()
         part_types = [p["type"] for p in asst.parts]
-        assert part_types == ["reasoning", "status", "text", "sources"]
+        assert part_types == [
+            "reasoning",
+            "tool_call",
+            "tool_result",
+            "status",
+            "text",
+            "sources",
+        ]
+        tool_call_part = next(p for p in asst.parts if p["type"] == "tool_call")
+        assert tool_call_part["input"]["query"] == "what is rust"
+        tool_result_part = next(p for p in asst.parts if p["type"] == "tool_result")
+        assert tool_result_part["toolCallId"] == tool_call_part["id"]
         status_part = next(p for p in asst.parts if p["type"] == "status")
         assert status_part["state"] == "done"
         sources_part = next(p for p in asst.parts if p["type"] == "sources")
@@ -1234,6 +1389,8 @@ async def test_web_search_emits_status_sources_and_persists_parts(
     wire_types = [p["type"] for p in asst_msg["parts"]]
     assert "status" in wire_types
     assert "sources" in wire_types
+    assert "tool_call" in wire_types
+    assert "tool_result" in wire_types
 
 
 async def test_web_search_omitted_is_byte_for_byte_unchanged(
@@ -1263,13 +1420,15 @@ async def test_web_search_omitted_is_byte_for_byte_unchanged(
     event_names = [name for name, _ in frames]
     assert "status" not in event_names
     assert "sources" not in event_names
+    assert "tool_call" not in event_names
+    assert "tool_result" not in event_names
     # The classic shape is intact.
     assert event_names[0] == "submitted"
     assert "reasoning_done" in event_names
     assert "answer_delta" in event_names
     assert event_names[-1] == "terminal"
 
-    # Persisted parts unchanged: [reasoning] [text], no status/sources.
+    # Persisted parts unchanged: [reasoning] [text], no status/sources/tools.
     async with session_factory() as session:
         asst = (
             await session.execute(
@@ -1305,14 +1464,19 @@ async def test_web_search_replay_reconstructs_status_and_sources(
         client, f"/api/conversations/{conv_id}/messages", body
     )
     replay_names = [name for name, _ in replay]
-    # Replay sequence: submitted -> status -> answer_delta -> sources -> terminal.
+    # Replay sequence: submitted -> status -> tools -> answer -> sources -> terminal.
     assert replay_names == [
         "submitted",
         "status",
+        "tool_call",
+        "tool_result",
         "answer_delta",
         "sources",
         "terminal",
     ]
+    replay_tool_call = next(p for n, p in replay if n == "tool_call")
+    replay_tool_result = next(p for n, p in replay if n == "tool_result")
+    assert replay_tool_result["toolCallId"] == replay_tool_call["id"]
     replay_sources = next(p for n, p in replay if n == "sources")
     assert [it["id"] for it in replay_sources["items"]] == [1, 2, 3]
     replay_status = next(p for n, p in replay if n == "status")
@@ -1400,6 +1564,7 @@ class _NoSubstitutionThenBlockProvider:
         model_id: str,
         history: list[ChatMessage],
         user_text: str,
+        attachments: list[object] | None = None,
         api_key: str | None = None,
         thinking: bool | None = None,
         reasoning_effort: str | None = None,

@@ -27,6 +27,10 @@ class ModelTier(CamelModel):
     # actually configured. Defaults to False as the backend-independent default
     # on the canonical tier objects.
     supports_web_search: bool = False
+    # Whether this tier can consume user file attachments through the provider
+    # adapter. Current adapters are text-only, so bootstrap sends false for all
+    # tiers and the FE disables attached sends instead of implying model access.
+    supports_attachments: bool = False
 
 
 class PromptSuggestion(CamelModel):

@@ -191,6 +191,41 @@ async def test_send_message_happy_path_streams_and_persists(
     assert len(body["messages"]) == 2
 
 
+async def test_send_message_with_attachments_rejects_before_provider_or_persist(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "please read this",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-1",
+                    "name": "paper.pdf",
+                    "mediaType": "pdf",
+                    "mimeType": "application/pdf",
+                    "sizeBytes": 2048,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "ATTACHMENTS_UNSUPPORTED"
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert rows == []
+
+
 # Idempotency ------------------------------------------------------------------
 
 

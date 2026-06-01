@@ -126,6 +126,10 @@ Returns a full `Conversation`. 404 if not owned (do not leak existence).
 
 Body: `{ selectedTierId, isTemporary }`. Returns a new `Conversation` with `messages: []` and title `"New chat"`. For `isTemporary: true`, returns a synthetic (un-persisted) id; subsequent `GET` 404s, but `messages` POST accepts it without a DB lookup. 201.
 
+### `POST /api/conversations/:id/branch`
+
+Body: `{ messageId }`. Creates a new owned conversation copied from the source conversation through the selected message, preserving message order and visible attribution while leaving usage/cost rollups untouched. Returns the new full `Conversation`. 201; 404 if the source or selected message is not available to the caller.
+
 ### `PATCH /api/conversations/:id`
 
 Body: `{ title?, pinned? }`. Returns the updated `Conversation` (no FE refetch). Ownership-checked. The explicit user rename path — no title autogen.

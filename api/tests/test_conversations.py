@@ -49,7 +49,17 @@ async def _seed_conversation(
         m_user = Message(
             conversation_id=conversation.id,
             role="user",
-            parts=[{"type": "text", "text": "hello"}],
+            parts=[
+                {"type": "text", "text": "hello"},
+                {
+                    "type": "attachment",
+                    "id": "att-1",
+                    "name": "diagram.png",
+                    "mediaType": "image",
+                    "mimeType": "image/png",
+                    "sizeBytes": 1234,
+                },
+            ],
             status=None,
             attribution=None,
             created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
@@ -117,6 +127,14 @@ async def test_get_owned_conversation_returns_body(
     user_msg, asst_msg = body["messages"]
     assert user_msg["role"] == "user"
     assert user_msg["parts"][0]["type"] == "text"
+    assert user_msg["parts"][1] == {
+        "type": "attachment",
+        "id": "att-1",
+        "name": "diagram.png",
+        "mediaType": "image",
+        "mimeType": "image/png",
+        "sizeBytes": 1234,
+    }
     assert asst_msg["role"] == "assistant"
     assert asst_msg["status"] == "done"
     # camelCase nested objects round-trip from the JSON column unchanged.

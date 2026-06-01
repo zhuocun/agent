@@ -11,12 +11,10 @@
 // the root `/` (we deliberately do NOT probe a page that itself calls the BE
 // — see brief §critical-correctness-traps "Order of webServers").
 //
-// DB ephemerality: globalSetup mints a fresh SQLite file under
-// `test-results/.playwright-db/test-<pid>.sqlite3` and runs the
-// `app.scripts.init_test_db` helper to materialize the schema (no Alembic).
-// The path lives under the gitignored test-results dir; globalTeardown
-// removes the file. The BE webServer below points `DATABASE_URL` at that file.
-// See shared-config.ts for the per-PID rationale.
+// DB ephemerality: the BE webServer command resets a fresh SQLite schema under
+// `test-results/.playwright-db/test.sqlite3` before uvicorn starts. The path
+// lives under the gitignored test-results dir; `app.scripts.init_test_db`
+// refuses non-test envs and avoids Alembic for this local E2E-only database.
 //
 // Isolation: Playwright's default is one fresh browser context per test, so
 // every test starts as a brand-new anonymous user (no cookie → BE mints a
@@ -51,9 +49,6 @@ export default defineConfig({
   reporter: [["list"], ["html", { open: "never" }]],
   outputDir: "./test-results/output",
 
-  globalSetup: "./tests/e2e/global-setup.ts",
-  globalTeardown: "./tests/e2e/global-teardown.ts",
-
   use: {
     baseURL: FE_URL,
     actionTimeout: 30_000,
@@ -73,13 +68,13 @@ export default defineConfig({
   webServer: [
     {
       // BE: uvicorn against the FastAPI app, pointed at the ephemeral SQLite
-      // minted by globalSetup. `uv` is invoked from the api directory so the
-      // venv resolves correctly.
+      // reset immediately before startup. `uv` is invoked from the api
+      // directory so the venv resolves correctly.
       command:
-        "uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --log-level warning",
+        "uv run python -m app.scripts.init_test_db && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --log-level warning",
       cwd: path.resolve(__dirname, "..", "api"),
       url: `${BE_URL}/healthz`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 60_000,
       // Pass the test env explicitly. process.env stays available too (PATH
       // etc.) because Playwright merges `env` with the parent process env.
@@ -98,7 +93,7 @@ export default defineConfig({
       command: "pnpm dev",
       cwd: __dirname,
       url: FE_URL,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 120_000,
       env: {
         // NEXT_PUBLIC_* is inlined at module load by Next; make sure the dev

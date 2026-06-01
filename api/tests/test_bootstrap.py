@@ -93,6 +93,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
             "contextHint",
             "modelLabel",
             "supportsWebSearch",
+            "supportsAttachments",
         ):
             assert key in tier
     # The picker discloses each tier's model (friendly label, never a raw id);
@@ -107,6 +108,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     # search_enabled(settings); with the fake backend that's True for all.
     for tier_id in ("auto", "fast", "smart", "pro"):
         assert by_id[tier_id]["supportsWebSearch"] is True
+        assert by_id[tier_id]["supportsAttachments"] is False
 
     suggestions = body["suggestions"]
     assert isinstance(suggestions, list) and len(suggestions) >= 1

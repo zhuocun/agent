@@ -9,7 +9,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { ArrowUp, Square } from "lucide-react";
+import {
+  ArrowUp,
+  FileText,
+  Image as ImageIcon,
+  Paperclip,
+  Square,
+  X,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -22,16 +29,17 @@ import {
   filterCommands,
 } from "@/components/chat/slash-commands-popover";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
-import type { SlashCommand } from "@/lib/types";
+import type { AttachmentPart, SlashCommand } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const SLASH_PATTERN = /^\/(\w*)$/;
 
 interface ComposerProps {
   isStreaming: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: AttachmentPart[]) => void;
   onStop: () => void;
   sendOnEnter?: boolean;
+  supportsAttachments?: boolean;
 }
 
 export interface ComposerHandle {
@@ -45,8 +53,37 @@ const MAX_HEIGHT = 200;
 // ~44px (leading-7 + py-2); 60 leaves headroom so a single line never trips it.
 const ONE_LINE_THRESHOLD = 60;
 const STOP_SETTLE_MS = 600;
+const MAX_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const BUTTON_BASE =
   "inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0 transition-[background-color,color,box-shadow] duration-300 ease-out";
+
+function attachmentId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `att-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function attachmentFromFile(file: File): AttachmentPart | null {
+  if (file.size > MAX_ATTACHMENT_BYTES) return null;
+  const name = file.name || "Attachment";
+  const pdf = file.type === "application/pdf" || name.toLowerCase().endsWith(".pdf");
+  const image = file.type.startsWith("image/");
+  if (!pdf && !image) return null;
+  return {
+    type: "attachment",
+    id: attachmentId(),
+    name,
+    mediaType: pdf ? "pdf" : "image",
+    mimeType: pdf ? "application/pdf" : file.type,
+    sizeBytes: file.size,
+  };
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // Icon morph: both glyphs are stacked in a fixed-size box and cross-faded with
 // a spring scale so a send↔stop swap reads as an iOS control morph rather than
@@ -97,10 +134,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onSend,
     onStop,
     sendOnEnter = true,
+    supportsAttachments = false,
   },
   forwardedRef,
 ) {
   const [value, setValue] = useState("");
+  const [attachments, setAttachments] = useState<AttachmentPart[]>([]);
   const [justStopped, setJustStopped] = useState(false);
   // True once the textarea has grown past a single line. A perfect 9999px pill
   // looks wrong at 4–6 lines, so the capsule swaps to a large continuous radius
@@ -113,6 +152,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // then arm again on the next fresh "/…" token.
   const [slashDismissed, setSlashDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // Anchor for the popover's outside-click guard — clicks anywhere on the
   // composer surface (textarea, send button) must NOT dismiss the popover.
   const capsuleRef = useRef<HTMLDivElement>(null);
@@ -236,9 +276,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const submit = () => {
     const text = value.trim();
     if (!text || isStreaming) return;
-    onSend(text);
+    if (attachments.length > 0 && !supportsAttachments) return;
+    onSend(text, attachments);
     prevValueRef.current = "";
     setValue("");
+    setAttachments([]);
     // The textarea collapses back to one line on send, so drop the grown radius
     // in lockstep — otherwise the empty pill would briefly keep its large
     // multi-line corners.
@@ -247,6 +289,27 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (ref.current) ref.current.style.height = "auto";
     });
   };
+
+  const onPickFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setAttachments((current) => {
+      const next = [...current];
+      for (const file of Array.from(files)) {
+        if (next.length >= MAX_ATTACHMENTS) break;
+        const attachment = attachmentFromFile(file);
+        if (attachment) next.push(attachment);
+      }
+      return next;
+    });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((current) => current.filter((attachment) => attachment.id !== id));
+  };
+
+  const attachedSendBlocked = attachments.length > 0 && !supportsAttachments;
+  const canSubmit = value.trim().length > 0 && !attachedSendBlocked;
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // IME-safe: leave Esc/Enter to the composition layer (CJK).
@@ -328,6 +391,39 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         optionIdPrefix={slashOptionPrefix}
         anchorRef={capsuleRef}
       />
+      {attachments.length > 0 ? (
+        <div className="mb-2 flex flex-wrap justify-end gap-2">
+          {attachments.map((attachment) => (
+            <span
+              key={attachment.id}
+              className={cn(
+                "glass-regular inline-flex h-9 max-w-full items-center gap-2 rounded-full px-3 text-xs text-foreground shadow-[var(--glass-highlight)]",
+                attachedSendBlocked && "text-muted-foreground",
+              )}
+            >
+              {attachment.mediaType === "pdf" ? (
+                <FileText aria-hidden className="size-3.5 shrink-0" />
+              ) : (
+                <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+              )}
+              <span className="min-w-0 max-w-[12rem] truncate">
+                {attachment.name}
+              </span>
+              <span className="shrink-0 text-muted-foreground">
+                {formatAttachmentSize(attachment.sizeBytes)}
+              </span>
+              <button
+                type="button"
+                aria-label={`Remove ${attachment.name}`}
+                onClick={() => removeAttachment(attachment.id)}
+                className="ml-0.5 inline-flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              >
+                <X className="size-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div
         ref={capsuleRef}
         // Radius: a perfect pill at one line, a large continuous radius once
@@ -343,6 +439,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         style={grown ? { borderRadius: "1.75rem" } : undefined}
         className="glass-capsule group flex items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
       >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/*,application/pdf,.pdf"
+          className="sr-only"
+          onChange={(e) => onPickFiles(e.target.files)}
+        />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isStreaming}
+                aria-label="Attach image or PDF"
+                className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+              >
+                <Paperclip className="size-4" />
+              </Button>
+            }
+          />
+          <TooltipContent>
+            {supportsAttachments
+              ? "Attach image or PDF"
+              : "Attachments are not supported by the current model"}
+          </TooltipContent>
+        </Tooltip>
         <label htmlFor="composer-input" className="sr-only">
           Message Olune
         </label>
@@ -397,8 +522,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             <Button
               type="button"
               onClick={submit}
-              disabled={!value.trim()}
-              aria-label="Send message"
+              disabled={!canSubmit}
+              aria-label={
+                attachedSendBlocked
+                  ? "Attachments are not supported by the current model"
+                  : "Send message"
+              }
               // E2E target: stable hook for "send the message" — Playwright
               // specs click this to dispatch a turn, since aria-label values
               // could drift with copy changes.
@@ -408,7 +537,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 // Order matters: a fresh keystroke during the settle pose
                 // should read as "armed" (brand + clickable) before the
                 // settle-pose styling can claim the slot.
-                value.trim().length > 0
+                canSubmit
                   ? "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
                   : justStopped
                     ? "bg-foreground/10 text-foreground"

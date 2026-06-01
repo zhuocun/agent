@@ -57,10 +57,10 @@ pnpm test:e2e          # headless
 pnpm test:e2e:ui       # interactive runner
 ```
 
-The BE uses an ephemeral SQLite at
-`test-results/.playwright-db/test-<pid>.sqlite3` for tests — your `api/dev.sqlite3`
-is never touched. Playwright's `globalSetup` mints the file and creates the
-schema via `python -m app.scripts.init_test_db`; `globalTeardown` removes it.
+The BE uses an ephemeral SQLite at `test-results/.playwright-db/test.sqlite3`
+for tests — your `api/dev.sqlite3` is never touched. The API webServer command
+resets the schema via `python -m app.scripts.init_test_db` before uvicorn
+starts.
 
 ## Deploy
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, type JSX, type ReactNode } from "react";
-import { LogOut } from "lucide-react";
+import { Gauge, Key, LogOut } from "lucide-react";
 
 import {
   Dialog,
@@ -16,7 +16,10 @@ import { Button } from "@/components/ui/button";
 import { ByokForm } from "@/components/chat/byok-form";
 import { TierPicker } from "@/components/chat/tier-picker";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
-import { UsageMeter } from "@/components/chat/usage-meter";
+import {
+  getUsagePresentation,
+  UsageMeter,
+} from "@/components/chat/usage-meter";
 import { MODEL_TIERS } from "@/lib/model-tiers";
 import {
   isAnonymousAccount,
@@ -24,6 +27,7 @@ import {
   type UsageBudget,
   type UserPreferences,
 } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -87,6 +91,116 @@ function SectionHeading({ children }: { children: ReactNode }): JSX.Element {
   );
 }
 
+function UsageDetails({
+  usage,
+  anonymous,
+}: {
+  usage: UsageBudget;
+  anonymous: boolean;
+}): JSX.Element {
+  if (usage.isByok) {
+    return (
+      <div className="glass-clear space-y-2 rounded-2xl px-3.5 py-3">
+        <div className="flex items-start gap-3">
+          <Key
+            aria-hidden
+            className="mt-0.5 size-4 shrink-0 text-byok-indicator-foreground"
+          />
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-medium">Bring your own key</p>
+              <UsageMeter usage={usage} />
+            </div>
+            <p className="text-xs leading-snug text-muted-foreground">
+              Model token charges bill to your provider key. Platform credits
+              remain available if you remove the key.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const budget = getUsagePresentation(usage);
+  const isExhausted = budget.tone === "exhausted";
+  const isNearLimit = budget.tone === "warning" || budget.tone === "critical";
+  const helper = isExhausted
+    ? anonymous
+      ? "Usage limit reached. Sign in and add a key below to keep using supported providers, or wait for the next period."
+      : "Usage limit reached. Add a key below to keep using supported providers, or wait for the next period."
+    : isNearLimit
+      ? anonymous
+        ? "You're close to the cap. Sign in to bring your own key and keep model charges off platform credits."
+        : "You're close to the cap. Bring your own key below to keep model charges off platform credits."
+      : "Platform-key requests count toward this monthly cap.";
+
+  return (
+    <div
+      className={cn(
+        "glass-clear space-y-3 rounded-2xl px-3.5 py-3",
+        isExhausted && "border-destructive/30",
+        isNearLimit && !isExhausted && "border-warning-foreground/25",
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <Gauge
+          aria-hidden
+          className={cn(
+            "mt-0.5 size-4 shrink-0",
+            isExhausted
+              ? "text-destructive"
+              : isNearLimit
+                ? "text-warning"
+                : "text-muted-foreground",
+          )}
+        />
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium">Platform credits</p>
+            <UsageMeter usage={usage} />
+          </div>
+          <p className="text-xs leading-snug text-muted-foreground">
+            {helper}
+          </p>
+        </div>
+      </div>
+      <dl className="grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <dt className="text-muted-foreground">Used</dt>
+          <dd className="mt-0.5 font-mono tabular-nums">
+            {budget.used.toLocaleString()}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Remaining</dt>
+          <dd
+            className={cn(
+              "mt-0.5 font-mono tabular-nums",
+              isExhausted
+                ? "text-destructive"
+                : isNearLimit
+                  ? "text-warning"
+                  : "text-foreground",
+            )}
+          >
+            {budget.remaining.toLocaleString()}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Limit</dt>
+          <dd className="mt-0.5 font-mono tabular-nums">
+            {budget.limit.toLocaleString()}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Period</dt>
+          <dd className="mt-0.5">{usage.periodLabel}</dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
 // Settings panel (PRD 06 §5.7 / PRD 05). Privacy-first copy + defaults:
 // training opt-in is framed as off-by-default and never assumed.
 export function SettingsDialog({
@@ -144,7 +258,7 @@ export function SettingsDialog({
               </div>
             </div>
 
-            <UsageMeter usage={usage} />
+            <UsageDetails usage={usage} anonymous={anonymous} />
 
             {!anonymous ? (
               <div className="pt-1">

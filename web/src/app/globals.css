@@ -587,6 +587,21 @@
 /* Streamed-markdown spacing/typography (PRD 01 §5.4). Zero-specificity :where()
    rules so Streamdown's own element classes always win when present. */
 @layer components {
+  /* Long chats can have hundreds of rich markdown bubbles. Let Chromium skip
+     off-screen row style/layout/paint work while preserving a stable scroll
+     range from the last measured size, with role-specific first-paint fallbacks.
+     Browsers without content-visibility support ignore this block harmlessly. */
+  .chat-message-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 10rem;
+  }
+  .chat-message-row[data-message-role="user"] {
+    contain-intrinsic-size: auto 5rem;
+  }
+  .chat-message-row[data-message-role="assistant"] {
+    contain-intrinsic-size: auto 12rem;
+  }
+
   .chat-md {
     @apply text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem];
   }

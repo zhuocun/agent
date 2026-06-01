@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import StringConstraints
+from pydantic import Field, StringConstraints
 
 from app.schemas.common import CamelModel, ModelTierId
-from app.schemas.message import ChatMessage
+from app.schemas.message import AttachmentPart, ChatMessage
 
 
 class Conversation(CamelModel):
@@ -31,6 +31,12 @@ class CreateConversationRequest(CamelModel):
 
     selected_tier_id: ModelTierId
     is_temporary: bool = False
+
+
+class BranchConversationRequest(CamelModel):
+    """Body for POST /api/conversations/:id/branch."""
+
+    message_id: str
 
 
 class PatchConversationRequest(CamelModel):
@@ -76,3 +82,7 @@ class SendMessageRequest(CamelModel):
     # it to False (silently, no error) when the served binding doesn't support
     # search or no search backend is configured.
     web_search: bool = False
+    # Attachment metadata for the user turn. This is metadata-only: the current
+    # provider protocol is text-only, so routes reject non-empty attachment
+    # lists before any provider call.
+    attachments: list[AttachmentPart] = Field(default_factory=list, max_length=10)

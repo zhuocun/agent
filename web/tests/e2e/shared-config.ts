@@ -1,19 +1,12 @@
 // Shared config for the FE↔BE E2E suite.
 //
-// Single source of truth for ports, URLs, the per-process ephemeral SQLite
-// path, and the BE env block. Imported from both `playwright.config.ts` and
-// `tests/e2e/global-setup.ts` so the two stay in lock-step.
+// Single source of truth for ports, URLs, the ephemeral SQLite path, and the BE
+// env block.
 //
-// Why per-PID DB path: `playwright.config.ts` sets `reuseExistingServer: true`
-// on the local dev path so a developer can re-run `pnpm test:e2e` without
-// waiting for the BE to boot each time. The risk is that globalSetup
-// unconditionally recreates the SQLite file BEFORE Playwright decides whether
-// to reuse the running BE — a reused BE would then hold open aiosqlite
-// connections + cached sqlalchemy state pointing at the recreated empty file,
-// surfacing as "no such table" errors. Minting a fresh per-PID file sidesteps
-// that hazard entirely (a new Playwright invocation gets a new PID → new file
-// → the reused BE's URL no longer matches what globalSetup just touched, so a
-// fresh `pnpm test:e2e` always restarts the BE if the DB path changed).
+// DB path rationale: Playwright starts webServer processes before tests run, so
+// DB setup must happen in the API webServer command itself. Use a fixed file
+// under gitignored test-results and always launch fresh web servers (see
+// playwright.config.ts) so the API process and DB file stay coupled.
 
 import path from "node:path";
 
@@ -27,17 +20,14 @@ export const BE_URL = `http://localhost:${BE_PORT}`;
 // is invoked from. `__dirname` here is `web/tests/e2e/`, so `../..` is `web/`.
 const WEB_DIR = path.resolve(__dirname, "..", "..");
 export const DB_DIR = path.join(WEB_DIR, "test-results", ".playwright-db");
-// Per-PID filename: defeats the reuseExistingServer-vs-stale-DB-handle hazard
-// described in the file header. Each fresh `pnpm test:e2e` invocation gets a
-// fresh DB; globalTeardown removes the file by name. Stale orphans (from
-// Ctrl-C exits) accumulate as `test-<pid>.sqlite3*` and are swept on the next
-// globalSetup via a glob (see global-setup.ts).
-export const DB_PATH = path.join(DB_DIR, `test-${process.pid}.sqlite3`);
+// Stable filename for one E2E invocation. The API webServer command resets it
+// before uvicorn starts.
+export const DB_PATH = path.join(DB_DIR, "test.sqlite3");
 // SQLAlchemy sqlite+aiosqlite URL — note the FOUR slashes for an absolute path.
 export const DATABASE_URL = `sqlite+aiosqlite:///${DB_PATH}`;
 
-// Env that BOTH globalSetup (init_test_db) and the BE webServer must see.
-// Centralized here so the two stay in lock-step.
+// Env that both init_test_db and the BE webServer must see. Centralized here so
+// the two stay in lock-step.
 export const BE_ENV = {
   ENV: "test",
   PROVIDER_BACKEND: "fake",

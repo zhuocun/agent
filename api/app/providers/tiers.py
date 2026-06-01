@@ -58,6 +58,9 @@ class TierBinding:
     # search backend in `list_tiers` (`... AND search_enabled(settings)`); this
     # binding-level flag is the provider-capability half.
     supports_web_search: bool = False
+    # Whether this binding can consume user file attachments through its
+    # provider adapter. Current adapters are text-only, so this remains false.
+    supports_attachments: bool = False
 
 
 def _tier(
@@ -320,11 +323,15 @@ def list_tiers(settings: Settings | None = None) -> list[ModelTier]:
         supports_search = (
             binding.supports_web_search if binding is not None else False
         ) and search_on
+        supports_attachments = (
+            binding.supports_attachments if binding is not None else False
+        )
         tiers.append(
             base.tier.model_copy(
                 update={
                     "model_label": label,
                     "supports_web_search": supports_search,
+                    "supports_attachments": supports_attachments,
                 }
             )
         )

@@ -56,6 +56,7 @@ import { useApiStream, type TerminalResult } from "@/lib/stream-client";
 import {
   ApiError,
   ApiNetworkError,
+  branchConversation,
   createConversation,
   deleteConversation,
   fetchBootstrap,
@@ -70,6 +71,7 @@ import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
 import { isAnonymousAccount } from "@/lib/types";
 import type {
   AccountInfo,
+  AttachmentPart,
   ChatMessage,
   ConversationSummary,
   Feedback,
@@ -280,6 +282,9 @@ export function ChatThread() {
   // this confirm — never delete without it (data-loss guard).
   const [pendingDeleteConversationId, setPendingDeleteConversationId] =
     useState<string | null>(null);
+  const [branchingMessageId, setBranchingMessageId] = useState<string | null>(
+    null,
+  );
   // Welcome→thread choreography (Decision 11, Opportunity 11): on first send
   // the welcome hero exits before the user bubble enters. Sequential — only
   // one disclosure surface in motion at a time (Pattern: Choreography of
@@ -357,6 +362,8 @@ export function ChatThread() {
   // needed (and none allowed: setState-in-effect is a lint error here).
   const selectedTierSupportsSearch =
     modelTiers.find((t) => t.id === selectedTierId)?.supportsWebSearch === true;
+  const selectedTierSupportsAttachments =
+    modelTiers.find((t) => t.id === selectedTierId)?.supportsAttachments === true;
   // Effective, gated view used by every consumer.
   const effectiveSearchEnabled = searchEnabled && selectedTierSupportsSearch;
   const [conversations, setConversations] = useState<ConversationSummary[]>(
@@ -466,6 +473,7 @@ export function ChatThread() {
       regenerate?: boolean;
       editMessageId?: string;
       webSearch?: boolean;
+      attachments?: AttachmentPart[];
     }): Promise<void> => {
       let conversationId = activeConversationId;
       if (!conversationId) {
@@ -525,12 +533,13 @@ export function ChatThread() {
         // Sent only when on; stream-client further drops it from the wire when
         // falsy, so the off path is byte-identical to today.
         webSearch: args.webSearch,
+        attachments: args.attachments,
       });
     },
     [activeConversationId, isTemporary, start],
   );
 
-  const handleSend = (text: string) => {
+  const handleSend = (text: string, attachments: AttachmentPart[]) => {
     const userBubbleId = localId();
     const assistantPlaceholderId = localId();
     tierAtSendRef.current = selectedTierId;
@@ -548,7 +557,7 @@ export function ChatThread() {
           id: userBubbleId,
           role: "user",
           createdAt: new Date().toISOString(),
-          parts: [{ type: "text", text }],
+          parts: [{ type: "text", text }, ...attachments],
         },
       ]);
       setPendingId(assistantPlaceholderId);
@@ -557,6 +566,7 @@ export function ChatThread() {
         text,
         tierId: tierAtSendRef.current,
         webSearch: searchAtSendRef.current || undefined,
+        attachments,
       });
     };
 
@@ -727,14 +737,67 @@ export function ChatThread() {
     });
   };
 
-  // Branch-from-here (PRD 01 §4.6 P1) is deferred until the BE exposes a
-  // copy-messages-on-create primitive. Shipping the button against the
-  // current `POST /api/conversations` (which only accepts `selectedTierId`
-  // + `isTemporary`) created an empty new chat and called it "branched" —
-  // a UX lie. The action is removed from MessageActions until either the
-  // create endpoint accepts an `initialMessages` payload or a dedicated
-  // `/branch` route lands; re-adding the button without that wire is a
-  // correctness regression, not a feature gain.
+  const handleBranchFromMessage = (messageId: string) => {
+    if (!activeConversationId || isTemporary || isStreaming) return;
+    if (messageId.startsWith("local-")) return;
+    const sourceConversationId = activeConversationId;
+    setBranchingMessageId(messageId);
+    void (async () => {
+      try {
+        const branched = await branchConversation(sourceConversationId, {
+          messageId,
+        });
+        if (welcomeExitTimerRef.current !== null) {
+          window.clearTimeout(welcomeExitTimerRef.current);
+          welcomeExitTimerRef.current = null;
+        }
+        if (welcomeSeamTimerRef.current !== null) {
+          window.clearTimeout(welcomeSeamTimerRef.current);
+          welcomeSeamTimerRef.current = null;
+        }
+        setWelcomeExiting(false);
+        setWelcomeSeamLanding(false);
+        setPendingId(null);
+        assistantIdRef.current = null;
+        pendingUserIdRef.current = null;
+        reset();
+        selectConversationTokenRef.current = branched.id;
+        setActiveConversationId(branched.id);
+        setIsTemporary(false);
+        setMessages(branched.messages);
+        setSelectedTierId(branched.selectedTierId);
+        setMobileNavOpen(false);
+        setConversations((prev) => {
+          const summary: ConversationSummary = {
+            id: branched.id,
+            title: branched.title,
+            updatedAt: new Date().toISOString(),
+            isTemporary: false,
+            pinned: false,
+          };
+          return [summary, ...prev.filter((c) => c.id !== branched.id)];
+        });
+        setLiveMessage("Branched into new chat");
+        showToast({ severity: "info", title: "Branched into new chat" });
+      } catch (cause) {
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't branch conversation";
+        setLiveMessage(title);
+        showToast({
+          severity: "error",
+          title,
+          body:
+            cause instanceof ApiError
+              ? cause.body
+              : cause instanceof Error
+                ? cause.message
+                : undefined,
+        });
+      } finally {
+        setBranchingMessageId(null);
+      }
+    })();
+  };
 
   const handleNewChat = () => {
     // Cancel any in-flight welcome→thread seam (see handleSelectConversation
@@ -1451,27 +1514,50 @@ export function ChatThread() {
               }
             >
               <MessageList isTemporary={isTemporary}>
-                {messages.map((m) =>
-                  m.role === "user" ? (
+                {messages.map((m) => {
+                  const canBranchMessage =
+                    !!activeConversationId &&
+                    !isTemporary &&
+                    !isStreaming &&
+                    !m.id.startsWith("local-");
+                  return m.role === "user" ? (
                     <UserMessage
                       key={m.id}
                       message={m}
                       canEdit={!isStreaming && !m.id.startsWith("local-")}
+                      canBranch={canBranchMessage}
+                      isBranching={branchingMessageId === m.id}
                       onEdit={(newText) => handleEditUserMessage(m.id, newText)}
+                      onBranch={
+                        canBranchMessage
+                          ? () => handleBranchFromMessage(m.id)
+                          : undefined
+                      }
                     />
                   ) : (
                     <AssistantMessage
                       key={m.id}
                       message={m}
                       status={m.status ?? "done"}
-                      canRegenerate={!isStreaming && m.id === lastAssistantId && ((m.status ?? "done") === "done" || m.status === "stopped")}
+                      canBranch={canBranchMessage}
+                      isBranching={branchingMessageId === m.id}
+                      canRegenerate={
+                        !isStreaming &&
+                        m.id === lastAssistantId &&
+                        ((m.status ?? "done") === "done" || m.status === "stopped")
+                      }
+                      onBranch={
+                        canBranchMessage
+                          ? () => handleBranchFromMessage(m.id)
+                          : undefined
+                      }
                       onRegenerate={handleRegenerate}
                       onFeedback={(f) => setFeedback(m.id, f)}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
                     />
-                  ),
-                )}
+                  );
+                })}
 
                 {pendingMessage ? (
                   <AssistantMessage
@@ -1508,6 +1594,7 @@ export function ChatThread() {
                 onSend={handleSend}
                 onStop={stop}
                 sendOnEnter={preferences.sendOnEnter}
+                supportsAttachments={selectedTierSupportsAttachments}
               />
               <AiDisclosure />
             </div>

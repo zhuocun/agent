@@ -17,9 +17,10 @@ M2 adds:
 from __future__ import annotations
 
 import secrets
-from datetime import UTC, datetime
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,6 +90,75 @@ async def create_for_user(
     await db.flush()
     await db.refresh(convo)
     return convo
+
+
+async def branch_for_user(
+    db: AsyncSession,
+    *,
+    source_conversation_id: UUID,
+    user_id: UUID,
+    through_message_id: UUID,
+) -> ConversationSchema | None:
+    """Copy an owned conversation through one message into a new conversation.
+
+    Branching is a copy operation, not a billing event. The visible message
+    content and attribution are preserved for context, but copied assistant
+    rows intentionally get ``cost_usd=NULL`` and no usage_rollup writes happen
+    here, so historical turns are not double-counted against future budget
+    checks.
+    """
+    source = await owned_by(db, source_conversation_id, user_id)
+    if source is None:
+        return None
+
+    messages_stmt = (
+        select(Message)
+        .where(Message.conversation_id == source.id)
+        .order_by(Message.created_at.asc(), Message.id.asc())
+    )
+    source_messages = (await db.execute(messages_stmt)).scalars().all()
+
+    copied_source_messages: list[Message] = []
+    for message in source_messages:
+        copied_source_messages.append(message)
+        if message.id == through_message_id:
+            break
+    else:
+        return None
+
+    now = datetime.now(UTC)
+    branch = Conversation(
+        user_id=user_id,
+        title=source.title,
+        selected_tier_id=source.selected_tier_id,
+        pinned=False,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(branch)
+    await db.flush()
+
+    id_map: dict[UUID, UUID] = {}
+    for index, source_message in enumerate(copied_source_messages):
+        new_id = uuid4()
+        id_map[source_message.id] = new_id
+        responds_to = source_message.responds_to_message_id
+        copied = Message(
+            id=new_id,
+            conversation_id=branch.id,
+            client_message_id=None,
+            role=source_message.role,
+            parts=deepcopy(source_message.parts),
+            status=source_message.status,
+            attribution=deepcopy(source_message.attribution),
+            cost_usd=None,
+            responds_to_message_id=id_map.get(responds_to) if responds_to else None,
+            created_at=now + timedelta(microseconds=index + 1),
+        )
+        db.add(copied)
+
+    await db.flush()
+    return await get_for_user(db, branch.id, user_id)
 
 
 async def owned_by(

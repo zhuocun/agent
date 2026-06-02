@@ -306,6 +306,31 @@ def decrypt(ciphertext: str, kek_b64: str) -> str:
     return _settings_versioned_cipher(kek_b64).decrypt(ciphertext)
 
 
+def ciphertext_version(blob: str) -> int:
+    """Return the KEK version a stored ciphertext was written under.
+
+    Header inspection only -- never decrypts, so it's safe to call without a
+    cipher / KEK in hand (e.g. when deciding whether a row needs a re-wrap).
+
+    A magic-prefixed blob returns its version byte; a magic-absent blob is the
+    legacy single-KEK format and returns 0. Malformed input surfaces the same
+    `DecryptionError` that `decrypt` raises on bad base64 / truncation, so the
+    caller can treat "can't tell the version" and "can't decrypt" identically.
+    Reuses the module's MAGIC / header constants so there's a single source of
+    truth for the on-disk layout.
+    """
+    try:
+        decoded = base64.b64decode(blob.encode("ascii"), validate=True)
+    except (ValueError, TypeError) as exc:
+        raise DecryptionError("ciphertext is not valid base64") from exc
+
+    if decoded.startswith(_MAGIC):
+        if len(decoded) < _HEADER_LEN:
+            raise DecryptionError("versioned ciphertext too short for header")
+        return decoded[_MAGIC_LEN]
+    return 0
+
+
 def parse_kek_versions(raw: str) -> dict[int, str]:
     """Parse a `BYOK_KEK_VERSIONS` env string into a registry dict.
 

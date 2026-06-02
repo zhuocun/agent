@@ -14,11 +14,16 @@ from uuid import UUID
 
 import structlog
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.db.models import ApiKey
-from app.security.crypto import DecryptionError, decrypt, encrypt
+from app.security.crypto import (
+    DecryptionError,
+    ciphertext_version,
+    decrypt,
+    encrypt,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -122,7 +127,7 @@ async def get_decrypted_for_user(
     if row is None:
         return None
     try:
-        return decrypt(row.ciphertext, settings.byok_encryption_kek)
+        plaintext = decrypt(row.ciphertext, settings.byok_encryption_kek)
     except DecryptionError as exc:
         log.warning(
             "byok.decrypt_failed",
@@ -131,6 +136,64 @@ async def get_decrypted_for_user(
             exc_info=exc,
         )
         return None
+
+    # Lazy re-wrap: if the stored ciphertext was written under a stale KEK
+    # version, re-encrypt under the current one so retiring an old KEK never
+    # orphans this row. Done in an INDEPENDENT short-lived session (see
+    # `_rewrap_ciphertext`) so it can never commit or roll back the caller's
+    # request transaction, and so a re-wrap failure can never break the read
+    # path (the plaintext we already hold is valid regardless).
+    if ciphertext_version(row.ciphertext) != settings.byok_current_kek_version:
+        await _rewrap_ciphertext(
+            db, api_key_id=row.id, provider=provider, plaintext=plaintext
+        )
+
+    return plaintext
+
+
+async def _rewrap_ciphertext(
+    db: AsyncSession,
+    *,
+    api_key_id: UUID,
+    provider: str,
+    plaintext: str,
+) -> None:
+    """Re-encrypt one BYOK row under the current KEK version, best-effort.
+
+    Runs in its own session bound to the SAME engine as `db` (mirrors the
+    streaming handler's `_derive_session_factory` so it works against the
+    per-test SQLite bind too), which fully decouples the re-wrap's commit from
+    the caller's request transaction -- the read path and any other pending
+    writes in `db` are never touched by a re-wrap commit/rollback. Any failure
+    is swallowed and logged with the row id only (never key material); the next
+    read simply retries. Re-checks the version under the isolated session so a
+    concurrent re-wrap by another worker is a no-op (idempotent).
+    """
+    bind = db.bind
+    if bind is None:  # pragma: no cover - session has executed by here
+        # Can't derive an isolated session; skip rather than touch the
+        # caller's transaction. The next read retries the re-wrap.
+        return
+    factory = async_sessionmaker(
+        bind=bind, expire_on_commit=False, autoflush=False
+    )
+    settings = get_settings()
+    try:
+        async with factory() as rewrap_db:
+            row = await rewrap_db.get(ApiKey, api_key_id)
+            if row is None:
+                return
+            if ciphertext_version(row.ciphertext) == settings.byok_current_kek_version:
+                return  # already re-wrapped (e.g. by a concurrent reader)
+            row.ciphertext = encrypt(plaintext, settings.byok_encryption_kek)
+            await rewrap_db.commit()
+    except Exception as exc:  # read path must survive any re-wrap error
+        log.warning(
+            "byok.rewrap_failed",
+            api_key_id=str(api_key_id),
+            provider=provider,
+            exc_info=exc,
+        )
 
 
 async def get_for_user(

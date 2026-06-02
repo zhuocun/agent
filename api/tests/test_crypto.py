@@ -8,11 +8,15 @@ import os
 import pytest
 
 from app.security.crypto import (
+    _MAGIC,
     AeadCipher,
     DecryptionError,
+    VersionedCipher,
+    ciphertext_version,
     decode_kek,
     decrypt,
     encrypt,
+    get_cipher,
 )
 
 
@@ -94,6 +98,49 @@ def test_decrypt_non_base64_raises() -> None:
     kek = _make_kek_b64()
     with pytest.raises(DecryptionError, match="base64"):
         decrypt("!!!not-base64!!!", kek)
+
+
+def test_ciphertext_version_legacy_is_zero() -> None:
+    """A legacy (magic-absent) blob reports version 0."""
+    kek = _make_kek_b64()
+    legacy = VersionedCipher(legacy=get_cipher(kek), registry={}, current_version=0)
+    blob = legacy.encrypt("legacy-row")
+    assert not base64.b64decode(blob).startswith(_MAGIC)
+    assert ciphertext_version(blob) == 0
+
+
+def test_ciphertext_version_reads_version_byte() -> None:
+    """A versioned blob reports the version byte from its header."""
+    legacy_kek = _make_kek_b64()
+    v3_kek = _make_kek_b64()
+    cipher = VersionedCipher(
+        legacy=get_cipher(legacy_kek),
+        registry={3: get_cipher(v3_kek)},
+        current_version=3,
+    )
+    blob = cipher.encrypt("v3-row")
+    assert ciphertext_version(blob) == 3
+
+
+def test_ciphertext_version_does_not_decrypt() -> None:
+    """Version detection works on a payload we cannot decrypt (no KEK)."""
+    # Hand-build a versioned header with version 7 and random (undecryptable)
+    # body; we only inspect the header, never the body.
+    blob = _MAGIC + bytes([7]) + os.urandom(12) + os.urandom(16)
+    assert ciphertext_version(base64.b64encode(blob).decode("ascii")) == 7
+
+
+def test_ciphertext_version_rejects_non_base64() -> None:
+    """Malformed input surfaces the same error class as decrypt."""
+    with pytest.raises(DecryptionError, match="base64"):
+        ciphertext_version("!!!not-base64!!!")
+
+
+def test_ciphertext_version_rejects_truncated_header() -> None:
+    """Magic prefix but no version byte -> DecryptionError."""
+    too_short = base64.b64encode(_MAGIC).decode("ascii")
+    with pytest.raises(DecryptionError, match="too short"):
+        ciphertext_version(too_short)
 
 
 def test_aead_cipher_class_methods_match_module_helpers() -> None:

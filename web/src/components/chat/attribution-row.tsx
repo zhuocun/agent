@@ -69,25 +69,15 @@ export function AttributionRow({
   const costSummary = formatCostSummary(attribution.costUsd);
   const costText = `${isEstimate && !costSummary.startsWith("<") ? "~" : ""}${costSummary}`;
   const tierLabel = servedTierLabelFor(servedTierId);
-  // When the served model label degenerates to the served tier's own label
-  // (a data gap in the auto→fast path leaves served_model_label === tierLabel),
-  // rendering both stutters ("Fast · Fast"). Drop the redundant tier segment;
-  // the genuine-fallback case keeps a distinct model name and shows both.
-  // Mirrors the model-mode-picker's showEffort dedupe.
-  const showTier = tierLabel !== servedModelLabel;
-  const showProvider =
-    providerLabel !== undefined &&
-    providerLabel !== servedModelLabel &&
-    providerLabel !== tierLabel;
   const byokLabel = providerLabel
     ? `Your ${providerLabel} key`
     : "Your API key";
 
   // Brief: byline reads as typography, not a stack of chips. Substitution
-  // collapses into a leading muted clause ("substituted from Pro: …"), and the
-  // BYOK indicator is a muted inline glyph+label too — so there is zero filled
-  // chrome at rest. Per Opp 4, filled pills next to a bare line were the
-  // regression to avoid.
+  // collapses into a leading muted clause ("substituted from Pro: …"). The
+  // visible identity stays intentionally compact: one served model label plus
+  // cost. Provider/tier details remain in the accessible label and full
+  // attribution payload without repeating model-ish names in every message.
   const substitutionPrefix = substitution
     ? `substituted from ${requestedTierLabelFor(attribution.requestedTierId)}: `
     : null;
@@ -111,6 +101,7 @@ export function AttributionRow({
       >
         <Popover.Trigger
           aria-label={triggerLabel}
+          data-testid="message-attribution"
           className={cn(
             "group inline-flex items-center gap-1 rounded-sm bg-transparent p-0",
             "text-muted-foreground outline-none transition-colors hover:text-foreground",
@@ -130,18 +121,6 @@ export function AttributionRow({
             aria-hidden
             className="size-3.5 opacity-70 transition-transform data-[popup-open]:rotate-180"
           />
-          {showProvider ? (
-            <>
-              {Dot}
-              <span>{providerLabel}</span>
-            </>
-          ) : null}
-          {showTier ? (
-            <>
-              {Dot}
-              <span>{tierLabel}</span>
-            </>
-          ) : null}
           {Dot}
           <span className="font-mono tabular-nums">{costText}</span>
         </Popover.Trigger>

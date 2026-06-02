@@ -109,6 +109,9 @@ def test_assert_prod_safe_prod_env_with_rotation_active() -> None:
     matching registry entry -> no raise."""
     s = Settings(
         env="production",
+        # Prod refuses a SQLite DATABASE_URL, so this end-to-end prod env must
+        # supply a non-SQLite URL.
+        database_url="postgresql+asyncpg://u:p@host/db?ssl=require",
         session_secret="prod-session-secret-fixed-and-long-enough",
         BYOK_ENCRYPTION_KEK=_VALID_KEK_B64,  # type: ignore[arg-type]
         cookie_secure=True,

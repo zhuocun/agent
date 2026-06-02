@@ -26,6 +26,9 @@ def _prod_settings(**overrides: object) -> Settings:
     """
     base: dict[str, object] = {
         "env": "production",
+        # A non-SQLite URL so the prod DATABASE_URL guard isn't the assertion
+        # that fires in the unrelated prod-construction tests below.
+        "database_url": "postgresql+asyncpg://u:p@host/db?ssl=require",
         "session_secret": "prod-session-secret-fixed-and-long-enough",
         # `byok_encryption_kek` and `cors_allowed_origins_raw` carry aliases on
         # the model, so pydantic-settings populates them by alias only — pass
@@ -193,3 +196,55 @@ def test_assert_prod_safe_accepts_well_formed_prod_env() -> None:
         anthropic_api_key="real-key",
     )
     good.assert_prod_safe()  # must not raise
+
+
+def test_assert_prod_safe_rejects_sqlite_database_url_in_production() -> None:
+    """A SQLite DATABASE_URL must be refused in production."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        database_url="sqlite+aiosqlite:///./dev.sqlite3",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape("DATABASE_URL must not be a SQLite URL in production"),
+    ):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_rejects_tavily_without_key_in_production() -> None:
+    """SEARCH_BACKEND=tavily without TAVILY_API_KEY must fail fast in prod."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        SEARCH_BACKEND="tavily",
+        TAVILY_API_KEY=None,
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape("TAVILY_API_KEY required when SEARCH_BACKEND=tavily"),
+    ):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_accepts_tavily_with_key_in_production() -> None:
+    """SEARCH_BACKEND=tavily with a key set → no raise."""
+    good = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        SEARCH_BACKEND="tavily",
+        TAVILY_API_KEY="tvly-real-key",
+    )
+    good.assert_prod_safe()  # must not raise
+
+
+def test_assert_prod_safe_no_op_for_sqlite_in_development() -> None:
+    """The default SQLite DATABASE_URL stays valid in dev."""
+    dev = Settings(env="dev", database_url="sqlite+aiosqlite:///./dev.sqlite3")
+    dev.assert_prod_safe()  # must not raise
+
+
+def test_assert_prod_safe_no_op_for_tavily_without_key_in_development() -> None:
+    """SEARCH_BACKEND=tavily with no key silently degrades in dev (no raise)."""
+    dev = Settings(env="dev", SEARCH_BACKEND="tavily", TAVILY_API_KEY=None)  # type: ignore[call-arg]
+    dev.assert_prod_safe()  # must not raise

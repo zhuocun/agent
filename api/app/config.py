@@ -97,7 +97,10 @@ class Settings(BaseSettings):
         default="none", alias="SEARCH_BACKEND"
     )
     # Tavily API key. Only consulted when `search_backend == "tavily"`. Comes
-    # from env / Fly secrets only — never commit it.
+    # from env / Fly secrets only — never commit it. In production
+    # `assert_prod_safe()` requires this to be set whenever
+    # `search_backend == "tavily"` (fail-loud); non-prod keeps the silent
+    # degrade-to-no-search behavior in `app/search/factory.py`.
     tavily_api_key: str | None = Field(default=None, alias="TAVILY_API_KEY")
 
     # User attachment intake. Payload bytes are accepted only on the current
@@ -382,6 +385,8 @@ class Settings(BaseSettings):
 
         if self.env != "production":
             return
+        if self.database_url.startswith("sqlite"):
+            raise RuntimeError("DATABASE_URL must not be a SQLite URL in production")
         if self.session_secret == _DEV_SESSION_SECRET:
             raise RuntimeError("SESSION_SECRET must be overridden in production")
         if len(self.session_secret) < 32:
@@ -411,6 +416,10 @@ class Settings(BaseSettings):
             raise RuntimeError("ANTHROPIC_API_KEY required when PROVIDER_BACKEND=anthropic")
         if self.provider_backend == "openai" and not self.openai_api_key:
             raise RuntimeError("OPENAI_API_KEY required when PROVIDER_BACKEND=openai")
+        if self.search_backend == "tavily" and not self.tavily_api_key:
+            raise RuntimeError(
+                "TAVILY_API_KEY required when SEARCH_BACKEND=tavily in production"
+            )
         if self.billing_backend == "fake":
             raise RuntimeError("BILLING_BACKEND must not be 'fake' in production.")
         if self.billing_backend == "stripe":

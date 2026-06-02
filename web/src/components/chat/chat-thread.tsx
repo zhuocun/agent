@@ -58,7 +58,9 @@ import {
   ApiNetworkError,
   branchConversation,
   createConversation,
+  deleteAccount,
   deleteConversation,
+  fetchAccountExport,
   fetchBootstrap,
   fetchConversation,
   patchConversation,
@@ -370,6 +372,11 @@ export function ChatThread() {
   // message list and feedback POSTs always reference server-issued ids.
   const pendingUserIdRef = useRef<string | null>(null);
   const assistantIdRef = useRef<string | null>(null);
+  // Set true when Stop is pressed during the pre-stream window (welcome-exit
+  // timer or the createConversation round-trip, before `start()` has armed a
+  // real AbortController). `beginTurn` checks this after the await resolves and
+  // bails out of `start()` so an early Stop cleanly cancels the turn. (P0-1)
+  const abortBeforeStartRef = useRef(false);
   // Latest in-flight `fetchConversation` request id; the load callback drops
   // its response if a faster selection has since superseded it.
   const selectConversationTokenRef = useRef<string | null>(null);
@@ -398,6 +405,11 @@ export function ChatThread() {
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(
     null,
   );
+  const [pendingDeleteAccount, setPendingDeleteAccount] = useState(false);
+  // Type-to-confirm value for the delete-account dialog. The BE requires the
+  // caller to echo their email (or "DELETE" when anonymous) — see
+  // handleDeleteAccount / the delete confirm dialog below.
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   // Welcome→thread choreography (Decision 11, Opportunity 11): on first send
   // the welcome hero exits before the user bubble enters. Sequential — only
   // one disclosure surface in motion at a time (Pattern: Choreography of
@@ -426,10 +438,17 @@ export function ChatThread() {
   // first hit BEFORE the response arrives, so a second concurrent request
   // would mint a second user row even if we discard its response.
   const bootstrapInFlightRef = useRef(false);
+  // Holds the live bootstrap AbortController so the "Try again" handler can
+  // abort a genuinely in-flight request and clear the in-flight latch before
+  // bumping `bootstrapAttempt` — otherwise the re-run sees `inFlight === true`
+  // (the prior async `finally` hasn't run yet) and returns without retrying,
+  // so retry looks dead. (P1-5)
+  const bootstrapControllerRef = useRef<AbortController | null>(null);
   useEffect(() => {
     if (bootstrapInFlightRef.current) return;
     bootstrapInFlightRef.current = true;
     const controller = new AbortController();
+    bootstrapControllerRef.current = controller;
     void (async () => {
       try {
         const result = await fetchBootstrap(controller.signal);
@@ -466,7 +485,12 @@ export function ChatThread() {
           throw cause;
         }
       } finally {
-        bootstrapInFlightRef.current = false;
+        // Only clear the latch if a newer attempt hasn't already replaced this
+        // controller (the retry handler aborts + supersedes synchronously). (P1-5)
+        if (bootstrapControllerRef.current === controller) {
+          bootstrapInFlightRef.current = false;
+          bootstrapControllerRef.current = null;
+        }
       }
     })();
     return () => {
@@ -578,6 +602,32 @@ export function ChatThread() {
     const assistantId = assistantIdRef.current;
     if (!assistantId) return;
 
+    // Stop pressed before any content streamed: committing an empty assistant
+    // bubble (parts:[]) reads as a blank/errored turn. Skip the assistant
+    // commit entirely — keep the user message, just clear the pending state.
+    // (P1-3)
+    if (
+      result.status === "stopped" &&
+      !result.reasoning &&
+      !result.answer &&
+      result.sources.length === 0
+    ) {
+      const optimisticUserId = pendingUserIdRef.current;
+      const serverUserId = result.serverUserMessageId;
+      if (optimisticUserId && serverUserId) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === optimisticUserId ? { ...m, id: serverUserId } : m,
+          ),
+        );
+      }
+      setLiveMessage("Generation stopped");
+      setPendingId(null);
+      assistantIdRef.current = null;
+      pendingUserIdRef.current = null;
+      return;
+    }
+
     const parts: MessagePart[] = [];
     if (result.reasoning) {
       parts.push({
@@ -635,7 +685,45 @@ export function ChatThread() {
     pendingUserIdRef.current = null;
   }, []);
 
-  const { state, start, stop, reset } = useApiStream(handleTerminal);
+  // A second send was rejected with 409 STREAM_IN_PROGRESS — a response is
+  // still generating. The hook suppressed the error terminal so the live answer
+  // survives; here we just roll back THIS turn's optimistic user bubble + clear
+  // its pending state and tell the user to wait. (P0-2)
+  const handleStreamInProgress = useCallback(() => {
+    const optimisticUserId = pendingUserIdRef.current;
+    if (optimisticUserId) {
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId));
+    }
+    pendingUserIdRef.current = null;
+    assistantIdRef.current = null;
+    setPendingId(null);
+    setLiveMessage("A response is still generating");
+    showToast({
+      severity: "info",
+      title: "A response is still generating — wait for it to finish or stop it.",
+    });
+  }, []);
+
+  const { state, start, stop, reset } = useApiStream(
+    handleTerminal,
+    handleStreamInProgress,
+  );
+
+  // Cancel the welcome→thread exit/seam timers. Shared by every handler that
+  // nulls activeConversationId or otherwise abandons a pending turn, so a
+  // scheduled commitTurn() can never fire into the wrong (or torn-down) thread.
+  // (P1-4 — hoisted out of handleNewChat / handleSelectConversation /
+  // handleDeleteConversation, and reused by handleToggleTemporary + handleStop.)
+  const cancelWelcomeTimers = useCallback(() => {
+    if (welcomeExitTimerRef.current !== null) {
+      window.clearTimeout(welcomeExitTimerRef.current);
+      welcomeExitTimerRef.current = null;
+    }
+    if (welcomeSeamTimerRef.current !== null) {
+      window.clearTimeout(welcomeSeamTimerRef.current);
+      welcomeSeamTimerRef.current = null;
+    }
+  }, []);
 
   const isStreaming =
     pendingId !== null && (state.status === "submitted" || state.status === "streaming");
@@ -686,6 +774,45 @@ export function ChatThread() {
     }
   };
 
+  // Synchronous "busy" signal for the composer + edit/regenerate gates. Unlike
+  // `isStreaming` (which only flips once the first SSE frame lands), this goes
+  // true the instant a turn is initiated — `pendingId` is set synchronously in
+  // commitTurn / handleEditUserMessage / handleRegenerate before any await, so
+  // the composer morphs to Stop and the second send is blocked immediately,
+  // closing the double-submit window during the `createConversation` round-trip.
+  // `welcomeExiting` covers the ~200ms welcome-exit timer before commitTurn runs
+  // (where `pendingId` is not yet set) so the composer is armed-busy for that
+  // gap too. (P0-1)
+  const isBusy = pendingId !== null || isStreaming || welcomeExiting;
+
+  // Stop handler that copes with the pre-stream window opened by the P0-1 busy
+  // signal. If a real stream is in flight, defer to the hook's `stop()` (which
+  // aborts + synthesizes the `stopped` terminal). If Stop is pressed BEFORE the
+  // first frame — during the welcome-exit timer or the createConversation
+  // round-trip — there's no AbortController yet, so we tear the turn down here:
+  // cancel the seam timers, flag `beginTurn` to skip `start()`, roll back the
+  // optimistic user bubble, and clear the synchronous busy state so the composer
+  // re-arms. (P0-1 requirement (a))
+  const handleStop = () => {
+    if (isStreaming) {
+      stop();
+      return;
+    }
+    // Pre-stream abort.
+    abortBeforeStartRef.current = true;
+    cancelWelcomeTimers();
+    setWelcomeExiting(false);
+    setWelcomeSeamLanding(false);
+    const optimisticUserId = pendingUserIdRef.current;
+    if (optimisticUserId) {
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId));
+    }
+    pendingUserIdRef.current = null;
+    assistantIdRef.current = null;
+    setPendingId(null);
+    setLiveMessage("Generation stopped");
+  };
+
   // Begin (or continue) a streamed turn. Shared by send / regenerate / edit.
   // Creates the conversation lazily on the FIRST send when none is active.
   // Returns the conversation id used so callers can fall through their own
@@ -700,6 +827,7 @@ export function ChatThread() {
       webSearch?: boolean;
       attachments?: AttachmentPart[];
     }): Promise<void> => {
+      abortBeforeStartRef.current = false;
       let conversationId = activeConversationId;
       if (!conversationId) {
         try {
@@ -708,6 +836,13 @@ export function ChatThread() {
             isTemporary,
             providerId: args.providerId,
           });
+          // Stop pressed during the create round-trip — abandon this turn
+          // before arming the stream. handleStop already cleared the optimistic
+          // bubble + pendingId; just don't create/insert/start. (P0-1)
+          if (abortBeforeStartRef.current) {
+            abortBeforeStartRef.current = false;
+            return;
+          }
           conversationId = created.id;
           setActiveConversationId(conversationId);
           // Temporary chats get a synthetic id but bootstrap won't list them;
@@ -733,6 +868,13 @@ export function ChatThread() {
           pendingUserIdRef.current = null;
           assistantIdRef.current = null;
           setPendingId(null);
+          // Restore the typed text to the composer so a failed first-send
+          // create doesn't lose the user's message (the composer cleared it on
+          // submit). Only the plain-send path reaches create with no active
+          // conversation; edit/regenerate run against an existing one. (P2-5)
+          if (!args.regenerate && !args.editMessageId) {
+            composerRef.current?.setDraft(args.text);
+          }
           showToast({
             severity: "error",
             title:
@@ -884,9 +1026,16 @@ export function ChatThread() {
     // server id yet (e.g. optimistic local-… ids on errored turns). The UI
     // disables actions on non-final turns, so this only catches edge cases.
     if (id.startsWith("local-")) return;
-    const previous = messages.find((m) => m.id === id)?.feedback ?? null;
+    // Capture the overwritten feedback from INSIDE the updater so a fast
+    // up→down toggle whose first POST fails reverts to exactly the value it
+    // replaced — not a stale render-time snapshot. (P0-3)
+    let previous: Feedback = null;
     setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, feedback: next } : m)),
+      prev.map((m) => {
+        if (m.id !== id) return m;
+        previous = m.feedback ?? null;
+        return { ...m, feedback: next };
+      }),
     );
     void postFeedback(id, next).catch((cause) => {
       setMessages((prev) =>
@@ -909,6 +1058,17 @@ export function ChatThread() {
 
   const handleRegenerate = () => {
     if (isStreaming) return;
+    // Compute the trailing user text from the pre-update `messages` snapshot
+    // BEFORE the setMessages updater runs, so the value we send and the trim
+    // below agree on one consistent view. (P2-4)
+    const lastUserText = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== "user") continue;
+        for (const p of m.parts) if (p.type === "text") return p.text;
+      }
+      return "";
+    })();
     // Drop trailing assistant turn(s), then re-stream a fresh response.
     setMessages((prev) => {
       const next = [...prev];
@@ -926,14 +1086,6 @@ export function ChatThread() {
     // Regenerate keeps the trailing user message verbatim — send its text
     // back to the server, which ignores `text` on regenerate but the wire
     // schema still requires it.
-    const lastUserText = (() => {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m.role !== "user") continue;
-        for (const p of m.parts) if (p.type === "text") return p.text;
-      }
-      return "";
-    })();
     void beginTurn({
       text: lastUserText,
       tierId: tierAtSendRef.current,
@@ -944,7 +1096,14 @@ export function ChatThread() {
   };
 
   const handleEditUserMessage = (messageId: string, newText: string) => {
-    if (isStreaming) return;
+    if (isStreaming) {
+      // Don't silently drop the edit — tell the user why it didn't apply. (P1-1)
+      showToast({
+        severity: "info",
+        title: "Wait for the current response to finish before editing.",
+      });
+      return;
+    }
     // Local-only ids belong to user bubbles whose turn never persisted
     // (e.g. a prior error before terminal). The BE rejects non-uuid edit
     // targets with 400, so skip rather than emit a doomed request.
@@ -1052,14 +1211,7 @@ export function ChatThread() {
     // for the corruption shape). New chat nulls activeConversationId, so a
     // pending exit timer firing here would commitTurn() into the wrong
     // (newly-empty) state.
-    if (welcomeExitTimerRef.current !== null) {
-      window.clearTimeout(welcomeExitTimerRef.current);
-      welcomeExitTimerRef.current = null;
-    }
-    if (welcomeSeamTimerRef.current !== null) {
-      window.clearTimeout(welcomeSeamTimerRef.current);
-      welcomeSeamTimerRef.current = null;
-    }
+    cancelWelcomeTimers();
     setWelcomeExiting(false);
     setWelcomeSeamLanding(false);
     if (isStreaming) reset();
@@ -1095,6 +1247,12 @@ export function ChatThread() {
       setIsTemporary(false);
       return;
     }
+    // Cancel any in-flight welcome→thread seam before nulling
+    // activeConversationId — otherwise a pending exit timer could fire
+    // commitTurn() into the now-temporary thread (data corruption). (P1-4)
+    cancelWelcomeTimers();
+    setWelcomeExiting(false);
+    setWelcomeSeamLanding(false);
     if (isStreaming) reset();
     setMessages([]);
     setPendingId(null);
@@ -1127,14 +1285,7 @@ export function ChatThread() {
     // messages, plus kicking off a stream for it. That's data corruption, not
     // just a visual glitch. The same clear runs in handleNewChat /
     // handleDeleteConversation paths that null `activeConversationId`.
-    if (welcomeExitTimerRef.current !== null) {
-      window.clearTimeout(welcomeExitTimerRef.current);
-      welcomeExitTimerRef.current = null;
-    }
-    if (welcomeSeamTimerRef.current !== null) {
-      window.clearTimeout(welcomeSeamTimerRef.current);
-      welcomeSeamTimerRef.current = null;
-    }
+    cancelWelcomeTimers();
     setWelcomeExiting(false);
     setWelcomeSeamLanding(false);
     if (isStreaming) reset();
@@ -1221,14 +1372,7 @@ export function ChatThread() {
       // Cancel any in-flight welcome→thread seam — same data-corruption guard
       // as handleSelectConversation / handleNewChat, since we're nulling
       // activeConversationId here too.
-      if (welcomeExitTimerRef.current !== null) {
-        window.clearTimeout(welcomeExitTimerRef.current);
-        welcomeExitTimerRef.current = null;
-      }
-      if (welcomeSeamTimerRef.current !== null) {
-        window.clearTimeout(welcomeSeamTimerRef.current);
-        welcomeSeamTimerRef.current = null;
-      }
+      cancelWelcomeTimers();
       setWelcomeExiting(false);
       setWelcomeSeamLanding(false);
       if (isStreaming) reset();
@@ -1298,6 +1442,19 @@ export function ChatThread() {
         prev ? { ...prev, preferences: previous } : prev,
       );
       if (cause instanceof ApiError) setLiveMessage(cause.title);
+      // Surface the rollback to sighted users too (e.g. a 429), matching the
+      // rename / pin handlers — a silent revert is invisible otherwise. (P1-2)
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't save your preferences",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
     });
   };
 
@@ -1372,6 +1529,61 @@ export function ChatThread() {
       .catch((cause) => {
         const title =
           cause instanceof ApiError ? cause.title : "Couldn't sign out";
+        const body =
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined;
+        showToast({ severity: "error", title, body });
+      });
+  };
+
+  // Account data export: the BE returns raw JSON; the fetch client ignores
+  // Content-Disposition, so build the download client-side from the payload.
+  const handleExportData = () => {
+    void fetchAccountExport()
+      .then((data) => {
+        if (typeof window === "undefined" || typeof document === "undefined")
+          return;
+        const blob = new Blob([JSON.stringify(data, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "account-export.json";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setLiveMessage("Your data was downloaded");
+        showToast({ severity: "success", title: "Your data was downloaded" });
+      })
+      .catch((cause) => {
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't export your data";
+        const body =
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined;
+        showToast({ severity: "error", title, body });
+      });
+  };
+
+  // Delete account + full reload. The BE clears the cookie, so the reload
+  // bootstraps as a fresh anonymous user (identical pattern to sign-out).
+  const handleDeleteAccount = (confirmation: string) => {
+    void deleteAccount(confirmation)
+      .then(() => {
+        setLiveMessage("Account deleted");
+        if (typeof window !== "undefined") window.location.reload();
+      })
+      .catch((cause) => {
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't delete account";
         const body =
           cause instanceof ApiError
             ? cause.body
@@ -1776,11 +1988,17 @@ export function ChatThread() {
     return (
       <div className="flex h-full min-h-svh items-center justify-center p-6">
         <div className="max-w-sm space-y-4 text-center">
-          <h2 className="text-lg font-semibold">{bootstrapError.title}</h2>
+          <h1 className="text-lg font-semibold">{bootstrapError.title}</h1>
           <p className="text-sm text-muted-foreground">{bootstrapError.body}</p>
           <Button
             type="button"
             onClick={() => {
+              // Abort any genuinely in-flight bootstrap and clear the latch so
+              // the re-run actually fetches instead of short-circuiting on a
+              // stale `inFlight === true`. (P1-5)
+              bootstrapControllerRef.current?.abort();
+              bootstrapControllerRef.current = null;
+              bootstrapInFlightRef.current = false;
               setBootstrapError(null);
               setBootstrapAttempt((n) => n + 1);
             }}
@@ -1796,6 +2014,13 @@ export function ChatThread() {
   if (!bootstrap || !account || !preferences || !usage) {
     return <div aria-hidden className="h-full min-h-svh" />;
   }
+
+  const suggestions = bootstrap.suggestions;
+  // Delete-account requires the user to type their email (or "DELETE" when
+  // anonymous), matching the BE's confirmation contract.
+  const deleteConfirmExpected = account.email || "DELETE";
+  const deleteConfirmMatches =
+    deleteConfirmText.trim() === deleteConfirmExpected;
 
   return (
     <>
@@ -1833,6 +2058,11 @@ export function ChatThread() {
             the top and bottom, with the floating header buttons and composer
             capsule sitting fully opaque on top. iOS Claude / Codex chrome. */}
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          {/* Page heading for the chat view — visually hidden so the design is
+              unchanged, but the document/landmark gets an <h1> for screen
+              readers. Carries the active conversation title with a sensible
+              default before one exists / while untitled. (A11Y-5) */}
+          <h1 className="sr-only">{activeConversationTitle ?? "New chat"}</h1>
           {/* First-run welcome ambient halo: a soft, single-hue brand bloom
               behind the greeting. Welcome-only, decorative, vignetted by the
               z-30 chrome strips. Fades in on mount, out at the welcome→thread
@@ -1929,6 +2159,7 @@ export function ChatThread() {
                 userName={firstName}
                 exiting={welcomeExiting}
                 onPromptSelect={handlePromptSelect}
+                suggestions={suggestions}
               />
             </div>
           ) : (
@@ -2017,9 +2248,9 @@ export function ChatThread() {
             <div className="pointer-events-auto">
               <Composer
                 ref={composerRef}
-                isStreaming={isStreaming}
+                isStreaming={isBusy}
                 onSend={handleSend}
-                onStop={stop}
+                onStop={handleStop}
                 sendOnEnter={preferences.sendOnEnter}
                 supportsAttachments={selectedTierSupportsAttachments}
               />
@@ -2038,6 +2269,11 @@ export function ChatThread() {
         onAccountChange={handleAccountChange}
         usage={usage}
         onSignOut={handleSignOut}
+        onExportData={handleExportData}
+        onDeleteAccount={() => {
+          setSettingsOpen(false);
+          setPendingDeleteAccount(true);
+        }}
       />
 
       <AuthDialog
@@ -2100,6 +2336,68 @@ export function ChatThread() {
               className="rounded-full"
             >
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={pendingDeleteAccount}
+        onOpenChange={(open) => {
+          setPendingDeleteAccount(open);
+          if (!open) setDeleteConfirmText("");
+        }}
+      >
+        <DialogContent className="sm:max-w-sm" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Delete account?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes your account and all your conversations.
+              This can&apos;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Type{" "}
+              <span className="font-medium text-foreground">
+                {deleteConfirmExpected}
+              </span>{" "}
+              to confirm.
+            </p>
+            <input
+              type="text"
+              autoComplete="off"
+              autoFocus
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              data-testid="delete-account-confirm-input"
+              aria-label={`Type ${deleteConfirmExpected} to confirm account deletion`}
+              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-sm text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] sm:h-9"
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setPendingDeleteAccount(false)}
+              className="rounded-full"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={!deleteConfirmMatches}
+              data-testid="confirm-delete-account"
+              onClick={() => {
+                const value = deleteConfirmText.trim();
+                setPendingDeleteAccount(false);
+                setDeleteConfirmText("");
+                handleDeleteAccount(value);
+              }}
+              className="rounded-full"
+            >
+              Delete account
             </Button>
           </DialogFooter>
         </DialogContent>

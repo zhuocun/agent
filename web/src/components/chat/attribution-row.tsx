@@ -105,7 +105,7 @@ export function AttributionRow({
           className={cn(
             "group inline-flex items-center gap-1 rounded-sm bg-transparent p-0",
             "text-muted-foreground outline-none transition-colors hover:text-foreground",
-            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+            "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
         >
           {substitutionPrefix ? (
@@ -126,7 +126,7 @@ export function AttributionRow({
         </Popover.Trigger>
 
         <Popover.Portal>
-          <Popover.Positioner sideOffset={6} align="start" className="z-50 outline-none">
+          <Popover.Positioner sideOffset={6} align="start" className="z-[60] outline-none">
             <Popover.Popup
               className={cn(
                 "glass-strong w-[min(22rem,calc(100vw-2rem))] origin-(--transform-origin) rounded-2xl text-popover-foreground outline-none",

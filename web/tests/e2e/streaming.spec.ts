@@ -173,7 +173,10 @@ test.describe("streaming", () => {
     const toggle = page.getByTestId("web-search-toggle");
     await expect(toggle).toBeVisible({ timeout: 5_000 });
     await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    // The desktop toggle is a Base UI menu checkbox item
+    // (role="menuitemcheckbox"), so its on-state is conveyed via aria-checked,
+    // not aria-pressed.
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
     // Dismiss the dropdown so it doesn't overlay the composer.
     await page.keyboard.press("Escape");
 

@@ -31,6 +31,29 @@ interface MessageActionsProps {
   onFeedback?: (next: Feedback) => void;
 }
 
+// Legacy clipboard fallback for insecure origins / denied permission, where
+// `navigator.clipboard` is unavailable. Selects an off-screen textarea and
+// runs `document.execCommand("copy")`. Returns whether the copy succeeded.
+function legacyCopy(value: string): boolean {
+  if (typeof document === "undefined") return false;
+  const ta = document.createElement("textarea");
+  ta.value = value;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  try {
+    ta.focus();
+    ta.select();
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
 export function MessageActions({
   text,
   feedback,
@@ -42,20 +65,40 @@ export function MessageActions({
   onFeedback,
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
+    const markCopied = () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
+    };
+    // Clipboard API is the happy path; fall back to a legacy off-screen
+    // textarea + execCommand so copy still works on insecure origins / when
+    // permission is denied (mirrors share-dialog.tsx). Prefer copying over
+    // erroring; only surface "Copy failed" if both paths fail.
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        markCopied();
+        return;
+      }
+      throw new Error("clipboard unavailable");
     } catch {
-      // Clipboard unavailable in insecure contexts.
+      if (legacyCopy(text)) {
+        markCopied();
+      } else {
+        setCopyFailed(true);
+        setTimeout(() => setCopyFailed(false), 1500);
+      }
     }
   };
 
   return (
     <div role="toolbar" aria-label="Message actions" className="group/actions inline-flex items-center gap-0.5 rounded-full p-0.5">
-      <IconAction label={copied ? "Copied" : "Copy"} onClick={handleCopy}>
+      <IconAction
+        label={copied ? "Copied" : copyFailed ? "Copy failed" : "Copy"}
+        onClick={handleCopy}
+      >
         {copied ? (
           <Check className="size-4 text-success" />
         ) : (

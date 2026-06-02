@@ -927,13 +927,17 @@ export function Sidebar({
           {isSearching ? (
             filteredConversations.length === 0 ? (
               <div className="px-2 py-6 text-center text-sm text-muted-foreground">
-                No conversations
+                No matches
               </div>
             ) : (
               <div role="list" aria-label="Search results">
                 {filteredConversations.map(renderRow)}
               </div>
             )
+          ) : displayConversations.length === 0 ? (
+            <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+              No chats yet — start one above
+            </div>
           ) : (
             GROUP_ORDER.map((key) => {
               const items = groups.get(key);

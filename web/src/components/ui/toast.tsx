@@ -211,7 +211,7 @@ export function Toaster() {
 
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex flex-col items-center gap-2 px-4 pb-[calc(var(--bottom-inset)+5rem)] pr-[max(env(safe-area-inset-right),1rem)] pl-[max(env(safe-area-inset-left),1rem)] md:inset-x-auto md:bottom-auto md:top-0 md:right-0 md:items-end md:pt-[max(env(safe-area-inset-top),1rem)] md:pb-0"
+      className="pointer-events-none fixed inset-x-0 bottom-0 z-[70] flex flex-col items-center gap-2 px-4 pb-[calc(var(--bottom-inset)+5rem)] pr-[max(env(safe-area-inset-right),1rem)] pl-[max(env(safe-area-inset-left),1rem)] md:inset-x-auto md:bottom-auto md:top-0 md:right-0 md:items-end md:pt-[max(env(safe-area-inset-top),1rem)] md:pb-0"
     >
       <ol className="flex w-full max-w-sm flex-col gap-2">
         {toasts.map((toast) => (

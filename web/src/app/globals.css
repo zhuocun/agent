@@ -7,6 +7,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* z-index scale (applied via Tailwind arbitrary `z-[..]` classes, not tokens):
+   base content 0–30 (bottom-anchored affordances — jump-to-latest button,
+   install coachmark — sit at z-30), modals + their backdrops 50 (dialog,
+   drawer, command palette), contextual popovers 60 (dropdown menus, tooltips —
+   so a menu/tooltip opened from inside a modal stacks above it), toasts 70
+   (always above modals), status-bar strip 100. */
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -127,6 +134,12 @@
   /* Tracking polish for SF Pro — needs less negative tracking than Geist did
      (SF is already optically tightened), so a subtler value avoids cramping. */
   --tracking-tight: -0.006em;
+
+  /* Caption type step below `text-xs` — exposed as the `text-2xs` utility for
+     the repeated 11px metadata/label captions (eyebrows, source meta, palette
+     footnotes) that sit one rung under the type ramp. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
 
   /* Bottom-inset: iOS notch safe-area when present, 1.5rem floor on desktop
      so the composer chrome strip never sits flush against the viewport edge. */

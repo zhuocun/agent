@@ -39,6 +39,29 @@ function attachmentIconType(mediaType: Extract<MessagePart, { type: "attachment"
   return mediaType === "image" ? "image" : "file";
 }
 
+// Legacy clipboard fallback for insecure origins / denied permission, where
+// `navigator.clipboard` is unavailable. Selects an off-screen textarea and
+// runs `document.execCommand("copy")`. Returns whether the copy succeeded.
+function legacyCopy(value: string): boolean {
+  if (typeof document === "undefined") return false;
+  const ta = document.createElement("textarea");
+  ta.value = value;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-9999px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  try {
+    ta.focus();
+    ta.select();
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
 export function UserMessage({
   message,
   onEdit,
@@ -59,6 +82,7 @@ export function UserMessage({
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(text);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -84,12 +108,28 @@ export function UserMessage({
   }, [isEditing]);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
+    const markCopied = () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
+    };
+    // Clipboard API is the happy path; fall back to a legacy off-screen
+    // textarea + execCommand so copy still works on insecure origins / when
+    // permission is denied (mirrors share-dialog.tsx). Prefer copying over
+    // erroring; only surface "Copy failed" if both paths fail.
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        markCopied();
+        return;
+      }
+      throw new Error("clipboard unavailable");
     } catch {
-      // Clipboard unavailable in insecure contexts.
+      if (legacyCopy(text)) {
+        markCopied();
+      } else {
+        setCopyFailed(true);
+        setTimeout(() => setCopyFailed(false), 1500);
+      }
     }
   };
 
@@ -106,7 +146,19 @@ export function UserMessage({
   const saveEdit = () => {
     if (submitting || !canSave || !onEdit) return;
     setSubmitting(true);
-    onEdit(trimmed);
+    try {
+      // The parent may guard the edit (e.g. reject while streaming). If it
+      // throws, stay in edit mode and re-enable the control so the draft is
+      // never silently lost and Save can't get permanently stuck.
+      onEdit(trimmed);
+    } catch {
+      setSubmitting(false);
+      return;
+    }
+    // Happy path: leave edit mode. The component unmounts/re-derives from the
+    // updated message, so `submitting` doesn't need an explicit reset here —
+    // but reset it anyway in case the parent keeps this instance mounted.
+    setSubmitting(false);
     setIsEditing(false);
   };
 
@@ -228,7 +280,7 @@ export function UserMessage({
                 type="button"
                 variant="ghost"
                 onClick={handleCopy}
-                aria-label={copied ? "Copied" : "Copy"}
+                aria-label={copied ? "Copied" : copyFailed ? "Copy failed" : "Copy"}
                 className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
               >
                 {copied ? (
@@ -239,7 +291,9 @@ export function UserMessage({
               </Button>
             }
           />
-          <TooltipContent>{copied ? "Copied" : "Copy"}</TooltipContent>
+          <TooltipContent>
+            {copied ? "Copied" : copyFailed ? "Copy failed" : "Copy"}
+          </TooltipContent>
         </Tooltip>
 
         {editable ? (

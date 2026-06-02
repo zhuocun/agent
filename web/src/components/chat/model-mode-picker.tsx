@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -174,7 +175,7 @@ export function ModelModePicker({
             </>
           ) : null}
           <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-[11px] font-semibold">
+            <DropdownMenuLabel className="text-2xs font-semibold">
               Model
             </DropdownMenuLabel>
             {tiers.map((t) => (
@@ -196,7 +197,7 @@ export function ModelModePicker({
           ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-[11px] font-semibold">
+            <DropdownMenuLabel className="text-2xs font-semibold">
               Reasoning effort
             </DropdownMenuLabel>
             {efforts.map((e) => (
@@ -213,36 +214,32 @@ export function ModelModePicker({
             <>
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-[11px] font-semibold">
+                <DropdownMenuLabel className="text-2xs font-semibold">
                   Web search
                 </DropdownMenuLabel>
                 {/* `closeOnClick={false}` keeps the menu open so toggling
-                    search on/off doesn't dismiss the picker mid-decision. */}
-                <DropdownMenuItem
-                  label="Web search"
+                    search on/off doesn't dismiss the picker mid-decision. The
+                    checkbox item exposes role="menuitemcheckbox"/aria-checked
+                    and renders its own check indicator on the right (so no
+                    inline glyph here — that would double the check). */}
+                <DropdownMenuCheckboxItem
+                  checked={searchEnabled}
                   closeOnClick={false}
-                  onClick={() => onToggleSearch(!searchEnabled)}
+                  onCheckedChange={(next) => onToggleSearch(next)}
                   className="py-2"
                   data-testid="web-search-toggle"
-                  aria-pressed={searchEnabled}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-medium">
                         {searchEnabled ? "On" : "Off"}
                       </span>
-                      {searchEnabled ? (
-                        <Check
-                          aria-hidden
-                          className="ml-auto size-4 text-foreground"
-                        />
-                      ) : null}
                     </div>
                     <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
                       Ground answers with a live web search.
                     </p>
                   </div>
-                </DropdownMenuItem>
+                </DropdownMenuCheckboxItem>
               </DropdownMenuGroup>
             </>
           ) : null}
@@ -278,7 +275,7 @@ export function ModelModePicker({
         />
         <DialogContent className="max-h-[80dvh] gap-3 px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
           <DialogHeader>
-            <DialogTitle className="text-base">Model and reasoning</DialogTitle>
+            <DialogTitle>Model and reasoning</DialogTitle>
             <DialogDescription className="sr-only">
               Choose which capability tier and reasoning effort answer your next
               message.
@@ -419,7 +416,7 @@ function SheetSection({
 }): JSX.Element {
   return (
     <div className="flex flex-col">
-      <p className="px-4 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+      <p className="px-4 pb-1 text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
         {title}
       </p>
       <ul className="flex flex-col">{children}</ul>

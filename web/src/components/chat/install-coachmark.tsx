@@ -64,7 +64,7 @@ export function InstallCoachmark(): React.JSX.Element | null {
       role="status"
       aria-live="polite"
       className={cn(
-        "pointer-events-auto fixed inset-x-3 z-40",
+        "pointer-events-auto fixed inset-x-3 z-30",
         "bottom-[calc(env(safe-area-inset-bottom)+0.75rem)]",
         "mx-auto flex max-w-md items-center gap-3 rounded-2xl",
         // `glass-regular` supplies the translucent material: saturated/
@@ -92,7 +92,7 @@ export function InstallCoachmark(): React.JSX.Element | null {
         className={cn(
           "inline-flex size-11 shrink-0 items-center justify-center rounded-full",
           "text-muted-foreground hover:bg-accent hover:text-foreground",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         )}
       >
         <X aria-hidden className="size-4" />

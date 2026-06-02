@@ -18,13 +18,35 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependency import current_user
+from app.config import Settings, get_settings
 from app.db.models import User
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import preferences as preferences_repo
 from app.db.session import get_db
+from app.errors import AppError, ErrorEnvelope
+from app.safety import SafetyDecision, check_user_turn
 from app.schemas.preferences import UserPreferences, UserPreferencesRequest
 
 router = APIRouter(prefix="/api", tags=["preferences"])
+
+
+def _safety_blocked(decision: SafetyDecision) -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="SAFETY_BLOCKED",
+            severity="warning",
+            title="Custom instructions blocked",
+            body=(
+                "Custom instructions could not be saved because they matched "
+                "a configured safety rule."
+            ),
+            meta={
+                "reasonCode": decision.reason_code,
+                "source": decision.source,
+            },
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
 
 
 @router.put("/preferences", status_code=status.HTTP_204_NO_CONTENT)
@@ -32,6 +54,7 @@ async def put_preferences(
     body: UserPreferencesRequest,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> None:
     """Replace the user's preferences row with `body`.
 
@@ -51,8 +74,21 @@ async def put_preferences(
             if body.telemetry_enabled is not None
             else existing.telemetry_enabled
         ),
+        custom_instructions=(
+            body.custom_instructions
+            if body.custom_instructions is not None
+            else existing.custom_instructions
+        ),
         retention_days=body.retention_days,
     )
+    safety_decision = check_user_turn(
+        settings,
+        text="",
+        custom_instructions=merged.custom_instructions,
+    )
+    if not safety_decision.allowed:
+        raise _safety_blocked(safety_decision)
+
     await preferences_repo.upsert(db, user.id, merged)
     if body.retention_days is not None:
         await conversations_repo.delete_older_than_for_user(

@@ -193,6 +193,93 @@ async def test_send_message_happy_path_streams_and_persists(
     assert len(body["messages"]) == 2
 
 
+async def test_custom_instructions_are_provider_only(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await client.get("/api/bootstrap")
+    await client.put(
+        "/api/preferences",
+        json={
+            "defaultTierId": "smart",
+            "temporaryByDefault": False,
+            "trainingOptIn": False,
+            "sendOnEnter": True,
+            "autoExpandReasoning": False,
+            "telemetryEnabled": True,
+            "customInstructions": "Always answer in terse bullets.",
+            "retentionDays": None,
+        },
+    )
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    seen_prompts: list[str] = []
+
+    class _CaptureProvider:
+        async def stream(
+            self,
+            *,
+            model_id: str,
+            history: list[ChatMessage],
+            user_text: str,
+            attachments: list[object] | None = None,
+            api_key: str | None = None,
+            thinking: bool | None = None,
+            reasoning_effort: str | None = None,
+            web_search: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            seen_prompts.append(user_text)
+            yield ReasoningDone()
+            yield AnswerDelta(text="ok")
+            usage = UsageUpdate(
+                input_tokens=10,
+                output_tokens=2,
+                reasoning_tokens=0,
+                cached_input_tokens=0,
+            )
+            yield Complete(usage=usage)
+
+        async def complete(
+            self,
+            *,
+            model_id: str,
+            history: list[ChatMessage],
+            user_text: str,
+            api_key: str | None = None,
+        ) -> str:
+            return "Custom Instructions Test"
+
+    from app.routes import conversations as conversation_routes
+
+    monkeypatch.setattr(
+        conversation_routes,
+        "build_provider",
+        lambda *args, **kwargs: _CaptureProvider(),
+    )
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "Summarize the launch plan.",
+        },
+    )
+    assert frames[-1][0] == "terminal"
+    assert seen_prompts
+    assert "Always answer in terse bullets." in seen_prompts[0]
+    assert "Summarize the launch plan." in seen_prompts[0]
+
+    async with session_factory() as session:
+        user_msg = (
+            await session.execute(select(Message).where(Message.role == "user"))
+        ).scalar_one()
+        assert user_msg.parts[0]["text"] == "Summarize the launch plan."
+
+
 async def test_send_message_with_attachment_streams_persists_metadata_only(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
@@ -303,6 +390,143 @@ async def test_send_message_with_text_attachment_extracts_transcript_metadata_on
                 "storagePolicy": "transient",
             },
         ]
+
+
+async def test_safety_blocklist_rejects_before_persisting_message(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setenv("SAFETY_BACKEND", "local")
+    monkeypatch.setenv("SAFETY_BLOCKLIST", "do-not-send")
+    get_settings.cache_clear()
+    try:
+        await client.get("/api/bootstrap")
+        user_id = await _current_user_id(session_factory)
+        conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+        response = await client.post(
+            f"/api/conversations/{conv_id}/messages",
+            json={
+                "clientMessageId": str(uuid4()),
+                "tierId": "fast",
+                "text": "please do-not-send this",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "SAFETY_BLOCKED"
+
+        async with session_factory() as session:
+            messages = (await session.execute(select(Message))).scalars().all()
+            streams = (await session.execute(select(Stream))).scalars().all()
+            assert messages == []
+            assert streams == []
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_safety_blocklist_rejects_regenerate_before_mutating_history(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    initial = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "fast",
+            "text": "please do-not-send this",
+        },
+    )
+    assert initial[-1][0] == "terminal"
+
+    monkeypatch.setenv("SAFETY_BACKEND", "local")
+    monkeypatch.setenv("SAFETY_BLOCKLIST", "do-not-send")
+    get_settings.cache_clear()
+    try:
+        response = await client.post(
+            f"/api/conversations/{conv_id}/messages",
+            json={
+                "clientMessageId": str(uuid4()),
+                "tierId": "fast",
+                "text": "ignored on regenerate",
+                "regenerate": True,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "SAFETY_BLOCKED"
+
+        async with session_factory() as session:
+            rows = (await session.execute(select(Message))).scalars().all()
+            assert [row.role for row in rows] == ["user", "assistant"]
+            streams = (await session.execute(select(Stream))).scalars().all()
+            assert [stream.status for stream in streams] == ["done"]
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_safety_blocklist_rejects_saved_custom_instructions_before_provider(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    await client.get("/api/bootstrap")
+    assert (
+        await client.put(
+            "/api/preferences",
+            json={
+                "defaultTierId": "smart",
+                "temporaryByDefault": False,
+                "trainingOptIn": False,
+                "sendOnEnter": True,
+                "autoExpandReasoning": False,
+                "telemetryEnabled": True,
+                "customInstructions": "Always include do-not-send.",
+                "retentionDays": None,
+            },
+        )
+    ).status_code == 204
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    monkeypatch.setenv("SAFETY_BACKEND", "local")
+    monkeypatch.setenv("SAFETY_BLOCKLIST", "do-not-send")
+    get_settings.cache_clear()
+    try:
+        response = await client.post(
+            f"/api/conversations/{conv_id}/messages",
+            json={
+                "clientMessageId": str(uuid4()),
+                "tierId": "fast",
+                "text": "normal user message",
+            },
+        )
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["code"] == "SAFETY_BLOCKED"
+        assert error["meta"]["source"] == "custom_instructions"
+
+        async with session_factory() as session:
+            messages = (await session.execute(select(Message))).scalars().all()
+            streams = (await session.execute(select(Stream))).scalars().all()
+            assert messages == []
+            assert streams == []
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_attachment_idempotent_replay_accepts_metadata_only_retry(

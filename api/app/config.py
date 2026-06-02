@@ -106,6 +106,15 @@ class Settings(BaseSettings):
     attachment_max_count: int = Field(default=4, alias="ATTACHMENT_MAX_COUNT")
     attachment_max_bytes: int = Field(default=5 * 1024 * 1024, alias="ATTACHMENT_MAX_BYTES")
 
+    # Baseline safety preflight. Default disabled keeps current local/prod
+    # behavior unchanged. `local` enables a deterministic blocklist check over
+    # user text, extracted text attachments, and custom instructions; future
+    # provider/gateway moderation adapters can hang off the same route seam.
+    safety_backend: Literal["disabled", "local"] = Field(
+        default="disabled", alias="SAFETY_BACKEND"
+    )
+    safety_blocklist_raw: str = Field(default="", alias="SAFETY_BLOCKLIST")
+
     # BYOK key encryption KEK (base64-encoded 32 bytes). Required in M3 — the
     # default value is a known-bad dev sentinel that `assert_prod_safe()`
     # rejects so production deploys fail fast.
@@ -311,6 +320,14 @@ class Settings(BaseSettings):
         """Parse the comma-separated env string into a list of origins."""
         raw = self.cors_allowed_origins_raw or ""
         return [s.strip() for s in raw.split(",") if s.strip()]
+
+    @cached_property
+    def safety_block_terms(self) -> tuple[str, ...]:
+        """Parse the comma-separated safety blocklist into normalized terms."""
+        raw = self.safety_blocklist_raw or ""
+        return tuple(
+            " ".join(s.strip().casefold().split()) for s in raw.split(",") if s.strip()
+        )
 
     @cached_property
     def kek_version_registry(self) -> dict[int, str]:

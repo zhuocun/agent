@@ -32,6 +32,7 @@ _VALID_BODY = {
     "sendOnEnter": False,
     "autoExpandReasoning": True,
     "telemetryEnabled": True,
+    "customInstructions": "Answer tersely and use bullets.",
     "retentionDays": 90,
 }
 
@@ -56,6 +57,7 @@ async def test_bootstrap_returns_defaults_when_no_row(
         "sendOnEnter": True,
         "autoExpandReasoning": False,
         "telemetryEnabled": True,
+        "customInstructions": "",
         "retentionDays": None,
     }
     # Bootstrap should NOT silently insert a row.
@@ -110,6 +112,26 @@ async def test_put_omitted_telemetry_preserves_existing_opt_out(
     prefs = boot.json()["preferences"]
     assert prefs["defaultTierId"] == "fast"
     assert prefs["telemetryEnabled"] is False
+
+
+async def test_put_omitted_custom_instructions_preserves_existing(
+    client: AsyncClient,
+) -> None:
+    await client.get("/api/bootstrap")
+    first = dict(_VALID_BODY)
+    first["customInstructions"] = "Prefer concise answers."
+    assert (await client.put("/api/preferences", json=first)).status_code == 204
+
+    stale_client_body = dict(_VALID_BODY)
+    stale_client_body.pop("customInstructions")
+    stale_client_body["defaultTierId"] = "fast"
+    response = await client.put("/api/preferences", json=stale_client_body)
+    assert response.status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    prefs = boot.json()["preferences"]
+    assert prefs["defaultTierId"] == "fast"
+    assert prefs["customInstructions"] == "Prefer concise answers."
 
 
 async def test_put_finite_retention_erases_expired_conversations(
@@ -178,6 +200,42 @@ async def test_put_rejects_missing_fields(client: AsyncClient) -> None:
     assert response.json()["error"]["code"] == "INVALID_INPUT"
 
 
+async def test_put_rejects_too_long_custom_instructions(client: AsyncClient) -> None:
+    await client.get("/api/bootstrap")
+    bad = dict(_VALID_BODY)
+    bad["customInstructions"] = "x" * 4001
+
+    response = await client.put("/api/preferences", json=bad)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_put_rejects_blocklisted_custom_instructions(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import get_settings
+
+    monkeypatch.setenv("SAFETY_BACKEND", "local")
+    monkeypatch.setenv("SAFETY_BLOCKLIST", "do-not-save")
+    get_settings.cache_clear()
+    try:
+        await client.get("/api/bootstrap")
+        bad = dict(_VALID_BODY)
+        bad["customInstructions"] = "Always do-not-save in replies."
+
+        response = await client.put("/api/preferences", json=bad)
+
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["code"] == "SAFETY_BLOCKED"
+        assert error["meta"]["source"] == "custom_instructions"
+        assert await _row_count(session_factory) == 0
+    finally:
+        get_settings.cache_clear()
+
+
 async def test_anonymous_user_can_put_preferences(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
@@ -193,6 +251,7 @@ async def test_anonymous_user_can_put_preferences(
         assert users[0].is_anonymous is True
         assert len(prefs) == 1
         assert prefs[0].user_id == users[0].id
+        assert prefs[0].custom_instructions == _VALID_BODY["customInstructions"]
 
 
 async def test_put_replaces_existing(

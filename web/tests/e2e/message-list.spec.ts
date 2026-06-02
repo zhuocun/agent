@@ -60,6 +60,7 @@ function bootstrapPayload() {
       sendOnEnter: true,
       autoExpandReasoning: false,
       telemetryEnabled: true,
+      customInstructions: "",
       retentionDays: 30,
     },
     usage: {

@@ -1538,6 +1538,73 @@ export function ChatThread() {
     })();
   };
 
+  const markdownFilename = (title: string | null | undefined): string => {
+    const safeTitle = (title || "conversation")
+      .trim()
+      .replace(/[^\w\s.-]/g, "")
+      .replace(/\s+/g, "-")
+      .slice(0, 80);
+    return `${safeTitle || "conversation"}.md`;
+  };
+
+  const downloadMarkdown = (payload: string, title?: string | null): void => {
+    if (!payload) {
+      setLiveMessage("Nothing to download");
+      showToast({ severity: "info", title: "Nothing to download" });
+      return;
+    }
+    const blob = new Blob([payload], {
+      type: "text/markdown;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = markdownFilename(title);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    setLiveMessage("Conversation downloaded");
+    showToast({ severity: "info", title: "Conversation downloaded" });
+  };
+
+  const handleDownloadConversation = () => {
+    const activeTitle =
+      conversations.find((conversation) => conversation.id === activeConversationId)
+        ?.title ?? "conversation";
+    downloadMarkdown(renderConversationMarkdown(messages), activeTitle);
+  };
+
+  const handleDownloadConversationById = (id: string) => {
+    if (id === activeConversationId) {
+      handleDownloadConversation();
+      return;
+    }
+    void (async () => {
+      try {
+        const conversation = await fetchConversation(id);
+        downloadMarkdown(
+          renderConversationMarkdown(conversation.messages),
+          conversation.title,
+        );
+      } catch (cause) {
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't download conversation";
+        setLiveMessage(title);
+        showToast({
+          severity: "error",
+          title,
+          body:
+            cause instanceof ApiError
+              ? cause.body
+              : cause instanceof Error
+                ? cause.message
+                : undefined,
+        });
+      }
+    })();
+  };
+
   const handleFocusComposer = () => {
     composerRef.current?.focus();
   };
@@ -1748,6 +1815,7 @@ export function ChatThread() {
             onDeleteConversation={handleDeleteConversation}
             onTogglePinConversation={handleTogglePinConversation}
             onCopyConversation={handleCopyConversationById}
+            onDownloadConversation={handleDownloadConversationById}
             onOpenSettings={handleOpenSettings}
             onSignIn={() => setAuthOpen(true)}
             onSignOut={handleSignOut}
@@ -1819,6 +1887,8 @@ export function ChatThread() {
                 onToggleTemporary={handleToggleTemporary}
                 onCopyConversation={handleCopyConversation}
                 canCopyConversation={messages.length > 0}
+                onDownloadConversation={handleDownloadConversation}
+                canDownloadConversation={messages.length > 0}
                 onShareConversation={handleOpenShare}
                 canShareConversation={canShareActiveConversation}
                 tiers={modelTiers}

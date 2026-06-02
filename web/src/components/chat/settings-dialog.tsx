@@ -108,6 +108,8 @@ const RETENTION_OPTIONS: Array<{
   { value: null, label: "Forever", description: "Keep saved chats until you delete them." },
 ];
 
+const CUSTOM_INSTRUCTIONS_LIMIT = 4000;
+
 function RetentionPicker({
   value,
   onChange,
@@ -322,6 +324,7 @@ export function SettingsDialog({
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
   const autoExpandId = useId();
+  const customInstructionsId = useId();
   const temporaryId = useId();
   const trainingId = useId();
   const telemetryId = useId();
@@ -345,6 +348,24 @@ export function SettingsDialog({
     "pro" | "credits" | "portal" | null
   >(null);
   const [billingError, setBillingError] = useState<string | null>(null);
+  const [customInstructionsDraft, setCustomInstructionsDraft] = useState(
+    preferences.customInstructions,
+  );
+
+  function mergePreferenceDraft(
+    patch: Partial<UserPreferences> = {},
+  ): UserPreferences {
+    return {
+      ...preferences,
+      customInstructions: customInstructionsDraft,
+      ...patch,
+    };
+  }
+
+  function commitCustomInstructions(): void {
+    if (customInstructionsDraft === preferences.customInstructions) return;
+    onPreferencesChange(mergePreferenceDraft());
+  }
 
   async function openCheckout(kind: BillingCheckoutKind): Promise<void> {
     const busy = kind === "pro_subscription" ? "pro" : "credits";
@@ -372,7 +393,13 @@ export function SettingsDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) commitCustomInstructions();
+        onOpenChange(nextOpen);
+      }}
+    >
       {/* The base DialogContent now provides the mobile bottom-sheet shell
           (full-width, bottom-pinned, rounded top, grabber, home-indicator-safe
           bottom padding, swipe-to-dismiss) and reverts to the centered modal at
@@ -519,7 +546,7 @@ export function SettingsDialog({
                   tiers={MODEL_TIERS}
                   selectedId={preferences.defaultTierId}
                   onSelect={(id) =>
-                    onPreferencesChange({ ...preferences, defaultTierId: id })
+                    onPreferencesChange(mergePreferenceDraft({ defaultTierId: id }))
                   }
                 />
               }
@@ -533,7 +560,7 @@ export function SettingsDialog({
                   id={sendOnEnterId}
                   checked={preferences.sendOnEnter}
                   onCheckedChange={(checked) =>
-                    onPreferencesChange({ ...preferences, sendOnEnter: checked })
+                    onPreferencesChange(mergePreferenceDraft({ sendOnEnter: checked }))
                   }
                 />
               }
@@ -547,14 +574,36 @@ export function SettingsDialog({
                   id={autoExpandId}
                   checked={preferences.autoExpandReasoning}
                   onCheckedChange={(checked) =>
-                    onPreferencesChange({
-                      ...preferences,
-                      autoExpandReasoning: checked,
-                    })
+                    onPreferencesChange(
+                      mergePreferenceDraft({ autoExpandReasoning: checked }),
+                    )
                   }
                 />
               }
             />
+            <div className="space-y-2">
+              <label
+                htmlFor={customInstructionsId}
+                className="text-sm font-medium"
+              >
+                Custom instructions
+              </label>
+              <textarea
+                id={customInstructionsId}
+                value={customInstructionsDraft}
+                maxLength={CUSTOM_INSTRUCTIONS_LIMIT}
+                rows={5}
+                onChange={(event) =>
+                  setCustomInstructionsDraft(event.currentTarget.value)
+                }
+                onBlur={commitCustomInstructions}
+                className="min-h-28 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+                placeholder="Preferred tone, formatting, and context for future chats"
+              />
+              <div className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                {customInstructionsDraft.length}/{CUSTOM_INSTRUCTIONS_LIMIT}
+              </div>
+            </div>
           </section>
 
           <Separator />
@@ -571,10 +620,9 @@ export function SettingsDialog({
                   id={temporaryId}
                   checked={preferences.temporaryByDefault}
                   onCheckedChange={(checked) =>
-                    onPreferencesChange({
-                      ...preferences,
-                      temporaryByDefault: checked,
-                    })
+                    onPreferencesChange(
+                      mergePreferenceDraft({ temporaryByDefault: checked }),
+                    )
                   }
                 />
               }
@@ -586,7 +634,7 @@ export function SettingsDialog({
                 <RetentionPicker
                   value={preferences.retentionDays}
                   onChange={(retentionDays) =>
-                    onPreferencesChange({ ...preferences, retentionDays })
+                    onPreferencesChange(mergePreferenceDraft({ retentionDays }))
                   }
                 />
               }
@@ -600,7 +648,7 @@ export function SettingsDialog({
                   id={trainingId}
                   checked={preferences.trainingOptIn}
                   onCheckedChange={(checked) =>
-                    onPreferencesChange({ ...preferences, trainingOptIn: checked })
+                    onPreferencesChange(mergePreferenceDraft({ trainingOptIn: checked }))
                   }
                 />
               }
@@ -614,10 +662,7 @@ export function SettingsDialog({
                   id={telemetryId}
                   checked={preferences.telemetryEnabled}
                   onCheckedChange={(checked) =>
-                    onPreferencesChange({
-                      ...preferences,
-                      telemetryEnabled: checked,
-                    })
+                    onPreferencesChange(mergePreferenceDraft({ telemetryEnabled: checked }))
                   }
                 />
               }

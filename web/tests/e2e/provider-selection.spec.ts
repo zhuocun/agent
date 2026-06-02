@@ -99,6 +99,7 @@ function bootstrapPayload(overrides: Record<string, unknown> = {}) {
       sendOnEnter: true,
       autoExpandReasoning: false,
       telemetryEnabled: true,
+      customInstructions: "",
       retentionDays: 30,
     },
     usage: {
@@ -137,6 +138,7 @@ test.describe("provider selection", () => {
             sendOnEnter: true,
             autoExpandReasoning: false,
             telemetryEnabled: true,
+            customInstructions: "",
             retentionDays: 30,
           },
           usage: {
@@ -321,6 +323,7 @@ test.describe("provider selection", () => {
             sendOnEnter: true,
             autoExpandReasoning: false,
             telemetryEnabled: true,
+            customInstructions: "",
             retentionDays: 30,
           },
           usage: {

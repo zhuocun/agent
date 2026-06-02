@@ -260,7 +260,7 @@ test.describe("provider selection", () => {
         status: 200,
         headers: { "Content-Type": "text/event-stream" },
         body:
-          'event: terminal\ndata: {"status":"done","messageId":"33333333-3333-4333-8333-333333333333","userMessageId":"44444444-4444-4444-8444-444444444444","attribution":{"requestedTierId":"auto","servedTierId":"smart","servedModelLabel":"Fake","providerId":"fake","providerLabel":"Fake","isByok":false,"costUsd":0,"costConfidence":"exact","breakdown":{"currency":"USD","listPriceInPerM":0,"listPriceOutPerM":0,"inputTokens":1,"outputTokens":1,"reasoningTokens":0,"cachedInputTokens":0,"longContext":{"flat":true},"promoApplied":false,"subtotalUsd":0,"sessionSurchargeUsd":0}}}\n\n',
+          'event: terminal\ndata: {"status":"done","messageId":"33333333-3333-4333-8333-333333333333","userMessageId":"44444444-4444-4444-8444-444444444444","attribution":{"requestedTierId":"auto","servedTierId":"fast","servedModelLabel":"DeepSeek V4 Flash","providerId":"deepseek","providerLabel":"DeepSeek","isByok":false,"costUsd":0.00003,"costConfidence":"exact","breakdown":{"currency":"USD","listPriceInPerM":0,"listPriceOutPerM":0,"inputTokens":1,"outputTokens":1,"reasoningTokens":0,"cachedInputTokens":0,"longContext":{"flat":true},"promoApplied":false,"subtotalUsd":0,"sessionSurchargeUsd":0}}}\n\n',
       });
     });
 
@@ -286,6 +286,9 @@ test.describe("provider selection", () => {
       "data:text/plain;base64,",
     );
     await expect(page.getByText("Request only")).toBeVisible();
+    await expect(page.getByTestId("message-attribution")).toHaveText(
+      "DeepSeek V4 Flash·<$0.0001",
+    );
 
     await page.getByTestId("composer-file-input").setInputFiles({
       name: "draft.txt",

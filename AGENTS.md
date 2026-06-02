@@ -265,3 +265,43 @@ In order from cheapest to most invasive.
 If you make a change that requires a new Fly secret, set it *before* the deploy
 fires (`flyctl secrets set --stage KEY=value`), otherwise the new machine boots
 without it and may fail `assert_prod_safe()`.
+
+## Cursor Cloud specific instructions
+
+Monorepo quickstart is in the root `README.md`. Cloud VMs need **[uv](https://docs.astral.sh/uv/)** on `PATH` (`$HOME/.local/bin` after the install script); the API pins **Python 3.11** via `api/.python-version` (`requires-python = ">=3.11,<3.12"`).
+
+### One-time per checkout (not in the VM update script)
+
+- `cd api && cp .env.example .env` then `uv run alembic upgrade head` (SQLite at `api/dev.sqlite3`).
+- `cd web && cp .env.example .env.local` and set `BE_ORIGIN=http://localhost:8000` when using the same-origin `/api/*` rewrite (leave `NEXT_PUBLIC_API_BASE_URL` empty).
+
+### Starting dev servers
+
+Use **tmux** so processes survive the session. Example session names: `api-dev-server`, `web-dev-server`.
+
+| Service | Command | Port |
+| --- | --- | --- |
+| API | `cd api && uv run uvicorn app.main:app --reload --port 8000` | 8000 |
+| Web | `cd web && pnpm dev` | 3000 |
+
+Health: `curl http://localhost:8000/healthz`. Browser: `http://localhost:3000`.
+
+### Lint / test / build
+
+Standard commands are in `api/README.md` and `web/README.md`. Summary:
+
+- API: `cd api && uv run ruff check . && uv run mypy app && uv run pytest`
+- Web: `cd web && pnpm lint && pnpm build`
+- E2E: `cd web && pnpm test:e2e` (starts BE+FE; ports **3000** and **8000** must be free; first run `pnpm test:e2e:install`)
+
+### Provider keys and pytest
+
+The API defaults to `PROVIDER_BACKEND=fake` in `.env.example`. If the VM has `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` set, bootstrap tier metadata and a few provider-routing tests expect **unavailable** DeepSeek/OpenAI routes and will fail. For CI-parity pytest, unset those variables:
+
+`env -u DEEPSEEK_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY uv run pytest`
+
+With keys present, local chat can hit the real DeepSeek route instead of the fake provider.
+
+### No separate DB or Docker
+
+SQLite is embedded in the API process. Redis/Neon are optional and not required for local dev or Playwright.

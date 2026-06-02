@@ -132,7 +132,7 @@ test.describe("bootstrap", () => {
     await dialog
       .getByLabel("Custom instructions", { exact: true })
       .fill("Always answer with concise bullets.");
-    await dialog.getByLabel("Send on Enter").click();
+    await dialog.getByRole("switch", { name: "Send on Enter" }).click();
 
     await expect
       .poll(() =>

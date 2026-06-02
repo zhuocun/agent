@@ -62,6 +62,7 @@ from app.providers.tiers import (
     tier_requires_pro,
     web_search_available_for_binding,
 )
+from app.safety import SafetyDecision, check_user_turn
 from app.schemas.common import ModelTierId, SubstitutionReasonCode
 from app.schemas.conversation import (
     BranchConversationRequest,
@@ -298,6 +299,22 @@ def _attachments_unsupported() -> AppError:
     )
 
 
+def _safety_blocked(decision: SafetyDecision) -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="SAFETY_BLOCKED",
+            severity="warning",
+            title="Message blocked",
+            body="The message could not be sent because it matched a configured safety rule.",
+            meta={
+                "reasonCode": decision.reason_code,
+                "source": decision.source,
+            },
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def _request_fingerprint(
     body: SendMessageRequest,
     *,
@@ -527,6 +544,17 @@ def _attachment_payloads_from_parts(parts: object) -> list[AttachmentPayload]:
             )
         )
     return payloads
+
+
+def _text_from_parts(parts: object) -> str:
+    """Recover concatenated text parts from a persisted message payload."""
+    if not isinstance(parts, list):
+        return ""
+    chunks: list[str] = []
+    for part in parts:
+        if isinstance(part, dict) and part.get("type") == "text":
+            chunks.append(str(part.get("text", "")))
+    return "".join(chunks)
 
 
 def _ms_until_next_month(now: datetime | None = None) -> int:
@@ -1040,6 +1068,7 @@ async def send_message(
       body is 400 INVALID_INPUT (semantically incoherent).
     """
     settings = get_settings()
+    user_prefs = await preferences_repo.get_or_default(db, user.id)
     selected_provider_id = _selected_provider_id(body.provider_id, settings)
     # Tier/provider validation.
     binding = _resolve_binding(body.tier_id, body.provider_id, settings)
@@ -1179,6 +1208,25 @@ async def send_message(
             max_count=settings.attachment_max_count,
             max_bytes=settings.attachment_max_bytes,
         )
+        safety_decision = check_user_turn(
+            settings,
+            text=body.text,
+            attachments=provider_attachments,
+            custom_instructions=user_prefs.custom_instructions,
+        )
+        if not safety_decision.allowed:
+            raise _safety_blocked(safety_decision)
+    elif body.regenerate and not is_temp:
+        last_user = await messages_repo.get_last_user_message(db, conversation_id)
+        if last_user is not None:
+            safety_decision = check_user_turn(
+                settings,
+                text=_text_from_parts(last_user.parts),
+                attachments=_attachment_payloads_from_parts(last_user.parts),
+                custom_instructions=user_prefs.custom_instructions,
+            )
+            if not safety_decision.allowed:
+                raise _safety_blocked(safety_decision)
 
     provider = build_provider(
         settings,
@@ -1430,6 +1478,7 @@ async def send_message(
             router_substitution=router_substitution,
             web_search=effective_web_search,
             attachments=provider_attachments,
+            custom_instructions=user_prefs.custom_instructions,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -1468,6 +1517,7 @@ async def send_message(
             router_substitution=router_substitution,
             web_search=effective_web_search,
             attachments=provider_attachments,
+            custom_instructions=user_prefs.custom_instructions,
         ):
             yield sse_event
 
@@ -1643,12 +1693,7 @@ async def _prepare_regenerate(
         full_history = full_history[:-1]
     # Fallback: trust the persisted parts if history flattening lost data.
     if not user_text:
-        parts = cast(list[dict[str, object]], last_user.parts or [])
-        chunks: list[str] = []
-        for part in parts:
-            if part.get("type") == "text":
-                chunks.append(str(part.get("text", "")))
-        user_text = "".join(chunks)
+        user_text = _text_from_parts(last_user.parts)
     return last_user.id, full_history, user_text, attachments
 
 

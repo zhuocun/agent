@@ -2,6 +2,7 @@
 
 import {
   ClipboardCopy,
+  Download,
   Menu,
   MoreHorizontal,
   Share,
@@ -34,6 +35,8 @@ interface AppHeaderProps {
   onToggleTemporary?: () => void;
   onCopyConversation?: () => void;
   canCopyConversation?: boolean;
+  onDownloadConversation?: () => void;
+  canDownloadConversation?: boolean;
   onShareConversation?: () => void;
   // Sharing is only offered for a real, persisted (non-temporary) conversation
   // — the BE 404s on temporary chats and there's nothing to share before the
@@ -71,6 +74,8 @@ export function AppHeader({
   onToggleTemporary,
   onCopyConversation,
   canCopyConversation,
+  onDownloadConversation,
+  canDownloadConversation,
   onShareConversation,
   canShareConversation,
   isTemporary,
@@ -163,6 +168,16 @@ export function AppHeader({
                 >
                   <ClipboardCopy className="size-4" aria-hidden />
                   <span>Copy conversation</span>
+                </DropdownMenuItem>
+              ) : null}
+              {onDownloadConversation ? (
+                <DropdownMenuItem
+                  onClick={onDownloadConversation}
+                  disabled={!canDownloadConversation}
+                  className="gap-2"
+                >
+                  <Download className="size-4" aria-hidden />
+                  <span>Download Markdown</span>
                 </DropdownMenuItem>
               ) : null}
               {onShareConversation ? (

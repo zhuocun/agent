@@ -1,19 +1,10 @@
 import type { Metadata, Viewport } from "next";
-import { Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toast";
 import { InstallCoachmark } from "@/components/chat/install-coachmark";
-
-// UI sans is the Apple system stack (defined as `--font-sans` in globals.css) —
-// no web-font load, so the standalone PWA renders in SF Pro like a native app.
-// Only the monospace code face is web-loaded (Geist Mono).
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Olune — multi-model AI chat",
@@ -98,7 +89,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistMono.variable} h-full antialiased`}
+      className="h-full antialiased"
     >
       <body className="min-h-full flex flex-col">
         {/* Status-bar safety strip (iOS `black-translucent`). Content draws

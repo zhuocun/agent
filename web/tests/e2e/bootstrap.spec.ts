@@ -109,6 +109,50 @@ test.describe("bootstrap", () => {
     await expect(dialog.getByText("Period", { exact: true })).toBeVisible();
   });
 
+  test("custom instructions draft is preserved when another setting is toggled", async ({
+    page,
+  }) => {
+    const preferenceBodies: Array<Record<string, unknown>> = [];
+    page.on("request", (request) => {
+      if (
+        request.url() === `${BE_URL}/api/preferences` &&
+        request.method() === "PUT"
+      ) {
+        preferenceBodies.push(request.postDataJSON() as Record<string, unknown>);
+      }
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByRole("button", { name: "Account menu" }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await dialog
+      .getByLabel("Custom instructions", { exact: true })
+      .fill("Always answer with concise bullets.");
+    await dialog.getByLabel("Send on Enter").click();
+
+    await expect
+      .poll(() =>
+        preferenceBodies.some(
+          (body) =>
+            body.customInstructions === "Always answer with concise bullets." &&
+            body.sendOnEnter === false,
+        ),
+      )
+      .toBe(true);
+
+    const persisted = await page.request.get(`${BE_URL}/api/bootstrap`);
+    expect(persisted.status()).toBe(200);
+    const body = await persisted.json();
+    expect(body.preferences.customInstructions).toBe(
+      "Always answer with concise bullets.",
+    );
+    expect(body.preferences.sendOnEnter).toBe(false);
+  });
+
   test("second visit in the same context reuses the same anonymous user", async ({
     page,
     context,

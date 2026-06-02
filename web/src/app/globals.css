@@ -14,7 +14,8 @@
      elsewhere). No web-font load — the OS font is the native-feeling default. */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
     system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono);
+  --font-mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
   --font-heading: var(--font-sans);
 
   /* Semantic roles (PRD 06 §3.1) */

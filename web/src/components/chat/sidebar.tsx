@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   ClipboardCopy,
+  Download,
   Key,
   LogIn,
   LogOut,
@@ -67,6 +68,7 @@ export interface SidebarProps {
   onDeleteConversation: (id: string) => void;
   onTogglePinConversation: (id: string) => void;
   onCopyConversation: (id: string) => void;
+  onDownloadConversation: (id: string) => void;
   onOpenSettings: () => void;
   onSignIn: () => void;
   onSignOut: () => void;
@@ -173,6 +175,7 @@ function ConversationRow({
   onRename,
   onTogglePin,
   onCopy,
+  onDownload,
   onRequestDelete,
 }: {
   conversation: ConversationSummary;
@@ -182,6 +185,7 @@ function ConversationRow({
   onRename: (id: string, newTitle: string) => void;
   onTogglePin: (id: string) => void;
   onCopy: (id: string) => void;
+  onDownload: (id: string) => void;
   onRequestDelete: (conversation: ConversationSummary) => void;
 }): React.JSX.Element {
   const [isRenaming, setIsRenaming] = useState(false);
@@ -495,6 +499,14 @@ function ConversationRow({
             <span>Copy conversation</span>
           </DropdownMenuItem>
           <DropdownMenuItem
+            label="Download Markdown"
+            onClick={() => onDownload(conversation.id)}
+            className="gap-2"
+          >
+            <Download className="size-4" aria-hidden />
+            <span>Download Markdown</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
             label="Delete"
             variant="destructive"
             onClick={() => onRequestDelete(conversation)}
@@ -762,6 +774,7 @@ export function Sidebar({
   onDeleteConversation,
   onTogglePinConversation,
   onCopyConversation,
+  onDownloadConversation,
   onOpenSettings,
   onSignIn,
   onSignOut,
@@ -840,6 +853,7 @@ export function Sidebar({
           onRename={onRenameConversation}
           onTogglePin={onTogglePinConversation}
           onCopy={onCopyConversation}
+          onDownload={onDownloadConversation}
           onRequestDelete={setPendingDelete}
         />
       </RowWrapper>

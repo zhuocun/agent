@@ -291,6 +291,7 @@ export interface UserPreferences {
   sendOnEnter: boolean;
   autoExpandReasoning: boolean;
   telemetryEnabled: boolean; // first-party product telemetry only
+  customInstructions: string;
   retentionDays: 30 | 90 | null; // null = retain forever
 }
 

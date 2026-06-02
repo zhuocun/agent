@@ -95,6 +95,14 @@ jobs:
         working-directory: web
         run: pnpm install --frozen-lockfile
 
+      - name: Web lint
+        working-directory: web
+        run: pnpm lint
+
+      - name: Web production build
+        working-directory: web
+        run: pnpm build
+
       - name: Resolve Playwright version
         id: pw-version
         working-directory: web

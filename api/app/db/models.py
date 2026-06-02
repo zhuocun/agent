@@ -98,6 +98,9 @@ class Preferences(Base):
     telemetry_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=true()
     )
+    custom_instructions: Mapped[str] = mapped_column(
+        String(4000), nullable=False, default="", server_default=text("''")
+    )
     # NULL means "retain forever"; non-NULL values are constrained by the API
     # schema/repository to the currently supported short windows.
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -196,7 +196,7 @@ test.describe("provider selection", () => {
     await page.getByTestId("model-mode-trigger").click();
     await page.getByTestId("web-search-toggle").click();
     await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
-      "aria-pressed",
+      "aria-checked",
       "true",
     );
     await expect(page.getByText("Gemini", { exact: true })).toBeVisible();

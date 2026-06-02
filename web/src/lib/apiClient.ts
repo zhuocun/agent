@@ -38,6 +38,14 @@ export interface BillingSessionResponse {
   url: string;
 }
 
+export interface AccountExportResponse {
+  account: AccountInfo;
+  preferences: UserPreferences;
+  usage: UsageBudget;
+  conversations: Conversation[];
+  exportedAt: string;
+}
+
 export type ErrorSeverity = "info" | "warning" | "error" | "fatal";
 export type ErrorActionKind = "retry" | "open_settings" | "dismiss";
 
@@ -211,8 +219,8 @@ export const apiClient = {
   patch<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     return request<T>(path, { method: "PATCH", body, signal });
   },
-  del<T = void>(path: string, signal?: AbortSignal): Promise<T> {
-    return request<T>(path, { method: "DELETE", signal });
+  del<T = void>(path: string, signal?: AbortSignal, body?: unknown): Promise<T> {
+    return request<T>(path, { method: "DELETE", body, signal });
   },
 };
 
@@ -222,6 +230,24 @@ export default apiClient;
 
 export function fetchBootstrap(signal?: AbortSignal): Promise<BootstrapResponse> {
   return apiClient.get<BootstrapResponse>("/api/bootstrap", signal);
+}
+
+// Download a full account export — account, preferences, usage, and every
+// conversation — as a single JSON payload. Available to anonymous callers too.
+export function fetchAccountExport(
+  signal?: AbortSignal,
+): Promise<AccountExportResponse> {
+  return apiClient.get<AccountExportResponse>("/api/account/export", signal);
+}
+
+// Permanently delete the caller's account and all conversations. The BE requires
+// a typed confirmation (the account email, or "DELETE" for anonymous callers),
+// returns 204, and clears the `sid` cookie; the helper resolves to undefined.
+export function deleteAccount(
+  confirmation: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.del("/api/account", signal, { confirmation });
 }
 
 export function fetchConversation(

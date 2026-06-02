@@ -1,13 +1,35 @@
 "use client";
 
-import { AlignLeft, ChevronRight, Lightbulb, PenLine, Sparkles } from "lucide-react";
+import {
+  AlignLeft,
+  Bug,
+  ChevronRight,
+  Code2,
+  Lightbulb,
+  PenLine,
+  Sparkles,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+
+import type { PromptSuggestion } from "@/lib/types";
 
 export interface WelcomeScreenProps {
   userName?: string;
   exiting?: boolean;
   onPromptSelect?: (text: string) => void;
+  suggestions: PromptSuggestion[];
 }
+
+// Stable icon-key → glyph map for bootstrap suggestions. Exhaustive over the
+// PromptSuggestion["icon"] union so a new key can't silently render nothing.
+const SUGGESTION_ICONS: Record<PromptSuggestion["icon"], LucideIcon> = {
+  code: Code2,
+  explain: Lightbulb,
+  write: PenLine,
+  analyze: AlignLeft,
+  brainstorm: Sparkles,
+  debug: Bug,
+};
 
 function buildGreeting(userName?: string): string {
   const hour = new Date().getHours();
@@ -45,6 +67,7 @@ export function WelcomeScreen({
   userName,
   exiting = false,
   onPromptSelect,
+  suggestions,
 }: WelcomeScreenProps) {
   const heading = buildGreeting(userName);
   const today = formatDate();
@@ -97,23 +120,44 @@ export function WelcomeScreen({
           aria-label="Suggested prompts"
           className="glass-clear mt-10 w-full overflow-hidden rounded-3xl text-left md:mt-12"
         >
-          {PROMPTS.map(({ icon: Icon, label }, index) => (
-            <li key={label} className="list-none">
-              <button
-                type="button"
-                onClick={() => onPromptSelect?.(label)}
-                className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-sm leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand md:text-base"
-                style={{ animationDelay: `${150 + index * 60}ms` }}
-              >
-                <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                {label}
-                <ChevronRight
-                  className="ml-auto size-4 shrink-0 text-muted-foreground/60"
-                  aria-hidden="true"
-                />
-              </button>
-            </li>
-          ))}
+          {suggestions.length > 0
+            ? suggestions.map((s, index) => {
+                const Icon = SUGGESTION_ICONS[s.icon];
+                return (
+                  <li key={s.id} className="list-none">
+                    <button
+                      type="button"
+                      onClick={() => onPromptSelect?.(s.prompt)}
+                      className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-sm leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
+                      style={{ animationDelay: `${150 + index * 60}ms` }}
+                    >
+                      <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                      {s.title}
+                      <ChevronRight
+                        className="ml-auto size-4 shrink-0 text-muted-foreground/60"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </li>
+                );
+              })
+            : PROMPTS.map(({ icon: Icon, label }, index) => (
+                <li key={label} className="list-none">
+                  <button
+                    type="button"
+                    onClick={() => onPromptSelect?.(label)}
+                    className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-sm leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
+                    style={{ animationDelay: `${150 + index * 60}ms` }}
+                  >
+                    <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    {label}
+                    <ChevronRight
+                      className="ml-auto size-4 shrink-0 text-muted-foreground/60"
+                      aria-hidden="true"
+                    />
+                  </button>
+                </li>
+              ))}
         </ul>
       </div>
     </div>

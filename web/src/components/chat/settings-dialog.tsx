@@ -43,6 +43,8 @@ export interface SettingsDialogProps {
   onAccountChange: (next: AccountInfo) => void;
   usage: UsageBudget;
   onSignOut: () => void;
+  onExportData: () => void;
+  onDeleteAccount: () => void;
 }
 
 // Derive avatar initials from a display name (first + last token), capped at
@@ -321,6 +323,8 @@ export function SettingsDialog({
   onAccountChange,
   usage,
   onSignOut,
+  onExportData,
+  onDeleteAccount,
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
   const autoExpandId = useId();
@@ -665,6 +669,45 @@ export function SettingsDialog({
                     onPreferencesChange(mergePreferenceDraft({ telemetryEnabled: checked }))
                   }
                 />
+              }
+            />
+          </section>
+
+          <Separator />
+
+          {/* Your data — portability + erasure. Both endpoints accept anonymous
+              callers (guests accrue data too), so these rows are ungated. The
+              parent owns the download / confirm-dialog / reset side effects. */}
+          <section className="space-y-4">
+            <SectionHeading>Your data</SectionHeading>
+            <SettingRow
+              label="Export your data"
+              helper="Download your account, preferences, and conversations as JSON."
+              control={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="export-data-button"
+                  onClick={onExportData}
+                >
+                  Export
+                </Button>
+              }
+            />
+            <SettingRow
+              label="Delete account"
+              helper="Permanently delete your account and all conversations. This can't be undone."
+              control={
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  data-testid="delete-account-button"
+                  onClick={onDeleteAccount}
+                >
+                  Delete account
+                </Button>
               }
             />
           </section>

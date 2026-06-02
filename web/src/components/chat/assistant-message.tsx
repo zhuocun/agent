@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
@@ -203,6 +203,35 @@ function ErrorFooter({
   const hasLongBody = body.length > ERROR_BODY_INLINE_MAX;
   const hasShortBody = body.length > 0 && !hasLongBody;
 
+  // Rate-limit (429) cooldown: when the envelope carries `retryAfterMs`,
+  // disable Retry and count down so the user can't immediately re-fire and
+  // 429 again. `secondsLeft` ticks to 0, then Retry re-enables. When
+  // `retryAfterMs` is absent, the countdown is inert and Retry stays generic.
+  const retryAfterMs = error?.retryAfterMs;
+  // Derive a fixed deadline from the first render that carries this envelope
+  // (error is set once per errored turn, so retryAfterMs is stable per mount).
+  // The effect then only ever calls setState inside the interval callback —
+  // not synchronously in the effect body — to satisfy the repo's
+  // react-hooks/set-state-in-effect lint (see share-dialog.tsx note).
+  const [deadline] = useState(() =>
+    retryAfterMs && retryAfterMs > 0 ? Date.now() + retryAfterMs : 0,
+  );
+  const secondsFromDeadline = () =>
+    deadline > 0 ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) : 0;
+  const [secondsLeft, setSecondsLeft] = useState(secondsFromDeadline);
+
+  useEffect(() => {
+    if (deadline <= 0) return;
+    const id = window.setInterval(() => {
+      const next = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setSecondsLeft(next);
+      if (next <= 0) window.clearInterval(id);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [deadline]);
+
+  const retryDisabled = secondsLeft > 0;
+
   return (
     <div className="space-y-2 pt-1" data-testid="assistant-error">
       <div className="flex flex-wrap items-center gap-2">
@@ -227,11 +256,15 @@ function ErrorFooter({
             variant="ghost"
             size="sm"
             onClick={onRetry}
+            disabled={retryDisabled}
+            aria-disabled={retryDisabled}
             className="rounded-full"
             data-testid="assistant-error-retry"
           >
             <RotateCcw aria-hidden />
-            <span>Retry</span>
+            <span>
+              {retryDisabled ? `Try again in ${secondsLeft}s` : "Retry"}
+            </span>
           </Button>
         ) : null}
       </div>

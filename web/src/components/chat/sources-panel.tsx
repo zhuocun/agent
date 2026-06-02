@@ -97,7 +97,7 @@ function SourceCard({ item }: { item: SourceItem }) {
     "flex items-start gap-3 rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] p-3",
     "transition-colors",
     clickable && "hover:bg-foreground/[0.04]",
-    "outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    "outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
   );
 
   const body = (
@@ -135,7 +135,7 @@ function SourceCard({ item }: { item: SourceItem }) {
             {item.title}
           </span>
           {domain ? (
-            <span className="shrink-0 truncate text-[11px] text-muted-foreground">
+            <span className="shrink-0 truncate text-2xs text-muted-foreground">
               {domain}
             </span>
           ) : null}

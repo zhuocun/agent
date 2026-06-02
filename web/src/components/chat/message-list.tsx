@@ -358,7 +358,7 @@ export function MessageList({
           non-interactive: pointer-events-none + aria-hidden + tabIndex -1 keep
           it out of the tab order and from intercepting taps. 44pt (size-11)
           meets the iOS touch-target floor; icon-only by design. */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+6.5rem)] z-40 flex justify-center">
+      <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+6.5rem)] z-30 flex justify-center">
         <Button
           type="button"
           variant="secondary"

@@ -90,10 +90,25 @@ export function PublicConversationView({ token }: { token: string }) {
 
 function PublicHeader() {
   return (
-    <header className="fixed inset-x-0 top-0 z-40 flex h-[46px] items-center gap-2 px-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] pt-[env(safe-area-inset-top)] backdrop-blur-md md:h-16">
+    // Mirrors the private top chrome (chat-thread.tsx): a light from-background
+    // color gradient carries status-bar-text legibility AND is the fallback
+    // separation when blur is gated, while a masked `chrome-frost` layer does
+    // the refractive blur over scrolling messages. The frost drops to nothing
+    // under prefers-reduced-transparency / no-backdrop-filter (see globals.css),
+    // leaving the opaque-enough gradient so the title + buttons never render
+    // over bare scrolling text.
+    <header className="fixed inset-x-0 top-0 z-40 flex h-[46px] items-center gap-2 bg-gradient-to-b from-background/70 via-background/30 to-background/0 px-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] pt-[env(safe-area-inset-top)] md:h-16">
+      <div
+        aria-hidden
+        className="chrome-frost pointer-events-none absolute inset-0 -z-10"
+        style={{
+          maskImage: "linear-gradient(to bottom, black, transparent)",
+          WebkitMaskImage: "linear-gradient(to bottom, black, transparent)",
+        }}
+      />
       <Link
         href="/"
-        className="flex items-center gap-2 rounded-sm font-medium text-foreground outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        className="flex items-center gap-2 rounded-sm font-medium text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         aria-label="Olune home"
       >
         <span className="text-base font-semibold tracking-tight">Olune</span>
@@ -107,7 +122,7 @@ function PublicHeader() {
           nativeButton={false}
           render={<Link href="/" />}
           variant="secondary"
-          className="h-9 rounded-full px-3.5 text-sm"
+          className="h-11 rounded-full px-3.5 text-sm sm:h-9"
         >
           Start your own chat
         </Button>
@@ -166,7 +181,7 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
       >
         <div
           data-testid="public-user-message"
-          className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem]"
+          className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground shadow-[var(--glass-highlight),inset_0_0_0_1px_var(--glass-border)] md:text-[0.9375rem]"
         >
           {text}
         </div>

@@ -440,7 +440,7 @@ export function CommandPalette({
             )}
           </div>
 
-          <div className="shrink-0 border-t border-foreground/10 px-5 py-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] text-[11px] text-muted-foreground sm:pb-2">
+          <div className="shrink-0 border-t border-foreground/10 px-5 py-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] text-2xs text-muted-foreground sm:pb-2">
             <span className="font-mono">↑↓</span> to navigate ·{" "}
             <span className="font-mono">↵</span> to select ·{" "}
             <span className="font-mono">Esc</span> to close

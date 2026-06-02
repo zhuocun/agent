@@ -101,7 +101,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                     {tier.description}
                   </p>
                   {tier.modelLabel ? (
-                    <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground/70 group-focus/dropdown-menu-item:text-accent-foreground/70">
+                    <p className="mt-0.5 text-2xs leading-snug text-muted-foreground/70 group-focus/dropdown-menu-item:text-accent-foreground/70">
                       {tier.modelLabel}
                     </p>
                   ) : null}
@@ -142,7 +142,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
         />
         <DialogContent className="max-h-[80dvh] gap-3 px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
           <DialogHeader>
-            <DialogTitle className="text-base">Model</DialogTitle>
+            <DialogTitle>Model</DialogTitle>
             <DialogDescription className="sr-only">
               Choose which capability tier answers your next message.
             </DialogDescription>
@@ -172,7 +172,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                         {tier.description}
                       </p>
                       {tier.modelLabel ? (
-                        <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground/70">
+                        <p className="mt-0.5 text-2xs leading-snug text-muted-foreground/70">
                           {tier.modelLabel}
                         </p>
                       ) : null}

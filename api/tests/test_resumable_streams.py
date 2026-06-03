@@ -39,7 +39,11 @@ from app.providers.tiers import get_binding
 from app.schemas.stream_events import AnswerDeltaEvent, SubmittedEvent
 from app.streaming import replay_registry
 from app.streaming.handler import run_detached_producer
-from app.streaming.replay_registry import ReplayBuffer
+from app.streaming.replay_registry import (
+    ReplayBuffer,
+    ReplayLogBuffer,
+    ReplayLogTruncatedError,
+)
 from app.streaming.sse import encode_answer_delta, encode_submitted
 from app.streaming.stop_registry import request_stop
 
@@ -662,6 +666,70 @@ async def test_reconnect_stream_for_other_conversation_is_404(
         f"/api/conversations/{c1_id}/stream/{stream_for_c2}"
     )
     assert resp.status_code == 404
+
+
+class _TruncatedReplayLogStore:
+    """A replay-log store whose `get` always reports a truncated/evicted prefix.
+
+    Mirrors the real Redis store's behavior when the bounded replay log has
+    dropped its oldest events (`RedisReplayLogStore.get` raising
+    `ReplayLogTruncatedError`, exercised store-level in
+    `tests/test_stream_state.py`). Installed via `replay_registry.set_store` so
+    the route's `get_async` call hits the truncation branch without standing up
+    Redis.
+    """
+
+    async def create(
+        self, stream_id: UUID, *, ttl_seconds: float, now: float | None = None
+    ) -> ReplayLogBuffer:
+        raise NotImplementedError
+
+    async def get(
+        self, stream_id: UUID, *, ttl_seconds: float, now: float | None = None
+    ) -> ReplayLogBuffer | None:
+        raise ReplayLogTruncatedError(
+            f"replay log for stream {stream_id} no longer has its prefix"
+        )
+
+    async def evict(self, stream_id: UUID) -> None:
+        return None
+
+
+async def test_reconnect_truncated_buffer_is_410_with_replay_truncated_code(
+    resumable_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Flag ON: when the replay log for an existing, owned stream has been
+    truncated (oldest events evicted past the retention bound), the reconnect
+    GET must map that to HTTP 410 with the `STREAM_REPLAY_TRUNCATED` error
+    envelope — not a 404 (which would hide that the stream existed) and not a
+    200 (which would replay a corrupt suffix)."""
+    await resumable_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    async with session_factory() as session:
+        convo = Conversation(
+            user_id=user_id, title="New chat", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        conv_id = convo.id
+
+    # A real, owned stream row for this conversation so ownership / IDOR checks
+    # pass and the route reaches the replay-log lookup.
+    stream_id = await _seed_stream(session_factory, conversation_id=conv_id)
+
+    # Induce the truncated-prefix condition the bounded replay log raises.
+    replay_registry.set_store(_TruncatedReplayLogStore())
+    try:
+        resp = await resumable_client.get(
+            f"/api/conversations/{conv_id}/stream/{stream_id}"
+        )
+    finally:
+        replay_registry.use_memory_store()
+
+    assert resp.status_code == 410
+    assert resp.json()["error"]["code"] == "STREAM_REPLAY_TRUNCATED"
 
 
 # Flag OFF ---------------------------------------------------------------------

@@ -437,6 +437,24 @@ class Settings(BaseSettings):
                 raise RuntimeError(
                     "STRIPE_CREDIT_AMOUNT_USD must be positive when BILLING_BACKEND=stripe"
                 )
+        # Resumable-stream replay must be Redis-backed in production. The
+        # in-process ReplayBuffer (`stream_state_backend="memory"`) is
+        # per-machine, and Fly scales horizontally (auto_start_machines /
+        # min_machines_running=0; see fly.toml). A reconnect load-balanced to a
+        # different machine than the detached producer would find no buffer and
+        # 404, so resumable streams are unusable across the fleet without a
+        # shared replay log. Require Redis whenever the flag is on in prod.
+        # (When the backend IS redis, `configure_stream_state` already fails
+        # boot loudly on a missing REDIS_URL — see app/streaming/state.py:65-66
+        # — so we deliberately do not re-assert `redis_url` here.)
+        if self.resumable_streams_enabled and self.stream_state_backend != "redis":
+            raise RuntimeError(
+                "STREAM_STATE_BACKEND must be 'redis' when RESUMABLE_STREAMS_ENABLED "
+                "is true in production: the in-process replay buffer is per-machine "
+                "and Fly scales horizontally, so a reconnect that lands on a "
+                "different machine than the producer would 404. Set "
+                "STREAM_STATE_BACKEND=redis (and REDIS_URL)."
+            )
 
 
 @lru_cache(maxsize=1)

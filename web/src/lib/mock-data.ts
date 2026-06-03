@@ -1,4 +1,4 @@
-import type { PromptSuggestion, SlashCommand } from "@/lib/types";
+import type { SlashCommand } from "@/lib/types";
 
 // Native slash commands (PRD 01 §4.3 / §5.3). Templates end with a trailing
 // space (one-liners) or an empty body inside code fences (multi-line) so the
@@ -61,35 +61,5 @@ export const MOCK_COMMANDS: SlashCommand[] = [
     description: "Brainstorm a list of ideas",
     prompt: "Brainstorm 10 ideas for: ",
     icon: "brainstorm",
-  },
-];
-
-// Empty-state prompt starters (PRD 01 §4.3). The BE includes a `suggestions`
-// array in bootstrap; for now the welcome screen doesn't render them so this
-// static set stands by as a fallback if/when the FE wires the welcome cards.
-export const MOCK_SUGGESTIONS: PromptSuggestion[] = [
-  {
-    id: "s1",
-    icon: "debug",
-    title: "Debug a stack trace",
-    prompt: "I'm getting a TypeError in this function — here's the stack trace. Walk me through finding the root cause.",
-  },
-  {
-    id: "s2",
-    icon: "explain",
-    title: "Explain a concept",
-    prompt: "Explain the difference between optimistic and pessimistic locking, with a concrete example of when each is the right choice.",
-  },
-  {
-    id: "s3",
-    icon: "write",
-    title: "Draft a message",
-    prompt: "Help me write a clear, friendly message letting my team know a deadline is slipping by a few days and why.",
-  },
-  {
-    id: "s4",
-    icon: "analyze",
-    title: "Compare options",
-    prompt: "Compare REST, GraphQL, and gRPC for a mobile app backend. Give me a short table of trade-offs and a recommendation.",
   },
 ];

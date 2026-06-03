@@ -250,4 +250,45 @@ test.describe("streaming", () => {
     expect(textIdx).toBeGreaterThanOrEqual(0);
     expect(sourcesIdx).toBeGreaterThan(textIdx);
   });
+
+  // Mermaid rendering path. The FakeProvider emits a well-formed, closed
+  // ```mermaid fence as its answer when the prompt starts with "MERMAID:" (see
+  // api/app/providers/fake.py). This asserts the FE half: Streamdown's mermaid
+  // plugin (markdown-renderer.tsx) renders the fence to an <svg> diagram rather
+  // than leaving the raw "graph TD" source as a plain code block.
+  test("mermaid: a fenced mermaid block renders as an svg diagram, not raw source", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    const composer = page.getByTestId("composer-textarea");
+    await composer.fill("MERMAID: show a flowchart");
+    await page.getByTestId("composer-send").click();
+
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toBeVisible({ timeout: 15_000 });
+
+    // Wait for the terminal frame: the fence is only complete (and the diagram
+    // only renders) once the stream resolves.
+    await expect(assistant).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+
+    const answer = assistant.getByTestId("assistant-answer");
+    await expect(answer).toBeVisible();
+
+    // The diagram rendered: Streamdown emits a `data-streamdown="mermaid"`
+    // container and mermaid renders an <svg> inside it. Headless mermaid render
+    // can be slow, so give it a generous timeout.
+    const svg = answer.locator('[data-streamdown="mermaid"] svg');
+    await expect(svg.first()).toBeVisible({ timeout: 30_000 });
+
+    // It did NOT fall through to a raw code block: no visible "graph TD" plain
+    // source text. (The rendered SVG may contain shapes but not the literal
+    // fenced source as a <code> block.)
+    await expect(
+      answer.locator("pre code", { hasText: "graph TD" }),
+    ).toHaveCount(0);
+  });
 });

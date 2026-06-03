@@ -24,6 +24,11 @@ Forced rate limit: when `user_text` starts with `FORCE_RATE_LIMIT:`, the
 provider raises a typed `AppError(RATE_LIMITED)` with `retryAfterMs` mid-stream,
 mirroring how the real provider maps a 429. Exercises the handler surfacing a
 typed provider error (code + retryAfterMs) on the wire.
+
+Mermaid diagram: when `user_text` starts with `MERMAID:`, the provider emits the
+usual reasoning block then a single well-formed, closed fenced ```mermaid block
+as its answer (instead of the templated text). Exercises the FE's Streamdown
+mermaid plugin rendering a diagram from streamed markdown end-to-end.
 """
 
 from __future__ import annotations
@@ -167,6 +172,25 @@ class FakeProvider:
             if extracted:
                 await asyncio.sleep(self._delay)
                 yield AnswerDelta(text=f"Extracted text: {extracted[0][:120]}. ")
+        # Mermaid trigger: emit a well-formed, closed fenced mermaid block as the
+        # answer body (instead of the templated text). Split across a couple of
+        # AnswerDelta chunks so the fence streams in, but always closing it so
+        # the FE renders the diagram rather than raw source.
+        if user_text.startswith("MERMAID:"):
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="```mermaid\ngraph TD\n")
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="  A[Start] --> B[End]\n```")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
         chunks = _pick_template(user_text)
         for i, chunk in enumerate(chunks):
             await asyncio.sleep(self._delay)

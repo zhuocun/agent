@@ -37,6 +37,12 @@ import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
 import { AiDisclosure } from "@/components/chat/ai-disclosure";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
+import {
+  CompareTierBar,
+  CompareView,
+  type CompareTurn,
+  type CompareViewHandle,
+} from "@/components/chat/compare-view";
 import { LiveRegion } from "@/components/chat/live-region";
 import { showToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
@@ -382,6 +388,29 @@ export function ChatThread() {
   const selectConversationTokenRef = useRef<string | null>(null);
   const composerRef = useRef<ComposerHandle>(null);
 
+  // --- Compare mode (parallel model comparison) -------------------------------
+  // Flagship multi-model differentiator: one prompt → two tiers answer side by
+  // side, each column streaming independently with its own answer + cost
+  // attribution. Entirely TRANSIENT — a single temporary conversation backs the
+  // fan-out (so its id is never persisted/listed), and no compare turn ever
+  // commits into `messages` or the sidebar.
+  const [compareMode, setCompareMode] = useState(false);
+  // The two tiers being compared, in column order. Seeded once compare turns on
+  // (see handleToggleCompare) so the two slots start DISTINCT.
+  const [compareTierIds, setCompareTierIds] = useState<
+    [ModelTierId, ModelTierId]
+  >(["fast", "pro"]);
+  // The active fan-out turn handed to CompareView, or null before the first
+  // compare send. The `token` makes each send fire the fan-out exactly once.
+  const [compareTurn, setCompareTurn] = useState<CompareTurn | null>(null);
+  // The compare prompt bubble, rendered above the columns. Transient.
+  const [compareUserMessage, setCompareUserMessage] =
+    useState<ChatMessage | null>(null);
+  const compareTokenRef = useRef(0);
+  const compareViewRef = useRef<CompareViewHandle>(null);
+  // True while any compare column is streaming — drives the composer Stop morph.
+  const [compareStreaming, setCompareStreaming] = useState(false);
+
   // Chrome state: sidebar (desktop rail + mobile drawer), settings, prefs,
   // temporary mode, and which conversation is active.
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -516,6 +545,13 @@ export function ChatThread() {
     effectiveTierForProvider(tier, effectiveProviderId),
   );
   const selectedModelTier = modelTiers.find((t) => t.id === selectedTierId);
+  // Resolved ModelTier objects for the two compare slots (provider-effective).
+  // Fall back to the first tier so the columns always have a label even before
+  // bootstrap settles the registry.
+  const compareTierA =
+    modelTiers.find((t) => t.id === compareTierIds[0]) ?? modelTiers[0];
+  const compareTierB =
+    modelTiers.find((t) => t.id === compareTierIds[1]) ?? modelTiers[0];
   // The selected tier's web-search capability. Drives the picker's toggle
   // visibility and gates whether `webSearch` is ever sent. Defaults to false
   // while bootstrap is pending. Selection handlers clear it when moving to a
@@ -783,7 +819,8 @@ export function ChatThread() {
   // `welcomeExiting` covers the ~200ms welcome-exit timer before commitTurn runs
   // (where `pendingId` is not yet set) so the composer is armed-busy for that
   // gap too. (P0-1)
-  const isBusy = pendingId !== null || isStreaming || welcomeExiting;
+  const isBusy =
+    pendingId !== null || isStreaming || welcomeExiting || compareStreaming;
 
   // Stop handler that copes with the pre-stream window opened by the P0-1 busy
   // signal. If a real stream is in flight, defer to the hook's `stop()` (which
@@ -794,6 +831,14 @@ export function ChatThread() {
   // optimistic user bubble, and clear the synchronous busy state so the composer
   // re-arms. (P0-1 requirement (a))
   const handleStop = () => {
+    // Compare mode owns its own per-column streams; fan Stop out to all of them
+    // (the single-stream `stop()` below is inert here — no main stream is in
+    // flight in compare mode).
+    if (compareMode) {
+      compareViewRef.current?.stopAll();
+      setLiveMessage("Generation stopped");
+      return;
+    }
     if (isStreaming) {
       stop();
       return;
@@ -909,6 +954,15 @@ export function ChatThread() {
   );
 
   const handleSend = (text: string, attachments: AttachmentPart[]) => {
+    // Compare mode hijacks send: fan the prompt out to two columns instead of
+    // committing a single turn. Attachments aren't offered in compare mode
+    // (the toggle replaces the attach affordance contextually), so they're
+    // ignored here.
+    if (compareMode) {
+      if (!text.trim()) return;
+      handleCompareSend(text);
+      return;
+    }
     const userBubbleId = localId();
     const assistantPlaceholderId = localId();
     const visibleAttachments: AttachmentPart[] = attachments.map((attachment) => ({
@@ -979,6 +1033,113 @@ export function ChatThread() {
 
   const handlePromptSelect = (text: string) => {
     composerRef.current?.setDraft(text);
+  };
+
+  // --- Compare-mode handlers --------------------------------------------------
+
+  // Reset every transient compare turn artifact. Shared by toggling compare off
+  // and by any navigation that abandons compare (new chat, select conversation,
+  // toggle temporary), so leaving compare never strands a streaming column or
+  // a stale prompt bubble.
+  const resetCompareTurn = useCallback(() => {
+    compareViewRef.current?.stopAll();
+    setCompareTurn(null);
+    setCompareUserMessage(null);
+    setCompareStreaming(false);
+  }, []);
+
+  // Compose the two-slot compare selection so the slots always stay DISTINCT —
+  // picking the tier already in the other slot swaps them rather than letting
+  // both columns answer with the same tier (which would defeat the comparison
+  // AND make the two columns' attribution labels identical).
+  const handleSelectCompareTier = (slot: 0 | 1, id: ModelTierId): void => {
+    setCompareTierIds((prev) => {
+      const other = prev[slot === 0 ? 1 : 0];
+      if (id === other) {
+        // Swap: the picked tier collides with the other slot, so trade places.
+        return slot === 0 ? [id, prev[0]] : [prev[1], id];
+      }
+      return slot === 0 ? [id, prev[1]] : [prev[0], id];
+    });
+    // A live turn's columns are pinned to the tiers they started with; clear it
+    // so the next send fans out with the new selection (and the stale columns
+    // stop streaming).
+    resetCompareTurn();
+  };
+
+  // Enter/exit compare. Entering seeds two distinct tiers (the current single-
+  // stream tier plus a different default) and clears any in-flight single turn;
+  // exiting tears down all compare state and returns to the normal thread.
+  const handleToggleCompare = () => {
+    if (compareMode) {
+      resetCompareTurn();
+      setCompareMode(false);
+      setLiveMessage("Exited compare mode");
+      return;
+    }
+    // Abort any in-flight single-stream turn before swapping the surface out —
+    // otherwise it keeps streaming hidden and commits to the now-offscreen
+    // thread (mirrors the new-chat / select-conversation reset paths).
+    if (isStreaming) reset();
+    // Seed slot 0 with the currently-selected tier and slot 1 with a distinct
+    // one so the two columns never start identical.
+    const first = selectedTierId;
+    const second =
+      baseModelTiers.find((t) => t.id !== first)?.id ??
+      (first === "fast" ? "pro" : "fast");
+    setCompareTierIds([first, second]);
+    setCompareTurn(null);
+    setCompareUserMessage(null);
+    setCompareMode(true);
+    setLiveMessage("Compare mode on. Pick two models and send a prompt.");
+  };
+
+  // Compare send: create ONE temporary conversation, then hand a fresh turn to
+  // CompareView, which fans `start()` out to every column. Belt-and-suspenders
+  // on the isTemporary invariant: the conversation is created with
+  // `isTemporary: true` for the URL id, AND every column's `start()` also sends
+  // `isTemporary: true` (compare-column.tsx) so no column can claim the
+  // per-conversation active-stream lock and 409 its sibling.
+  const handleCompareSend = (text: string) => {
+    setCompareUserMessage({
+      id: `compare-user-${crypto.randomUUID()}`,
+      role: "user",
+      createdAt: new Date().toISOString(),
+      parts: [{ type: "text", text }],
+    });
+    setLiveMessage("Comparing two models");
+    void (async () => {
+      try {
+        const created = await createConversation({
+          selectedTierId: compareTierIds[0],
+          isTemporary: true,
+          providerId: effectiveProviderId,
+        });
+        const token = ++compareTokenRef.current;
+        setCompareTurn({
+          token,
+          text,
+          conversationId: created.id,
+          clientMessageIds: compareTierIds.map(() => crypto.randomUUID()),
+        });
+      } catch (cause) {
+        setCompareUserMessage(null);
+        composerRef.current?.setDraft(text);
+        const title =
+          cause instanceof ApiError ? cause.title : "Couldn't start compare";
+        setLiveMessage(title);
+        showToast({
+          severity: "error",
+          title,
+          body:
+            cause instanceof ApiError
+              ? cause.body
+              : cause instanceof Error
+                ? cause.message
+                : undefined,
+        });
+      }
+    })();
   };
 
   const pendingMessage: ChatMessage | null = useMemo(() => {
@@ -1215,6 +1376,11 @@ export function ChatThread() {
     setWelcomeExiting(false);
     setWelcomeSeamLanding(false);
     if (isStreaming) reset();
+    // Leaving for a fresh chat exits compare cleanly (stop columns, drop turn).
+    if (compareMode) {
+      resetCompareTurn();
+      setCompareMode(false);
+    }
     setMessages([]);
     setPendingId(null);
     assistantIdRef.current = null;
@@ -1254,6 +1420,10 @@ export function ChatThread() {
     setWelcomeExiting(false);
     setWelcomeSeamLanding(false);
     if (isStreaming) reset();
+    if (compareMode) {
+      resetCompareTurn();
+      setCompareMode(false);
+    }
     setMessages([]);
     setPendingId(null);
     assistantIdRef.current = null;
@@ -1289,6 +1459,10 @@ export function ChatThread() {
     setWelcomeExiting(false);
     setWelcomeSeamLanding(false);
     if (isStreaming) reset();
+    if (compareMode) {
+      resetCompareTurn();
+      setCompareMode(false);
+    }
     setPendingId(null);
     assistantIdRef.current = null;
     pendingUserIdRef.current = null;
@@ -1608,7 +1782,8 @@ export function ChatThread() {
   };
 
   const showWelcome =
-    (messages.length === 0 && !pendingMessage) || welcomeExiting;
+    !compareMode &&
+    ((messages.length === 0 && !pendingMessage) || welcomeExiting);
 
   // Clear the pending welcome-exit timer if the component unmounts mid-seam
   // (e.g. user closes the tab during the 200ms exit).
@@ -2139,11 +2314,23 @@ export function ChatThread() {
             </div>
           </div>
 
-          {/* Message area — for WelcomeScreen we put a single scroll wrapper
-              that clears both strips. For MessageList we let it own its
-              scroll (its internal `<ol>` already has matching pt/pb that
-              clears the chrome). */}
-          {showWelcome ? (
+          {/* Message area — compare mode takes over the whole surface with its
+              own 2-up scroll wrapper. Otherwise: WelcomeScreen gets a single
+              scroll wrapper that clears both strips, and MessageList owns its
+              scroll (its internal `<ol>` has matching pt/pb that clears the
+              chrome). */}
+          {compareMode && compareTierA && compareTierB ? (
+            <div className="relative min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+7rem)]">
+              <CompareView
+                tiers={[compareTierA, compareTierB]}
+                userMessage={compareUserMessage}
+                turn={compareTurn}
+                defaultReasoningOpen={preferences.autoExpandReasoning}
+                handleRef={compareViewRef}
+                onStreamingChange={setCompareStreaming}
+              />
+            </div>
+          ) : showWelcome ? (
             // Welcome state is the canonical Ma surface (Decision 11; Spacing §Ma).
             // Padding on each side equals the chrome floor it must clear, so the
             // greeting sits at the true visual center of the uncovered area —
@@ -2246,13 +2433,27 @@ export function ChatThread() {
               }}
             />
             <div className="pointer-events-auto">
+              {compareMode ? (
+                <CompareTierBar
+                  tiers={modelTiers}
+                  compareTierIds={compareTierIds}
+                  onSelect={handleSelectCompareTier}
+                />
+              ) : null}
               <Composer
                 ref={composerRef}
                 isStreaming={isBusy}
                 onSend={handleSend}
                 onStop={handleStop}
                 sendOnEnter={preferences.sendOnEnter}
-                supportsAttachments={selectedTierSupportsAttachments}
+                // Attachments aren't offered in compare mode — the compare
+                // toggle takes the contextual slot and a 2-up transient view
+                // doesn't carry per-column attachments in MVP.
+                supportsAttachments={
+                  !compareMode && selectedTierSupportsAttachments
+                }
+                compareEnabled={compareMode}
+                onToggleCompare={handleToggleCompare}
               />
               <AiDisclosure />
             </div>

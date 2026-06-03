@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   ArrowUp,
+  Columns2,
   FileText,
   Image as ImageIcon,
   LoaderCircle,
@@ -42,6 +43,12 @@ interface ComposerProps {
   onStop: () => void;
   sendOnEnter?: boolean;
   supportsAttachments?: boolean;
+  // Compare-mode affordance. When `onToggleCompare` is provided the composer
+  // renders a "Compare" toggle next to the model controls; `compareEnabled`
+  // drives its pressed state. Left undefined on surfaces that don't offer
+  // compare (the toggle is simply absent).
+  compareEnabled?: boolean;
+  onToggleCompare?: () => void;
 }
 
 export interface ComposerHandle {
@@ -182,6 +189,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onStop,
     sendOnEnter = true,
     supportsAttachments = false,
+    compareEnabled = false,
+    onToggleCompare,
   },
   forwardedRef,
 ) {
@@ -636,6 +645,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               <TooltipContent>Attach image, PDF, or text file</TooltipContent>
             </Tooltip>
           </>
+        ) : null}
+        {onToggleCompare ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={onToggleCompare}
+                  // aria-pressed conveys the toggle state to AT; the brand tint
+                  // gives sighted users the same "on" signal.
+                  aria-pressed={compareEnabled}
+                  aria-label="Compare two models"
+                  data-testid="compare-toggle"
+                  className={cn(
+                    "size-11 shrink-0 rounded-full p-0",
+                    compareEnabled
+                      ? "text-brand hover:text-brand"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Columns2 className="size-4" />
+                </Button>
+              }
+            />
+            <TooltipContent>
+              {compareEnabled ? "Exit compare mode" : "Compare two models"}
+            </TooltipContent>
+          </Tooltip>
         ) : null}
         <label htmlFor="composer-input" className="sr-only">
           Message Olune

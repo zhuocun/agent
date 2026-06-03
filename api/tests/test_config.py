@@ -248,3 +248,56 @@ def test_assert_prod_safe_no_op_for_tavily_without_key_in_development() -> None:
     """SEARCH_BACKEND=tavily with no key silently degrades in dev (no raise)."""
     dev = Settings(env="dev", SEARCH_BACKEND="tavily", TAVILY_API_KEY=None)  # type: ignore[call-arg]
     dev.assert_prod_safe()  # must not raise
+
+
+def test_assert_prod_safe_rejects_resumable_streams_with_memory_backend() -> None:
+    """RESUMABLE_STREAMS_ENABLED=true with the in-process (memory) replay
+    backend must fail prod boot: the buffer is per-machine and Fly scales
+    horizontally, so a cross-machine reconnect would 404."""
+    bad = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        RESUMABLE_STREAMS_ENABLED=True,
+        STREAM_STATE_BACKEND="memory",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape("STREAM_STATE_BACKEND must be 'redis'"),
+    ):
+        bad.assert_prod_safe()
+
+
+def test_assert_prod_safe_accepts_resumable_streams_with_redis_backend() -> None:
+    """RESUMABLE_STREAMS_ENABLED=true with a Redis replay backend (and
+    REDIS_URL set) → no raise."""
+    good = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        RESUMABLE_STREAMS_ENABLED=True,
+        STREAM_STATE_BACKEND="redis",
+        REDIS_URL="redis://localhost:6379/0",
+    )
+    good.assert_prod_safe()  # must not raise
+
+
+def test_assert_prod_safe_accepts_resumable_streams_off_with_memory_backend() -> None:
+    """The flag is off by default (today's prod config), so the memory backend
+    is fine and the guard must not fire."""
+    good = _prod_settings(
+        provider_backend="anthropic",
+        anthropic_api_key="real-key",
+        RESUMABLE_STREAMS_ENABLED=False,
+        STREAM_STATE_BACKEND="memory",
+    )
+    good.assert_prod_safe()  # must not raise
+
+
+def test_assert_prod_safe_no_op_for_resumable_streams_in_development() -> None:
+    """Resumable streams on the memory backend stays valid outside production —
+    the guard is prod-only and must not affect the test suite's defaults."""
+    dev = Settings(
+        env="dev",
+        RESUMABLE_STREAMS_ENABLED=True,  # type: ignore[call-arg]
+        STREAM_STATE_BACKEND="memory",  # type: ignore[call-arg]
+    )
+    dev.assert_prod_safe()  # must not raise

@@ -299,6 +299,7 @@ async def test_stop_during_resumable_persists_stopped_and_marks_done(
             reasoning_effort: str | None = None,
             web_search: bool = False,
             supports_vision: bool = True,
+            response_format: object | None = None,
         ) -> AsyncIterator[ProviderEvent]:
             async def _gen() -> AsyncIterator[ProviderEvent]:
                 yield AnswerDelta(text="partial")

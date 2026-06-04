@@ -366,6 +366,14 @@ export function ChatThread() {
   // Captured at send-time alongside the tier so a mid-stream toggle can't
   // retroactively change what this turn requested.
   const searchAtSendRef = useRef(false);
+  // Composer JSON-mode (structured-output) toggle. Unlike web search this is
+  // NOT tier-gated — every tier accepts it (the BE handles provider-specific
+  // best-effort), so there is no clearing-on-tier-switch effect. Purely
+  // ephemeral session state, mirroring `searchEnabled`.
+  const [jsonModeEnabled, setJsonModeEnabled] = useState(false);
+  // Captured at send-time so a mid-stream toggle can't retroactively change
+  // what this turn requested (mirrors `searchAtSendRef`).
+  const jsonModeAtSendRef = useRef(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
@@ -899,6 +907,7 @@ export function ChatThread() {
       continueTurn?: boolean;
       editMessageId?: string;
       webSearch?: boolean;
+      responseFormat?: { type: "json_object" };
       attachments?: AttachmentPart[];
     }): Promise<void> => {
       abortBeforeStartRef.current = false;
@@ -977,6 +986,9 @@ export function ChatThread() {
         // Sent only when on; stream-client further drops it from the wire when
         // falsy, so the off path is byte-identical to today.
         webSearch: args.webSearch,
+        // Sent only when JSON mode is on; stream-client drops it from the wire
+        // when undefined, so the off path is byte-identical to today.
+        responseFormat: args.responseFormat,
         attachments: args.attachments,
       });
     },
@@ -1010,6 +1022,8 @@ export function ChatThread() {
     // the effect already keeps `searchEnabled` false off-tier, but gate here too
     // so a same-tick tier switch can't leak a stale flag.
     searchAtSendRef.current = effectiveSearchEnabled;
+    // JSON mode isn't tier-gated, so capture the raw toggle at send-time.
+    jsonModeAtSendRef.current = jsonModeEnabled;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
 
@@ -1030,6 +1044,9 @@ export function ChatThread() {
         tierId: tierAtSendRef.current,
         providerId: providerAtSendRef.current,
         webSearch: searchAtSendRef.current || undefined,
+        responseFormat: jsonModeAtSendRef.current
+          ? { type: "json_object" }
+          : undefined,
         attachments,
       });
     };
@@ -1272,6 +1289,7 @@ export function ChatThread() {
     tierAtSendRef.current = selectedTierId;
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
+    jsonModeAtSendRef.current = jsonModeEnabled;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
     // Regenerate keeps the trailing user message verbatim — send its text
@@ -1283,6 +1301,9 @@ export function ChatThread() {
       providerId: providerAtSendRef.current,
       regenerate: true,
       webSearch: searchAtSendRef.current || undefined,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
     });
   };
 
@@ -1309,6 +1330,7 @@ export function ChatThread() {
     tierAtSendRef.current = selectedTierId;
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
+    jsonModeAtSendRef.current = jsonModeEnabled;
     setPendingId(continueId);
     setLiveMessage("Continuing response");
     void beginTurn({
@@ -1317,6 +1339,9 @@ export function ChatThread() {
       providerId: providerAtSendRef.current,
       continueTurn: true,
       webSearch: searchAtSendRef.current || undefined,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
     });
   };
 
@@ -1340,6 +1365,7 @@ export function ChatThread() {
     tierAtSendRef.current = selectedTierId;
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
+    jsonModeAtSendRef.current = jsonModeEnabled;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
     setMessages((prev) => [
@@ -1359,6 +1385,9 @@ export function ChatThread() {
       providerId: providerAtSendRef.current,
       editMessageId: messageId,
       webSearch: searchAtSendRef.current || undefined,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
     });
   };
 
@@ -2371,6 +2400,8 @@ export function ChatThread() {
                 onSelectEffort={setSelectedReasoningEffortId}
                 searchEnabled={effectiveSearchEnabled}
                 onToggleSearch={setSearchEnabled}
+                jsonModeEnabled={jsonModeEnabled}
+                onToggleJsonMode={setJsonModeEnabled}
               />
               {isTemporary ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />

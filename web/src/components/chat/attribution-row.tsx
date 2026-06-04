@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ChevronDown, Info, Key } from "lucide-react";
+import { Braces, ChevronDown, Info, Key, TriangleAlert } from "lucide-react";
 import { Popover } from "@base-ui/react/popover";
 
 import type { ModelAttribution, ModelTierId } from "@/lib/types";
@@ -60,7 +60,13 @@ export function AttributionRow({
   onOpen,
 }: AttributionRowProps): React.JSX.Element {
   const isEstimate = attribution.costConfidence === "estimate";
-  const { substitution, isByok, servedModelLabel } = attribution;
+  const { substitution, isByok, servedModelLabel, outputFormat } = attribution;
+  // JSON-mode affordance. `outputFormat` is present only when structured output
+  // was requested this turn; `outputValid === false` means the model's output
+  // failed to parse/validate as JSON. The label carries the valid/invalid state
+  // in TEXT (not color alone) so it reads for AT and in monochrome.
+  const showJsonChip = outputFormat !== undefined;
+  const jsonInvalid = attribution.outputValid === false;
   const servedTierId = assertServedTier(attribution.servedTierId);
   const providerLabel = attribution.providerLabel?.trim() || undefined;
 
@@ -148,6 +154,27 @@ export function AttributionRow({
         <span className="inline-flex items-center gap-1 text-muted-foreground/80">
           <Key aria-hidden className="size-3" />
           <span>{byokLabel}</span>
+        </span>
+      ) : null}
+
+      {showJsonChip ? (
+        // Rendered INLINE (glyph + muted text, no filled background) to match the
+        // BYOK/substitution treatment so the byline keeps zero filled chrome at
+        // rest. The invalid variant swaps to the warning glyph + tint and states
+        // "(invalid)" in text, so the failure reads without relying on color.
+        <span
+          className={cn(
+            "inline-flex items-center gap-1",
+            jsonInvalid ? "text-warning" : "text-muted-foreground/80",
+          )}
+          data-testid="json-output-chip"
+        >
+          {jsonInvalid ? (
+            <TriangleAlert aria-hidden className="size-3" />
+          ) : (
+            <Braces aria-hidden className="size-3" />
+          )}
+          <span>{jsonInvalid ? "JSON (invalid)" : "JSON"}</span>
         </span>
       ) : null}
     </div>

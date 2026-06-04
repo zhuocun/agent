@@ -57,6 +57,11 @@ class AnswerDeltaEvent(CamelModel):
 
 
 class TerminalEvent(CamelModel):
-    status: Literal["done"] = "done"
+    # `awaiting_approval` is the human-in-the-loop pause terminal: the turn ended
+    # because an approval-gated tool needs a decision. The FE reads the pending
+    # `tool_call` part + this widened terminal to render the approval UI; a
+    # follow-up `toolApproval` resume POST continues the turn. Default stays
+    # `done` so every existing emit site is unchanged.
+    status: Literal["done", "awaiting_approval"] = "done"
     message_id: str
     attribution: ModelAttribution

@@ -52,6 +52,26 @@ Slow stream: when `user_text` starts with `SLOW:`, the provider emits the usual
 reasoning block then ~40 non-empty answer deltas at 50ms each, so an e2e can
 deterministically catch the stream mid-flight (e.g. to click Stop and commit a
 non-empty `stopped` partial). Without it the default stream is too fast to stop.
+
+Backend tool calling (only when `settings.tools_enabled` is True — otherwise
+these markers are ignored and the provider streams a normal templated answer, so
+the flag-off path is byte-for-byte unchanged):
+
+- `TOOL_TIME:` exercises the AUTO (no-approval) tool path. Round 1 emits the
+  reasoning block then a bare `ToolCall(name="get_current_time", status="running")`
+  and ENDS (no answer / no `Complete`). The agent loop executes the tool, emits
+  the `ToolResult`, and re-invokes this stream with the result appended to
+  `history` (prefixed by `agent_loop.TOOL_FEEDBACK_SENTINEL`); seeing that
+  sentinel, round 2 emits a grounded answer + `Complete`.
+- `TOOL_APPROVE:` exercises the HITL approval pause. It emits the reasoning block
+  then `ToolCall(id="fake_cal_1", name="calendar_create_event",
+  status="awaiting_approval", approval_state="pending", input={"title": ...})`
+  followed by `AwaitingApproval(tool_call_id="fake_cal_1")` and RETURNS (no
+  `Complete`) — the PAUSE. On the RESUME turn the route seeds the decision and
+  sends a continuation `user_text` containing "Tool approved:" / "Tool denied:";
+  the fake then emits the post-tool answer ("…tool approved: …" / "…tool denied:
+  …") + `Complete`. The seeded `tool_result` is emitted by the handler before
+  this stream runs.
 """
 
 from __future__ import annotations
@@ -60,10 +80,12 @@ import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 
+from app.config import get_settings
 from app.errors import AppError, ErrorEnvelope
 from app.providers.protocol import (
     AnswerDelta,
     AttachmentPayload,
+    AwaitingApproval,
     ChatMessage,
     Complete,
     ProviderEvent,
@@ -77,6 +99,7 @@ from app.providers.protocol import (
 )
 from app.search.fake import FakeSearchProvider
 from app.search.protocol import SourceItem
+from app.tools.agent_loop import TOOL_FEEDBACK_SENTINEL
 
 # Small bank of response templates. Hash the input to pick one deterministically.
 _RESPONSE_TEMPLATES: tuple[tuple[str, str, str, str], ...] = (
@@ -158,13 +181,96 @@ class FakeProvider:
                 ),
                 status_code=503,
             )
-        # Two short reasoning deltas, then done.
-        await asyncio.sleep(self._delay)
-        yield ReasoningDelta(text="Let me think")
-        await asyncio.sleep(self._delay)
-        yield ReasoningDelta(text="... OK")
-        await asyncio.sleep(self._delay)
-        yield ReasoningDone()
+        # Backend tool calling. Gated on `tools_enabled` so the flag-off path is
+        # byte-for-byte unchanged (the markers fall through to the normal answer).
+        tools_on = get_settings().tools_enabled
+        # A feedback round = the agent loop re-invoked us with tool results
+        # appended to history. We skip the reasoning block on those continuation
+        # rounds so reasoning isn't duplicated across rounds.
+        has_tool_feedback = any(
+            TOOL_FEEDBACK_SENTINEL in message.text for message in history
+        )
+
+        # Two short reasoning deltas, then done (skipped on a tool-feedback round).
+        if not has_tool_feedback:
+            await asyncio.sleep(self._delay)
+            yield ReasoningDelta(text="Let me think")
+            await asyncio.sleep(self._delay)
+            yield ReasoningDelta(text="... OK")
+            await asyncio.sleep(self._delay)
+            yield ReasoningDone()
+
+        if tools_on and user_text.startswith("TOOL_TIME:"):
+            if not has_tool_feedback:
+                # Round 1: request the auto tool, then end the round (no answer /
+                # no Complete) so the agent loop executes it and re-invokes us.
+                await asyncio.sleep(self._delay)
+                yield ToolCall(
+                    id="fake_time_1",
+                    name="get_current_time",
+                    label="Get current time",
+                    status="running",
+                    input={},
+                )
+                return
+            # Round 2: the loop fed the tool result back via history. Answer.
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="The current time was retrieved by the tool.")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        if tools_on and user_text.startswith("TOOL_APPROVE:"):
+            # Approval-gated tool: emit the pending tool_call, then the pause
+            # sentinel, and RETURN (no Complete). The handler ends the turn in
+            # `awaiting_approval`; a resume POST applies the decision.
+            await asyncio.sleep(self._delay)
+            yield ToolCall(
+                id="fake_cal_1",
+                name="calendar_create_event",
+                label="Create calendar event",
+                status="awaiting_approval",
+                approval_state="pending",
+                input={"title": "Planning review"},
+            )
+            yield AwaitingApproval(tool_call_id="fake_cal_1")
+            return
+
+        if tools_on and "Tool approved:" in user_text:
+            # Resume → approve. The handler already emitted the approved
+            # tool_result; we emit the post-tool answer + Complete.
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="…tool approved: the calendar event was created.")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        if tools_on and "Tool denied:" in user_text:
+            # Resume → deny. The handler already emitted the cancelled
+            # tool_result; we emit the denial answer + Complete.
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="…tool denied: I did not create the calendar event.")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
 
         # Web-search path: emit the status line + deterministic sources between
         # the reasoning block and the answer, mirroring the real provider's

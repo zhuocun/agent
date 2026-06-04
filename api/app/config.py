@@ -303,6 +303,25 @@ class Settings(BaseSettings):
     resumable_buffer_max_events: int = Field(default=1000, alias="RESUMABLE_BUFFER_MAX_EVENTS")
     resumable_buffer_max_bytes: int = Field(default=1_048_576, alias="RESUMABLE_BUFFER_MAX_BYTES")
 
+    # Backend-side tool calling + human-in-the-loop (HITL) approval. DEFAULT-OFF
+    # feature flag — a hard safety gate around the agent loop. When False (the
+    # default), the provider advertises no tools and the streaming path is
+    # byte-for-byte identical to a pre-tools build: the agent loop never runs,
+    # so every existing test passes unchanged. When True, the handler drives a
+    # bounded agent loop over the provider's `ToolCall` events, executing
+    # side-effect-free tools inline and PAUSING (a new terminal state
+    # `awaiting_approval`) on an approval-gated tool until a follow-up
+    # `toolApproval` resume POST applies the decision.
+    tools_enabled: bool = Field(default=False, alias="TOOLS_ENABLED")
+    # Hard upper bound on agent-loop rounds (one round = one model turn that may
+    # request tool calls). Mirrors the web_search loop's `_MAX_SEARCH_ROUNDS`.
+    # Guarantees the loop terminates even if the model never stops requesting
+    # tools.
+    tool_max_rounds: int = Field(default=4, alias="TOOL_MAX_ROUNDS")
+    # Per-tool execution timeout (seconds). A tool whose executor exceeds this is
+    # cancelled and reported as a failed result rather than hanging the turn.
+    tool_timeout_seconds: float = Field(default=10.0, alias="TOOL_TIMEOUT_SECONDS")
+
     @property
     def deepseek_key(self) -> str | None:
         """Effective DeepSeek key for the active DeepSeek backend.

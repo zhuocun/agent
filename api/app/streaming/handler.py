@@ -55,6 +55,7 @@ from app.providers.pricing import build_attribution, compute_cost_breakdown
 from app.providers.protocol import (
     AnswerDelta,
     AttachmentPayload,
+    AwaitingApproval,
     ChatMessage,
     Complete,
     Provider,
@@ -69,6 +70,7 @@ from app.providers.protocol import (
 )
 from app.providers.tiers import TierBinding, get_binding
 from app.schemas.common import ModelTierId, SubstitutionReasonCode
+from app.schemas.conversation import ToolApprovalDecision
 from app.schemas.message import ModelAttribution, ToolCallPart, ToolResultPart
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
@@ -96,6 +98,9 @@ from app.streaming.sse import (
     encode_tool_result,
 )
 from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
+from app.tools.agent_loop import run_agent_loop, tool_feedback_to_history
+from app.tools.builtin import execute_tool
+from app.tools.protocol import ToolCallRequest
 
 log = logging.getLogger(__name__)
 _struct_log = structlog.get_logger(__name__)
@@ -144,6 +149,29 @@ async def cancel_all_producers() -> None:
     for task in tasks:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+
+@dataclass(frozen=True)
+class ResumeToolSeed:
+    """Resolved instruction for resuming a turn paused on an approval-gated tool.
+
+    Built by the route's `_prepare_resume_tool` AFTER it re-validated server-side
+    that the tool exists, genuinely needs approval, and any `edited_input` is
+    allowlisted (the approval gate is the trust boundary — the client decision is
+    never trusted on its own). The handler turns this into the seeded
+    `tool_result` it emits BEFORE running the post-approval provider pass:
+
+    - ``decision == "approve"`` → execute the tool (timeout-wrapped) and emit a
+      ``ToolResult(approval_state="approved")``.
+    - ``decision == "deny"`` → synthesize a cancelled/rejected ``ToolResult``
+      WITHOUT executing (the side effect must not happen on a denial).
+    """
+
+    tool_call_id: str
+    name: str
+    label: str | None
+    decision: str
+    input: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -333,6 +361,8 @@ async def stream_and_persist(
     fallback_provider_id: str | None = None,
     fallback_api_key: str | None = None,
     fallback_substitution: SubstitutionReasonCode | None = None,
+    tool_approval: ToolApprovalDecision | None = None,
+    resume_seed: ResumeToolSeed | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -382,6 +412,15 @@ async def stream_and_persist(
     `fallback_substitution` reason code; the handler stays dumb. When
     `fallback_binding` is None (the default / no alternate) the error surfaces as
     today.
+
+    `tool_approval` / `resume_seed` (HITL tool calling): present only on a resume
+    POST that applies an approve/deny decision to a turn previously paused in
+    `awaiting_approval`. When `resume_seed` is set the handler emits the seeded
+    `tool_result` (executing the approved tool, or synthesizing a cancelled
+    result on deny) BEFORE the post-approval provider pass. The agent loop only
+    wraps the provider when `settings.tools_enabled`; otherwise the provider
+    stream is consumed directly and this whole feature is inert (the flag-off
+    path is byte-for-byte unchanged).
     """
     # Emit `submitted` immediately. Resumable clients need the durable stream
     # id in-band so they can reconnect to the exact producer they just started.
@@ -408,6 +447,15 @@ async def stream_and_persist(
     latest_status: tuple[str, str] | None = None
     search_items: list[SourceItem] = []
     tool_parts: list[dict[str, Any]] = []
+    # HITL pause state (tools only). Set when the agent loop emits an
+    # `AwaitingApproval` sentinel: the turn ends in the NEW terminal state
+    # `awaiting_approval` rather than `done`. Stays False on every non-tool path.
+    paused = False
+    paused_tool_call_id: str | None = None
+    # Captured once so the per-turn tools gate + agent-loop wrapping read a
+    # stable value (and tests can override via a settings cache flush).
+    handler_settings = get_settings()
+    tools_active = handler_settings.tools_enabled
     # Working route state. These start at the primary route and are REASSIGNED in
     # place if a provider-fallback retry fires (Phase 2). The inner closures
     # (`_persist_assistant`, `_terminal_properties`, `_apply_event`,
@@ -436,14 +484,17 @@ async def stream_and_persist(
     sub_model: str | None = None
     sub_label: str | None = None
 
-    # The current provider iterator. Rebuilt on a fallback retry so the pump
-    # drains the alternate route. Built from the CURRENT working route state
-    # (`active_provider` / `binding` / `active_api_key`) plus the per-turn effort
-    # overrides; the override REPLACES the binding default only when non-None.
-    def _build_provider_iter() -> AsyncIterator[ProviderEvent]:
+    # Build ONE raw provider stream for the current working route + optional
+    # agent-loop tool feedback. `tool_feedback` carries the results the agent
+    # loop accumulated across rounds, appended to `history` as synthetic turns
+    # (the `Provider.stream` Protocol intentionally has no tool params). Empty on
+    # round 1 / the non-tool path, so the provider stream is byte-for-byte
+    # unchanged there.
+    def _build_raw_stream(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+        round_history = history + tool_feedback_to_history(tool_feedback)
         return active_provider.stream(
             model_id=binding.model_id,
-            history=history,
+            history=round_history,
             user_text=_apply_custom_instructions(user_text, custom_instructions),
             attachments=attachments,
             api_key=active_api_key,
@@ -470,6 +521,20 @@ async def stream_and_persist(
             # point.
             supports_vision=binding.supports_vision,
         )
+
+    # The current provider iterator. Rebuilt on a fallback retry so the pump
+    # drains the alternate route. When tools are enabled the raw stream is wrapped
+    # in the bounded agent loop (which intercepts `ToolCall`s, runs the registry,
+    # and emits the HITL `AwaitingApproval` pause); otherwise it is the raw
+    # provider stream — byte-for-byte the pre-tools path. The fallback rebuild
+    # path calls this again, so a fallback route is wrapped identically.
+    def _build_provider_iter() -> AsyncIterator[ProviderEvent]:
+        if tools_active:
+            return run_agent_loop(
+                make_stream=_build_raw_stream,
+                settings=handler_settings,
+            )
+        return _build_raw_stream([])
 
     # Wrap the provider iteration in a Task so we can cancel on disconnect.
     provider_iter = _build_provider_iter()
@@ -682,6 +747,50 @@ async def stream_and_persist(
         if error_code is not None:
             props["errorCode"] = error_code
         return props
+
+    # HITL resume seeding. On a resume POST the route resolved + re-validated the
+    # decision into `resume_seed`; emit the corresponding `tool_result` BEFORE
+    # consuming the post-approval provider pass so the new assistant row's parts
+    # are [tool_result, …answer]. Approve runs the (timeout-wrapped) tool; deny
+    # synthesizes a cancelled/rejected result WITHOUT executing — the side effect
+    # must never happen on a denial.
+    if resume_seed is not None:
+        if resume_seed.decision == "approve":
+            exec_result = await execute_tool(
+                ToolCallRequest(
+                    id=resume_seed.tool_call_id,
+                    name=resume_seed.name,
+                    input=resume_seed.input or {},
+                    approval_state="approved",
+                )
+            )
+            seeded_result = ToolResult(
+                tool_call_id=exec_result.tool_call_id,
+                name=exec_result.name,
+                label=resume_seed.label,
+                status=exec_result.status,
+                approval_state="approved",
+                summary=exec_result.summary,
+                output=exec_result.output or None,
+                error=exec_result.error,
+            )
+        else:
+            seeded_result = ToolResult(
+                tool_call_id=resume_seed.tool_call_id,
+                name=resume_seed.name,
+                label=resume_seed.label,
+                status="cancelled",
+                approval_state="rejected",
+                summary="User denied the tool call.",
+                error="User denied the tool call.",
+            )
+        seeded_part = _tool_result_part(seeded_result)
+        tool_parts.append(seeded_part.model_dump(by_alias=True, exclude_none=True))
+        yield encode_tool_result(
+            ToolResultEvent.model_validate(
+                seeded_part.model_dump(by_alias=True, exclude_none=True)
+            )
+        )
 
     try:
         while True:
@@ -915,6 +1024,15 @@ async def stream_and_persist(
                         result_part.model_dump(by_alias=True, exclude_none=True)
                     )
                 )
+            elif isinstance(ev, AwaitingApproval):
+                # HITL pause. The gated `tool_call` part (awaiting_approval /
+                # pending) was already emitted via the ToolCall branch above. Flag
+                # the pause and break — this is NOT an error, so it must NOT route
+                # through the fallback / `_PumpError` path. Post-loop branching on
+                # `paused` ends the turn in `awaiting_approval`.
+                paused = True
+                paused_tool_call_id = ev.tool_call_id
+                break
             elif isinstance(ev, AnswerDelta):
                 # Invariant: emit ReasoningDone before the first AnswerDelta,
                 # if any reasoning_delta has been seen but done hasn't fired.
@@ -936,6 +1054,93 @@ async def stream_and_persist(
                 sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
                     ev, (sub_code, sub_provider, sub_model, sub_label)
                 )
+
+        # HITL pause terminal. The agent loop hit an approval-gated tool and
+        # emitted `AwaitingApproval`; end the turn in the NEW terminal state
+        # `awaiting_approval` instead of `done`. The paused state lives entirely
+        # in the persisted `tool_call` (awaiting_approval / pending) part — no
+        # migration is needed (Message/Stream `status` are free String columns).
+        # We persist an ESTIMATE attribution (reuse the stopped-path build) over
+        # the tokens consumed up to the pause, bump usage, and RELEASE the
+        # single-active-stream guard so the resume POST can open its own stream.
+        if paused:
+            breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
+            turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+            attribution = build_attribution(
+                requested_tier_id=requested_tier_id,
+                binding=binding,
+                breakdown=breakdown,
+                cost_confidence="estimate",
+                is_byok=is_byok_turn,
+                substitution=sub_code,
+                substituted_provider=sub_provider,
+                substituted_model=sub_model,
+                substituted_display_label=sub_label,
+            )
+            paused_assistant_id: UUID | None = None
+            if not is_temporary and conversation_id is not None:
+                paused_assistant_id = await _persist_assistant(
+                    status="awaiting_approval",
+                    attribution=attribution,
+                    commit=False,
+                    cost_usd=turn_cost,
+                )
+                if user_id is not None:
+                    await usage_repo.increment_for_period(
+                        db,
+                        user_id=user_id,
+                        cost_usd_delta=turn_cost,
+                        is_byok=is_byok_turn,
+                        monthly_quota_usd=(
+                            monthly_quota_usd_override
+                            if monthly_quota_usd_override is not None
+                            else get_settings().usage_budget_usd
+                        ),
+                        reference_type="message",
+                        reference_id=(
+                            str(paused_assistant_id)
+                            if paused_assistant_id is not None
+                            else None
+                        ),
+                    )
+                if stream_id is not None:
+                    # Release the active-stream guard: the turn is parked awaiting
+                    # a human decision, and the resume POST must be allowed to open
+                    # its own stream on this conversation.
+                    await streams_repo.mark_status(
+                        db,
+                        stream_id=stream_id,
+                        status="awaiting_approval",
+                        message_id=paused_assistant_id,
+                        release_active_guard=True,
+                    )
+                await db.commit()
+            terminal_message_id = (
+                str(paused_assistant_id) if paused_assistant_id is not None else str(uuid4())
+            )
+            _struct_log.info(
+                "turn.awaiting_approval",
+                status="awaiting_approval",
+                conversation_id=str(conversation_id) if conversation_id else None,
+                turn_ms=int((time.monotonic() - turn_started_at) * 1000),
+                tool_call_id=paused_tool_call_id,
+                cost_usd=breakdown.subtotal_usd,
+                cost_confidence="estimate",
+                is_byok=is_byok_turn,
+                tier_id=binding.tier.id,
+                provider_id=attribution.provider_id,
+                message_id=terminal_message_id,
+            )
+            yield encode_terminal(
+                TerminalEvent(
+                    status="awaiting_approval",
+                    message_id=terminal_message_id,
+                    attribution=attribution,
+                )
+            )
+            if stream_id is not None:
+                await clear_stop_async(stream_id)
+            return
 
         # Provider finished cleanly. Compute attribution and emit terminal.
         breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
@@ -1221,6 +1426,8 @@ async def run_detached_producer(
     fallback_provider_id: str | None = None,
     fallback_api_key: str | None = None,
     fallback_substitution: SubstitutionReasonCode | None = None,
+    tool_approval: ToolApprovalDecision | None = None,
+    resume_seed: ResumeToolSeed | None = None,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 
@@ -1276,6 +1483,8 @@ async def run_detached_producer(
                 fallback_provider_id=fallback_provider_id,
                 fallback_api_key=fallback_api_key,
                 fallback_substitution=fallback_substitution,
+                tool_approval=tool_approval,
+                resume_seed=resume_seed,
             ):
                 # Mirror the last frame kind so the buffer's terminal_kind is
                 # observable. `terminal`/`error` are the only closing frames;

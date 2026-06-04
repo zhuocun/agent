@@ -269,6 +269,15 @@ async def test_approval_gated_tool_pauses_turn(
         assert stream_rows[0].status == "awaiting_approval"
         assert stream_rows[0].message_id == assistant[0].id
 
+    # Wire round-trip: the paused turn must serialize through GET (StreamStatus
+    # has to accept "awaiting_approval") so a reload can rehydrate the approval
+    # card. Without it the read 500s on a paused conversation.
+    resp = await tools_client.get(f"/api/conversations/{conv_id}")
+    assert resp.status_code == 200, resp.text
+    wire_assistant = [m for m in resp.json()["messages"] if m["role"] == "assistant"]
+    assert len(wire_assistant) == 1
+    assert wire_assistant[0]["status"] == "awaiting_approval"
+
 
 # 3. Resume → approve ----------------------------------------------------------
 

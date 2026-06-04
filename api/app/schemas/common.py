@@ -49,7 +49,13 @@ ModelTierId = Literal["fast", "smart", "pro", "auto"]
 # win; `standard`/`extended` map to provider effort levels. Providers that don't
 # support effort hints ignore them (it's a hint, never an error).
 ReasoningEffortId = Literal["auto", "minimal", "standard", "extended"]
-StreamStatus = Literal["idle", "submitted", "streaming", "done", "stopped", "error"]
+# "awaiting_approval" is a terminal persisted state: a turn paused at a HITL
+# tool-approval gate. It must be serializable on `ChatMessage.status` so a paused
+# conversation round-trips through GET (and survives a reload), not only on the
+# SSE terminal frame.
+StreamStatus = Literal[
+    "idle", "submitted", "streaming", "done", "stopped", "error", "awaiting_approval"
+]
 Feedback = Literal["up", "down"]  # null serialized as `feedback: null` on the wire
 
 # The six SubstitutionReasonCodes the FE renders. PRD-only codes

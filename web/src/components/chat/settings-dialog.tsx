@@ -46,6 +46,9 @@ export interface SettingsDialogProps {
   // existing preferences flow in the parent.
   onSaveBudget: (value: number | null) => void;
   onSignOut: () => void;
+  // Open the auth dialog (closing settings first). Anonymous-only affordances —
+  // upgrade/credits/BYOK — route here instead of dead-ending on disabled chrome.
+  onRequestSignIn: () => void;
   onExportData: () => void;
   onDeleteAccount: () => void;
 }
@@ -418,6 +421,7 @@ export function SettingsDialog({
   usage,
   onSaveBudget,
   onSignOut,
+  onRequestSignIn,
   onExportData,
   onDeleteAccount,
 }: SettingsDialogProps): JSX.Element {
@@ -543,53 +547,62 @@ export function SettingsDialog({
             />
 
             <div className="flex flex-wrap gap-2">
-              {!billing.proEnabled ? (
+              {anonymous ? (
+                // Guests can't check out; rather than a dead, disabled control
+                // route them straight to the auth dialog (closes settings).
                 <Button
                   type="button"
                   size="sm"
-                  disabled={
-                    anonymous ||
-                    !proCheckoutAvailable ||
-                    billingBusy !== null
-                  }
-                  onClick={() => void openCheckout("pro_subscription")}
+                  onClick={onRequestSignIn}
                 >
                   <CreditCard aria-hidden className="size-3.5" />
-                  <span>
-                    {anonymous
-                      ? "Sign in to upgrade"
-                      : billingBusy === "pro"
-                        ? "Opening..."
-                        : "Upgrade to Pro"}
-                  </span>
+                  <span>Sign in to upgrade</span>
                 </Button>
-              ) : null}
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={
-                  anonymous || !creditCheckoutAvailable || billingBusy !== null
-                }
-                onClick={() => void openCheckout("credit_purchase")}
-              >
-                <Receipt aria-hidden className="size-3.5" />
-                <span>{billingBusy === "credits" ? "Opening..." : "Buy credits"}</span>
-              </Button>
-              {billing.portalAvailable ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={billingBusy !== null}
-                  onClick={() => void openPortal()}
-                >
-                  <CreditCard aria-hidden className="size-3.5" />
-                  <span>
-                    {billingBusy === "portal" ? "Opening..." : "Manage billing"}
-                  </span>
-                </Button>
-              ) : null}
+              ) : (
+                <>
+                  {!billing.proEnabled ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={!proCheckoutAvailable || billingBusy !== null}
+                      onClick={() => void openCheckout("pro_subscription")}
+                    >
+                      <CreditCard aria-hidden className="size-3.5" />
+                      <span>
+                        {billingBusy === "pro" ? "Opening..." : "Upgrade to Pro"}
+                      </span>
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={!creditCheckoutAvailable || billingBusy !== null}
+                    onClick={() => void openCheckout("credit_purchase")}
+                  >
+                    <Receipt aria-hidden className="size-3.5" />
+                    <span>
+                      {billingBusy === "credits" ? "Opening..." : "Buy credits"}
+                    </span>
+                  </Button>
+                  {billing.portalAvailable ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={billingBusy !== null}
+                      onClick={() => void openPortal()}
+                    >
+                      <CreditCard aria-hidden className="size-3.5" />
+                      <span>
+                        {billingBusy === "portal"
+                          ? "Opening..."
+                          : "Manage billing"}
+                      </span>
+                    </Button>
+                  ) : null}
+                </>
+              )}
             </div>
             {billingError ? (
               <p className="text-xs text-destructive">{billingError}</p>
@@ -621,6 +634,7 @@ export function SettingsDialog({
               account={account}
               preferences={preferences}
               onAccountChange={onAccountChange}
+              onRequestSignIn={onRequestSignIn}
             />
           </section>
 

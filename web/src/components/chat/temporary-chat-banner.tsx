@@ -32,10 +32,10 @@ export function TemporaryChatBanner({
         // is still"). Height is governed by the h-11 "Turn off" button child so
         // the trailing tap target meets the touch-target minimum without making
         // the pill awkward.
-        className="inline-flex h-11 items-center gap-1.5 rounded-full bg-temporary-chat-banner pl-3 pr-1 text-xs text-temporary-chat-banner-foreground ring-1 ring-temporary-chat-banner-border"
+        className="inline-flex h-11 max-w-full items-center gap-1.5 rounded-full bg-temporary-chat-banner pl-3 pr-1 text-xs text-temporary-chat-banner-foreground ring-1 ring-temporary-chat-banner-border"
       >
         <Ghost aria-hidden className="size-3.5 shrink-0" />
-        <span className="truncate">
+        <span className="min-w-0">
           <span className="font-medium text-foreground">Temporary chat</span>
           <span> — won&apos;t be saved.</span>
         </span>

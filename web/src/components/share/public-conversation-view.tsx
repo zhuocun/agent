@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { RotateCw } from "lucide-react";
 import Link from "next/link";
 import { Loader2, MessageSquareText } from "lucide-react";
 
@@ -36,9 +37,15 @@ type LoadState =
 
 export function PublicConversationView({ token }: { token: string }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
+  // Bumped by the error-state "Try again" button to re-run the fetch effect.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
+    // Re-running via the retry button resets the view to the loading spinner;
+    // the initial mount is already in `loading`, so only retries need this.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (attempt > 0) setState({ kind: "loading" });
     // No synchronous setState here: `loading` is the initial state, and the
     // page never swaps tokens in place (each /share/{token} is its own mount),
     // so resetting to loading on token change isn't needed. State only moves
@@ -62,7 +69,7 @@ export function PublicConversationView({ token }: { token: string }) {
       }
     })();
     return () => controller.abort();
-  }, [token]);
+  }, [token, attempt]);
 
   // Reflect the conversation title in the tab once it loads. The server page
   // ships sensible static metadata; this is a low-churn enhancement that avoids
@@ -79,7 +86,9 @@ export function PublicConversationView({ token }: { token: string }) {
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-16 md:pt-[calc(env(safe-area-inset-top)+5.5rem)]">
         {state.kind === "loading" ? <LoadingState /> : null}
         {state.kind === "unavailable" ? <UnavailableState /> : null}
-        {state.kind === "error" ? <ErrorState /> : null}
+        {state.kind === "error" ? (
+          <ErrorState onRetry={() => setAttempt((n) => n + 1)} />
+        ) : null}
         {state.kind === "ready" ? (
           <ConversationBody conversation={state.conversation} />
         ) : null}
@@ -260,16 +269,25 @@ function UnavailableState() {
   );
 }
 
-function ErrorState() {
+function ErrorState({ onRetry }: { onRetry: () => void }) {
   return (
     <EmptyState
       title="Couldn't load this conversation"
       body="Something went wrong reaching the server. Check your connection and try again."
+      onRetry={onRetry}
     />
   );
 }
 
-function EmptyState({ title, body }: { title: string; body: string }) {
+function EmptyState({
+  title,
+  body,
+  onRetry,
+}: {
+  title: string;
+  body: string;
+  onRetry?: () => void;
+}) {
   return (
     <div
       className="flex flex-1 flex-col items-center justify-center gap-4 py-24 text-center"
@@ -282,13 +300,26 @@ function EmptyState({ title, body }: { title: string; body: string }) {
         <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
         <p className="mx-auto max-w-sm text-sm text-muted-foreground">{body}</p>
       </div>
-      <Button
-        nativeButton={false}
-        render={<Link href="/" />}
-        className="h-10 rounded-full px-4 text-sm"
-      >
-        Start your own chat
-      </Button>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {onRetry ? (
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onRetry}
+            className="h-10 rounded-full px-4 text-sm"
+          >
+            <RotateCw aria-hidden className="size-4" />
+            <span>Try again</span>
+          </Button>
+        ) : null}
+        <Button
+          nativeButton={false}
+          render={<Link href="/" />}
+          className="h-10 rounded-full px-4 text-sm"
+        >
+          Start your own chat
+        </Button>
+      </div>
     </div>
   );
 }

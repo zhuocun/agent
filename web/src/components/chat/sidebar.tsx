@@ -24,6 +24,7 @@ import {
   Search,
   Settings,
   Trash2,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -914,8 +915,21 @@ export function Sidebar({
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder="Search conversations"
             aria-label="Search conversations"
-            className="block h-11 w-full rounded-full bg-muted/50 pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)]"
+            className={cn(
+              "block h-11 w-full rounded-full bg-muted/50 pl-8 text-sm text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)]",
+              search.length > 0 ? "pr-11" : "pr-3",
+            )}
           />
+          {search.length > 0 ? (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => onSearchChange("")}
+              className="absolute right-1 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            >
+              <X aria-hidden className="size-3.5" />
+            </button>
+          ) : null}
         </div>
       </div>
 

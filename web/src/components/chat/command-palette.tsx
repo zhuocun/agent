@@ -2,7 +2,12 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
-import { MessageSquare, Search, type LucideIcon } from "lucide-react";
+import {
+  LoaderCircle,
+  MessageSquare,
+  Search,
+  type LucideIcon,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { searchConversations } from "@/lib/apiClient";
@@ -126,6 +131,7 @@ export function CommandPalette({
   const [isMobile, setIsMobile] = useState(false);
   const [remoteConversationState, setRemoteConversationState] =
     useState<RemoteConversationState | null>(null);
+  const [searchPending, setSearchPending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
   const optionIdPrefix = useId();
@@ -143,17 +149,25 @@ export function CommandPalette({
 
   useEffect(() => {
     const q = query.trim();
-    if (!open || q.length === 0) return;
+    if (!open || q.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSearchPending(false);
+      return;
+    }
 
+    setSearchPending(true);
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void searchConversations(q, controller.signal)
         .then((results) => {
           if (!controller.signal.aborted) {
             setRemoteConversationState({ query: q, results });
+            setSearchPending(false);
           }
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (!controller.signal.aborted) setSearchPending(false);
+        });
     }, 150);
 
     return () => {
@@ -324,12 +338,23 @@ export function CommandPalette({
               placeholder="Search actions and conversations…"
               className="block w-full bg-transparent py-4 pl-3 pr-2 text-lg text-foreground outline-none placeholder:text-muted-foreground"
             />
+            {searchPending ? (
+              <LoaderCircle
+                aria-hidden
+                className="ml-2 size-4 shrink-0 text-muted-foreground motion-safe:animate-spin"
+              />
+            ) : null}
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto py-2">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto py-2"
+            aria-busy={searchPending || undefined}
+          >
             {flat.length === 0 ? (
               <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-                No results — try a different term
+                {searchPending
+                  ? "Searching…"
+                  : "No results — try a different term"}
               </div>
             ) : (
               <ul role="listbox" id={listboxId} aria-label="Commands">

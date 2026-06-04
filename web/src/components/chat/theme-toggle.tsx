@@ -24,11 +24,7 @@ export function ThemeToggle() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
-  const Active = !mounted
-    ? Sun
-    : resolvedTheme === "dark"
-      ? Moon
-      : Sun;
+  const Active = resolvedTheme === "dark" ? Moon : Sun;
 
   return (
     <DropdownMenu>
@@ -40,7 +36,14 @@ export function ThemeToggle() {
             aria-label="Change theme"
             className="size-11 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
           >
-            <Active className="size-4" />
+            {/* Until mounted the resolved theme is unknown; render an empty
+                slot rather than guessing Sun, which flashes the wrong icon for
+                dark-mode users on load. */}
+            {mounted ? (
+              <Active className="size-4" />
+            ) : (
+              <span aria-hidden className="size-4" />
+            )}
           </Button>
         }
       />

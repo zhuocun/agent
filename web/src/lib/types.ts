@@ -33,6 +33,12 @@ export interface ModelTier {
   supportsWebSearch: boolean;
   // Whether this tier accepts file attachments for the current turn.
   supportsAttachments: boolean;
+  // Whether this tier can INTERPRET images (and native PDF document blocks).
+  // DISTINCT from `supportsAttachments`: a tier may accept files (text/PDF as
+  // transcript text) without being multimodal. When false the composer
+  // auto-removes image attachments while keeping PDFs/text. Filled by the BE
+  // from the active provider backend.
+  supportsVision?: boolean;
   // Active backend route metadata. Mirrors api/app/schemas/tier.py and is
   // populated from the provider registry in bootstrap.
   providerId: string;
@@ -54,6 +60,7 @@ export interface ProviderTierOption {
   modelLabel: string;
   supportsWebSearch: boolean;
   supportsAttachments: boolean;
+  supportsVision?: boolean;
   defaultRouteEligible: boolean;
   dataPolicy: ProviderDataPolicy | null;
 }

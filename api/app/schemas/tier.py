@@ -34,6 +34,7 @@ class ProviderRouteOption(CamelModel):
     model_label: str = ""
     supports_web_search: bool = False
     supports_attachments: bool = False
+    supports_vision: bool = False
     default_route_eligible: bool = False
     data_policy: ProviderDataPolicy | None = None
 
@@ -61,6 +62,11 @@ class ModelTier(CamelModel):
     # Whether this tier accepts user attachments with native provider payloads.
     # Metadata-only fallback is not advertised as attachment support.
     supports_attachments: bool = False
+    # Whether this tier can INTERPRET images (and native PDF *document* blocks).
+    # DISTINCT from `supports_attachments`: a tier may accept files (text/PDF as
+    # transcript text) without being multimodal. The FE composer auto-removes
+    # image attachments (keeping PDFs/text) when this is False.
+    supports_vision: bool = False
     # Active provider route metadata. Populated by `list_tiers` from the backend
     # registry so the FE can disclose the route/policy without hardcoded model
     # facts. Empty defaults keep canonical tier objects backend-independent.

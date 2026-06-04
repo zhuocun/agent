@@ -545,13 +545,36 @@ export function ChatThread() {
     effectiveTierForProvider(tier, effectiveProviderId),
   );
   const selectedModelTier = modelTiers.find((t) => t.id === selectedTierId);
+  // "Can use Pro on the platform" — mirrors the BE entitlement rule
+  // (`_has_platform_pro_access`): a BYOK key OR an active Pro plan grants Pro.
+  // We read the same signal the settings dialog uses (`billing.proEnabled`,
+  // falling back to `planLabel === "Pro"`), plus BYOK. Anonymous/free users
+  // without BYOK can't use Pro. Used to gate the Pro option in compare slots so
+  // a non-entitled user isn't offered a column that would just 402.
+  const canUsePro =
+    !!account &&
+    (account.byokEnabled === true ||
+      account.billing?.proEnabled === true ||
+      account.planLabel === "Pro");
+  // Tiers offered in the compare slot pickers. Pro is filtered out for users
+  // who can't use it (compare is a new surface, so there's no regression in
+  // hiding it — selecting it would only graceful-402 per column). The two
+  // slots' collision-swap logic in `handleSelectCompareTier` still holds on a
+  // filtered list (it never assumes Pro is present).
+  const compareModelTiers = canUsePro
+    ? modelTiers
+    : modelTiers.filter((tier) => tier.id !== "pro");
   // Resolved ModelTier objects for the two compare slots (provider-effective).
-  // Fall back to the first tier so the columns always have a label even before
-  // bootstrap settles the registry.
+  // Resolve against the entitlement-filtered list so a non-entitled user whose
+  // saved slot is Pro falls back to an offered tier (never a Pro column they
+  // can't run). Fall back to the first offered tier so the columns always have
+  // a label even before bootstrap settles the registry.
   const compareTierA =
-    modelTiers.find((t) => t.id === compareTierIds[0]) ?? modelTiers[0];
+    compareModelTiers.find((t) => t.id === compareTierIds[0]) ??
+    compareModelTiers[0];
   const compareTierB =
-    modelTiers.find((t) => t.id === compareTierIds[1]) ?? modelTiers[0];
+    compareModelTiers.find((t) => t.id === compareTierIds[1]) ??
+    compareModelTiers[0];
   // The selected tier's web-search capability. Drives the picker's toggle
   // visibility and gates whether `webSearch` is ever sent. Defaults to false
   // while bootstrap is pending. Selection handlers clear it when moving to a
@@ -559,6 +582,11 @@ export function ChatThread() {
   const selectedTierSupportsSearch = selectedModelTier?.supportsWebSearch === true;
   const selectedTierSupportsAttachments =
     selectedModelTier?.supportsAttachments === true;
+  // Whether the selected tier can interpret images. DISTINCT from attachment
+  // support: a tier may accept files (PDF/text as transcript) without vision.
+  // Drives the composer's image-only auto-removal. Defaults to true while
+  // bootstrap is pending so we never spuriously strip images mid-load.
+  const selectedTierSupportsVision = selectedModelTier?.supportsVision !== false;
   // Effective, gated view used by every consumer.
   const effectiveSearchEnabled = searchEnabled && selectedTierSupportsSearch;
   const [conversations, setConversations] = useState<ConversationSummary[]>(
@@ -2435,7 +2463,7 @@ export function ChatThread() {
             <div className="pointer-events-auto">
               {compareMode ? (
                 <CompareTierBar
-                  tiers={modelTiers}
+                  tiers={compareModelTiers}
                   compareTierIds={compareTierIds}
                   onSelect={handleSelectCompareTier}
                 />
@@ -2452,6 +2480,7 @@ export function ChatThread() {
                 supportsAttachments={
                   !compareMode && selectedTierSupportsAttachments
                 }
+                supportsVision={selectedTierSupportsVision}
                 compareEnabled={compareMode}
                 onToggleCompare={handleToggleCompare}
               />

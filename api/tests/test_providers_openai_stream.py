@@ -543,6 +543,62 @@ async def test_stream_sends_text_attachment_transcript_as_text_content() -> None
     assert "Alpha beta notes" in content
 
 
+@respx.mock
+async def test_stream_non_vision_binding_omits_native_image_and_pdf_blocks() -> None:
+    """A non-vision binding (DeepSeek) emits NO native image/PDF blocks.
+
+    Images are dropped and PDFs degrade to their `extracted_text` transcript;
+    the request carries plain transcript text, never an `image_url`/`file`
+    content part the provider can't interpret.
+    """
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(
+            _stream_body(prompt_tokens=10, completion_tokens=10, answer_chunks=("ok",))
+        )
+    )
+
+    image_bytes = b"image-bytes"
+    pdf_bytes = b"%PDF-bytes"
+    provider = _provider()
+    async for _ in provider.stream(
+        model_id="deepseek-v4-flash",
+        history=[],
+        user_text="read these",
+        attachments=[
+            AttachmentPayload(
+                id="img-1",
+                name="sketch.png",
+                media_type="image",
+                mime_type="image/png",
+                size_bytes=len(image_bytes),
+                data=image_bytes,
+            ),
+            AttachmentPayload(
+                id="pdf-1",
+                name="paper.pdf",
+                media_type="pdf",
+                mime_type="application/pdf",
+                size_bytes=len(pdf_bytes),
+                data=pdf_bytes,
+                extracted_text="Paper transcript text",
+            ),
+        ],
+        supports_vision=False,
+    ):
+        pass
+
+    body = json.loads(route.calls.last.request.content)
+    content = body["messages"][-1]["content"]
+    # Non-vision: no native multimodal parts at all — the whole turn is text.
+    assert isinstance(content, str)
+    # The PDF still contributes its transcript (degraded, text-only).
+    assert "paper.pdf (application/pdf" in content
+    assert "Paper transcript text" in content
+    # No native image/file part leaked anywhere.
+    assert "image_url" not in body["messages"][-1].__repr__()
+    assert "file_data" not in content
+
+
 # --- DeepSeek V4 dual-mode hints + reasoning_content + cache fallback ---------
 #
 # These exercise the provider-hint passthrough (thinking / reasoning_effort) and

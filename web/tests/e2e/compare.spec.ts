@@ -129,6 +129,32 @@ test.describe("compare mode", () => {
     await expect(page.getByTestId("sidebar-conversation-link")).toHaveCount(0);
   });
 
+  test("anonymous user is not offered Pro as a compare slot option", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByTestId("compare-toggle").click();
+    await expect(page.getByTestId("compare-tier-bar")).toBeVisible();
+
+    // Open slot 0's picker. The anonymous (non-entitled) user can't use Pro, so
+    // Pro must not appear as a selectable option — it would only graceful-402.
+    await page
+      .getByTestId("compare-slot-0")
+      .getByRole("button")
+      .click();
+    const options = page.locator('[data-slot="dropdown-menu-item"]:visible');
+    await expect(options.filter({ hasText: "Fast" })).toHaveCount(1);
+    await expect(options.filter({ hasText: "Smart" })).toHaveCount(1);
+    // No Pro option for the non-entitled user.
+    await expect(options.filter({ hasText: "Pro" })).toHaveCount(0);
+
+    // Dismiss the menu so it doesn't bleed into later assertions.
+    await page.keyboard.press("Escape");
+    await expect(options).toHaveCount(0);
+  });
+
   test("Stop cancels both compare columns", async ({ page }) => {
     await page.goto("/");
     await waitForBootstrap(page);

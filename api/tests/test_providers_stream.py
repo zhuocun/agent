@@ -313,6 +313,59 @@ async def test_stream_sends_text_attachment_transcript_as_text_content() -> None
 
 
 @respx.mock
+async def test_stream_non_vision_binding_omits_native_image_and_pdf_blocks() -> None:
+    """A non-vision binding emits NO native image/document blocks.
+
+    Images are dropped and PDFs degrade to their `extracted_text` transcript;
+    the request carries plain transcript text, never a native `image`/`document`
+    block.
+    """
+    route = respx.post(_MESSAGES_URL).mock(
+        return_value=_sse_response(_stream_body(input_tokens=10, output_tokens=10))
+    )
+
+    image_bytes = b"image-bytes"
+    pdf_bytes = b"%PDF-bytes"
+    provider = AnthropicProvider(api_key="sk-test")
+    async for _ in provider.stream(
+        model_id="test-model",
+        history=[],
+        user_text="read these",
+        attachments=[
+            AttachmentPayload(
+                id="img-1",
+                name="sketch.png",
+                media_type="image",
+                mime_type="image/png",
+                size_bytes=len(image_bytes),
+                data=image_bytes,
+            ),
+            AttachmentPayload(
+                id="pdf-1",
+                name="paper.pdf",
+                media_type="pdf",
+                mime_type="application/pdf",
+                size_bytes=len(pdf_bytes),
+                data=pdf_bytes,
+                extracted_text="Paper transcript text",
+            ),
+        ],
+        supports_vision=False,
+    ):
+        pass
+
+    body = json.loads(route.calls.last.request.content)
+    content = body["messages"][-1]["content"]
+    # Non-vision: the entire turn collapses to transcript text, no native blocks.
+    assert isinstance(content, str)
+    assert "paper.pdf (application/pdf" in content
+    assert "Paper transcript text" in content
+    serialized = json.dumps(body["messages"][-1])
+    assert '"type": "image"' not in serialized
+    assert '"type": "document"' not in serialized
+
+
+@respx.mock
 async def test_stream_maps_rate_limit_to_app_error() -> None:
     """A 429 stream open becomes RATE_LIMITED with retryAfterMs, no raw text."""
     respx.post(_MESSAGES_URL).mock(

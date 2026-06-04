@@ -43,6 +43,12 @@ interface ComposerProps {
   onStop: () => void;
   sendOnEnter?: boolean;
   supportsAttachments?: boolean;
+  // Whether the active tier can INTERPRET images. DISTINCT from
+  // `supportsAttachments`: a tier may accept files (PDF/text as transcript)
+  // without being multimodal. When attachments are supported but vision is not,
+  // the composer auto-removes only IMAGE attachments (PDFs/text stay) with a
+  // clear notice. Defaults to true so callers that don't pass it are unaffected.
+  supportsVision?: boolean;
   // Compare-mode affordance. When `onToggleCompare` is provided the composer
   // renders a "Compare" toggle next to the model controls; `compareEnabled`
   // drives its pressed state. Left undefined on surfaces that don't offer
@@ -189,6 +195,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onStop,
     sendOnEnter = true,
     supportsAttachments = false,
+    supportsVision = true,
     compareEnabled = false,
     onToggleCompare,
   },
@@ -222,6 +229,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const slashOptionPrefix = useId();
   const prevStreamingRef = useRef(isStreaming);
   const supportsAttachmentsRef = useRef(supportsAttachments);
+  const supportsVisionRef = useRef(supportsVision);
   const attachmentReadGenerationRef = useRef(0);
 
   const clearAttachments = useCallback((reason: "unsupported" | "manual" = "manual") => {
@@ -260,6 +268,27 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       });
     }, 0);
   }, [supportsAttachments]);
+
+  // Vision gate, parallel to the attachments gate above but narrower: when the
+  // active tier accepts files yet can't INTERPRET images (e.g. DeepSeek), drop
+  // only the IMAGE attachments and keep PDFs/text. When the tier supports no
+  // attachments at all the effect above already cleared everything, so this only
+  // matters for attachment-capable-but-non-vision tiers.
+  useEffect(() => {
+    supportsVisionRef.current = supportsVision;
+    if (supportsVision || !supportsAttachments) return;
+    window.setTimeout(() => {
+      setAttachments((current) => {
+        if (!current.some((attachment) => attachment.mediaType === "image")) {
+          return current;
+        }
+        setAttachmentNotice(
+          "Images aren't supported by this model and were removed.",
+        );
+        return current.filter((attachment) => attachment.mediaType !== "image");
+      });
+    }, 0);
+  }, [supportsVision, supportsAttachments]);
 
   // Stop→Send settling pose: after a stream ends, hold the slot in a quiet
   // neutral state for a beat before reverting to rest, so the transition reads
@@ -427,7 +456,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         if (!supportsAttachmentsRef.current) return;
         setAttachments((current) => {
           const availableSlots = Math.max(0, MAX_ATTACHMENTS - current.length);
-          const next = picked.filter(
+          let next = picked.filter(
             (attachment): attachment is AttachmentPart => attachment !== null,
           );
           if (next.length < picked.length) {
@@ -436,6 +465,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 MAX_ATTACHMENT_BYTES,
               )} can be attached.`,
             );
+          }
+          // Non-vision tier: accept files but drop images (PDFs/text stay).
+          if (!supportsVisionRef.current) {
+            const withoutImages = next.filter(
+              (attachment) => attachment.mediaType !== "image",
+            );
+            if (withoutImages.length < next.length) {
+              setAttachmentNotice(
+                "Images aren't supported by this model and were removed.",
+              );
+            }
+            next = withoutImages;
           }
           return [...current, ...next.slice(0, availableSlots)];
         });

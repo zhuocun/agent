@@ -114,9 +114,11 @@ class FakeProvider:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         web_search: bool = False,
+        supports_vision: bool = True,
     ) -> AsyncIterator[ProviderEvent]:
-        # `thinking` / `reasoning_effort` are accepted to satisfy the Provider
-        # Protocol but ignored — the fake's output is fixed/deterministic.
+        # `thinking` / `reasoning_effort` / `supports_vision` are accepted to
+        # satisfy the Provider Protocol but ignored — the fake's output is
+        # fixed/deterministic and it never emits native attachment blocks.
         # Two short reasoning deltas, then done.
         await asyncio.sleep(self._delay)
         yield ReasoningDelta(text="Let me think")

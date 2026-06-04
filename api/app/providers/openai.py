@@ -116,9 +116,22 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def _openai_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | None:
-    """Map a transient attachment into Chat Completions multimodal content."""
+def _openai_attachment_part(
+    attachment: AttachmentPayload,
+    *,
+    supports_vision: bool,
+) -> dict[str, Any] | None:
+    """Map a transient attachment into Chat Completions multimodal content.
+
+    Native image/PDF-document blocks are emitted only when the binding can
+    interpret them (`supports_vision`). A non-vision binding returns None for
+    images and PDFs so they degrade to transcript text (PDFs) or are dropped
+    (images) — DeepSeek (the canonical prod OpenAI-compatible route) is not
+    multimodal.
+    """
     if attachment.media_type == "text":
+        return None
+    if not supports_vision:
         return None
     if attachment.data is None:
         return None
@@ -144,6 +157,8 @@ def _openai_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | N
 def _openai_user_content(
     user_text: str,
     attachments: list[AttachmentPayload] | None,
+    *,
+    supports_vision: bool,
 ) -> str | list[dict[str, Any]]:
     """Build the current user content, including native attachment bytes."""
     if not attachments:
@@ -152,7 +167,7 @@ def _openai_user_content(
     content: list[dict[str, Any]] = []
     transcript_attachments: list[AttachmentPayload] = []
     for attachment in attachments:
-        part = _openai_attachment_part(attachment)
+        part = _openai_attachment_part(attachment, supports_vision=supports_vision)
         if part is None:
             transcript_attachments.append(attachment)
         else:
@@ -445,13 +460,24 @@ class OpenAIProvider:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         web_search: bool = False,
+        supports_vision: bool = True,
     ) -> AsyncIterator[ProviderEvent]:
         # Build messages: history + the current user turn. Only user/assistant
         # roles (no system role), which keeps o-series models happy.
         messages: list[dict[str, Any]] = [{"role": m.role, "content": m.text} for m in history]
         # Steer ONLY the current user turn (real-provider, outgoing request,
         # never persisted). History stays verbatim. See app/providers/steering.py.
-        messages.append({"role": "user", "content": _openai_user_content(user_text, attachments)})
+        # On a non-vision binding native image/PDF blocks are suppressed
+        # (PDFs degrade to transcript text), so DeepSeek never sees a payload
+        # it can't interpret.
+        messages.append(
+            {
+                "role": "user",
+                "content": _openai_user_content(
+                    user_text, attachments, supports_vision=supports_vision
+                ),
+            }
+        )
 
         # Optional provider hints, built CONDITIONALLY so we never send a
         # `reasoning_effort=None` or an empty `extra_body` to stock OpenAI.

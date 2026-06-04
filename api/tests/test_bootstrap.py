@@ -101,6 +101,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
             "modelLabel",
             "supportsWebSearch",
             "supportsAttachments",
+            "supportsVision",
             "providerId",
             "providerLabel",
             "providerRouteStatus",
@@ -134,6 +135,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     assert options["gemini"]["status"] == "pending"
     assert options["gemini"]["supportsWebSearch"] is False
     assert options["gemini"]["supportsAttachments"] is False
+    assert options["gemini"]["supportsVision"] is False
     # Test config sets SEARCH_BACKEND=fake, so search is enabled and every real
     # tier (including `auto`, whose binding supports search via the tool loop)
     # reports the capability. The wire flag = binding.supports_web_search AND
@@ -141,6 +143,12 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     for tier_id in ("auto", "fast", "smart", "pro"):
         assert by_id[tier_id]["supportsWebSearch"] is True
         assert by_id[tier_id]["supportsAttachments"] is True
+    # `supportsVision` is DISTINCT from `supportsAttachments`: the fake backend
+    # marks `fast` attachment-capable-but-NOT-vision (so the FE e2e can drive the
+    # vision-removed path) while auto/smart/pro stay vision-capable.
+    assert by_id["fast"]["supportsVision"] is False
+    for tier_id in ("auto", "smart", "pro"):
+        assert by_id[tier_id]["supportsVision"] is True
 
     suggestions = body["suggestions"]
     assert isinstance(suggestions, list) and len(suggestions) >= 1

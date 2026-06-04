@@ -299,6 +299,19 @@ def _attachments_unsupported() -> AppError:
     )
 
 
+def _vision_unsupported() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="VISION_UNSUPPORTED",
+            severity="warning",
+            title="This model can't read images",
+            body="Switch to a vision-capable model or remove the image, then send "
+            "the message again.",
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def _safety_blocked(decision: SafetyDecision) -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -1208,6 +1221,14 @@ async def send_message(
             max_count=settings.attachment_max_count,
             max_bytes=settings.attachment_max_bytes,
         )
+        # Defense-in-depth: images require a vision-capable binding. A binding
+        # may accept attachments (text/PDF as transcript) without being
+        # multimodal (e.g. DeepSeek), so reject images cleanly here instead of
+        # letting the provider error on a payload it can't interpret.
+        if not binding.supports_vision and any(
+            payload.media_type == "image" for payload in provider_attachments
+        ):
+            raise _vision_unsupported()
         safety_decision = check_user_turn(
             settings,
             text=body.text,
@@ -1280,6 +1301,7 @@ async def send_message(
             db=db,
             conversation_id=conversation_id,
             supports_attachments=binding.supports_attachments,
+            supports_vision=binding.supports_vision,
         )
     elif body.edit_message_id is not None:
         user_message_id, history, provider_user_text = await _prepare_edit(
@@ -1654,6 +1676,7 @@ async def _prepare_regenerate(
     db: AsyncSession,
     conversation_id: UUID,
     supports_attachments: bool,
+    supports_vision: bool,
 ) -> tuple[UUID, list[ProviderChatMessage], str, list[AttachmentPayload]]:
     """Drop trailing assistant(s) and reuse the existing trailing user message.
 
@@ -1673,6 +1696,10 @@ async def _prepare_regenerate(
     attachments = _attachment_payloads_from_parts(last_user.parts)
     if attachments and not supports_attachments:
         raise _attachments_unsupported()
+    if not supports_vision and any(
+        attachment.media_type == "image" for attachment in attachments
+    ):
+        raise _vision_unsupported()
     # Drop trailing assistant(s). Returns 0 if the last message is already a
     # user message (no assistant to drop) — that's still a valid regen (e.g.
     # a prior turn was stopped mid-stream and never persisted assistant).

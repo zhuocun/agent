@@ -35,7 +35,7 @@ export function CompareTierBar({
 }) {
   return (
     <div
-      className="mx-auto mb-2 flex w-full max-w-3xl items-center justify-center gap-2 px-4"
+      className="mx-auto mb-2 flex w-full max-w-3xl flex-wrap items-center justify-center gap-x-2 gap-y-1.5 px-4"
       data-testid="compare-tier-bar"
     >
       <span className="text-xs text-muted-foreground">Compare</span>

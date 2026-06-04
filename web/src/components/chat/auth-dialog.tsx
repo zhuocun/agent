@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState, type FormEvent, type JSX } from "react";
+import { Eye, EyeOff } from "lucide-react";
 
 import {
   Dialog,
@@ -72,6 +73,7 @@ export function AuthDialog({
   const [mode, setMode] = useState<AuthMode>("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -83,6 +85,7 @@ export function AuthDialog({
       setMode("signin");
       setEmail("");
       setPassword("");
+      setShowPassword(false);
       setError(null);
       setPending(false);
     }
@@ -167,22 +170,40 @@ export function AuthDialog({
             <label htmlFor={passwordId} className="text-sm font-medium">
               Password
             </label>
-            <input
-              id={passwordId}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete={isSignIn ? "current-password" : "new-password"}
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              required
-              disabled={pending}
-              aria-invalid={error !== null}
-              aria-describedby={error ? errorId : undefined}
-              placeholder="••••••••"
-              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50"
-            />
+            <div className="relative">
+              <input
+                id={passwordId}
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete={isSignIn ? "current-password" : "new-password"}
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                required
+                disabled={pending}
+                aria-invalid={error !== null}
+                aria-describedby={error ? errorId : undefined}
+                placeholder="••••••••"
+                className="block h-11 w-full rounded-2xl bg-muted/50 pl-3 pr-12 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50"
+              />
+              <button
+                type="button"
+                // Accessible name deliberately avoids the word "password" so it
+                // doesn't collide with getByLabel("Password") for the input.
+                aria-label={showPassword ? "Hide entered text" : "Show entered text"}
+                aria-pressed={showPassword}
+                onClick={() => setShowPassword((v) => !v)}
+                disabled={pending}
+                className="absolute right-1 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+              >
+                {showPassword ? (
+                  <EyeOff aria-hidden className="size-4" />
+                ) : (
+                  <Eye aria-hidden className="size-4" />
+                )}
+              </button>
+            </div>
           </div>
 
           {error ? (

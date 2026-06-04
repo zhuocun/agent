@@ -6,6 +6,7 @@ import {
   ClipboardCopy,
   Code2,
   KeyRound,
+  LoaderCircle,
   MessageSquarePlus,
   PanelLeft,
   Settings as SettingsIcon,
@@ -2456,7 +2457,19 @@ export function ChatThread() {
   }
 
   if (!bootstrap || !account || !preferences || !usage) {
-    return <div aria-hidden className="h-full min-h-svh" />;
+    return (
+      <div
+        role="status"
+        aria-busy="true"
+        className="flex h-full min-h-svh items-center justify-center"
+      >
+        <LoaderCircle
+          aria-hidden
+          className="size-6 text-muted-foreground motion-safe:animate-spin"
+        />
+        <span className="sr-only">Loading Olune…</span>
+      </div>
+    );
   }
 
   const suggestions = bootstrap.suggestions;
@@ -2765,6 +2778,10 @@ export function ChatThread() {
         usage={usage}
         onSaveBudget={handleSaveBudget}
         onSignOut={handleSignOut}
+        onRequestSignIn={() => {
+          setSettingsOpen(false);
+          setAuthOpen(true);
+        }}
         onExportData={handleExportData}
         onDeleteAccount={() => {
           setSettingsOpen(false);

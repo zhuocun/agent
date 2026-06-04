@@ -71,12 +71,16 @@ export interface ByokFormProps {
   account: AccountInfo;
   preferences: Pick<UserPreferences, "telemetryEnabled">;
   onAccountChange: (next: AccountInfo) => void | Promise<void>;
+  // Anonymous sessions can't store keys; this opens the auth dialog so the
+  // guest can sign in without leaving Settings to hunt for the account menu.
+  onRequestSignIn?: () => void;
 }
 
 export function ByokForm({
   account,
   preferences,
   onAccountChange,
+  onRequestSignIn,
 }: ByokFormProps): JSX.Element {
   const providerId = useId();
   const keyId = useId();
@@ -196,11 +200,23 @@ export function ByokForm({
 
   if (anonymous) {
     return (
-      <div className="space-y-2">
+      <div className="space-y-3">
         <p className="text-sm text-muted-foreground">
           Sign in to bring your own API key. Guest sessions can&apos;t store
           provider credentials.
         </p>
+        {onRequestSignIn ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={onRequestSignIn}
+            className="rounded-full"
+          >
+            <Key aria-hidden className="size-3.5" />
+            <span>Sign in to add a key</span>
+          </Button>
+        ) : null}
       </div>
     );
   }

@@ -731,6 +731,14 @@ html {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in oklch, var(--muted-foreground), transparent 65%) transparent;
 }
+/* Hide the WebKit-native search clear glyph: search inputs (e.g. the sidebar
+   conversation search) render a custom clear button, and the native decoration
+   would otherwise overlap it. */
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

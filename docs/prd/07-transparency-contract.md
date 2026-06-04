@@ -73,6 +73,8 @@ Every assistant message stores:
 | `cost_breakdown` | post-turn | structured details in §4.1 (incl. `cost_scope`, `long_context`, `promo`) |
 | `cost_confidence` | post-turn | `exact` / `estimate` / `unavailable` |
 | `is_byok` | yes | platform meter vs user's provider key |
+| `outputFormat` | when structured output requested | `json_object` / `json_schema` — the structured-output mode requested for the turn (SHIPPED; `ModelAttribution.output_format` in `api/app/schemas/message.py`). Absent when no `responseFormat` was requested. |
+| `outputValid` | when structured output requested | Boundary-validation result for the turn (SHIPPED): JSON parse for any JSON mode plus `jsonschema.validate` for `json_schema` (`api/app/streaming/handler.py::_apply_structured_output`). Invalid output sets this `false` but never hard-fails the turn. |
 
 ### 4.1 `cost_breakdown` minimum shape **[P0]**
 
@@ -150,6 +152,8 @@ Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible 
 
 **AC:** any non-null reason renders a visible callout on the assistant message.
 
+> **Shipped (as-built).** The backend emits **six** of these codes — `auto_downgrade`, `provider_fallback`, `rate_limited`, `capacity_reroute`, `deprecated_model`, `gateway_route` (`SubstitutionReasonCode` in `api/app/schemas/common.py`). `auto_route`, `budget_cap`, and `policy_route` are **spec-reserved**: they stay in this table but are intentionally not emitted until the FE renders them. `provider_fallback` and `rate_limited` are wired to the shipped single-shot provider-fallback retry (PRD 02 FR-5 / FR-11b): a fallback emits `provider_fallback`, except a rate-limited primary error reads as `rate_limited` so the wire reason matches the cause.
+
 ---
 
 ## 6. UX rules
@@ -181,6 +185,8 @@ Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible 
 | Public unlisted share link | Yes | **No** | **No** |
 
 **AC:** public share markup and embedded JSON contain no `cost_usd`, token counts, or `cost_breakdown`.
+
+> **Shipped + structurally enforced (as-built).** Public-by-link sharing is live (`routes/share.py`) over a nullable `conversation.share_token` (mint / revoke = set NULL). The public payload uses dedicated narrow shapes — `PublicConversation` / `PublicMessage` / `PublicAttribution` (`api/app/schemas/share.py`) — that carry model identity (`requestedTierId`, `servedTierId`, `servedModelLabel`, `isByok`, `substitution`) but **have no cost/token/breakdown field at all**. The strip is therefore a structural guarantee (the field can't serialize because it doesn't exist on the model), not a runtime filter a refactor could silently undo. The full-fidelity `cost_usd` / `breakdown` stay on the owner-facing `ChatMessage` / `ModelAttribution` and in the GDPR export.
 
 ---
 

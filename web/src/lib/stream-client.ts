@@ -113,6 +113,11 @@ export interface StartArgs {
   text: string;
   isTemporary?: boolean;
   regenerate?: boolean;
+  // Continue a previously-Stopped turn: keeps the persisted partial and streams
+  // a NEW assistant message linked to the same user message. Sent only when
+  // true (the BE treats absence as false). Mutually exclusive with
+  // `regenerate` / `editMessageId`.
+  continueTurn?: boolean;
   editMessageId?: string;
   // Toggled on in the composer; sent only when true (the BE treats absence as
   // false). Gated upstream on the selected tier's `supportsWebSearch`.
@@ -769,6 +774,9 @@ export function useApiStream(
       if (args.providerId !== undefined) body.providerId = args.providerId;
       if (args.isTemporary !== undefined) body.isTemporary = args.isTemporary;
       if (args.regenerate !== undefined) body.regenerate = args.regenerate;
+      // Send `continueTurn` only when true (BE treats absence as false), so the
+      // non-continue path is byte-identical to today's wire shape.
+      if (args.continueTurn) body.continueTurn = true;
       if (args.editMessageId !== undefined)
         body.editMessageId = args.editMessageId;
       // Send `webSearch` only when on — the BE treats absence as false, so the

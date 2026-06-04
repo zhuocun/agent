@@ -27,8 +27,10 @@ interface AssistantMessageProps {
   canBranch?: boolean;
   isBranching?: boolean;
   canRegenerate?: boolean;
+  canContinue?: boolean;
   onBranch?: () => void;
   onRegenerate?: () => void;
+  onContinue?: () => void;
   onFeedback?: (next: Feedback) => void;
   onAttributionOpen?: () => void;
   defaultReasoningOpen?: boolean;
@@ -49,8 +51,10 @@ export function AssistantMessage({
   canBranch,
   isBranching,
   canRegenerate,
+  canContinue,
   onBranch,
   onRegenerate,
+  onContinue,
   onFeedback,
   onAttributionOpen,
   defaultReasoningOpen = false,
@@ -148,8 +152,10 @@ export function AssistantMessage({
               canBranch={canBranch}
               isBranching={isBranching}
               canRegenerate={canRegenerate}
+              canContinue={canContinue && isStopped}
               onBranch={onBranch}
               onRegenerate={onRegenerate}
+              onContinue={onContinue}
               onFeedback={onFeedback}
             />
           </div>

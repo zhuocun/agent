@@ -896,6 +896,7 @@ export function ChatThread() {
       tierId: ModelTierId;
       providerId?: string;
       regenerate?: boolean;
+      continueTurn?: boolean;
       editMessageId?: string;
       webSearch?: boolean;
       attachments?: AttachmentPart[];
@@ -945,7 +946,7 @@ export function ChatThread() {
           // create doesn't lose the user's message (the composer cleared it on
           // submit). Only the plain-send path reaches create with no active
           // conversation; edit/regenerate run against an existing one. (P2-5)
-          if (!args.regenerate && !args.editMessageId) {
+          if (!args.regenerate && !args.editMessageId && !args.continueTurn) {
             composerRef.current?.setDraft(args.text);
           }
           showToast({
@@ -971,6 +972,7 @@ export function ChatThread() {
         text: args.text,
         isTemporary: isTemporary || undefined,
         regenerate: args.regenerate,
+        continueTurn: args.continueTurn,
         editMessageId: args.editMessageId,
         // Sent only when on; stream-client further drops it from the wire when
         // falsy, so the off path is byte-identical to today.
@@ -1280,6 +1282,40 @@ export function ChatThread() {
       tierId: tierAtSendRef.current,
       providerId: providerAtSendRef.current,
       regenerate: true,
+      webSearch: searchAtSendRef.current || undefined,
+    });
+  };
+
+  const handleContinue = () => {
+    if (isStreaming) return;
+    // CRITICAL: unlike regenerate, continue MUST NOT pop the trailing stopped
+    // assistant bubble — the user paid for that partial and we keep it. The
+    // continuation streams in as a NEW assistant bubble right after it.
+    //
+    // Find the trailing user text so the wire schema's required `text` is
+    // satisfied; the BE ignores it on continue (it replays the persisted
+    // history + appends a fixed continuation instruction).
+    const lastUserText = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== "user") continue;
+        for (const p of m.parts) if (p.type === "text") return p.text;
+      }
+      return "";
+    })();
+    const continueId = localId();
+    assistantIdRef.current = continueId;
+    pendingUserIdRef.current = null;
+    tierAtSendRef.current = selectedTierId;
+    providerAtSendRef.current = effectiveProviderId;
+    searchAtSendRef.current = effectiveSearchEnabled;
+    setPendingId(continueId);
+    setLiveMessage("Continuing response");
+    void beginTurn({
+      text: lastUserText,
+      tierId: tierAtSendRef.current,
+      providerId: providerAtSendRef.current,
+      continueTurn: true,
       webSearch: searchAtSendRef.current || undefined,
     });
   };
@@ -2418,12 +2454,18 @@ export function ChatThread() {
                         m.id === lastAssistantId &&
                         ((m.status ?? "done") === "done" || m.status === "stopped")
                       }
+                      canContinue={
+                        !isStreaming &&
+                        m.id === lastAssistantId &&
+                        m.status === "stopped"
+                      }
                       onBranch={
                         canBranchMessage
                           ? () => handleBranchFromMessage(m.id)
                           : undefined
                       }
                       onRegenerate={handleRegenerate}
+                      onContinue={handleContinue}
                       onFeedback={(f) => setFeedback(m.id, f)}
                       onAttributionOpen={handleAttributionOpen}
                       defaultReasoningOpen={preferences.autoExpandReasoning}

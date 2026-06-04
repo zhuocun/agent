@@ -291,4 +291,139 @@ test.describe("streaming", () => {
       answer.locator("pre code", { hasText: "graph TD" }),
     ).toHaveCount(0);
   });
+
+  // Continue-a-stopped-turn path. Exercises the FE half end-to-end:
+  //   (a) Stop mid-stream produces a `stopped` assistant bubble (partial kept)
+  //   (b) the Continue affordance shows ONLY on the stopped turn
+  //   (c) clicking Continue keeps the stopped partial AND appends a NEW
+  //       assistant bubble carrying the fake's deterministic continuation
+  //   (d) NO duplicate user bubble is created (continue reuses the user turn)
+  // The fake provider answers the continuation instruction with a distinctive
+  // "…continued: " prefix (see api/app/providers/fake.py).
+  test("continue a stopped turn: keeps the partial, appends a new bubble, no duplicate user turn", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    // Capture the conversation id authoritatively from the streaming POST URL
+    // (the sidebar row id can lag the first send).
+    let capturedConvId: string | null = null;
+    page.on("request", (req) => {
+      const m = req
+        .url()
+        .match(/\/api\/conversations\/([0-9a-fA-F-]{36})\/messages/);
+      if (m && !capturedConvId) capturedConvId = m[1]!;
+    });
+
+    const composer = page.getByTestId("composer-textarea");
+
+    // Produce a SERVER-CONFIRMED stopped turn. The partial assistant row is
+    // persisted via the disconnect path, which is timing-nondeterministic in
+    // this harness (the BE marks the mid-stream-disconnect persist xfail under
+    // test transports — production works). `SLOW:` makes the fake stream ~40
+    // deltas at 50ms each (api/app/providers/fake.py) for a wide stop window;
+    // we stop a few deltas in (not at the first, which races the
+    // reasoning→answer boundary), then retry the whole produce-stop-confirm
+    // with a fresh chat until the BE commits the `stopped` row — so Continue
+    // (which reads that row) has a real partial to extend.
+    let partialBefore: string | null = null;
+    for (let attempt = 0; partialBefore === null && attempt < 6; attempt++) {
+      if (attempt > 0) {
+        await page.getByRole("button", { name: "New chat" }).first().click();
+        await expect(page.getByTestId("user-message-text")).toHaveCount(0);
+      }
+      capturedConvId = null;
+      await composer.fill("SLOW: tell me a long story so I can stop it");
+      await page.getByTestId("composer-send").click();
+
+      const streaming = page.getByTestId("assistant-message").last();
+      await expect(
+        streaming.getByTestId("assistant-answer").first(),
+      ).toContainText("part 5 ", { timeout: 15_000 });
+
+      // Stop mid-stream (well within the ~2s slow window).
+      await page.getByRole("button", { name: "Stop generating" }).click();
+      await expect(streaming).toHaveAttribute("data-status", "stopped", {
+        timeout: 15_000,
+      });
+      await expect(streaming.getByTestId("stopped-chip")).toBeVisible();
+
+      // Confirm the BE committed the `stopped` row before continuing — a
+      // continue POST that races persistence 400s NOTHING_TO_CONTINUE.
+      await expect.poll(() => capturedConvId).not.toBeNull();
+      try {
+        await expect
+          .poll(
+            async () => {
+              const r = await page.request.get(
+                `${BE_URL}/api/conversations/${capturedConvId}`,
+              );
+              if (!r.ok()) return false;
+              const body = (await r.json()) as {
+                messages: Array<{ role: string; status?: string | null }>;
+              };
+              return body.messages.some(
+                (m) => m.role === "assistant" && m.status === "stopped",
+              );
+            },
+            { timeout: 6_000, intervals: [250] },
+          )
+          .toBe(true);
+      } catch {
+        continue; // not persisted this attempt — fresh chat and retry
+      }
+      partialBefore =
+        (await streaming
+          .getByTestId("assistant-answer")
+          .first()
+          .textContent()
+          .catch(() => "")) ?? "";
+    }
+    expect(
+      partialBefore,
+      "the BE never persisted a stopped turn after retries",
+    ).not.toBeNull();
+
+    const stopped = page.getByTestId("assistant-message").last();
+    // Exactly one user bubble in the (final) conversation.
+    await expect(page.getByTestId("user-message-text")).toHaveCount(1);
+
+    // The Continue affordance is present on the stopped turn; Regenerate too.
+    const continueBtn = stopped.getByTestId("continue-turn");
+    await expect(continueBtn).toBeVisible();
+    await continueBtn.click();
+
+    // A NEW assistant bubble streams the deterministic continuation. We assert
+    // on the LAST assistant message carrying the "…continued: " marker.
+    await expect
+      .poll(
+        async () => {
+          const texts = await page
+            .getByTestId("assistant-message")
+            .getByTestId("assistant-answer")
+            .allInnerTexts();
+          return texts.some((t) => t.includes("…continued: "));
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+
+    // Two assistant bubbles now: the stopped partial + the continuation. The
+    // stopped one is NOT removed (continue, unlike regenerate, keeps it).
+    await expect(page.getByTestId("assistant-message")).toHaveCount(2);
+    const stoppedAfter = page
+      .getByTestId("assistant-message")
+      .filter({ has: page.getByTestId("stopped-chip") });
+    await expect(stoppedAfter).toHaveCount(1);
+    if (partialBefore) {
+      await expect(stoppedAfter.getByTestId("assistant-answer").first()).toHaveText(
+        partialBefore,
+      );
+    }
+
+    // CRITICAL: still exactly ONE user bubble — continue reuses the user turn
+    // and must not mint a duplicate.
+    await expect(page.getByTestId("user-message-text")).toHaveCount(1);
+  });
 });

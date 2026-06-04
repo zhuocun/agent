@@ -111,6 +111,18 @@ from app.uploads import extract_attachment_text, is_supported_attachment_type
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 
+# Continuation instruction appended to the provider history when continuing a
+# stopped turn. The prior (partial) assistant text is replayed as the trailing
+# assistant turn, then THIS instruction is sent as the new user turn so the
+# model extends its own response instead of restarting it. The fake provider
+# detects this exact constant to emit a deterministic continuation (see
+# app/providers/fake.py).
+_CONTINUE_INSTRUCTION = (
+    "Continue your previous response from exactly where it left off. "
+    "Do not repeat or re-introduce anything already written."
+)
+
+
 # Multi-worker note: this dict only lives in one process. Behind multiple
 # uvicorn workers, a temporary chat created on worker A and posted to from
 # worker B will 404. M2 may swap this for Redis or a signed-cookie token.
@@ -286,6 +298,19 @@ def _idempotency_mismatch() -> AppError:
     )
 
 
+def _nothing_to_continue() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="NOTHING_TO_CONTINUE",
+            severity="warning",
+            title="Nothing to continue",
+            body="This conversation has no stopped response to continue. "
+            "Send a new message or regenerate instead.",
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def _attachments_unsupported() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -345,6 +370,7 @@ def _request_fingerprint(
         "text": body.text,
         "webSearch": bool(body.web_search),
         "regenerate": bool(body.regenerate),
+        "continueTurn": bool(body.continue_turn),
         "editMessageId": body.edit_message_id,
         "attachments": [
             {
@@ -1096,21 +1122,30 @@ async def send_message(
     except ValueError as exc:
         raise _invalid_input("INVALID_INPUT", "clientMessageId must be a UUID.") from exc
 
-    # M2: regenerate and editMessageId are mutually exclusive.
-    if body.regenerate and body.edit_message_id is not None:
+    # regenerate / editMessageId / continueTurn are mutually exclusive — each is
+    # a distinct recovery mode, and combining them is semantically incoherent.
+    mode_flags = sum(
+        (
+            bool(body.regenerate),
+            body.edit_message_id is not None,
+            bool(body.continue_turn),
+        )
+    )
+    if mode_flags > 1:
         raise _invalid_input(
             "INVALID_INPUT",
-            "regenerate and editMessageId cannot both be set.",
+            "regenerate, editMessageId, and continueTurn are mutually exclusive.",
         )
 
     is_temp = body.is_temporary or _is_temp_for_user(user.id, conversation_id)
 
-    # Regenerate / edit are not meaningful for temporary chats (no prior
-    # rows to drop / truncate). Reject so the FE doesn't silently degrade.
-    if is_temp and (body.regenerate or body.edit_message_id is not None):
+    # Regenerate / edit / continue are not meaningful for temporary chats (no
+    # prior rows to drop / truncate / continue). Reject so the FE doesn't
+    # silently degrade.
+    if is_temp and (body.regenerate or body.edit_message_id is not None or body.continue_turn):
         raise _invalid_input(
             "INVALID_INPUT",
-            "regenerate / editMessageId are not supported on temporary chats.",
+            "regenerate / editMessageId / continueTurn are not supported on temporary chats.",
         )
 
     # BYOK resolution + budget gate. Resolved here (before any user-message
@@ -1138,11 +1173,12 @@ async def send_message(
             raise not_found("conversation")
 
         # Idempotency: prior user message for this client_message_id?
-        # Regenerate reuses an existing user row and the FE mints a fresh id, so
-        # it has no persisted client_message_id row to replay. Normal sends and
-        # edits both insert a user row; exact fingerprint matches can safely
-        # replay before budget/provider gates, while mismatches get a 409.
-        if not body.regenerate:
+        # Regenerate / continue reuse an existing user row and the FE mints a
+        # fresh id, so they have no persisted client_message_id row to replay.
+        # Normal sends and edits both insert a user row; exact fingerprint
+        # matches can safely replay before budget/provider gates, while
+        # mismatches get a 409.
+        if not body.regenerate and not body.continue_turn:
             replay = await _maybe_replay(
                 db,
                 conversation_id,
@@ -1213,7 +1249,11 @@ async def send_message(
         )
 
     provider_attachments: list[AttachmentPayload] = []
-    if not body.regenerate:
+    # Regenerate and continue both reuse the existing trailing user message
+    # (no new user turn is inserted), so the request body's attachments / text
+    # are ignored and safety is re-checked against the persisted user message.
+    reuses_existing_user_message = body.regenerate or body.continue_turn
+    if not reuses_existing_user_message:
         if body.attachments and not binding.supports_attachments:
             raise _attachments_unsupported()
         provider_attachments = _decode_attachment_payloads(
@@ -1237,7 +1277,10 @@ async def send_message(
         )
         if not safety_decision.allowed:
             raise _safety_blocked(safety_decision)
-    elif body.regenerate and not is_temp:
+    elif (body.regenerate or body.continue_turn) and not is_temp:
+        # Regenerate / continue both re-stream against the persisted trailing
+        # user message; re-check it against the safety policy (it may have
+        # tightened since the original send).
         last_user = await messages_repo.get_last_user_message(db, conversation_id)
         if last_user is not None:
             safety_decision = check_user_turn(
@@ -1285,6 +1328,9 @@ async def send_message(
 
     # Branch by mode:
     #   regenerate -> drop trailing assistant(s), reuse existing user message
+    #   continueTurn -> keep the stopped partial assistant, reuse its user
+    #                   message, replay the partial as the trailing assistant
+    #                   turn and send the continuation instruction as the turn
     #   editMessageId -> truncate from that user message inclusive, insert new
     #   default -> existing M1 path
     user_message_id: UUID
@@ -1298,6 +1344,18 @@ async def send_message(
             provider_user_text,
             provider_attachments,
         ) = await _prepare_regenerate(
+            db=db,
+            conversation_id=conversation_id,
+            supports_attachments=binding.supports_attachments,
+            supports_vision=binding.supports_vision,
+        )
+    elif body.continue_turn:
+        (
+            user_message_id,
+            history,
+            provider_user_text,
+            provider_attachments,
+        ) = await _prepare_continue(
             db=db,
             conversation_id=conversation_id,
             supports_attachments=binding.supports_attachments,
@@ -1410,7 +1468,9 @@ async def send_message(
     # the prior assistant(s) and leaves count_assistant_messages at 0. Gate it
     # explicitly on "this is a fresh send" so the handler can require BOTH
     # conditions before scheduling the detached autogen task.
-    is_initial = not body.regenerate and body.edit_message_id is None
+    is_initial = (
+        not body.regenerate and not body.continue_turn and body.edit_message_id is None
+    )
 
     # Effective web-search opt-in for this turn. Unsupported provider/config
     # combinations degrade silently: the turn still answers, just ungrounded.
@@ -1430,6 +1490,13 @@ async def send_message(
                 db,
                 user_id=user.id,
                 event_type="message.regenerated",
+                properties=event_props,
+            )
+        if body.continue_turn:
+            await analytics_repo.record(
+                db,
+                user_id=user.id,
+                event_type="message.continued",
                 properties=event_props,
             )
         if body.edit_message_id is not None:
@@ -1722,6 +1789,78 @@ async def _prepare_regenerate(
     if not user_text:
         user_text = _text_from_parts(last_user.parts)
     return last_user.id, full_history, user_text, attachments
+
+
+async def _prepare_continue(
+    *,
+    db: AsyncSession,
+    conversation_id: UUID,
+    supports_attachments: bool,
+    supports_vision: bool,
+) -> tuple[UUID, list[ProviderChatMessage], str, list[AttachmentPayload]]:
+    """Continue a previously-Stopped turn WITHOUT discarding the partial.
+
+    Unlike `_prepare_regenerate`, this does NOT call `delete_trailing_assistants`
+    — the stopped partial row stays in place. The continuation streams as a NEW
+    assistant message linked to the SAME user message the stopped turn responded
+    to (the returned `user_message_id`), so `submitted` echoes that user id and
+    `stream_and_persist` sets `responds_to_message_id` to it.
+
+    History building: `load_history` already flattens every turn including the
+    stopped partial, so the returned `history` ends with
+    `[…prior turns, the user message, the partial assistant message]`. The
+    continuation instruction (`_CONTINUE_INSTRUCTION`) is returned as the
+    `user_text` — sent as the new user turn so the model EXTENDS its own prior
+    (partial) answer rather than restarting. The fake provider detects this
+    exact constant to emit a deterministic continuation.
+
+    Returns `(user_message_id, history, user_text, attachments)`. `attachments`
+    is empty: the continuation instruction carries no files; the original user
+    attachments already live in the replayed history. Validation still rejects a
+    conversation whose persisted user attachments are incompatible with the
+    served binding, matching the regenerate guard.
+    """
+    # Must have a trailing assistant turn, and it must be `status="stopped"` —
+    # only a stopped (interrupted) turn can be continued. A `done` / `error`
+    # trailing turn has nothing partial to extend.
+    last_assistant = await messages_repo.get_last_assistant_message(db, conversation_id)
+    if last_assistant is None or last_assistant.status != "stopped":
+        raise _nothing_to_continue()
+
+    # The continuation links to the SAME user message the stopped turn answered.
+    # Fall back to the trailing user message if the legacy row predates the
+    # `responds_to_message_id` column (NULL) — same pair-by-tail assumption the
+    # rest of the router makes.
+    user_message_id = last_assistant.responds_to_message_id
+    if user_message_id is None:
+        last_user = await messages_repo.get_last_user_message(db, conversation_id)
+        if last_user is None:
+            raise _nothing_to_continue()
+        user_message_id = last_user.id
+
+    user_row = await messages_repo.get_by_id(db, user_message_id)
+    if user_row is None:
+        raise _nothing_to_continue()
+
+    # Re-validate the persisted user attachments against the served binding (the
+    # served tier may differ from the stopped turn's). Mirrors regenerate.
+    attachments = _attachment_payloads_from_parts(user_row.parts)
+    if attachments and not supports_attachments:
+        raise _attachments_unsupported()
+    if not supports_vision and any(
+        attachment.media_type == "image" for attachment in attachments
+    ):
+        raise _vision_unsupported()
+
+    # History already includes the stopped partial as the trailing assistant
+    # turn (load_history does not filter by status). The continuation
+    # instruction goes out as the new user turn.
+    history = await messages_repo.load_history(db, conversation_id)
+    # No history mutation happens on continue, but bump the conversation so it
+    # rises in the sidebar like any other accepted turn.
+    await conversations_repo.touch_updated_at(db, conversation_id)
+    await db.commit()
+    return user_message_id, history, _CONTINUE_INSTRUCTION, []
 
 
 async def _prepare_edit(

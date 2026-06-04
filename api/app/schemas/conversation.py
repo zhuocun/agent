@@ -85,6 +85,12 @@ class SendMessageRequest(CamelModel):
     is_temporary: bool = False
     regenerate: bool = False
     edit_message_id: str | None = None
+    # Continue a turn the user previously Stopped: keep the persisted partial
+    # assistant message and stream a NEW assistant message linked to the SAME
+    # user message (via `responds_to_message_id`), rather than discarding the
+    # partial like `regenerate` does. Wire alias `continueTurn`. Mutually
+    # exclusive with `regenerate` / `edit_message_id` (enforced in the route).
+    continue_turn: bool = False
     # Opt this turn into web search. Wire alias `webSearch`. The route degrades
     # it to False (silently, no error) when the served binding doesn't support
     # search or no search backend is configured.

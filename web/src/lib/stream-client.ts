@@ -887,6 +887,36 @@ export function useApiStream(
                 await consumeStream(replay);
                 return;
               }
+              // Non-ok reconnect status. The server returns the standard
+              // `{ error: envelope }` JSON for these — most notably 410
+              // STREAM_REPLAY_TRUNCATED (the replay buffer expired past TTL).
+              // Surface the server's typed error (title/body + Retry via
+              // ErrorFooter) instead of falling through to the generic network
+              // error below. Mirror the pre-stream non-ok parsing above.
+              if (!controller.signal.aborted) {
+                let envelope: ApiErrorEnvelope | null = null;
+                try {
+                  const parsed: unknown = await replay.json();
+                  if (
+                    isRecord(parsed) &&
+                    isRecord(parsed.error) &&
+                    isErrorEnvelope(parsed.error)
+                  ) {
+                    envelope = parsed.error;
+                  } else if (isErrorEnvelope(parsed)) {
+                    envelope = parsed;
+                  }
+                } catch {
+                  // Body wasn't a parseable envelope; fall through to the
+                  // generic stream-read error below.
+                }
+                if (envelope && !terminalEmittedRef.current) {
+                  const replayErr = new ApiError(envelope, replay.status);
+                  setState((s) => ({ ...s, status: "error" }));
+                  emitTerminal("error", { error: replayErr });
+                  return;
+                }
+              }
             } catch {
               if (controller.signal.aborted) return;
             }

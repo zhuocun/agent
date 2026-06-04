@@ -41,6 +41,10 @@ export interface ModelModePickerProps {
   efforts: ReasoningEffort[];
   selectedEffortId: ReasoningEffortId;
   onSelectEffort: (id: ReasoningEffortId) => void;
+  // False when the served provider ignores reasoning effort (e.g. Anthropic).
+  // The effort rows are then rendered DISABLED with a one-line note — never an
+  // error. Defaults to true (supported) when omitted.
+  effortSupported?: boolean;
   // Web-search toggle. The "Web search" section is shown ONLY when the
   // currently-selected tier reports `supportsWebSearch`; on a tier that can't
   // search, the toggle is hidden entirely (the BE would ignore the flag).
@@ -65,6 +69,7 @@ export function ModelModePicker({
   efforts,
   selectedEffortId,
   onSelectEffort,
+  effortSupported = true,
   searchEnabled,
   onToggleSearch,
   disabled,
@@ -205,10 +210,17 @@ export function ModelModePicker({
                 key={e.id}
                 label={e.label}
                 description={e.description}
+                meta={effortMeta(e)}
                 selected={e.id === selectedEffortId}
+                disabled={!effortSupported}
                 onSelect={() => onSelectEffort(e.id)}
               />
             ))}
+            {!effortSupported ? (
+              <p className="px-3 py-1.5 text-xs leading-snug text-muted-foreground">
+                This model ignores reasoning effort.
+              </p>
+            ) : null}
           </DropdownMenuGroup>
           {showWebSearch ? (
             <>
@@ -326,11 +338,21 @@ export function ModelModePicker({
                 <SheetRow
                   key={e.id}
                   label={e.label}
-                  description={e.description}
+                  description={[e.description, effortMeta(e)]
+                    .filter(Boolean)
+                    .join(" · ")}
                   selected={e.id === selectedEffortId}
+                  disabled={!effortSupported}
                   onSelect={() => handleSelectEffort(e.id)}
                 />
               ))}
+              {!effortSupported ? (
+                <li>
+                  <p className="px-4 py-2 text-xs leading-snug text-muted-foreground">
+                    This model ignores reasoning effort.
+                  </p>
+                </li>
+              ) : null}
             </SheetSection>
             {showWebSearch ? (
               <SheetSection title="Web search">
@@ -484,4 +506,12 @@ function providerDescription(provider: ProviderTierOption): string {
 function tierMeta(tier: ModelTier): string {
   const parts = [tier.modelLabel, tier.supportsAttachments ? "Attachments" : ""];
   return parts.filter(Boolean).join(" · ");
+}
+
+// Relative cost/latency hint for an effort row, surfacing the trade-off so a
+// "max reasoning" pick can't be made without seeing it (PRD 01 §4.2). Skipped
+// for "Auto" (its hints are "auto", which carry no signal worth showing).
+function effortMeta(effort: ReasoningEffort): string | undefined {
+  if (effort.costHint === "auto") return undefined;
+  return `Cost ${effort.costHint} · Latency ${effort.latencyHint}`;
 }

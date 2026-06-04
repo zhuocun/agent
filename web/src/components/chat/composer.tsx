@@ -32,7 +32,8 @@ import {
   filterCommands,
 } from "@/components/chat/slash-commands-popover";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
-import type { AttachmentPart, SlashCommand } from "@/lib/types";
+import { estimateTurnCost } from "@/lib/cost-estimate";
+import type { AttachmentPart, ModelTier, SlashCommand } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const SLASH_PATTERN = /^\/(\w*)$/;
@@ -55,6 +56,10 @@ interface ComposerProps {
   // compare (the toggle is simply absent).
   compareEnabled?: boolean;
   onToggleCompare?: () => void;
+  // The provider-effective tier the next turn will use. When present (and not in
+  // compare mode), the composer shows a muted pre-send cost/token estimate
+  // computed from the live draft (Feature 2). Absent ⇒ no estimate line.
+  estimateTier?: ModelTier;
 }
 
 export interface ComposerHandle {
@@ -145,6 +150,17 @@ function formatAttachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// USD formatter for the pre-send estimate — mirrors cost-breakdown.tsx's
+// `formatUsd` (sub-cent figures get more decimals so a fractional-cent estimate
+// doesn't collapse to "$0.00").
+function formatEstimateUsd(n: number): string {
+  if (n === 0) return "$0.00";
+  const decimals = n < 0.01 ? 6 : n < 1 ? 4 : 2;
+  return `$${n.toFixed(decimals)}`;
+}
+
+const estimateTokenFmt = new Intl.NumberFormat("en-US");
+
 // Icon morph: both glyphs are stacked in a fixed-size box and cross-faded with
 // a spring scale so a send↔stop swap reads as an iOS control morph rather than
 // a hard cut. The active glyph sits at scale-100/opacity-100; the inactive one
@@ -198,6 +214,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     supportsVision = true,
     compareEnabled = false,
     onToggleCompare,
+    estimateTier,
   },
   forwardedRef,
 ) {
@@ -501,6 +518,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     !attachedSendBlocked &&
     !attachmentReadPending;
 
+  // Pre-send cost/token estimate (Feature 2). Recomputed as the draft + the
+  // selected tier change. Only shown once there's something to estimate; the
+  // tier object carries the (bootstrap-supplied) per-M list prices. `usd` is
+  // null for Auto / unpriced tiers — we then show "estimate unavailable for
+  // Auto" rather than a misleading "$0.00".
+  const costEstimate = useMemo(() => {
+    if (!estimateTier) return null;
+    const trimmed = value.trim();
+    if (trimmed.length === 0 && attachments.length === 0) return null;
+    return estimateTurnCost({
+      text: trimmed,
+      attachments,
+      tier: estimateTier,
+    });
+  }, [estimateTier, value, attachments]);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // IME-safe: leave Esc/Enter to the composition layer (CJK).
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -799,6 +832,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           )}
         </div>
       </div>
+      {costEstimate ? (
+        <p
+          className="mt-1 px-2 text-right text-[11px] leading-snug text-muted-foreground/80"
+          data-testid="cost-estimate"
+        >
+          {costEstimate.usd === null ? (
+            <>Estimate unavailable for Auto</>
+          ) : (
+            <>
+              Est. {formatEstimateUsd(costEstimate.usd)} ·{" "}
+              {estimateTokenFmt.format(costEstimate.tokens)} tokens in
+            </>
+          )}
+        </p>
+      ) : null}
     </div>
   );
 });

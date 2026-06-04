@@ -277,6 +277,8 @@ function activeProviderOptionForTier(tier: ModelTier): ProviderTierOption {
     supportsAttachments: tier.supportsAttachments,
     defaultRouteEligible: tier.defaultRouteEligible,
     dataPolicy: tier.dataPolicy,
+    listPriceInPerM: tier.listPriceInPerM,
+    listPriceOutPerM: tier.listPriceOutPerM,
   };
 }
 
@@ -326,6 +328,8 @@ function effectiveTierForProvider(
     modelLabel: option.modelLabel,
     supportsWebSearch: option.supportsWebSearch,
     supportsAttachments: option.supportsAttachments,
+    listPriceInPerM: option.listPriceInPerM,
+    listPriceOutPerM: option.listPriceOutPerM,
   };
 }
 
@@ -370,6 +374,10 @@ export function ChatThread() {
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
   const providerAtSendRef = useRef<string | undefined>(selectedProviderId);
+  // Captured at send-time alongside the tier/provider so a mid-stream effort
+  // change can't retroactively alter what this turn requested (mirrors
+  // tierAtSendRef / searchAtSendRef).
+  const effortAtSendRef = useRef<ReasoningEffortId>(selectedReasoningEffortId);
   const selectedTierIdRef = useRef<ModelTierId>(selectedTierId);
   const selectedProviderIdRef = useRef<string | undefined>(selectedProviderId);
   // The optimistic id of the user message we just sent — set on send, cleared
@@ -589,6 +597,18 @@ export function ChatThread() {
   const selectedTierSupportsVision = selectedModelTier?.supportsVision !== false;
   // Effective, gated view used by every consumer.
   const effectiveSearchEnabled = searchEnabled && selectedTierSupportsSearch;
+  // Whether the served provider honours a reasoning-effort knob. Anthropic
+  // ignores the control, so we DISABLE the effort rows (a graceful, honest UX:
+  // the picker shows a one-line note rather than ever surfacing an error). The
+  // check is on the effective provider id so switching provider re-evaluates.
+  // Defaults to supported while bootstrap is pending.
+  const effortSupported = effectiveProviderId !== "anthropic";
+  // Effective, gated reasoning effort actually sent: forced to "auto" when the
+  // served provider ignores effort, so an unsupported turn never carries a
+  // stale non-auto value onto the wire.
+  const effectiveReasoningEffort: ReasoningEffortId = effortSupported
+    ? selectedReasoningEffortId
+    : "auto";
   const [conversations, setConversations] = useState<ConversationSummary[]>(
     [],
   );
@@ -899,6 +919,7 @@ export function ChatThread() {
       continueTurn?: boolean;
       editMessageId?: string;
       webSearch?: boolean;
+      reasoningEffort?: ReasoningEffortId;
       attachments?: AttachmentPart[];
     }): Promise<void> => {
       abortBeforeStartRef.current = false;
@@ -977,6 +998,9 @@ export function ChatThread() {
         // Sent only when on; stream-client further drops it from the wire when
         // falsy, so the off path is byte-identical to today.
         webSearch: args.webSearch,
+        // Sent only when non-"auto"; stream-client drops it from the wire on
+        // "auto"/absent, so the default path is byte-identical to today.
+        reasoningEffort: args.reasoningEffort,
         attachments: args.attachments,
       });
     },
@@ -1010,6 +1034,9 @@ export function ChatThread() {
     // the effect already keeps `searchEnabled` false off-tier, but gate here too
     // so a same-tick tier switch can't leak a stale flag.
     searchAtSendRef.current = effectiveSearchEnabled;
+    // Capture the effort picked at send-time (gated below so an unsupported
+    // tier never rides a stale value onto the wire).
+    effortAtSendRef.current = effectiveReasoningEffort;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
 
@@ -1030,6 +1057,7 @@ export function ChatThread() {
         tierId: tierAtSendRef.current,
         providerId: providerAtSendRef.current,
         webSearch: searchAtSendRef.current || undefined,
+        reasoningEffort: effortAtSendRef.current,
         attachments,
       });
     };
@@ -1272,6 +1300,7 @@ export function ChatThread() {
     tierAtSendRef.current = selectedTierId;
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
+    effortAtSendRef.current = effectiveReasoningEffort;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
     // Regenerate keeps the trailing user message verbatim — send its text
@@ -1283,6 +1312,62 @@ export function ChatThread() {
       providerId: providerAtSendRef.current,
       regenerate: true,
       webSearch: searchAtSendRef.current || undefined,
+      reasoningEffort: effortAtSendRef.current,
+    });
+  };
+
+  // Regenerate the trailing turn with a DIFFERENT model/provider (Feature 4).
+  // A copy of `handleRegenerate` that uses the passed tier/provider instead of
+  // the currently-selected one, and also moves the picker selection to match so
+  // the served model is reflected going forward. The BE regenerate route
+  // already accepts tierId/providerId, so this rides the existing wire path.
+  const handleRegenerateWith = (tierId: ModelTierId, providerId?: string) => {
+    if (isStreaming) return;
+    // Resolve the provider route for the chosen tier the same way the picker
+    // does — honour the explicit providerId when given, else the default route.
+    const resolvedProviderId =
+      providerOptionForTierId(baseModelTiers, tierId, providerId)?.providerId ??
+      providerId;
+    // Reflect the new served model in the picker for subsequent turns.
+    setSelectedTierId(tierId);
+    setSelectedProviderId(resolvedProviderId);
+    const lastUserText = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== "user") continue;
+        for (const p of m.parts) if (p.type === "text") return p.text;
+      }
+      return "";
+    })();
+    setMessages((prev) => {
+      const next = [...prev];
+      while (next.length && next[next.length - 1].role === "assistant") next.pop();
+      return next;
+    });
+    const regenId = localId();
+    assistantIdRef.current = regenId;
+    pendingUserIdRef.current = null;
+    tierAtSendRef.current = tierId;
+    providerAtSendRef.current = resolvedProviderId;
+    // Web search rides only when the CHOSEN tier/provider supports it.
+    const chosenTier = baseModelTiers.find((t) => t.id === tierId);
+    const chosenEffectiveTier = chosenTier
+      ? effectiveTierForProvider(chosenTier, resolvedProviderId)
+      : undefined;
+    searchAtSendRef.current =
+      searchEnabled && chosenEffectiveTier?.supportsWebSearch === true;
+    // Effort rides only when the chosen provider honours it (Anthropic ignores).
+    effortAtSendRef.current =
+      resolvedProviderId !== "anthropic" ? selectedReasoningEffortId : "auto";
+    setPendingId(regenId);
+    setLiveMessage("Regenerating response");
+    void beginTurn({
+      text: lastUserText,
+      tierId,
+      providerId: resolvedProviderId,
+      regenerate: true,
+      webSearch: searchAtSendRef.current || undefined,
+      reasoningEffort: effortAtSendRef.current,
     });
   };
 
@@ -1309,6 +1394,7 @@ export function ChatThread() {
     tierAtSendRef.current = selectedTierId;
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
+    effortAtSendRef.current = effectiveReasoningEffort;
     setPendingId(continueId);
     setLiveMessage("Continuing response");
     void beginTurn({
@@ -1317,6 +1403,7 @@ export function ChatThread() {
       providerId: providerAtSendRef.current,
       continueTurn: true,
       webSearch: searchAtSendRef.current || undefined,
+      reasoningEffort: effortAtSendRef.current,
     });
   };
 
@@ -1340,6 +1427,7 @@ export function ChatThread() {
     tierAtSendRef.current = selectedTierId;
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
+    effortAtSendRef.current = effectiveReasoningEffort;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
     setMessages((prev) => [
@@ -1359,6 +1447,7 @@ export function ChatThread() {
       providerId: providerAtSendRef.current,
       editMessageId: messageId,
       webSearch: searchAtSendRef.current || undefined,
+      reasoningEffort: effortAtSendRef.current,
     });
   };
 
@@ -1693,6 +1782,18 @@ export function ChatThread() {
               ? cause.message
               : undefined,
       });
+    });
+  };
+
+  // Persist a new monthly spend cap (Feature 3). Routes through the SAME
+  // optimistic preferences flow as every other setting — `handlePreferencesChange`
+  // already does the optimistic setBootstrap + PUT + rollback-on-error — so the
+  // cap rides the existing wire path and surfacing instead of a bespoke one.
+  const handleSaveBudget = (value: number | null) => {
+    if (!bootstrap) return;
+    handlePreferencesChange({
+      ...bootstrap.preferences,
+      monthlyBudgetUsd: value,
     });
   };
 
@@ -2369,6 +2470,7 @@ export function ChatThread() {
                 efforts={REASONING_EFFORTS}
                 selectedEffortId={selectedReasoningEffortId}
                 onSelectEffort={setSelectedReasoningEffortId}
+                effortSupported={effortSupported}
                 searchEnabled={effectiveSearchEnabled}
                 onToggleSearch={setSearchEnabled}
               />
@@ -2465,6 +2567,12 @@ export function ChatThread() {
                           : undefined
                       }
                       onRegenerate={handleRegenerate}
+                      onRegenerateWith={handleRegenerateWith}
+                      regenerateOptions={{
+                        tiers: modelTiers,
+                        providerOptions,
+                        selectedTierId,
+                      }}
                       onContinue={handleContinue}
                       onFeedback={(f) => setFeedback(m.id, f)}
                       onAttributionOpen={handleAttributionOpen}
@@ -2525,6 +2633,9 @@ export function ChatThread() {
                 supportsVision={selectedTierSupportsVision}
                 compareEnabled={compareMode}
                 onToggleCompare={handleToggleCompare}
+                // Pre-send estimate uses the provider-effective selected tier;
+                // suppressed in compare mode (two tiers, no single estimate).
+                estimateTier={compareMode ? undefined : selectedModelTier}
               />
               <AiDisclosure />
             </div>
@@ -2540,6 +2651,7 @@ export function ChatThread() {
         account={account}
         onAccountChange={handleAccountChange}
         usage={usage}
+        onSaveBudget={handleSaveBudget}
         onSignOut={handleSignOut}
         onExportData={handleExportData}
         onDeleteAccount={() => {

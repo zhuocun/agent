@@ -18,7 +18,15 @@ import {
 } from "@/components/ui/collapsible";
 import type { ApiError } from "@/lib/apiClient";
 import { cn } from "@/lib/utils";
-import type { ChatMessage, Feedback, MessagePart, StreamStatus } from "@/lib/types";
+import type {
+  ChatMessage,
+  Feedback,
+  MessagePart,
+  ModelTier,
+  ModelTierId,
+  ProviderTierOption,
+  StreamStatus,
+} from "@/lib/types";
 
 interface AssistantMessageProps {
   message: ChatMessage;
@@ -30,6 +38,14 @@ interface AssistantMessageProps {
   canContinue?: boolean;
   onBranch?: () => void;
   onRegenerate?: () => void;
+  // Regenerate with a specific model/provider (Feature 4). Threaded straight to
+  // MessageActions, which renders the split dropdown when both are present.
+  onRegenerateWith?: (tierId: ModelTierId, providerId?: string) => void;
+  regenerateOptions?: {
+    tiers: ModelTier[];
+    providerOptions: ProviderTierOption[];
+    selectedTierId: ModelTierId;
+  };
   onContinue?: () => void;
   onFeedback?: (next: Feedback) => void;
   onAttributionOpen?: () => void;
@@ -54,6 +70,8 @@ export function AssistantMessage({
   canContinue,
   onBranch,
   onRegenerate,
+  onRegenerateWith,
+  regenerateOptions,
   onContinue,
   onFeedback,
   onAttributionOpen,
@@ -155,6 +173,8 @@ export function AssistantMessage({
               canContinue={canContinue && isStopped}
               onBranch={onBranch}
               onRegenerate={onRegenerate}
+              onRegenerateWith={onRegenerateWith}
+              regenerateOptions={regenerateOptions}
               onContinue={onContinue}
               onFeedback={onFeedback}
             />

@@ -45,6 +45,7 @@ import type {
   ModelAttribution,
   ModelTierId,
   MessagePart,
+  ReasoningEffortId,
   SourceItem,
   StreamStatus,
 } from "@/lib/types";
@@ -122,6 +123,11 @@ export interface StartArgs {
   // Toggled on in the composer; sent only when true (the BE treats absence as
   // false). Gated upstream on the selected tier's `supportsWebSearch`.
   webSearch?: boolean;
+  // Reasoning-effort knob picked in the composer. Sent only when set to a
+  // non-"auto" value (the BE treats absence as "auto"), so the default path is
+  // byte-identical to today's wire shape. Ignored by providers that don't
+  // expose an effort control (the picker disables it for them upstream).
+  reasoningEffort?: ReasoningEffortId;
   // Attachment metadata plus transient payload bytes for the current request.
   // The BE strips payload bytes before message persistence.
   attachments?: AttachmentPart[];
@@ -782,6 +788,12 @@ export function useApiStream(
       // Send `webSearch` only when on — the BE treats absence as false, so the
       // off path is a no-op vs today's wire shape.
       if (args.webSearch) body.webSearch = true;
+      // Send `reasoningEffort` only when the user picked a concrete (non-auto)
+      // value — the BE treats absence as "auto", so the default path is
+      // byte-identical to today (mirrors `webSearch` above).
+      if (args.reasoningEffort && args.reasoningEffort !== "auto") {
+        body.reasoningEffort = args.reasoningEffort;
+      }
       if (args.attachments && args.attachments.length > 0) {
         body.attachments = args.attachments;
       }

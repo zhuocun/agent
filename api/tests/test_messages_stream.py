@@ -229,6 +229,7 @@ async def test_custom_instructions_are_provider_only(
             thinking: bool | None = None,
             reasoning_effort: str | None = None,
             web_search: bool = False,
+            supports_vision: bool = True,
         ) -> AsyncIterator[ProviderEvent]:
             seen_prompts.append(user_text)
             yield ReasoningDone()
@@ -721,6 +722,47 @@ async def test_send_message_rejects_unextractable_text_attachment(
     assert response.status_code == 400
     body = response.json()
     assert body["error"]["code"] == "INVALID_ATTACHMENT"
+    async with session_factory() as session:
+        rows = (await session.execute(select(Message))).scalars().all()
+        assert rows == []
+
+
+async def test_send_message_rejects_image_for_non_vision_tier(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An image to a non-vision binding fails cleanly with VISION_UNSUPPORTED.
+
+    The fake `fast` tier is attachment-capable but NOT vision-capable, so an
+    image is rejected at the route (defense-in-depth) rather than erroring at
+    the provider. PDFs/text on the same tier still succeed (degraded to text).
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "fast",
+            "text": "what's in this image?",
+            "attachments": [
+                {
+                    "type": "attachment",
+                    "id": "att-img-1",
+                    "name": "sketch.png",
+                    "mediaType": "image",
+                    "mimeType": "image/png",
+                    "sizeBytes": 5,
+                    "dataUrl": "data:image/png;base64,aGVsbG8=",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VISION_UNSUPPORTED"
     async with session_factory() as session:
         rows = (await session.execute(select(Message))).scalars().all()
         assert rows == []
@@ -2458,6 +2500,7 @@ class _NoSubstitutionThenBlockProvider:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         web_search: bool = False,
+        supports_vision: bool = True,
     ) -> AsyncIterator[ProviderEvent]:
         try:
             yield ReasoningDelta(text="thinking")

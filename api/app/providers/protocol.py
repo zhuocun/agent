@@ -235,6 +235,14 @@ class Provider(Protocol):
     answer. When False (the default), behavior is byte-for-byte unchanged — no
     tools are advertised. Implementations with no search backend available
     treat True as a no-op.
+
+    `supports_vision` reflects whether the active binding can INTERPRET images
+    and native PDF *document* blocks. When False (the default), the real-provider
+    adapters MUST NOT emit native image/PDF-document content blocks: images are
+    dropped and PDFs degrade to their `extracted_text` transcript only. The route
+    rejects images to a non-vision binding before reaching the provider, so this
+    flag is defense-in-depth at the adapter. Text attachments always flow as
+    transcript regardless of this flag.
     """
 
     def stream(
@@ -248,6 +256,7 @@ class Provider(Protocol):
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         web_search: bool = False,
+        supports_vision: bool = True,
     ) -> AsyncIterator[ProviderEvent]: ...
 
     async def complete(

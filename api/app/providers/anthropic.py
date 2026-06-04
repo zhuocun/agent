@@ -61,9 +61,20 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def _anthropic_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] | None:
-    """Map a transient attachment into Anthropic Messages content."""
+def _anthropic_attachment_part(
+    attachment: AttachmentPayload,
+    *,
+    supports_vision: bool,
+) -> dict[str, Any] | None:
+    """Map a transient attachment into Anthropic Messages content.
+
+    Native image/PDF-document blocks are emitted only when the binding can
+    interpret them (`supports_vision`). A non-vision binding returns None so
+    images are dropped and PDFs degrade to their `extracted_text` transcript.
+    """
     if attachment.media_type == "text":
+        return None
+    if not supports_vision:
         return None
     if attachment.data is None:
         return None
@@ -82,6 +93,8 @@ def _anthropic_attachment_part(attachment: AttachmentPayload) -> dict[str, Any] 
 def _anthropic_user_content(
     user_text: str,
     attachments: list[AttachmentPayload] | None,
+    *,
+    supports_vision: bool,
 ) -> str | list[dict[str, Any]]:
     """Build the current user content, including native attachment bytes."""
     if not attachments:
@@ -90,7 +103,7 @@ def _anthropic_user_content(
     content: list[dict[str, Any]] = []
     transcript_attachments: list[AttachmentPayload] = []
     for attachment in attachments:
-        part = _anthropic_attachment_part(attachment)
+        part = _anthropic_attachment_part(attachment, supports_vision=supports_vision)
         if part is None:
             transcript_attachments.append(attachment)
         else:
@@ -310,6 +323,7 @@ class AnthropicProvider:
         thinking: bool | None = None,
         reasoning_effort: str | None = None,
         web_search: bool = False,
+        supports_vision: bool = True,
     ) -> AsyncIterator[ProviderEvent]:
         # `thinking` / `reasoning_effort` accepted for Protocol conformance but
         # ignored: Anthropic extended-thinking is not yet wired here.
@@ -319,8 +333,15 @@ class AnthropicProvider:
         ]
         # Steer ONLY the current user turn (real-provider, outgoing request,
         # never persisted). History stays verbatim. See app/providers/steering.py.
+        # `supports_vision` gates native image/PDF-document blocks; a non-vision
+        # binding degrades PDFs to transcript text and drops images.
         messages.append(
-            {"role": "user", "content": _anthropic_user_content(user_text, attachments)}
+            {
+                "role": "user",
+                "content": _anthropic_user_content(
+                    user_text, attachments, supports_vision=supports_vision
+                ),
+            }
         )
 
         # Anthropic server-side web search (hosted tool). Advertise the tool only

@@ -405,6 +405,11 @@ async def stream_and_persist(
         # Opt this turn into the web_search tool. False (the default) leaves the
         # provider stream byte-for-byte unchanged — no StatusUpdate / Sources.
         web_search=web_search,
+        # Whether the active binding can interpret images / native PDF document
+        # blocks. On a non-vision binding the real-provider adapters suppress
+        # native image/PDF blocks (PDFs degrade to transcript text); the route
+        # already rejects images to a non-vision binding before this point.
+        supports_vision=binding.supports_vision,
     )
 
     queue: asyncio.Queue[ProviderEvent | _PumpError | None] = asyncio.Queue()

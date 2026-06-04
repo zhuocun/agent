@@ -245,8 +245,17 @@ class TierBinding:
     supports_web_search: bool = False
     # Whether this binding can accept user attachments for a turn using native
     # provider payloads. Metadata-only fallback is intentionally not enough to
-    # advertise this capability.
+    # advertise this capability. Text attachments flow as transcript text; PDFs
+    # flow as transcript text plus (on vision bindings) a native document block.
     supports_attachments: bool = False
+    # Whether this binding can INTERPRET images (and native PDF *document*
+    # blocks). DISTINCT from `supports_attachments`: a binding may accept files
+    # (text/PDF as transcript text) without being multimodal. When False, the
+    # provider adapters emit NEITHER native image blocks NOR native PDF document
+    # blocks — PDFs degrade to their `extracted_text` transcript only. DeepSeek
+    # (the canonical OpenAI-compatible prod route) is NOT multimodal, so the
+    # OpenAI-compatible binding stays conservative (`supports_vision=False`).
+    supports_vision: bool = False
 
 
 def _tier(
@@ -426,6 +435,9 @@ def _anthropic_binding(tier_id: ModelTierId) -> TierBinding | None:
         model_label=_ANTHROPIC_LABEL_FOR.get(tier_id, ""),
         supports_web_search=True,
         supports_attachments=True,
+        # Claude is multimodal — it can interpret images and native PDF
+        # document blocks.
+        supports_vision=True,
     )
 
 
@@ -487,6 +499,11 @@ def _openai_binding(tier_id: ModelTierId, s: Settings) -> TierBinding | None:
         model_label="" if tier_id == "auto" else model_id,
         supports_web_search=True,
         supports_attachments=True,
+        # Conservative: the canonical prod OpenAI-compatible route is DeepSeek,
+        # which is NOT multimodal. Leave `supports_vision=False` so attachments
+        # are accepted (text/PDF as transcript) but images are rejected at the
+        # route and native image/document blocks are never emitted.
+        supports_vision=False,
     )
 
 
@@ -530,6 +547,19 @@ def tier_requires_pro(tier_id: ModelTierId) -> bool:
     return tier_id == "pro"
 
 
+# Per-tier vision capability for the dev/test `fake` backend. The `fast` tier is
+# deliberately attachment-capable-but-NOT-vision so the FE e2e (which runs under
+# PROVIDER_BACKEND=fake) can drive the vision-removed path by switching to it,
+# while the other tiers (auto/smart/pro) keep vision so the vision-allowed path
+# is exercised too. Tiers absent from this map default to vision-capable.
+_FAKE_SUPPORTS_VISION: dict[ModelTierId, bool] = {
+    "fast": False,
+    "smart": True,
+    "auto": True,
+    "pro": True,
+}
+
+
 def _binding_for_provider(
     tier_id: ModelTierId,
     *,
@@ -547,6 +577,12 @@ def _binding_for_provider(
     if provider_id == "fake":
         for binding in TIER_BINDINGS:
             if binding.tier.id == tier_id:
+                # The fake backend exercises BOTH capability paths so the FE e2e
+                # can cover vision-allowed and vision-removed flows under
+                # PROVIDER_BACKEND=fake: `fast` is attachment-capable but NOT
+                # vision (images rejected, PDFs/text degrade to transcript),
+                # while the rest are vision-capable.
+                fake_vision = _FAKE_SUPPORTS_VISION.get(tier_id, True)
                 if explicit_provider_override:
                     return replace(
                         binding,
@@ -554,8 +590,13 @@ def _binding_for_provider(
                         model_id="fake",
                         model_label="" if tier_id == "auto" else "Fake",
                         supports_attachments=True,
+                        supports_vision=fake_vision,
                     )
-                return replace(binding, supports_attachments=True)
+                return replace(
+                    binding,
+                    supports_attachments=True,
+                    supports_vision=fake_vision,
+                )
         return None
     if provider_id == "deepseek":
         for binding in TIER_BINDINGS:
@@ -598,6 +639,9 @@ def _provider_options_for_tier(
                 supports_attachments=(
                     binding.supports_attachments if binding is not None else False
                 ),
+                supports_vision=(
+                    binding.supports_vision if binding is not None else False
+                ),
                 default_route_eligible=(
                     route.default_route_eligible and runtime_status == "available"
                 ),
@@ -634,12 +678,14 @@ def list_tiers(
             web_search_available_for_binding(binding, settings=s) if binding is not None else False
         )
         supports_attachments = binding.supports_attachments if binding is not None else False
+        supports_vision = binding.supports_vision if binding is not None else False
         tiers.append(
             base.tier.model_copy(
                 update={
                     "model_label": label,
                     "supports_web_search": supports_search,
                     "supports_attachments": supports_attachments,
+                    "supports_vision": supports_vision,
                     "provider_id": route.provider_id if route is not None else "",
                     "provider_label": route.label if route is not None else "",
                     "provider_route_status": active_status,

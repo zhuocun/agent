@@ -44,6 +44,11 @@ class CamelModel(BaseModel):
 
 # Wire enums kept tight to what the FE renders. See web/src/lib/types.ts.
 ModelTierId = Literal["fast", "smart", "pro", "auto"]
+# Per-turn reasoning-effort override the FE composer can attach. `auto` defers to
+# the tier binding's default; `minimal` forces thinking OFF for a real latency
+# win; `standard`/`extended` map to provider effort levels. Providers that don't
+# support effort hints ignore them (it's a hint, never an error).
+ReasoningEffortId = Literal["auto", "minimal", "standard", "extended"]
 StreamStatus = Literal["idle", "submitted", "streaming", "done", "stopped", "error"]
 Feedback = Literal["up", "down"]  # null serialized as `feedback: null` on the wire
 

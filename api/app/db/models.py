@@ -104,6 +104,13 @@ class Preferences(Base):
     # NULL means "retain forever"; non-NULL values are constrained by the API
     # schema/repository to the currently supported short windows.
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # User-set monthly platform-spend cap in USD. NULL means "no user cap".
+    # Numeric(12,6) mirrors `usage_rollup.cost_usd` / `message.cost_usd` so the
+    # cap composes with the same fixed-precision money math; `asdecimal=False`
+    # keeps SQLAlchemy returning plain Python floats for the budget gate.
+    monthly_budget_usd: Mapped[float | None] = mapped_column(
+        Numeric(12, 6, asdecimal=False), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

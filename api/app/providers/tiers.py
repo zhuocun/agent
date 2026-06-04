@@ -646,6 +646,12 @@ def _provider_options_for_tier(
                     route.default_route_eligible and runtime_status == "available"
                 ),
                 data_policy=route.data_policy,
+                list_price_in_per_m=(
+                    binding.list_price_in_per_m if binding is not None else 0.0
+                ),
+                list_price_out_per_m=(
+                    binding.list_price_out_per_m if binding is not None else 0.0
+                ),
             )
         )
     return options
@@ -679,6 +685,19 @@ def list_tiers(
         )
         supports_attachments = binding.supports_attachments if binding is not None else False
         supports_vision = binding.supports_vision if binding is not None else False
+        # Prices for a pre-send estimate. `auto` stays 0.0 (its served model —
+        # and thus its price — varies per request), mirroring the blank
+        # `model_label` convention above.
+        price_in = (
+            binding.list_price_in_per_m
+            if binding is not None and base.tier.id != "auto"
+            else 0.0
+        )
+        price_out = (
+            binding.list_price_out_per_m
+            if binding is not None and base.tier.id != "auto"
+            else 0.0
+        )
         tiers.append(
             base.tier.model_copy(
                 update={
@@ -686,6 +705,8 @@ def list_tiers(
                     "supports_web_search": supports_search,
                     "supports_attachments": supports_attachments,
                     "supports_vision": supports_vision,
+                    "list_price_in_per_m": price_in,
+                    "list_price_out_per_m": price_out,
                     "provider_id": route.provider_id if route is not None else "",
                     "provider_label": route.label if route is not None else "",
                     "provider_route_status": active_status,

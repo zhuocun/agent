@@ -6,7 +6,7 @@ from typing import Annotated
 
 from pydantic import Field, StringConstraints
 
-from app.schemas.common import CamelModel, ModelTierId
+from app.schemas.common import CamelModel, ModelTierId, ReasoningEffortId
 from app.schemas.message import AttachmentPart, ChatMessage
 
 
@@ -99,3 +99,9 @@ class SendMessageRequest(CamelModel):
     # payload bytes on each part; persistence strips those fields and stores
     # metadata only.
     attachments: list[AttachmentPart] = Field(default_factory=list, max_length=10)
+    # Per-turn reasoning-effort override. Wire alias `reasoningEffort`. None /
+    # "auto" defers to the served binding's default; "minimal" forces thinking
+    # off for a latency win; "standard"/"extended" select provider effort
+    # levels. The route degrades it silently (no error) for providers that
+    # don't support effort hints — it is a hint, never a hard requirement.
+    reasoning_effort: ReasoningEffortId | None = None

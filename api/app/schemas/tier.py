@@ -37,6 +37,11 @@ class ProviderRouteOption(CamelModel):
     supports_vision: bool = False
     default_route_eligible: bool = False
     data_policy: ProviderDataPolicy | None = None
+    # List prices (USD per million tokens) for this route, so the FE can render a
+    # pre-send cost estimate without hardcoding provider pricing. 0.0 for routes
+    # whose served model varies per request (the `auto` router) or has no binding.
+    list_price_in_per_m: float = 0.0
+    list_price_out_per_m: float = 0.0
 
 
 class ModelTier(CamelModel):
@@ -76,6 +81,11 @@ class ModelTier(CamelModel):
     default_route_eligible: bool = False
     data_policy: ProviderDataPolicy | None = None
     provider_options: list[ProviderRouteOption] = Field(default_factory=list)
+    # List prices (USD per million tokens) for the ACTIVE backend's binding, so
+    # the FE can render a pre-send cost estimate. 0.0 for `auto` (served model
+    # varies per request) and as the backend-independent canonical default.
+    list_price_in_per_m: float = 0.0
+    list_price_out_per_m: float = 0.0
 
 
 class PromptSuggestion(CamelModel):

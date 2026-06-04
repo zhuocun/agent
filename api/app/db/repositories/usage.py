@@ -59,6 +59,18 @@ def _round_usd(amount: float) -> float:
     return round(float(amount), 6)
 
 
+def _effective_quota_usd(settings_cap: float, user_cap: float | None) -> float:
+    """Compose the operator quota and the user's own cap into one enforced cap.
+
+    A cap is "active" only when positive. When both the operator
+    `USAGE_BUDGET_USD` and the user's `monthly_budget_usd` are set, the LOWER one
+    wins (the stricter limit). Returns 0.0 (= "no cap") when neither is positive,
+    preserving the existing budget-disabled mode.
+    """
+    caps = [c for c in (settings_cap, user_cap or 0.0) if c > 0]
+    return min(caps) if caps else 0.0
+
+
 def _usage_lock_for(user_id: UUID) -> asyncio.Lock:
     lock = _USAGE_LOCKS.get(user_id)
     if lock is None:
@@ -456,6 +468,7 @@ async def get_current_budget(
     user_id: UUID,
     is_byok: bool,
     monthly_quota_usd: float = 0.0,
+    user_budget_usd: float | None = None,
 ) -> UsageBudget:
     """Return the current month's rollup as a FE-shape `UsageBudget`.
 
@@ -463,6 +476,11 @@ async def get_current_budget(
     historical flag -- the column is analytics-only (see plan §"UsageBudget
     semantics"). Returns the default-zero budget when no row exists for the
     period yet.
+
+    `user_budget_usd` is the user's own monthly cap (from preferences). The
+    effective enforced cap is the LOWER of it and the operator quota
+    (`monthly_quota_usd`); `platform_remaining_usd` is computed against that
+    effective cap so the FE meter reflects the limit actually enforced.
     """
     period = _month_start()
     stmt = select(UsageRollup).where(
@@ -474,9 +492,10 @@ async def get_current_budget(
     limit = int(row.limit_value) if row is not None else _DEFAULT_LIMIT
     monthly_spend_usd = float(row.cost_usd) if row is not None else 0.0
     credit_balance_usd = await get_credit_balance(db, user_id=user_id)
+    effective = _effective_quota_usd(monthly_quota_usd, user_budget_usd)
     platform_remaining_usd = (
-        _round_usd(max(0.0, monthly_quota_usd - monthly_spend_usd) + credit_balance_usd)
-        if monthly_quota_usd > 0
+        _round_usd(max(0.0, effective - monthly_spend_usd) + credit_balance_usd)
+        if effective > 0
         else None
     )
     recent_entries = await list_recent_credit_entries(db, user_id=user_id)
@@ -489,6 +508,8 @@ async def get_current_budget(
         monthly_quota_usd=_round_usd(monthly_quota_usd),
         credit_balance_usd=credit_balance_usd,
         platform_remaining_usd=platform_remaining_usd,
+        user_budget_usd=user_budget_usd,
+        effective_quota_usd=effective or None,
         recent_ledger_entries=recent_entries,
     )
 

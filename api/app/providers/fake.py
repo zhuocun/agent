@@ -25,6 +25,16 @@ provider raises a typed `AppError(RATE_LIMITED)` with `retryAfterMs` mid-stream,
 mirroring how the real provider maps a 429. Exercises the handler surfacing a
 typed provider error (code + retryAfterMs) on the wire.
 
+Forced provider-fallback retry: when `user_text` starts with
+`FORCE_FALLBACK_RETRY:`, the provider raises a retryable
+`AppError(PROVIDER_UPSTREAM, 503)` BEFORE yielding any event — but ONLY on the
+primary route (`model_id != "fake-fallback"`). The route selects a fallback
+binding with `model_id="fake-fallback"`, on which this marker is a no-op, so the
+handler's one-shot pre-token fallback retries onto it and streams a normal
+answer carrying a `provider_fallback` substitution. Distinct from
+`FORCE_RATE_LIMIT:`, which raises AFTER deltas (post-token) and therefore must
+NOT be retried.
+
 Mermaid diagram: when `user_text` starts with `MERMAID:`, the provider emits the
 usual reasoning block then a single well-formed, closed fenced ```mermaid block
 as its answer (instead of the templated text). Exercises the FE's Streamdown
@@ -132,6 +142,22 @@ class FakeProvider:
         # `thinking` / `reasoning_effort` / `supports_vision` are accepted to
         # satisfy the Provider Protocol but ignored — the fake's output is
         # fixed/deterministic and it never emits native attachment blocks.
+        # Forced provider-fallback retry: when `user_text` starts with
+        # `FORCE_FALLBACK_RETRY:`, raise a retryable upstream error BEFORE
+        # yielding ANYTHING — but ONLY on the primary route. The route hands the
+        # fallback a binding whose `model_id == "fake-fallback"`, so the retry
+        # streams a normal answer and the handler emits a `provider_fallback`
+        # substitution. Exercises the handler's pre-token fallback seam E2E.
+        if user_text.startswith("FORCE_FALLBACK_RETRY:") and model_id != "fake-fallback":
+            raise AppError(
+                ErrorEnvelope(
+                    code="PROVIDER_UPSTREAM",
+                    severity="error",
+                    title="Provider error",
+                    body="The model provider returned an error. Please try again.",
+                ),
+                status_code=503,
+            )
         # Two short reasoning deltas, then done.
         await asyncio.sleep(self._delay)
         yield ReasoningDelta(text="Let me think")

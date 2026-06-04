@@ -80,6 +80,7 @@ async def put_preferences(
             else existing.custom_instructions
         ),
         retention_days=body.retention_days,
+        monthly_budget_usd=body.monthly_budget_usd,
     )
     safety_decision = check_user_turn(
         settings,

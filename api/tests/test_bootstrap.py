@@ -313,3 +313,44 @@ async def test_bootstrap_exposes_credit_balance_and_recent_ledger(
     assert usage["recentLedgerEntries"][0]["entryType"] == "grant"
     assert usage["recentLedgerEntries"][0]["amountUsd"] == pytest.approx(7.5)
     assert usage["recentLedgerEntries"][0]["description"] == "Test grant"
+
+
+async def test_bootstrap_reflects_user_budget_cap(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A saved `monthly_budget_usd` surfaces as `usage.userBudgetUsd` and (with
+    the operator cap disabled) becomes `usage.effectiveQuotaUsd`.
+
+    The operator `USAGE_BUDGET_USD` defaults to 0 in tests, so the user cap is
+    the only positive cap and therefore the effective one.
+    """
+    from app.db.repositories import preferences as preferences_repo
+
+    # No cap yet -> both fields null on first bootstrap.
+    first = await client.get("/api/bootstrap")
+    assert first.status_code == 200
+    usage0 = first.json()["usage"]
+    assert usage0["userBudgetUsd"] is None
+    assert usage0["effectiveQuotaUsd"] is None
+
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        prefs = await preferences_repo.get_or_default(session, user.id)
+        await preferences_repo.upsert(
+            session,
+            user.id,
+            prefs.model_copy(update={"monthly_budget_usd": 12.5}),
+        )
+        await session.commit()
+
+    response = await client.get("/api/bootstrap")
+    assert response.status_code == 200
+    usage = response.json()["usage"]
+    assert usage["userBudgetUsd"] == pytest.approx(12.5)
+    # Operator cap disabled (0) -> the user cap is the effective quota.
+    assert usage["effectiveQuotaUsd"] == pytest.approx(12.5)
+    # And the platform-remaining is computed against that effective cap.
+    assert usage["platformRemainingUsd"] == pytest.approx(12.5)
+    # The saved cap also round-trips on the preferences payload.
+    assert response.json()["preferences"]["monthlyBudgetUsd"] == pytest.approx(12.5)

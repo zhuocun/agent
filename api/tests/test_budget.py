@@ -417,6 +417,151 @@ async def test_platform_credits_extend_budget_and_are_debited(
     assert debits[0].amount_usd < 0
 
 
+# Feature 3: user monthly budget cap ------------------------------------------
+
+
+async def _set_user_budget(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: object,
+    monthly_budget_usd: float | None,
+) -> None:
+    """Persist the user's `monthly_budget_usd` via the preferences repo."""
+    from app.db.repositories import preferences as preferences_repo
+
+    async with session_factory() as session:
+        prefs = await preferences_repo.get_or_default(session, user_id)  # type: ignore[arg-type]
+        updated = prefs.model_copy(update={"monthly_budget_usd": monthly_budget_usd})
+        await preferences_repo.upsert(session, user_id, updated)  # type: ignore[arg-type]
+        await session.commit()
+
+
+async def test_effective_quota_composition() -> None:
+    """`_effective_quota_usd` composes operator + user caps (lower positive wins).
+
+    - Neither positive -> 0.0 (disabled).
+    - Only one positive -> that one.
+    - Both positive -> the LOWER.
+    """
+    from app.db.repositories.usage import _effective_quota_usd
+
+    assert _effective_quota_usd(0.0, None) == 0.0
+    assert _effective_quota_usd(0.0, 0.0) == 0.0
+    assert _effective_quota_usd(5.0, None) == 5.0
+    assert _effective_quota_usd(0.0, 3.0) == 3.0
+    assert _effective_quota_usd(5.0, 3.0) == 3.0  # user lower wins
+    assert _effective_quota_usd(2.0, 9.0) == 2.0  # operator lower wins
+
+
+async def test_user_budget_cap_enforced_with_operator_cap_disabled(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """With `USAGE_BUDGET_USD=0` (operator cap disabled) a tiny USER cap still
+    refuses the next platform turn once the ledger crosses it -> 429.
+
+    Uses the default `client` (operator cap defaults to 0), so the ONLY active
+    cap is the user's own `monthly_budget_usd`.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Tiny user cap; one fake turn's cost exceeds it.
+    await _set_user_budget(
+        session_factory, user_id=user_id, monthly_budget_usd=0.0000001
+    )
+
+    # Turn 1 passes (ledger starts at 0 < cap) and writes a cost over the cap.
+    await _collect_sse(
+        client, f"/api/conversations/{conv_id}/messages", _send_body()
+    )
+
+    # Turn 2: pre-flight gate sees accumulated cost >= user cap -> 429.
+    resp = await client.post(
+        f"/api/conversations/{conv_id}/messages", json=_send_body()
+    )
+    assert resp.status_code == 429, resp.text
+    assert resp.json()["error"]["code"] == "BUDGET_EXCEEDED"
+
+
+async def test_lower_operator_cap_wins_over_large_user_cap(
+    budget_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """When BOTH caps are positive the LOWER wins. `budget_client` sets a tiny
+    operator cap; a LARGE user cap must not relax it — the turn is still refused.
+    """
+    await budget_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Large user cap (would allow the turn on its own), but the tiny operator cap
+    # from `budget_env` is lower and therefore the enforced one.
+    await _set_user_budget(
+        session_factory, user_id=user_id, monthly_budget_usd=1000.0
+    )
+
+    # Turn 1 crosses the tiny operator cap.
+    await _collect_sse(
+        budget_client, f"/api/conversations/{conv_id}/messages", _send_body()
+    )
+
+    # Turn 2 refused — the lower (operator) cap governs.
+    resp = await budget_client.post(
+        f"/api/conversations/{conv_id}/messages", json=_send_body()
+    )
+    assert resp.status_code == 429, resp.text
+    assert resp.json()["error"]["code"] == "BUDGET_EXCEEDED"
+
+
+async def test_user_budget_cap_byok_still_exempt(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A BYOK turn stays exempt from the user cap: the user pays their own
+    provider, so a tiny `monthly_budget_usd` does not gate a BYOK turn."""
+    from app.db.repositories import api_keys as api_keys_repo
+    from app.db.repositories import usage as usage_repo
+    from app.providers.tiers import get_binding
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=False, name="Upgraded", email="byok-usercap@example.com")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        await api_keys_repo.upsert(
+            session,
+            user_id=user.id,
+            provider=binding.provider_id,
+            raw_api_key="sk-test-byok-key-9876",
+        )
+        # Over-budget rollup so the gate WOULD fire if consulted for a BYOK turn.
+        await usage_repo.increment_for_period(
+            session, user_id=user.id, used_delta=1, cost_usd_delta=1.0
+        )
+        await session.commit()
+        byok_user_id = user.id
+
+    # Tiny user cap; BYOK must still bypass it.
+    await _set_user_budget(
+        session_factory, user_id=byok_user_id, monthly_budget_usd=0.0000001
+    )
+
+    cookie_name, cookie_value = await _session_cookie_for(session_factory, byok_user_id)
+    client.cookies.set(cookie_name, cookie_value)
+    conv_id = await _seed_conversation(session_factory, user_id=byok_user_id)
+
+    frames = await _collect_sse(
+        client, f"/api/conversations/{conv_id}/messages", _send_body()
+    )
+    assert frames[-1][0] == "terminal"
+    assert frames[-1][1]["attribution"]["isByok"] is True
+
+
 async def _session_cookie_for(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: object,

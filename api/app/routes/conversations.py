@@ -41,6 +41,7 @@ from app.db.repositories import messages as messages_repo
 from app.db.repositories import preferences as preferences_repo
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
+from app.db.repositories.usage import _effective_quota_usd
 from app.db.session import get_db
 from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
 from app.middleware.ratelimit import limiter
@@ -54,6 +55,7 @@ from app.providers.protocol import (
 from app.providers.router import route_auto
 from app.providers.tiers import (
     TierBinding,
+    available_provider_backend_ids,
     get_binding,
     get_provider_route,
     is_known_tier,
@@ -63,7 +65,7 @@ from app.providers.tiers import (
     web_search_available_for_binding,
 )
 from app.safety import SafetyDecision, check_user_turn
-from app.schemas.common import ModelTierId, SubstitutionReasonCode
+from app.schemas.common import ModelTierId, ReasoningEffortId, SubstitutionReasonCode
 from app.schemas.conversation import (
     BranchConversationRequest,
     ConversationSearchResult,
@@ -225,6 +227,92 @@ def _ensure_provider_usable(
         return
     if not platform_provider_usable(provider_id, settings):
         raise _provider_unavailable(provider_id)
+
+
+def _map_reasoning_effort(
+    effort: ReasoningEffortId | None,
+    binding: TierBinding,
+) -> tuple[str | None, bool | None]:
+    """Map a per-turn reasoning-effort hint to provider call overrides.
+
+    Returns `(reasoning_effort_override, thinking_override)` — each None means
+    "use the binding default unchanged" at the provider call:
+
+    - `auto` / None  -> `(binding.reasoning_effort, None)`: unchanged behavior.
+    - `minimal`      -> `(None, False)`: force thinking OFF for a real latency
+      win (and omit any effort level).
+    - `standard`     -> `("medium", None)`.
+    - `extended`     -> `("high", None)`.
+
+    Providers that don't support effort hints ignore them, so this is always a
+    safe, graceful hint — it NEVER raises for an unsupported effort.
+    """
+    if effort is None or effort == "auto":
+        return binding.reasoning_effort, None
+    if effort == "minimal":
+        return None, False
+    if effort == "standard":
+        return "medium", None
+    # "extended"
+    return "high", None
+
+
+async def _select_fallback_route(
+    tier_id: ModelTierId,
+    primary_provider_id: str,
+    settings: Settings,
+    *,
+    user: User,
+    db: AsyncSession,
+    resolved_api_key: str | None,
+) -> tuple[TierBinding, str, str | None] | None:
+    """Pick a single alternate provider route to retry on a provider fallback.
+
+    Policy (ALL routing decisions live here; the handler stays dumb):
+
+    - Candidates = real adapter backends (`available_provider_backend_ids`)
+      MINUS the primary, that are usable either on the platform key
+      (`platform_provider_usable`) OR via a stored BYOK key for the caller, and
+      whose adapter is allowed in this runtime (`route_adapter_available`).
+    - Iterate a FIXED safe order (deepseek, anthropic, openai, fake) and pick the
+      first candidate with a non-None `get_binding(tier_id, provider_id=cand)`.
+    - Resolve that candidate's BYOK key (mirrors the primary BYOK lookup).
+
+    Returns `(binding, provider_id, api_key)` or None when no alternate exists.
+
+    The `fake` backend is included so the dev/test path can exercise the retry:
+    when the active backend is `fake`, the fallback binding's `model_id` is
+    switched to `"fake-fallback"` so the fake provider streams normally on the
+    retry (it only raises pre-token on the primary `model_id`).
+    """
+    # Fixed safe order. `fake` last so real providers always win when present.
+    preferred_order = ("deepseek", "anthropic", "openai", "fake")
+    available = set(available_provider_backend_ids())
+    for candidate in preferred_order:
+        if candidate == primary_provider_id or candidate not in available:
+            continue
+        if not route_adapter_available(candidate, settings):
+            continue
+        # Resolve a BYOK key for the candidate (non-anonymous users only).
+        candidate_key: str | None = None
+        if not user.is_anonymous:
+            candidate_key = await api_keys_repo.get_decrypted_for_user(
+                db, user_id=user.id, provider=candidate
+            )
+        # Usable iff the platform can call it OR the caller has a BYOK key.
+        if not (platform_provider_usable(candidate, settings) or candidate_key is not None):
+            continue
+        candidate_binding = get_binding(tier_id, settings=settings, provider_id=candidate)
+        if candidate_binding is None:
+            continue
+        if candidate == "fake":
+            # Distinct model id so the fake provider streams (doesn't re-raise)
+            # on the retry — see providers/fake.py FORCE_FALLBACK_RETRY marker.
+            from dataclasses import replace as _replace
+
+            candidate_binding = _replace(candidate_binding, model_id="fake-fallback")
+        return candidate_binding, candidate, candidate_key
+    return None
 
 
 def _stream_in_progress() -> AppError:
@@ -1108,6 +1196,12 @@ async def send_message(
     """
     settings = get_settings()
     user_prefs = await preferences_repo.get_or_default(db, user.id)
+    # Effective monthly cap = min of the operator quota and the user's own
+    # budget (whichever positive caps exist; 0.0 = no cap). Computed once here so
+    # the budget gate AND the handler's credit-debit math use the same value.
+    effective_quota_usd = _effective_quota_usd(
+        settings.usage_budget_usd, user_prefs.monthly_budget_usd
+    )
     selected_provider_id = _selected_provider_id(body.provider_id, settings)
     # Tier/provider validation.
     binding = _resolve_binding(body.tier_id, body.provider_id, settings)
@@ -1215,11 +1309,13 @@ async def send_message(
             api_key=resolved_api_key,
         )
 
-        if settings.usage_budget_usd > 0 and resolved_api_key is None:
+        # Effective cap (min of operator quota + user's own budget) was computed
+        # once at the top of this handler; gate the platform-key turn against it.
+        if effective_quota_usd > 0 and resolved_api_key is None:
             has_allowance = await usage_repo.has_platform_allowance(
                 db,
                 user_id=user.id,
-                monthly_quota_usd=settings.usage_budget_usd,
+                monthly_quota_usd=effective_quota_usd,
             )
             if not has_allowance:
                 async with _derive_session_factory(db)() as event_db:
@@ -1455,6 +1551,34 @@ async def send_message(
         if routed.is_downgrade and routed_tier_id == routed.tier_id:
             router_substitution = "auto_downgrade"
 
+    # The `binding` is now FINALIZED (provider override + auto-route rebind both
+    # applied). Compute the per-turn reasoning-effort overrides and the
+    # provider-fallback route off the final binding/provider.
+
+    # Feature 1: per-turn reasoning-effort override. Maps the hint to provider
+    # call overrides; None means "use the binding default" for that hint.
+    reasoning_effort_override, thinking_override = _map_reasoning_effort(
+        body.reasoning_effort, binding
+    )
+
+    # Phase 2: pick a single alternate route to retry ONCE if the primary
+    # provider raises a retryable error before emitting any token. None when no
+    # alternate is usable — the error then surfaces as today. All routing policy
+    # lives in `_select_fallback_route`; the handler stays dumb.
+    fallback_route = await _select_fallback_route(
+        binding.tier.id,
+        binding.provider_id,
+        settings,
+        user=user,
+        db=db,
+        resolved_api_key=resolved_api_key,
+    )
+    fallback_binding: TierBinding | None = None
+    fallback_provider_id: str | None = None
+    fallback_api_key: str | None = None
+    if fallback_route is not None:
+        fallback_binding, fallback_provider_id, fallback_api_key = fallback_route
+
     # Durable stream lifecycle (PRD 04 §5.1). The active row was claimed before
     # message-history mutation and committed by the accepted branch above. The id
     # is threaded into `stream_and_persist`, which transitions it to done /
@@ -1568,6 +1692,13 @@ async def send_message(
             web_search=effective_web_search,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
+            reasoning_effort_override=reasoning_effort_override,
+            thinking_override=thinking_override,
+            monthly_quota_usd_override=effective_quota_usd,
+            fallback_binding=fallback_binding,
+            fallback_provider_id=fallback_provider_id,
+            fallback_api_key=fallback_api_key,
+            fallback_substitution="provider_fallback",
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -1607,6 +1738,13 @@ async def send_message(
             web_search=effective_web_search,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
+            reasoning_effort_override=reasoning_effort_override,
+            thinking_override=thinking_override,
+            monthly_quota_usd_override=effective_quota_usd,
+            fallback_binding=fallback_binding,
+            fallback_provider_id=fallback_provider_id,
+            fallback_api_key=fallback_api_key,
+            fallback_substitution="provider_fallback",
         ):
             yield sse_event
 

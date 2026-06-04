@@ -48,6 +48,7 @@ async def bootstrap(
         user.id,
         is_byok=account.byok_enabled,
         monthly_quota_usd=settings.usage_budget_usd,
+        user_budget_usd=prefs.monthly_budget_usd,
     )
     summaries = await conversations.list_summaries_for_user(db, user.id)
     return BootstrapResponse(

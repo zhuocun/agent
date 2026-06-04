@@ -160,6 +160,17 @@ class _PumpError:
     exc: BaseException
 
 
+# Provider error codes that are safe to retry on a fallback route: a rate limit
+# or a transient upstream failure. These mirror the typed `AppError`s the real
+# provider adapters raise (`openai.py` / `anthropic.py` `_map_sdk_error`).
+_RETRYABLE_CODES = {"RATE_LIMITED", "PROVIDER_UPSTREAM"}
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Whether a provider exception qualifies for a fallback-route retry."""
+    return isinstance(exc, AppError) and exc.envelope.code in _RETRYABLE_CODES
+
+
 def _fold_complete_substitution(
     ev: Complete,
     current: tuple[str | None, str | None, str | None, str | None],
@@ -315,6 +326,13 @@ async def stream_and_persist(
     web_search: bool = False,
     attachments: list[AttachmentPayload] | None = None,
     custom_instructions: str | None = None,
+    reasoning_effort_override: str | None = None,
+    thinking_override: bool | None = None,
+    monthly_quota_usd_override: float | None = None,
+    fallback_binding: TierBinding | None = None,
+    fallback_provider_id: str | None = None,
+    fallback_api_key: str | None = None,
+    fallback_substitution: SubstitutionReasonCode | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -345,6 +363,25 @@ async def stream_and_persist(
     describes a more urgent, accurate served-vs-requested delta, so it wins and
     overwrites the router-side seed (it carries the actual served model label).
     When neither side substitutes, no `substitution` is emitted.
+
+    `reasoning_effort_override` / `thinking_override` (Feature 1): per-turn
+    overrides of the binding's `reasoning_effort` / `thinking` defaults. When
+    non-None they REPLACE the binding default for that hint at the provider call;
+    when None the binding default is used unchanged. Providers ignore hints they
+    don't support, so this is always safe.
+
+    `monthly_quota_usd_override` (Feature 3): the effective monthly quota (min of
+    the operator cap and the user's own cap) used for the credit-debit math at
+    the `increment_for_period(...)` calls. None falls back to the operator
+    `USAGE_BUDGET_USD` so existing callers are unchanged.
+
+    `fallback_*` (Phase 2 provider fallback): an alternate route to retry ONCE
+    when the primary provider raises a retryable error BEFORE emitting any token.
+    The route owns ALL selection policy and passes a fully-resolved
+    `(fallback_binding, fallback_provider_id, fallback_api_key)` plus a
+    `fallback_substitution` reason code; the handler stays dumb. When
+    `fallback_binding` is None (the default / no alternate) the error surfaces as
+    today.
     """
     # Emit `submitted` immediately. Resumable clients need the durable stream
     # id in-band so they can reconnect to the exact producer they just started.
@@ -371,8 +408,17 @@ async def stream_and_persist(
     latest_status: tuple[str, str] | None = None
     search_items: list[SourceItem] = []
     tool_parts: list[dict[str, Any]] = []
-    is_byok_turn = api_key is not None
+    # Working route state. These start at the primary route and are REASSIGNED in
+    # place if a provider-fallback retry fires (Phase 2). The inner closures
+    # (`_persist_assistant`, `_terminal_properties`, `_apply_event`,
+    # `build_attribution` calls) all read these names at call time, so a
+    # pre-first-token rebind is transparently reflected downstream.
+    active_provider = provider
+    active_api_key = api_key
+    is_byok_turn = active_api_key is not None
     runtime_provider_id = provider_id or binding.provider_id
+    # Single-shot fallback guard: at most ONE retry, ever.
+    fallback_attempted = False
     # Substitution metadata threaded into build_attribution(...). Two sources
     # feed it, with provider-side winning (see below + the docstring):
     #  1. Router-side (auto-routing): seeded here from `router_substitution`.
@@ -390,31 +436,47 @@ async def stream_and_persist(
     sub_model: str | None = None
     sub_label: str | None = None
 
+    # The current provider iterator. Rebuilt on a fallback retry so the pump
+    # drains the alternate route. Built from the CURRENT working route state
+    # (`active_provider` / `binding` / `active_api_key`) plus the per-turn effort
+    # overrides; the override REPLACES the binding default only when non-None.
+    def _build_provider_iter() -> AsyncIterator[ProviderEvent]:
+        return active_provider.stream(
+            model_id=binding.model_id,
+            history=history,
+            user_text=_apply_custom_instructions(user_text, custom_instructions),
+            attachments=attachments,
+            api_key=active_api_key,
+            # DeepSeek V4 dual-mode hints. The per-turn override REPLACES the
+            # binding default when set; otherwise the binding default is used.
+            # None means "provider default" (alternate bindings leave both unset,
+            # and adapters ignore what they don't support).
+            thinking=(
+                thinking_override if thinking_override is not None else binding.thinking
+            ),
+            reasoning_effort=(
+                reasoning_effort_override
+                if reasoning_effort_override is not None
+                else binding.reasoning_effort
+            ),
+            # Opt this turn into the web_search tool. False (the default) leaves
+            # the provider stream byte-for-byte unchanged — no StatusUpdate /
+            # Sources.
+            web_search=web_search,
+            # Whether the active binding can interpret images / native PDF
+            # document blocks. On a non-vision binding the real-provider adapters
+            # suppress native image/PDF blocks (PDFs degrade to transcript text);
+            # the route already rejects images to a non-vision binding before this
+            # point.
+            supports_vision=binding.supports_vision,
+        )
+
     # Wrap the provider iteration in a Task so we can cancel on disconnect.
-    provider_iter = provider.stream(
-        model_id=binding.model_id,
-        history=history,
-        user_text=_apply_custom_instructions(user_text, custom_instructions),
-        attachments=attachments,
-        api_key=api_key,
-        # DeepSeek V4 dual-mode hints from the tier binding. None means
-        # "provider default" (the Anthropic/OpenAI alternate bindings leave
-        # both unset, and the provider adapters ignore what they don't support).
-        thinking=binding.thinking,
-        reasoning_effort=binding.reasoning_effort,
-        # Opt this turn into the web_search tool. False (the default) leaves the
-        # provider stream byte-for-byte unchanged — no StatusUpdate / Sources.
-        web_search=web_search,
-        # Whether the active binding can interpret images / native PDF document
-        # blocks. On a non-vision binding the real-provider adapters suppress
-        # native image/PDF blocks (PDFs degrade to transcript text); the route
-        # already rejects images to a non-vision binding before this point.
-        supports_vision=binding.supports_vision,
-    )
+    provider_iter = _build_provider_iter()
 
     queue: asyncio.Queue[ProviderEvent | _PumpError | None] = asyncio.Queue()
 
-    async def _pump() -> None:
+    async def _pump(iterator: AsyncIterator[ProviderEvent]) -> None:
         """Drain the provider iterator into the queue.
 
         A provider exception is forwarded to the consumer as a `_PumpError`
@@ -424,7 +486,7 @@ async def stream_and_persist(
         the queue so the consumer never blocks.
         """
         try:
-            async for ev in provider_iter:
+            async for ev in iterator:
                 await queue.put(ev)
         except asyncio.CancelledError:
             raise
@@ -433,7 +495,42 @@ async def stream_and_persist(
         finally:
             await queue.put(None)
 
-    pump_task = asyncio.create_task(_pump())
+    pump_task = asyncio.create_task(_pump(provider_iter))
+
+    def _no_output_yet() -> bool:
+        """True iff NOTHING has been emitted/accumulated for this turn yet.
+
+        The fallback retry is only safe before the first token/content: zero
+        answer deltas (`first_answer_ms is None`), empty reasoning/answer/tool
+        accumulators, and empty usage. If any of these is non-empty the primary
+        route already produced visible output, so retrying would double-emit /
+        double-bill — we must NOT retry.
+        """
+        return (
+            first_answer_ms is None
+            and not reasoning_buf
+            and not answer_buf
+            and not tool_parts
+            and final_usage == UsageUpdate()
+        )
+
+    def _fallback_pending(exc: BaseException | None) -> bool:
+        """Whether `exc` should trigger the one-shot fallback retry.
+
+        ALL of these must hold (the safety boundary): an alternate route exists
+        (`fallback_binding`), we have not already retried (`fallback_attempted`),
+        the error is retryable (`_is_retryable`), and NOTHING was emitted yet
+        (`_no_output_yet`). `None` is never retryable (used for the defensive
+        exhaustion check). Keeping the predicate in one place so the `_PumpError`
+        branch and the exhaustion guard can't drift.
+        """
+        return (
+            exc is not None
+            and fallback_binding is not None
+            and not fallback_attempted
+            and _is_retryable(exc)
+            and _no_output_yet()
+        )
 
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
@@ -652,7 +749,11 @@ async def stream_and_persist(
                             user_id=user_id,
                             cost_usd_delta=turn_cost,
                             is_byok=is_byok_turn,
-                            monthly_quota_usd=get_settings().usage_budget_usd,
+                            monthly_quota_usd=(
+                                monthly_quota_usd_override
+                                if monthly_quota_usd_override is not None
+                                else get_settings().usage_budget_usd
+                            ),
                             reference_type="message",
                             reference_id=(
                                 str(stopped_assistant_id)
@@ -710,11 +811,73 @@ async def stream_and_persist(
             except TimeoutError:
                 continue
             if ev is None:
+                if _fallback_pending(None):
+                    # The primary pump exhausted with `None` only AFTER a
+                    # retryable `_PumpError` set up a pending retry below; this
+                    # branch is unreachable in practice because `_PumpError`
+                    # arrives before its terminal `None`. Kept defensive.
+                    continue
                 break  # Provider exhausted.
             if isinstance(ev, _PumpError):
-                # Provider raised mid-stream. Re-raise into the top-level
+                # Provider raised mid-stream. Phase 2: if this is a retryable
+                # error that arrived BEFORE any token/content was emitted, and a
+                # fallback route is available and we haven't already retried,
+                # tear down the first pump and restart on the fallback route —
+                # exactly once. Otherwise re-raise into the top-level
                 # `except Exception` so we emit an `error` frame and persist
                 # nothing (the assistant row was never committed).
+                if _fallback_pending(ev.exc):
+                    fallback_attempted = True
+                    # Drain the pump's terminal `None` (the pump always enqueues
+                    # one after the error) so the queue is clean before restart.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await pump_task
+                    while not queue.empty():
+                        leftover = queue.get_nowait()
+                        if not (leftover is None or isinstance(leftover, _PumpError)):
+                            # Defensive: a retryable pre-token error means no
+                            # real events preceded it, but never fold a stray
+                            # event in — that would defeat the no-output gate.
+                            pass
+                    # Rebind the working route to the fallback. `fallback_binding`
+                    # is non-None here (checked in `_fallback_pending`).
+                    assert fallback_binding is not None
+                    binding = fallback_binding
+                    runtime_provider_id = (
+                        fallback_provider_id or fallback_binding.provider_id
+                    )
+                    active_api_key = fallback_api_key
+                    is_byok_turn = active_api_key is not None
+                    # Build the provider for the fallback route. The fallback may
+                    # be a DIFFERENT backend (e.g. deepseek→anthropic), so we
+                    # cannot reuse the primary provider object — that would send
+                    # the fallback model id to the wrong API. Constructing the
+                    # provider for an already-chosen route is not routing policy;
+                    # all selection happened in the route's `_select_fallback_route`.
+                    active_provider = build_provider(
+                        get_settings(),
+                        provider_id=runtime_provider_id,
+                        api_key=active_api_key,
+                    )
+                    # Surface the substitution. Prefer the caller's explicit
+                    # reason, but a RATE_LIMITED primary error reads as
+                    # `rate_limited` so the wire reason matches the cause.
+                    if (
+                        isinstance(ev.exc, AppError)
+                        and ev.exc.envelope.code == "RATE_LIMITED"
+                    ):
+                        sub_code = "rate_limited"
+                    else:
+                        sub_code = fallback_substitution or "provider_fallback"
+                    _struct_log.warning(
+                        "turn.provider_fallback",
+                        conversation_id=str(conversation_id) if conversation_id else None,
+                        fallback_provider_id=runtime_provider_id,
+                        reason_code=sub_code,
+                    )
+                    provider_iter = _build_provider_iter()
+                    pump_task = asyncio.create_task(_pump(provider_iter))
+                    continue
                 raise ev.exc
 
             if isinstance(ev, ReasoningDelta):
@@ -827,7 +990,11 @@ async def stream_and_persist(
                     user_id=user_id,
                     cost_usd_delta=turn_cost,
                     is_byok=is_byok_turn,
-                    monthly_quota_usd=get_settings().usage_budget_usd,
+                    monthly_quota_usd=(
+                        monthly_quota_usd_override
+                        if monthly_quota_usd_override is not None
+                        else get_settings().usage_budget_usd
+                    ),
                     reference_type="message",
                     reference_id=str(row.id),
                 )
@@ -889,7 +1056,7 @@ async def stream_and_persist(
                         user_text=user_text,
                         session_factory=_derive_session_factory(db),
                         provider_id=runtime_provider_id,
-                        api_key=api_key,
+                        api_key=active_api_key,
                     )
                 )
                 _BG_TASKS.add(task)
@@ -1047,6 +1214,13 @@ async def run_detached_producer(
     web_search: bool = False,
     attachments: list[AttachmentPayload] | None = None,
     custom_instructions: str | None = None,
+    reasoning_effort_override: str | None = None,
+    thinking_override: bool | None = None,
+    monthly_quota_usd_override: float | None = None,
+    fallback_binding: TierBinding | None = None,
+    fallback_provider_id: str | None = None,
+    fallback_api_key: str | None = None,
+    fallback_substitution: SubstitutionReasonCode | None = None,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 
@@ -1095,6 +1269,13 @@ async def run_detached_producer(
                 web_search=web_search,
                 attachments=attachments,
                 custom_instructions=custom_instructions,
+                reasoning_effort_override=reasoning_effort_override,
+                thinking_override=thinking_override,
+                monthly_quota_usd_override=monthly_quota_usd_override,
+                fallback_binding=fallback_binding,
+                fallback_provider_id=fallback_provider_id,
+                fallback_api_key=fallback_api_key,
+                fallback_substitution=fallback_substitution,
             ):
                 # Mirror the last frame kind so the buffer's terminal_kind is
                 # observable. `terminal`/`error` are the only closing frames;

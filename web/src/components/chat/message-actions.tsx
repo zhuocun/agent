@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  ArrowRight,
   Check,
   Copy,
   GitBranch,
@@ -26,8 +27,12 @@ interface MessageActionsProps {
   canBranch?: boolean;
   isBranching?: boolean;
   canRegenerate?: boolean;
+  // Shown only for a Stopped turn: keeps the persisted partial and streams a
+  // continuation as a new assistant bubble (see chat-thread `handleContinue`).
+  canContinue?: boolean;
   onBranch?: () => void;
   onRegenerate?: () => void;
+  onContinue?: () => void;
   onFeedback?: (next: Feedback) => void;
 }
 
@@ -60,8 +65,10 @@ export function MessageActions({
   canBranch,
   isBranching,
   canRegenerate,
+  canContinue,
   onBranch,
   onRegenerate,
+  onContinue,
   onFeedback,
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
@@ -105,6 +112,16 @@ export function MessageActions({
           <Copy className="size-4" />
         )}
       </IconAction>
+
+      {canContinue ? (
+        <IconAction
+          label="Continue"
+          onClick={onContinue}
+          testId="continue-turn"
+        >
+          <ArrowRight className="size-4" />
+        </IconAction>
+      ) : null}
 
       {canRegenerate ? (
         <IconAction label="Regenerate" onClick={onRegenerate}>
@@ -150,12 +167,14 @@ function IconAction({
   pressed,
   disabled,
   onClick,
+  testId,
   children,
 }: {
   label: string;
   pressed?: boolean;
   disabled?: boolean;
   onClick?: () => void;
+  testId?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -167,6 +186,7 @@ function IconAction({
             variant="ghost"
             onClick={onClick}
             disabled={disabled}
+            data-testid={testId}
             aria-label={label}
             aria-pressed={typeof pressed === "boolean" ? pressed : undefined}
             className={cn(

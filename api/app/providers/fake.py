@@ -29,6 +29,19 @@ Mermaid diagram: when `user_text` starts with `MERMAID:`, the provider emits the
 usual reasoning block then a single well-formed, closed fenced ```mermaid block
 as its answer (instead of the templated text). Exercises the FE's Streamdown
 mermaid plugin rendering a diagram from streamed markdown end-to-end.
+
+Continue a stopped turn: when `user_text` is the continuation instruction the
+route sends to extend a Stopped turn (it CONTAINS the marker phrase
+"Continue your previous response"), the provider emits the usual reasoning block
+then a distinctive deterministic answer beginning with "…continued: " so e2e /
+BE tests can assert the continuation streamed as a NEW assistant bubble. The
+prior partial answer lives in the replayed `history` (trailing assistant turn),
+not in `user_text`.
+
+Slow stream: when `user_text` starts with `SLOW:`, the provider emits the usual
+reasoning block then ~40 non-empty answer deltas at 50ms each, so an e2e can
+deterministically catch the stream mid-flight (e.g. to click Stop and commit a
+non-empty `stopped` partial). Without it the default stream is too fast to stop.
 """
 
 from __future__ import annotations
@@ -174,6 +187,45 @@ class FakeProvider:
             if extracted:
                 await asyncio.sleep(self._delay)
                 yield AnswerDelta(text=f"Extracted text: {extracted[0][:120]}. ")
+        # Continuation trigger: the route sends a fixed instruction as the new
+        # user turn when continuing a Stopped turn. Detect it (the marker phrase
+        # is stable) and emit a distinctive deterministic answer so tests can
+        # assert the continuation streamed as a NEW assistant bubble. The prior
+        # partial text lives in the replayed history, not here.
+        if "Continue your previous response" in user_text:
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="…continued: ")
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="and here is the rest of the answer.")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        # Slow trigger: emit many answer deltas with a longer delay so a
+        # mid-stream Stop has a wide, DETERMINISTIC window. The default fake
+        # stream is ~150ms end-to-end — too fast for an e2e to reliably catch
+        # the "Stop generating" button or commit a non-empty `stopped` partial.
+        # Each delta is non-empty so the stopped turn is continuable.
+        if user_text.startswith("SLOW:"):
+            for i in range(40):
+                await asyncio.sleep(0.05)
+                yield AnswerDelta(text=f"part {i} ")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
         # Mermaid trigger: emit a well-formed, closed fenced mermaid block as the
         # answer body (instead of the templated text). Split across a couple of
         # AnswerDelta chunks so the fence streams in, but always closing it so

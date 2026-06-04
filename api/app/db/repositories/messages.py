@@ -386,6 +386,28 @@ async def get_last_user_message(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def get_last_assistant_message(
+    db: AsyncSession,
+    conversation_id: UUID,
+) -> Message | None:
+    """Return the latest assistant message in the conversation, or None.
+
+    Used by the continue path to find the trailing assistant turn and assert it
+    is `status="stopped"` (only a stopped turn can be continued). Ordering by
+    `(created_at, id)` desc mirrors `get_last_user_message`.
+    """
+    stmt = (
+        select(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.role == "assistant",
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 async def count_assistant_messages(
     db: AsyncSession,
     conversation_id: UUID,

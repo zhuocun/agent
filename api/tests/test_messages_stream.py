@@ -1452,6 +1452,162 @@ async def test_regenerate_rejects_persisted_attachments_for_unsupported_provider
         assert row is not None
 
 
+# Continue stopped turn --------------------------------------------------------
+
+
+async def _mark_trailing_assistant_stopped(
+    session_factory: async_sessionmaker[AsyncSession],
+    conv_id: str,
+) -> tuple[str, str]:
+    """Flip the trailing assistant row to `status="stopped"` (simulates a Stop).
+
+    Returns `(stopped_assistant_id, responds_to_message_id)`. Mid-stream
+    disconnect isn't reproducible over httpx's ASGI transport, so we persist a
+    normal turn then mutate its status to model the Stop outcome the continue
+    path consumes.
+    """
+    async with session_factory() as session:
+        asst = (
+            await session.execute(
+                select(Message)
+                .where(
+                    Message.conversation_id == UUID(conv_id),
+                    Message.role == "assistant",
+                )
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+        asst.status = "stopped"
+        await session.commit()
+        return str(asst.id), str(asst.responds_to_message_id)
+
+
+async def test_continue_appends_linked_assistant_and_keeps_partial(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Continue keeps the stopped partial and streams a NEW linked assistant."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # Turn 1 — a normal turn we then mark stopped to model an interrupted turn.
+    first = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "hello"},
+    )
+    user_msg_id = next(p for n, p in first if n == "submitted")["messageId"]
+    stopped_id, responds_to = await _mark_trailing_assistant_stopped(
+        session_factory, conv_id
+    )
+    assert responds_to == user_msg_id
+
+    # Usage before the continue, to assert the meter increments.
+    async with session_factory() as session:
+        from app.db.models import UsageRollup
+
+        used_before = (
+            await session.execute(select(UsageRollup.used).where(UsageRollup.user_id == user_id))
+        ).scalar_one()
+
+    # Continue (fresh clientMessageId — the FE mints one like regenerate).
+    cont = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "ignored on continue",
+            "continueTurn": True,
+        },
+    )
+    cont_submitted = next(p for n, p in cont if n == "submitted")
+    cont_terminal = next(p for n, p in cont if n == "terminal")
+    # submitted echoes the SAME user message id the stopped turn responded to.
+    assert cont_submitted["messageId"] == user_msg_id
+    # A NEW assistant message — not the stopped one.
+    assert cont_terminal["messageId"] != stopped_id
+    # The continuation answer streamed (fake's deterministic trigger).
+    answer = "".join(str(p.get("text", "")) for n, p in cont if n == "answer_delta")
+    assert answer.startswith("…continued: ")
+
+    # DB: stopped partial row NOT deleted; new assistant linked to same user msg.
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == UUID(conv_id))
+                .order_by(Message.created_at.asc(), Message.id.asc())
+            )
+        ).scalars().all()
+        assistants = [r for r in rows if r.role == "assistant"]
+        assert len(assistants) == 2  # stopped partial + continuation
+        stopped_row = next(r for r in assistants if str(r.id) == stopped_id)
+        new_row = next(r for r in assistants if str(r.id) == cont_terminal["messageId"])
+        assert stopped_row.status == "stopped"
+        assert str(new_row.responds_to_message_id) == user_msg_id
+
+        from app.db.models import UsageRollup
+
+        used_after = (
+            await session.execute(select(UsageRollup.used).where(UsageRollup.user_id == user_id))
+        ).scalar_one()
+        assert used_after == used_before + 1
+
+
+async def test_continue_with_regenerate_is_mutually_exclusive(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """continueTurn + regenerate in one body -> 400 INVALID_INPUT."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "hi",
+            "continueTurn": True,
+            "regenerate": True,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_continue_with_no_stopped_turn_errors(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Continue when the trailing turn is `done` (not stopped) -> 400."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    # A completed turn — its assistant persists with status="done".
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "hello"},
+    )
+    response = await client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "ignored",
+            "continueTurn": True,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "NOTHING_TO_CONTINUE"
+
+
 # M2: edit path ---------------------------------------------------------------
 
 

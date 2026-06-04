@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, model_validator
 
 from app.schemas.common import CamelModel, ModelTierId, ReasoningEffortId
 from app.schemas.message import AttachmentPart, ChatMessage
@@ -25,6 +25,30 @@ class ToolApprovalDecision(CamelModel):
     tool_call_id: str
     decision: Literal["approve", "deny"]
     edited_input: dict[str, Any] | None = None
+
+
+class ResponseFormatRequest(CamelModel):
+    """Structured-output opt-in for a send turn (wire alias `responseFormat`).
+
+    `type="json_object"` requests any single valid JSON value; `json_schema`
+    additionally constrains the answer to `schema` (a JSON Schema document). The
+    BE threads this to the provider and validates the model's output at the
+    boundary (`ModelAttribution.outputFormat` / `outputValid`).
+
+    `schema_` carries a trailing underscore because `schema` shadows pydantic's
+    `BaseModel.schema`; the wire field is `schema` via the alias. `json_schema`
+    without a `schema` is rejected as INVALID_INPUT (the RequestValidationError
+    handler maps the raised ValueError).
+    """
+
+    type: Literal["json_object", "json_schema"]
+    schema_: dict[str, Any] | None = Field(default=None, alias="schema")
+
+    @model_validator(mode="after")
+    def _schema_required_for_json_schema(self) -> ResponseFormatRequest:
+        if self.type == "json_schema" and self.schema_ is None:
+            raise ValueError("response_format.schema is required when type is 'json_schema'")
+        return self
 
 
 class Conversation(CamelModel):
@@ -129,3 +153,8 @@ class SendMessageRequest(CamelModel):
     # decision. Mutually exclusive with `regenerate` / `editMessageId` /
     # `continueTurn` (enforced in the route).
     tool_approval: ToolApprovalDecision | None = None
+    # Opt this turn into structured output (JSON mode). Wire alias
+    # `responseFormat`. None (the default) leaves the turn unchanged. The route
+    # threads it to the provider and the handler validates the output at the
+    # boundary, surfacing the result on the assistant attribution.
+    response_format: ResponseFormatRequest | None = None

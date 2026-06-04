@@ -216,6 +216,15 @@ class ModelAttribution(CamelModel):
     cost_confidence: CostConfidence
     breakdown: CostBreakdown
     substitution: Substitution | None = None
+    # Structured-output (JSON mode) result for the turn. Populated ONLY when a
+    # `response_format` was requested; otherwise both stay None and the wire
+    # emits no `outputFormat`/`outputValid`. `output_valid` reflects boundary
+    # validation: JSON parse (always) plus JSON Schema validation (for
+    # `json_schema`). Invalid output never hard-fails the turn — it is surfaced
+    # here while the raw text is preserved. Kept at the END so existing
+    # positional/test usage is unaffected.
+    output_format: Literal["json_object", "json_schema"] | None = None
+    output_valid: bool | None = None
 
 
 class ChatMessage(CamelModel):

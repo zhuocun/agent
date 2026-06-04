@@ -143,6 +143,11 @@ export interface StartArgs {
   // byte-identical to today's wire shape. Ignored by providers that don't
   // expose an effort control (the picker disables it for them upstream).
   reasoningEffort?: ReasoningEffortId;
+  // Structured-output ("JSON mode") request. Sent only when JSON mode is on;
+  // the BE treats absence as off. The FE only ever requests `json_object` (no
+  // schema-editor UI), but the field carries the full format object the BE
+  // accepts. Available on all tiers (not tier-gated like `webSearch`).
+  responseFormat?: { type: "json_object" };
   // Attachment metadata plus transient payload bytes for the current request.
   // The BE strips payload bytes before message persistence.
   attachments?: AttachmentPart[];
@@ -837,6 +842,9 @@ export function useApiStream(
       if (args.reasoningEffort && args.reasoningEffort !== "auto") {
         body.reasoningEffort = args.reasoningEffort;
       }
+      // Send `responseFormat` only when JSON mode is on — the BE treats absence
+      // as off, so the non-JSON path is byte-identical to today's wire shape.
+      if (args.responseFormat) body.responseFormat = args.responseFormat;
       if (args.attachments && args.attachments.length > 0) {
         body.attachments = args.attachments;
       }

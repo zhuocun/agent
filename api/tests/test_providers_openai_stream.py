@@ -1361,3 +1361,94 @@ async def test_stream_web_search_round_cap_forces_terminal_answer() -> None:
     assert usage_updates[0].input_tokens == 2 * _MAX_SEARCH_ROUNDS
     assert usage_updates[0].output_tokens == 3 * _MAX_SEARCH_ROUNDS
     assert completes[0].usage == usage_updates[0]
+
+
+# Structured output (JSON mode) ------------------------------------------------
+
+_DEEPSEEK_COMPLETIONS_URL = "https://api.deepseek.com/v1/chat/completions"
+
+
+def _openai_provider() -> OpenAIProvider:
+    """True-OpenAI binding (supports native json_schema)."""
+    return OpenAIProvider(api_key="test-key", base_url="https://api.openai.com/v1")
+
+
+def _deepseek_provider() -> OpenAIProvider:
+    """DeepSeek binding (json_object only; json_schema downgrades)."""
+    return OpenAIProvider(api_key="test-key", base_url="https://api.deepseek.com/v1")
+
+
+async def _drain(provider: OpenAIProvider, **stream_kwargs: Any) -> None:
+    async for _event in provider.stream(**stream_kwargs):
+        pass
+
+
+@respx.mock
+async def test_json_object_passes_response_format_and_json_hint() -> None:
+    """`json_object` sends response_format and a system message containing 'json'."""
+    from app.providers.protocol import ResponseFormat
+
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(_stream_body(prompt_tokens=5, completion_tokens=5))
+    )
+    await _drain(
+        _openai_provider(),
+        model_id="gpt-4o",
+        history=[],
+        user_text="hi",
+        response_format=ResponseFormat(type="json_object"),
+    )
+    body = json.loads(route.calls[-1].request.content)
+    assert body["response_format"] == {"type": "json_object"}
+    # A leading system message must carry the literal word "json" (API requirement).
+    system_msgs = [m for m in body["messages"] if m["role"] == "system"]
+    assert system_msgs, "json mode must inject a system message"
+    assert "json" in system_msgs[0]["content"].lower()
+
+
+@respx.mock
+async def test_json_schema_native_on_true_openai() -> None:
+    """True OpenAI gets the native strict json_schema response_format."""
+    from app.providers.protocol import ResponseFormat
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    route = respx.post(_COMPLETIONS_URL).mock(
+        return_value=_sse_response(_stream_body(prompt_tokens=5, completion_tokens=5))
+    )
+    await _drain(
+        _openai_provider(),
+        model_id="gpt-4o",
+        history=[],
+        user_text="hi",
+        response_format=ResponseFormat(type="json_schema", schema=schema),
+    )
+    body = json.loads(route.calls[-1].request.content)
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["schema"] == schema
+    assert body["response_format"]["json_schema"]["strict"] is True
+
+
+@respx.mock
+async def test_json_schema_downgrades_to_json_object_on_deepseek() -> None:
+    """DeepSeek can't do strict json_schema → downgrade to json_object, inject schema."""
+    from app.providers.protocol import ResponseFormat
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    route = respx.post(_DEEPSEEK_COMPLETIONS_URL).mock(
+        return_value=_sse_response(_stream_body(prompt_tokens=5, completion_tokens=5))
+    )
+    await _drain(
+        _deepseek_provider(),
+        model_id="deepseek-v4-pro",
+        history=[],
+        user_text="hi",
+        response_format=ResponseFormat(type="json_schema", schema=schema),
+    )
+    body = json.loads(route.calls[-1].request.content)
+    # Downgraded to json_object (NOT native json_schema).
+    assert body["response_format"] == {"type": "json_object"}
+    # Schema text is injected into the system message so the model still sees it.
+    system_msgs = [m for m in body["messages"] if m["role"] == "system"]
+    assert system_msgs
+    assert "json" in system_msgs[0]["content"].lower()
+    assert "properties" in system_msgs[0]["content"]

@@ -370,6 +370,14 @@ export function ChatThread() {
   // Captured at send-time alongside the tier so a mid-stream toggle can't
   // retroactively change what this turn requested.
   const searchAtSendRef = useRef(false);
+  // Composer JSON-mode (structured-output) toggle. Unlike web search this is
+  // NOT tier-gated — every tier accepts it (the BE handles provider-specific
+  // best-effort), so there is no clearing-on-tier-switch effect. Purely
+  // ephemeral session state, mirroring `searchEnabled`.
+  const [jsonModeEnabled, setJsonModeEnabled] = useState(false);
+  // Captured at send-time so a mid-stream toggle can't retroactively change
+  // what this turn requested (mirrors `searchAtSendRef`).
+  const jsonModeAtSendRef = useRef(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
@@ -930,6 +938,7 @@ export function ChatThread() {
       };
       webSearch?: boolean;
       reasoningEffort?: ReasoningEffortId;
+      responseFormat?: { type: "json_object" };
       attachments?: AttachmentPart[];
     }): Promise<void> => {
       abortBeforeStartRef.current = false;
@@ -1019,6 +1028,9 @@ export function ChatThread() {
         // Sent only when non-"auto"; stream-client drops it from the wire on
         // "auto"/absent, so the default path is byte-identical to today.
         reasoningEffort: args.reasoningEffort,
+        // Sent only when JSON mode is on; stream-client drops it from the wire
+        // when undefined, so the off path is byte-identical to today.
+        responseFormat: args.responseFormat,
         attachments: args.attachments,
       });
     },
@@ -1055,6 +1067,8 @@ export function ChatThread() {
     // Capture the effort picked at send-time (gated below so an unsupported
     // tier never rides a stale value onto the wire).
     effortAtSendRef.current = effectiveReasoningEffort;
+    // JSON mode isn't tier-gated, so capture the raw toggle at send-time.
+    jsonModeAtSendRef.current = jsonModeEnabled;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
 
@@ -1076,6 +1090,9 @@ export function ChatThread() {
         providerId: providerAtSendRef.current,
         webSearch: searchAtSendRef.current || undefined,
         reasoningEffort: effortAtSendRef.current,
+        responseFormat: jsonModeAtSendRef.current
+          ? { type: "json_object" }
+          : undefined,
         attachments,
       });
     };
@@ -1319,6 +1336,7 @@ export function ChatThread() {
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
+    jsonModeAtSendRef.current = jsonModeEnabled;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
     // Regenerate keeps the trailing user message verbatim — send its text
@@ -1331,6 +1349,9 @@ export function ChatThread() {
       regenerate: true,
       webSearch: searchAtSendRef.current || undefined,
       reasoningEffort: effortAtSendRef.current,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
     });
   };
 
@@ -1377,6 +1398,8 @@ export function ChatThread() {
     // Effort rides only when the chosen provider honours it (Anthropic ignores).
     effortAtSendRef.current =
       resolvedProviderId !== "anthropic" ? selectedReasoningEffortId : "auto";
+    // JSON mode isn't tier-gated, so capture the raw toggle at send-time.
+    jsonModeAtSendRef.current = jsonModeEnabled;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
     void beginTurn({
@@ -1386,6 +1409,9 @@ export function ChatThread() {
       regenerate: true,
       webSearch: searchAtSendRef.current || undefined,
       reasoningEffort: effortAtSendRef.current,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
     });
   };
 
@@ -1413,6 +1439,7 @@ export function ChatThread() {
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
+    jsonModeAtSendRef.current = jsonModeEnabled;
     setPendingId(continueId);
     setLiveMessage("Continuing response");
     void beginTurn({
@@ -1422,6 +1449,9 @@ export function ChatThread() {
       continueTurn: true,
       webSearch: searchAtSendRef.current || undefined,
       reasoningEffort: effortAtSendRef.current,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
     });
   };
 
@@ -1454,6 +1484,7 @@ export function ChatThread() {
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
+    jsonModeAtSendRef.current = jsonModeEnabled;
     setPendingId(resumeId);
     setLiveMessage(
       decision.decision === "approve"
@@ -1470,6 +1501,9 @@ export function ChatThread() {
       },
       webSearch: searchAtSendRef.current || undefined,
       reasoningEffort: effortAtSendRef.current,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
     });
   };
 
@@ -1494,6 +1528,7 @@ export function ChatThread() {
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
+    jsonModeAtSendRef.current = jsonModeEnabled;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
     setMessages((prev) => [
@@ -1514,6 +1549,9 @@ export function ChatThread() {
       editMessageId: messageId,
       webSearch: searchAtSendRef.current || undefined,
       reasoningEffort: effortAtSendRef.current,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
     });
   };
 
@@ -2539,6 +2577,8 @@ export function ChatThread() {
                 effortSupported={effortSupported}
                 searchEnabled={effectiveSearchEnabled}
                 onToggleSearch={setSearchEnabled}
+                jsonModeEnabled={jsonModeEnabled}
+                onToggleJsonMode={setJsonModeEnabled}
               />
               {isTemporary ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />

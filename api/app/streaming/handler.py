@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -37,6 +38,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
+import jsonschema
 import structlog
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -62,6 +64,7 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    ResponseFormat,
     Sources,
     StatusUpdate,
     ToolCall,
@@ -281,6 +284,46 @@ def _apply_custom_instructions(user_text: str, custom_instructions: str | None) 
     )
 
 
+def _apply_structured_output(
+    attribution: ModelAttribution,
+    *,
+    response_format: ResponseFormat | None,
+    answer_text: str,
+) -> None:
+    """Surface structured-output (JSON mode) validation on the attribution.
+
+    The "schema validation at the boundary" step. No-op when `response_format`
+    is None. Otherwise it records the requested `output_format` and computes
+    `output_valid` from the accumulated answer text:
+
+    - `json.loads(answer_text)` must succeed (any json mode). A parse failure ⇒
+      `output_valid=False`.
+    - For `json_schema` with a schema present, the parsed value is additionally
+      validated with `jsonschema.validate`; a `ValidationError`/`SchemaError` ⇒
+      `output_valid=False`.
+
+    Invalid output NEVER hard-fails the turn — the raw text is preserved and the
+    status stays `done`; only `output_valid` reflects the failure. Mutates
+    `attribution` in place (additive fields kept at the END of the model). Shared
+    by the inline and detached-producer paths so they can't drift.
+    """
+    if response_format is None:
+        return
+    attribution.output_format = response_format.type
+    try:
+        instance = json.loads(answer_text)
+    except (ValueError, TypeError):
+        attribution.output_valid = False
+        return
+    if response_format.type == "json_schema" and response_format.schema is not None:
+        try:
+            jsonschema.validate(instance, response_format.schema)
+        except (jsonschema.ValidationError, jsonschema.SchemaError):
+            attribution.output_valid = False
+            return
+    attribution.output_valid = True
+
+
 async def _autogen_title(
     *,
     conversation_id: UUID,
@@ -352,6 +395,7 @@ async def stream_and_persist(
     stream_id: UUID | None = None,
     router_substitution: SubstitutionReasonCode | None = None,
     web_search: bool = False,
+    response_format: ResponseFormat | None = None,
     attachments: list[AttachmentPayload] | None = None,
     custom_instructions: str | None = None,
     reasoning_effort_override: str | None = None,
@@ -514,6 +558,11 @@ async def stream_and_persist(
             # the provider stream byte-for-byte unchanged — no StatusUpdate /
             # Sources.
             web_search=web_search,
+            # Opt this turn into structured output (JSON mode). None (the
+            # default) leaves the provider stream byte-for-byte unchanged; the
+            # adapters degrade gracefully and the boundary validation surfaces
+            # the result on the attribution.
+            response_format=response_format,
             # Whether the active binding can interpret images / native PDF
             # document blocks. On a non-vision binding the real-provider adapters
             # suppress native image/PDF blocks (PDFs degrade to transcript text);
@@ -1159,6 +1208,15 @@ async def stream_and_persist(
             substituted_model=sub_model,
             substituted_display_label=sub_label,
         )
+        # Structured-output boundary validation. No-op unless a `response_format`
+        # was requested; then it sets `output_format` and validates the
+        # accumulated answer text (JSON parse + optional JSON Schema check),
+        # surfacing `output_valid` WITHOUT failing the turn.
+        _apply_structured_output(
+            attribution,
+            response_format=response_format,
+            answer_text="".join(answer_buf),
+        )
 
         # Persist the assistant message (skipped for temporary).
         # First-terminal check happens BEFORE the create so we don't count
@@ -1417,6 +1475,7 @@ async def run_detached_producer(
     stream_id: UUID | None = None,
     router_substitution: SubstitutionReasonCode | None = None,
     web_search: bool = False,
+    response_format: ResponseFormat | None = None,
     attachments: list[AttachmentPayload] | None = None,
     custom_instructions: str | None = None,
     reasoning_effort_override: str | None = None,
@@ -1474,6 +1533,7 @@ async def run_detached_producer(
                 stream_id=stream_id,
                 router_substitution=router_substitution,
                 web_search=web_search,
+                response_format=response_format,
                 attachments=attachments,
                 custom_instructions=custom_instructions,
                 reasoning_effort_override=reasoning_effort_override,

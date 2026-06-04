@@ -19,6 +19,7 @@ FakeProvider only. Cache token counts map cleanly.
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any, cast
@@ -35,6 +36,7 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    ResponseFormat,
     Sources,
     StatusUpdate,
     ToolCall,
@@ -55,6 +57,32 @@ _ANTHROPIC_WEB_SEARCH_TOOL: dict[str, Any] = {
     "max_uses": 3,
 }
 _SEARCH_STATUS_LABEL = "Searching the web…"
+
+# Base instruction injected for JSON mode. Anthropic has NO `response_format`
+# parameter, so structured output is INSTRUCTION-BASED only (best-effort): we
+# steer the model with a strong system instruction and rely on the handler's
+# boundary validation to surface whether the output actually parsed/validated.
+# (We deliberately do NOT use assistant prefill — it complicates the streaming
+# adapter's reasoning/text event ordering.)
+_JSON_MODE_SYSTEM_INSTRUCTION = (
+    "Respond ONLY with a single valid JSON value, no prose, no markdown fences."
+)
+
+
+def _json_mode_system(response_format: ResponseFormat | None) -> str | None:
+    """Build the JSON-mode system instruction for a turn (None when off).
+
+    For `json_schema` the schema document is appended so the model sees the
+    contract. Anthropic can't enforce it natively, so this is best-effort.
+    """
+    if response_format is None:
+        return None
+    if response_format.type == "json_schema" and response_format.schema is not None:
+        return (
+            f"{_JSON_MODE_SYSTEM_INSTRUCTION} The JSON value must conform to this "
+            f"JSON Schema:\n{json.dumps(response_format.schema)}"
+        )
+    return _JSON_MODE_SYSTEM_INSTRUCTION
 
 
 def _b64(data: bytes) -> str:
@@ -324,6 +352,7 @@ class AnthropicProvider:
         reasoning_effort: str | None = None,
         web_search: bool = False,
         supports_vision: bool = True,
+        response_format: ResponseFormat | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         # `thinking` / `reasoning_effort` accepted for Protocol conformance but
         # ignored: Anthropic extended-thinking is not yet wired here.
@@ -353,6 +382,15 @@ class AnthropicProvider:
         stream_kwargs: dict[str, Any] = {}
         if web_search:
             stream_kwargs["tools"] = [_ANTHROPIC_WEB_SEARCH_TOOL]
+
+        # Structured output (JSON mode), instruction-based (Anthropic has no
+        # native `response_format`). Pass the steer as the top-level `system`
+        # prompt; composes with web search (the tool list is independent). The
+        # handler validates the streamed text at the boundary. None ⇒ no system
+        # prompt, byte-for-byte unchanged.
+        json_mode_system = _json_mode_system(response_format)
+        if json_mode_system is not None:
+            stream_kwargs["system"] = json_mode_system
 
         # Track whether we're currently inside a thinking block so we can
         # emit exactly one ReasoningDone at block end.

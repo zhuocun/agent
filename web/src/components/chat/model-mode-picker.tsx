@@ -50,6 +50,11 @@ export interface ModelModePickerProps {
   // search, the toggle is hidden entirely (the BE would ignore the flag).
   searchEnabled: boolean;
   onToggleSearch: (next: boolean) => void;
+  // JSON-mode (structured-output) toggle. Unlike web search this is NOT
+  // tier-gated — every tier accepts it (the BE handles provider-specific
+  // best-effort), so the "JSON output" section always renders.
+  jsonModeEnabled: boolean;
+  onToggleJsonMode: (next: boolean) => void;
   disabled?: boolean;
 }
 
@@ -72,6 +77,8 @@ export function ModelModePicker({
   effortSupported = true,
   searchEnabled,
   onToggleSearch,
+  jsonModeEnabled,
+  onToggleJsonMode,
   disabled,
 }: ModelModePickerProps): JSX.Element {
   const tier = tiers.find((t) => t.id === selectedTierId) ?? tiers[0];
@@ -255,6 +262,36 @@ export function ModelModePicker({
               </DropdownMenuGroup>
             </>
           ) : null}
+          {/* JSON output is NOT tier-gated (unlike web search above) — every
+              tier accepts it, so this section always renders. */}
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="text-2xs font-semibold">
+              JSON output
+            </DropdownMenuLabel>
+            {/* Mirrors the web-search toggle: `closeOnClick={false}` keeps the
+                menu open across the flip, and the checkbox item exposes
+                role="menuitemcheckbox"/aria-checked with its own check
+                indicator (no inline glyph). */}
+            <DropdownMenuCheckboxItem
+              checked={jsonModeEnabled}
+              closeOnClick={false}
+              onCheckedChange={(next) => onToggleJsonMode(next)}
+              className="py-2"
+              data-testid="json-mode-toggle"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">
+                    {jsonModeEnabled ? "On" : "Off"}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                  Ask the model to reply with a JSON object.
+                </p>
+              </div>
+            </DropdownMenuCheckboxItem>
+          </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -367,6 +404,16 @@ export function ModelModePicker({
                 />
               </SheetSection>
             ) : null}
+            {/* JSON output isn't tier-gated, so this section always renders. */}
+            <SheetSection title="JSON output">
+              <SheetRow
+                label={jsonModeEnabled ? "On" : "Off"}
+                description="Ask the model to reply with a JSON object."
+                selected={jsonModeEnabled}
+                onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
+                testId="json-mode-toggle"
+              />
+            </SheetSection>
           </div>
         </DialogContent>
       </Dialog>

@@ -72,6 +72,15 @@ the flag-off path is byte-for-byte unchanged):
   the fake then emits the post-tool answer ("…tool approved: …" / "…tool denied:
   …") + `Complete`. The seeded `tool_result` is emitted by the handler before
   this stream runs.
+
+Structured output: when a `response_format` is requested (any type), the
+provider emits a deterministic JSON answer instead of the templated text. By
+default it streams exactly two deltas — `{"ok": true, ` then
+`"items": [1, 2, 3]}` — yielding the valid JSON object
+`{"ok": true, "items": [1, 2, 3]}`. When `user_text` starts with `BADJSON:`, it
+instead emits a single non-JSON delta (`this is not valid json`) so the handler's
+post-stream validation marks `outputValid=False`. Exercises the JSON-mode +
+schema-validation boundary end-to-end.
 """
 
 from __future__ import annotations
@@ -91,6 +100,7 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    ResponseFormat,
     Sources,
     StatusUpdate,
     ToolCall,
@@ -161,6 +171,7 @@ class FakeProvider:
         reasoning_effort: str | None = None,
         web_search: bool = False,
         supports_vision: bool = True,
+        response_format: ResponseFormat | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         # `thinking` / `reasoning_effort` / `supports_vision` are accepted to
         # satisfy the Provider Protocol but ignored — the fake's output is
@@ -329,6 +340,32 @@ class FakeProvider:
             yield AnswerDelta(text="…continued: ")
             await asyncio.sleep(self._delay)
             yield AnswerDelta(text="and here is the rest of the answer.")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        # Structured-output trigger: when the turn requested a `response_format`,
+        # emit a deterministic JSON answer instead of the templated text so the
+        # handler's boundary validation has something to parse/validate. Placed
+        # AFTER the reasoning + continuation branches but BEFORE the
+        # SLOW:/MERMAID:/template branches so JSON mode wins over templated text.
+        if response_format is not None:
+            if user_text.startswith("BADJSON:"):
+                # Invalid JSON so post-stream validation marks outputValid=False.
+                await asyncio.sleep(self._delay)
+                yield AnswerDelta(text="this is not valid json")
+            else:
+                # Exactly two deltas → `{"ok": true, "items": [1, 2, 3]}`.
+                await asyncio.sleep(self._delay)
+                yield AnswerDelta(text='{"ok": true, ')
+                await asyncio.sleep(self._delay)
+                yield AnswerDelta(text='"items": [1, 2, 3]}')
             usage = UsageUpdate(
                 input_tokens=50,
                 output_tokens=100,

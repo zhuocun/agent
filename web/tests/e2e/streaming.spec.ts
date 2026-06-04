@@ -251,6 +251,85 @@ test.describe("streaming", () => {
     expect(sourcesIdx).toBeGreaterThan(textIdx);
   });
 
+  // JSON-mode (structured-output) path. Requires the integrated BE running the
+  // FakeProvider with JSON mode wired: when the message-create carries
+  // `responseFormat: { type: "json_object" }`, the fake emits the deterministic
+  // answer `{"ok": true, "items": [1, 2, 3]}` (valid JSON) and the terminal
+  // frame's attribution carries `outputFormat: "json_object"` /
+  // `outputValid: true`. This asserts the FE half of the contract end-to-end:
+  //   (a) toggling JSON mode on sends `responseFormat: { type: "json_object" }`
+  //   (b) the assistant answer renders the JSON object text ("ok" + "items")
+  //   (c) the "JSON" attribution chip appears on the assistant message
+  test("json mode: toggle on sends responseFormat, answer renders JSON, attribution chip shows", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    // Capture the message-create POST body to confirm the `responseFormat`
+    // object rode along.
+    let sentResponseFormat: unknown;
+    page.on("request", (request) => {
+      const url = request.url();
+      if (
+        request.method() === "POST" &&
+        /\/api\/conversations\/[^/]+\/messages$/.test(url)
+      ) {
+        try {
+          const body = request.postDataJSON() as { responseFormat?: unknown };
+          if (body.responseFormat !== undefined) {
+            sentResponseFormat = body.responseFormat;
+          }
+        } catch {
+          // Non-JSON body — leave `sentResponseFormat` undefined; the assertion
+          // below will flag it.
+        }
+      }
+    });
+
+    // Toggle JSON mode ON via the model-mode picker. Unlike web search, the
+    // "JSON output" section is NOT tier-gated, so it's always present. Desktop
+    // project (Desktop Chrome) → the dropdown variant; open it, click the toggle.
+    await page.getByTestId("model-mode-trigger").click();
+    const toggle = page.getByTestId("json-mode-toggle");
+    await expect(toggle).toBeVisible({ timeout: 5_000 });
+    await toggle.click();
+    // The desktop toggle is a Base UI menu checkbox item
+    // (role="menuitemcheckbox"), so its on-state is conveyed via aria-checked.
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+    // Dismiss the dropdown so it doesn't overlay the composer.
+    await page.keyboard.press("Escape");
+
+    const composer = page.getByTestId("composer-textarea");
+    await composer.fill("Give me a structured result");
+    await page.getByTestId("composer-send").click();
+
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toBeVisible({ timeout: 15_000 });
+
+    // Terminal lands; the answer settles.
+    await expect(assistant).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+
+    // (a) The create request carried responseFormat: { type: "json_object" }.
+    expect(sentResponseFormat).toEqual({ type: "json_object" });
+
+    // (b) The assistant answer renders the deterministic JSON object: the fake
+    // emits `{"ok": true, "items": [1, 2, 3]}` when JSON mode is requested.
+    const answer = assistant.getByTestId("assistant-answer");
+    await expect(answer).toBeVisible();
+    await expect(answer).toContainText("ok", { timeout: 15_000 });
+    await expect(answer).toContainText("items");
+
+    // (c) The "JSON" attribution chip appears on the assistant message (valid
+    // JSON → no "(invalid)" affordance).
+    const jsonChip = assistant.getByTestId("json-output-chip");
+    await expect(jsonChip).toBeVisible({ timeout: 15_000 });
+    await expect(jsonChip).toContainText("JSON");
+    await expect(jsonChip).not.toContainText("invalid");
+  });
+
   // Mermaid rendering path. The FakeProvider emits a well-formed, closed
   // ```mermaid fence as its answer when the prompt starts with "MERMAID:" (see
   // api/app/providers/fake.py). This asserts the FE half: Streamdown's mermaid

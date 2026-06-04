@@ -81,6 +81,22 @@ def text_with_attachment_fallback(
 
 
 @dataclass(frozen=True)
+class ResponseFormat:
+    """Structured-output request threaded into `Provider.stream(...)`.
+
+    `type="json_object"` asks the model for any single valid JSON value;
+    `type="json_schema"` additionally constrains it to `schema` (JSON Schema).
+    Adapters degrade gracefully: a backend that can't enforce a schema natively
+    (DeepSeek, Anthropic) injects the schema into a system instruction and falls
+    back to plain json-object mode. The handler validates the final text at the
+    boundary regardless of how the provider enforced (or failed to enforce) it.
+    """
+
+    type: Literal["json_object", "json_schema"]
+    schema: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class ReasoningDelta:
     type: Literal["reasoning_delta"] = "reasoning_delta"
     text: str = ""
@@ -262,6 +278,18 @@ class Provider(Protocol):
     rejects images to a non-vision binding before reaching the provider, so this
     flag is defense-in-depth at the adapter. Text attachments always flow as
     transcript regardless of this flag.
+
+    `response_format` opts the turn into structured output (JSON mode). When set,
+    the implementation asks the model to answer as JSON: `json_object` is any
+    single valid JSON value; `json_schema` additionally constrains it to the
+    provided JSON Schema. Implementations enforce this best-effort — a backend
+    with native support (true OpenAI) uses the API parameter; backends without
+    it (DeepSeek strict schema, Anthropic) degrade to a system instruction and/or
+    plain json-object mode. Implementations that don't support it at all degrade
+    gracefully (best-effort, never error). The streaming handler validates the
+    accumulated text at the boundary regardless, surfacing the result on
+    `ModelAttribution.output_valid`. When None (the default), behavior is
+    byte-for-byte unchanged.
     """
 
     def stream(
@@ -276,6 +304,7 @@ class Provider(Protocol):
         reasoning_effort: str | None = None,
         web_search: bool = False,
         supports_vision: bool = True,
+        response_format: ResponseFormat | None = None,
     ) -> AsyncIterator[ProviderEvent]: ...
 
     async def complete(

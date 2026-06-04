@@ -58,6 +58,8 @@ interface AppHeaderProps {
   effortSupported?: boolean;
   searchEnabled: boolean;
   onToggleSearch: (next: boolean) => void;
+  jsonModeEnabled: boolean;
+  onToggleJsonMode: (next: boolean) => void;
 }
 
 const FLOAT_BUTTON =
@@ -95,6 +97,8 @@ export function AppHeader({
   effortSupported,
   searchEnabled,
   onToggleSearch,
+  jsonModeEnabled,
+  onToggleJsonMode,
 }: AppHeaderProps) {
   return (
     <header className="relative flex h-[46px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
@@ -132,6 +136,8 @@ export function AppHeader({
           effortSupported={effortSupported}
           searchEnabled={searchEnabled}
           onToggleSearch={onToggleSearch}
+          jsonModeEnabled={jsonModeEnabled}
+          onToggleJsonMode={onToggleJsonMode}
         />
       </div>
 

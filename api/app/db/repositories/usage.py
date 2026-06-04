@@ -1,13 +1,13 @@
 """usage_rollup repository.
 
-Per the M0 budget review: "per-turn counter for MVP". M3 increments by 1 per
-terminal (including stopped-flush) and reads the current calendar-month row on
-bootstrap. The `is_byok` column on a row records whether THAT period's last
-write was a BYOK turn -- analytics-only today (the FE shows
-`UsageBudget.isByok` from the user's current key state, not historical writes).
+The integer `used` meter increments by 1 per terminal (including
+stopped-flush) and reads the current calendar-month row on bootstrap. The
+`is_byok` column on a row records whether THAT period's last write was a BYOK
+turn -- analytics-only (the FE shows `UsageBudget.isByok` from the user's
+current key state, not historical writes).
 
-Post-M4: increments use a dialect-specific `INSERT ... ON CONFLICT DO UPDATE`
-to eliminate the SELECT-then-INSERT race. Two concurrent terminals for the
+Increments use a dialect-specific `INSERT ... ON CONFLICT DO UPDATE` to
+eliminate the SELECT-then-INSERT race. Two concurrent terminals for the
 same (user_id, period_start) key both go through one atomic upsert; the DB
 serializes them so the final `used` reflects every write.
 
@@ -36,9 +36,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import UsageCreditLedger, UsageRollup, User
 from app.schemas.account import UsageBudget, UsageLedgerEntry
 
-# Default monthly cap until real cost data drives the limit. The FE renders
-# `used / limit` raw with no unit, so the number is informational. M4 swaps
-# this for cost-based caps via PRD 07.
+# Default monthly cap for the integer `used` meter. The FE renders
+# `used / limit` raw with no unit, so the number is informational. Cost-based
+# caps (PRD 07) are the enforced gate today — see `get_period_cost` and the
+# `usage_budget_usd` / `monthly_budget_usd` checks in `send_message`.
 _DEFAULT_LIMIT = 1000
 _DEFAULT_PERIOD = "this month"
 _LEDGER_RECENT_LIMIT = 10

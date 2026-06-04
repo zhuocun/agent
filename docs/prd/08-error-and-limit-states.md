@@ -116,12 +116,10 @@ P0 Continue is a new continuation request; it is **not** P1 resumable replay.
 | Code | Trigger | Actions |
 |---|---|---|
 | `PLATFORM_RATE_LIMIT` | Request/token window | Wait `retry_after`, Reduce usage |
-| `PLATFORM_BUDGET_EXCEEDED` | Rolling USD/message cap (enforcement uses the LOWER of the platform `USAGE_BUDGET_USD` and the per-user `monthly_budget_usd`, composed in `api/app/db/repositories/usage.py::_effective_quota_usd`; a positive credit balance extends the cap. **Naming note:** the shipped backend emits this as code `BUDGET_EXCEEDED`, not `PLATFORM_BUDGET_EXCEEDED` — see the §5.4 note below) | Upgrade, Add credits, BYOK |
+| `PLATFORM_BUDGET_EXCEEDED` | Rolling USD/message cap (enforcement uses the LOWER of the platform `USAGE_BUDGET_USD` and the per-user `monthly_budget_usd`, composed in `api/app/db/repositories/usage.py::_effective_quota_usd`; a positive credit balance extends the cap) | Upgrade, Add credits, BYOK |
 | `PLATFORM_TIER_GATED` | Model/tier not available | Upgrade or pick available tier |
 | `PLATFORM_GUEST_DOWNGRADE` | Guest moved to a weaker model after good-model allotment | (transparency callout, not a block) Sign up to keep the better model |
 | `PLATFORM_GUEST_LIMIT` | Anonymous cap (hard sign-up wall) | Sign up / sign in |
-
-> **Code-name discrepancy — flagged for the reviewer, NOT resolved here.** This catalog names the cost-cap error `PLATFORM_BUDGET_EXCEEDED`, but the shipped FE-facing constant in `api/app/routes/conversations.py::_budget_exceeded` is **`BUDGET_EXCEEDED`** (429, `severity: "warning"`, `retry_after_ms` until the next calendar-month reset). Neither side is renamed in this pass — the contract owner should decide which name is canonical and align the other. Enforcement otherwise matches this row: best-effort/post-hoc against the accumulated `usage_rollup` cost ledger, exempting BYOK turns, gated on the effective (lower-of-two) quota plus any credit balance.
 
 > **Guest model-downgrade transparency (distinct from the hard `PLATFORM_GUEST_LIMIT` block).** 2026 guest flows silently downgrade anonymous users to a weaker/mini model before the hard sign-up wall. For a transparency-first product, a **silent** downgrade is an own-goal. When a guest is moved to a weaker model, surface a **transparency callout reusing the substitution-callout** (PRD 06 §5.4 / PRD 07) — `severity: "info"`, not a block — naming the served model and the reason ("Now answering with Fast — sign up to keep the better model"). This is a transparency surface, **not** an error: `PLATFORM_GUEST_DOWNGRADE` continues generation; only `PLATFORM_GUEST_LIMIT` blocks send.
 

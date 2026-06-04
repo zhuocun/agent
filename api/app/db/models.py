@@ -222,9 +222,10 @@ class Stream(Base):
     (`app.streaming.stop_registry`): the registry is the live cancel channel,
     this table is the persisted intent + status.
 
-    Resumable replay is OUT of scope today, but the schema is deliberately
-    shaped to support it later: the active row per conversation plus its
-    `message_id` is enough to resume / re-attach a stream once that lands.
+    Resumable replay is implemented behind `RESUMABLE_STREAMS_ENABLED`: the
+    active row per conversation plus its `message_id` is enough to resume /
+    re-attach a stream (see `app.streaming.replay_registry` and the resume
+    paths in `app.routes.conversations`).
     """
 
     __tablename__ = "stream"

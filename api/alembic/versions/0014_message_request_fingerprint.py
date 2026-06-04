@@ -1,7 +1,7 @@
 """Add message request fingerprint for idempotency replay.
 
 Revision ID: 0014_message_request_fingerprint
-Revises: 0013_usage_ledger_constraints
+Revises: 0013_usage_credit_ledger_constraints
 Create Date: 2026-06-01 00:00:00.000000
 """
 
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0014_message_request_fingerprint"
-down_revision: str | Sequence[str] | None = "0013_usage_ledger_constraints"
+down_revision: str | Sequence[str] | None = "0013_usage_credit_ledger_constraints"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

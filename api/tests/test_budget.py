@@ -6,7 +6,8 @@ Covers the parallel cost field added alongside the integer `used` meter:
 - `usage_rollup.cost_usd` accumulates across turns in the same period.
 - `get_period_cost` reads the accumulated value.
 - `USAGE_BUDGET_USD` enforcement: once the period's accumulated cost reaches the
-  cap, the next platform-key turn is refused with a 429 BUDGET_EXCEEDED envelope.
+  cap, the next platform-key turn is refused with a 429 PLATFORM_BUDGET_EXCEEDED
+  envelope.
 - BYOK turns are exempt: a user with a stored BYOK key keeps streaming even when
   the cap is already exceeded (they pay their own provider).
 
@@ -279,7 +280,8 @@ async def test_budget_exceeded_returns_429(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """First platform-key turn passes (cap not yet reached); the next turn,
-    after the ledger crosses the tiny cap, is refused with 429 BUDGET_EXCEEDED.
+    after the ledger crosses the tiny cap, is refused with 429
+    PLATFORM_BUDGET_EXCEEDED.
     """
     await budget_client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
@@ -305,7 +307,7 @@ async def test_budget_exceeded_returns_429(
     )
     assert resp.status_code == 429, resp.text
     payload = resp.json()
-    assert payload["error"]["code"] == "BUDGET_EXCEEDED"
+    assert payload["error"]["code"] == "PLATFORM_BUDGET_EXCEEDED"
     assert payload["error"]["severity"] == "warning"
     assert payload["error"]["retryAfterMs"] > 0
     actions = payload["error"]["actions"]
@@ -482,7 +484,7 @@ async def test_user_budget_cap_enforced_with_operator_cap_disabled(
         f"/api/conversations/{conv_id}/messages", json=_send_body()
     )
     assert resp.status_code == 429, resp.text
-    assert resp.json()["error"]["code"] == "BUDGET_EXCEEDED"
+    assert resp.json()["error"]["code"] == "PLATFORM_BUDGET_EXCEEDED"
 
 
 async def test_lower_operator_cap_wins_over_large_user_cap(
@@ -512,7 +514,7 @@ async def test_lower_operator_cap_wins_over_large_user_cap(
         f"/api/conversations/{conv_id}/messages", json=_send_body()
     )
     assert resp.status_code == 429, resp.text
-    assert resp.json()["error"]["code"] == "BUDGET_EXCEEDED"
+    assert resp.json()["error"]["code"] == "PLATFORM_BUDGET_EXCEEDED"
 
 
 async def test_user_budget_cap_byok_still_exempt(

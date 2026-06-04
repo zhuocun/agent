@@ -1,8 +1,8 @@
-"""SSE event payload schemas (M0: declared but not emitted).
+"""SSE event payload schemas.
 
-Reserved for M1 wiring of `POST /api/conversations/:id/messages`. We declare
-the payload shapes now so the wire contract is locked in and routes can be
-implemented later without schema work.
+These payload shapes lock in the wire contract for the streaming turn at
+`POST /api/conversations/:id/messages`. They are emitted by the streaming
+handler (`app.streaming.handler`) over the SSE channel.
 """
 
 from __future__ import annotations

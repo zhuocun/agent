@@ -74,27 +74,29 @@ The open market gap is **multi-model + transparency + privacy + cost control**. 
 
 ### 4.2 Tension resolution (explicit)
 - **Multi-provider model picker + transparency → P0.** It is the wedge, and the architecture (backend provider protocol + DeepSeek/OpenAI-compatible and Anthropic adapters, with future gateway/OpenRouter breadth) makes a basic picker and per-message cost/model display cheap. Integrate Anthropic + OpenAI + Gemini directly for primary tiers and OpenRouter for breadth/fallback. `[VERIFY]` model IDs/pricing.
-- **Deep *parallel* comparison (same prompt → N models side by side) → P1.** The picker is P0; running and diffing multiple models in one view is a heavier, later layer.
+- **Deep *parallel* comparison (same prompt → N models side by side) → Shipped** (a 2-up view landed ahead of schedule, #134/#135; was variously slated P1/P2). The picker is P0; running and diffing multiple models in one view was a heavier, later layer now built.
 - **Artifacts/canvas, web-search/RAG, memory, voice, image-gen, MCP, Capacitor native, enterprise → P1/P2** (high infra cost, mobile-web complexity, or long sales cycle).
 
 ### 4.3 Feature → phase table (reconciled)
 
 Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2** = later/differentiator/heavier infra. **Source** cites authoritative workstream PRD sections. Legacy `research-*.md` files are not in this repo; see §10.1 for mapping.
 
+**Shipped** / **Shipped\*** (behind a default-off flag) annotates rows whose code landed ahead of the original phase.
+
 | Feature / capability | Phase | Source | Notes / dependencies |
 |---|---|---|---|
 | Token streaming with Stop/Abort (preserves partial output) | **P0** | 01 §4.1, 04 §5.1 | SSE + Stop/abort + partial persistence. |
 | Interrupted-stream recovery (partial + Continue/Regenerate) | **P0** | 01 §4.1, 03 §4.6, 04 §5.1 | Distinct from resumable replay; no SSE replay at MVP. |
-| Resumable-stream replay (same-device) | **P1** | 04 §5.1, 01 §4.1 | Requires Redis + `Stream` table; Stop semantics invert. |
+| Resumable-stream replay (same-device) | **P1 — Shipped\* (RESUMABLE_STREAMS_ENABLED; prod needs Redis)** | 04 §5.1, 01 §4.1 | Requires Redis + `Stream` table; Stop semantics invert. Dedicated stop endpoint + orphan reaper shipped & always-on. |
 | Streaming-safe markdown renderer (code+copy, KaTeX, GFM tables) | **P0** | 01 §4.4, 03 §4.10 | Mermaid renders as code/source at P0. |
-| Mermaid diagram rendering | **P1** | 01 §4.4, 03 §4.10 | Interactive/fullscreen; lazy-loaded engine. |
+| Mermaid diagram rendering | **P1 — Shipped** | 01 §4.4, 03 §4.10 | Interactive/fullscreen; lazy-loaded engine. |
 | Robust text composer (multiline, send/stop, text paste, model picker) | **P0** | 01 §4.3, 03 §4.3 | P0 text-only; no attach affordance. |
-| Mobile camera/library/file attach UI | **P1** | 03 §4.7, 01 §4.3, 02 §4.8 | Lands with vision/PDF; no +/paperclip at P0. |
+| Mobile camera/library/file attach UI | **P1 — partially shipped** | 03 §4.7, 01 §4.3, 02 §4.8 | Lands with vision/PDF; attach UI present, image vision Anthropic-only. |
 | Multi-provider model picker (Fast/Smart/Pro tiers) | **P0** | 02 §4.2, 04 §5.2 | Core wedge; direct primaries + breadth layer. |
 | xAI/Grok registry entry, gated from default/Auto | **P0** | 02 §5.3, 04 §5.2 | Not free-tier/Auto default until data-policy approval. |
 | Transparency surface: model used + per-message token/cost | **P0** | 01 §4.6, 02 §4.1, 04 §6, 07 | Core wedge; no silent downgrade. |
 | Transparency cost schema + served-vs-requested surface | **P0** | 00 §11 D6, 02 FR-2b, 04 §6, 07 | One contract; no scalar-only pricing. |
-| Public share: model attribution, no per-message cost | **P0** | 01 §4.10, 07 §6.4 | Public-by-link exception. |
+| Public share: model attribution, no per-message cost | **P0 — Shipped** | 01 §4.10, 07 §6.4 | Public-by-link exception. |
 | Typed multi-part message model | **P0** | 00 §11 D7, 01 §4.4, 04 §6 | P0 data layer; render text/code/reasoning/status subset. |
 | Tool-call/status parts in message schema | **P0** | 01 §4.1, 04 §5.3/§6 | Renderer = status lines; full tool UI P1. |
 | Next.js 16 FE / FastAPI backend / custom anonymous-first auth | **P0** | 00 §8, 04 §4 | Shipped foundation. |
@@ -109,25 +111,35 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 | Virtualized message list + smart auto-scroll | **P0** | 03 §4.5 | Top technical spike. |
 | INP budget + `scheduler.yield()` / rAF token batching | **P0** | 03 §4.10, 05 §6.1 | Streaming chat worst-case for INP. |
 | Context management + usage/cost meter | **P0** | 02 §4.9, 04 §6, 07 | Underpins transparency + routing. |
-| Structured outputs / schema validation | **P0** | 02 §4.10, 04 §5.2 | Validate at the backend/provider boundary. |
+| Structured outputs / schema validation | **P0** | 02 §4.10, 04 §5.2 | Validate at the backend/provider boundary. Shipped: `response_format` + boundary validation → `outputValid`. |
 | Safety + AI-interaction disclosure | **P0** | 02 §6, 04 §5.7, 05 §7.5 | US + EU launch gate. |
-| No-train-by-default + retention/export/delete | **P0** | 04 §5.7, 05 §7.3 | Privacy acquisition hook. |
-| Metered free + metered Pro + BYOK | **P0** | 05 §5, 04 §5.6, 02 FR-6 | Pro = explicit caps + USD overage. |
-| Minimal metered-overage / USD credit primitive | **P0** | 05 §5.1, 00 §11 D8, 04 §5.6 | Enforcement reads `message.cost_usd`. |
-| Vision + PDF/document understanding | **P1** | 02 §4.8, 04 §5.4 | Includes uploads/attach UI. |
-| Tool/function calling + basic agent loop | **P1** | 02 §4.6, 04 §5.2 | HITL approval for sensitive tools. |
-| Web search/grounding + citations/source cards | **P1** | 01 §4.11, 02 §4.7 | Structured citation parts. |
-| Deep parallel model comparison | **P2** | 00 §5, 02 FR-12 | Heavy-comparison layer over picker; P1 keeps per-turn switching and branch/retry workflows. |
-| Projects/Spaces, memory transparency, copy-on-branch | **P1** | 01 §4.6, 01 §4.8, 05 §4.4 | Continuity and retention layer. |
+| No-train-by-default + retention/export/delete | **P0** | 04 §5.7, 05 §7.3 | Privacy acquisition hook. Export/delete shipped (`/api/account/export`, `DELETE /api/account`); per-user retention purge shipped. |
+| Metered free + metered Pro + BYOK | **P0** | 05 §5, 04 §5.6, 02 FR-6 | Pro = explicit caps + USD overage. Shipped: real Stripe checkout/portal/webhooks + USD credit ledger (grant/debit), default-off `BILLING_BACKEND`. |
+| Minimal metered-overage / USD credit primitive | **P0** | 05 §5.1, 00 §11 D8, 04 §5.6 | Enforcement reads `message.cost_usd`. Shipped: real Stripe checkout/portal/webhooks + USD credit ledger (grant/debit), default-off `BILLING_BACKEND`. |
+| Vision + PDF/document understanding | **P1 — partially shipped** | 02 §4.8, 04 §5.4 | Attach + text/PDF transcript on attachment-capable bindings (Anthropic/OpenAI); the prod DeepSeek route accepts no attachments; image vision Anthropic-only. |
+| Tool/function calling + basic agent loop | **P1 — Shipped\* (TOOLS_ENABLED, fake-provider v1)** | 02 §4.6, 04 §5.2 | HITL approval for sensitive tools. |
+| Web search/grounding + citations/source cards | **P1 — Shipped\* (SEARCH_BACKEND, Tavily)** | 01 §4.11, 02 §4.7 | Structured citation parts; source-card list, no inline `[n]` markers yet. |
+| Deep parallel model comparison | **Shipped** | 00 §5, 02 FR-12 | 2-up same-prompt view; originally P2. P1 keeps per-turn switching and branch/retry workflows. |
+| Projects/Spaces, memory transparency, copy-on-branch | **P1 (copy-on-branch Shipped; rest deferred)** | 01 §4.6, 01 §4.8, 05 §4.4 | Continuity and retention layer. |
 | Slash commands / prompt library + customizable shortcuts | **P1** | 01 §4.3, 01 §4.9 | Power-user ergonomics. |
 | Richer usage-credit UX / prepaid packs | **P1** | 05 §5.1 | P0 has minimal overage primitive. |
 | Artifacts/Canvas, code execution, RAG, voice, image generation, MCP, native, teams/enterprise | **P2** | 01 §4.12, 02 §4.7/§4.12, 03 §6, 04 §8 | Later differentiators/heavier infra. |
 | Ads on free tier | **P2 (revisit)** | 05 §2.2, 05 §9.10 | Trust risk; revisit only at scale. |
+| Per-turn reasoning-effort override (+cost/latency hint) | **P0 — Shipped** | 02 FR-16, 01 §4.2 | minimal/standard/extended; graceful on unsupported providers. |
+| Provider fallback (pre-first-token, substitution-coded) | **P0 — Shipped** | 02 FR-5/FR-11b, 07 §5, 08 §10 | single-shot; provider_fallback/rate_limited. |
+| User monthly budget cap (lower-of platform/user) | **P0 — Shipped** | 05 §5.1, 04 §5.6 | preferences.monthly_budget_usd (mig 0018). |
+| Real Stripe billing (checkout/portal/webhooks/entitlements/credits) | **P0 — Shipped\* (BILLING_BACKEND)** | 05 §5.1, 04 §5.6 | signed idempotent webhooks; Pro + credit packs. |
+| First-party analytics (FE intake + server funnel events) | **P0 — Shipped** | 05 §6, 04 §5.6 | POST /api/analytics/events; analytics_event. |
+| Continue-a-stopped-turn | **P0 — Shipped** | 08 §5.2, 04 §5.1 | distinct from replay. |
+| Conversation branch / search / pin | **P0/P1 — Shipped** | 01 §4.6, 00 D10 | branch is cost-stripped. |
+| Versioned-KEK BYOK + re-encryption | **P0 — Shipped** | 04 §5.2/§5.7 | BYOK_KEK_VERSIONS. |
+| Safety / moderation preflight | **P0 — Shipped\* (SAFETY_BACKEND=local)** | 02 SR-1, 04 §5.7 | blocklist preflight. |
+| Custom instructions + retention controls | **P0 — Shipped** | 02 FR-20, 04 §5.7 | preferences.custom_instructions/retention_days. |
 
 ### 4.4 Dependency notes
 - **Provider-abstraction layer** (P0) is the spine: model picker, routing, transparency meter, BYOK, and later parallel comparison all sit on it. Build it thin so OpenRouter/LiteLLM can swap in without app changes.
 - **Interrupted-stream spine (P0):** partial persistence + Continue/Regenerate + terminal stream analytics flags — no Redis replay required for launch.
-- **Resumable-stream spine (P1):** Redis replay + dedicated stop endpoint + orphan reaper. Design the `Stream` table in P0; ship same-device replay in P1.
+- **Resumable-stream spine (P1 — shipped behind `RESUMABLE_STREAMS_ENABLED`):** Redis replay + dedicated stop endpoint + orphan reaper. Stop endpoint + reaper are shipped & always-on; replay is default-off and prod-gated on Redis.
 - **Tool/function-calling loop** (P1) is a prerequisite for **web search** (P1), **data analysis** (P2), and **MCP** (P2).
 - **Agentic loop + artifacts** precede **sandboxed code execution** (P2).
 - **Vision/file understanding** (P1) precedes **RAG** (P2) — start with large-context "attach a doc" before full retrieval.
@@ -149,6 +161,8 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 - **BYOK option:** user plugs in their own provider keys; **we add zero token markup**. Monetize via a small flat platform fee or bundle into Pro. Near-zero COGS revenue line that converts power users cheaply and **directly de-risks our biggest margin threat**. **Routing BYOK via OpenRouter is free for the first 1M BYOK requests/mo (then 5% of equivalent cost)** — materially lowers BYOK infra cost and supports the $0-markup promise. `[VERIFY]`.
 - **Usage credits:** the **minimal metered-overage / USD credit primitive is now P0** (so Pro's caps have transparent overage); **richer prepaid credit-pack UX (top-up flows, Poe-style packs) is P1** for occasional heavy users who don't subscribe.
 - **Defer:** ads (a **trust liability we decline even as OpenAI leans in** — §2.2) and enterprise seats (P2; long cycle/compliance).
+
+*Implementation status: shipped behind default-off `BILLING_BACKEND` (`stripe`/`fake`) — Stripe Checkout (`pro_subscription` + `credit_purchase`), Billing Portal, signature-verified idempotent webhooks granting USD credits / Pro entitlements, and a `usage_credit_ledger` (grant/platform_debit/adjustment) read by the budget gate (`api/app/routes/billing.py`). The "richer prepaid credit-pack UX" remains the P1 layer.*
 
 ### 5.2 Cost economics (why this shape)
 - AI-first companies run **~50–60% gross margins** (vs 80–90% classic SaaS); inference alone can eat **~23% of revenue**. `[VERIFY]`

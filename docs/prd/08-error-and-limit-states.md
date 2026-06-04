@@ -116,10 +116,12 @@ P0 Continue is a new continuation request; it is **not** P1 resumable replay.
 | Code | Trigger | Actions |
 |---|---|---|
 | `PLATFORM_RATE_LIMIT` | Request/token window | Wait `retry_after`, Reduce usage |
-| `PLATFORM_BUDGET_EXCEEDED` | Rolling USD/message cap | Upgrade, Add credits, BYOK |
+| `PLATFORM_BUDGET_EXCEEDED` | Rolling USD/message cap (enforcement uses the LOWER of the platform `USAGE_BUDGET_USD` and the per-user `monthly_budget_usd`, composed in `api/app/db/repositories/usage.py::_effective_quota_usd`; a positive credit balance extends the cap. **Naming note:** the shipped backend emits this as code `BUDGET_EXCEEDED`, not `PLATFORM_BUDGET_EXCEEDED` — see the §5.4 note below) | Upgrade, Add credits, BYOK |
 | `PLATFORM_TIER_GATED` | Model/tier not available | Upgrade or pick available tier |
 | `PLATFORM_GUEST_DOWNGRADE` | Guest moved to a weaker model after good-model allotment | (transparency callout, not a block) Sign up to keep the better model |
 | `PLATFORM_GUEST_LIMIT` | Anonymous cap (hard sign-up wall) | Sign up / sign in |
+
+> **Code-name discrepancy — flagged for the reviewer, NOT resolved here.** This catalog names the cost-cap error `PLATFORM_BUDGET_EXCEEDED`, but the shipped FE-facing constant in `api/app/routes/conversations.py::_budget_exceeded` is **`BUDGET_EXCEEDED`** (429, `severity: "warning"`, `retry_after_ms` until the next calendar-month reset). Neither side is renamed in this pass — the contract owner should decide which name is canonical and align the other. Enforcement otherwise matches this row: best-effort/post-hoc against the accumulated `usage_rollup` cost ledger, exempting BYOK turns, gated on the effective (lower-of-two) quota plus any credit balance.
 
 > **Guest model-downgrade transparency (distinct from the hard `PLATFORM_GUEST_LIMIT` block).** 2026 guest flows silently downgrade anonymous users to a weaker/mini model before the hard sign-up wall. For a transparency-first product, a **silent** downgrade is an own-goal. When a guest is moved to a weaker model, surface a **transparency callout reusing the substitution-callout** (PRD 06 §5.4 / PRD 07) — `severity: "info"`, not a block — naming the served model and the reason ("Now answering with Fast — sign up to keep the better model"). This is a transparency surface, **not** an error: `PLATFORM_GUEST_DOWNGRADE` continues generation; only `PLATFORM_GUEST_LIMIT` blocks send.
 
@@ -208,13 +210,18 @@ Terminal events feed PRD 05 analytics.
 | Area | P0 | P1 | P2 |
 |---|---|---|---|
 | Stream fail/stop/timeout/409 | Yes | — | — |
-| Provider 429/5xx | Yes | Automated fallback UX | — |
+| Provider 429/5xx | Yes | Automated fallback UX — **P1: Shipped (backend)** | — |
 | Platform/guest/tier caps | Yes | Rich credit packs | Team/admin limits |
 | BYOK errors | Yes | — | — |
 | Offline queue + optimistic send | Yes | Background sync replay where supported | — |
-| Resumable-stream Continue | Partial+Continue request | True replay | — |
-| Tool/HITL errors | Reserved | Yes | — |
+| Resumable-stream Continue | Partial+Continue request | True replay — **P1: Shipped\* (`RESUMABLE_STREAMS_ENABLED`)** | — |
+| Tool/HITL errors | Reserved | Yes — **P1: Shipped\* (`TOOLS_ENABLED`)** | — |
 | Moderation appeals | — | — | Yes |
+
+> **Shipped-on-`main` annotations (\* = behind a default-off flag; inert until enabled).**
+> - **Provider 429/5xx → P1 Shipped (backend):** a single-shot, pre-first-token provider fallback is live (`api/app/routes/conversations.py::_select_fallback_route` + `streaming/handler.py`). It retries once on an alternate route for a retryable error (rate-limit / upstream) raised before any token, and records the substitution as `provider_fallback` (or `rate_limited`) per PRD 07 §5 — surfaced as a transparency callout, not a red error banner (§5.7). The automated *fallback UX* still belongs to the FE.
+> - **Resumable-stream Continue → P1 Shipped\* (`RESUMABLE_STREAMS_ENABLED`):** true detached-producer replay + reconnect ships behind the default-off flag (prod additionally requires `STREAM_STATE_BACKEND=redis`). The **P0 `continueTurn`** path (a new continuation request that preserves the stopped partial; `NET_INTERRUPTED` Continue) is fully shipped and on by default — see §5.2.
+> - **Tool/HITL errors → P1 Shipped\* (`TOOLS_ENABLED`):** the agent loop + HITL approval gate ship behind the default-off `TOOLS_ENABLED` flag. A paused turn ends in the persisted `awaiting_approval` terminal; a failed/timed-out/denied tool yields a failed/cancelled `tool_result` (the turn keeps going) rather than erroring the whole turn.
 
 ---
 

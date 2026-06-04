@@ -32,7 +32,7 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 ### Non-goals
 - Marketing site / brand campaign system.
 - Artifact/canvas full design (**P2**).
-- Citation/source rail full design (**P1**; reserve component slots now).
+- Citation/source rail full design (**P1**; the full **source-card list is shipped** — `sources-panel.tsx`; inline `[n]` citation chips remain pending).
 - Native iOS/Android design languages (Capacitor **P2** reuses web tokens).
 
 ---
@@ -75,7 +75,7 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 |---|---|---|
 | App shell | Header + optional sidebar + chat column | PRD 03 |
 | Sidebar / drawer | History, search, new chat, grouped threads | PRD 01/03 |
-| Composer bar | `[textarea] [tier picker] [Send/Stop]`; attach added P1 | PRD 01/03 |
+| Composer bar | `[textarea] [tier picker] [Send/Stop]`; attach added P1 (attach shipped behind provider capability; inert on DeepSeek) | PRD 01/03 |
 | Message list | Virtualized scroll region + jump-to-latest FAB | PRD 03 |
 | Command palette | `Cmd/Ctrl+K`; full keyboard navigation | PRD 01 |
 | Settings/data | Theme, custom instructions, BYOK, data controls | PRD 01/04 |
@@ -106,16 +106,21 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 - Expandable details: tokens, cost, estimate badge, routing notes.
 - Served-vs-requested substitution uses `substitution-callout`, not generic error red.
 - BYOK turns show "Your API key" badge.
+- **[shipped] Cost-anomaly callout:** when no substitution clause is present, the byline can lead with a muted "why this cost" reason — "High reasoning cost" / "Long context" / "No cache hit" — derived from the cost breakdown (`attribution-row.tsx`, `cost-breakdown.tsx` `costAnomaly`).
+- **[shipped] JSON-output chip:** when structured output was requested, the row shows a "JSON" chip, switching to "JSON (invalid)" (warning glyph) when the output failed to parse — the validity state reads in **text, not color alone** (`attribution-row.tsx`).
 
 ### 5.5 Usage / budget meter **[P0]**
 - Platform-key users: period usage vs cap.
 - BYOK sessions: "Billed to your key"; no platform token markup.
 - Approaching limits use warning state; hard caps hand off to PRD 08.
+- **[shipped]** A **user-editable monthly budget cap** (with an explicit Save) that surfaces the platform's tighter enforced cap when it binds ("Enforced cap: … — the platform cap is tighter than your setting"), a **credit balance** line, and recent **ledger rows** (`settings-dialog.tsx` `BudgetEditor` / `UsageDetails`; the compact byline meter is `usage-meter.tsx`).
 
 ### 5.6 Composer + tier picker **[P0]**
 - Tier labels: Fast / Smart / Pro / Auto; no raw model IDs by default.
 - Menu shows relative speed/cost/context hints from registry.
 - P0 is text-only; attach/paperclip is hidden until P1.
+- **[shipped]** The picker grew into a combined **model + provider + reasoning-effort + web-search + JSON-output** control (`model-mode-picker.tsx`; desktop dropdown / mobile bottom sheet). The provider section appears only when >1 route is available; web search appears only on search-capable tiers; reasoning-effort rows disable with a one-line note when the served provider ignores effort.
+- **[shipped]** An optional **Compare** toggle sits next to the model controls when the surface offers it (`composer.tsx`), and the **attach paperclip is shown only on attachment-capable tiers** (so it's inert on the prod DeepSeek backend).
 
 ### 5.7 Code block **[P0]**
 - Language label, syntax highlighting, copy button.
@@ -141,8 +146,8 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 | Core tokens + themes | Yes | — | — |
 | Message, composer, reasoning, attribution, meter | Yes | — | — |
 | Error/limit visual primitives | Yes | — | — |
-| Citation/source card visuals | Slots only | Full | — |
-| Mermaid chrome | Code/source view | Interactive/fullscreen | — |
+| Citation/source card visuals | Slots only | **Full source-card list — shipped** (`sources-panel.tsx`); inline `[n]` chips pending | — |
+| Mermaid chrome | Code/source view | **Interactive/fullscreen — shipped** (rendered diagram via lazy Streamdown plugin, not code-only) | — |
 | Memory ledger UI | — | Yes | — |
 | Artifact/canvas design | — | Read-only stretch | Full |
 

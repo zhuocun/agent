@@ -241,6 +241,10 @@ export type StreamStatus =
   | "submitted" // pre-first-token
   | "streaming"
   | "done"
+  // HITL pause: the turn ended in a terminal awaiting the user's tool-approval
+  // decision. The bubble stays put and shows the approve/deny card; the
+  // decision rides a follow-up message POST that resumes as a NEW bubble.
+  | "awaiting_approval"
   | "stopped"
   | "error";
 

@@ -78,7 +78,12 @@ export interface ApiStreamState {
 }
 
 export interface TerminalResult {
-  status: "done" | "stopped" | "error";
+  // `awaiting_approval` is a server terminal (HITL pause): the turn ended
+  // pending a tool-approval decision. The bubble is committed in place (with
+  // its tool parts) and shows the approve/deny card. Like `done` it carries
+  // the assistant message id, but never an `attribution` (the cost lands on
+  // the resumed turn).
+  status: "done" | "stopped" | "error" | "awaiting_approval";
   reasoning: string;
   reasoningDurationSec: number;
   answer: string;
@@ -120,6 +125,16 @@ export interface StartArgs {
   // `regenerate` / `editMessageId`.
   continueTurn?: boolean;
   editMessageId?: string;
+  // HITL resume: the user's approve/deny decision for a tool call the turn
+  // paused on. Sent only when set; mutually exclusive with
+  // `regenerate`/`continueTurn`/`editMessageId` on the wire. The BE replays the
+  // paused turn, applies the decision (running or rejecting the tool), and
+  // streams the post-tool answer as a NEW assistant message.
+  toolApproval?: {
+    toolCallId: string;
+    decision: "approve" | "deny";
+    editedInput?: Record<string, unknown>;
+  };
   // Toggled on in the composer; sent only when true (the BE treats absence as
   // false). Gated upstream on the selected tier's `supportsWebSearch`.
   webSearch?: boolean;
@@ -233,22 +248,41 @@ function isErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
   );
 }
 
-// `terminal` payload narrows to `{ status: "done", messageId, attribution }`.
+// `terminal` payload narrows to `{ status?, messageId, attribution? }`. `status`
+// widens from the original `"done"`-only to also carry `"awaiting_approval"`
+// (the HITL pause), defaulting to `"done"` when the field is absent (older
+// backends). On the `awaiting_approval` pause there's no `attribution` yet — the
+// cost lands on the resumed turn — so attribution is optional here.
+type TerminalFrameStatus = "done" | "awaiting_approval";
+
 interface TerminalPayload {
+  status: TerminalFrameStatus;
   messageId: string;
-  attribution: ModelAttribution;
+  attribution?: ModelAttribution;
+}
+
+function readTerminalStatus(value: unknown): TerminalFrameStatus {
+  return value === "awaiting_approval" ? "awaiting_approval" : "done";
 }
 
 function parseTerminal(value: unknown): TerminalPayload | null {
   if (!isRecord(value)) return null;
   const messageId = readStringField(value, "messageId");
+  if (!messageId) return null;
+  const status = readTerminalStatus(value.status);
   const attribution = value.attribution;
-  if (!messageId || !isRecord(attribution)) return null;
   // We don't deep-validate ModelAttribution here — the BE owns its wire
   // shape via Pydantic, and the FE renders it through `AttributionRow`
   // which tolerates partial shapes. A bad attribution is a contract bug,
-  // not a recoverable client-side error.
-  return { messageId, attribution: attribution as unknown as ModelAttribution };
+  // not a recoverable client-side error. On the `awaiting_approval` pause the
+  // BE sends no attribution, so it stays undefined there.
+  return {
+    status,
+    messageId,
+    ...(isRecord(attribution)
+      ? { attribution: attribution as unknown as ModelAttribution }
+      : {}),
+  };
 }
 
 // `status` payload narrows to `{ label, state }`. `state` is constrained to
@@ -441,7 +475,7 @@ export function useApiStream(
 
   const emitTerminal = useCallback(
     (
-      status: "done" | "stopped" | "error",
+      status: "done" | "stopped" | "error" | "awaiting_approval",
       extras: {
         serverAssistantMessageId?: string;
         attribution?: ModelAttribution;
@@ -593,15 +627,19 @@ export function useApiStream(
             emitTerminal("error", { error: err });
             return true;
           }
+          // Surface the frame's status (default "done"). On the HITL pause the
+          // BE sends `status: "awaiting_approval"` and no attribution — the
+          // bubble settles into the approval card and the cost lands on the
+          // resumed turn.
           setState((s) => ({
             ...s,
-            status: "done",
+            status: parsed.status,
             reasoningStreaming: false,
             reasoningDurationSec: durationRef.current,
           }));
-          emitTerminal("done", {
+          emitTerminal(parsed.status, {
             serverAssistantMessageId: parsed.messageId,
-            attribution: parsed.attribution,
+            ...(parsed.attribution ? { attribution: parsed.attribution } : {}),
           });
           return true;
         }
@@ -785,6 +823,11 @@ export function useApiStream(
       if (args.continueTurn) body.continueTurn = true;
       if (args.editMessageId !== undefined)
         body.editMessageId = args.editMessageId;
+      // HITL resume: send the approve/deny decision only when set (mirrors how
+      // `continueTurn`/`webSearch` are conditionally added), so non-HITL turns
+      // are byte-identical to today's wire shape. Mutually exclusive with
+      // regenerate/continue/edit by construction (the caller sets only one).
+      if (args.toolApproval) body.toolApproval = args.toolApproval;
       // Send `webSearch` only when on — the BE treats absence as false, so the
       // off path is a no-op vs today's wire shape.
       if (args.webSearch) body.webSearch = true;

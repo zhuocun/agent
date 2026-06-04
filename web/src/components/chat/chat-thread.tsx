@@ -762,6 +762,10 @@ export function ChatThread() {
 
     if (result.status === "done") setLiveMessage("Response ready");
     else if (result.status === "stopped") setLiveMessage("Generation stopped");
+    else if (result.status === "awaiting_approval")
+      // HITL pause: the turn committed in place (with its tool parts) and the
+      // bubble now shows the approve/deny card. Not "ready" — it's waiting on us.
+      setLiveMessage("Action needs your approval");
     else setLiveMessage("Generation failed");
 
     setPendingId(null);
@@ -918,6 +922,12 @@ export function ChatThread() {
       regenerate?: boolean;
       continueTurn?: boolean;
       editMessageId?: string;
+      // HITL resume decision; mutually exclusive with regenerate/continue/edit.
+      toolApproval?: {
+        toolCallId: string;
+        decision: "approve" | "deny";
+        editedInput?: Record<string, unknown>;
+      };
       webSearch?: boolean;
       reasoningEffort?: ReasoningEffortId;
       attachments?: AttachmentPart[];
@@ -966,8 +976,14 @@ export function ChatThread() {
           // Restore the typed text to the composer so a failed first-send
           // create doesn't lose the user's message (the composer cleared it on
           // submit). Only the plain-send path reaches create with no active
-          // conversation; edit/regenerate run against an existing one. (P2-5)
-          if (!args.regenerate && !args.editMessageId && !args.continueTurn) {
+          // conversation; edit/regenerate/continue/tool-approval run against an
+          // existing one. (P2-5)
+          if (
+            !args.regenerate &&
+            !args.editMessageId &&
+            !args.continueTurn &&
+            !args.toolApproval
+          ) {
             composerRef.current?.setDraft(args.text);
           }
           showToast({
@@ -995,6 +1011,8 @@ export function ChatThread() {
         regenerate: args.regenerate,
         continueTurn: args.continueTurn,
         editMessageId: args.editMessageId,
+        // HITL resume decision; stream-client sends it on the wire only when set.
+        toolApproval: args.toolApproval,
         // Sent only when on; stream-client further drops it from the wire when
         // falsy, so the off path is byte-identical to today.
         webSearch: args.webSearch,
@@ -1402,6 +1420,54 @@ export function ChatThread() {
       tierId: tierAtSendRef.current,
       providerId: providerAtSendRef.current,
       continueTurn: true,
+      webSearch: searchAtSendRef.current || undefined,
+      reasoningEffort: effortAtSendRef.current,
+    });
+  };
+
+  // HITL resume. Mirrors `handleContinue` exactly: the paused (awaiting_approval)
+  // bubble is RETAINED — the continuation streams in as a NEW assistant bubble
+  // via the existing pendingMessage live path. The decision rides a follow-up
+  // message POST (`toolApproval`), which the BE treats as a resume of the paused
+  // turn (replay history + apply decision). `messageId` is unused for the wire
+  // (the BE keys off the conversation's paused turn + toolCallId), but kept in
+  // the signature to match the per-message handler shape.
+  const handleToolDecision = (
+    _messageId: string,
+    decision: { toolCallId: string; decision: "approve" | "deny" },
+  ) => {
+    if (isStreaming) return;
+    // Trailing user text satisfies the wire schema's required `text`; the BE
+    // ignores it on a tool-approval resume (it replays the persisted history).
+    const lastUserText = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role !== "user") continue;
+        for (const p of m.parts) if (p.type === "text") return p.text;
+      }
+      return "";
+    })();
+    const resumeId = localId();
+    assistantIdRef.current = resumeId;
+    pendingUserIdRef.current = null;
+    tierAtSendRef.current = selectedTierId;
+    providerAtSendRef.current = effectiveProviderId;
+    searchAtSendRef.current = effectiveSearchEnabled;
+    effortAtSendRef.current = effectiveReasoningEffort;
+    setPendingId(resumeId);
+    setLiveMessage(
+      decision.decision === "approve"
+        ? "Approving action"
+        : "Denying action",
+    );
+    void beginTurn({
+      text: lastUserText,
+      tierId: tierAtSendRef.current,
+      providerId: providerAtSendRef.current,
+      toolApproval: {
+        toolCallId: decision.toolCallId,
+        decision: decision.decision,
+      },
       webSearch: searchAtSendRef.current || undefined,
       reasoningEffort: effortAtSendRef.current,
     });
@@ -2561,6 +2627,11 @@ export function ChatThread() {
                         m.id === lastAssistantId &&
                         m.status === "stopped"
                       }
+                      isAwaitingApproval={
+                        !isStreaming &&
+                        m.id === lastAssistantId &&
+                        m.status === "awaiting_approval"
+                      }
                       onBranch={
                         canBranchMessage
                           ? () => handleBranchFromMessage(m.id)
@@ -2574,6 +2645,7 @@ export function ChatThread() {
                         selectedTierId,
                       }}
                       onContinue={handleContinue}
+                      onToolDecision={(d) => handleToolDecision(m.id, d)}
                       onFeedback={(f) => setFeedback(m.id, f)}
                       onAttributionOpen={handleAttributionOpen}
                       defaultReasoningOpen={preferences.autoExpandReasoning}

@@ -13,6 +13,8 @@ changes with the provider. These tests pin both halves.
 
 from __future__ import annotations
 
+import pytest
+
 from app.config import Settings
 from app.providers.tiers import (
     PROVIDER_ROUTES,
@@ -186,6 +188,32 @@ def test_list_tiers_carries_active_backend_model_label() -> None:
     oa = {t.id: t.model_label for t in _openai_settings_tiers(openai_model_pro="deepseek-reasoner")}
     assert oa["pro"] == "deepseek-reasoner"
     assert oa["auto"] == ""
+
+
+def test_list_tiers_carries_list_prices_for_estimate() -> None:
+    """Feature 2: each wire tier carries the active binding's list prices so the
+    FE can render a pre-send estimate. `auto` stays 0.0 (its model/price varies
+    per request), mirroring its blank `model_label`."""
+    tiers = {
+        t.id: t
+        for t in list_tiers(Settings(provider_backend="deepseek", deepseek_api_key="k"))
+    }
+    # Concrete tiers echo the canonical DeepSeek V4 prices.
+    assert tiers["fast"].list_price_in_per_m == pytest.approx(0.14)
+    assert tiers["fast"].list_price_out_per_m == pytest.approx(0.28)
+    assert tiers["pro"].list_price_in_per_m == pytest.approx(0.435)
+    assert tiers["pro"].list_price_out_per_m == pytest.approx(0.87)
+    # auto stays 0.0 (varies per request).
+    assert tiers["auto"].list_price_in_per_m == 0.0
+    assert tiers["auto"].list_price_out_per_m == 0.0
+    # Provider route options carry per-route prices too (so the FE can estimate a
+    # non-default route). The deepseek option on the `pro` tier matches its
+    # binding; the gemini (pending, no binding) option stays 0.0.
+    pro_options = {o.provider_id: o for o in tiers["pro"].provider_options}
+    assert pro_options["deepseek"].list_price_in_per_m == pytest.approx(0.435)
+    assert pro_options["deepseek"].list_price_out_per_m == pytest.approx(0.87)
+    assert pro_options["gemini"].list_price_in_per_m == 0.0
+    assert pro_options["gemini"].list_price_out_per_m == 0.0
 
 
 def test_get_binding_anthropic_backend_returns_anthropic_binding() -> None:

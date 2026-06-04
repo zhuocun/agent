@@ -18,7 +18,15 @@ import {
 } from "@/components/ui/collapsible";
 import type { ApiError } from "@/lib/apiClient";
 import { cn } from "@/lib/utils";
-import type { ChatMessage, Feedback, MessagePart, StreamStatus } from "@/lib/types";
+import type {
+  ChatMessage,
+  Feedback,
+  MessagePart,
+  ModelTier,
+  ModelTierId,
+  ProviderTierOption,
+  StreamStatus,
+} from "@/lib/types";
 
 interface AssistantMessageProps {
   message: ChatMessage;
@@ -28,9 +36,28 @@ interface AssistantMessageProps {
   isBranching?: boolean;
   canRegenerate?: boolean;
   canContinue?: boolean;
+  // HITL: true only for the LAST assistant message whose status is
+  // `awaiting_approval`. Gates the approve/deny controls so a stale paused
+  // bubble higher in the thread never shows live decision buttons (mirrors the
+  // `canContinue && isStopped` gating).
+  isAwaitingApproval?: boolean;
   onBranch?: () => void;
   onRegenerate?: () => void;
+  // Regenerate with a specific model/provider (Feature 4). Threaded straight to
+  // MessageActions, which renders the split dropdown when both are present.
+  onRegenerateWith?: (tierId: ModelTierId, providerId?: string) => void;
+  regenerateOptions?: {
+    tiers: ModelTier[];
+    providerOptions: ProviderTierOption[];
+    selectedTierId: ModelTierId;
+  };
   onContinue?: () => void;
+  // HITL: the user's approve/deny decision for the tool call this turn paused
+  // on. Threaded down to the paused tool part's controls.
+  onToolDecision?: (d: {
+    toolCallId: string;
+    decision: "approve" | "deny";
+  }) => void;
   onFeedback?: (next: Feedback) => void;
   onAttributionOpen?: () => void;
   defaultReasoningOpen?: boolean;
@@ -52,9 +79,13 @@ export function AssistantMessage({
   isBranching,
   canRegenerate,
   canContinue,
+  isAwaitingApproval,
   onBranch,
   onRegenerate,
+  onRegenerateWith,
+  regenerateOptions,
   onContinue,
+  onToolDecision,
   onFeedback,
   onAttributionOpen,
   defaultReasoningOpen = false,
@@ -123,7 +154,15 @@ export function AssistantMessage({
           return <SourcesPanel key={idx} items={part.items} />;
         }
         if (part.type === "tool_call" || part.type === "tool_result") {
-          return <ToolPartView key={idx} part={part} />;
+          return (
+            <ToolPartView
+              key={idx}
+              part={part}
+              // Only the trailing paused turn gets live approve/deny controls;
+              // ToolPartView further narrows to the pending tool_call part.
+              onDecision={isAwaitingApproval ? onToolDecision : undefined}
+            />
+          );
         }
         return null;
       })}
@@ -155,6 +194,8 @@ export function AssistantMessage({
               canContinue={canContinue && isStopped}
               onBranch={onBranch}
               onRegenerate={onRegenerate}
+              onRegenerateWith={onRegenerateWith}
+              regenerateOptions={regenerateOptions}
               onContinue={onContinue}
               onFeedback={onFeedback}
             />

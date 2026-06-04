@@ -41,6 +41,7 @@ from app.db.repositories import messages as messages_repo
 from app.db.repositories import preferences as preferences_repo
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
+from app.db.repositories.usage import _effective_quota_usd
 from app.db.session import get_db
 from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
 from app.middleware.ratelimit import limiter
@@ -55,6 +56,7 @@ from app.providers.protocol import (
 from app.providers.router import route_auto
 from app.providers.tiers import (
     TierBinding,
+    available_provider_backend_ids,
     get_binding,
     get_provider_route,
     is_known_tier,
@@ -64,13 +66,14 @@ from app.providers.tiers import (
     web_search_available_for_binding,
 )
 from app.safety import SafetyDecision, check_user_turn
-from app.schemas.common import ModelTierId, SubstitutionReasonCode
+from app.schemas.common import ModelTierId, ReasoningEffortId, SubstitutionReasonCode
 from app.schemas.conversation import (
     BranchConversationRequest,
     ConversationSearchResult,
     CreateConversationRequest,
     PatchConversationRequest,
     SendMessageRequest,
+    ToolApprovalDecision,
 )
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.message import AttachmentPart, ModelAttribution
@@ -89,6 +92,7 @@ from app.schemas.stream_events import (
 from app.search.protocol import SourceItem
 from app.streaming import replay_registry
 from app.streaming.handler import (
+    ResumeToolSeed,
     _derive_session_factory,
     spawn_detached_producer,
     stream_and_persist,
@@ -107,6 +111,7 @@ from app.streaming.sse import (
     encode_tool_result,
 )
 from app.streaming.stop_registry import request_stop_async
+from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
 from app.uploads import extract_attachment_text, is_supported_attachment_type
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -121,6 +126,20 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 _CONTINUE_INSTRUCTION = (
     "Continue your previous response from exactly where it left off. "
     "Do not repeat or re-introduce anything already written."
+)
+
+# Continuation instructions sent as the new user turn when RESUMING a turn that
+# paused on an approval-gated tool. They carry the human's decision so the model
+# (and the deterministic fake provider) produces the post-tool answer. The
+# handler emits the seeded `tool_result` BEFORE this turn streams. The phrases
+# "Tool approved:" / "Tool denied:" are detected by the fake provider.
+_RESUME_APPROVE_INSTRUCTION = (
+    "Tool approved: the requested tool has been executed. Use its result to "
+    "complete your response."
+)
+_RESUME_DENY_INSTRUCTION = (
+    "Tool denied: the user declined the requested tool. Do not perform the "
+    "action; briefly acknowledge and continue."
 )
 
 
@@ -228,6 +247,101 @@ def _ensure_provider_usable(
         raise _provider_unavailable(provider_id)
 
 
+def _map_reasoning_effort(
+    effort: ReasoningEffortId | None,
+    binding: TierBinding,
+) -> tuple[str | None, bool | None]:
+    """Map a per-turn reasoning-effort hint to provider call overrides.
+
+    Returns `(reasoning_effort_override, thinking_override)` — each None means
+    "use the binding default unchanged" at the provider call:
+
+    - `auto` / None  -> `(binding.reasoning_effort, None)`: unchanged behavior.
+    - `minimal`      -> `(None, False)`: force thinking OFF for a real latency
+      win (and omit any effort level).
+    - `standard`     -> `("medium", None)`.
+    - `extended`     -> `("high", None)`.
+
+    Providers that don't support effort hints ignore them, so this is always a
+    safe, graceful hint — it NEVER raises for an unsupported effort.
+    """
+    if effort is None or effort == "auto":
+        return binding.reasoning_effort, None
+    if effort == "minimal":
+        return None, False
+    if effort == "standard":
+        return "medium", None
+    # "extended"
+    return "high", None
+
+
+async def _select_fallback_route(
+    tier_id: ModelTierId,
+    primary_provider_id: str,
+    settings: Settings,
+    *,
+    user: User,
+    db: AsyncSession,
+    resolved_api_key: str | None,
+) -> tuple[TierBinding, str, str | None] | None:
+    """Pick a single alternate provider route to retry on a provider fallback.
+
+    Policy (ALL routing decisions live here; the handler stays dumb):
+
+    - Candidates = real adapter backends (`available_provider_backend_ids`)
+      MINUS the primary, that are usable either on the platform key
+      (`platform_provider_usable`) OR via a stored BYOK key for the caller, and
+      whose adapter is allowed in this runtime (`route_adapter_available`).
+    - Iterate a FIXED safe order (deepseek, anthropic, openai, fake) and pick the
+      first candidate with a non-None `get_binding(tier_id, provider_id=cand)`.
+    - Resolve that candidate's BYOK key (mirrors the primary BYOK lookup).
+
+    Returns `(binding, provider_id, api_key)` or None when no alternate exists.
+
+    The `fake` backend is included so the dev/test path can exercise the retry:
+    when the active backend is `fake`, the fallback binding's `model_id` is
+    switched to `"fake-fallback"` so the fake provider streams normally on the
+    retry (it only raises pre-token on the primary `model_id`).
+    """
+    # Fixed safe order. `fake` last so real providers always win when present.
+    preferred_order = ("deepseek", "anthropic", "openai", "fake")
+    available = set(available_provider_backend_ids())
+    for candidate in preferred_order:
+        if candidate not in available:
+            continue
+        # Skip the primary route — EXCEPT the `fake` dev/test backend, which may
+        # serve as its own fallback: the `model_id="fake-fallback"` swap below
+        # makes it a genuinely distinct route that streams instead of re-raising.
+        # Real providers never self-fall-back (a single usable provider correctly
+        # yields no alternate and the error surfaces), and `fake` is gated out of
+        # production entirely by `route_adapter_available`/`platform_provider_usable`,
+        # so prod is unchanged — this only lights up the dev/test retry seam.
+        if candidate == primary_provider_id and candidate != "fake":
+            continue
+        if not route_adapter_available(candidate, settings):
+            continue
+        # Resolve a BYOK key for the candidate (non-anonymous users only).
+        candidate_key: str | None = None
+        if not user.is_anonymous:
+            candidate_key = await api_keys_repo.get_decrypted_for_user(
+                db, user_id=user.id, provider=candidate
+            )
+        # Usable iff the platform can call it OR the caller has a BYOK key.
+        if not (platform_provider_usable(candidate, settings) or candidate_key is not None):
+            continue
+        candidate_binding = get_binding(tier_id, settings=settings, provider_id=candidate)
+        if candidate_binding is None:
+            continue
+        if candidate == "fake":
+            # Distinct model id so the fake provider streams (doesn't re-raise)
+            # on the retry — see providers/fake.py FORCE_FALLBACK_RETRY marker.
+            from dataclasses import replace as _replace
+
+            candidate_binding = _replace(candidate_binding, model_id="fake-fallback")
+        return candidate_binding, candidate, candidate_key
+    return None
+
+
 def _stream_in_progress() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -307,6 +421,19 @@ def _nothing_to_continue() -> AppError:
             title="Nothing to continue",
             body="This conversation has no stopped response to continue. "
             "Send a new message or regenerate instead.",
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _nothing_to_resume() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="NOTHING_TO_RESUME",
+            severity="warning",
+            title="Nothing to resume",
+            body="This conversation has no tool awaiting approval. "
+            "Send a new message instead.",
         ),
         status.HTTP_400_BAD_REQUEST,
     )
@@ -1109,6 +1236,12 @@ async def send_message(
     """
     settings = get_settings()
     user_prefs = await preferences_repo.get_or_default(db, user.id)
+    # Effective monthly cap = min of the operator quota and the user's own
+    # budget (whichever positive caps exist; 0.0 = no cap). Computed once here so
+    # the budget gate AND the handler's credit-debit math use the same value.
+    effective_quota_usd = _effective_quota_usd(
+        settings.usage_budget_usd, user_prefs.monthly_budget_usd
+    )
     selected_provider_id = _selected_provider_id(body.provider_id, settings)
     # Tier/provider validation.
     binding = _resolve_binding(body.tier_id, body.provider_id, settings)
@@ -1123,30 +1256,38 @@ async def send_message(
     except ValueError as exc:
         raise _invalid_input("INVALID_INPUT", "clientMessageId must be a UUID.") from exc
 
-    # regenerate / editMessageId / continueTurn are mutually exclusive — each is
-    # a distinct recovery mode, and combining them is semantically incoherent.
+    # regenerate / editMessageId / continueTurn / toolApproval are mutually
+    # exclusive — each is a distinct recovery / resume mode, and combining them is
+    # semantically incoherent.
     mode_flags = sum(
         (
             bool(body.regenerate),
             body.edit_message_id is not None,
             bool(body.continue_turn),
+            body.tool_approval is not None,
         )
     )
     if mode_flags > 1:
         raise _invalid_input(
             "INVALID_INPUT",
-            "regenerate, editMessageId, and continueTurn are mutually exclusive.",
+            "regenerate, editMessageId, continueTurn, and toolApproval are mutually exclusive.",
         )
 
     is_temp = body.is_temporary or _is_temp_for_user(user.id, conversation_id)
 
-    # Regenerate / edit / continue are not meaningful for temporary chats (no
-    # prior rows to drop / truncate / continue). Reject so the FE doesn't
-    # silently degrade.
-    if is_temp and (body.regenerate or body.edit_message_id is not None or body.continue_turn):
+    # Regenerate / edit / continue / toolApproval are not meaningful for temporary
+    # chats (no prior rows to drop / truncate / continue / resume). Reject so the
+    # FE doesn't silently degrade.
+    if is_temp and (
+        body.regenerate
+        or body.edit_message_id is not None
+        or body.continue_turn
+        or body.tool_approval is not None
+    ):
         raise _invalid_input(
             "INVALID_INPUT",
-            "regenerate / editMessageId / continueTurn are not supported on temporary chats.",
+            "regenerate / editMessageId / continueTurn / toolApproval are not supported "
+            "on temporary chats.",
         )
 
     # BYOK resolution + budget gate. Resolved here (before any user-message
@@ -1174,12 +1315,12 @@ async def send_message(
             raise not_found("conversation")
 
         # Idempotency: prior user message for this client_message_id?
-        # Regenerate / continue reuse an existing user row and the FE mints a
-        # fresh id, so they have no persisted client_message_id row to replay.
-        # Normal sends and edits both insert a user row; exact fingerprint
+        # Regenerate / continue / toolApproval reuse an existing user row and the
+        # FE mints a fresh id, so they have no persisted client_message_id row to
+        # replay. Normal sends and edits both insert a user row; exact fingerprint
         # matches can safely replay before budget/provider gates, while
         # mismatches get a 409.
-        if not body.regenerate and not body.continue_turn:
+        if not body.regenerate and not body.continue_turn and body.tool_approval is None:
             replay = await _maybe_replay(
                 db,
                 conversation_id,
@@ -1216,11 +1357,13 @@ async def send_message(
             api_key=resolved_api_key,
         )
 
-        if settings.usage_budget_usd > 0 and resolved_api_key is None:
+        # Effective cap (min of operator quota + user's own budget) was computed
+        # once at the top of this handler; gate the platform-key turn against it.
+        if effective_quota_usd > 0 and resolved_api_key is None:
             has_allowance = await usage_repo.has_platform_allowance(
                 db,
                 user_id=user.id,
-                monthly_quota_usd=settings.usage_budget_usd,
+                monthly_quota_usd=effective_quota_usd,
             )
             if not has_allowance:
                 async with _derive_session_factory(db)() as event_db:
@@ -1250,10 +1393,13 @@ async def send_message(
         )
 
     provider_attachments: list[AttachmentPayload] = []
-    # Regenerate and continue both reuse the existing trailing user message
-    # (no new user turn is inserted), so the request body's attachments / text
-    # are ignored and safety is re-checked against the persisted user message.
-    reuses_existing_user_message = body.regenerate or body.continue_turn
+    # Regenerate / continue / toolApproval all reuse the existing trailing user
+    # message (no new user turn is inserted), so the request body's attachments /
+    # text are ignored and safety is re-checked against the persisted user
+    # message.
+    reuses_existing_user_message = (
+        body.regenerate or body.continue_turn or body.tool_approval is not None
+    )
     if not reuses_existing_user_message:
         if body.attachments and not binding.supports_attachments:
             raise _attachments_unsupported()
@@ -1278,10 +1424,11 @@ async def send_message(
         )
         if not safety_decision.allowed:
             raise _safety_blocked(safety_decision)
-    elif (body.regenerate or body.continue_turn) and not is_temp:
-        # Regenerate / continue both re-stream against the persisted trailing
-        # user message; re-check it against the safety policy (it may have
-        # tightened since the original send).
+    elif (body.regenerate or body.continue_turn or body.tool_approval is not None) and not is_temp:
+        # Regenerate / continue / toolApproval all re-stream against the persisted
+        # trailing user message; re-check it against the safety policy (it may have
+        # tightened since the original send). Edited tool inputs get an additional
+        # safety pass inside `_prepare_resume_tool`.
         last_user = await messages_repo.get_last_user_message(db, conversation_id)
         if last_user is not None:
             safety_decision = check_user_turn(
@@ -1337,6 +1484,10 @@ async def send_message(
     user_message_id: UUID
     history: list[ProviderChatMessage]
     provider_user_text: str
+    # Resume seed for an approval-gated tool (HITL). None on every non-resume
+    # path; set by `_prepare_resume_tool` so the handler emits the seeded
+    # `tool_result` before the post-approval provider pass.
+    resume_seed: ResumeToolSeed | None = None
 
     if body.regenerate:
         (
@@ -1359,6 +1510,22 @@ async def send_message(
         ) = await _prepare_continue(
             db=db,
             conversation_id=conversation_id,
+            supports_attachments=binding.supports_attachments,
+            supports_vision=binding.supports_vision,
+        )
+    elif body.tool_approval is not None:
+        (
+            user_message_id,
+            history,
+            provider_user_text,
+            provider_attachments,
+            resume_seed,
+        ) = await _prepare_resume_tool(
+            db=db,
+            conversation_id=conversation_id,
+            decision=body.tool_approval,
+            settings=settings,
+            custom_instructions=user_prefs.custom_instructions,
             supports_attachments=binding.supports_attachments,
             supports_vision=binding.supports_vision,
         )
@@ -1456,6 +1623,34 @@ async def send_message(
         if routed.is_downgrade and routed_tier_id == routed.tier_id:
             router_substitution = "auto_downgrade"
 
+    # The `binding` is now FINALIZED (provider override + auto-route rebind both
+    # applied). Compute the per-turn reasoning-effort overrides and the
+    # provider-fallback route off the final binding/provider.
+
+    # Feature 1: per-turn reasoning-effort override. Maps the hint to provider
+    # call overrides; None means "use the binding default" for that hint.
+    reasoning_effort_override, thinking_override = _map_reasoning_effort(
+        body.reasoning_effort, binding
+    )
+
+    # Phase 2: pick a single alternate route to retry ONCE if the primary
+    # provider raises a retryable error before emitting any token. None when no
+    # alternate is usable — the error then surfaces as today. All routing policy
+    # lives in `_select_fallback_route`; the handler stays dumb.
+    fallback_route = await _select_fallback_route(
+        binding.tier.id,
+        binding.provider_id,
+        settings,
+        user=user,
+        db=db,
+        resolved_api_key=resolved_api_key,
+    )
+    fallback_binding: TierBinding | None = None
+    fallback_provider_id: str | None = None
+    fallback_api_key: str | None = None
+    if fallback_route is not None:
+        fallback_binding, fallback_provider_id, fallback_api_key = fallback_route
+
     # Durable stream lifecycle (PRD 04 §5.1). The active row was claimed before
     # message-history mutation and committed by the accepted branch above. The id
     # is threaded into `stream_and_persist`, which transitions it to done /
@@ -1470,7 +1665,10 @@ async def send_message(
     # explicitly on "this is a fresh send" so the handler can require BOTH
     # conditions before scheduling the detached autogen task.
     is_initial = (
-        not body.regenerate and not body.continue_turn and body.edit_message_id is None
+        not body.regenerate
+        and not body.continue_turn
+        and body.edit_message_id is None
+        and body.tool_approval is None
     )
 
     # Effective web-search opt-in for this turn. Unsupported provider/config
@@ -1511,6 +1709,20 @@ async def send_message(
                 user_id=user.id,
                 event_type="message.continued",
                 properties=event_props,
+            )
+        if body.tool_approval is not None:
+            await analytics_repo.record(
+                db,
+                user_id=user.id,
+                event_type=(
+                    "tool.approved"
+                    if body.tool_approval.decision == "approve"
+                    else "tool.denied"
+                ),
+                properties={
+                    **event_props,
+                    "toolCallId": body.tool_approval.tool_call_id,
+                },
             )
         if body.edit_message_id is not None:
             await analytics_repo.record(
@@ -1592,6 +1804,15 @@ async def send_message(
             response_format=effective_response_format,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
+            reasoning_effort_override=reasoning_effort_override,
+            thinking_override=thinking_override,
+            monthly_quota_usd_override=effective_quota_usd,
+            fallback_binding=fallback_binding,
+            fallback_provider_id=fallback_provider_id,
+            fallback_api_key=fallback_api_key,
+            fallback_substitution="provider_fallback",
+            tool_approval=body.tool_approval,
+            resume_seed=resume_seed,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -1632,6 +1853,15 @@ async def send_message(
             response_format=effective_response_format,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
+            reasoning_effort_override=reasoning_effort_override,
+            thinking_override=thinking_override,
+            monthly_quota_usd_override=effective_quota_usd,
+            fallback_binding=fallback_binding,
+            fallback_provider_id=fallback_provider_id,
+            fallback_api_key=fallback_api_key,
+            fallback_substitution="provider_fallback",
+            tool_approval=body.tool_approval,
+            resume_seed=resume_seed,
         ):
             yield sse_event
 
@@ -1886,6 +2116,148 @@ async def _prepare_continue(
     await conversations_repo.touch_updated_at(db, conversation_id)
     await db.commit()
     return user_message_id, history, _CONTINUE_INSTRUCTION, []
+
+
+def _find_pending_tool_call(
+    parts: object,
+    tool_call_id: str,
+) -> dict[str, object] | None:
+    """Find a pending, approval-awaiting `tool_call` part by id in a parts list."""
+    if not isinstance(parts, list):
+        return None
+    for part in parts:
+        if (
+            isinstance(part, dict)
+            and part.get("type") == "tool_call"
+            and part.get("id") == tool_call_id
+            and part.get("status") == "awaiting_approval"
+            and part.get("approvalState") == "pending"
+        ):
+            return part
+    return None
+
+
+async def _prepare_resume_tool(
+    *,
+    db: AsyncSession,
+    conversation_id: UUID,
+    decision: ToolApprovalDecision,
+    settings: Settings,
+    custom_instructions: str | None,
+    supports_attachments: bool,
+    supports_vision: bool,
+) -> tuple[UUID, list[ProviderChatMessage], str, list[AttachmentPayload], ResumeToolSeed]:
+    """Resolve + RE-VALIDATE a human-in-the-loop tool approval, return the seed.
+
+    Models `_prepare_continue`: the paused assistant row stays in place (NOT
+    deleted), and the continuation streams as a NEW assistant row linked to the
+    SAME user message the paused turn answered.
+
+    SECURITY — the approval gate is the trust boundary, so NOTHING from the client
+    is trusted on its own:
+    - The trailing assistant MUST be `status="awaiting_approval"`, else 400
+      NOTHING_TO_RESUME.
+    - The decision's `tool_call_id` MUST match a pending `tool_call` part on that
+      row, else 400 INVALID_INPUT (a forged id can't execute anything).
+    - The named tool MUST exist in `TOOL_REGISTRY` AND genuinely
+      `needs_approval`, else 400 INVALID_INPUT — a forged approve for an
+      unknown / non-gated tool must never run.
+    - Any client `edited_input` is re-validated against the tool's allowlist
+      (400 INVALID_INPUT on violation) and re-run through the safety preflight.
+
+    Returns `(user_message_id, history, provider_user_text, attachments, seed)`.
+    `provider_user_text` is the approve/deny continuation instruction; the handler
+    emits the seeded `tool_result` before that turn streams. `attachments` is
+    empty (the original user attachments already live in the replayed history).
+    """
+    last_assistant = await messages_repo.get_last_assistant_message(db, conversation_id)
+    if last_assistant is None or last_assistant.status != "awaiting_approval":
+        raise _nothing_to_resume()
+
+    pending = _find_pending_tool_call(last_assistant.parts, decision.tool_call_id)
+    if pending is None:
+        raise _invalid_input(
+            "INVALID_INPUT",
+            "toolApproval.toolCallId does not match a tool awaiting approval.",
+        )
+
+    tool_name = str(pending.get("name") or "")
+    spec = TOOL_REGISTRY.get(tool_name)
+    # Re-assert the gate server-side: the tool must exist AND genuinely require
+    # approval. A forged approve for an unknown / non-gated tool is refused.
+    if spec is None or not spec.needs_approval:
+        raise _invalid_input(
+            "INVALID_INPUT",
+            "Approved tool is not an approval-gated tool.",
+        )
+
+    # Effective input: a validated `edited_input` overrides the originally
+    # requested input; otherwise reuse the pending part's input.
+    raw_input = pending.get("input")
+    effective_input: dict[str, object] = (
+        raw_input if isinstance(raw_input, dict) else {}
+    )
+    if decision.edited_input is not None:
+        try:
+            effective_input = validate_tool_input(tool_name, decision.edited_input)
+        except ToolInputError as exc:
+            raise _invalid_input("INVALID_INPUT", str(exc)) from exc
+        # Re-run the safety preflight on the edited input — it is fresh
+        # user-influenced content and the policy may have tightened.
+        edited_text = " ".join(
+            str(value) for value in effective_input.values() if isinstance(value, str)
+        )
+        if edited_text:
+            safety_decision = check_user_turn(
+                settings,
+                text=edited_text,
+                attachments=[],
+                custom_instructions=custom_instructions,
+            )
+            if not safety_decision.allowed:
+                raise _safety_blocked(safety_decision)
+
+    # Link to the SAME user message the paused turn answered (fallback to the
+    # trailing user message for legacy rows with a NULL pointer).
+    user_message_id = last_assistant.responds_to_message_id
+    if user_message_id is None:
+        last_user = await messages_repo.get_last_user_message(db, conversation_id)
+        if last_user is None:
+            raise _nothing_to_resume()
+        user_message_id = last_user.id
+
+    user_row = await messages_repo.get_by_id(db, user_message_id)
+    if user_row is None:
+        raise _nothing_to_resume()
+
+    # Re-validate the persisted user attachments against the served binding,
+    # mirroring regenerate / continue.
+    attachments = _attachment_payloads_from_parts(user_row.parts)
+    if attachments and not supports_attachments:
+        raise _attachments_unsupported()
+    if not supports_vision and any(
+        attachment.media_type == "image" for attachment in attachments
+    ):
+        raise _vision_unsupported()
+
+    history = await messages_repo.load_history(db, conversation_id)
+    await conversations_repo.touch_updated_at(db, conversation_id)
+    await db.commit()
+
+    label = pending.get("label")
+    seed = ResumeToolSeed(
+        tool_call_id=decision.tool_call_id,
+        name=tool_name,
+        label=str(label) if isinstance(label, str) else None,
+        decision=decision.decision,
+        input=dict(effective_input),
+    )
+    instruction = (
+        _RESUME_APPROVE_INSTRUCTION
+        if decision.decision == "approve"
+        else _RESUME_DENY_INSTRUCTION
+    )
+    return user_message_id, history, instruction, [], seed
 
 
 async def _prepare_edit(

@@ -36,6 +36,11 @@ export const BE_ENV = {
   // the status/sources frames the web-search e2e asserts. Mirrors the
   // SEARCH_BACKEND=fake set in api/tests/conftest.py for the pytest suite.
   SEARCH_BACKEND: "fake",
+  // Enable tools so the HITL tool-approval e2e (tool-approval.spec.ts) can
+  // drive the fake provider's tool markers (TOOL_APPROVE / TOOL_TIME). The fake
+  // provider only emits tool calls on those markers, so this is a no-op for
+  // every other test — no stray tool parts without a marker.
+  TOOLS_ENABLED: "true",
   DATABASE_URL,
   CORS_ALLOWED_ORIGINS: FE_URL,
   // Long-and-fixed; assert_prod_safe() requires >=32 chars in prod, dev/test

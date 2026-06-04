@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import StringConstraints
+from pydantic import Field, StringConstraints
 
 from app.schemas.common import CamelModel, ModelTierId
 
@@ -21,6 +21,10 @@ class UserPreferences(CamelModel):
     custom_instructions: CustomInstructions = ""
     # None means "retain forever"; finite choices stay intentionally narrow.
     retention_days: Literal[30, 90] | None = None
+    # User-set monthly platform-spend cap in USD. None means "no user cap" (only
+    # the operator's `USAGE_BUDGET_USD` applies, if any). When both are set the
+    # lower one wins (see `usage._effective_quota_usd`).
+    monthly_budget_usd: float | None = None
 
 
 class UserPreferencesRequest(CamelModel):
@@ -33,3 +37,5 @@ class UserPreferencesRequest(CamelModel):
     custom_instructions: CustomInstructions | None = None
     # None means "retain forever"; finite choices stay intentionally narrow.
     retention_days: Literal[30, 90] | None = None
+    # User-set monthly platform-spend cap in USD. Non-negative; None clears it.
+    monthly_budget_usd: Annotated[float, Field(ge=0)] | None = None

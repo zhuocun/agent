@@ -30,6 +30,33 @@ function formatUsd(n: number): string {
   return `$${n.toFixed(decimals)}`;
 }
 
+// Conservative thresholds for the long-context "no cache hit" / "high reasoning"
+// callouts. Tuned high so the clause only fires when the signal is genuinely
+// notable — a quiet "why this cost more" nudge, not noise on every turn.
+const LONG_CONTEXT_TOKENS = 200_000;
+const NO_CACHE_INPUT_TOKENS = 50_000;
+
+// Pure cost-anomaly classifier (Feature 5). Returns a short human reason when
+// the breakdown shows a notable cost driver, else null. Derived entirely from
+// existing breakdown fields — no wire change. Order matters: the first matching
+// (most cost-relevant) reason wins so the clause stays one line.
+export function costAnomaly(breakdown: CostBreakdown): string | null {
+  // Reasoning dominated output: extended-thinking turns where the (output-rate,
+  // un-cached) reasoning tokens exceed the visible answer tokens.
+  if (breakdown.reasoningTokens > breakdown.outputTokens) {
+    return "High reasoning cost";
+  }
+  // Very large input window — long context is the dominant input driver.
+  if (breakdown.inputTokens + breakdown.cachedInputTokens > LONG_CONTEXT_TOKENS) {
+    return "Long context";
+  }
+  // A big prompt that got zero cache discount (every input token billed full).
+  if (breakdown.cachedInputTokens === 0 && breakdown.inputTokens > NO_CACHE_INPUT_TOKENS) {
+    return "No cache hit";
+  }
+  return null;
+}
+
 function Row({
   label,
   value,
@@ -142,6 +169,7 @@ export function CostBreakdownDetails({
   const isEstimate = attribution.costConfidence === "estimate";
   const hasReasoning = b.reasoningTokens > 0;
   const hasSurcharge = b.sessionSurchargeUsd > 0;
+  const anomaly = costAnomaly(b);
 
   return (
     <div className="bg-muted/50 space-y-2.5 rounded-2xl p-4 text-xs">
@@ -203,6 +231,16 @@ export function CostBreakdownDetails({
           emphasis
         />
       </dl>
+
+      {anomaly ? (
+        <p
+          className="flex items-start gap-1.5 text-warning"
+          data-testid="cost-anomaly"
+        >
+          <Info aria-hidden className="mt-0.5 size-3 shrink-0" />
+          <span>{anomaly}</span>
+        </p>
+      ) : null}
 
       {isEstimate ? (
         <p className="flex items-start gap-1.5 text-warning">

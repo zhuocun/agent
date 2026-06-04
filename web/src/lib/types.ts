@@ -31,6 +31,13 @@ export interface ModelTier {
   // true. Filled by the BE from the active provider backend (the mock in
   // model-tiers.ts is a realistic stand-in for the loading frame).
   supportsWebSearch: boolean;
+  // Per-million-token LIST prices for this tier's served model, surfaced so the
+  // composer can show a pre-send cost estimate (cost-estimate.ts). Filled by the
+  // BE from the active provider backend's pricing; 0 for "auto" (the router
+  // picks the model per turn, so there's no single price) and for any tier whose
+  // binding is missing a price — the estimate UI shows "unavailable" then.
+  listPriceInPerM: number;
+  listPriceOutPerM: number;
   // Whether this tier accepts file attachments for the current turn.
   supportsAttachments: boolean;
   // Whether this tier can INTERPRET images (and native PDF document blocks).
@@ -63,6 +70,10 @@ export interface ProviderTierOption {
   supportsVision?: boolean;
   defaultRouteEligible: boolean;
   dataPolicy: ProviderDataPolicy | null;
+  // Per-million-token LIST prices for this provider route's model. Mirror
+  // `ModelTier` above so a per-provider estimate is possible; 0 when unpriced.
+  listPriceInPerM: number;
+  listPriceOutPerM: number;
 }
 
 // Reasoning-effort / extended-thinking control surfaced in the composer
@@ -236,6 +247,10 @@ export type StreamStatus =
   | "submitted" // pre-first-token
   | "streaming"
   | "done"
+  // HITL pause: the turn ended in a terminal awaiting the user's tool-approval
+  // decision. The bubble stays put and shows the approve/deny card; the
+  // decision rides a follow-up message POST that resumes as a NEW bubble.
+  | "awaiting_approval"
   | "stopped"
   | "error";
 
@@ -262,6 +277,13 @@ export interface UsageBudget {
   creditBalanceUsd?: number;
   platformRemainingUsd?: number | null;
   recentLedgerEntries?: UsageLedgerEntry[];
+  // User-set monthly spend cap (PRD 07 §5.x). `null`/absent means no user cap.
+  // Surfaced + edited in the settings budget UI.
+  userBudgetUsd?: number | null;
+  // The cap actually ENFORCED this period — the tighter of the user cap and any
+  // platform cap. When this differs from `userBudgetUsd`, the platform cap is
+  // binding and the settings UI shows the enforced figure.
+  effectiveQuotaUsd?: number | null;
 }
 
 export interface UsageLedgerEntry {
@@ -306,6 +328,10 @@ export interface UserPreferences {
   telemetryEnabled: boolean; // first-party product telemetry only
   customInstructions: string;
   retentionDays: 30 | 90 | null; // null = retain forever
+  // User-set monthly spend cap in USD, or null for no cap. Edited in the
+  // settings budget UI; the BE enforces it (refusing turns once exceeded) and
+  // echoes the effective figure back via `UsageBudget`.
+  monthlyBudgetUsd: number | null;
 }
 
 // Account / billing identity for the sidebar footer + settings (PRD 05 / PRD 07 §5.8).

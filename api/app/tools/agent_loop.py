@@ -1,0 +1,210 @@
+"""Provider-agnostic, bounded agent loop for backend-side tool calling (HITL).
+
+Generalizes the shape of the provider-internal web_search loop (see
+``app/providers/openai.py``) into a standalone orchestrator that drives ANY
+provider's ``ToolCall`` events through the built-in tool registry — including
+the human-in-the-loop (HITL) approval gate. ``web_search`` stays
+provider-internal and UNTOUCHED; this loop is additive and, in v1, drives only
+the FAKE provider.
+
+Round model (mirrors ``_MAX_SEARCH_ROUNDS``): one round = one provider stream.
+``make_stream(tool_feedback)`` returns a fresh provider event iterator given the
+tool results accumulated so far (the handler threads them back via ``history``,
+since the ``Provider.stream`` Protocol intentionally carries no tool params). For
+each round:
+
+- Relay every non-``ToolCall`` event (reasoning / answer / status / sources /
+  usage / complete) straight through.
+- For each ``ToolCall`` the provider requests:
+  - UNKNOWN tool → synthesize a failed ``ToolResult`` and feed it back (the
+    model can recover next round); never execute.
+  - APPROVAL-GATED and not yet approved → emit
+    ``ToolCall(status="awaiting_approval", approval_state="pending")`` then an
+    ``AwaitingApproval`` sentinel and STOP. The handler turns this into the
+    paused terminal; a resume POST applies the decision.
+  - Otherwise (auto / already-approved) → emit ``ToolCall(status="running")``,
+    execute it (``execute_tool`` is timeout-wrapped), emit the ``ToolResult``,
+    feed it back, and continue to the next round.
+- A round that requests NO tool calls is terminal: its content was the final
+  answer; relay it and stop.
+
+The loop is hard-bounded by ``settings.tool_max_rounds`` so it can never spin
+forever even if the provider keeps requesting tools.
+
+SECURITY: tool output is untrusted (a prompt-injection surface). It is fed back
+ONLY as structured tool data via ``make_stream``'s feedback channel, never spliced
+into instructions. The approval gate is enforced here AND re-checked at the
+resume route — a forged approval cannot reach a non-gated/unknown tool.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator, Callable
+
+from app.config import Settings
+from app.providers.protocol import (
+    AwaitingApproval,
+    ChatMessage,
+    ProviderEvent,
+    ToolCall,
+    ToolResult,
+)
+from app.tools.builtin import TOOL_REGISTRY, execute_tool
+from app.tools.protocol import ToolApprovalState, ToolCallRequest
+
+# Factory: given the tool results gathered so far, build a fresh provider event
+# stream for the next round. The handler supplies this so the loop stays
+# provider-agnostic and the `Provider.stream` Protocol gains no tool params.
+MakeStream = Callable[[list[ToolResult]], AsyncIterator[ProviderEvent]]
+
+# Sentinel prefixing the synthetic history turn that carries tool results back to
+# the provider for the next round. The handler builds these turns via
+# `tool_feedback_to_history`; the FAKE provider detects this prefix to know the
+# tool has run and it should now answer (a real provider would instead receive a
+# structured `role="tool"` message — that wiring is out of scope for the
+# fake-only v1). Tool output remains untrusted: it is carried ONLY as this data
+# turn, never spliced into instructions.
+TOOL_FEEDBACK_SENTINEL = "[tool-results]"
+
+
+def tool_feedback_to_history(results: list[ToolResult]) -> list[ChatMessage]:
+    """Encode accumulated tool results as appended chat-history turns.
+
+    One sentinel-prefixed assistant turn carrying the JSON results. Empty list
+    when there are no results yet (round 1), so the first provider pass sees the
+    unmodified history.
+    """
+    if not results:
+        return []
+    payload = json.dumps(
+        [
+            {
+                "toolCallId": r.tool_call_id,
+                "name": r.name,
+                "status": r.status,
+                "output": r.output,
+                "error": r.error,
+            }
+            for r in results
+        ],
+        separators=(",", ":"),
+    )
+    return [ChatMessage(role="assistant", text=f"{TOOL_FEEDBACK_SENTINEL} {payload}")]
+
+
+def _to_result_event(*, call: ToolCall, exec_result: object) -> ToolResult:
+    """Build a wire ``ToolResult`` event from a ``ToolExecutionResult``."""
+    from app.tools.protocol import ToolExecutionResult
+
+    assert isinstance(exec_result, ToolExecutionResult)
+    spec = TOOL_REGISTRY.get(call.name)
+    label = call.label or (spec.label if spec is not None else None)
+    return ToolResult(
+        tool_call_id=exec_result.tool_call_id,
+        name=exec_result.name,
+        label=label,
+        status=exec_result.status,
+        approval_state=exec_result.approval_state,
+        summary=exec_result.summary,
+        output=exec_result.output or None,
+        error=exec_result.error,
+    )
+
+
+async def run_agent_loop(
+    *,
+    make_stream: MakeStream,
+    settings: Settings,
+) -> AsyncIterator[ProviderEvent]:
+    """Drive a bounded tool-calling loop over a provider event stream.
+
+    Yields the same ``ProviderEvent`` union the handler already consumes, so the
+    handler's accumulation / persistence is unchanged. Stops on: a round with no
+    tool calls (relayed answer), an ``AwaitingApproval`` pause, or the
+    ``tool_max_rounds`` bound.
+    """
+    tool_feedback: list[ToolResult] = []
+    max_rounds = max(1, settings.tool_max_rounds)
+
+    for _round in range(max_rounds):
+        is_final_round = _round == max_rounds - 1
+        stream = make_stream(list(tool_feedback))
+
+        # Every provider event is RELAYED as-is (the provider's own ToolCall IS
+        # the request — the loop fulfills it, it never re-emits it). We buffer the
+        # calls that still need fulfilling and the ids the provider self-resolved
+        # this round (a provider may emit its own ToolResult, e.g. an internal
+        # tool); those are skipped so we never double-execute.
+        pending_calls: list[ToolCall] = []
+        provider_resolved: set[str] = set()
+        async for event in stream:
+            if isinstance(event, ToolCall):
+                pending_calls.append(event)
+            elif isinstance(event, ToolResult):
+                provider_resolved.add(event.tool_call_id)
+            elif isinstance(event, AwaitingApproval):
+                # The provider itself decided to pause (it emitted the gated
+                # ToolCall before this). Relay and stop — do NOT execute.
+                yield event
+                return
+            yield event
+
+        # Calls the loop must still fulfill this round.
+        unresolved = [c for c in pending_calls if c.id not in provider_resolved]
+        if not unresolved:
+            # No tool work left → the relayed content WAS the final answer.
+            return
+
+        round_results: list[ToolResult] = []
+        for call in unresolved:
+            spec = TOOL_REGISTRY.get(call.name)
+            if spec is None:
+                # Unknown tool: synthesize a failed result and feed it back so a
+                # later round can recover. Never execute.
+                exec_result = await execute_tool(
+                    ToolCallRequest(id=call.id, name=call.name, input=call.input or {})
+                )
+                result_event = _to_result_event(call=call, exec_result=exec_result)
+                yield result_event
+                round_results.append(result_event)
+                continue
+
+            already_approved = call.approval_state == "approved"
+            if spec.needs_approval and not already_approved:
+                # HITL gate, loop-synthesized (the provider requested a gated tool
+                # without pausing itself). The pending ToolCall was already
+                # relayed above; emit the AwaitingApproval sentinel to end the
+                # turn. The handler turns this into the paused terminal.
+                yield AwaitingApproval(tool_call_id=call.id)
+                return
+
+            # Auto / already-approved tool: run it (timeout-wrapped) and emit the
+            # result. The request ToolCall was already relayed by the provider.
+            approval_state: ToolApprovalState = (
+                "approved" if already_approved else "not_required"
+            )
+            exec_result = await execute_tool(
+                ToolCallRequest(
+                    id=call.id,
+                    name=call.name,
+                    input=call.input or {},
+                    approval_state=approval_state,
+                )
+            )
+            result_event = _to_result_event(call=call, exec_result=exec_result)
+            yield result_event
+            round_results.append(result_event)
+
+        tool_feedback.extend(round_results)
+
+        if is_final_round:
+            # Loop bound reached with tools still being requested. Do one final
+            # provider pass with the results fed back but STOP honoring any
+            # further tool calls, so the turn always terminates.
+            final_stream = make_stream(list(tool_feedback))
+            async for event in final_stream:
+                if isinstance(event, (ToolCall, AwaitingApproval)):
+                    continue
+                yield event
+            return

@@ -68,6 +68,12 @@ class UsageBudget(CamelModel):
     monthly_quota_usd: float = 0.0
     credit_balance_usd: float = 0.0
     platform_remaining_usd: float | None = None
+    # The user's own monthly budget cap (from preferences), if set. None when the
+    # user has not set one.
+    user_budget_usd: float | None = None
+    # The cap actually enforced this period: min of the operator quota and the
+    # user cap (whichever positive caps exist). None when neither caps spend.
+    effective_quota_usd: float | None = None
     recent_ledger_entries: list[UsageLedgerEntry] = Field(default_factory=list)
 
 

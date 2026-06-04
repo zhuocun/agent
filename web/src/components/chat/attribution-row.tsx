@@ -7,7 +7,10 @@ import { Popover } from "@base-ui/react/popover";
 import type { ModelAttribution, ModelTierId } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { MODEL_TIERS_BY_ID } from "@/lib/model-tiers";
-import { CostBreakdownDetails } from "@/components/chat/cost-breakdown";
+import {
+  CostBreakdownDetails,
+  costAnomaly,
+} from "@/components/chat/cost-breakdown";
 
 export interface AttributionRowProps {
   attribution: ModelAttribution;
@@ -88,6 +91,12 @@ export function AttributionRow({
     ? `substituted from ${requestedTierLabelFor(attribution.requestedTierId)}: `
     : null;
 
+  // Cost-anomaly "why" clause (Feature 5). Only shown when there's NO
+  // substitution — the substitution clause already explains this turn's cost
+  // story, and stacking two muted prefixes clutters the byline. Reuses the same
+  // Info-glyph treatment as the substitution clause.
+  const anomalyReason = substitution ? null : costAnomaly(attribution.breakdown);
+
   const triggerLabel = [
     `served by ${servedModelLabel}`,
     providerLabel ? `provider ${providerLabel}` : null,
@@ -118,6 +127,14 @@ export function AttributionRow({
             <span className="inline-flex items-center gap-1 text-muted-foreground/80">
               <Info aria-hidden className="size-3" />
               <span>{substitutionPrefix}</span>
+            </span>
+          ) : anomalyReason ? (
+            <span
+              className="inline-flex items-center gap-1 text-muted-foreground/80"
+              data-testid="attribution-anomaly"
+            >
+              <Info aria-hidden className="size-3" />
+              <span>{anomalyReason}: </span>
             </span>
           ) : null}
           <span className="underline-offset-4 group-hover:underline">

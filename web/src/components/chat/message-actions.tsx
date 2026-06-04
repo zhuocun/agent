@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   Copy,
   GitBranch,
   Loader2,
@@ -14,12 +15,25 @@ import {
 
 import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { Feedback } from "@/lib/types";
+import type {
+  Feedback,
+  ModelTier,
+  ModelTierId,
+  ProviderTierOption,
+} from "@/lib/types";
 
 interface MessageActionsProps {
   text: string;
@@ -32,6 +46,20 @@ interface MessageActionsProps {
   canContinue?: boolean;
   onBranch?: () => void;
   onRegenerate?: () => void;
+  // Regenerate with a SPECIFIC model/provider (Feature 4). When provided
+  // alongside `regenerateOptions`, the Regenerate control becomes a split
+  // dropdown: primary click regenerates with the current tier (`onRegenerate`);
+  // menu items pick another tier/provider. Absent ⇒ plain Regenerate button.
+  onRegenerateWith?: (tierId: ModelTierId, providerId?: string) => void;
+  // The tiers (and provider routes) offered in the regenerate menu. Required for
+  // the split-dropdown variant; absent ⇒ plain button. `providerOptions` are the
+  // routes for `selectedTierId` (the currently-served tier), so provider items
+  // regenerate that tier on the chosen provider.
+  regenerateOptions?: {
+    tiers: ModelTier[];
+    providerOptions: ProviderTierOption[];
+    selectedTierId: ModelTierId;
+  };
   onContinue?: () => void;
   onFeedback?: (next: Feedback) => void;
 }
@@ -68,6 +96,8 @@ export function MessageActions({
   canContinue,
   onBranch,
   onRegenerate,
+  onRegenerateWith,
+  regenerateOptions,
   onContinue,
   onFeedback,
 }: MessageActionsProps) {
@@ -124,9 +154,17 @@ export function MessageActions({
       ) : null}
 
       {canRegenerate ? (
-        <IconAction label="Regenerate" onClick={onRegenerate}>
-          <RotateCcw className="size-4" />
-        </IconAction>
+        onRegenerateWith && regenerateOptions ? (
+          <RegenerateMenu
+            onRegenerate={onRegenerate}
+            onRegenerateWith={onRegenerateWith}
+            options={regenerateOptions}
+          />
+        ) : (
+          <IconAction label="Regenerate" onClick={onRegenerate}>
+            <RotateCcw className="size-4" />
+          </IconAction>
+        )
       ) : null}
 
       {onBranch ? (
@@ -158,6 +196,109 @@ export function MessageActions({
       >
         <ThumbsDown className="size-4" />
       </IconAction>
+    </div>
+  );
+}
+
+// Split Regenerate control (Feature 4): a primary button that regenerates with
+// the current tier, plus a chevron that opens a menu to regenerate with a
+// different model (or provider route). Mirrors the model-mode-picker dropdown.
+function RegenerateMenu({
+  onRegenerate,
+  onRegenerateWith,
+  options,
+}: {
+  onRegenerate?: () => void;
+  onRegenerateWith: (tierId: ModelTierId, providerId?: string) => void;
+  options: {
+    tiers: ModelTier[];
+    providerOptions: ProviderTierOption[];
+    selectedTierId: ModelTierId;
+  };
+}) {
+  // Only offer provider items when there's a genuine choice (>1 available
+  // route) — a single provider would just duplicate the tier row.
+  const availableProviders = options.providerOptions.filter(
+    (provider) => provider.status === "available",
+  );
+  const showProviders = availableProviders.length > 1;
+
+  return (
+    <div className="inline-flex items-center">
+      {/* Primary: regenerate with the current tier (back-compat behaviour). */}
+      <IconAction label="Regenerate" onClick={onRegenerate}>
+        <RotateCcw className="size-4" />
+      </IconAction>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label="Regenerate with a different model"
+              data-testid="regenerate-with-trigger"
+              className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
+            >
+              <ChevronDown className="size-4" />
+            </Button>
+          }
+        />
+        <DropdownMenuContent
+          align="start"
+          sideOffset={8}
+          className="w-60 max-w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl"
+        >
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="text-2xs font-semibold">
+              Regenerate with
+            </DropdownMenuLabel>
+            {options.tiers.map((tier) => (
+              <DropdownMenuItem
+                key={tier.id}
+                label={tier.label}
+                onClick={() => onRegenerateWith(tier.id)}
+                data-testid={`regenerate-with-tier-${tier.id}`}
+                className="py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <span className="truncate font-medium">{tier.label}</span>
+                  {tier.modelLabel ? (
+                    <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                      {tier.modelLabel}
+                    </p>
+                  ) : null}
+                </div>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuGroup>
+          {showProviders ? (
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="text-2xs font-semibold">
+                Provider
+              </DropdownMenuLabel>
+              {availableProviders.map((provider) => (
+                <DropdownMenuItem
+                  key={provider.providerId}
+                  label={provider.label}
+                  onClick={() =>
+                    onRegenerateWith(options.selectedTierId, provider.providerId)
+                  }
+                  className="py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <span className="truncate font-medium">{provider.label}</span>
+                    {provider.modelLabel ? (
+                      <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                        {provider.modelLabel}
+                      </p>
+                    ) : null}
+                  </div>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }

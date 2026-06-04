@@ -42,6 +42,9 @@ export interface SettingsDialogProps {
   account: AccountInfo;
   onAccountChange: (next: AccountInfo) => void;
   usage: UsageBudget;
+  // Persist a new monthly spend cap (or `null` to clear it). Wired through the
+  // existing preferences flow in the parent.
+  onSaveBudget: (value: number | null) => void;
   onSignOut: () => void;
   onExportData: () => void;
   onDeleteAccount: () => void;
@@ -165,12 +168,102 @@ function ledgerEntryLabel(entryType: string): string {
   return "Adjustment";
 }
 
+// Monthly spend-cap editor (Feature 3). A small number input bound to the
+// user's saved cap with an explicit Save. When the platform enforces a TIGHTER
+// cap, `effectiveQuotaUsd` differs from the user cap and we surface the enforced
+// figure so the user understands which limit actually binds.
+function BudgetEditor({
+  usage,
+  onSaveBudget,
+}: {
+  usage: UsageBudget;
+  onSaveBudget: (value: number | null) => void;
+}): JSX.Element {
+  const inputId = useId();
+  // Bind to the saved user cap; empty string ⇒ no cap.
+  const [draft, setDraft] = useState<string>(
+    usage.userBudgetUsd != null ? String(usage.userBudgetUsd) : "",
+  );
+
+  // The enforced cap line only matters when the platform cap is tighter than
+  // (and so overrides) the user's chosen cap.
+  const userCap = usage.userBudgetUsd ?? null;
+  const effectiveCap = usage.effectiveQuotaUsd ?? null;
+  const showEnforced =
+    effectiveCap != null && (userCap == null || effectiveCap < userCap);
+
+  function save(): void {
+    const trimmed = draft.trim();
+    if (trimmed === "") {
+      onSaveBudget(null);
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    onSaveBudget(parsed);
+  }
+
+  return (
+    <div className="space-y-1.5 border-t border-border/50 pt-2">
+      <label htmlFor={inputId} className="text-xs font-medium">
+        Monthly budget cap
+      </label>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-xs text-muted-foreground"
+          >
+            $
+          </span>
+          <input
+            id={inputId}
+            type="number"
+            inputMode="decimal"
+            min={0}
+            step="0.01"
+            value={draft}
+            placeholder="No cap"
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            data-testid="budget-cap-input"
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-sm tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+          />
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={save}
+          data-testid="budget-cap-save"
+        >
+          Save
+        </Button>
+      </div>
+      <p className="text-xs leading-snug text-muted-foreground">
+        {showEnforced ? (
+          <>
+            Enforced cap:{" "}
+            <span className="font-mono tabular-nums text-foreground">
+              {formatUsd(effectiveCap)}
+            </span>{" "}
+            — the platform cap is tighter than your setting.
+          </>
+        ) : (
+          "Pause platform-key usage once this month's spend reaches the cap. Leave empty for no cap."
+        )}
+      </p>
+    </div>
+  );
+}
+
 function UsageDetails({
   usage,
   anonymous,
+  onSaveBudget,
 }: {
   usage: UsageBudget;
   anonymous: boolean;
+  onSaveBudget: (value: number | null) => void;
 }): JSX.Element {
   if (usage.isByok) {
     return (
@@ -308,6 +401,7 @@ function UsageDetails({
           ))}
         </div>
       ) : null}
+      <BudgetEditor usage={usage} onSaveBudget={onSaveBudget} />
     </div>
   );
 }
@@ -322,6 +416,7 @@ export function SettingsDialog({
   account,
   onAccountChange,
   usage,
+  onSaveBudget,
   onSignOut,
   onExportData,
   onDeleteAccount,
@@ -441,7 +536,11 @@ export function SettingsDialog({
               </div>
             </div>
 
-            <UsageDetails usage={usage} anonymous={anonymous} />
+            <UsageDetails
+              usage={usage}
+              anonymous={anonymous}
+              onSaveBudget={onSaveBudget}
+            />
 
             <div className="flex flex-wrap gap-2">
               {!billing.proEnabled ? (

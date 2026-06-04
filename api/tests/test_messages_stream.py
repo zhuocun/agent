@@ -2812,3 +2812,350 @@ async def test_auto_route_provider_fallback_wins_over_downgrade_seed(
     # The served label reflects the provider's substituted model, not the
     # routed tier's default label.
     assert attribution["servedModelLabel"] == "Fallback Model"
+
+
+# Feature 1: per-turn reasoning-effort override ------------------------------
+
+
+async def test_map_reasoning_effort_all_values() -> None:
+    """`_map_reasoning_effort` maps every enum value (and None) correctly.
+
+    None / "auto" defer to the binding default for BOTH hints; "minimal" forces
+    thinking OFF; "standard"/"extended" select effort levels and leave thinking
+    at the binding default (None override). Pinned against bindings with and
+    without a binding-level `reasoning_effort` so the auto/None passthrough is
+    exercised both ways.
+    """
+    from app.providers.tiers import get_binding
+    from app.routes.conversations import _map_reasoning_effort
+
+    smart = get_binding("smart")  # binding.reasoning_effort is None
+    pro = get_binding("pro")  # binding.reasoning_effort == "high"
+    assert smart is not None and pro is not None
+
+    # None / auto pass the binding default through for the effort hint, never
+    # touching thinking (None = "use binding default").
+    assert _map_reasoning_effort(None, smart) == (None, None)
+    assert _map_reasoning_effort("auto", smart) == (None, None)
+    assert _map_reasoning_effort("auto", pro) == ("high", None)
+    assert _map_reasoning_effort(None, pro) == ("high", None)
+
+    # minimal forces thinking OFF and omits the effort level.
+    assert _map_reasoning_effort("minimal", smart) == (None, False)
+    assert _map_reasoning_effort("minimal", pro) == (None, False)
+
+    # standard / extended select effort levels; thinking stays at binding default.
+    assert _map_reasoning_effort("standard", smart) == ("medium", None)
+    assert _map_reasoning_effort("extended", smart) == ("high", None)
+
+
+async def test_reasoning_effort_extended_streams_and_persists(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A turn carrying `reasoningEffort:"extended"` streams normally under the
+    fake backend (the hint is accepted and ignored — never an error)."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "hello world",
+            "reasoningEffort": "extended",
+        },
+    )
+    event_names = [name for name, _ in frames]
+    assert event_names[0] == "submitted"
+    assert event_names[-1] == "terminal"
+
+
+async def test_reasoning_effort_minimal_forwards_thinking_off_to_provider(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`reasoningEffort:"minimal"` reaches the provider as `thinking=False` and
+    `reasoning_effort=None`; `"extended"` reaches it as `reasoning_effort="high"`.
+
+    Spy on `FakeProvider.stream` to capture the per-call hints the route resolved
+    so the end-to-end override threading is pinned without a real provider.
+    """
+    captured: list[dict[str, object]] = []
+    from app.providers.fake import FakeProvider
+
+    real_stream = FakeProvider.stream
+
+    def _spy_stream(self: FakeProvider, **kwargs: object) -> object:
+        captured.append(
+            {
+                "thinking": kwargs.get("thinking"),
+                "reasoning_effort": kwargs.get("reasoning_effort"),
+            }
+        )
+        return real_stream(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(FakeProvider, "stream", _spy_stream)
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "minimal please",
+            "reasoningEffort": "minimal",
+        },
+    )
+    assert captured, "provider.stream was never called"
+    assert captured[-1]["thinking"] is False
+    assert captured[-1]["reasoning_effort"] is None
+
+    captured.clear()
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "extended please",
+            "reasoningEffort": "extended",
+        },
+    )
+    assert captured[-1]["reasoning_effort"] == "high"
+
+
+async def test_reasoning_effort_auto_uses_binding_default(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`reasoningEffort:"auto"` leaves the provider call at the binding defaults.
+
+    The `smart` binding's defaults are `thinking=True`, `reasoning_effort=None`,
+    so the captured outbound call must match those — proving the override is a
+    no-op for `auto`.
+    """
+    captured: list[dict[str, object]] = []
+    from app.providers.fake import FakeProvider
+    from app.providers.tiers import get_binding
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    real_stream = FakeProvider.stream
+
+    def _spy_stream(self: FakeProvider, **kwargs: object) -> object:
+        captured.append(
+            {
+                "thinking": kwargs.get("thinking"),
+                "reasoning_effort": kwargs.get("reasoning_effort"),
+            }
+        )
+        return real_stream(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(FakeProvider, "stream", _spy_stream)
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "auto effort",
+            "reasoningEffort": "auto",
+        },
+    )
+    assert captured[-1]["thinking"] is binding.thinking
+    assert captured[-1]["reasoning_effort"] == binding.reasoning_effort
+
+
+# Phase 2: provider fallback retry --------------------------------------------
+
+
+async def test_provider_fallback_retry_succeeds_and_bills_once(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`FORCE_FALLBACK_RETRY:` makes the PRIMARY route raise a retryable upstream
+    error before any token; the handler retries ONCE on the fallback route, which
+    streams a normal answer.
+
+    Asserts: terminal `done`, attribution.substitution.reasonCode is a fallback
+    code, attribution.providerId is the fallback provider, EXACTLY one assistant
+    row persisted, and `usage_rollup.used == 1` (billed once — no double-bill).
+    """
+    from app.db.models import UsageRollup
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "FORCE_FALLBACK_RETRY: please answer",
+        },
+    )
+    event_names = [name for name, _ in frames]
+    assert event_names[-1] == "terminal", event_names
+    assert "error" not in event_names
+    # Real answer streamed on the fallback route.
+    assert "answer_delta" in event_names
+
+    terminal_payload = frames[-1][1]
+    assert terminal_payload["status"] == "done"
+    attribution = terminal_payload["attribution"]
+    assert isinstance(attribution, dict)
+    sub = attribution.get("substitution")
+    assert isinstance(sub, dict), "expected a substitution on the fallback turn"
+    assert sub["reasonCode"] in {"provider_fallback", "rate_limited"}
+    # The served provider is the fallback route (fake), not the primary deepseek.
+    assert attribution["providerId"] == "fake"
+
+    # Exactly one assistant row; billed exactly once.
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(select(Message).where(Message.role == "assistant"))
+        ).scalars().all()
+        assert len(assistants) == 1
+        rollup = (await session.execute(select(UsageRollup))).scalar_one()
+        assert rollup.used == 1
+
+
+async def test_provider_fallback_self_fallback_on_fake_primary(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """When the PRIMARY route is the `fake` dev/test backend (e.g. the FE sends
+    `providerId="fake"` in a fake-only deployment), the one-shot retry must still
+    find an alternate: `fake` self-falls-back via the `fake-fallback` model id.
+
+    This is the exact path the browser E2E suite drives; without the
+    fake-self-fallback the turn regresses to an `error` frame because the
+    primary-exclusion would skip the only platform-usable backend. Real
+    providers never self-fall-back (and `fake` is gated out of production), so
+    this does not change prod behavior.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "fake",
+            "text": "FORCE_FALLBACK_RETRY: please answer",
+        },
+    )
+    event_names = [name for name, _ in frames]
+    assert event_names[-1] == "terminal", event_names
+    assert "error" not in event_names
+    assert "answer_delta" in event_names
+
+    terminal_payload = frames[-1][1]
+    assert terminal_payload["status"] == "done"
+    sub = terminal_payload["attribution"].get("substitution")
+    assert isinstance(sub, dict), "expected a substitution on the self-fallback turn"
+    assert sub["reasonCode"] in {"provider_fallback", "rate_limited"}
+    # Served route is the fake fallback; primary `fake` was retried as fake-fallback.
+    assert terminal_payload["attribution"]["providerId"] == "fake"
+
+
+async def test_post_token_rate_limit_does_not_retry(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A retryable error that arrives AFTER the first token (`FORCE_RATE_LIMIT:`
+    raises after a couple of answer deltas) must NOT trigger the fallback retry.
+
+    The boundary is strict: once content was emitted, retrying would double-emit
+    / double-bill. So the turn surfaces an `error` frame and persists no
+    assistant row — identical to the pre-fallback behavior.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "FORCE_RATE_LIMIT: slow down",
+        },
+    )
+    event_names = [name for name, _ in frames]
+    # Some answer text streamed BEFORE the raise, so no retry happened.
+    assert "answer_delta" in event_names
+    assert event_names[-1] == "error"
+    assert "terminal" not in event_names
+    error_payload = frames[-1][1]
+    assert error_payload["code"] == "RATE_LIMITED"
+
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(select(Message).where(Message.role == "assistant"))
+        ).scalars().all()
+        assert assistants == []
+
+
+async def test_no_alternate_route_surfaces_error_as_today(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When `_select_fallback_route` returns None (no alternate), a retryable
+    pre-token error surfaces as an `error` frame exactly as before — proving the
+    fallback path is purely additive and gated on an available alternate.
+    """
+    import app.routes.conversations as convo_routes
+
+    async def _no_fallback(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(convo_routes, "_select_fallback_route", _no_fallback)
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "FORCE_FALLBACK_RETRY: please answer",
+        },
+    )
+    event_names = [name for name, _ in frames]
+    assert event_names[-1] == "error", event_names
+    assert "terminal" not in event_names
+    error_payload = frames[-1][1]
+    assert error_payload["code"] == "PROVIDER_UPSTREAM"
+
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(select(Message).where(Message.role == "assistant"))
+        ).scalars().all()
+        assert assistants == []

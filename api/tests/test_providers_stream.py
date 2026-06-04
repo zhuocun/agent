@@ -167,6 +167,35 @@ async def test_stream_surfaces_input_and_output_tokens() -> None:
 
 
 @respx.mock
+async def test_stream_accepts_and_ignores_reasoning_effort() -> None:
+    """Anthropic accepts `thinking` / `reasoning_effort` for Protocol conformance
+    and IGNORES them — passing them must NOT raise and must stream normally.
+
+    Feature 1 routes the per-turn effort override to ALL providers; Anthropic's
+    adapter doesn't wire extended-thinking yet, so the hints are inert. This
+    pins that inertness so the override stays graceful for non-supporting
+    providers.
+    """
+    respx.post(_MESSAGES_URL).mock(
+        return_value=_sse_response(_stream_body(input_tokens=10, output_tokens=5))
+    )
+
+    provider = AnthropicProvider(api_key="sk-test")
+    answer_parts: list[str] = []
+    async for event in provider.stream(
+        model_id="test-model",
+        history=[],
+        user_text="hi",
+        thinking=False,
+        reasoning_effort="high",
+    ):
+        if getattr(event, "type", None) == "answer_delta":
+            answer_parts.append(getattr(event, "text", ""))
+    # Streamed normally despite the (ignored) hints.
+    assert "".join(answer_parts) == "Hello there"
+
+
+@respx.mock
 async def test_stream_cache_creation_not_pooled_into_cache_read() -> None:
     """Cache-creation tokens must not land in the cache-read (10%) bucket."""
     body = _stream_body(input_tokens=100, output_tokens=10, cache_read_input_tokens=40)

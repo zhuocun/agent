@@ -185,6 +185,24 @@ class UsageUpdate:
 
 
 @dataclass(frozen=True)
+class AwaitingApproval:
+    """Agent-loop "pause here" marker for a human-in-the-loop tool gate.
+
+    Emitted by the agent loop (NOT by a real provider's own stream) right after
+    a `ToolCall(status="awaiting_approval", approval_state="pending")` when the
+    requested tool needs approval and none has been granted yet. It is the
+    analogue of `Complete`: it ENDS the provider event stream for this turn, but
+    instead of finalizing the turn as `done` the handler persists the assistant
+    row as `awaiting_approval` and frees the active-stream guard so a follow-up
+    resume POST can open its own stream. `tool_call_id` identifies the gated call
+    the resume must decide.
+    """
+
+    tool_call_id: str
+    type: Literal["awaiting_approval"] = "awaiting_approval"
+
+
+@dataclass(frozen=True)
 class Complete:
     """End-of-stream marker. Provider has yielded everything.
 
@@ -213,6 +231,7 @@ ProviderEvent = (
     | ToolCall
     | ToolResult
     | UsageUpdate
+    | AwaitingApproval
     | Complete
 )
 

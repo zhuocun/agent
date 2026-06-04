@@ -53,6 +53,9 @@ interface AppHeaderProps {
   efforts: ReasoningEffort[];
   selectedEffortId: ReasoningEffortId;
   onSelectEffort: (id: ReasoningEffortId) => void;
+  // False when the served provider ignores reasoning effort (e.g. Anthropic):
+  // the picker disables the effort rows with a one-line note instead of erroring.
+  effortSupported?: boolean;
   searchEnabled: boolean;
   onToggleSearch: (next: boolean) => void;
   jsonModeEnabled: boolean;
@@ -91,6 +94,7 @@ export function AppHeader({
   efforts,
   selectedEffortId,
   onSelectEffort,
+  effortSupported,
   searchEnabled,
   onToggleSearch,
   jsonModeEnabled,
@@ -129,6 +133,7 @@ export function AppHeader({
           efforts={efforts}
           selectedEffortId={selectedEffortId}
           onSelectEffort={onSelectEffort}
+          effortSupported={effortSupported}
           searchEnabled={searchEnabled}
           onToggleSearch={onToggleSearch}
           jsonModeEnabled={jsonModeEnabled}

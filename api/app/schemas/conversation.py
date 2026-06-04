@@ -6,8 +6,25 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, StringConstraints, model_validator
 
-from app.schemas.common import CamelModel, ModelTierId
+from app.schemas.common import CamelModel, ModelTierId, ReasoningEffortId
 from app.schemas.message import AttachmentPart, ChatMessage
+
+
+class ToolApprovalDecision(CamelModel):
+    """A human-in-the-loop decision for a paused, approval-gated tool call.
+
+    Sent on a follow-up `POST .../messages` (wire field `toolApproval`) to resume
+    a turn that ended in `awaiting_approval`. `tool_call_id` must match the
+    pending `tool_call` part on the trailing assistant message; `decision`
+    approves or denies it. `edited_input` optionally replaces the tool input
+    before execution — the route RE-VALIDATES it server-side (the approval gate
+    is the trust boundary) and re-runs the safety preflight before running the
+    tool.
+    """
+
+    tool_call_id: str
+    decision: Literal["approve", "deny"]
+    edited_input: dict[str, Any] | None = None
 
 
 class ResponseFormatRequest(CamelModel):
@@ -123,6 +140,19 @@ class SendMessageRequest(CamelModel):
     # payload bytes on each part; persistence strips those fields and stores
     # metadata only.
     attachments: list[AttachmentPart] = Field(default_factory=list, max_length=10)
+    # Per-turn reasoning-effort override. Wire alias `reasoningEffort`. None /
+    # "auto" defers to the served binding's default; "minimal" forces thinking
+    # off for a latency win; "standard"/"extended" select provider effort
+    # levels. The route degrades it silently (no error) for providers that
+    # don't support effort hints — it is a hint, never a hard requirement.
+    reasoning_effort: ReasoningEffortId | None = None
+    # Resume a turn paused on an approval-gated tool (HITL). Wire alias
+    # `toolApproval`. When set, this POST is a RESUME of a prior turn that ended
+    # in `awaiting_approval`: it reuses the existing user message (links a NEW
+    # assistant row via `responds_to_message_id`) and applies the approve/deny
+    # decision. Mutually exclusive with `regenerate` / `editMessageId` /
+    # `continueTurn` (enforced in the route).
+    tool_approval: ToolApprovalDecision | None = None
     # Opt this turn into structured output (JSON mode). Wire alias
     # `responseFormat`. None (the default) leaves the turn unchanged. The route
     # threads it to the provider and the handler validates the output at the

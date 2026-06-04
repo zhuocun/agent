@@ -1,15 +1,18 @@
 "use client";
 
 import {
+  Check,
   CheckCircle2,
   CircleDashed,
   Loader2,
   ShieldCheck,
   ShieldQuestion,
   Wrench,
+  X,
   XCircle,
 } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type {
   MessagePart,
@@ -21,9 +24,13 @@ type ToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
 
 interface ToolPartViewProps {
   part: ToolPart;
+  // HITL: invoked when the user approves/denies a tool call awaiting their
+  // decision. Only wired (and the buttons only shown) for the LAST assistant
+  // message whose turn is paused on this call — the parent gates it.
+  onDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }
 
-export function ToolPartView({ part }: ToolPartViewProps) {
+export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
   const isResult = part.type === "tool_result";
   const status = part.status ?? (isResult ? "succeeded" : "pending");
   const approvalState = part.approvalState ?? "not_required";
@@ -33,6 +40,16 @@ export function ToolPartView({ part }: ToolPartViewProps) {
       ? previewJson(part.input)
       : part.error ?? part.summary ?? previewJson(part.output);
   const destructive = status === "failed" || approvalState === "rejected";
+  // Show the approve/deny controls only on a tool_call still pending the user's
+  // decision, and only when the parent supplied a handler (it gates this to the
+  // trailing paused turn). Mirrors the BE pause shape: status
+  // "awaiting_approval" + approvalState "pending".
+  const showApprovalControls =
+    part.type === "tool_call" &&
+    status === "awaiting_approval" &&
+    approvalState === "pending" &&
+    onDecision !== undefined;
+  const toolCallId = part.type === "tool_call" ? part.id : undefined;
 
   return (
     <div
@@ -60,6 +77,31 @@ export function ToolPartView({ part }: ToolPartViewProps) {
           <p className="mt-1 line-clamp-2 break-words text-xs leading-snug text-muted-foreground">
             {detail}
           </p>
+        ) : null}
+        {showApprovalControls && toolCallId ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => onDecision({ toolCallId, decision: "approve" })}
+              data-testid="tool-approve"
+              className="rounded-full"
+            >
+              <Check aria-hidden />
+              <span>Approve</span>
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => onDecision({ toolCallId, decision: "deny" })}
+              data-testid="tool-deny"
+              className="rounded-full"
+            >
+              <X aria-hidden />
+              <span>Deny</span>
+            </Button>
+          </div>
         ) : null}
       </div>
     </div>

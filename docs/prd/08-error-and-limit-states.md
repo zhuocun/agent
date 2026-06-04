@@ -111,15 +111,27 @@ P0 Continue is a new continuation request; it is **not** P1 resumable replay.
 | `PROVIDER_ERROR` | Upstream 5xx/unknown | Retry, Status link |
 | `PROVIDER_QUOTA` | BYOK/provider account quota | Check provider account/key |
 
+> **`PROVIDER_ERROR` "Status link" target (resolves §13 #4).** The "Status link" action points at the public platform status surface — `GET /api/status` (unauthenticated, like `/api/share/{token}`) — described in §10 and owned by the F6 incident/status work. The surface reports per-provider-route operational state (operational / degraded / down) derived from recent `Stream` terminal-event error/fallback rates over a window plus a short incident list; no third-party status vendor is used for v1, and no per-user data or secrets are exposed. When the *active* route is degraded, an in-app degraded-provider banner (`role="status"`, dismissible per session, reusing the §5.7 substitution copy and linking to the model directory to switch routes) appears alongside the per-message substitution callout — extending "never silently downgrade" from the model to platform health. With telemetry insufficient (cold start), the surface reads "operational" rather than fabricating an incident. (Cite D30.)
+
 ### 5.4 Platform limits
 
 | Code | Trigger | Actions |
 |---|---|---|
 | `PLATFORM_RATE_LIMIT` | Request/token window | Wait `retry_after`, Reduce usage |
 | `PLATFORM_BUDGET_EXCEEDED` | Rolling USD/message cap (enforcement uses the LOWER of the platform `USAGE_BUDGET_USD` and the per-user `monthly_budget_usd`, composed in `api/app/db/repositories/usage.py::_effective_quota_usd`; a positive credit balance extends the cap) | Upgrade, Add credits, BYOK |
+| `PLATFORM_BUDGET_WARNING` | Threshold alert at a configured % of `effective_quota_usd` (e.g. 50/80/100%) or low credit-balance runway | (transparency callout, not a block) View usage, Adjust budget |
+| `PLATFORM_BUDGET_SOFT_CAP` | Soft-cap mode reached its ceiling; opt-in alternative to the hard `PLATFORM_BUDGET_EXCEEDED` block | (acknowledge-to-continue, not a block) Continue this period, View usage, Add credits |
+| `PLATFORM_CONVERSATION_CAP` | Optional per-conversation USD ceiling exceeded on a single thread | Raise this chat's cap, Start new chat, BYOK |
 | `PLATFORM_TIER_GATED` | Model/tier not available | Upgrade or pick available tier |
 | `PLATFORM_GUEST_DOWNGRADE` | Guest moved to a weaker model after good-model allotment | (transparency callout, not a block) Sign up to keep the better model |
 | `PLATFORM_GUEST_LIMIT` | Anonymous cap (hard sign-up wall) | Sign up / sign in |
+
+> **Proactive budget guardrails (E6 — layered over the shipped hard gate; default behavior unchanged).** The shipped budget cap is a hard binary gate: at the cap the next platform turn 429s `PLATFORM_BUDGET_EXCEEDED` (`routes/conversations.py`). E6 adds three opt-in limit states *beside* it without altering that default.
+> - **`PLATFORM_BUDGET_WARNING` (warn before the wall, `severity: "warning"`).** Fires once per threshold per period (deduped) at user-configured percentages of `effective_quota_usd` and on low credit runway. Continues generation; it is a pre-wall alert, not a block. Alerts deep-link into the §6 usage breakdown (E1) — "80% of your budget — DeepSeek Pro in 'X' is your top spender." In-app always; email is opt-in and off by default for registered users.
+> - **`PLATFORM_BUDGET_SOFT_CAP` (soft cap warns + continues on acknowledgement, `severity: "warning"`).** **Opt-in only** per the user's `monthly_budget_usd`; when a user enables soft-cap mode, hitting the ceiling warns and lets them continue this period with one explicit acknowledgement rather than blocking. **The default remains the hard cap: with soft-cap mode off, `PLATFORM_BUDGET_EXCEEDED` preserves the current 429-blocking behavior byte-for-byte.** The acknowledge affordance is a single labeled action (no gesture-only dismissal).
+> - **`PLATFORM_CONVERSATION_CAP` (per-conversation ceiling, `severity: "blocking"` for the one thread).** An optional ceiling on a single thread so a runaway long-context / agentic loop can't drain the month (relevant once tools/search are enabled — `TOOLS_ENABLED`, `SEARCH_BACKEND`). When exceeded it halts only that conversation's platform turns with a clear limit-state; other conversations are unaffected.
+>
+> BYOK turns are exempt from all platform caps (consistent with current enforcement) but may still receive *informational* spend estimates. (Cite D27.)
 
 > **Guest model-downgrade transparency (distinct from the hard `PLATFORM_GUEST_LIMIT` block).** 2026 guest flows silently downgrade anonymous users to a weaker/mini model before the hard sign-up wall. For a transparency-first product, a **silent** downgrade is an own-goal. When a guest is moved to a weaker model, surface a **transparency callout reusing the substitution-callout** (PRD 06 §5.4 / PRD 07) — `severity: "info"`, not a block — naming the served model and the reason ("Now answering with Fast — sign up to keep the better model"). This is a transparency surface, **not** an error: `PLATFORM_GUEST_DOWNGRADE` continues generation; only `PLATFORM_GUEST_LIMIT` blocks send.
 
@@ -136,9 +148,22 @@ P0 Continue is a new continuation request; it is **not** P1 resumable replay.
 
 | Code | Trigger | Actions |
 |---|---|---|
-| `INPUT_MODERATION` | Safety block | Edit message |
+| `SAFETY_BLOCKED` (alias `INPUT_MODERATION`) | Safety block | Edit message, Request review, Learn more |
 | `INPUT_CONTEXT_EXCEEDED` | Over context pre-send | Shorten, Start new chat, Summarize when available |
 | `INPUT_INVALID` | Schema/validation | Fix input |
+
+> **Taxonomy reconciliation — `SAFETY_BLOCKED` is the as-built code; `INPUT_MODERATION` is its documented alias.** The shipped safety preflight emits `SAFETY_BLOCKED` (`routes/conversations.py::_safety_blocked`), while earlier drafts of this PRD named the same state `INPUT_MODERATION`. These are **one state, not two**: `SAFETY_BLOCKED` is the canonical, as-built code that the client must recognize; `INPUT_MODERATION` is retained only as its documented alias for cross-reference continuity. New clients key off `SAFETY_BLOCKED`. The block is gated by `SAFETY_BACKEND` (default `disabled`; `local` = operator blocklist); with `SAFETY_BACKEND=disabled` (the prod default today) no block fires and behavior is byte-identical.
+
+#### 5.6.1 Transparent block + appeal **[P1]**
+
+The safety preflight (`safety/moderation.py::check_user_turn`) already computes a structured `SafetyDecision(allowed, reason_code, source)` where `source ∈ {message, attachment, custom_instructions}` and `reason_code = "configured_blocklist"`. Today the block surfaces with `severity: "warning"` but a **generic** body ("matched a configured safety rule") and no user-facing explanation or recourse. On a transparency-first product an opaque or silent block is an own-goal — the same failure the §5.4 guest-downgrade note calls out. F4 closes it by making the block transparent and appealable. **This is "never silently downgrade/modify" applied to safety: we never silently block or silently edit — we always surface a visible reason, and we offer recourse.**
+
+- **Surface the category and source of the block** in the message UI as a `warning`/`info` callout styled per §5.7 substitution styling — **`severity: "warning"`, never `error`** (no red error banner). Example body composed from structured `meta`: "This message was held because it matched a safety rule on the message text. Edit and resend, or request a review." The displayed copy is composed from `meta` (`reasonCode`, `source`, optional operator-configurable `category` label) per the §3 structured-copy rule — **never a hard-coded English body**, and never leaking the exact blocklist terms (which would defeat the filter).
+- **Request-review / appeal affordance** (lightweight): the callout offers ≤3 actions — Edit, Request review, and Learn more (links the content policy). Submitting an appeal writes an `AuditEvent` (`safety.appeal`) carrying the message id + the user's note (no raw blocked content beyond what the user re-submits) and returns a **confirmation, not an unblock** — there is no automated unblock in P1; operator review tooling trails to P2.
+- **Output modification is transparent too.** If a future provider/gateway moderation adapter trims rather than blocks (the `safety/moderation.py` seam is shaped for this), show a transparency note — "Response was filtered by a safety policy" — never a silent edit.
+- **Invariants preserved.** A blocked turn never persists an assistant message and never calls the provider (matches current preflight ordering). The callout uses `role="status"` (warning), is announced once, and all actions are keyboard-operable; on mobile-web the appeal is a small sheet with 44–48px tap targets and focus management on open/close. Block (`safety.block`) and appeal (`safety.appeal`) audit events feed the data-access activity log. (Cite D30.)
+
+> **Ephemeral / temporary threads reject share and regenerate (F3).** An ephemeral or temporary conversation (per-conversation `expires_at` / the in-process temporary path) is non-persistent, so sharing it is incoherent: it **never mints a `share_token`** (a share request on such a thread is disabled / 400), and the regenerate / edit / continue message-actions remain rejected on temporary chats (matching the shipped in-process behavior). This is a constraint, not an error family of its own — surface it as a disabled affordance with a reason, consistent with the §7 limit-and-meter behavior. (Cite D31.)
 
 ### 5.7 Substitution is not an error
 
@@ -173,6 +198,8 @@ Hard cap actions depend on account:
 - Free: upgrade, BYOK, wait until reset.
 - Pro: add credits, BYOK, switch cheaper tier.
 - BYOK: fix key/provider quota; do not upsell platform credits for provider-billed failures.
+
+Per-conversation budget caps (E6 `PLATFORM_CONVERSATION_CAP`) follow the same meter thresholds above but scope the meter and the blocking state to the single thread (§5.4). **Ephemeral / temporary threads (F3)** present share and regenerate/edit/continue as disabled affordances with a visible reason rather than erroring — see §5.6; a non-persistent thread never mints a `share_token`.
 
 ---
 
@@ -209,17 +236,22 @@ Terminal events feed PRD 05 analytics.
 |---|---|---|---|
 | Stream fail/stop/timeout/409 | Yes | — | — |
 | Provider 429/5xx | Yes | Automated fallback UX — **P1: Shipped (backend)** | — |
-| Platform/guest/tier caps | Yes | Rich credit packs | Team/admin limits |
+| Platform/guest/tier caps | Yes | Rich credit packs; budget alerts + soft-cap + per-conversation cap (E6) | Team/admin limits |
 | BYOK errors | Yes | — | — |
 | Offline queue + optimistic send | Yes | Background sync replay where supported | — |
 | Resumable-stream Continue | Partial+Continue request | True replay — **P1: Shipped\* (`RESUMABLE_STREAMS_ENABLED`)** | — |
 | Tool/HITL errors | Reserved | Yes — **P1: Shipped\* (`TOOLS_ENABLED`)** | — |
-| Moderation appeals | — | — | Yes |
+| Moderation appeals | — | User-facing transparency + appeal capture (F4 §5.6.1) | Operator appeal-review tooling |
+| Platform/provider status transparency | — | Public `/api/status` + degraded-provider banner (F6) | — |
 
 > **Shipped-on-`main` annotations (\* = behind a default-off flag; inert until enabled).**
 > - **Provider 429/5xx → P1 Shipped (backend):** a single-shot, pre-first-token provider fallback is live (`api/app/routes/conversations.py::_select_fallback_route` + `streaming/handler.py`). It retries once on an alternate route for a retryable error (rate-limit / upstream) raised before any token, and records the substitution as `provider_fallback` (or `rate_limited`) per PRD 07 §5 — surfaced as a transparency callout, not a red error banner (§5.7). The automated *fallback UX* still belongs to the FE.
 > - **Resumable-stream Continue → P1 Shipped\* (`RESUMABLE_STREAMS_ENABLED`):** true detached-producer replay + reconnect ships behind the default-off flag (prod additionally requires `STREAM_STATE_BACKEND=redis`). The **P0 `continueTurn`** path (a new continuation request that preserves the stopped partial; `NET_INTERRUPTED` Continue) is fully shipped and on by default — see §5.2.
 > - **Tool/HITL errors → P1 Shipped\* (`TOOLS_ENABLED`):** the agent loop + HITL approval gate ship behind the default-off `TOOLS_ENABLED` flag. A paused turn ends in the persisted `awaiting_approval` terminal; a failed/timed-out/denied tool yields a failed/cancelled `tool_result` (the turn keeps going) rather than erroring the whole turn.
+
+> **Net-new for this roadmap (not yet on `main`).**
+> - **Platform/provider status transparency (F6, P1).** A public `GET /api/status` (unauthenticated, like `/api/share/{token}`) returns per-route operational state (operational / degraded / down) derived from recent `Stream` terminal-event error/fallback rates over a configurable window, plus a short incident list — no third-party status vendor, no PII, no secrets. A route flips to "degraded" when its windowed error/fallback rate exceeds a configurable threshold and flips back on recovery. The §5.3 `PROVIDER_ERROR` "Status link" action targets this surface (resolving §13 #4); an in-app degraded-provider banner (`role="status"`, dismissible per session, reusing §5.7 substitution copy, linking to the model directory to switch routes) shows only when the *active* route is degraded. (Cite D30.)
+> - **Moderation appeals split (F4, was P2-only).** User-facing transparency + appeal *capture* moves to **P1** (§5.6.1); only the **operator** appeal-review tooling stays **P2** (no automated unblock in P1). (Cite D30.)
 
 ---
 
@@ -257,5 +289,5 @@ Terminal events feed PRD 05 analytics.
 1. Exact free-tier caps (PRD 05 §9.3).
 2. Soft timeout values per model/tier.
 3. Whether P0 exposes both Continue and Regenerate, or a primary "Continue" plus secondary menu.
-4. Provider status page strategy.
-5. Moderation appeal flow timing.
+4. ~~Provider status page strategy.~~ **Resolved (F6, D30):** a first-party public `GET /api/status` surface derived from `Stream` terminal-event error/fallback rates (no third-party status vendor for v1) + an in-app degraded-provider banner; the §5.3 `PROVIDER_ERROR` "Status link" wires to it. See §5.3 and §10. *(Open input that remains: the windowed degraded-state threshold value — a tuning constant, not a strategy question.)*
+5. ~~Moderation appeal flow timing.~~ **Resolved (F4, D30):** user-facing transparent block + appeal *capture* ships **P1** (§5.6.1); the **operator** appeal-review tooling (and any automated unblock) stays **P2**. See §5.6.1 and the §10 phase table.

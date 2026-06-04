@@ -180,7 +180,7 @@ Neon Postgres (SQLAlchemy/Alembic)
 - **[P0/MVP] Typed multi-part message model (THIS PRD owns the data-model schema):** a `message` is an **ordered list of typed parts** — `text | reasoning | tool-call | tool-result | citation | interactive-block` — not a single markdown string. Modeling this in the P0 data layer (even if P0 only *renders* the text/reasoning/code subset) de-risks tools, structured citations, interactive viz, and generative UI in one move; skipping it guarantees a P1 refactor. **PRD 01 references this for rendering** (the rendering decision is really a data-model decision and is made here once).
 - **[P0/MVP] `tool-call` part shape (schema now, minimal renderer):** even before tools ship (P1), `message.parts` MUST accept persistable tool/status parts so PRD 01 status lines are not throwaway. Minimum fields: `type: 'tool-call'`, stable `id`, `toolName` or `displayLabel`, `status: 'pending' | 'running' | 'completed' | 'failed' | 'denied'`, nullable `input`/`output` jsonb, nullable `error`, optional `startedAt`/`completedAt`. P0 UI may render these as status lines only; expandable tool UI is P1.
 - **[P1]** `attachment` (file upload lands with vision/PDF understanding), `document` + `suggestion` (artifacts).
-- **[P2]** `embedding` (RAG, pgvector) — reserve the design, do not build.
+- **[P2 — BUILD-READY when RAG lands] `embedding` (file/document RAG, pgvector):** the schema reserve is now a **build-ready** design rather than a placeholder (PRD 00 §11 **D25**; PRD 02 §4.7 FR-29 owns the retrieval sub-spec). Activating it means `CREATE EXTENSION vector`, the `embedding` table (§6), and an HNSW/IVFFlat index. The **vector dimension is registry-driven, not hardcoded** — it is read from the configured embedding route's metadata (the same no-hardcoding discipline §5.2 applies to chat model ids), so a BYO-embedding route can carry its own dimension. RAG stays **genuinely unbuilt at P0/P1** and is gated on two infra preconditions that do not exist today: durable object storage for source documents and a real worker/queue for off-request ingest (§5.4). Retrieval is anchored to *cited chat answers* (every retrieved chunk is a `SourceItem`), not a document-management suite — see §6 and PRD 02 FR-29. Per-turn retrieval spend is captured in `message.cost_breakdown` (§6), and the privacy/index-control + delete fan-out for embeddings is specified in §5.7 (PRD 00 §11 **D25**).
 
 ### 5.4 Storage & file uploads
 
@@ -191,6 +191,8 @@ Neon Postgres (SQLAlchemy/Alembic)
 - **[P1] Validation:** server issues presigned URLs only for allowed content-types and a max size; verify object existence + size after upload before marking `ready`.
 - **[P1] Async processing via queue/worker:** thumbnailing/resize, PDF/text extraction (for future RAG), and virus/abuse scanning run out of band, never inline. The queue can be a dedicated worker, QStash, or another durable job runner behind an adapter. `attachment.status` transitions `uploaded → processing → ready | failed`.
 - **[P1] Storage adapter:** wrap R2/Blob/S3 behind one interface so R2 ↔ Blob ↔ S3 swaps are config, not code.
+- **[P2 — named precondition] Object storage + worker/queue are hard preconditions for file/document RAG (D3):** the same object-storage adapter and durable worker/queue above are *also* what activates the §5.3/§6 `embedding`/pgvector path (PRD 00 §11 **D25**; PRD 02 §4.7 FR-29). RAG ingest — text extraction → chunk (with overlap) → embed each chunk → write vectors + chunk text + source metadata — runs **off the request path** on the worker/queue (never inline in a stream), and the source documents live in object storage. This is the heaviest dependency in the retrieval domain and the reason RAG is P2: the shipped single-process, in-process-job model is explicitly *MVP-only* and cannot carry durable ingest. Until both exist, RAG stays unbuilt; the large-context "attach a doc and ask" bridge (PRD 02 FR-29) is the P1 precursor that needs neither.
+- **[P2 — generated-media persistence] Object-storage path for generated images (B5):** in-thread image generation (PRD 02 §4.8 FR-33, **P2**) persists each generated image as a typed `generated-image`/`image` message part whose bytes live in **object storage via the same adapter** — *not* the transient-only attachment path (today's attachments are transient, with no object store, so this is a real new infra dependency, PRD 00 §11 **D22**). The part carries per-image model attribution + per-image cost (§6 `cost_breakdown`) and a provenance/content-marking slot; the EU AI Act Art. 50(2) marking obligation on that slot is owned by the compliance workstream (§5.7 [VERIFY] / PRD 00 §11 **D32**), while this PRD owns only the storage + capture shape. Public share keeps the image + provenance marker but strips cost (PRD 07 §6.4). With no image-gen route configured the path is inert (default-off discipline).
 
 ### 5.5 Auth & guest sessions
 
@@ -210,6 +212,11 @@ Neon Postgres (SQLAlchemy/Alembic)
   Return `429` with retry-after and surface a clear UI state. **Budget/metering hook (cross-PRD):** this limiter is also the enforcement mechanism for the P0 metered-overage/credit primitive PRD 05 is adopting. **PRD 05 owns the monetization/credit decision; this PRD owns enforcement.** ([genai.owasp.org LLM10 Unbounded Consumption](https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/), [zuplo token-based rate limiting](https://zuplo.com/learning-center/token-based-rate-limiting-ai-agents).)
 - **[P0/MVP] Caching/state:** sessions and durable chat state live in Postgres; per-process registries handle temporary ids, replay buffers, stop signals, and limiter state. Shared Redis/Upstash becomes a requirement when replay, stop, rate limiting, or hot-read caching must work across multiple workers. **Shipped enforcement:** `STREAM_STATE_BACKEND` selects `memory` (default) or `redis`; production boot is refused (`assert_prod_safe()`) if `RESUMABLE_STREAMS_ENABLED=true` while the backend is not `redis`, because Fly scales horizontally and a reconnect on another machine would 404 against a per-machine in-memory buffer.
 - **[P1] Background jobs:** attachment processing, embeddings, durable title generation, webhooks, and stream reaping move to an idempotent queue/worker with retries and dead-letter handling. Current title/reaper behavior is in-process and acceptable only for the single-process MVP.
+- **[P1] Subscription-lifecycle entitlement & webhook mechanics (E4 — extends the shipped Stripe spine, does not re-spec it):** the billing cluster (`billing_customer` / `billing_entitlement` / `billing_webhook_event` / `billing_fulfillment`, §6, behind default-off `BILLING_BACKEND`) ships today with single-price Pro + credit-pack Checkout/Portal and a signature-verified, idempotent webhook that currently handles only `checkout.session.completed` + subscription `create`/`update`/`delete`. Completing the lifecycle (PRD 00 §11 **D28**; PRD 05 owns price/policy) is **additive wire + webhook handling, with little-to-no schema change**:
+  - **Annual price** is a second, env-configured price id (sibling to `STRIPE_PRO_PRICE_ID` — never hardcoded; the contested annual band is a PRD 05 §9.1 input, flag-don't-set). Checkout offers monthly vs annual.
+  - **Proration** on monthly↔annual up/downgrade is computed provider-side and surfaced *before confirm* via a preview read (e.g. `GET /api/billing/plan-change-preview`); the change is applied through the provider and reflected by the **existing webhook → `billing_entitlement` path** — no second source of truth.
+  - **Pause & dunning are entitlement *states*, not new tables:** `billing_entitlement.status` already enumerates `paused` / `past_due` / `canceled`, so the work is webhook handling + wire fields on the billing state shape (annual availability, renewal date, pause/dunning flags), not a migration. A `paused` entitlement gates as not-Pro but is non-destructive and resumes cleanly; a `past_due` entitlement drives an in-app grace window before downgrade. Cancel keeps Pro until `current_period_end` (the entitlement check already honors period end).
+  - All transitions reuse the shipped signature verification + `billing_webhook_event` idempotency; dunning limit-state copy is PRD 08's. (Workspace billing, E5/§6, reuses this same lifecycle for the pooled-credit owner.)
 - **[P0/MVP] Observability / tracing:** emit structured logs with request IDs and model/usage/cost fields. Optional Sentry captures exceptions and optional OpenTelemetry exports traces. Track TTFT and full-response latency per model (PRD 05 §7 KPI). Langfuse-style LLM tracing is a future observability backend, not a shipped dependency.
 - **[P0/MVP] Error handling:** distinguish stream errors, provider errors (rate-limit/quota/timeout), and app errors; log with key redaction; design idempotent retries for future jobs.
 
@@ -218,12 +225,21 @@ Neon Postgres (SQLAlchemy/Alembic)
 - **[P0/MVP] Encryption:** TLS in transit everywhere; encryption at rest for DB and object storage; BYOK keys encrypted with the app KEK/versioned KEK registry (§5.2), with KMS envelope encryption as the hardening path.
 - **[P0/MVP] No-train-by-default — provider DPAs / no-train API modes are the PRIMARY control:** never send user chats to providers for training; the no-train wedge rests primarily on choosing provider API modes / DPAs that prohibit training on our traffic. Surface retention status in-product. Gateway ZDR can be a future defense-in-depth layer if the provider mix moves through a gateway, but it is not the baseline guarantee.
 - **[P0/MVP] Retention controls + export/delete — cross-store cascade (GDPR-complete, not Postgres-only):** short, **configurable retention**; one-click **export** (user's chats/messages) and **delete**. The shipped export/delete routes cover Postgres-owned user data. When attachments, shared replay storage, and third-party trace backends are added, delete/retention must fan out across every store that can hold PII via an idempotent delete job with documented per-store TTLs:
-  - **Object storage (R2/Blob/S3):** delete the user's attachment objects (otherwise orphaned after the row delete).
+  - **Object storage (R2/Blob/S3):** delete the user's attachment objects (otherwise orphaned after the row delete). **RAG corpus fan-out (D3/D4, PRD 00 §11 D25):** the same delete must purge a deleted corpus's/document's **source objects** in object storage *and* its **Postgres `embedding` vectors** (`corpus_id`-scoped) *and* any retrieval cache — idempotently — so deleted knowledge stops being retrievable immediately. A per-corpus/per-document delete and an index manifest ("what's indexed, where embeddings live, retention, no-train of the embedding route") are the user-facing index-control surface (PRD 02 §6.2); indexing consent is explicit and temporary/`temporary_by_default` chats never index.
   - **Shared replay/cache storage:** purge buffered resumable-stream data and cached reads (keys scoped per user/chat).
   - **Observability traces:** **traces are a PII store** if they contain prompt/response content, so they are in scope for export/delete or must be configured for retention/no-content capture.
   - **Gateway/provider logs:** provider DPAs/no-train modes are the primary control; any gateway must document retention/ZDR behavior separately.
+  - **New Postgres-owned user-data stores (A7, PRD 00 §11 D19/D20/D21):** the burst's net-new tables — `memory_fact`, `project`, `tag` / `conversation_tag`, and (when shared) `workspace` / `workspace_membership` plus the `workspace_id`-scoped credit pool — are first-party PII/user-data and **export-and-erase-complete from first ship**. `GET /api/account/export` adds memory facts (with provenance), projects (+ instructions/defaults), tags, and per-conversation project/tag/archive metadata; `DELETE /api/account` cascades to all of them via the existing FK-ordered cascade (every table FKs to its owner with `ON DELETE CASCADE`; memory-fact provenance links are `SET NULL`, so a fact survives a purged source conversation as "learned from a deleted chat"). Memory facts are **never** emitted on a public share (re-asserted at the `schemas/share.py` serializer boundary).
   This is the product's core privacy wedge and a GDPR requirement.
-  - **Shipped (as-built):** the Postgres-owned slice is live (`routes/account_data.py`). `GET /api/account/export` returns one self-contained camelCase JSON document of everything held for the caller (account, preferences, usage + credit ledger, masked BYOK key metadata, full conversations with messages, audit + analytics events) — never the decrypted/ciphertext BYOK key or any session secret. `DELETE /api/account` requires an explicit confirmation value, deletes the account + all data via an FK-ordered cascade, and **commits explicitly before signalling 204 / clearing the cookie** so a commit failure can't report a false erasure. Configurable retention is enforced as a per-user purge of conversations older than `preferences.retention_days` (applied before history reads and on export). The cross-store fan-out (object storage, shared replay, trace backends) remains future, since those stores aren't built yet.
+  - **Shipped (as-built):** the Postgres-owned slice is live (`routes/account_data.py`). `GET /api/account/export` returns one self-contained camelCase JSON document of everything held for the caller (account, preferences, usage + credit ledger, masked BYOK key metadata, full conversations with messages, audit + analytics events) — never the decrypted/ciphertext BYOK key or any session secret. `DELETE /api/account` requires an explicit confirmation value, deletes the account + all data via an FK-ordered cascade, and **commits explicitly before signalling 204 / clearing the cookie** so a commit failure can't report a false erasure. Configurable retention is enforced as a per-user purge of conversations older than `preferences.retention_days` (applied before history reads and on export). The cross-store fan-out (object storage, shared replay, trace backends) remains future, since those stores aren't built yet. *The burst's net-new Postgres tables (`memory_fact` / `project` / `tag` / `conversation_tag` / `workspace` / `workspace_membership`) slot into this same FK-ordered cascade and into the export document from first ship (above); no new cross-store target is added until those external stores exist.*
+- **[P1] Granular per-conversation retention + ephemeral chat + scheduled purge (F3, PRD 00 §11 D31):** today retention is account-global (`preferences.retention_days` ∈ {30, 90, forever}) and "temporary" is an in-process-only flag (no DB row), so per-user retention is only enforced *opportunistically* when a user hits the history/export routes. This extends control to the conversation grain and makes purge durable:
+  - **Per-conversation override:** new nullable **`conversation.retention_days_override`** (a constrained set incl. a 7-day option) + a durable **`conversation.expires_at`** (generalizing the temporary-chat `expires_at` reserve in the §6 sketch into a real ephemeral TTL). **Effective retention = `min(override, account default)`** where both are set; the override alone applies when the account default is `NULL`; documented and unit-tested. A per-conversation "sensitive" posture defaults to the shortest window and excludes the thread from memory/personalization (the memory-exclusion contract is worker A's; PRD 02 FR-41).
+  - **Scheduled purge (reaper pattern):** a background loop **reusing the orphan-stream reaper pattern** (`streaming/reaper.py` + the `stream_reap_*` config convention; disabled by a `<= 0` interval) deletes conversations past their effective TTL / `expires_at` **independent of whether the user hits a route** — closing the opportunistic-enforcement gap. Purge is destructive and cascades `message` / `vote` / `stream` through the existing FKs, and emits a `retention.purge` audit event (below). A multi-worker deployment runs this on the same shared-state discipline as the reaper.
+  - **Coherence rules:** an ephemeral/temporary thread never mints a `share_token` (sharing a non-persistent thread is incoherent → 400/disabled); converting a saved thread to ephemeral requires explicit confirmation and emits `conversation.ephemeral_set`. (PRD 08 owns the limit-state copy for ephemeral threads rejecting share/regenerate.)
+- **[P1] User-facing data-access activity log (F1, PRD 00 §11 D30 — distinct from the enterprise audit/SOC 2 console, which stays a §5.7 P2 non-goal):** surface the shipped write-only **`audit_event`** trail (today emitted only for `byok.upsert` / `byok.revoke` / `account.export` / `account.delete`, with **no read route**) as a prosumer trust surface — *receipts for the privacy promise*, **not** the enterprise audit console.
+  - **Read route:** a new `GET /api/account/activity` (auth = current user; anonymous allowed — they accrue data) returns the caller's `audit_event` rows newest-first, paginated, camelCase, never leaking another user's rows. The activity log is append-only and is itself erased on `DELETE /api/account` (the `account.delete` row is retained with `user_id = NULL` per the shipped SET-NULL behavior).
+  - **More event types (no new table, no migration if `details` carries the fields):** emit (and test) `session.signin`, `account.upgrade`, `share.mint`, `share.revoke`, `retention.purge`, and `byok.use` (at most once per provider per rolling window — avoid per-turn log spam), plus F3's `conversation.ephemeral_set` and F4's `safety.*`. Details store **provider id + jurisdiction + message id only — never message content**.
+  - **"Where your messages were processed" view:** a per-conversation / account-rollup breakdown computed **only** from the already-persisted `message.attribution` (provider, jurisdiction from the route's `data_policy.data_residency`, BYOK-vs-platform, substitution reason code — reusing PRD 07 §5 codes) — **no new per-message table**. Jurisdiction labels read the live registry (never hardcoded); a route with `data_policy = None` renders "policy unavailable," not a guess. This makes the DeepSeek/China residency tradeoff (PRD 00 §11 D11) *retrospectively auditable per message*, not just badged.
 - **[P0/MVP — UNCONDITIONAL] AI-interaction disclosure (EU AI Act Article 50(1) transparency):** the interaction-disclosure duty is **FIRM at 2 Aug 2026** (unchanged by the 7-May-2026 Digital Omnibus). A persistent UI affordance/flag disclosing the user is interacting with AI. **Build the disclosure hook (a disclosure flag in the chat UI + response metadata) as an unconditional P0 — it is NOT contingent on the content-marking debate** and is needed regardless of EU outcome (US disclosure gates apply too; PRD 05 owns). This is a firm date, not a `[confirm at build]` item.
 - **[VERIFY — LEGALLY UNSETTLED COMPLIANCE DATE; NEEDS LEGAL SIGN-OFF BEFORE EU-LAUNCH SCOPE IS LOCKED] AI-content marking (EU AI Act Article 50(2), machine-readable marking of AI-generated content):** the binding date is **legally unsettled for a new launch** following the **7-May-2026 Digital Omnibus** (a Council/Parliament provisional agreement that is **provisional pending Official Journal publication**). **Do not pick a single marking date** — readings range from an **architecture read (~2 Dec 2026)** to a **compliance read (no grace for a new product → binds 2 Aug 2026)**. This is a legal call, **coordinated with PRD 05** so the two PRDs agree (neither PRD asserts one date unilaterally).
   - **What is settled:** marking only attaches **if/when we ship AI-generated media**. For a P0 text-relay chat with attribution it is narrow either way; image/media generation is P2.
@@ -256,6 +272,15 @@ Aligned with the shipped SQLAlchemy/Alembic schema, with typed multi-part messag
 > - **`stream.status`** is `active | done | stopped | error` (plus the runtime `awaiting_approval` value); a partial UNIQUE index enforces one active stream per conversation.
 > - **Added tables absent from the draft:** **`usage_credit_ledger`** (signed grant / platform_debit / adjustment ledger backing FR-16); the **billing cluster** `billing_customer` / `billing_entitlement` / `billing_webhook_event` / `billing_fulfillment` (Stripe checkout/subscription/credit fulfillment, default-off); **`analytics_event`** (first-party, user-owned, exported + erased with the account); **`audit_event`** (write-only audit trail, `user_id` nullable SET NULL so erasure keeps a minimal operational record).
 > - **NOT built (the draft's `[P1]`/`[P2]` reserves remain unbuilt):** `user_plan` (entitlement is the `billing_entitlement` table + the credit ledger), `attachment` (attachments are transient-only — no object storage), `document`, `suggestion`, `embedding`/pgvector (no RAG). The `audit_log` sketch shipped as `audit_event`.
+>
+> **Net-new tables/columns for the feature-expansion burst (SPEC — none built yet; each lands as a new Alembic revision after the current head `0018`, additive and back-compatible so existing personal-ownership paths are unchanged).** Every new table FKs to its owner (`users`, or a `conversation`/`workspace` that itself cascades from `users`) with `ON DELETE CASCADE` so the §5.7 erasure stays FK-ordered and complete; structured JSON columns use the repo's portable `JSONB().with_variant(JSON(), "sqlite")` pattern; provenance/cross-entity links that must survive a parent purge use `ON DELETE SET NULL`. The SQL sketches below carry the field-level detail.
+>   - **Conversation memory (A1/A7 — PRD 00 §11 D19):** new **`memory_fact`** (opt-in, user-visible editable long-term facts with per-fact provenance) keyed to `users` with cascade; provenance links `source_conversation_id` / `source_message_id` are `SET NULL` so a fact outlives a purged source ("learned from a deleted chat"). New `preferences.memory_enabled` (bool, default `false` — off by default) and `preferences.memory_confirmation` (`auto | review`, default `auto`). The per-turn *injected-fact set* is recorded inside the existing `message.attribution` jsonb (an `injectedMemoryFactIds` array), **no new column** — and is stripped from public share (memory is private PII; PRD 07 §6.4). Memory is lightweight user facts injected as preferences (FR-37 cache-stable prefix), distinct from RAG document retrieval (the `embedding` path).
+>   - **Projects + organization (A3/A4 — PRD 00 §11 D20/D21):** new **`project`** (a thin scoping container — name, optional color, scoped `instructions` / `default_tier_id` / `retention_days` / `monthly_budget_usd`, NOT a workspace suite) keyed to `users` with cascade; new nullable **`conversation.project_id`** (`SET NULL` = "No project", so deleting a project never orphans a chat) and **`conversation.archived`** (bool, default `false` — a lifecycle state, excluded from the default list and from retrieval-over-history but still searchable). Tags are a normalized pair — **`tag`** (`users`-owned) + a **`conversation_tag`** join (composite PK, both FKs cascade) — chosen over an array column so a tag rename/merge is a single update. Projects are the single-level container hierarchy (no nesting at P1); tags are orthogonal cross-cutting labels.
+>   - **History search FTS (A5 — PRD 00 §11 D21):** no new table — the `message`/`conversation` cost+attribution data the transparency-native filters read already exists. The only data-layer addition is a **Postgres-only `tsvector`** (generated column or expression index) behind a dialect guard, falling back to the shipped substring `LIKE` matcher on SQLite (the AGENTS.md dual-dialect contract) — see the note on `message` below. Vector/semantic search is deferred to P2 with RAG (the `embedding` path), not this FTS layer.
+>   - **File/document RAG (D3/D4/D6 — PRD 00 §11 D25):** the reserved **`embedding`** table is promoted from placeholder to **build-ready** with a **registry-driven** vector dimension (read from the configured embedding route's metadata, not hardcoded), plus `chunk` text + source metadata + `corpus_id` so per-corpus delete (§5.7) is a clean fan-out; gated on `CREATE EXTENSION vector` + an HNSW/IVFFlat index and the object-storage + worker/queue preconditions (§5.4). Per-turn retrieval spend rides the existing **`message.cost_breakdown`** jsonb as a `retrieval` sub-object (additive, no new column; PRD 07 §4.1). See the updated `embedding` sketch below.
+>   - **Usage analytics rollup (E1 — PRD 00 §11 D27):** an **optional** denormalized **`usage_daily_rollup`** (`user_id` + day + served tier/provider + `is_byok` → summed `cost_usd` + `message_count`) keyed to `users` with cascade, written on the terminal step alongside the existing `usage_rollup` upsert, to back a server-aggregated `GET /api/usage/analytics` endpoint at scale. v1 can scan `message.cost_usd` directly; the rollup is a performance option, not required. The dashboard MUST label which cost basis a number uses — the cumulative `usage_rollup` meter (every generation triggered) vs `sum(message.cost_usd)` (only surviving messages) — and never silently mix them.
+>   - **Lightweight shared workspaces (E5 — PRD 00 §11 D29):** new **`workspace`** + **`workspace_membership`** (`role: owner | member` only — no granular RBAC) and a new **nullable `workspace_id` ownership axis** on `conversation` (and `project`), so a conversation/Project may be owned by a user **or** a workspace while existing personal-ownership paths stay unchanged (purely additive migration). A workspace holds its own pooled USD credits — modeled as a nullable `workspace_id` axis on the shipped `usage_credit_ledger` (the minimal additive option) so member platform turns debit the pool on the same money primitive; the budget gate composes the pool with any operator cap. BYOK stays **personal** (never shared into a workspace). Explicit non-goals stay non-goals: **no SSO/SCIM/SOC 2/audit console/DPA/per-seat licensing** (PRD 00 §3). This resolves the forward reference in §5.6's E4 note ("Workspace billing … reuses this same lifecycle for the pooled-credit owner").
+>   - **Trust surfaces (F1/F3 — PRD 00 §11 D30/D31):** **no new audit table** — the shipped write-only **`audit_event`** gains a user-facing read route (`GET /api/account/activity`) and more event types (`session.signin`, `account.upgrade`, `share.mint`, `share.revoke`, `retention.purge`, `byok.use`, plus F3's `conversation.ephemeral_set`); the per-message "which provider processed which message" view is computed from the existing `message.attribution` (provider/jurisdiction/`is_byok`/substitution), **no per-message table**. Granular retention (F3) adds **`conversation.retention_days_override`** + **`conversation.expires_at`** (the `chat` sketch already reserves `expires_at` for temporary chats — F3 generalizes it to a durable per-conversation TTL) and a scheduled purge reusing the orphan-reaper loop pattern (§5.7). All new event details carry provider/jurisdiction/message-id only, never message content.
 
 ```sql
 -- USER --------------------------------------------------------------- [P0]
@@ -332,6 +357,13 @@ message (
 -- cost_usd doubles as the live budget-enforcement signal for §5.6 (not just a display value)
 -- billing-vs-stream-failure atomicity: cost_usd/cost_breakdown + usage_rollup are written in the SAME
 --   transaction that finalizes message+stream, from backend provider terminal usage (§5.1)
+-- advanced history search (A5, PRD 00 §11 D21): served-model/tier + per-message cost already live in
+--   `attribution` (jsonb) + `cost_usd`, so the transparency-native filters (model/tier/cost/date/tag/
+--   project/archived) are pure DB reads. Full-text matching is DIALECT-GUARDED: on Postgres add a
+--   `tsvector` (generated column or expression index) over title + extracted message text for ranked
+--   relevance; on SQLite (tests) fall back to the shipped substring `LIKE` matcher (`search_for_user`)
+--   so the dual-dialect contract holds. Vector/semantic search is NOT here — it defers to P2 with the
+--   `embedding`/pgvector path. cost_breakdown also carries a `retrieval` sub-object (D-6, PRD 07 §4.1).
 
 -- USER_PLAN / USAGE --------------------------------------------------- [P0] (metered free + Pro + credits)
 user_plan (
@@ -428,28 +460,157 @@ api_key (
 -- unique index: (user_id, provider) where deleted_at is null  -- one active key per provider per user
 -- BYOK policy: require a NON-ANONYMOUS account to store a key (guest identities are evictable; see §5.2/§5.5)
 
--- EMBEDDING (future RAG, pgvector) ----------------------------------- [P2]
--- CREATE EXTENSION vector;
+-- EMBEDDING (file/document RAG, pgvector) ------- [P2 — BUILD-READY, was reserved] (D3/D4/D6, D25)
+-- Promoted from a placeholder reserve to a build-ready design (PRD 00 §11 D25; PRD 02 §4.7 FR-29).
+-- Activation (a new Alembic revision after head 0018) runs `CREATE EXTENSION vector;` + the HNSW/IVFFlat
+-- index. STILL unbuilt at P0/P1: gated on the object-storage + worker/queue preconditions (§5.4).
 embedding (
   id          uuid pk,
-  document_id uuid not null,
-  chunk       text not null,
-  embedding   vector(1536),             -- dim per embedding model [confirm at build]
+  user_id     uuid not null references user(id) on delete cascade,  -- owner; erasure fan-out (§5.7)
+  corpus_id   uuid not null,            -- per-corpus grouping → per-corpus delete is a clean fan-out (D4)
+  document_id uuid null,                -- source doc (object storage); SET NULL on source purge
+  chunk       text not null,            -- the retrieved chunk text (a SourceItem on a cited answer)
+  chunk_meta  jsonb null,               -- locator (page/offset) + source metadata; portable JSON variant
+  embedding   vector,                   -- REGISTRY-DRIVEN dimension (read from the configured embedding
+                                         --   route's metadata — NOT hardcoded; same no-hardcoding rule
+                                         --   §5.2 applies to chat model ids; a BYO-embedding route carries
+                                         --   its own dimension). The pgvector column is sized at build per
+                                         --   the active route. [confirm at build]
   created_at  timestamptz not null
 )
--- ivfflat/hnsw index added when RAG is built
+-- index: (user_id, corpus_id)  -- per-corpus retrieval + delete scoping
+-- HNSW/IVFFlat vector index added at activation (pgvector 0.8 iterative scan improves filtered/per-user recall)
+-- Every retrieved chunk is a `SourceItem` (provenance `knowledge`) on a CITED answer, not a doc-management
+--   suite. Per-turn retrieval spend (query embedding + rerank) is captured in `message.cost_breakdown`
+--   (`retrieval` sub-object); ingest embedding cost is attributed to the corpus. Index-control + the
+--   cross-store delete fan-out (Postgres vectors + object storage + caches) are specified in §5.7 (D4).
 
 -- AUDIT_LOG (SOC 2 / security hook) ---------------------------------- [P1 design, P2 enforce]
+-- As-built this shipped as `audit_event` (write-only, user_id nullable SET NULL). The feature-expansion
+-- burst adds NO new audit table — F1 (D30) only adds a read route (GET /api/account/activity) + more
+-- event types; the per-message provenance view is computed from `message.attribution`, no per-message table.
 audit_log (
   id          uuid pk,
-  user_id     uuid null,
-  action      text not null,            -- login, export, delete, key_add, ...
-  metadata    jsonb,
+  user_id     uuid null,                -- SET NULL on erasure: keep a minimal operational record (D30)
+  action      text not null,            -- login, export, delete, key_add, session.signin, account.upgrade,
+                                         --   share.mint, share.revoke, retention.purge, byok.use,
+                                         --   conversation.ephemeral_set, conversation.export, safety.* ...
+  metadata    jsonb,                    -- provider/jurisdiction/message-id ONLY — never message content
   created_at  timestamptz not null
 )
+
+-- =====================================================================================================
+-- FEATURE-EXPANSION BURST — net-new SPEC tables/columns (NONE built; each = a new Alembic revision after
+-- head 0018, additive). Portable JSON uses `JSONB().with_variant(JSON(),"sqlite")`. Every table FKs to its
+-- owner with cascade so §5.7 erasure stays FK-ordered; provenance/cross-entity links use SET NULL.
+-- =====================================================================================================
+
+-- MEMORY_FACT (opt-in glass-box long-term memory) ----- [P1] (A1/A7, PRD 00 §11 D19)
+memory_fact (
+  id                     uuid pk,
+  user_id                uuid not null references user(id) on delete cascade,
+  content                text not null,            -- short atomic fact ("Prefers TypeScript")
+  status                 text not null default 'active',   -- active | archived
+  source                 text not null,            -- extracted | manual | imported
+  source_conversation_id uuid null references chat(id) on delete set null,   -- provenance (outlives purge)
+  source_message_id      uuid null references message(id) on delete set null,
+  confidence             real null,
+  created_at             timestamptz not null,
+  updated_at             timestamptz not null,
+  last_used_at           timestamptz null
+)
+-- index: (user_id, status, updated_at)
+-- Off by default (preferences.memory_enabled). Extraction runs OFF the request path (cheap-tier, metered,
+--   budget-gated); injection rides the FR-37 cache-stable prefix as an untrusted <remembered_facts> block.
+-- Temporary chats neither extract nor (default) read facts. The per-turn injected-fact set is recorded in
+--   `message.attribution.injectedMemoryFactIds` (no new column) and is STRIPPED from public share (PII).
+-- Memory = lightweight user facts injected as preferences; DISTINCT from RAG document retrieval (embedding).
+
+-- PROJECT (thin scoping container, NOT a workspace suite) ----- [P1] (A3, PRD 00 §11 D20)
+project (
+  id                 uuid pk,
+  user_id            uuid not null references user(id) on delete cascade,
+  workspace_id       uuid null references workspace(id) on delete cascade,  -- optional shared owner (E5)
+  name               text not null,
+  color              text null,                -- decorative (aria-hidden); name is the identifier
+  instructions       text not null default '',  -- project-scoped custom-instructions block (String(4000) bound)
+  default_tier_id    text null,                -- overrides preferences.default_tier_id for chats here
+  retention_days     integer null,             -- project-scoped retention override (composes w/ §5.7)
+  monthly_budget_usd numeric(12,6) null,       -- advisory sub-cap; global gate (§5.6) owns enforcement
+  created_at         timestamptz not null,
+  updated_at         timestamptz not null
+)
+-- Single-level (no nesting at P1); memory stays account-global. A project MAY associate a knowledge base,
+--   but RAG retrieval is the embedding-path's job (PRD 02 FR-29), not this container.
+
+-- New columns on the existing `conversation` (sketch: `chat`) — additive (A3/A4/F3):
+--   project_id              uuid null references project(id)   on delete set null  -- NULL = "No project"
+--   workspace_id            uuid null references workspace(id) on delete cascade   -- shared-ownership axis (E5)
+--   archived                boolean not null default false      -- lifecycle state; excluded from default list
+--                                                               --   + retrieval-over-history, still searchable
+--   retention_days_override integer null      -- per-conversation TTL; effective = min(override, account default)
+--   expires_at              timestamptz null  -- durable ephemeral TTL (generalizes the temporary-chat reserve)
+-- index: (user_id, project_id, updated_at); partial index WHERE NOT archived for the default list.
+
+-- New columns on the existing `preferences` table — additive (A1):
+--   memory_enabled       boolean not null default false        -- opt-in; off by default
+--   memory_confirmation  text    not null default 'auto'       -- auto | review
+
+-- TAG + CONVERSATION_TAG (orthogonal cross-cutting labels) ----- [P1] (A4, PRD 00 §11 D21)
+tag (
+  id          uuid pk,
+  user_id     uuid not null references user(id) on delete cascade,
+  name        text not null,
+  color       text null,
+  created_at  timestamptz not null
+)
+conversation_tag (
+  conversation_id uuid not null references chat(id) on delete cascade,
+  tag_id          uuid not null references tag(id)  on delete cascade,
+  primary key (conversation_id, tag_id)
+)
+-- index: conversation_tag(tag_id). Normalized pair (not an array column) so tag rename/merge is one update.
+
+-- USAGE_DAILY_ROLLUP (optional analytics denormalization) ----- [P1] (E1, PRD 00 §11 D27)
+usage_daily_rollup (
+  user_id        uuid not null references user(id) on delete cascade,
+  day            date not null,
+  served_tier_id text not null,
+  provider_id    text not null,
+  is_byok        boolean not null,
+  cost_usd       numeric(12,6) not null default 0,
+  message_count  integer not null default 0,
+  primary key (user_id, day, served_tier_id, provider_id, is_byok)
+)
+-- OPTIONAL — backs a server-aggregated GET /api/usage/analytics (by day/model/conversation). v1 may scan
+--   `message.cost_usd` directly; this rollup is a perf option written on terminal alongside usage_rollup.
+-- The dashboard MUST label the cost basis: cumulative usage_rollup meter (every generation) vs
+--   sum(message.cost_usd) (surviving messages only) — never silently mixed.
+
+-- WORKSPACE + WORKSPACE_MEMBERSHIP (minimal prosumer teams on-ramp) ----- [P2] (E5, PRD 00 §11 D29)
+-- Additive ownership axis only. NON-GOALS (stay deferred): no SSO/SCIM/SOC 2/audit console/DPA/per-seat.
+workspace (
+  id          uuid pk,
+  owner_id    uuid not null references user(id) on delete cascade,  -- billing/admin owner
+  name        text not null,
+  created_at  timestamptz not null,
+  updated_at  timestamptz not null
+)
+workspace_membership (
+  workspace_id uuid not null references workspace(id) on delete cascade,
+  user_id      uuid not null references user(id)      on delete cascade,
+  role         text not null,            -- owner | member (no further RBAC)
+  created_at   timestamptz not null,
+  primary key (workspace_id, user_id)
+)
+-- Shared credit pool = a nullable `workspace_id` axis ADDED to the shipped `usage_credit_ledger` (minimal
+--   additive option, same USD-credit money primitive): member platform turns debit the pool; the budget
+--   gate composes the pool with any operator cap. Subscription billing reuses the §5.6 E4 lifecycle for the
+--   pooled-credit owner. BYOK stays PERSONAL — a member's `api_key` is never shared into the workspace.
+-- Leaving/removing a member detaches them from the pool + shared projects without destroying personal data.
 ```
 
-**Cross-PRD contract (must be respected):** `message` carries `model_id`, `provider`, token counts, and `cost_usd` per message; `message.client_message_id` (unique-per-chat) is the message-send idempotency key that protects the `cost_usd` ledger from double-charge (§5.1); `user.is_anonymous` enables guest sessions; `ai_generated` on `message`/`document` is the EU AI Act content-marking hook.
+**Cross-PRD contract (must be respected):** `message` carries `model_id`, `provider`, token counts, and `cost_usd` per message; `message.client_message_id` (unique-per-chat) is the message-send idempotency key that protects the `cost_usd` ledger from double-charge (§5.1); `user.is_anonymous` enables guest sessions; `ai_generated` on `message`/`document` is the EU AI Act content-marking hook. **Burst additions (net-new, all additive):** a `conversation` is owned by a user and *optionally* scoped by `project_id` and/or `workspace_id` (both nullable — personal ownership is unchanged); `memory_fact` / `project` / `tag` / `usage_daily_rollup` / `workspace` / `workspace_membership` all FK to their owner with `ON DELETE CASCADE` (and provenance links via `SET NULL`) so the §5.7 export/erase cascade stays complete; the per-turn injected-memory set and the retrieval cost sub-object live inside the existing `message.attribution` / `message.cost_breakdown` jsonb (no new message columns); memory facts are PII and never leave on a public share.
 
 ---
 

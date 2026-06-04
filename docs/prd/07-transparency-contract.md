@@ -47,6 +47,9 @@ Transparency is not a debug view. It is persisted per turn and displayed in prod
 | Registry pricing fields | PRD 02 | Structured `pricing`, model metadata, data policy |
 | Cost computation | PRD 02 | `cost_usd`, `cost_breakdown`, estimate status |
 | Routing/substitution | PRD 02 | requested vs served, reason codes |
+| Citations/sources | PRD 07 (contract) / PRD 02 (shape) | `SourcesPart` record, grounded-vs-ungrounded honesty, provenance, share rules (§4.3) |
+| Retrieval cost | PRD 02 (math) / PRD 07 (shape) | `cost_breakdown.retrieval` — search-fee + embedding/rerank spend (§4.1) |
+| Activity log / data-access | PRD 07 (contract) / PRD 04 (capture) | user-facing access log + per-message provenance view (§6.5) |
 | Persistence | PRD 04 | message fields and ledger capture |
 | Display | PRD 01 / 06 | badges, rows, callouts, meter |
 | Monetization | PRD 05 | caps, credits, BYOK policy |
@@ -111,6 +114,14 @@ Every assistant message stores:
     "effective_until": null,
     "date_valid_at_turn": null
   },
+  "retrieval": {
+    "applied": false,
+    "search_call_usd": 0,
+    "query_embedding_usd": 0,
+    "rerank_usd": 0,
+    "is_byok": false,
+    "sources_resolved": 0
+  },
   "subtotal_usd": 0,
   "session_surcharge_usd": 0,
   "notes": []
@@ -124,6 +135,8 @@ Every assistant message stores:
 
 `session_multiplier` (whole-session reprice) and `applied_tier` (stepped band) are mutually exclusive: exactly one applies per turn, selected by `tier_scope`; `flat: true` means neither applies. The `list_price_*` fields remain the model's baseline (below-threshold) rates.
 
+**`retrieval` carries the per-turn retrieval spend** when a turn grounded its answer on web search and/or document retrieval — so the cost wedge does not become false exactly when retrieval is on. It is an additive sub-object under the same structured-cost discipline (no scalar shortcut): `search_call_usd` is the per-call web-search fee for a per-call-billed backend; `query_embedding_usd` and `rerank_usd` cover RAG's per-query embedding + optional rerank (ingest/indexing embedding is amortized to the corpus, not the turn). `applied: false` (the default) means no retrieval ran and the sub-object is identity/zero — a non-retrieval turn shows no retrieval cost. When search/embeddings ride a user's own key, `is_byok: true` and the meter reads "billed to your key" with no platform markup (§6.3), mirroring chat BYOK. A route with no published retrieval rate labels `cost_confidence: "estimate"` / `"unavailable"`, never a silent `$0.00`-exact. `sources_resolved` records the citation-coverage count for the grounded turn (feeds the grounded-answer signal in §4.3, not a cost field). Cite D25.
+
 Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible estimate label.
 
 ### 4.2 Cost scope — per-message vs request/session surcharge **[P0]**
@@ -133,6 +146,17 @@ Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible 
 - `cost_scope` is `"message"` (default, per-message cost only) or `"session"` (this message carries a request-scoped surcharge).
 - `session_surcharge_usd` records the request-scoped delta (the cost above what the same tokens would have cost at baseline rates). It is **always attributed to the triggering turn** — the assistant message whose request crossed the threshold — and is **not** amortized across the request's other messages. A `notes` entry records the trigger, e.g. `"session-repriced: 272K threshold crossed"`.
 - The §8 AC#5 meter reconciliation therefore sums `cost_usd` across messages (each already including any surcharge attributed to it); the documented tolerance need not cover surcharge re-allocation because attribution is single-turn and deterministic.
+
+### 4.3 Citation & source contract **[P1]**
+
+Citations are the **source-side** of the transparency contract — the counterpart to the model+cost+served-vs-requested record above. The model-attribution half answers *which model answered and what it cost*; this half answers *what the answer was grounded on, and whether it was grounded at all*. (Inline `[n]` marker rendering is owned by PRD 01 §4.11/§5.6; the source/citation metadata shape is owned by PRD 02 §4.7; this section is the contract authority for honesty + share/export behavior. Inline markers are **render-only and currently shipping** as a P1 increment over the already-shipped source-card list — `sources-panel.tsx`; the contract below is net-new.)
+
+- **Canonical citation record.** The per-turn `SourcesPart` (an ordered list of `SourceItem`s, each with a 1-based ordinal `id` the inline `[n]` chip keys on) is the authoritative citation record for an assistant message. It is already persisted and replayed (PRD 04), so the grounded state survives reload, replay, and share without a new field.
+- **Grounded vs ungrounded (honesty rule).** An assistant turn is **grounded** iff it carries a non-empty `SourcesPart`. If the user opted into web search / retrieval for a turn but **no usable sources resolved** (search backend failure → empty, an unsupported binding silently degrading, or `SEARCH_BACKEND=none`), the answer MUST be **visibly marked ungrounded** ("Answered without live sources") rather than implying grounding. This applies the anti-silent-downgrade ethos (§7) to retrieval: never let an ungrounded answer masquerade as a cited one. The ungrounded marker is a calm inline chip, not an error.
+- **Provenance / origin label.** Each source set records its origin — `web` (shipped), with `knowledge` (user-document RAG) and `connector` (read-only data connectors) **reserved** for D25's retrieval cluster — so the UI can say "From the web" vs "From your documents." Provenance is additive and small (reserve the enum now, per the typed-parts precedent); it is the source's origin label, distinct from the *model's* `data_policy` badge (PRD 02).
+- **Share/export asymmetry (defined here, enforced in §6.4).** Sources are model-identity-class data, **not** cost data, so a **web** source is public-share-safe — its `title` / `url` / `domain` / `snippet` are **retained** on a public share (they are part of the trust story and carry no private cost/token data), and the full cost/breakdown stays stripped per §6.4. A **private-knowledge** (`knowledge`/`connector`) citation is tighter: its `title` / `snippet` are owner-only and MUST NOT leak to a public share — only a **redacted** "from your knowledge base" marker survives. This boundary is pinned **before** RAG ships so it is not retrofitted as a leak fix.
+
+**AC:** a search-requested turn that resolves zero sources renders an explicit "answered without live sources" marker (asserted on an empty-result fixture, and its absence asserted on a grounded fixture); grounded state + provenance round-trip on reload, replay, and share. Cite D24.
 
 ---
 
@@ -177,16 +201,37 @@ Missing tier/promo data yields `cost_confidence: "estimate"` and a user-visible 
 
 ### 6.4 Share/export **[P0]**
 
-| Surface | Model | Cost | Tokens |
-|---|---:|---:|---:|
-| In-app message row | Yes | Yes | Optional/expanded |
-| Copy-as-markdown | Yes | Optional default-on | Optional default-on |
-| GDPR/data export | Yes | Yes | Yes |
-| Public unlisted share link | Yes | **No** | **No** |
+One matrix, surfaces as rows, data classes as columns. The load-bearing rule is the **public-share-vs-private asymmetry**: a **public share STRIPS** cost/tokens; **private** export/copy **RETAINS** them; and each data class below honors that same asymmetry consistently.
 
-**AC:** public share markup and embedded JSON contain no `cost_usd`, token counts, or `cost_breakdown`.
+| Surface | Model | Cost | Tokens | Sources | Memory facts | Gen-media provenance |
+|---|---:|---:|---:|---:|---:|---:|
+| In-app message row | Yes | Yes | Optional/expanded | Yes | Yes | Yes |
+| Copy-as-markdown | Yes | Optional default-on | Optional default-on | Yes | Yes | Yes |
+| GDPR/data export | Yes | Yes | Yes | Yes | Yes | Yes |
+| Multi-format export — PDF/.docx (private) | Yes | Optional default-on | Optional default-on | Yes | Yes | Yes |
+| Multi-format export — PDF/.docx (share-safe) | Yes | **No** | **No** | web Yes / private-knowledge **redacted** | **Omitted** | Yes |
+| Public unlisted share link | Yes | **No** | **No** | web Yes / private-knowledge **redacted** | **Omitted** | Yes |
+
+Column rules (each consistent with the public-strip / private-retain asymmetry):
+
+- **Sources (D24, §4.3).** Sources are model-identity-class data, not cost — so a **web** source's `title`/`url`/`domain`/`snippet` is **retained** on a public share (and share-safe export); a **private-knowledge** (`knowledge`/`connector`) citation's `title`/`snippet` is owner-only and is **redacted** on any public/share-safe surface (only a "from your knowledge base" marker survives). Private surfaces (in-app, copy, GDPR export, private PDF/.docx) retain full source detail for both origins.
+- **Memory facts (D19).** The per-message "memory used here" indicator and the list of injected facts are private user data (PII). They are retained in the in-app thread and in private export/copy, but are **OMITTED** from public share and share-safe export — the memory analogue of the cost exception (model-attribution Yes / cost No / memory Omitted). Pinned here per PRD 01 §4.8 / A2.
+- **Generated-media provenance (D32).** A generated image's visible "AI-generated" badge + its structured provenance field (model · provider · timestamp · marking-standard/version) is a **content claim, not cost data** — it is **RETAINED** on every surface, including public share and share-safe export (it must *not* be stripped). Only the image's per-image *cost* follows the cost column and is stripped on public share. This is the EU AI Act Art. 50(2)-aligned marking surface (built only with image-gen and after legal sign-off); the shipped Art. 50(1) interaction disclosure is separate.
+- **Multi-format export — PDF/.docx (D31).** Two variants of the same export: a **private** export retains cost/tokens (default-on, toggleable — matching copy-as-markdown and the GDPR export), while a **share-safe** variant strips cost/tokens (same guarantee as the public share payload) for sending the file onward. Both render model attribution + substitution callouts; the share-safe variant additionally applies the Sources-redaction and Memory-omission rules above. Export honors retention/ephemerality (an ephemeral conversation can be exported by its owner in-session) and emits an `AuditEvent` (feeds §6.5).
+
+**AC:** public share markup and embedded JSON (and any **share-safe** PDF/.docx) contain no `cost_usd`, token counts, or `cost_breakdown`; contain **web** source `title`/`url`/`domain`/`snippet` but **no** private-knowledge source title/snippet (only a redacted marker); contain **no** memory facts / `injectedMemoryFactIds`; and **retain** generated-media provenance metadata. A **private** PDF/.docx export retains model attribution and (default-on) per-message cost/tokens, matching the GDPR/copy-as-markdown rows.
 
 > **Shipped + structurally enforced (as-built).** Public-by-link sharing is live (`routes/share.py`) over a nullable `conversation.share_token` (mint / revoke = set NULL). The public payload uses dedicated narrow shapes — `PublicConversation` / `PublicMessage` / `PublicAttribution` (`api/app/schemas/share.py`) — that carry model identity (`requestedTierId`, `servedTierId`, `servedModelLabel`, `isByok`, `substitution`) but **have no cost/token/breakdown field at all**. The strip is therefore a structural guarantee (the field can't serialize because it doesn't exist on the model), not a runtime filter a refactor could silently undo. The full-fidelity `cost_usd` / `breakdown` stay on the owner-facing `ChatMessage` / `ModelAttribution` and in the GDPR export.
+
+### 6.5 Activity log & data-access transparency **[P1]**
+
+The share/export rules above govern what leaves a thread; this surface governs **what the user can see about how their own data was accessed** — the retrospective half of the privacy promise. It is a **user-facing prosumer trust surface**, explicitly distinct from the enterprise audit/SOC2 console (a standing non-goal). It makes the data-residency tradeoff (e.g. a DeepSeek/China route) *auditable per message* rather than only badged prospectively. Built almost entirely on data the platform already persists.
+
+- **Activity log.** A reverse-chronological, paginated **Activity** view in settings lists account-level events — sign-in, anonymous→account upgrade, export, deletion request, BYOK key add/revoke/use, retention purge, share-link mint/revoke, and moderation block/appeal. It is read-only and append-only, included verbatim in the GDPR export, and itself erased on account deletion (the `account.delete` row is retained with `user_id = NULL`, matching the shipped SET-NULL behavior). Anonymous users see their own session-scoped log.
+- **"Where your messages were processed."** A per-conversation (and account-rollup) breakdown computed **only** from the already-persisted per-message `attribution` — provider, jurisdiction (from the route's `data_policy.data_residency`), BYOK-vs-platform, and any substitution reason (reusing the §5 reason codes) — surfacing facts like "N messages processed in China (DeepSeek)" as first-class and honest, with a one-tap link to switch routes. No new per-message table; no message content in the log (provider id + jurisdiction + message id only).
+- **Honesty constraints.** Jurisdiction labels are read from the live registry `data_policy` (never hardcoded); a route with no published policy renders "policy unavailable," not a guess. This is the retrospective companion to the registry-backed display rules above.
+
+**AC:** a read route (e.g. `GET /api/account/activity`, anonymous allowed) returns the caller's events newest-first, paginated, never leaking another user's rows; the per-message provenance view is derived solely from persisted `attribution`; the log is in the GDPR export and is erased on account deletion. Cite D30.
 
 ---
 
@@ -201,6 +246,8 @@ The product must never:
 5. hardcode model display/pricing facts outside the registry;
 6. leak cost/tokens into public share links;
 7. apply the `cached_input` discount to reasoning tokens. **Reasoning tokens are billed at the output rate and are never cache-eligible** — they are per-request and full-price every turn. The `multipliers.cached_input` (and any stepped `applied_tier.cached_input_per_m`) applies only to non-reasoning input/output; `reasoning_tokens` are billed at `list_price_out_per_m` (or the applicable `applied_tier.price_out_per_m`) with no cache discount.
+8. let an **ungrounded** answer masquerade as grounded — a turn that requested retrieval but resolved no usable sources must be visibly marked "answered without live sources" (§4.3), the retrieval-side of the no-silent-downgrade through-line;
+9. hide **retrieval spend** — web-search call fees and RAG embedding/rerank cost ride the same per-message meter, structured in `cost_breakdown.retrieval` (§4.1), with BYO-search/BYO-embedding shown "billed to your key" and no platform markup.
 
 ---
 
@@ -211,7 +258,7 @@ The product must never:
 3. Cost golden tests cover baseline, cached-input, **long-context pricing (three fixtures: OpenAI whole-session `session_multiplier` with separate ×in/×out, Gemini stepped `applied_tier`, Anthropic `flat:true`)**, **reasoning-token cache-exemption** (a reasoning-bearing turn computes reasoning at output rate with the cache discount NOT applied), and **promo-expiry boundary** (the same turn before vs after `effective_until` — DeepSeek 2026-05-31 reversion is the golden fixture — yields the promo'd vs reverted cost and sets `promo.date_valid_at_turn` accordingly).
 4. Missing pricing fields produce estimate labels.
 5. Platform usage meter matches sum of `message.cost_usd` within documented tolerance, where any request-scoped `session_surcharge_usd` is attributed to its single triggering turn (§4.2) and already included in that turn's `cost_usd`.
-6. Public share leak test finds zero cost/token fields.
+6. Public share leak test (and the share-safe PDF/.docx variant) finds zero cost/token fields, and: contains **web** source `title`/`url`/`domain`/`snippet` but **no** private-knowledge (`knowledge`/`connector`) source title/snippet (only a redacted marker), contains **no** memory facts / `injectedMemoryFactIds`, and **retains** generated-media provenance metadata (provenance present, cost absent) — per §6.4 and §4.3.
 7. BYOK turns set `is_byok = true` and do not decrement platform token-charge budget.
 8. Registry no-hardcoding grep catches model IDs/prices outside approved config.
 

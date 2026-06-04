@@ -302,6 +302,34 @@ The API defaults to `PROVIDER_BACKEND=fake` in `.env.example`. If the VM has `DE
 
 With keys present, local chat can hit the real DeepSeek route instead of the fake provider.
 
+### Manual UI / screenshot testing (fake provider)
+
+For GUI verification (manual testing, screenshots, demo videos) you usually want
+the **deterministic fake provider** so the UI populates and streams without real
+keys, exactly like the e2e suite. Reuse the e2e `BE_ENV` block from
+`web/tests/e2e/shared-config.ts` rather than the dev `.env`. Run the BE and FE in
+separate tmux sessions:
+
+```
+# BE — fake provider + fake search + tools, ephemeral SQLite (never touches dev.sqlite3)
+cd api && \
+  ENV=test PROVIDER_BACKEND=fake SEARCH_BACKEND=fake TOOLS_ENABLED=true \
+  DATABASE_URL="sqlite+aiosqlite:////workspace/web/test-results/.playwright-db/test.sqlite3" \
+  CORS_ALLOWED_ORIGINS=http://localhost:3000 \
+  SESSION_SECRET=playwright-e2e-session-secret-fixed-and-long-enough \
+  COOKIE_SECURE=false COOKIE_SAMESITE=lax \
+  BYOK_ENCRYPTION_KEK=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+  sh -c 'uv run python -m app.scripts.init_test_db && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000'
+
+# FE — same-origin /api/* proxy pointed at the local BE
+cd web && BE_ORIGIN=http://localhost:8000 NEXT_PUBLIC_API_BASE_URL= pnpm dev
+```
+
+Then drive `http://localhost:3000`. Sending a message streams a canned fake
+reply; the account starts as an anonymous guest. **Stop these dev servers before
+running `pnpm test:e2e`** — the suite needs ports 3000 + 8000 free and starts its
+own BE+FE.
+
 ### No separate DB or Docker
 
 SQLite is embedded in the API process. Redis/Neon are optional and not required for local dev or Playwright.

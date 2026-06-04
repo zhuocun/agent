@@ -273,8 +273,10 @@ test.describe("pre-send estimate", () => {
     expect(proUsd).toBeGreaterThan(fastUsd);
 
     // Switch to Auto (no single price) — the estimate reads "unavailable".
+    // "Auto" labels two rows (the Model tier and the Reasoning-effort option);
+    // the Model group renders first, so the tier "Auto" is the first match.
     await page.getByTestId("model-mode-trigger").click();
-    await pickerMenu(page).getByText("Auto", { exact: true }).click();
+    await pickerMenu(page).getByText("Auto", { exact: true }).first().click();
     await expect(estimate).toContainText("Estimate unavailable for Auto");
   });
 });

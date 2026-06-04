@@ -3036,6 +3036,48 @@ async def test_provider_fallback_retry_succeeds_and_bills_once(
         assert rollup.used == 1
 
 
+async def test_provider_fallback_self_fallback_on_fake_primary(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """When the PRIMARY route is the `fake` dev/test backend (e.g. the FE sends
+    `providerId="fake"` in a fake-only deployment), the one-shot retry must still
+    find an alternate: `fake` self-falls-back via the `fake-fallback` model id.
+
+    This is the exact path the browser E2E suite drives; without the
+    fake-self-fallback the turn regresses to an `error` frame because the
+    primary-exclusion would skip the only platform-usable backend. Real
+    providers never self-fall-back (and `fake` is gated out of production), so
+    this does not change prod behavior.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "providerId": "fake",
+            "text": "FORCE_FALLBACK_RETRY: please answer",
+        },
+    )
+    event_names = [name for name, _ in frames]
+    assert event_names[-1] == "terminal", event_names
+    assert "error" not in event_names
+    assert "answer_delta" in event_names
+
+    terminal_payload = frames[-1][1]
+    assert terminal_payload["status"] == "done"
+    sub = terminal_payload["attribution"].get("substitution")
+    assert isinstance(sub, dict), "expected a substitution on the self-fallback turn"
+    assert sub["reasonCode"] in {"provider_fallback", "rate_limited"}
+    # Served route is the fake fallback; primary `fake` was retried as fake-fallback.
+    assert terminal_payload["attribution"]["providerId"] == "fake"
+
+
 async def test_post_token_rate_limit_does_not_retry(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

@@ -289,7 +289,16 @@ async def _select_fallback_route(
     preferred_order = ("deepseek", "anthropic", "openai", "fake")
     available = set(available_provider_backend_ids())
     for candidate in preferred_order:
-        if candidate == primary_provider_id or candidate not in available:
+        if candidate not in available:
+            continue
+        # Skip the primary route — EXCEPT the `fake` dev/test backend, which may
+        # serve as its own fallback: the `model_id="fake-fallback"` swap below
+        # makes it a genuinely distinct route that streams instead of re-raising.
+        # Real providers never self-fall-back (a single usable provider correctly
+        # yields no alternate and the error surfaces), and `fake` is gated out of
+        # production entirely by `route_adapter_available`/`platform_provider_usable`,
+        # so prod is unchanged — this only lights up the dev/test retry seam.
+        if candidate == primary_provider_id and candidate != "fake":
             continue
         if not route_adapter_available(candidate, settings):
             continue

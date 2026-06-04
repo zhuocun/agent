@@ -332,6 +332,14 @@ async def test_resume_approve_creates_new_assistant_and_executes_tool(
     assert types.index("tool_result") < types.index("text")
     assert "tool_call" not in types
 
+    # No double-bill: the paused turn is metered once and the resume once — two
+    # turns, two increments. Re-billing the paused row on resume would show 3.
+    from app.db.models import UsageRollup
+
+    async with session_factory() as session:
+        rollup = (await session.execute(select(UsageRollup))).scalar_one()
+        assert rollup.used == 2
+
 
 # 4. Resume → deny -------------------------------------------------------------
 

@@ -744,7 +744,7 @@ def _ms_until_next_month(now: datetime | None = None) -> int:
 def _budget_exceeded() -> AppError:
     return AppError(
         ErrorEnvelope(
-            code="BUDGET_EXCEEDED",
+            code="PLATFORM_BUDGET_EXCEEDED",
             severity="warning",
             title="Usage limit reached",
             body="You've reached your usage budget for this period.",

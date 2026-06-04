@@ -181,7 +181,7 @@ class Settings(BaseSettings):
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the
-    # next platform-key turn is refused with a 429 `BUDGET_EXCEEDED` envelope.
+    # next platform-key turn is refused with a 429 `PLATFORM_BUDGET_EXCEEDED` envelope.
     # `<= 0` means "disabled / unlimited" -- the default, so existing behavior
     # and tests are unchanged. BYOK turns are always exempt (the user pays their
     # own provider) and never consult this cap.

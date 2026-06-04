@@ -1,6 +1,6 @@
 """Constrain usage credit ledger values.
 
-Revision ID: 0013_usage_ledger_constraints
+Revision ID: 0013_usage_credit_ledger_constraints
 Revises: 0012_usage_credit_ledger
 Create Date: 2026-06-01 00:00:00.000000
 """
@@ -11,7 +11,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0013_usage_ledger_constraints"
+revision: str = "0013_usage_credit_ledger_constraints"
 down_revision: str | Sequence[str] | None = "0012_usage_credit_ledger"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

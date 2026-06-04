@@ -230,6 +230,7 @@ async def test_custom_instructions_are_provider_only(
             reasoning_effort: str | None = None,
             web_search: bool = False,
             supports_vision: bool = True,
+            response_format: object | None = None,
         ) -> AsyncIterator[ProviderEvent]:
             seen_prompts.append(user_text)
             yield ReasoningDone()
@@ -2657,6 +2658,7 @@ class _NoSubstitutionThenBlockProvider:
         reasoning_effort: str | None = None,
         web_search: bool = False,
         supports_vision: bool = True,
+        response_format: object | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         try:
             yield ReasoningDelta(text="thinking")

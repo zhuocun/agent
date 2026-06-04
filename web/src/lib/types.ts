@@ -139,6 +139,12 @@ export interface ModelAttribution {
   breakdown: CostBreakdown;
   // Present only when served != requested (silent-downgrade prevention).
   substitution?: Substitution;
+  // Present only when structured output ("JSON mode") was requested for the
+  // turn. `outputFormat` echoes the requested format; `outputValid` reports
+  // whether the model's output parsed/validated as JSON. Mirrors the new
+  // optional fields on the BE `terminal` frame's attribution.
+  outputFormat?: "json_object" | "json_schema";
+  outputValid?: boolean;
 }
 
 // A single web-search result surfaced as a source card under a grounded

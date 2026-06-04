@@ -47,6 +47,7 @@ from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.protocol import (
     AttachmentPayload,
+    ResponseFormat,
 )
 from app.providers.protocol import (
     ChatMessage as ProviderChatMessage,
@@ -1478,6 +1479,18 @@ async def send_message(
         binding,
         settings=settings,
     )
+    # Structured-output (JSON mode) opt-in. Build the provider protocol object
+    # from the request (None when absent) and thread it down the identical path
+    # as `web_search`. Every adapter degrades gracefully, so there's no
+    # binding-capability gate here — JSON mode always applies when requested.
+    effective_response_format = (
+        ResponseFormat(
+            type=body.response_format.type,
+            schema=body.response_format.schema_,
+        )
+        if body.response_format is not None
+        else None
+    )
     if not is_temp:
         event_props = {
             "conversationId": str(conversation_id),
@@ -1512,6 +1525,16 @@ async def send_message(
                 user_id=user.id,
                 event_type="search.used",
                 properties=event_props,
+            )
+        if effective_response_format is not None:
+            await analytics_repo.record(
+                db,
+                user_id=user.id,
+                event_type="structured_output.used",
+                properties={
+                    **event_props,
+                    "outputFormat": effective_response_format.type,
+                },
             )
         if provider_attachments:
             await analytics_repo.record(
@@ -1566,6 +1589,7 @@ async def send_message(
             stream_id=stream_id,
             router_substitution=router_substitution,
             web_search=effective_web_search,
+            response_format=effective_response_format,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
         )
@@ -1605,6 +1629,7 @@ async def send_message(
             stream_id=stream_id,
             router_substitution=router_substitution,
             web_search=effective_web_search,
+            response_format=effective_response_format,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
         ):

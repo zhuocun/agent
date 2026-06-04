@@ -57,6 +57,7 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    ResponseFormat,
     Sources,
     StatusUpdate,
     ToolCall,
@@ -99,6 +100,25 @@ WEB_SEARCH_TOOL: dict[str, Any] = {
         },
     },
 }
+
+# Short system instruction injected when JSON mode is on. The DeepSeek /
+# OpenAI-compatible json_object mode REQUIRES the literal word "json" to appear
+# somewhere in the messages or the API rejects the request, so this string both
+# satisfies that constraint and steers the model toward a bare JSON value.
+_JSON_MODE_SYSTEM_HINT = "You must respond with a single valid JSON value and nothing else."
+
+
+def _is_deepseek_base_url(base_url: str | None) -> bool:
+    """Whether the active OpenAI-compatible binding is DeepSeek.
+
+    DeepSeek's OpenAI-compatible endpoint does NOT support strict
+    `response_format={"type":"json_schema",...}` — only `{"type":"json_object"}`.
+    True OpenAI supports both. We distinguish on the base URL (DeepSeek is always
+    pointed at `api.deepseek.com`; true OpenAI leaves `base_url` None or an
+    openai.com host).
+    """
+    return "deepseek" in (base_url or "").lower()
+
 
 _SEARCH_STATUS_LABEL = "Searching the web…"
 _MAX_SEARCH_RESULTS = 5
@@ -461,6 +481,7 @@ class OpenAIProvider:
         reasoning_effort: str | None = None,
         web_search: bool = False,
         supports_vision: bool = True,
+        response_format: ResponseFormat | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         # Build messages: history + the current user turn. Only user/assistant
         # roles (no system role), which keeps o-series models happy.
@@ -488,6 +509,47 @@ class OpenAIProvider:
             kwargs["reasoning_effort"] = reasoning_effort
         if thinking is not None:
             kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
+
+        # Structured output (JSON mode). Compose with the optional web-search
+        # tool loop below — `kwargs` (incl. `response_format`) is forwarded into
+        # every round's completion. A `system` hint is PREPENDED so the literal
+        # word "json" is present (the OpenAI/DeepSeek json_object mode rejects a
+        # request that lacks it) and the model is steered toward a bare JSON
+        # value. For `json_schema`: true OpenAI gets native strict json_schema;
+        # DeepSeek (which only supports json_object) downgrades to json_object
+        # AND has the schema text injected into the system hint so the model
+        # still sees the contract. The handler validates the final text at the
+        # boundary regardless. When `response_format` is None this block is a
+        # no-op and the request is byte-for-byte unchanged.
+        if response_format is not None:
+            is_deepseek = _is_deepseek_base_url(self._base_url)
+            hint = _JSON_MODE_SYSTEM_HINT
+            if (
+                response_format.type == "json_schema"
+                and response_format.schema is not None
+                and is_deepseek
+            ):
+                # DeepSeek can't enforce the schema natively; show it to the model.
+                hint = (
+                    f"{_JSON_MODE_SYSTEM_HINT} The JSON value must conform to this "
+                    f"JSON Schema:\n{json.dumps(response_format.schema)}"
+                )
+            messages.insert(0, {"role": "system", "content": hint})
+            if (
+                response_format.type == "json_schema"
+                and response_format.schema is not None
+                and not is_deepseek
+            ):
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response",
+                        "schema": response_format.schema,
+                        "strict": True,
+                    },
+                }
+            else:
+                kwargs["response_format"] = {"type": "json_object"}
 
         client = self._client_for(api_key)
 

@@ -1,16 +1,21 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { MermaidConfig } from "mermaid";
 import {
+  type Components,
   type DiagramPlugin,
   type MermaidErrorComponentProps,
   type PluginConfig,
+  type StreamdownProps,
   Streamdown,
+  defaultRehypePlugins,
 } from "streamdown";
 import { useTheme } from "next-themes";
 
 import { cn } from "@/lib/utils";
+import type { SourceItem } from "@/lib/types";
+import { CITATION_TAG, createCitationRehypePlugin } from "./citation-rehype";
 
 // Mirror of Streamdown's internal `MermaidInstance` interface (not exported
 // from the package). Matches `getMermaid`'s return contract in
@@ -83,12 +88,63 @@ function MermaidError({ chart }: MermaidErrorComponentProps) {
   );
 }
 
+// Interactive inline citation chip rendered for a `<citationmarker>` element
+// produced by the citation rehype plugin. Keyboard-focusable; activating it
+// reveals the matching source card. The literal `[n]` text is preserved as the
+// chip's label so copy/paste of the answer still reads naturally.
+function CitationChip({
+  children,
+  onActivate,
+}: {
+  children?: ReactNode;
+  onActivate: (id: number) => void;
+}) {
+  const label =
+    typeof children === "string"
+      ? children
+      : Array.isArray(children)
+        ? children.join("")
+        : String(children ?? "");
+  const match = /\[(\d{1,4})\]/.exec(label);
+  if (!match) return <>{children}</>;
+  const id = Number(match[1]);
+
+  return (
+    <button
+      type="button"
+      data-testid="citation-marker"
+      data-citation-id={id}
+      onClick={(e) => {
+        e.preventDefault();
+        onActivate(id);
+      }}
+      aria-label={`Jump to source ${id}`}
+      className={cn(
+        "mx-px inline-flex items-baseline align-baseline rounded px-1 text-[0.85em] font-medium leading-none",
+        "text-primary bg-primary/[0.08] hover:bg-primary/15",
+        "cursor-pointer transition-colors",
+        "outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 export function MarkdownRenderer({
   children,
   className,
+  sources,
+  onCitationClick,
 }: {
   children: string;
   className?: string;
+  // Active source list for the message (optional). When present alongside
+  // `onCitationClick`, bare `[n]` tokens whose `n` matches a source id become
+  // interactive citation chips. Absent/empty leaves the renderer byte-for-byte
+  // as before (default off) so every existing call site is unchanged.
+  sources?: SourceItem[];
+  onCitationClick?: (id: number) => void;
 }) {
   const { resolvedTheme } = useTheme();
 
@@ -106,6 +162,38 @@ export function MarkdownRenderer({
 
   const plugins = useMemo<PluginConfig>(() => ({ mermaid: mermaidPlugin }), []);
 
+  // Citation wiring is opt-in: only active when the caller supplies both a
+  // non-empty source list and a click handler. Keyed on the sorted id list so
+  // the memo identity is stable across re-renders with the same sources.
+  const idsKey = (sources ?? [])
+    .map((s) => s.id)
+    .sort((a, b) => a - b)
+    .join(",");
+  const citationsEnabled = idsKey.length > 0 && !!onCitationClick;
+
+  const rehypePlugins = useMemo<StreamdownProps["rehypePlugins"]>(() => {
+    if (!citationsEnabled) return undefined;
+    const ids = idsKey.split(",").map(Number);
+    // Append AFTER the default raw → sanitize → harden chain so the custom
+    // citation element survives sanitization (the model's own HTML is still
+    // scrubbed by the defaults that run first).
+    return [
+      ...Object.values(defaultRehypePlugins),
+      createCitationRehypePlugin(ids),
+    ];
+  }, [citationsEnabled, idsKey]);
+
+  const components = useMemo<Components | undefined>(() => {
+    if (!citationsEnabled || !onCitationClick) return undefined;
+    const Cite = (props: { children?: ReactNode }) => (
+      <CitationChip onActivate={onCitationClick}>{props.children}</CitationChip>
+    );
+    // The `Components` map's index signature widens child props to `unknown`;
+    // our chip only reads `children`, so cast through `unknown` rather than
+    // contorting the signature.
+    return { [CITATION_TAG]: Cite } as unknown as Components;
+  }, [citationsEnabled, onCitationClick]);
+
   return (
     <Streamdown
       parseIncompleteMarkdown
@@ -113,6 +201,8 @@ export function MarkdownRenderer({
       mermaid={mermaid}
       plugins={plugins}
       className={cn("chat-md", className)}
+      {...(rehypePlugins ? { rehypePlugins } : {})}
+      {...(components ? { components } : {})}
     >
       {children}
     </Streamdown>

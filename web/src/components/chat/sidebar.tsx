@@ -30,6 +30,7 @@ import {
   Plus,
   Search,
   Settings,
+  SlidersHorizontal,
   Tag as TagIcon,
   Tags,
   Timer,
@@ -82,6 +83,10 @@ export interface SidebarProps {
   searchResults?: ConversationSummary[] | null;
   searchPending?: boolean;
   onSearchChange: (next: string) => void;
+  // Open the advanced history-search dialog (filters by model, cost, date,
+  // project, tag). Optional so a stale embedding of <Sidebar/> still type-checks;
+  // the affordance is hidden when it's not provided.
+  onOpenAdvancedSearch?: () => void;
   onSelect: (id: string) => void;
   onNewChat: () => void;
   onRenameConversation: (id: string, newTitle: string) => void;
@@ -1069,6 +1074,7 @@ export function Sidebar({
   searchResults,
   searchPending = false,
   onSearchChange,
+  onOpenAdvancedSearch,
   onSelect,
   onNewChat,
   onRenameConversation,
@@ -1431,6 +1437,19 @@ export function Sidebar({
             </button>
           ) : null}
         </div>
+        {/* Advanced search opens the filter-rich dialog (model / cost / date /
+            project / tag) — the inline box stays a quick title/snippet search. */}
+        {onOpenAdvancedSearch ? (
+          <button
+            type="button"
+            onClick={onOpenAdvancedSearch}
+            data-testid="sidebar-advanced-search"
+            className="mt-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          >
+            <SlidersHorizontal aria-hidden className="size-3" />
+            <span>Advanced search</span>
+          </button>
+        ) : null}
       </div>
 
       {/* Select toggle (Conversation Org v2). Entry point into multi-select; the

@@ -19,6 +19,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependency import current_user
@@ -28,11 +29,29 @@ from app.db.models import User
 from app.db.repositories import audit_events
 from app.db.repositories import tags as tags_repo
 from app.db.session import get_db
-from app.errors import not_found
+from app.errors import AppError, ErrorEnvelope, not_found
 from app.middleware.ratelimit import limiter
 from app.schemas.tag import Tag, TagCreateRequest, TagUpdateRequest
 
 router = APIRouter(prefix="/api/tags", tags=["tags"])
+
+
+def _tag_name_taken() -> AppError:
+    """409 for the `(user_id, name)` UNIQUE violation — a friendly conflict.
+
+    The DB index is the authoritative guard; catching the `IntegrityError` here
+    (and rolling back the poisoned transaction) turns a duplicate-name create or
+    rename into a clean 409 instead of an unhandled 500.
+    """
+    return AppError(
+        ErrorEnvelope(
+            code="TAG_NAME_TAKEN",
+            severity="error",
+            title="Tag already exists",
+            body="You already have a tag with that name.",
+        ),
+        status.HTTP_409_CONFLICT,
+    )
 
 
 def _to_schema(row: TagRow) -> Tag:
@@ -67,13 +86,17 @@ async def create_tag(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Tag:
-    """Create a tag for the caller and emit `tag.created`."""
-    row = await tags_repo.create_for_user(
-        db,
-        user_id=user.id,
-        name=body.name,
-        color=body.color,
-    )
+    """Create a tag for the caller and emit `tag.created`. Duplicate name -> 409."""
+    try:
+        row = await tags_repo.create_for_user(
+            db,
+            user_id=user.id,
+            name=body.name,
+            color=body.color,
+        )
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _tag_name_taken() from exc
     await audit_events.record(
         db,
         user_id=user.id,
@@ -102,12 +125,16 @@ async def update_tag(
     update_kwargs: dict[str, object] = {"name": body.name}
     if "color" in fields_set:
         update_kwargs["color"] = body.color
-    row = await tags_repo.update_for_user(
-        db,
-        tag_id=tag_id,
-        user_id=user.id,
-        **update_kwargs,  # type: ignore[arg-type]
-    )
+    try:
+        row = await tags_repo.update_for_user(
+            db,
+            tag_id=tag_id,
+            user_id=user.id,
+            **update_kwargs,  # type: ignore[arg-type]
+        )
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _tag_name_taken() from exc
     if row is None:
         raise not_found("tag")
     await audit_events.record(

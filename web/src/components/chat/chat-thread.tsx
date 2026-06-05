@@ -10,6 +10,7 @@ import {
   MessageSquarePlus,
   Mic,
   PanelLeft,
+  Search,
   Settings as SettingsIcon,
   Sparkles,
   Sun,
@@ -39,6 +40,7 @@ import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { ActivityDialog } from "@/components/chat/activity-dialog";
 import { MemoryDialog } from "@/components/chat/memory-dialog";
 import { TemplateLibraryDialog } from "@/components/chat/template-library-dialog";
+import { HistorySearchDialog } from "@/components/chat/history-search-dialog";
 import { ModelDirectoryDialog } from "@/components/chat/model-directory-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
@@ -223,6 +225,7 @@ const LABEL_BY_ID = ((): Record<ShortcutId, string> => {
   // Palette-only actions have no KEY_BINDINGS entry; label them here.
   out["open-settings"] = "Open settings";
   out["toggle-theme"] = "Toggle theme";
+  out["search-history"] = "Search history";
   return out;
 })();
 
@@ -238,6 +241,7 @@ const PALETTE_ACTION_META: Array<{
   hasBinding: boolean;
 }> = [
   { id: "new-chat", label: "New chat", icon: MessageSquarePlus, section: "Actions", hasBinding: true },
+  { id: "search-history", label: "Search history", icon: Search, section: "Actions", hasBinding: false },
   { id: "focus-composer", label: "Focus composer", icon: TextCursorInput, section: "Actions", hasBinding: true },
   { id: "copy-last-response", label: "Copy last response", icon: ClipboardCopy, section: "Actions", hasBinding: true },
   { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", hasBinding: true },
@@ -482,6 +486,7 @@ export function ChatThread() {
   const [activityOpen, setActivityOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [modelDirectoryOpen, setModelDirectoryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -2831,6 +2836,9 @@ export function ChatThread() {
       case "new-chat":
         handleNewChat();
         return;
+      case "search-history":
+        setSearchOpen(true);
+        return;
       case "focus-composer":
         handleFocusComposer();
         return;
@@ -2992,6 +3000,7 @@ export function ChatThread() {
             searchResults={visibleConversationSearchResults}
             searchPending={conversationSearchPending}
             onSearchChange={setConversationSearch}
+            onOpenAdvancedSearch={() => setSearchOpen(true)}
             onSelect={handleSelectConversation}
             onNewChat={handleNewChat}
             onRenameConversation={handleRenameConversation}
@@ -3369,6 +3378,16 @@ export function ChatThread() {
       <TemplateLibraryDialog
         open={templatesOpen}
         onOpenChange={setTemplatesOpen}
+      />
+
+      <HistorySearchDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        projects={projects}
+        // Org v2 ships the tag list in the same wave; feed the live tags so the
+        // dialog's tag filter is populated (it hides the control when empty).
+        tags={tags}
+        onSelectConversation={handleSelectConversation}
       />
 
       <ModelDirectoryDialog

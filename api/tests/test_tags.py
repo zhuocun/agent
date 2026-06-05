@@ -98,6 +98,30 @@ async def test_tag_create_rejects_blank_name(client: AsyncClient) -> None:
     assert resp.json()["error"]["code"] == "INVALID_INPUT"
 
 
+async def test_tag_name_conflict_returns_409(client: AsyncClient) -> None:
+    """Duplicate names -> a clean 409 (TAG_NAME_TAKEN), never a 500.
+
+    Covers a duplicate create AND a rename onto an existing name; the final list
+    confirms the conflict rollback didn't poison the session for later requests.
+    """
+    await client.get("/api/bootstrap")
+    a = await client.post("/api/tags", json={"name": "alpha"})
+    assert a.status_code == 201
+    b = await client.post("/api/tags", json={"name": "beta"})
+    assert b.status_code == 201
+
+    dup = await client.post("/api/tags", json={"name": "alpha"})
+    assert dup.status_code == 409
+    assert dup.json()["error"]["code"] == "TAG_NAME_TAKEN"
+
+    rename = await client.patch(f"/api/tags/{b.json()['id']}", json={"name": "alpha"})
+    assert rename.status_code == 409
+    assert rename.json()["error"]["code"] == "TAG_NAME_TAKEN"
+
+    listed = await client.get("/api/tags")
+    assert {t["name"] for t in listed.json()} == {"alpha", "beta"}
+
+
 async def test_tag_patch_missing_is_404(client: AsyncClient) -> None:
     await client.get("/api/bootstrap")
     resp = await client.patch(f"/api/tags/{uuid4()}", json={"name": "nope"})

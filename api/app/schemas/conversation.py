@@ -96,6 +96,17 @@ class ConversationSummary(CamelModel):
 class ConversationSearchResult(ConversationSummary):
     match_snippet: str
     matched_message_id: str | None = None
+    # Transparency-native fields for the advanced history-search dialog. All
+    # additive + optional so the existing search callers (sidebar box, Cmd+K
+    # palette) keep working unchanged. Populated from the MATCHED assistant
+    # message when the hit is on message content: `served_model_label` from
+    # `attribution.servedModelLabel`, `cost_usd` from the message's `cost_usd`
+    # column, `matched_at` from the matched message's `created_at`. Stay `None`
+    # for a title-only match (no matched message) or a user-message match (no
+    # attribution / cost).
+    served_model_label: str | None = None
+    cost_usd: float | None = None
+    matched_at: str | None = None
 
 
 class CreateConversationRequest(CamelModel):

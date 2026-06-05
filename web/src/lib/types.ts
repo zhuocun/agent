@@ -401,6 +401,28 @@ export interface ConversationSummary {
   // Assigned tag ids (Conversation Org v2). Echoed on the summary so tag chips +
   // the tag filter render without a follow-up GET. Absent/empty = no tags.
   tagIds?: string[];
+  // Transparency-native fields populated by the advanced history-search dialog
+  // (additive; absent on the plain sidebar/Cmd+K search results). Carry the
+  // MATCHED message's served-model label, per-turn cost, and timestamp so each
+  // result row can surface the transparency wedge inline.
+  servedModelLabel?: string | null;
+  costUsd?: number | null;
+  matchedAt?: string | null;
+}
+
+// Filters for the advanced history-search dialog. Every field is optional; an
+// omitted field means "no constraint" and the bare query behaves exactly like
+// the existing conversation search. Mirrors the BE `GET /search` query params
+// (`servedModel`, `costMin`, `costMax`, `dateFrom`, `dateTo`, `projectId`,
+// `tagId`). Dates are ISO-8601 strings; cost is in USD; ids are UUID strings.
+export interface SearchFilters {
+  servedModel?: ModelTierId;
+  costMin?: number;
+  costMax?: number;
+  dateFrom?: string;
+  dateTo?: string;
+  projectId?: string;
+  tagId?: string;
 }
 
 // A Project/Space (D20): a thin scoping container that groups conversations and
@@ -487,7 +509,8 @@ export type ShortcutId =
   | "toggle-dictation"
   | "shortcuts"
   | "open-settings"
-  | "toggle-theme";
+  | "toggle-theme"
+  | "search-history";
 
 // A single user-supplied shortcut override (D23). Mirrors the matcher-
 // significant fields of `ShortcutKeys` (`web/src/lib/use-keyboard-shortcuts.ts`)

@@ -8,6 +8,7 @@ import {
   KeyRound,
   LoaderCircle,
   MessageSquarePlus,
+  Mic,
   PanelLeft,
   Settings as SettingsIcon,
   Sparkles,
@@ -111,6 +112,7 @@ type ShortcutId =
   | "toggle-sidebar"
   | "custom-instructions"
   | "delete-chat"
+  | "toggle-dictation"
   | "shortcuts"
   | "open-settings"
   | "toggle-theme";
@@ -183,6 +185,16 @@ const KEY_BINDINGS: KeyBinding[] = [
     allowInInput: true,
   },
   {
+    id: "toggle-dictation",
+    label: "Toggle dictation",
+    key: "D",
+    mod: true,
+    shift: true,
+    // Fires while the composer textarea is focused — dictation is composer-
+    // centric, so the user is typically focused there when toggling it.
+    allowInInput: true,
+  },
+  {
     id: "shortcuts",
     label: "Show all shortcuts",
     key: "/",
@@ -213,6 +225,7 @@ const PALETTE_ACTION_META: Array<{
   { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", binding: BINDING_BY_ID("copy-last-code") },
   { id: "toggle-sidebar", label: "Toggle sidebar", icon: PanelLeft, section: "Actions", binding: BINDING_BY_ID("toggle-sidebar") },
   { id: "delete-chat", label: "Delete current chat", icon: Trash2, section: "Actions", binding: BINDING_BY_ID("delete-chat") },
+  { id: "toggle-dictation", label: "Toggle dictation", icon: Mic, section: "Actions", binding: BINDING_BY_ID("toggle-dictation") },
   { id: "custom-instructions", label: "Open custom instructions", icon: Sparkles, section: "Settings", binding: BINDING_BY_ID("custom-instructions") },
   { id: "shortcuts", label: "Show all shortcuts", icon: KeyRound, section: "Settings", binding: BINDING_BY_ID("shortcuts") },
   { id: "open-settings", label: "Open settings", icon: SettingsIcon, section: "Settings" },
@@ -224,7 +237,7 @@ const PALETTE_ACTION_META: Array<{
 const SHORTCUT_DIALOG_SECTIONS: { heading: string; ids: ShortcutId[] }[] = [
   { heading: "General", ids: ["palette", "shortcuts", "custom-instructions"] },
   { heading: "Navigation", ids: ["new-chat", "focus-composer", "toggle-sidebar"] },
-  { heading: "Editing", ids: ["copy-last-response", "copy-last-code", "delete-chat"] },
+  { heading: "Editing", ids: ["copy-last-response", "copy-last-code", "toggle-dictation", "delete-chat"] },
 ];
 
 // Local-only id generator for optimistic message bubbles before the server
@@ -2429,6 +2442,9 @@ export function ChatThread() {
         return;
       case "delete-chat":
         handleRequestDeleteCurrentChat();
+        return;
+      case "toggle-dictation":
+        composerRef.current?.toggleDictation();
         return;
       case "shortcuts":
         setShortcutsDialogOpen((v) => !v);

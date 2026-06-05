@@ -16,6 +16,7 @@ import {
   FileText,
   Image as ImageIcon,
   LoaderCircle,
+  Mic,
   Paperclip,
   Square,
   X,
@@ -33,6 +34,7 @@ import {
 } from "@/components/chat/slash-commands-popover";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
 import { estimateTurnCost } from "@/lib/cost-estimate";
+import { useSpeechRecognition } from "@/lib/use-speech-recognition";
 import type { AttachmentPart, ModelTier, SlashCommand } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -66,6 +68,10 @@ export interface ComposerHandle {
   setDraft: (text: string) => void;
   clearAttachments: (reason?: "unsupported" | "manual") => void;
   focus: () => void;
+  // Toggle on-device dictation (STT). No-op when the browser lacks the Web
+  // Speech recognition API. Lets the keyboard shortcut in chat-thread drive the
+  // same control as the mic button.
+  toggleDictation: () => void;
 }
 
 const MAX_HEIGHT = 200;
@@ -397,6 +403,31 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     }
   };
 
+  // Dictation (STT) writes each finalized transcript chunk into the composer
+  // draft via the SAME state path as typing, so the result is fully EDITABLE and
+  // is NEVER auto-sent. We append (with a single separating space) rather than
+  // replace, so a user can dictate, tweak, dictate again. After writing we grow
+  // the textarea and keep the caret at the end.
+  const appendDictation = useCallback((chunk: string) => {
+    setValue((current) => {
+      const needsSpace = current.length > 0 && !/\s$/.test(current);
+      const next = needsSpace ? `${current} ${chunk}` : `${current}${chunk}`;
+      prevValueRef.current = next;
+      return next;
+    });
+    requestAnimationFrame(() => {
+      const ta = ref.current;
+      if (!ta) return;
+      ta.style.height = "auto";
+      const scrollHeight = ta.scrollHeight;
+      ta.style.height = `${Math.min(scrollHeight, MAX_HEIGHT)}px`;
+      setGrown(scrollHeight > ONE_LINE_THRESHOLD);
+      const end = ta.value.length;
+      ta.setSelectionRange(end, end);
+    });
+  }, []);
+  const dictation = useSpeechRecognition(appendDictation);
+
   useImperativeHandle(forwardedRef, () => ({
     setDraft: (text: string) => {
       prevValueRef.current = text;
@@ -414,6 +445,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     clearAttachments,
     focus: () => {
       ref.current?.focus();
+    },
+    toggleDictation: () => {
+      dictation.toggle();
     },
   }));
 
@@ -720,6 +754,52 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             </Tooltip>
           </>
         ) : null}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => dictation.toggle()}
+                // Feature-detect: when the browser lacks the Web Speech
+                // recognition API the control is disabled and the tooltip
+                // explains why. Also disabled mid-stream (parity with attach).
+                disabled={!dictation.supported || isStreaming}
+                // aria-pressed conveys the recording state to AT; the brand tint
+                // gives the same "on" signal to sighted users.
+                aria-pressed={dictation.listening}
+                aria-label={
+                  !dictation.supported
+                    ? "Dictation not supported in this browser"
+                    : dictation.listening
+                      ? "Stop dictation"
+                      : "Start dictation"
+                }
+                data-testid="composer-dictate"
+                className={cn(
+                  "size-11 shrink-0 rounded-full p-0",
+                  dictation.listening
+                    ? "text-brand hover:text-brand"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Mic
+                  className={cn(
+                    "size-4",
+                    dictation.listening && "motion-safe:animate-pulse",
+                  )}
+                />
+              </Button>
+            }
+          />
+          <TooltipContent>
+            {!dictation.supported
+              ? "Dictation isn't supported in this browser"
+              : dictation.listening
+                ? "Stop dictation · processed on your device by your browser"
+                : "Dictate · voice is processed on your device by your browser"}
+          </TooltipContent>
+        </Tooltip>
         {onToggleCompare ? (
           <Tooltip>
             <TooltipTrigger

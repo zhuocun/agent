@@ -102,6 +102,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
             "supportsWebSearch",
             "supportsAttachments",
             "supportsVision",
+            "modalitiesOut",
             "providerId",
             "providerLabel",
             "providerRouteStatus",
@@ -149,6 +150,14 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     assert by_id["fast"]["supportsVision"] is False
     for tier_id in ("auto", "smart", "pro"):
         assert by_id[tier_id]["supportsVision"] is True
+    # `modalitiesOut` documents the D22 output-modality contract. Every wired
+    # route is text-out today (voice in v1 runs ON-DEVICE via the browser Web
+    # Speech API and is NOT a provider output modality), so every tier and every
+    # provider route reports exactly ["text"].
+    for tier_id in ("auto", "fast", "smart", "pro"):
+        assert by_id[tier_id]["modalitiesOut"] == ["text"]
+    for option in options.values():
+        assert option["modalitiesOut"] == ["text"]
 
     suggestions = body["suggestions"]
     assert isinstance(suggestions, list) and len(suggestions) >= 1

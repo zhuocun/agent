@@ -257,6 +257,14 @@ class TierBinding:
     # (the canonical OpenAI-compatible prod route) is NOT multimodal, so the
     # OpenAI-compatible binding stays conservative (`supports_vision=False`).
     supports_vision: bool = False
+    # Output modalities this binding can PRODUCE (D22 precondition). Every wired
+    # route is text-out today, so this defaults to ("text",); the field documents
+    # the contract so a future audio/image-out route declares it here and it
+    # threads to the FE exactly like `supports_vision`. This is registry metadata
+    # only — voice in v1 (dictation + read-aloud) runs ON-DEVICE in the browser
+    # via the Web Speech API and never touches a provider, so no route claims an
+    # audio output modality.
+    modalities_out: tuple[str, ...] = ("text",)
 
 
 def _tier(
@@ -643,6 +651,9 @@ def _provider_options_for_tier(
                 supports_vision=(
                     binding.supports_vision if binding is not None else False
                 ),
+                modalities_out=(
+                    list(binding.modalities_out) if binding is not None else ["text"]
+                ),
                 default_route_eligible=(
                     route.default_route_eligible and runtime_status == "available"
                 ),
@@ -686,6 +697,7 @@ def list_tiers(
         )
         supports_attachments = binding.supports_attachments if binding is not None else False
         supports_vision = binding.supports_vision if binding is not None else False
+        modalities_out = list(binding.modalities_out) if binding is not None else ["text"]
         # Prices for a pre-send estimate. `auto` stays 0.0 (its served model —
         # and thus its price — varies per request), mirroring the blank
         # `model_label` convention above.
@@ -706,6 +718,7 @@ def list_tiers(
                     "supports_web_search": supports_search,
                     "supports_attachments": supports_attachments,
                     "supports_vision": supports_vision,
+                    "modalities_out": modalities_out,
                     "list_price_in_per_m": price_in,
                     "list_price_out_per_m": price_out,
                     "provider_id": route.provider_id if route is not None else "",
@@ -768,6 +781,7 @@ def list_provider_directory(
                     supports_web_search=binding.supports_web_search,
                     supports_attachments=binding.supports_attachments,
                     supports_vision=binding.supports_vision,
+                    modalities_out=list(binding.modalities_out),
                 )
             )
         entries.append(

@@ -10,6 +10,7 @@ from app.schemas.common import CamelModel
 from app.schemas.conversation import Conversation
 from app.schemas.memory import MemoryFact
 from app.schemas.preferences import UserPreferences
+from app.schemas.prompt_template import PromptTemplate
 
 
 class AccountByokKey(CamelModel):
@@ -175,6 +176,8 @@ class AccountExport(CamelModel):
     analytics_events: list[AnalyticsEventExport]
     # Transparent long-term memory (D19): the caller's full editable fact ledger.
     memory_facts: list[MemoryFact]
+    # Prompt library (D23): the caller's user-authored, reusable templates.
+    prompt_templates: list[PromptTemplate]
     exported_at: str
 
 

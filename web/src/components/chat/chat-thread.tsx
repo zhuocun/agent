@@ -38,6 +38,7 @@ import { DegradedStatusBanner } from "@/components/chat/degraded-status-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { ActivityDialog } from "@/components/chat/activity-dialog";
 import { MemoryDialog } from "@/components/chat/memory-dialog";
+import { TemplateLibraryDialog } from "@/components/chat/template-library-dialog";
 import { ModelDirectoryDialog } from "@/components/chat/model-directory-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
@@ -452,6 +453,7 @@ export function ChatThread() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const [modelDirectoryOpen, setModelDirectoryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -2867,6 +2869,10 @@ export function ChatThread() {
           setSettingsOpen(false);
           setMemoryOpen(true);
         }}
+        onOpenTemplates={() => {
+          setSettingsOpen(false);
+          setTemplatesOpen(true);
+        }}
         onOpenModelDirectory={() => {
           setSettingsOpen(false);
           setModelDirectoryOpen(true);
@@ -2904,6 +2910,11 @@ export function ChatThread() {
             memoryEnabled: next,
           });
         }}
+      />
+
+      <TemplateLibraryDialog
+        open={templatesOpen}
+        onOpenChange={setTemplatesOpen}
       />
 
       <ModelDirectoryDialog

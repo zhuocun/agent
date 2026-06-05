@@ -421,6 +421,20 @@ export interface MemoryFact {
   updatedAt: string; // ISO
 }
 
+// A user-authored, reusable prompt template (D23). Selecting one prefills the
+// composer with `body` — a PURE composer prefill, NO model/cost/provider
+// change. `body` may carry literal variable placeholders (e.g. `{{topic}}`)
+// the user fills in after insertion. Mirrors
+// api/app/schemas/prompt_template.py `PromptTemplate`.
+export interface PromptTemplate {
+  id: string;
+  title: string;
+  body: string;
+  description?: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
 // Account / billing identity for the sidebar footer + settings (PRD 05 / PRD 07 §5.8).
 export interface AccountInfo {
   name: string;

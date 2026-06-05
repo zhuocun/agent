@@ -21,6 +21,7 @@ import type {
   ModerationAppealRequest,
   PlatformStatus,
   PromptSuggestion,
+  PromptTemplate,
   PublicConversation,
   ShareLinkResponse,
   SpendAnalytics,
@@ -560,6 +561,60 @@ export function deleteMemoryFact(
   signal?: AbortSignal,
 ): Promise<void> {
   return apiClient.del(`/api/account/memory/${encodeURIComponent(id)}`, signal);
+}
+
+// --- Prompt library (D23) ---------------------------------------------------
+//
+// User-authored, reusable prompt templates. All caller-scoped +
+// anonymous-allowed; each mutation emits a `prompt_template.*` audit event on
+// the BE. Selecting a template prefills the composer (pure prefill).
+
+export interface PromptTemplateInput {
+  title: string;
+  body: string;
+  description?: string | null;
+}
+
+export function fetchPromptTemplates(
+  signal?: AbortSignal,
+): Promise<PromptTemplate[]> {
+  return apiClient.get<PromptTemplate[]>(
+    "/api/account/prompt-templates",
+    signal,
+  );
+}
+
+export function createPromptTemplate(
+  input: PromptTemplateInput,
+  signal?: AbortSignal,
+): Promise<PromptTemplate> {
+  return apiClient.post<PromptTemplate>(
+    "/api/account/prompt-templates",
+    input,
+    signal,
+  );
+}
+
+export function updatePromptTemplate(
+  id: string,
+  input: PromptTemplateInput,
+  signal?: AbortSignal,
+): Promise<PromptTemplate> {
+  return apiClient.patch<PromptTemplate>(
+    `/api/account/prompt-templates/${encodeURIComponent(id)}`,
+    input,
+    signal,
+  );
+}
+
+export function deletePromptTemplate(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.del(
+    `/api/account/prompt-templates/${encodeURIComponent(id)}`,
+    signal,
+  );
 }
 
 // The model & data-policy directory: every provider route in the registry with

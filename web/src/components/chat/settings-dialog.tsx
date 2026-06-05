@@ -58,6 +58,9 @@ export interface SettingsDialogProps {
   // Open the "Memory" manager (closing settings first): the opt-in toggle +
   // the editable, attributed fact ledger (D19).
   onOpenMemory: () => void;
+  // Open the "Prompt templates" manager (closing settings first): the editable
+  // library of user-authored, reusable prompt templates (D23).
+  onOpenTemplates: () => void;
   // Open the read-only "Models & data policies" directory (closing settings
   // first). Browsable catalog of provider routes, policies, and prices.
   onOpenModelDirectory: () => void;
@@ -520,6 +523,7 @@ export function SettingsDialog({
   onDeleteAccount,
   onOpenActivity,
   onOpenMemory,
+  onOpenTemplates,
   onOpenModelDirectory,
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
@@ -925,6 +929,21 @@ export function SettingsDialog({
                   size="sm"
                   data-testid="open-memory-button"
                   onClick={onOpenMemory}
+                >
+                  Manage
+                </Button>
+              }
+            />
+            <SettingRow
+              label="Prompt templates"
+              helper="Create and edit reusable prompts you can drop into the composer."
+              control={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="open-templates-button"
+                  onClick={onOpenTemplates}
                 >
                   Manage
                 </Button>

@@ -17,6 +17,7 @@ from app.db.models import (
     MemoryFact,
     Message,
     Preferences,
+    PromptTemplate,
     Session,
     Stream,
     UsageCreditLedger,
@@ -72,6 +73,10 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
     # unconstrained (SET NULL, not RESTRICT), so deleting here is safe even after
     # the conversation rows are gone.
     await db.execute(delete(MemoryFact).where(MemoryFact.user_id == user_id))
+    # Prompt library (D23). FK to users is CASCADE, but SQLite (tests) does not
+    # enforce it, so remove it explicitly — same explicit-cascade rationale as
+    # the rows above.
+    await db.execute(delete(PromptTemplate).where(PromptTemplate.user_id == user_id))
     await db.execute(delete(AuditEvent).where(AuditEvent.user_id == user_id))
     await db.execute(delete(User).where(User.id == user_id))
     await db.flush()

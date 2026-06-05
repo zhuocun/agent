@@ -18,6 +18,7 @@ from app.db.models import (
     Message,
     Preferences,
     Project,
+    PromptTemplate,
     Session,
     Stream,
     UsageCreditLedger,
@@ -78,6 +79,10 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
     # ordering is unconstrained. SQLite (tests) enforces neither, so remove the
     # ledger explicitly — same explicit-cascade rationale as the rows above.
     await db.execute(delete(Project).where(Project.user_id == user_id))
+    # Prompt library (D23). FK to users is CASCADE, but SQLite (tests) does not
+    # enforce it, so remove it explicitly — same explicit-cascade rationale as
+    # the rows above.
+    await db.execute(delete(PromptTemplate).where(PromptTemplate.user_id == user_id))
     await db.execute(delete(AuditEvent).where(AuditEvent.user_id == user_id))
     await db.execute(delete(User).where(User.id == user_id))
     await db.flush()

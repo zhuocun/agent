@@ -11,6 +11,7 @@ from app.schemas.conversation import Conversation
 from app.schemas.memory import MemoryFact
 from app.schemas.preferences import UserPreferences
 from app.schemas.project import Project
+from app.schemas.prompt_template import PromptTemplate
 
 
 class AccountByokKey(CamelModel):
@@ -179,6 +180,8 @@ class AccountExport(CamelModel):
     # Projects/Spaces (D20): the caller's full set of scoping containers. Present
     # from first ship so an export is never silently missing project metadata.
     projects: list[Project]
+    # Prompt library (D23): the caller's user-authored, reusable templates.
+    prompt_templates: list[PromptTemplate]
     exported_at: str
 
 

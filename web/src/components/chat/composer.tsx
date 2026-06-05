@@ -15,6 +15,7 @@ import {
   Columns2,
   FileText,
   Image as ImageIcon,
+  Library,
   LoaderCircle,
   Mic,
   Paperclip,
@@ -32,13 +33,35 @@ import {
   SlashCommandsPopover,
   filterCommands,
 } from "@/components/chat/slash-commands-popover";
+import {
+  TemplatePickerPopover,
+  filterTemplates,
+} from "@/components/chat/template-picker-popover";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
 import { estimateTurnCost } from "@/lib/cost-estimate";
+import { fetchPromptTemplates } from "@/lib/apiClient";
 import { useSpeechRecognition } from "@/lib/use-speech-recognition";
-import type { AttachmentPart, ModelTier, SlashCommand } from "@/lib/types";
+import type {
+  AttachmentPart,
+  ModelTier,
+  PromptTemplate,
+  SlashCommand,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const SLASH_PATTERN = /^\/(\w*)$/;
+
+// Matches a `{{placeholder}}` token (the variable seam in a prompt template).
+// Non-greedy so adjacent placeholders don't merge into one match.
+const PLACEHOLDER_PATTERN = /\{\{.*?\}\}/;
+
+// Where to park the cursor after inserting a template body: the START of the
+// FIRST `{{…}}` placeholder so the user can type over it, or end-of-text when
+// the body has no placeholders. Exported for unit coverage.
+export function firstPlaceholderOffset(body: string): number {
+  const match = body.match(PLACEHOLDER_PATTERN);
+  return match?.index ?? body.length;
+}
 
 interface ComposerProps {
   isStreaming: boolean;
@@ -250,6 +273,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const prevValueRef = useRef("");
   const slashListboxId = useId();
   const slashOptionPrefix = useId();
+  // Prompt library (D23) — a SIBLING popover layer to the slash commands,
+  // opened from a toolbar button (NOT the "/" token), so it never touches the
+  // load-bearing slash send/stop/Enter handling. Selecting a template prefills
+  // the composer with its body (pure prefill — no model/cost change).
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+  // `templatesLoaded` flips true after the first fetch settles so the picker
+  // can distinguish "loading" from "genuinely empty". The fetch is lazy: it
+  // fires the first time the picker opens, then the result is cached in state.
+  const [templatesLoaded, setTemplatesLoaded] = useState(false);
+  const [templateSelectedIndex, setTemplateSelectedIndex] = useState(0);
+  const templateListboxId = useId();
+  const templateOptionPrefix = useId();
   const prevStreamingRef = useRef(isStreaming);
   const supportsAttachmentsRef = useRef(supportsAttachments);
   const supportsVisionRef = useRef(supportsVision);
@@ -343,6 +379,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       ? `${slashOptionPrefix}-${slashHighlightIndex}`
       : undefined;
 
+  // Template picker is opened from the toolbar button (not a text token), so it
+  // lists the full library (empty query). `filterTemplates` is still applied so
+  // the pure filter stays the single source of truth for both render + keynav.
+  const filteredTemplates = useMemo(
+    () => (templatePickerOpen ? filterTemplates(templates, "") : []),
+    [templatePickerOpen, templates],
+  );
+  const templateHighlightIndex =
+    filteredTemplates.length === 0
+      ? -1
+      : Math.min(
+          Math.max(templateSelectedIndex, 0),
+          filteredTemplates.length - 1,
+        );
+
   const autoGrow = () => {
     const ta = ref.current;
     if (!ta) return;
@@ -398,6 +449,65 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         if (!ta2) return;
         const end = next.length;
         ta2.setSelectionRange(end, end);
+        autoGrow();
+      });
+    }
+  };
+
+  // Lazily load the user's prompt templates the first time the picker opens,
+  // then cache the result in state (re-opens reuse it). Caller-scoped + anon-
+  // allowed on the BE; a fetch error degrades to an empty list (the picker
+  // shows its empty-state hint).
+  const openTemplatePicker = useCallback(() => {
+    setTemplateSelectedIndex(0);
+    setTemplatePickerOpen((alreadyOpen) => !alreadyOpen);
+  }, []);
+
+  useEffect(() => {
+    if (!templatePickerOpen || templatesLoaded) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await fetchPromptTemplates(controller.signal);
+        if (cancelled) return;
+        setTemplates(rows);
+      } catch {
+        if (cancelled) return;
+        // Leave `templates` empty; the picker renders the empty-state hint.
+      } finally {
+        if (!cancelled) setTemplatesLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [templatePickerOpen, templatesLoaded]);
+
+  // Insert a chosen template's body into the composer (pure prefill — no
+  // model/cost/provider change). Mirrors `pickCommand`'s focus + rAF
+  // selection, but parks the cursor on the FIRST `{{…}}` placeholder (or
+  // end-of-text when the body has none) so the user types straight into the
+  // first variable.
+  const pickTemplate = (template: PromptTemplate) => {
+    const next = template.body;
+    prevValueRef.current = next;
+    setValue(next);
+    setTemplatePickerOpen(false);
+    setTemplateSelectedIndex(0);
+    // A template body is never a "/…" token in practice, but keep the slash
+    // popover armed-state coherent with the new draft.
+    setSlashDismissed(false);
+    setSlashSelectedIndex(0);
+    const ta = ref.current;
+    if (ta) {
+      ta.focus();
+      requestAnimationFrame(() => {
+        const ta2 = ref.current;
+        if (!ta2) return;
+        const caret = firstPlaceholderOffset(next);
+        ta2.setSelectionRange(caret, caret);
         autoGrow();
       });
     }
@@ -571,6 +681,46 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // IME-safe: leave Esc/Enter to the composition layer (CJK).
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    // Template-picker layer runs FIRST and only when the picker is open. Each
+    // branch returns, so when the picker is closed none of the slash / stream-
+    // stop / send invariants below are touched. Opened from a toolbar button
+    // (not a text token), so it never interacts with the "/" branch.
+    if (templatePickerOpen) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setTemplatePickerOpen(false);
+        setTemplateSelectedIndex(0);
+        return;
+      }
+      if (filteredTemplates.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setTemplateSelectedIndex(
+            (templateHighlightIndex + 1) % filteredTemplates.length,
+          );
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setTemplateSelectedIndex(
+            (templateHighlightIndex - 1 + filteredTemplates.length) %
+              filteredTemplates.length,
+          );
+          return;
+        }
+        if (
+          (e.key === "Enter" && !e.shiftKey) ||
+          (e.key === "Tab" && !e.shiftKey)
+        ) {
+          if (templateHighlightIndex >= 0) {
+            e.preventDefault();
+            const picked = filteredTemplates[templateHighlightIndex];
+            if (picked) pickTemplate(picked);
+            return;
+          }
+        }
+      }
+    }
     // Slash-command layer runs first so Escape closes the popover (not the
     // stream) and Enter/Tab can pick a highlighted command before falling
     // through to the send path.
@@ -646,6 +796,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         onClose={() => setSlashDismissed(true)}
         listboxId={slashListboxId}
         optionIdPrefix={slashOptionPrefix}
+        anchorRef={capsuleRef}
+      />
+      <TemplatePickerPopover
+        open={templatePickerOpen}
+        items={filteredTemplates}
+        query=""
+        selectedIndex={templateHighlightIndex}
+        onSelectedIndexChange={setTemplateSelectedIndex}
+        onPick={pickTemplate}
+        onClose={() => setTemplatePickerOpen(false)}
+        loading={!templatesLoaded}
+        listboxId={templateListboxId}
+        optionIdPrefix={templateOptionPrefix}
         anchorRef={capsuleRef}
       />
       {attachments.length > 0 || attachmentReadPending || attachmentNotice ? (
@@ -754,6 +917,34 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             </Tooltip>
           </>
         ) : null}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={openTemplatePicker}
+                // Disabled mid-stream (parity with attach/dictation). The brand
+                // tint gives sighted users the same "open" signal aria-pressed
+                // conveys to AT.
+                disabled={isStreaming}
+                aria-pressed={templatePickerOpen}
+                aria-haspopup="listbox"
+                aria-label="Insert a prompt template"
+                data-testid="composer-templates"
+                className={cn(
+                  "size-11 shrink-0 rounded-full p-0",
+                  templatePickerOpen
+                    ? "text-brand hover:text-brand"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Library className="size-4" />
+              </Button>
+            }
+          />
+          <TooltipContent>Insert a prompt template</TooltipContent>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger
             render={

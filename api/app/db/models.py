@@ -690,3 +690,37 @@ class Project(Base):
     )
 
     __table_args__ = (Index("ix_project_user_created", "user_id", "created_at"),)
+
+
+class PromptTemplate(Base):
+    """A user-authored, reusable prompt template (D23).
+
+    Selecting a template prefills the composer with `body` — a PURE composer
+    prefill with NO model/cost/provider change. `body` may carry literal
+    variable placeholders (e.g. `{{topic}}`) that the user fills in after
+    insertion. `title` labels the template in the picker/manager; `description`
+    is an optional one-line hint. The user FK is CASCADE so account erasure
+    removes the library.
+    """
+
+    __tablename__ = "prompt_template"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_prompt_template_user_created", "user_id", "created_at"),
+    )

@@ -154,7 +154,7 @@ P0 Continue is a new continuation request; it is **not** P1 resumable replay.
 
 > **Taxonomy reconciliation — `SAFETY_BLOCKED` is the as-built code; `INPUT_MODERATION` is its documented alias.** The shipped safety preflight emits `SAFETY_BLOCKED` (`routes/conversations.py::_safety_blocked`), while earlier drafts of this PRD named the same state `INPUT_MODERATION`. These are **one state, not two**: `SAFETY_BLOCKED` is the canonical, as-built code that the client must recognize; `INPUT_MODERATION` is retained only as its documented alias for cross-reference continuity. New clients key off `SAFETY_BLOCKED`. The block is gated by `SAFETY_BACKEND` (default `disabled`; `local` = operator blocklist); with `SAFETY_BACKEND=disabled` (the prod default today) no block fires and behavior is byte-identical.
 
-#### 5.6.1 Transparent block + appeal **[P1]**
+#### 5.6.1 Transparent block + appeal **[Shipped — #145]**
 
 The safety preflight (`safety/moderation.py::check_user_turn`) already computes a structured `SafetyDecision(allowed, reason_code, source)` where `source ∈ {message, attachment, custom_instructions}` and `reason_code = "configured_blocklist"`. Today the block surfaces with `severity: "warning"` but a **generic** body ("matched a configured safety rule") and no user-facing explanation or recourse. On a transparency-first product an opaque or silent block is an own-goal — the same failure the §5.4 guest-downgrade note calls out. F4 closes it by making the block transparent and appealable. **This is "never silently downgrade/modify" applied to safety: we never silently block or silently edit — we always surface a visible reason, and we offer recourse.**
 
@@ -236,22 +236,22 @@ Terminal events feed PRD 05 analytics.
 |---|---|---|---|
 | Stream fail/stop/timeout/409 | Yes | — | — |
 | Provider 429/5xx | Yes | Automated fallback UX — **P1: Shipped (backend)** | — |
-| Platform/guest/tier caps | Yes | Rich credit packs; budget alerts + soft-cap + per-conversation cap (E6) | Team/admin limits |
+| Platform/guest/tier caps | Yes | Rich credit packs; budget alerts + soft-cap + per-conversation cap (E6) — **soft-cap + per-conversation cap Shipped (#144)** | Team/admin limits |
 | BYOK errors | Yes | — | — |
 | Offline queue + optimistic send | Yes | Background sync replay where supported | — |
 | Resumable-stream Continue | Partial+Continue request | True replay — **P1: Shipped\* (`RESUMABLE_STREAMS_ENABLED`)** | — |
 | Tool/HITL errors | Reserved | Yes — **P1: Shipped\* (`TOOLS_ENABLED`)** | — |
-| Moderation appeals | — | User-facing transparency + appeal capture (F4 §5.6.1) | Operator appeal-review tooling |
-| Platform/provider status transparency | — | Public `/api/status` + degraded-provider banner (F6) | — |
+| Moderation appeals | — | User-facing transparency + appeal capture (F4 §5.6.1) — **Shipped (#145)** | Operator appeal-review tooling |
+| Platform/provider status transparency | — | Public `/api/status` + `/status` page + degraded-provider banner (F6) — **Shipped (#145)** | — |
 
 > **Shipped-on-`main` annotations (\* = behind a default-off flag; inert until enabled).**
 > - **Provider 429/5xx → P1 Shipped (backend):** a single-shot, pre-first-token provider fallback is live (`api/app/routes/conversations.py::_select_fallback_route` + `streaming/handler.py`). It retries once on an alternate route for a retryable error (rate-limit / upstream) raised before any token, and records the substitution as `provider_fallback` (or `rate_limited`) per PRD 07 §5 — surfaced as a transparency callout, not a red error banner (§5.7). The automated *fallback UX* still belongs to the FE.
 > - **Resumable-stream Continue → P1 Shipped\* (`RESUMABLE_STREAMS_ENABLED`):** true detached-producer replay + reconnect ships behind the default-off flag (prod additionally requires `STREAM_STATE_BACKEND=redis`). The **P0 `continueTurn`** path (a new continuation request that preserves the stopped partial; `NET_INTERRUPTED` Continue) is fully shipped and on by default — see §5.2.
 > - **Tool/HITL errors → P1 Shipped\* (`TOOLS_ENABLED`):** the agent loop + HITL approval gate ship behind the default-off `TOOLS_ENABLED` flag. A paused turn ends in the persisted `awaiting_approval` terminal; a failed/timed-out/denied tool yields a failed/cancelled `tool_result` (the turn keeps going) rather than erroring the whole turn.
 
-> **Net-new for this roadmap (not yet on `main`).**
-> - **Platform/provider status transparency (F6, P1).** A public `GET /api/status` (unauthenticated, like `/api/share/{token}`) returns per-route operational state (operational / degraded / down) derived from recent `Stream` terminal-event error/fallback rates over a configurable window, plus a short incident list — no third-party status vendor, no PII, no secrets. A route flips to "degraded" when its windowed error/fallback rate exceeds a configurable threshold and flips back on recovery. The §5.3 `PROVIDER_ERROR` "Status link" action targets this surface (resolving §13 #4); an in-app degraded-provider banner (`role="status"`, dismissible per session, reusing §5.7 substitution copy, linking to the model directory to switch routes) shows only when the *active* route is degraded. (Cite D30.)
-> - **Moderation appeals split (F4, was P2-only).** User-facing transparency + appeal *capture* moves to **P1** (§5.6.1); only the **operator** appeal-review tooling stays **P2** (no automated unblock in P1). (Cite D30.)
+> **Shipped on `main` (D30, #145).**
+> - **Platform/provider status transparency (F6 — shipped).** A public `GET /api/status` (unauthenticated, like `/api/share/{token}`) + a `/status` page returns per-route operational state (operational / degraded / down) derived from recent `Stream` terminal-event error/fallback rates over a configurable window, plus a short incident list — no third-party status vendor, no PII, no secrets. A route flips to "degraded" when its windowed error/fallback rate exceeds a configurable threshold and flips back on recovery. The §5.3 `PROVIDER_ERROR` "Status link" action targets this surface (resolving §13 #4); an in-app degraded-provider banner (`role="status"`, dismissible per session, reusing §5.7 substitution copy, linking to the model directory to switch routes) shows only when the *active* route is degraded. (Cite D30.)
+> - **Moderation appeals split (F4, was P2-only — appeal capture now shipped).** User-facing transparency + appeal *capture* shipped (§5.6.1; `POST /api/account/moderation-appeal`); only the **operator** appeal-review tooling stays **P2** (no automated unblock). (Cite D30.)
 
 ---
 
@@ -289,5 +289,5 @@ Terminal events feed PRD 05 analytics.
 1. Exact free-tier caps (PRD 05 §9.3).
 2. Soft timeout values per model/tier.
 3. Whether P0 exposes both Continue and Regenerate, or a primary "Continue" plus secondary menu.
-4. ~~Provider status page strategy.~~ **Resolved (F6, D30):** a first-party public `GET /api/status` surface derived from `Stream` terminal-event error/fallback rates (no third-party status vendor for v1) + an in-app degraded-provider banner; the §5.3 `PROVIDER_ERROR` "Status link" wires to it. See §5.3 and §10. *(Open input that remains: the windowed degraded-state threshold value — a tuning constant, not a strategy question.)*
-5. ~~Moderation appeal flow timing.~~ **Resolved (F4, D30):** user-facing transparent block + appeal *capture* ships **P1** (§5.6.1); the **operator** appeal-review tooling (and any automated unblock) stays **P2**. See §5.6.1 and the §10 phase table.
+4. ~~Provider status page strategy.~~ **Resolved + shipped (F6, D30, #145):** a first-party public `GET /api/status` surface (+ `/status` page) derived from `Stream` terminal-event error/fallback rates (no third-party status vendor for v1) + an in-app degraded-provider banner; the §5.3 `PROVIDER_ERROR` "Status link" wires to it. See §5.3 and §10. *(Open input that remains: the windowed degraded-state threshold value — a tuning constant, not a strategy question.)*
+5. ~~Moderation appeal flow timing.~~ **Resolved (F4, D30, #145):** user-facing transparent block + appeal *capture* shipped (§5.6.1; `POST /api/account/moderation-appeal`); the **operator** appeal-review tooling (and any automated unblock) stays **P2**. See §5.6.1 and the §10 phase table.

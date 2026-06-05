@@ -72,6 +72,8 @@ import {
   createConversation,
   deleteAccount,
   deleteConversation,
+  createProject,
+  deleteProject,
   fetchAccountExport,
   fetchBootstrap,
   fetchConversation,
@@ -80,7 +82,9 @@ import {
   postAuthSignout,
   putPreferences,
   searchConversations,
+  updateProject,
   type BootstrapResponse,
+  type ProjectUpdateInput,
 } from "@/lib/apiClient";
 import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
 import { reportTelemetry } from "@/lib/telemetry";
@@ -94,6 +98,7 @@ import type {
   MessagePart,
   ModelTier,
   ModelTierId,
+  Project,
   ProviderTierOption,
   ReasoningEffortId,
   UsageBudget,
@@ -406,6 +411,10 @@ export function ChatThread() {
   const effortAtSendRef = useRef<ReasoningEffortId>(selectedReasoningEffortId);
   const selectedTierIdRef = useRef<ModelTierId>(selectedTierId);
   const selectedProviderIdRef = useRef<string | undefined>(selectedProviderId);
+  // Live mirror of the project context for a NEW chat (D20), so the send path's
+  // `useCallback` reads the current value without re-creating on every list
+  // change. Synced in an effect once `activeProjectId` is derived below.
+  const activeProjectIdRef = useRef<string | null>(null);
   // The optimistic id of the user message we just sent — set on send, cleared
   // on terminal (after we replace it with the server-issued uuid). Reconciling
   // user + assistant ids happens together on the `terminal` callback so the
@@ -648,6 +657,27 @@ export function ChatThread() {
     if (bootstrap && !conversationsHydratedRef.current) {
       conversationsHydratedRef.current = true;
       setConversations(bootstrap.conversations);
+    }
+  }, [bootstrap]);
+
+  // Projects/Spaces (D20). Same hydrate-once-then-own-locally discipline as the
+  // conversation list. `Project` (the full shape) is a superset of the bootstrap
+  // `ProjectSummary`, so the summaries hydrate this list directly.
+  const [projects, setProjects] = useState<Project[]>([]);
+  const projectsHydratedRef = useRef(false);
+  useEffect(() => {
+    if (bootstrap && !projectsHydratedRef.current) {
+      projectsHydratedRef.current = true;
+      setProjects(
+        (bootstrap.projects ?? []).map((p) => ({
+          ...p,
+          // ProjectSummary omits timestamps; fill placeholders so the FE `Project`
+          // shape is satisfied. They are only used by the export view, never the
+          // sidebar/settings, so the empty string is inert here.
+          createdAt: "",
+          updatedAt: "",
+        })),
+      );
     }
   }, [bootstrap]);
 
@@ -973,10 +1003,17 @@ export function ChatThread() {
       let conversationId = activeConversationId;
       if (!conversationId) {
         try {
+          // File a fresh (non-temporary) chat under the active project context
+          // (D20) when one exists; temp chats can't carry a project.
+          const projectIdForCreate =
+            !isTemporary && activeProjectIdRef.current
+              ? activeProjectIdRef.current
+              : undefined;
           const created = await createConversation({
             selectedTierId: args.tierId,
             isTemporary,
             providerId: args.providerId,
+            ...(projectIdForCreate ? { projectId: projectIdForCreate } : {}),
           });
           // Stop pressed during the create round-trip — abandon this turn
           // before arming the stream. handleStop already cleared the optimistic
@@ -995,6 +1032,7 @@ export function ChatThread() {
               title: created.title,
               updatedAt: new Date().toISOString(),
               pinned: false,
+              projectId: created.projectId ?? null,
             };
             setConversations((prev) => [summary, ...prev]);
           }
@@ -1924,6 +1962,131 @@ export function ChatThread() {
     });
   };
 
+  // --- Projects/Spaces (D20) -------------------------------------------------
+
+  // File (projectId) or un-file (null) a conversation. Optimistic + rollback +
+  // toast, mirroring `handleSetConversationRetention`.
+  const handleAssignConversationToProject = (
+    id: string,
+    projectId: string | null,
+  ) => {
+    const previous = conversations;
+    const target = previous.find((c) => c.id === id);
+    if (!target || (target.projectId ?? null) === projectId) return;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, projectId } : c)),
+    );
+    void patchConversation(id, { projectId }).catch((cause) => {
+      setConversations(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't move conversation",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
+    });
+  };
+
+  // Create a project. Optimistic insert with a temporary id replaced by the
+  // server row on success; rollback + toast on failure.
+  const handleCreateProject = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const tempId = `temp-project-${crypto.randomUUID()}`;
+    const optimistic: Project = {
+      id: tempId,
+      name: trimmed,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    setProjects((prev) => [optimistic, ...prev]);
+    void createProject({ name: trimmed })
+      .then((created) => {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === tempId ? created : p)),
+        );
+      })
+      .catch((cause) => {
+        setProjects((prev) => prev.filter((p) => p.id !== tempId));
+        if (cause instanceof ApiError) setLiveMessage(cause.title);
+        showToast({
+          severity: "error",
+          title:
+            cause instanceof ApiError ? cause.title : "Couldn't create project",
+          body:
+            cause instanceof ApiError
+              ? cause.body
+              : cause instanceof Error
+                ? cause.message
+                : undefined,
+        });
+      });
+  };
+
+  // Shared optimistic project-settings update (rename + the settings panel).
+  const handleUpdateProject = (id: string, patch: ProjectUpdateInput) => {
+    const previous = projects;
+    const target = previous.find((p) => p.id === id);
+    if (!target) return;
+    setProjects((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+    );
+    void updateProject(id, patch).catch((cause) => {
+      setProjects(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't update project",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
+    });
+  };
+
+  const handleRenameProject = (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    handleUpdateProject(id, { name: trimmed });
+  };
+
+  // Delete a project. Conversations are un-filed (BE SET NULL); reflect that
+  // locally by clearing membership on any conversation that pointed at it.
+  const handleDeleteProject = (id: string) => {
+    const previousProjects = projects;
+    const previousConversations = conversations;
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    setConversations((prev) =>
+      prev.map((c) => (c.projectId === id ? { ...c, projectId: null } : c)),
+    );
+    void deleteProject(id).catch((cause) => {
+      setProjects(previousProjects);
+      setConversations(previousConversations);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't delete project",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
+    });
+  };
+
   const handlePreferencesChange = (next: UserPreferences) => {
     if (!bootstrap) return;
     const previous = bootstrap.preferences;
@@ -2374,6 +2537,23 @@ export function ChatThread() {
     ? conversations.find((c) => c.id === activeConversationId)?.title ?? null
     : null;
 
+  // Project/Space context for a NEW chat (D20): when the user is viewing a
+  // conversation filed under a known project, a fresh chat started from that
+  // context inherits the project (so the BE pre-seeds its default tier and
+  // scopes its instructions/retention/budget). On the welcome screen (no active
+  // conversation) a new chat is unfiled. A `projectId` pointing at a project not
+  // in the current list (stale) is treated as unfiled.
+  const activeProjectId: string | null = (() => {
+    if (!activeConversationId) return null;
+    const active = conversations.find((c) => c.id === activeConversationId);
+    const pid = active?.projectId ?? null;
+    if (pid && projects.some((p) => p.id === pid)) return pid;
+    return null;
+  })();
+  useEffect(() => {
+    activeProjectIdRef.current = activeProjectId;
+  }, [activeProjectId]);
+
   // Custom instructions live inside the settings dialog in MVP; wiring the
   // shortcut now so muscle memory transfers when a dedicated panel ships.
   const handleOpenCustomInstructions = () => {
@@ -2569,6 +2749,12 @@ export function ChatThread() {
             onCopyConversation={handleCopyConversationById}
             onDownloadConversation={handleDownloadConversationById}
             onOpenSettings={handleOpenSettings}
+            projects={projects}
+            onAssignConversationToProject={handleAssignConversationToProject}
+            onCreateProject={handleCreateProject}
+            onRenameProject={handleRenameProject}
+            onDeleteProject={handleDeleteProject}
+            onManageProjects={handleOpenSettings}
             onSignIn={() => setAuthOpen(true)}
             onSignOut={handleSignOut}
             onCollapse={() => {
@@ -2871,6 +3057,8 @@ export function ChatThread() {
           setSettingsOpen(false);
           setModelDirectoryOpen(true);
         }}
+        projects={projects}
+        onUpdateProject={handleUpdateProject}
       />
 
       <ActivityDialog

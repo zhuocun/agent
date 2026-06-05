@@ -73,6 +73,7 @@ test.describe("bootstrap", () => {
     expect(body).toHaveProperty("modelTiers");
     expect(body).toHaveProperty("suggestions");
     expect(body).toHaveProperty("conversations");
+    expect(body).toHaveProperty("projects");
 
     // Spot-check camelCase keys on nested objects.
     expect(body.account).toHaveProperty("planLabel");

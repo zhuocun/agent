@@ -366,6 +366,9 @@ export interface Conversation {
   // the user's global `UserPreferences.retentionDays`. Drives the kebab
   // retention control + the "expires in ~N days" hint.
   retentionDays?: number | null;
+  // Project/Space membership (D20). `null`/absent = unfiled. Drives the
+  // Projects grouping in the sidebar + the "Assign to project" control.
+  projectId?: string | null;
 }
 
 // A lightweight history-list entry for the sidebar (PRD 01 §4.2 / PRD 03).
@@ -383,6 +386,35 @@ export interface ConversationSummary {
   // the user's global retention. Echoed on the sidebar summary so the kebab
   // control + "expires in ~N days" hint render without a follow-up GET.
   retentionDays?: number | null;
+  // Project/Space membership (D20). `null`/absent = unfiled. Echoed on the
+  // sidebar summary so the Projects grouping renders without a follow-up GET.
+  projectId?: string | null;
+}
+
+// A Project/Space (D20): a thin scoping container that groups conversations and
+// scopes the existing wedge controls — default tier, retention, per-conversation
+// budget sub-cap, and shared custom instructions. Every setting is OPTIONAL and
+// `null` means "inherit the user-global value" (a labeled default, not a lock).
+export interface Project {
+  id: string;
+  name: string;
+  customInstructions?: string | null;
+  defaultTierId?: ModelTierId | null;
+  retentionDays?: number | null;
+  perConversationBudgetUsd?: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// The bootstrap sidebar shape for a Project: the settings ride along so the
+// FE pickers can render, but the timestamps stay out.
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  customInstructions?: string | null;
+  defaultTierId?: ModelTierId | null;
+  retentionDays?: number | null;
+  perConversationBudgetUsd?: number | null;
 }
 
 // User-editable preferences surfaced in the settings panel (PRD 06 §5.7 / PRD 05).

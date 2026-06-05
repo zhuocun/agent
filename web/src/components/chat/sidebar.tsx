@@ -12,6 +12,8 @@ import {
 import {
   ClipboardCopy,
   Download,
+  Folder,
+  FolderPlus,
   Key,
   LogIn,
   LogOut,
@@ -56,6 +58,7 @@ import {
   isAnonymousAccount,
   type AccountInfo,
   type ConversationSummary,
+  type ProjectSummary,
 } from "@/lib/types";
 
 // Width of the swipe-revealed trailing action tray (two 64px action buttons).
@@ -79,6 +82,16 @@ export interface SidebarProps {
   onCopyConversation: (id: string) => void;
   onDownloadConversation: (id: string) => void;
   onOpenSettings: () => void;
+  // Projects/Spaces (D20). `projects` is the caller's container set; the other
+  // callbacks file/un-file a conversation and create/rename/delete a project.
+  // `onManageProjects` opens the per-project settings panel (in the settings
+  // dialog). All optional so a stale embedding of <Sidebar/> still type-checks.
+  projects?: ProjectSummary[];
+  onAssignConversationToProject?: (id: string, projectId: string | null) => void;
+  onCreateProject?: (name: string) => void;
+  onRenameProject?: (id: string, name: string) => void;
+  onDeleteProject?: (id: string) => void;
+  onManageProjects?: () => void;
   onSignIn: () => void;
   onSignOut: () => void;
   onCollapse?: () => void; // desktop: hide the sidebar rail; omit the button if undefined
@@ -216,10 +229,12 @@ function ConversationRow({
   conversation,
   active,
   activeRowRef,
+  projects,
   onSelect,
   onRename,
   onTogglePin,
   onSetRetention,
+  onAssignProject,
   onCopy,
   onDownload,
   onRequestDelete,
@@ -227,10 +242,12 @@ function ConversationRow({
   conversation: ConversationSummary;
   active: boolean;
   activeRowRef?: React.RefObject<HTMLDivElement | null>;
+  projects: ProjectSummary[];
   onSelect: (id: string) => void;
   onRename: (id: string, newTitle: string) => void;
   onTogglePin: (id: string) => void;
   onSetRetention: (id: string, retentionDays: number | null) => void;
+  onAssignProject?: (id: string, projectId: string | null) => void;
   onCopy: (id: string) => void;
   onDownload: (id: string) => void;
   onRequestDelete: (conversation: ConversationSummary) => void;
@@ -579,6 +596,40 @@ function ConversationRow({
               </DropdownMenuRadioGroup>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
+          {onAssignProject ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger
+                className="gap-2"
+                data-testid="sidebar-conversation-assign-project"
+              >
+                <Folder className="size-4" aria-hidden />
+                <span>Assign to project</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <DropdownMenuRadioGroup
+                  // The wire `projectId` is nullable; round-trip `null`
+                  // ("No project") through base-ui's string RadioGroup with the
+                  // sentinel "none".
+                  value={conversation.projectId ?? "none"}
+                  onValueChange={(next) => {
+                    onAssignProject(
+                      conversation.id,
+                      next === "none" ? null : next,
+                    );
+                  }}
+                >
+                  <DropdownMenuRadioItem value="none">
+                    No project
+                  </DropdownMenuRadioItem>
+                  {projects.map((project) => (
+                    <DropdownMenuRadioItem key={project.id} value={project.id}>
+                      {project.name}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : null}
           <DropdownMenuItem
             label="Copy conversation"
             onClick={() => onCopy(conversation.id)}
@@ -866,6 +917,12 @@ export function Sidebar({
   onCopyConversation,
   onDownloadConversation,
   onOpenSettings,
+  projects = [],
+  onAssignConversationToProject,
+  onCreateProject,
+  onRenameProject,
+  onDeleteProject,
+  onManageProjects,
   onSignIn,
   onSignOut,
   onCollapse,
@@ -904,12 +961,72 @@ export function Sidebar({
         )
         .map((r) => r.conversation)
     : displayConversations;
+  // Conversations filed under a KNOWN project render in the Projects section, so
+  // the recency groups exclude them to avoid double-listing. A conversation
+  // whose `projectId` points at a project not in this list (e.g. a stale id)
+  // still falls through to the recency groups so it never disappears.
+  const knownProjectIds = new Set(projects.map((p) => p.id));
+  const recencyConversations = isSearching
+    ? filteredConversations
+    : filteredConversations.filter(
+        (c) => !(c.projectId && knownProjectIds.has(c.projectId)),
+      );
   const groups = isSearching
     ? new Map<RecencyKey, ConversationSummary[]>()
-    : groupConversations(filteredConversations);
+    : groupConversations(recencyConversations);
 
   const [pendingDelete, setPendingDelete] =
     useState<ConversationSummary | null>(null);
+  // Projects/Spaces (D20): the inline create/rename dialog state, and the
+  // pending project deletion confirmation. `projectDialog` is null when closed;
+  // `{ mode: "create" }` opens a name prompt; `{ mode: "rename", id, name }`
+  // pre-fills the existing name. The dialog is functional and consistent with
+  // the conversation-delete confirmation already in this file.
+  const [projectDialog, setProjectDialog] = useState<
+    { mode: "create" } | { mode: "rename"; id: string; name: string } | null
+  >(null);
+  const [projectDraft, setProjectDraft] = useState("");
+  const [pendingProjectDelete, setPendingProjectDelete] =
+    useState<ProjectSummary | null>(null);
+
+  // Group conversations by project for the Projects section. Only conversations
+  // actually filed under each project appear; the per-project bucket reuses the
+  // live `displayConversations` so optimistic assigns/detaches reflect instantly.
+  const conversationsByProject = new Map<string, ConversationSummary[]>();
+  for (const conversation of displayConversations) {
+    const pid = conversation.projectId;
+    if (!pid) continue;
+    const bucket = conversationsByProject.get(pid);
+    if (bucket) bucket.push(conversation);
+    else conversationsByProject.set(pid, [conversation]);
+  }
+
+  const openCreateProject = () => {
+    setProjectDraft("");
+    setProjectDialog({ mode: "create" });
+  };
+  const openRenameProject = (project: ProjectSummary) => {
+    setProjectDraft(project.name);
+    setProjectDialog({ mode: "rename", id: project.id, name: project.name });
+  };
+  const submitProjectDialog = () => {
+    const trimmed = projectDraft.trim();
+    if (!trimmed || !projectDialog) {
+      setProjectDialog(null);
+      return;
+    }
+    if (projectDialog.mode === "create") {
+      onCreateProject?.(trimmed);
+    } else if (trimmed !== projectDialog.name) {
+      onRenameProject?.(projectDialog.id, trimmed);
+    }
+    setProjectDialog(null);
+  };
+  const confirmProjectDelete = () => {
+    if (!pendingProjectDelete) return;
+    onDeleteProject?.(pendingProjectDelete.id);
+    setPendingProjectDelete(null);
+  };
 
   const activeRowRef = useRef<HTMLDivElement | null>(null);
   // useLayoutEffect avoids a flash on mobile-drawer open: each drawer mount is a
@@ -939,10 +1056,12 @@ export function Sidebar({
           conversation={conversation}
           active={conversation.id === activeId}
           activeRowRef={activeRowRef}
+          projects={projects}
           onSelect={onSelect}
           onRename={onRenameConversation}
           onTogglePin={onTogglePinConversation}
           onSetRetention={onSetConversationRetention}
+          onAssignProject={onAssignConversationToProject}
           onCopy={onCopyConversation}
           onDownload={onDownloadConversation}
           onRequestDelete={setPendingDelete}
@@ -1038,29 +1157,152 @@ export function Sidebar({
                 {filteredConversations.map(renderRow)}
               </div>
             )
-          ) : displayConversations.length === 0 ? (
-            <div className="px-2 py-6 text-center text-sm text-muted-foreground">
-              No chats yet — start one above
-            </div>
           ) : (
-            GROUP_ORDER.map((key) => {
-              const items = groups.get(key);
-              if (!items || items.length === 0) {
-                return null;
-              }
-              return (
-                // Ma: tripled inter-group gutter so the recency label gains
-                // weight from surrounding silence, not from size or color.
-                <div key={key} className="mb-6">
-                  <div className="px-2 pb-2 pt-1 text-xs font-semibold text-muted-foreground">
-                    {RECENCY_LABELS[key]}
+            <>
+              {/* Projects/Spaces (D20). Rendered above the recency groups. Each
+                  project is a labeled container with its filed conversations and
+                  a kebab to manage settings / rename / delete. */}
+              {onCreateProject || projects.length > 0 ? (
+                <div className="mb-6" data-testid="sidebar-projects">
+                  <div className="flex items-center justify-between px-2 pb-1 pt-1">
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      Projects
+                    </span>
+                    {onCreateProject ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        aria-label="New project"
+                        data-testid="sidebar-new-project"
+                        onClick={openCreateProject}
+                        className="size-7 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <FolderPlus className="size-4" aria-hidden />
+                      </Button>
+                    ) : null}
                   </div>
-                  <div role="list" aria-label={RECENCY_LABELS[key]}>
-                    {items.map(renderRow)}
-                  </div>
+                  {projects.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-muted-foreground">
+                      No projects yet
+                    </div>
+                  ) : (
+                    projects.map((project) => {
+                      const filed =
+                        conversationsByProject.get(project.id) ?? [];
+                      return (
+                        <div
+                          key={project.id}
+                          className="mb-2"
+                          data-testid="sidebar-project"
+                        >
+                          <div className="group/proj flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-sidebar-foreground hover:bg-muted/60">
+                            <Folder
+                              className="size-4 shrink-0 text-muted-foreground"
+                              aria-hidden
+                            />
+                            <span
+                              className="min-w-0 flex-1 truncate font-medium"
+                              data-testid="sidebar-project-name"
+                            >
+                              {project.name}
+                            </span>
+                            <span className="shrink-0 text-xs text-muted-foreground">
+                              {filed.length}
+                            </span>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger
+                                render={
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    aria-label="Project actions"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground md:opacity-0 md:group-hover/proj:opacity-100 md:aria-expanded:opacity-100"
+                                  >
+                                    <MoreHorizontal
+                                      className="size-4"
+                                      aria-hidden
+                                    />
+                                  </Button>
+                                }
+                              />
+                              <DropdownMenuContent align="end" className="w-44">
+                                {onManageProjects ? (
+                                  <DropdownMenuItem
+                                    label="Project settings"
+                                    onClick={onManageProjects}
+                                    className="gap-2"
+                                  >
+                                    <Settings className="size-4" aria-hidden />
+                                    <span>Project settings</span>
+                                  </DropdownMenuItem>
+                                ) : null}
+                                {onRenameProject ? (
+                                  <DropdownMenuItem
+                                    label="Rename project"
+                                    onClick={() => openRenameProject(project)}
+                                    className="gap-2"
+                                  >
+                                    <Pencil className="size-4" aria-hidden />
+                                    <span>Rename</span>
+                                  </DropdownMenuItem>
+                                ) : null}
+                                {onDeleteProject ? (
+                                  <DropdownMenuItem
+                                    label="Delete project"
+                                    variant="destructive"
+                                    onClick={() =>
+                                      setPendingProjectDelete(project)
+                                    }
+                                    className="gap-2"
+                                  >
+                                    <Trash2 className="size-4" aria-hidden />
+                                    <span>Delete</span>
+                                  </DropdownMenuItem>
+                                ) : null}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                          {filed.length > 0 ? (
+                            <div
+                              role="list"
+                              aria-label={`${project.name} conversations`}
+                              className="ml-2 border-l border-border/60 pl-1"
+                            >
+                              {filed.map(renderRow)}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
-              );
-            })
+              ) : null}
+              {displayConversations.length === 0 ? (
+                <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                  No chats yet — start one above
+                </div>
+              ) : recencyConversations.length === 0 ? null : (
+                GROUP_ORDER.map((key) => {
+                  const items = groups.get(key);
+                  if (!items || items.length === 0) {
+                    return null;
+                  }
+                  return (
+                    // Ma: tripled inter-group gutter so the recency label gains
+                    // weight from surrounding silence, not from size or color.
+                    <div key={key} className="mb-6">
+                      <div className="px-2 pb-2 pt-1 text-xs font-semibold text-muted-foreground">
+                        {RECENCY_LABELS[key]}
+                      </div>
+                      <div role="list" aria-label={RECENCY_LABELS[key]}>
+                        {items.map(renderRow)}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </>
           )}
         </div>
       </ScrollArea>
@@ -1162,6 +1404,101 @@ export function Sidebar({
               // Solid native-destructive fill (not the soft tint the variant
               // uses elsewhere) so the primary commit action reads clearly; 44px
               // iOS touch target.
+              className="h-11 rounded-full bg-destructive px-6 text-white hover:bg-destructive/90 dark:bg-destructive dark:text-white dark:hover:bg-destructive/90"
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Project create / rename prompt (D20). */}
+      <Dialog
+        open={projectDialog !== null}
+        onOpenChange={(next) => {
+          if (!next) setProjectDialog(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>
+              {projectDialog?.mode === "rename" ? "Rename project" : "New project"}
+            </DialogTitle>
+            <DialogDescription>
+              Projects group conversations and scope shared defaults.
+            </DialogDescription>
+          </DialogHeader>
+          <input
+            type="text"
+            value={projectDraft}
+            placeholder="Project name"
+            aria-label="Project name"
+            data-testid="sidebar-project-name-input"
+            autoFocus
+            maxLength={200}
+            onChange={(event) => setProjectDraft(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submitProjectDialog();
+              }
+            }}
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setProjectDialog(null)}
+              className="h-11 rounded-full px-6"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={submitProjectDialog}
+              disabled={projectDraft.trim().length === 0}
+              data-testid="sidebar-project-save"
+              className="h-11 rounded-full px-6"
+            >
+              {projectDialog?.mode === "rename" ? "Save" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Project delete confirmation (D20). Un-files conversations, never deletes
+          them — the copy makes that explicit. */}
+      <Dialog
+        open={pendingProjectDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingProjectDelete(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Delete project?</DialogTitle>
+            <DialogDescription>
+              {pendingProjectDelete
+                ? `This deletes "${pendingProjectDelete.name}". Its conversations are kept and moved out of the project.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setPendingProjectDelete(null)}
+              className="h-11 rounded-full px-6"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={confirmProjectDelete}
+              data-testid="sidebar-project-delete-confirm"
               className="h-11 rounded-full bg-destructive px-6 text-white hover:bg-destructive/90 dark:bg-destructive dark:text-white dark:hover:bg-destructive/90"
             >
               Delete

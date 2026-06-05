@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Activity, AlertTriangle, Loader2, RotateCcw, SearchX } from "lucide-react";
+import { Activity, AlertTriangle, Brain, Loader2, RotateCcw, SearchX } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import {
@@ -64,6 +64,9 @@ interface AssistantMessageProps {
   }) => void;
   onFeedback?: (next: Feedback) => void;
   onAttributionOpen?: () => void;
+  // Open the Memory manager (D19). Wired to the "Memory used here" chip that
+  // appears when this turn injected saved facts.
+  onMemoryOpen?: () => void;
   defaultReasoningOpen?: boolean;
   // Set only when `status === "error"` — the canonical ApiErrorEnvelope from
   // the terminal frame. Drives the inline chip + Details + Retry.
@@ -127,6 +130,7 @@ export function AssistantMessage({
   onToolDecision,
   onFeedback,
   onAttributionOpen,
+  onMemoryOpen,
   defaultReasoningOpen = false,
   error,
 }: AssistantMessageProps) {
@@ -249,6 +253,12 @@ export function AssistantMessage({
                   onOpen={onAttributionOpen}
                 />
               ) : null}
+              {message.attribution?.memoryApplied ? (
+                <MemoryUsedChip
+                  count={message.attribution.memoryApplied}
+                  onOpen={onMemoryOpen}
+                />
+              ) : null}
               {isStopped ? <StoppedChip /> : null}
             </div>
           ) : null}
@@ -308,6 +318,35 @@ function StoppedChip() {
     >
       Stopped
     </span>
+  );
+}
+
+// "Memory used here" indicator (D19): shown when this turn injected saved facts.
+// Turn-level (not per-fact) attribution is the v1 scope. Clicking opens the
+// Memory manager so the user can review/edit exactly what the assistant can see.
+function MemoryUsedChip({
+  count,
+  onOpen,
+}: {
+  count: number;
+  onOpen?: () => void;
+}) {
+  const label = `Memory used here · ${count} ${count === 1 ? "fact" : "facts"}`;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`${label}. Open memory manager.`}
+      data-testid="memory-used-chip"
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full bg-foreground/[0.06] px-2 py-0.5 text-xs text-muted-foreground",
+        "outline-none transition-colors hover:text-foreground",
+        "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+      )}
+    >
+      <Brain aria-hidden className="size-3" />
+      <span>Memory used here</span>
+    </button>
   );
 }
 

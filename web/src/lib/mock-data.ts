@@ -1,4 +1,22 @@
-import type { SlashCommand } from "@/lib/types";
+import type { SlashCommand, UserPreferences } from "@/lib/types";
+
+// Privacy-first default preferences. MIRRORS the backend defaults in
+// api/app/db/repositories/preferences.py `_DEFAULTS` (asserted in
+// api/tests/test_preferences.py): any change here must land there too. Used as
+// the FE's optimistic baseline before bootstrap resolves the saved row.
+export const MOCK_PREFERENCES: UserPreferences = {
+  defaultTierId: "auto",
+  temporaryByDefault: false,
+  trainingOptIn: false,
+  sendOnEnter: true,
+  autoExpandReasoning: false,
+  telemetryEnabled: true,
+  customInstructions: "",
+  retentionDays: null,
+  monthlyBudgetUsd: null,
+  perConversationBudgetUsd: null,
+  memoryEnabled: false,
+};
 
 // Native slash commands (PRD 01 §4.3 / §5.3). Templates end with a trailing
 // space (one-liners) or an empty body inside code fences (multi-line) so the

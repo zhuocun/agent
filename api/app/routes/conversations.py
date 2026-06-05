@@ -38,6 +38,7 @@ from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import audit_events as audit_events_repo
 from app.db.repositories import billing as billing_repo
 from app.db.repositories import conversations as conversations_repo
+from app.db.repositories import memory_facts as memory_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import preferences as preferences_repo
 from app.db.repositories import streams as streams_repo
@@ -1866,6 +1867,15 @@ async def send_message(
                 },
             )
 
+    # Transparent long-term memory (D19): load the caller's saved facts to inject
+    # ONLY when memory is opt-in enabled AND the turn is not temporary. Temporary
+    # chats skip persistence (handler.py) and must skip injection too — they are
+    # the user's escape hatch from memory. The handler folds these into the user
+    # turn (`_apply_memory`) and surfaces the injected count on the attribution.
+    memory_facts: list[str] = []
+    if user_prefs.memory_enabled and not is_temp:
+        memory_facts = await memory_repo.list_for_injection(db, user.id)
+
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
     # appends every wire event to an in-process ReplayBuffer; this POST then
@@ -1902,6 +1912,7 @@ async def send_message(
             response_format=effective_response_format,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
+            memory_facts=memory_facts,
             reasoning_effort_override=reasoning_effort_override,
             thinking_override=thinking_override,
             monthly_quota_usd_override=effective_quota_usd,
@@ -1951,6 +1962,7 @@ async def send_message(
             response_format=effective_response_format,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
+            memory_facts=memory_facts,
             reasoning_effort_override=reasoning_effort_override,
             thinking_override=thinking_override,
             monthly_quota_usd_override=effective_quota_usd,

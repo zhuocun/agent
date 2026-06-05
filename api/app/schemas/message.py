@@ -232,6 +232,12 @@ class ModelAttribution(CamelModel):
     # positional/test usage is unaffected.
     output_format: Literal["json_object", "json_schema"] | None = None
     output_valid: bool | None = None
+    # Transparent long-term memory (D19): how many saved facts were injected into
+    # this turn. Present (and > 0) ONLY when memory was applied; omitted otherwise
+    # so the wire is unchanged for memory-off turns. The FE renders the "Memory
+    # used here" chip from this turn-level count. Kept at the END so existing
+    # positional/test usage is unaffected.
+    memory_applied: int | None = None
 
 
 class ChatMessage(CamelModel):

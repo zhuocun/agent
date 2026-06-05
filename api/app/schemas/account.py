@@ -8,6 +8,7 @@ from pydantic import Field
 
 from app.schemas.common import CamelModel
 from app.schemas.conversation import Conversation
+from app.schemas.memory import MemoryFact
 from app.schemas.preferences import UserPreferences
 
 
@@ -172,6 +173,8 @@ class AccountExport(CamelModel):
     conversations: list[Conversation]
     audit_events: list[AuditEventExport]
     analytics_events: list[AnalyticsEventExport]
+    # Transparent long-term memory (D19): the caller's full editable fact ledger.
+    memory_facts: list[MemoryFact]
     exported_at: str
 
 

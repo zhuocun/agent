@@ -369,6 +369,12 @@ export interface Conversation {
   // Project/Space membership (D20). `null`/absent = unfiled. Drives the
   // Projects grouping in the sidebar + the "Assign to project" control.
   projectId?: string | null;
+  // Archive flag (Conversation Org v2). `true` = hidden from the sidebar's main
+  // list into the collapsible "Archived" section. Absent/false = active.
+  archived?: boolean;
+  // Assigned tag ids (Conversation Org v2). Drives the tag chips on the row +
+  // the "Assign tags" picker. Absent/empty = no tags.
+  tagIds?: string[];
 }
 
 // A lightweight history-list entry for the sidebar (PRD 01 §4.2 / PRD 03).
@@ -389,6 +395,12 @@ export interface ConversationSummary {
   // Project/Space membership (D20). `null`/absent = unfiled. Echoed on the
   // sidebar summary so the Projects grouping renders without a follow-up GET.
   projectId?: string | null;
+  // Archive flag (Conversation Org v2). `true` = hidden into the "Archived"
+  // section. Echoed on the summary so the sidebar splits the list on first paint.
+  archived?: boolean;
+  // Assigned tag ids (Conversation Org v2). Echoed on the summary so tag chips +
+  // the tag filter render without a follow-up GET. Absent/empty = no tags.
+  tagIds?: string[];
 }
 
 // A Project/Space (D20): a thin scoping container that groups conversations and
@@ -415,6 +427,17 @@ export interface ProjectSummary {
   defaultTierId?: ModelTierId | null;
   retentionDays?: number | null;
   perConversationBudgetUsd?: number | null;
+}
+
+// A Tag (Conversation Org v2): a thin user-scoped label assignable to
+// conversations and filterable in the sidebar. `color` is optional and the BE
+// stores it opaquely (the FE picks a default when absent).
+export interface Tag {
+  id: string;
+  name: string;
+  color?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 // User-editable preferences surfaced in the settings panel (PRD 06 §5.7 / PRD 05).

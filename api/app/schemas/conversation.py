@@ -64,6 +64,12 @@ class Conversation(CamelModel):
     # Project/Space membership (D20). `None` = unfiled. Surfaced so the FE can
     # group the conversation under its Project and default the picker to it.
     project_id: str | None = None
+    # Archive flag (Conversation Org v2). `True` = hidden from the sidebar's main
+    # list into the collapsible "Archived" section. Defaults False.
+    archived: bool = False
+    # Assigned tag ids (Conversation Org v2). The FE renders tag chips and the
+    # tag picker from these; an empty list = no tags.
+    tag_ids: list[str] = Field(default_factory=list)
 
 
 class ConversationSummary(CamelModel):
@@ -79,6 +85,12 @@ class ConversationSummary(CamelModel):
     # Project/Space membership (D20), echoed on the sidebar summary so the
     # Projects grouping renders without a follow-up GET. `None` = unfiled.
     project_id: str | None = None
+    # Archive flag (Conversation Org v2), echoed on the sidebar summary so the
+    # "Archived" section renders without a follow-up GET. Defaults False.
+    archived: bool = False
+    # Assigned tag ids (Conversation Org v2), echoed on the sidebar summary so
+    # tag chips + the tag filter render without a follow-up GET. Empty = no tags.
+    tag_ids: list[str] = Field(default_factory=list)
 
 
 class ConversationSearchResult(ConversationSummary):
@@ -135,6 +147,52 @@ class PatchConversationRequest(CamelModel):
     # file the conversation under it; explicit `null` = un-file (detach). The
     # route reads `model_fields_set` to tell "omitted" from an explicit `null`.
     project_id: str | None = None
+    # Archive flag (Conversation Org v2). THREE-VALUED on the wire like
+    # `pinned` (a plain optional bool): omitted = leave unchanged; `true`/`false`
+    # = set it. There is no "clear" meaning for a non-nullable bool.
+    archived: bool | None = None
+    # Tag assignment (Conversation Org v2). FULL REPLACE: when present, the
+    # conversation's tag set is replaced wholesale by these ids (bounded). Omitted
+    # = leave the tags unchanged; `[]` = clear all tags. Non-owned / unknown tag
+    # ids are rejected (404) by the route so the assignment never references
+    # another user's tag. The route reads `model_fields_set` to tell "omitted"
+    # from an explicit value.
+    tag_ids: Annotated[list[str], Field(max_length=50)] | None = None
+
+
+class BulkActionRequest(CamelModel):
+    """Body for POST /api/conversations/bulk (Conversation Org v2).
+
+    A multi-select action over the caller's own conversations. `conversation_ids`
+    is bounded so one call can't fan out unboundedly. `action` is one of
+    archive / unarchive / delete / tag / untag. `tag_id` is REQUIRED for the
+    tag/untag actions (and ignored otherwise) — a `model_validator` enforces that
+    so a `tag`/`untag` without a target id is rejected as INVALID_INPUT before it
+    reaches the route. Every id is owner-scoped in the repo: a forged id that
+    belongs to another user is silently ignored (IDOR-safe), never errored, so
+    the response can't be used to probe foreign ids.
+    """
+
+    conversation_ids: Annotated[list[str], Field(min_length=1, max_length=200)]
+    action: Literal["archive", "unarchive", "delete", "tag", "untag"]
+    tag_id: str | None = None
+
+    @model_validator(mode="after")
+    def _tag_id_required_for_tag_actions(self) -> BulkActionRequest:
+        if self.action in ("tag", "untag") and self.tag_id is None:
+            raise ValueError("tagId is required for the 'tag' and 'untag' actions")
+        return self
+
+
+class BulkActionResponse(CamelModel):
+    """Result of POST /api/conversations/bulk (Conversation Org v2).
+
+    `affected` is the number of the caller's OWN conversations the action touched
+    — foreign ids passed in are silently dropped (IDOR-safe), so `affected` can
+    be lower than `len(conversationIds)` without an error.
+    """
+
+    affected: int
 
 
 class SendMessageRequest(CamelModel):

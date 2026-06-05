@@ -14,6 +14,7 @@ from app.db.models import (
     BillingCustomer,
     BillingEntitlement,
     Conversation,
+    ConversationTag,
     MemoryFact,
     Message,
     Preferences,
@@ -21,6 +22,7 @@ from app.db.models import (
     PromptTemplate,
     Session,
     Stream,
+    Tag,
     UsageCreditLedger,
     UsageRollup,
     User,
@@ -59,6 +61,15 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
         # so it must be removed explicitly or rows orphan on SQLite.
         await db.execute(delete(Stream).where(Stream.conversation_id.in_(convo_ids)))
         await db.execute(delete(Message).where(Message.conversation_id.in_(convo_ids)))
+        # conversation_tag join rows (Conversation Org v2). FK to conversation is
+        # CASCADE, but SQLite (tests) enforces none, so remove the join rows
+        # explicitly BEFORE the parent conversation — same explicit-cascade
+        # rationale as the rows above.
+        await db.execute(
+            delete(ConversationTag).where(
+                ConversationTag.conversation_id.in_(convo_ids)
+            )
+        )
     await db.execute(delete(Conversation).where(Conversation.user_id == user_id))
     await db.execute(delete(AnalyticsEvent).where(AnalyticsEvent.user_id == user_id))
     await db.execute(delete(ApiKey).where(ApiKey.user_id == user_id))
@@ -79,6 +90,10 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
     # ordering is unconstrained. SQLite (tests) enforces neither, so remove the
     # ledger explicitly — same explicit-cascade rationale as the rows above.
     await db.execute(delete(Project).where(Project.user_id == user_id))
+    # Tags (Conversation Org v2). FK to users is CASCADE and the join rows were
+    # removed with the conversations above, but SQLite (tests) enforces neither,
+    # so remove the tag rows explicitly — same explicit-cascade rationale.
+    await db.execute(delete(Tag).where(Tag.user_id == user_id))
     # Prompt library (D23). FK to users is CASCADE, but SQLite (tests) does not
     # enforce it, so remove it explicitly — same explicit-cascade rationale as
     # the rows above.

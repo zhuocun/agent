@@ -18,11 +18,12 @@ from app.account_info import account_info_for_user, usable_provider_ids_for_user
 from app.auth.dependency import current_user
 from app.config import get_settings
 from app.db.models import User
-from app.db.repositories import conversations, preferences, projects, usage
+from app.db.repositories import conversations, preferences, projects, tags, usage
 from app.db.session import get_db
 from app.providers.tiers import list_tiers
 from app.schemas.bootstrap import BootstrapResponse
 from app.schemas.project import ProjectSummary
+from app.schemas.tag import Tag
 from app.suggestions import list_suggestions
 
 router = APIRouter(prefix="/api", tags=["bootstrap"])
@@ -53,6 +54,7 @@ async def bootstrap(
     )
     summaries = await conversations.list_summaries_for_user(db, user.id)
     project_rows = await projects.list_for_user(db, user.id)
+    tag_rows = await tags.list_for_user(db, user.id)
     return BootstrapResponse(
         account=account,
         preferences=prefs,
@@ -70,5 +72,15 @@ async def bootstrap(
                 per_conversation_budget_usd=row.per_conversation_budget_usd,
             )
             for row in project_rows
+        ],
+        tags=[
+            Tag(
+                id=str(row.id),
+                name=row.name,
+                color=row.color,
+                created_at=row.created_at.isoformat(),
+                updated_at=row.updated_at.isoformat(),
+            )
+            for row in tag_rows
         ],
     )

@@ -154,6 +154,15 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String, nullable=False, default="New chat")
     selected_tier_id: Mapped[str] = mapped_column(String, nullable=False)
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Archive flag (Conversation Org v2). NOT NULL, defaults False so every
+    # existing row is "active". Archived conversations hide from the sidebar's
+    # main recency list into a collapsible "Archived" section; they remain fully
+    # owned data and — deliberately — stay subject to the retention purge (an
+    # archive is not a "keep forever" pin). `false()` gives a DB-level default so
+    # the column backfills on the ALTER and a bare insert never writes NULL.
+    archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     # Public-by-link share token. NULL = unshared (the default); a non-NULL
     # URL-safe random token = shared. Anyone holding the token can read a
     # cost-stripped snapshot of the conversation via GET /api/share/{token}
@@ -697,6 +706,65 @@ class Project(Base):
     )
 
     __table_args__ = (Index("ix_project_user_created", "user_id", "created_at"),)
+
+
+class Tag(Base):
+    """A user-scoped label assignable to conversations (Conversation Org v2).
+
+    Tags are thin organizational labels: a user creates them, assigns them to
+    conversations (via the `conversation_tag` join), and filters the sidebar by
+    them. Owned by a user with a CASCADE FK so account erasure removes them. The
+    `(user_id, name)` UNIQUE index makes tag names unique *per user* — two
+    different users can both have a "work" tag, but one user can't have two.
+    """
+
+    __tablename__ = "tag"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Optional display color (e.g. a hex string or a token name). NULL = the FE
+    # picks a default. Kept loose (String(32)) — the BE does not interpret it.
+    color: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_tag_user_name", "user_id", "name", unique=True),
+    )
+
+
+class ConversationTag(Base):
+    """Join table linking conversations to tags (Conversation Org v2).
+
+    Composite PK `(conversation_id, tag_id)` makes a given (conversation, tag)
+    pair unique and idempotent to insert-if-absent. Both FKs CASCADE so deleting
+    either side cleans up the link. The `(tag_id)` index backs the
+    "conversations for a tag" filter read.
+    """
+
+    __tablename__ = "conversation_tag"
+
+    conversation_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("conversation.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tag_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("tag.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    __table_args__ = (Index("ix_conversation_tag_tag", "tag_id"),)
 
 
 class PromptTemplate(Base):

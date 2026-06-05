@@ -25,9 +25,19 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import String, delete, func, or_, select
 from sqlalchemy import cast as sa_cast
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Message, Preferences, Project, Stream, Vote
+from app.db.models import (
+    Conversation,
+    ConversationTag,
+    Message,
+    Preferences,
+    Project,
+    Stream,
+    Tag,
+    Vote,
+)
 from app.db.repositories import audit_events
 from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
@@ -148,16 +158,49 @@ def _message_snippet(parts: object, query: str) -> str | None:
     return None
 
 
+async def _tag_ids_by_conversation(
+    db: AsyncSession,
+    conversation_ids: Sequence[UUID],
+) -> dict[UUID, list[str]]:
+    """Batch-fetch assigned tag ids for a set of conversations (avoids N+1).
+
+    Returns a map conversation_id -> [tag_id_str, ...] for every conversation
+    that has at least one tag. Conversations with no tags are simply absent from
+    the map (the caller defaults to `[]`). Ordered by tag_id for stable output.
+    """
+    if not conversation_ids:
+        return {}
+    stmt = (
+        select(ConversationTag.conversation_id, ConversationTag.tag_id)
+        .where(ConversationTag.conversation_id.in_(conversation_ids))
+        .order_by(ConversationTag.tag_id.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+    result: dict[UUID, list[str]] = {}
+    for conversation_id, tag_id in rows:
+        result.setdefault(conversation_id, []).append(str(tag_id))
+    return result
+
+
 async def list_summaries_for_user(
     db: AsyncSession, user_id: UUID
 ) -> list[ConversationSummary]:
-    """Return sidebar summaries: pinned desc, then updated_at desc."""
+    """Return sidebar summaries: pinned desc, then updated_at desc.
+
+    Tag ids are batch-fetched in one extra query (not per-conversation) to avoid
+    an N+1. `archived` rides along so the sidebar can split the list into the
+    main recency buckets and the collapsible "Archived" section without a
+    follow-up GET.
+    """
     stmt = (
         select(Conversation)
         .where(Conversation.user_id == user_id)
         .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
     )
     rows = (await db.execute(stmt)).scalars().all()
+    tag_ids_by_conversation = await _tag_ids_by_conversation(
+        db, [row.id for row in rows]
+    )
     return [
         ConversationSummary(
             id=str(row.id),
@@ -167,6 +210,8 @@ async def list_summaries_for_user(
             pinned=row.pinned,
             retention_days=row.retention_days,
             project_id=str(row.project_id) if row.project_id is not None else None,
+            archived=row.archived,
+            tag_ids=tag_ids_by_conversation.get(row.id, []),
         )
         for row in rows
     ]
@@ -417,6 +462,7 @@ async def get_for_user(
         )
         messages.append(chat_message)
 
+    tag_ids_by_conversation = await _tag_ids_by_conversation(db, [row.id])
     return ConversationSchema(
         id=str(row.id),
         title=row.title,
@@ -425,7 +471,35 @@ async def get_for_user(
         is_temporary=False,
         retention_days=row.retention_days,
         project_id=str(row.project_id) if row.project_id is not None else None,
+        archived=row.archived,
+        tag_ids=tag_ids_by_conversation.get(row.id, []),
     )
+
+
+async def _replace_tags(
+    db: AsyncSession,
+    conversation_id: UUID,
+    tag_ids: Sequence[UUID],
+) -> None:
+    """Full-replace a conversation's tag set with `tag_ids` (already validated).
+
+    The caller (route) has already verified the conversation is owned and that
+    every tag id belongs to the same user, so this is a pure write: delete the
+    existing join rows for the conversation, then insert the new set. Dedupes the
+    incoming ids so a repeated id can't trip the composite PK.
+    """
+    await db.execute(
+        delete(ConversationTag).where(
+            ConversationTag.conversation_id == conversation_id
+        )
+    )
+    seen: set[UUID] = set()
+    for tag_id in tag_ids:
+        if tag_id in seen:
+            continue
+        seen.add(tag_id)
+        db.add(ConversationTag(conversation_id=conversation_id, tag_id=tag_id))
+    await db.flush()
 
 
 async def update_for_user(
@@ -435,17 +509,22 @@ async def update_for_user(
     *,
     title: str | None = None,
     pinned: bool | None = None,
+    archived: bool | None = None,
     retention_days: int | None | _Unset = _UNSET,
     project_id: UUID | None | _Unset = _UNSET,
+    tag_ids: Sequence[UUID] | _Unset = _UNSET,
 ) -> Conversation | None:
-    """Update the owned conversation's title/pinned/retention/project. Returns the row.
+    """Update the owned conversation's title/pinned/archived/retention/project/tags.
 
-    `title` / `pinned` use `None` as "don't touch". `retention_days` and
+    `title` / `pinned` / `archived` use `None` as "don't touch" (each is a plain
+    field — for the bools there is no "clear" meaning). `retention_days` and
     `project_id` are three-valued — their `None` means "CLEAR" (inherit the
     global retention / un-file from the Project), so they use the `_UNSET`
-    sentinel for "don't touch" instead. Returns the refreshed ORM row, or None
-    if the row isn't owned/doesn't exist. Bumps `updated_at` so the sidebar's
-    pinned/updated ordering reflects the change.
+    sentinel for "don't touch" instead. `tag_ids` is a FULL REPLACE when present
+    (an explicit list, possibly empty = clear all) and `_UNSET` = leave the tags
+    unchanged; the caller MUST have validated tag ownership first. Returns the
+    refreshed ORM row, or None if the row isn't owned/doesn't exist. Bumps
+    `updated_at` so the sidebar's pinned/updated ordering reflects the change.
     """
     row = await owned_by(db, conversation_id, user_id)
     if row is None:
@@ -454,10 +533,14 @@ async def update_for_user(
         row.title = title
     if pinned is not None:
         row.pinned = pinned
+    if archived is not None:
+        row.archived = archived
     if not isinstance(retention_days, _Unset):
         row.retention_days = retention_days
     if not isinstance(project_id, _Unset):
         row.project_id = project_id
+    if not isinstance(tag_ids, _Unset):
+        await _replace_tags(db, conversation_id, tag_ids)
     # Touch updated_at — the column has a server_default but no onupdate hook,
     # so we set it explicitly. Naive datetime is fine for SQLite tests; Postgres
     # accepts tz-aware values via TIMESTAMP(timezone=True).
@@ -536,6 +619,13 @@ async def delete_for_user(
         await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
     await db.execute(delete(Stream).where(Stream.conversation_id == conversation_id))
     await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+    # conversation_tag join rows: explicit cleanup for SQLite (tests) which
+    # enforces no FK cascade. Idempotent on Postgres where the CASCADE fires.
+    await db.execute(
+        delete(ConversationTag).where(
+            ConversationTag.conversation_id == conversation_id
+        )
+    )
     await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await db.flush()
     return True
@@ -610,8 +700,163 @@ async def _purge_conversation_ids(
         await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
     await db.execute(delete(Stream).where(Stream.conversation_id.in_(conversation_ids)))
     await db.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
+    # conversation_tag join rows are ON DELETE CASCADE on Postgres but SQLite
+    # (tests) enforces no cascade, so remove them explicitly before the parent
+    # conversation — idempotent on Postgres. This keeps both retention purge and
+    # bulk delete from orphaning tag assignments.
+    await db.execute(
+        delete(ConversationTag).where(
+            ConversationTag.conversation_id.in_(conversation_ids)
+        )
+    )
     await db.execute(delete(Conversation).where(Conversation.id.in_(conversation_ids)))
     await db.flush()
+
+
+async def _owned_conversation_ids(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+) -> list[UUID]:
+    """Filter `conversation_ids` down to the ones actually owned by `user_id`.
+
+    The trust boundary for every bulk action: a forged id belonging to another
+    user is silently dropped here (IDOR-safe) rather than erroring, so the bulk
+    response can't be used to probe whether a foreign id exists.
+    """
+    if not conversation_ids:
+        return []
+    stmt = select(Conversation.id).where(
+        Conversation.id.in_(conversation_ids),
+        Conversation.user_id == user_id,
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def bulk_set_archived(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+    archived: bool,
+) -> int:
+    """Archive / unarchive a batch of OWNED conversations. Returns the count.
+
+    Owner-scoped: only the caller's own conversations are touched; foreign ids
+    are silently ignored. Does NOT bump `updated_at` — archiving is an
+    organizational toggle, not new activity, so it shouldn't reorder the sidebar.
+    """
+    owned = await _owned_conversation_ids(
+        db, conversation_ids=conversation_ids, user_id=user_id
+    )
+    if not owned:
+        return 0
+    await db.execute(
+        sa_update(Conversation)
+        .where(Conversation.id.in_(owned))
+        .values(archived=archived)
+    )
+    await db.flush()
+    return len(owned)
+
+
+async def bulk_delete(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+) -> int:
+    """Delete a batch of OWNED conversations and their dependents. Returns count.
+
+    Owner-scoped: foreign ids are silently ignored. Reuses `_purge_conversation_ids`
+    (the same manual-cascade helper retention uses) after narrowing to the
+    caller's own ids, so the message/vote/stream/tag-join cleanup is identical.
+    """
+    owned = await _owned_conversation_ids(
+        db, conversation_ids=conversation_ids, user_id=user_id
+    )
+    if not owned:
+        return 0
+    await _purge_conversation_ids(db, owned)
+    return len(owned)
+
+
+async def bulk_add_tag(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+    tag_id: UUID,
+) -> int:
+    """Add `tag_id` to a batch of OWNED conversations. Returns conversations touched.
+
+    Owner-scoped on BOTH sides: the caller (route) has verified `tag_id` belongs
+    to the user, and foreign conversation ids are silently ignored here. Skips
+    pairs that already exist (idempotent) so a re-run never trips the composite
+    PK. Does not bump `updated_at` (tagging is organizational, not activity).
+    """
+    owned = await _owned_conversation_ids(
+        db, conversation_ids=conversation_ids, user_id=user_id
+    )
+    if not owned:
+        return 0
+    existing_stmt = select(ConversationTag.conversation_id).where(
+        ConversationTag.tag_id == tag_id,
+        ConversationTag.conversation_id.in_(owned),
+    )
+    already = set((await db.execute(existing_stmt)).scalars().all())
+    for conversation_id in owned:
+        if conversation_id in already:
+            continue
+        db.add(ConversationTag(conversation_id=conversation_id, tag_id=tag_id))
+    await db.flush()
+    return len(owned)
+
+
+async def bulk_remove_tag(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+    tag_id: UUID,
+) -> int:
+    """Remove `tag_id` from a batch of OWNED conversations. Returns conversations touched.
+
+    Owner-scoped: foreign conversation ids are silently ignored. Idempotent —
+    removing a tag that isn't assigned is a no-op for that conversation.
+    """
+    owned = await _owned_conversation_ids(
+        db, conversation_ids=conversation_ids, user_id=user_id
+    )
+    if not owned:
+        return 0
+    await db.execute(
+        delete(ConversationTag).where(
+            ConversationTag.tag_id == tag_id,
+            ConversationTag.conversation_id.in_(owned),
+        )
+    )
+    await db.flush()
+    return len(owned)
+
+
+async def owned_tag_ids(
+    db: AsyncSession,
+    *,
+    tag_ids: Sequence[UUID],
+    user_id: UUID,
+) -> set[UUID]:
+    """Return the subset of `tag_ids` that belong to `user_id`.
+
+    Used by the PATCH tag-replace path to validate that every requested tag id is
+    the caller's own before assigning — the route 404s if any id is missing, so a
+    forged id can never attach another user's tag to a conversation.
+    """
+    if not tag_ids:
+        return set()
+    stmt = select(Tag.id).where(Tag.id.in_(tag_ids), Tag.user_id == user_id)
+    return set((await db.execute(stmt)).scalars().all())
 
 
 async def delete_older_than_for_user(

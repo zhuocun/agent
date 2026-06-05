@@ -44,6 +44,7 @@ from app.db.repositories import (
     preferences,
     projects,
     prompt_templates,
+    tags,
     usage,
     users,
 )
@@ -64,6 +65,7 @@ from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.memory import MemoryFact as MemoryFactSchema
 from app.schemas.project import Project as ProjectSchema
 from app.schemas.prompt_template import PromptTemplate as PromptTemplateSchema
+from app.schemas.tag import Tag as TagSchema
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 
@@ -130,6 +132,7 @@ async def export_account(
     analytics_rows = await analytics.list_for_user(db, user.id)
     memory_rows = await memory_facts.list_for_user(db, user.id)
     project_rows = await projects.list_for_user(db, user.id)
+    tag_rows = await tags.list_for_user(db, user.id)
     template_rows = await prompt_templates.list_for_user(db, user.id)
 
     # Full conversations with messages. N+1 is acceptable for an export: list
@@ -214,6 +217,16 @@ async def export_account(
                 updated_at=_iso(row.updated_at),
             )
             for row in project_rows
+        ],
+        tags=[
+            TagSchema(
+                id=str(row.id),
+                name=row.name,
+                color=row.color,
+                created_at=_iso(row.created_at),
+                updated_at=_iso(row.updated_at),
+            )
+            for row in tag_rows
         ],
         prompt_templates=[
             PromptTemplateSchema(

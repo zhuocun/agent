@@ -54,6 +54,7 @@ from app.routes.preferences import router as preferences_router
 from app.routes.projects import router as projects_router
 from app.routes.share import router as share_router
 from app.routes.status import router as status_router
+from app.routes.tags import router as tags_router
 from app.streaming.handler import cancel_all_producers
 from app.streaming.reaper import reap_once, run_reaper_loop
 from app.streaming.state import close_stream_state, configure_stream_state
@@ -231,6 +232,7 @@ def create_app() -> FastAPI:
     app.include_router(account_memory_router)
     app.include_router(account_prompt_templates_router)
     app.include_router(projects_router)
+    app.include_router(tags_router)
     app.include_router(analytics_router)
     app.include_router(billing_router)
     app.include_router(auth_router)

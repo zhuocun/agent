@@ -188,6 +188,9 @@ class Settings(BaseSettings):
     rate_limit_moderation_appeal: str = Field(
         default="10/minute", alias="RATE_LIMIT_MODERATION_APPEAL"
     )
+    # Memory-fact CRUD (D19). Anonymous-allowed (guests can keep memory too),
+    # caller-scoped writes/reads over a per-user ledger; bound abusive churn.
+    rate_limit_memory: str = Field(default="30/minute", alias="RATE_LIMIT_MEMORY")
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the

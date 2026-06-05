@@ -36,6 +36,7 @@ import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { DegradedStatusBanner } from "@/components/chat/degraded-status-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { ActivityDialog } from "@/components/chat/activity-dialog";
+import { MemoryDialog } from "@/components/chat/memory-dialog";
 import { ModelDirectoryDialog } from "@/components/chat/model-directory-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
@@ -437,6 +438,7 @@ export function ChatThread() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [modelDirectoryOpen, setModelDirectoryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -2754,6 +2756,7 @@ export function ChatThread() {
                       onToolDecision={(d) => handleToolDecision(m.id, d)}
                       onFeedback={(f) => setFeedback(m.id, f)}
                       onAttributionOpen={handleAttributionOpen}
+                      onMemoryOpen={() => setMemoryOpen(true)}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
                     />
@@ -2844,6 +2847,10 @@ export function ChatThread() {
           setSettingsOpen(false);
           setActivityOpen(true);
         }}
+        onOpenMemory={() => {
+          setSettingsOpen(false);
+          setMemoryOpen(true);
+        }}
         onOpenModelDirectory={() => {
           setSettingsOpen(false);
           setModelDirectoryOpen(true);
@@ -2863,6 +2870,22 @@ export function ChatThread() {
             );
             trigger?.focus();
             trigger?.click();
+          });
+        }}
+      />
+
+      <MemoryDialog
+        open={memoryOpen}
+        onOpenChange={setMemoryOpen}
+        memoryEnabled={bootstrap?.preferences.memoryEnabled ?? false}
+        onMemoryEnabledChange={(next) => {
+          // Reuse the optimistic preferences flow (setBootstrap + PUT +
+          // rollback-on-error), exactly like the budget cap, so the toggle
+          // rides the existing wire path.
+          if (!bootstrap) return;
+          handlePreferencesChange({
+            ...bootstrap.preferences,
+            memoryEnabled: next,
           });
         }}
       />

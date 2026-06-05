@@ -21,7 +21,9 @@ from sqlalchemy import (
     Numeric,
     PrimaryKeyConstraint,
     String,
+    Text,
     UniqueConstraint,
+    false,
     func,
     text,
     true,
@@ -118,6 +120,12 @@ class Preferences(Base):
     # send-gate comparison.
     per_conversation_budget_usd: Mapped[float | None] = mapped_column(
         Numeric(12, 6, asdecimal=False), nullable=True
+    )
+    # Transparent long-term memory opt-in (D19). OFF by default — when False the
+    # fact ledger is never injected into a turn. `server_default=false()`
+    # backfills existing rows to the privacy-first default.
+    memory_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -575,3 +583,42 @@ class AuditEvent(Base):
         Index("ix_audit_event_user_created", "user_id", "created_at"),
         Index("ix_audit_event_type_created", "event_type", "created_at"),
     )
+
+
+class MemoryFact(Base):
+    """A single editable, attributed long-term-memory fact (D19).
+
+    The glass-box differentiator: every fact the assistant may use is a row the
+    user can read, edit, and delete. `source` distinguishes user-authored facts
+    ('manual') from facts distilled out of a conversation ('conversation');
+    `source_conversation_id` is a best-effort back-reference (SET NULL on
+    conversation delete so erasing a thread never strands the pointer). The
+    user FK is CASCADE so account erasure removes the ledger.
+    """
+
+    __tablename__ = "memory_fact"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # 'manual' (user-authored) | 'conversation' (distilled from a chat).
+    source: Mapped[str] = mapped_column(
+        String, nullable=False, default="manual", server_default=text("'manual'")
+    )
+    source_conversation_id: Mapped[UUID | None] = mapped_column(
+        UuidVariant,
+        ForeignKey("conversation.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_memory_fact_user_created", "user_id", "created_at"),)

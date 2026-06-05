@@ -55,6 +55,9 @@ export interface SettingsDialogProps {
   // Open the read-only "Activity & data access" surface (closing settings
   // first). Lists the data-access log + the processing-provenance rollup.
   onOpenActivity: () => void;
+  // Open the "Memory" manager (closing settings first): the opt-in toggle +
+  // the editable, attributed fact ledger (D19).
+  onOpenMemory: () => void;
   // Open the read-only "Models & data policies" directory (closing settings
   // first). Browsable catalog of provider routes, policies, and prices.
   onOpenModelDirectory: () => void;
@@ -516,6 +519,7 @@ export function SettingsDialog({
   onExportData,
   onDeleteAccount,
   onOpenActivity,
+  onOpenMemory,
   onOpenModelDirectory,
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
@@ -907,6 +911,25 @@ export function SettingsDialog({
               parent owns the download / confirm-dialog / reset side effects. */}
           <section className="space-y-4">
             <SectionHeading>Your data</SectionHeading>
+            <SettingRow
+              label="Memory"
+              helper={
+                preferences.memoryEnabled
+                  ? "On — review and edit the facts the assistant remembers about you."
+                  : "Off — opt in and manage the facts the assistant can remember."
+              }
+              control={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="open-memory-button"
+                  onClick={onOpenMemory}
+                >
+                  Manage
+                </Button>
+              }
+            />
             <SettingRow
               label="Activity & data access"
               helper="See sensitive account actions and where your messages were processed."

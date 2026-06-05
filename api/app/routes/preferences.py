@@ -80,6 +80,11 @@ async def put_preferences(
         retention_days=body.retention_days,
         monthly_budget_usd=body.monthly_budget_usd,
         per_conversation_budget_usd=body.per_conversation_budget_usd,
+        memory_enabled=(
+            body.memory_enabled
+            if body.memory_enabled is not None
+            else existing.memory_enabled
+        ),
     )
     safety_decision = check_user_turn(
         settings,

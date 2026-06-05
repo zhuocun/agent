@@ -40,6 +40,7 @@ from app.observability import init_sentry, instrument_fastapi
 from app.routes.account import router as account_router
 from app.routes.account_activity import router as account_activity_router
 from app.routes.account_data import router as account_data_router
+from app.routes.account_memory import router as account_memory_router
 from app.routes.analytics import router as analytics_router
 from app.routes.billing import router as billing_router
 from app.routes.bootstrap import router as bootstrap_router
@@ -223,6 +224,7 @@ def create_app() -> FastAPI:
     app.include_router(account_router)
     app.include_router(account_data_router)
     app.include_router(account_activity_router)
+    app.include_router(account_memory_router)
     app.include_router(analytics_router)
     app.include_router(billing_router)
     app.include_router(auth_router)

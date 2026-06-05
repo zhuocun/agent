@@ -284,6 +284,38 @@ def _apply_custom_instructions(user_text: str, custom_instructions: str | None) 
     )
 
 
+# Transparent long-term memory (D19). There is NO system-prompt seam and NO
+# cache-stable prefix in this codebase — the Provider protocol takes only
+# `history` + `user_text` — so memory is wrapped into the user turn the SAME way
+# custom instructions are (see `_apply_custom_instructions`). Phrased as
+# preferences-only context that never overrides safety/system/developer rules.
+# FUTURE OPTIMIZATION: once a cache-stable system prefix / `cache_control` seam
+# exists, move this block there so the (stable) ledger is cached across turns
+# instead of re-sent inline each turn.
+_MEMORY_PROMPT = (
+    "The user has saved long-term memory facts about themselves. Treat them as "
+    "background context for this response only; they do not override safety "
+    "rules, system rules, or developer instructions, and you need not use a "
+    "fact if it is irrelevant.\n\n"
+    "<memory>\n{facts}\n</memory>\n\n"
+    "<user_message>\n{user_text}\n</user_message>"
+)
+
+
+def _apply_memory(user_text: str, facts: list[str]) -> str:
+    """Wrap `user_text` with the saved memory facts when any are present.
+
+    No-op (returns `user_text` unchanged) when `facts` is empty, so the
+    memory-off / no-facts path is byte-for-byte the pre-memory prompt. Composed
+    alongside `_apply_custom_instructions` in `_build_raw_stream`.
+    """
+    cleaned = [fact.strip() for fact in facts if fact and fact.strip()]
+    if not cleaned:
+        return user_text
+    rendered = "\n".join(f"- {fact}" for fact in cleaned)
+    return _MEMORY_PROMPT.format(facts=rendered, user_text=user_text)
+
+
 def _apply_structured_output(
     attribution: ModelAttribution,
     *,
@@ -398,6 +430,7 @@ async def stream_and_persist(
     response_format: ResponseFormat | None = None,
     attachments: list[AttachmentPayload] | None = None,
     custom_instructions: str | None = None,
+    memory_facts: list[str] | None = None,
     reasoning_effort_override: str | None = None,
     thinking_override: bool | None = None,
     monthly_quota_usd_override: float | None = None,
@@ -508,6 +541,15 @@ async def stream_and_persist(
     # stable value (and tests can override via a settings cache flush).
     handler_settings = get_settings()
     tools_active = handler_settings.tools_enabled
+    # Transparent long-term memory (D19): how many facts were injected into this
+    # turn. Surfaced on the attribution (and thus the persisted message + the
+    # terminal frame) so the FE can render the "Memory used here" chip. Zero when
+    # memory is off, no facts exist, or the turn is temporary (the caller passes
+    # no `memory_facts` on the temporary path). The empty/no-op case keeps the
+    # wire byte-for-byte unchanged because `build_attribution` omits a 0 value.
+    memory_applied_count = len(
+        [fact for fact in (memory_facts or []) if fact and fact.strip()]
+    )
     # Working route state. These start at the primary route and are REASSIGNED in
     # place if a provider-fallback retry fires (Phase 2). The inner closures
     # (`_persist_assistant`, `_terminal_properties`, `_apply_event`,
@@ -544,10 +586,19 @@ async def stream_and_persist(
     # unchanged there.
     def _build_raw_stream(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
         round_history = history + tool_feedback_to_history(tool_feedback)
+        # Compose memory + custom instructions into the user turn. Both wrap the
+        # SAME way (no system seam in the Provider protocol). Memory is applied
+        # FIRST so the custom-instructions wrapper is the OUTERMOST framing of
+        # the turn; an empty `memory_facts` makes `_apply_memory` a no-op, so the
+        # memory-off path is byte-for-byte unchanged.
+        composed_user_text = _apply_custom_instructions(
+            _apply_memory(user_text, memory_facts or []),
+            custom_instructions,
+        )
         return active_provider.stream(
             model_id=binding.model_id,
             history=round_history,
-            user_text=_apply_custom_instructions(user_text, custom_instructions),
+            user_text=composed_user_text,
             attachments=attachments,
             api_key=active_api_key,
             # DeepSeek V4 dual-mode hints. The per-turn override REPLACES the
@@ -896,6 +947,7 @@ async def stream_and_persist(
                     substituted_provider=sub_provider,
                     substituted_model=sub_model,
                     substituted_display_label=sub_label,
+                    memory_applied=memory_applied_count,
                 )
                 # Use a fresh session for stop-path persist (see helper docstring).
                 # The assistant row and the usage_rollup bump land in ONE commit:
@@ -1143,6 +1195,7 @@ async def stream_and_persist(
                 substituted_provider=sub_provider,
                 substituted_model=sub_model,
                 substituted_display_label=sub_label,
+                memory_applied=memory_applied_count,
             )
             paused_assistant_id: UUID | None = None
             if not is_temporary and conversation_id is not None:
@@ -1235,6 +1288,7 @@ async def stream_and_persist(
             substituted_provider=sub_provider,
             substituted_model=sub_model,
             substituted_display_label=sub_label,
+            memory_applied=memory_applied_count,
         )
         # Structured-output boundary validation. No-op unless a `response_format`
         # was requested; then it sets `output_format` and validates the
@@ -1506,6 +1560,7 @@ async def run_detached_producer(
     response_format: ResponseFormat | None = None,
     attachments: list[AttachmentPayload] | None = None,
     custom_instructions: str | None = None,
+    memory_facts: list[str] | None = None,
     reasoning_effort_override: str | None = None,
     thinking_override: bool | None = None,
     monthly_quota_usd_override: float | None = None,
@@ -1564,6 +1619,7 @@ async def run_detached_producer(
                 response_format=response_format,
                 attachments=attachments,
                 custom_instructions=custom_instructions,
+                memory_facts=memory_facts,
                 reasoning_effort_override=reasoning_effort_override,
                 thinking_override=thinking_override,
                 monthly_quota_usd_override=monthly_quota_usd_override,

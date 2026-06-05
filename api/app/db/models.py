@@ -163,6 +163,17 @@ class Conversation(Base):
     # Keyed on `updated_at` to match the global opportunistic purge: a recently
     # renamed / pinned / continued conversation is still active data.
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Optional Project/Space membership (D20). NULL = unfiled (the default).
+    # A Project is a thin scoping container that groups conversations and scopes
+    # the existing wedge controls (default tier, retention, budget sub-cap,
+    # shared instructions). SET NULL on project delete so removing a Project
+    # un-files its conversations rather than deleting them — a Project is a
+    # labeled default, never a lock.
+    project_id: Mapped[UUID | None] = mapped_column(
+        UuidVariant,
+        ForeignKey("project.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -181,6 +192,11 @@ class Conversation(Base):
             "ix_conversation_share_token",
             "share_token",
             unique=True,
+        ),
+        Index(
+            "ix_conversation_user_project",
+            "user_id",
+            "project_id",
         ),
     )
 
@@ -622,3 +638,55 @@ class MemoryFact(Base):
     )
 
     __table_args__ = (Index("ix_memory_fact_user_created", "user_id", "created_at"),)
+
+
+class Project(Base):
+    """A Project/Space: a thin scoping container for conversations (D20).
+
+    Projects group conversations and scope the EXISTING wedge controls — a
+    default tier, retention window, per-conversation budget sub-cap, and shared
+    custom instructions. Each setting is a LABELED DEFAULT, not a lock: NULL
+    means "inherit the user-global value", so a Project never hard-overrides the
+    send-path tier resolution. Single-level (no nesting). Owned by a user with a
+    CASCADE FK so account erasure removes them; `conversation.project_id` is SET
+    NULL on delete so removing a Project un-files its conversations.
+    """
+
+    __tablename__ = "project"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Shared instructions for every conversation in the Project. Appended to the
+    # user-global `preferences.custom_instructions` at send time (concat, never
+    # replace). NULL = no project-level instructions. String(4000) mirrors
+    # `Preferences.custom_instructions`.
+    custom_instructions: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    # Create-time default tier for new conversations filed under the Project.
+    # NULL = inherit the user's `preferences.default_tier_id`. Only seeds a new
+    # conversation's `selected_tier_id`; the send-path tier resolution is
+    # untouched (a labeled default, not a lock).
+    default_tier_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Project-scoped retention window in days. NULL = inherit. Slots BETWEEN the
+    # per-conversation override and the user-global retention in the precedence
+    # chain (conv > project > global).
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Project-scoped per-conversation budget sub-cap in USD. NULL = inherit the
+    # user's `preferences.per_conversation_budget_usd`. Numeric(12,6) mirrors the
+    # preferences money columns so the gate composes with the same fixed-precision
+    # arithmetic; `asdecimal=False` keeps SQLAlchemy returning plain floats.
+    per_conversation_budget_usd: Mapped[float | None] = mapped_column(
+        Numeric(12, 6, asdecimal=False), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_project_user_created", "user_id", "created_at"),)

@@ -42,6 +42,7 @@ from app.db.repositories import (
     conversations,
     memory_facts,
     preferences,
+    projects,
     usage,
     users,
 )
@@ -60,6 +61,7 @@ from app.schemas.account import (
 )
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.memory import MemoryFact as MemoryFactSchema
+from app.schemas.project import Project as ProjectSchema
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 
@@ -125,6 +127,7 @@ async def export_account(
     audit_rows = await audit_events.list_for_user(db, user.id)
     analytics_rows = await analytics.list_for_user(db, user.id)
     memory_rows = await memory_facts.list_for_user(db, user.id)
+    project_rows = await projects.list_for_user(db, user.id)
 
     # Full conversations with messages. N+1 is acceptable for an export: list
     # the summaries to learn the ids, then load each full conversation.
@@ -195,6 +198,19 @@ async def export_account(
                 updated_at=_iso(row.updated_at),
             )
             for row in memory_rows
+        ],
+        projects=[
+            ProjectSchema(
+                id=str(row.id),
+                name=row.name,
+                custom_instructions=row.custom_instructions,
+                default_tier_id=row.default_tier_id,
+                retention_days=row.retention_days,
+                per_conversation_budget_usd=row.per_conversation_budget_usd,
+                created_at=_iso(row.created_at),
+                updated_at=_iso(row.updated_at),
+            )
+            for row in project_rows
         ],
         exported_at=datetime.now(UTC).isoformat(),
     )

@@ -32,7 +32,7 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
-from app.db.models import Message, User
+from app.db.models import Message, Project, User
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import audit_events as audit_events_repo
@@ -41,6 +41,7 @@ from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import memory_facts as memory_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import preferences as preferences_repo
+from app.db.repositories import projects as projects_repo
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
 from app.db.repositories.usage import _effective_quota_usd
@@ -233,6 +234,28 @@ def _resolve_binding(
 
 def _selected_provider_id(provider_id: str | None, settings: Settings) -> str:
     return provider_id or settings.provider_backend
+
+
+def _combine_instructions(
+    user_instructions: str | None,
+    project_instructions: str | None,
+) -> str:
+    """Concat user-global + project custom instructions for a Project (D20).
+
+    The user-global instructions come first, the project's are appended,
+    separated by a blank line. Empty/whitespace-only parts are dropped so we
+    never emit a leading/trailing blank-line artifact, and an all-empty result
+    is `""` (byte-for-byte what the pre-D20 path passed). NEVER replaces — a
+    Project's instructions are additive, a labeled default layered on top of the
+    user's own. The result threads to the SAME user-turn wrapper the user-global
+    instructions already used (there is no system-prompt seam in this codebase).
+    """
+    parts = [
+        part.strip()
+        for part in (user_instructions, project_instructions)
+        if part is not None and part.strip()
+    ]
+    return "\n\n".join(parts)
 
 
 def _ensure_provider_usable(
@@ -906,6 +929,9 @@ async def create_conversation(
     )
 
     if body.is_temporary:
+        # Temporary chats have no persisted row, so they can NEVER carry a
+        # Project membership (D20). Silently ignore any `projectId` here rather
+        # than erroring — the FE simply shows an unfiled temp chat.
         synthetic_id = uuid4()
         _TEMP_IDS[user.id].add(synthetic_id)
         return ConversationSchema(
@@ -916,17 +942,41 @@ async def create_conversation(
             is_temporary=True,
         )
 
+    # Resolve the Project membership (D20). A forged / not-owned project id is a
+    # 404 (never leaks another user's project). When the project has a
+    # `defaultTierId`, pre-seed the conversation's tier from it — a create-time
+    # default only (the send-path tier resolution is untouched; the FE picker
+    # simply defaults to this value and the user can still change it per turn).
+    project_id: UUID | None = None
+    selected_tier_id: ModelTierId = body.selected_tier_id
+    if body.project_id is not None:
+        try:
+            project_id = UUID(body.project_id)
+        except ValueError as exc:
+            raise _invalid_input("INVALID_INPUT", "projectId must be a UUID.") from exc
+        project = await projects_repo.get_for_user(
+            db, project_id=project_id, user_id=user.id
+        )
+        if project is None:
+            raise not_found("project")
+        if project.default_tier_id is not None and is_known_tier(
+            project.default_tier_id
+        ):
+            selected_tier_id = cast(ModelTierId, project.default_tier_id)
+
     convo = await conversations_repo.create_for_user(
         db,
         user_id=user.id,
-        selected_tier_id=body.selected_tier_id,
+        selected_tier_id=selected_tier_id,
+        project_id=project_id,
     )
     return ConversationSchema(
         id=str(convo.id),
         title=convo.title,
         messages=[],
-        selected_tier_id=body.selected_tier_id,
+        selected_tier_id=selected_tier_id,
         is_temporary=False,
+        project_id=str(convo.project_id) if convo.project_id is not None else None,
     )
 
 
@@ -970,42 +1020,68 @@ async def patch_conversation(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationSchema:
-    """Rename / pin / set the per-conversation retention. Returns the full
-    updated body so the FE avoids a follow-up GET.
+    """Rename / pin / set the per-conversation retention / file under a Project.
+    Returns the full updated body so the FE avoids a follow-up GET.
 
-    `retentionDays` is THREE-VALUED (D31): omitted leaves the override unchanged;
-    an integer sets it; explicit `null` CLEARS it (the conversation falls back to
-    the global retention). `model_fields_set` distinguishes "omitted" from an
-    explicit `null` so a clear is honored rather than swallowed.
+    `retentionDays` and `projectId` are THREE-VALUED (D31/D20): omitted leaves
+    the field unchanged; a value sets it; explicit `null` CLEARS it (retention
+    falls back to the global; project un-files the conversation).
+    `model_fields_set` distinguishes "omitted" from an explicit `null` so a clear
+    is honored rather than swallowed.
 
     Empty patch (`{}` or all-explicit-nulls) -> 400 INVALID_INPUT. The
-    retention-clear case (`{"retentionDays": null}`) is a MEANINGFUL patch and is
-    NOT rejected. Not-owned -> 404.
+    retention-clear / project-detach cases (`{"retentionDays": null}` /
+    `{"projectId": null}`) are MEANINGFUL patches and are NOT rejected.
+    Not-owned conversation -> 404. Filing under a not-owned project -> 404.
     """
     retention_set = "retention_days" in body.model_fields_set
+    project_set = "project_id" in body.model_fields_set
     patch_dict = body.model_dump(exclude_unset=True)
     # Reject `{}` AND `{"title": null, "pinned": null}` — both are no-ops.
     # `exclude_unset` keeps explicit nulls in the dict (they ARE "set"), so a
     # plain truthiness check would let `{title: null, pinned: null}` slip
     # through to `update_for_user`, which would only bump `updated_at`. A sent
-    # `retentionDays` (even `null`) IS a meaningful change, so it counts.
+    # `retentionDays` / `projectId` (even `null`) IS a meaningful change.
     has_title_or_pinned = any(
         patch_dict.get(k) is not None for k in ("title", "pinned")
     )
-    if not has_title_or_pinned and not retention_set:
+    if not has_title_or_pinned and not retention_set and not project_set:
         raise _invalid_input(
             "INVALID_INPUT",
-            "PATCH body must include at least one of: title, pinned, retentionDays.",
+            "PATCH body must include at least one of: title, pinned, "
+            "retentionDays, projectId.",
         )
+    # Build the three-valued kwargs. Each is passed ONLY when it was sent;
+    # otherwise the repo's `_UNSET` default leaves the column untouched.
+    # `retentionDays` clears to inherit on null; `projectId` un-files on null,
+    # and a non-null id must be a UUID the caller owns (404 otherwise — never
+    # leaks another user's project).
+    extra_kwargs: dict[str, object] = {}
+    if retention_set:
+        extra_kwargs["retention_days"] = body.retention_days
+    if project_set:
+        if body.project_id is None:
+            extra_kwargs["project_id"] = None
+        else:
+            try:
+                target_project_id = UUID(body.project_id)
+            except ValueError as exc:
+                raise _invalid_input(
+                    "INVALID_INPUT", "projectId must be a UUID."
+                ) from exc
+            project = await projects_repo.get_for_user(
+                db, project_id=target_project_id, user_id=user.id
+            )
+            if project is None:
+                raise not_found("project")
+            extra_kwargs["project_id"] = target_project_id
     updated_row = await conversations_repo.update_for_user(
         db,
         conversation_id,
         user.id,
         title=body.title,
         pinned=body.pinned,
-        # Pass the value only when the field was sent; otherwise let the repo's
-        # `_UNSET` default leave the column untouched.
-        **({"retention_days": body.retention_days} if retention_set else {}),
+        **extra_kwargs,  # type: ignore[arg-type]
     )
     if updated_row is None:
         raise not_found("conversation")
@@ -1325,6 +1401,15 @@ async def send_message(
     effective_quota_usd = _effective_quota_usd(
         settings.usage_budget_usd, user_prefs.monthly_budget_usd
     )
+    # Project/Space scoping (D20). Loaded once below when the conversation's
+    # owner row is fetched (temp chats have no row, so they have no project).
+    # `effective_instructions` is the non-empty join of the user-global custom
+    # instructions and the conversation's Project instructions (user first,
+    # project appended) — threaded to EVERY `custom_instructions=` call site that
+    # currently consumes `user_prefs.custom_instructions`. With no project it is
+    # byte-for-byte the user-global value, so the non-D20 path is unchanged.
+    conversation_project: Project | None = None
+    effective_instructions: str = user_prefs.custom_instructions
     selected_provider_id = _selected_provider_id(body.provider_id, settings)
     # Tier/provider validation.
     binding = _resolve_binding(body.tier_id, body.provider_id, settings)
@@ -1397,6 +1482,21 @@ async def send_message(
         if owner_row is None:
             raise not_found("conversation")
 
+        # Project/Space scoping (D20). Load the conversation's Project once here
+        # (owner-scoped, so a not-owned project can never be read) and compute
+        # the effective custom instructions = user-global + project (concat,
+        # never replace). Threaded to every `custom_instructions=` call site
+        # below. Temp chats never reach this branch — they have no project.
+        if owner_row.project_id is not None:
+            conversation_project = await projects_repo.get_for_user(
+                db, project_id=owner_row.project_id, user_id=user.id
+            )
+            if conversation_project is not None:
+                effective_instructions = _combine_instructions(
+                    user_prefs.custom_instructions,
+                    conversation_project.custom_instructions,
+                )
+
         # Idempotency: prior user message for this client_message_id?
         # Regenerate / continue / toolApproval reuse an existing user row and the
         # FE mints a fresh id, so they have no persisted client_message_id row to
@@ -1466,10 +1566,21 @@ async def send_message(
         # Per-conversation budget cap (D27). Layered OVER the monthly gate and
         # independent of it: platform-key turns only (BYOK pays their own
         # provider), non-temporary only (temp chats have no persisted cost
-        # ledger), and only when the user set a positive cap. Reaching the
+        # ledger), and only when a positive cap applies. Reaching the
         # conversation's accumulated surviving-assistant cost refuses the next
         # turn — same best-effort/post-hoc semantics as the monthly gate.
-        per_conversation_cap = user_prefs.per_conversation_budget_usd or 0.0
+        #
+        # Project scoping (D20): a Project's `per_conversation_budget_usd`
+        # OVERRIDES the user preference when the conversation is filed under a
+        # Project that set one; otherwise the user-pref cap applies. The gate
+        # machinery below is unchanged.
+        if (
+            conversation_project is not None
+            and conversation_project.per_conversation_budget_usd is not None
+        ):
+            per_conversation_cap = conversation_project.per_conversation_budget_usd
+        else:
+            per_conversation_cap = user_prefs.per_conversation_budget_usd or 0.0
         if per_conversation_cap > 0 and resolved_api_key is None and not is_temp:
             conversation_cost = await usage_repo.get_conversation_cost(
                 db, conversation_id
@@ -1530,7 +1641,7 @@ async def send_message(
             settings,
             text=body.text,
             attachments=provider_attachments,
-            custom_instructions=user_prefs.custom_instructions,
+            custom_instructions=effective_instructions,
         )
         if not safety_decision.allowed:
             await _record_moderation_blocked(
@@ -1548,7 +1659,7 @@ async def send_message(
                 settings,
                 text=_text_from_parts(last_user.parts),
                 attachments=_attachment_payloads_from_parts(last_user.parts),
-                custom_instructions=user_prefs.custom_instructions,
+                custom_instructions=effective_instructions,
             )
             if not safety_decision.allowed:
                 await _record_moderation_blocked(
@@ -1642,7 +1753,7 @@ async def send_message(
             conversation_id=conversation_id,
             decision=body.tool_approval,
             settings=settings,
-            custom_instructions=user_prefs.custom_instructions,
+            custom_instructions=effective_instructions,
             supports_attachments=binding.supports_attachments,
             supports_vision=binding.supports_vision,
         )
@@ -1929,7 +2040,7 @@ async def send_message(
             web_search=effective_web_search,
             response_format=effective_response_format,
             attachments=provider_attachments,
-            custom_instructions=user_prefs.custom_instructions,
+            custom_instructions=effective_instructions,
             memory_facts=memory_facts,
             reasoning_effort_override=reasoning_effort_override,
             thinking_override=thinking_override,
@@ -1979,7 +2090,7 @@ async def send_message(
             web_search=effective_web_search,
             response_format=effective_response_format,
             attachments=provider_attachments,
-            custom_instructions=user_prefs.custom_instructions,
+            custom_instructions=effective_instructions,
             memory_facts=memory_facts,
             reasoning_effort_override=reasoning_effort_override,
             thinking_override=thinking_override,

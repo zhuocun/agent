@@ -282,6 +282,121 @@ async def test_custom_instructions_are_provider_only(
         assert user_msg.parts[0]["text"] == "Summarize the launch plan."
 
 
+async def test_project_custom_instructions_reach_composed_user_turn(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Project's `customInstructions` are CONCATENATED with the user-global
+    instructions (user first, project appended) and reach the same user-turn
+    wrapper the user-global instructions use (D20). Unfiled conversations see
+    only the user-global instructions (no project bleed)."""
+    await client.get("/api/bootstrap")
+    await client.put(
+        "/api/preferences",
+        json={
+            "defaultTierId": "smart",
+            "temporaryByDefault": False,
+            "trainingOptIn": False,
+            "sendOnEnter": True,
+            "autoExpandReasoning": False,
+            "telemetryEnabled": True,
+            "customInstructions": "GLOBAL: be terse.",
+            "retentionDays": None,
+        },
+    )
+    # Project carrying its own shared instructions.
+    project = await client.post(
+        "/api/projects",
+        json={"name": "Legal", "customInstructions": "PROJECT: cite statutes."},
+    )
+    project_id = project.json()["id"]
+    user_id = await _current_user_id(session_factory)
+
+    # One conversation filed under the project, one left unfiled.
+    filed = await client.post(
+        "/api/conversations",
+        json={"selectedTierId": "smart", "isTemporary": False, "projectId": project_id},
+    )
+    filed_id = filed.json()["id"]
+    unfiled_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    seen_prompts: list[str] = []
+
+    class _CaptureProvider:
+        async def stream(
+            self,
+            *,
+            model_id: str,
+            history: list[ChatMessage],
+            user_text: str,
+            attachments: list[object] | None = None,
+            api_key: str | None = None,
+            thinking: bool | None = None,
+            reasoning_effort: str | None = None,
+            web_search: bool = False,
+            supports_vision: bool = True,
+            response_format: object | None = None,
+        ) -> AsyncIterator[ProviderEvent]:
+            seen_prompts.append(user_text)
+            yield ReasoningDone()
+            yield AnswerDelta(text="ok")
+            yield Complete(
+                usage=UsageUpdate(
+                    input_tokens=10,
+                    output_tokens=2,
+                    reasoning_tokens=0,
+                    cached_input_tokens=0,
+                )
+            )
+
+        async def complete(
+            self,
+            *,
+            model_id: str,
+            history: list[ChatMessage],
+            user_text: str,
+            api_key: str | None = None,
+        ) -> str:
+            return "Project Instructions Test"
+
+    from app.routes import conversations as conversation_routes
+
+    monkeypatch.setattr(
+        conversation_routes,
+        "build_provider",
+        lambda *args, **kwargs: _CaptureProvider(),
+    )
+
+    # Filed conversation: BOTH instructions reach the prompt, user-global first.
+    filed_frames = await _collect_sse(
+        client,
+        f"/api/conversations/{filed_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "Question one."},
+    )
+    assert filed_frames[-1][0] == "terminal"
+    assert seen_prompts
+    filed_prompt = seen_prompts[-1]
+    assert "GLOBAL: be terse." in filed_prompt
+    assert "PROJECT: cite statutes." in filed_prompt
+    assert "Question one." in filed_prompt
+    # Ordering: user-global instructions precede the project's.
+    assert filed_prompt.index("GLOBAL: be terse.") < filed_prompt.index(
+        "PROJECT: cite statutes."
+    )
+
+    # Unfiled conversation: only the user-global instructions; no project bleed.
+    unfiled_frames = await _collect_sse(
+        client,
+        f"/api/conversations/{unfiled_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "Question two."},
+    )
+    assert unfiled_frames[-1][0] == "terminal"
+    unfiled_prompt = seen_prompts[-1]
+    assert "GLOBAL: be terse." in unfiled_prompt
+    assert "PROJECT: cite statutes." not in unfiled_prompt
+
+
 async def test_send_message_with_attachment_streams_persists_metadata_only(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

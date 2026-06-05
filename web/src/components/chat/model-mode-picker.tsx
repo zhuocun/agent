@@ -82,6 +82,9 @@ export function ModelModePicker({
   disabled,
 }: ModelModePickerProps): JSX.Element {
   const tier = tiers.find((t) => t.id === selectedTierId) ?? tiers[0];
+  // Value-aware hint (PRD 05 §4.5 D27 / PRD 07 §6.3): flag the cheapest capable
+  // route. A LABEL ONLY — it never changes the selection automatically.
+  const cheapestTierId = cheapestAvailableTierId(tiers);
   const provider =
     providerOptions.find((p) => p.providerId === selectedProviderId) ??
     providerOptions.find((p) => p.status === "available") ??
@@ -196,6 +199,7 @@ export function ModelModePicker({
                 label={t.label}
                 description={t.description}
                 meta={tierMeta(t)}
+                badge={t.id === cheapestTierId ? "Cheapest" : undefined}
                 selected={t.id === selectedTierId}
                 onSelect={() => handleSelectTier(t.id)}
               />
@@ -356,6 +360,7 @@ export function ModelModePicker({
                   description={[t.description, tierMeta(t)]
                     .filter(Boolean)
                     .join(" · ")}
+                  badge={t.id === cheapestTierId ? "Cheapest" : undefined}
                   selected={t.id === selectedTierId}
                   onSelect={() => handleSelectTier(t.id)}
                 />
@@ -425,6 +430,7 @@ function DropdownRow({
   label,
   description,
   meta,
+  badge,
   selected,
   disabled,
   onSelect,
@@ -432,6 +438,7 @@ function DropdownRow({
   label: string;
   description: string;
   meta?: string;
+  badge?: string;
   selected: boolean;
   disabled?: boolean;
   onSelect: () => void;
@@ -446,6 +453,7 @@ function DropdownRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate font-medium">{label}</span>
+          {badge ? <ValueBadge label={badge} /> : null}
           {selected ? (
             <Check aria-hidden className="ml-auto size-4 text-foreground" />
           ) : null}
@@ -496,6 +504,7 @@ function SheetSection({
 function SheetRow({
   label,
   description,
+  badge,
   selected,
   disabled,
   onSelect,
@@ -503,6 +512,7 @@ function SheetRow({
 }: {
   label: string;
   description: string;
+  badge?: string;
   selected: boolean;
   disabled?: boolean;
   onSelect: () => void;
@@ -528,6 +538,7 @@ function SheetRow({
             <span className="min-w-0 truncate text-sm font-medium text-foreground">
               {label}
             </span>
+            {badge ? <ValueBadge label={badge} /> : null}
           </div>
           <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
             {description}
@@ -550,9 +561,50 @@ function providerDescription(provider: ProviderTierOption): string {
   return provider.dataPolicy?.policyLabel ?? "Available for this turn.";
 }
 
+// A subtle "Cheapest" (or similar) pill rendered next to a model row's label.
+// Purely informational — selection never changes on its own.
+function ValueBadge({ label }: { label: string }): JSX.Element {
+  return (
+    <span className="shrink-0 rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-brand uppercase">
+      {label}
+    </span>
+  );
+}
+
 function tierMeta(tier: ModelTier): string {
-  const parts = [tier.modelLabel, tier.supportsAttachments ? "Attachments" : ""];
+  const parts = [
+    tier.modelLabel,
+    tierPriceMeta(tier),
+    tier.supportsAttachments ? "Attachments" : "",
+  ];
   return parts.filter(Boolean).join(" · ");
+}
+
+// Per-million-token list price hint, e.g. "$0.14/M in · $0.28/M out". Empty for
+// unpriced tiers ("auto", or any tier whose binding is missing a price) so the
+// row simply omits it rather than showing "$0/M".
+function tierPriceMeta(tier: ModelTier): string {
+  if (tier.listPriceInPerM <= 0 && tier.listPriceOutPerM <= 0) return "";
+  return `$${tier.listPriceInPerM}/M in · $${tier.listPriceOutPerM}/M out`;
+}
+
+// The cheapest tier with an AVAILABLE route and a real price, by combined
+// in+out list price. Returns null when no priced+available tier exists (e.g.
+// only "auto" is priced at 0, or all routes are pending/unavailable).
+function cheapestAvailableTierId(tiers: ModelTier[]): ModelTierId | null {
+  let best: { id: ModelTierId; price: number } | null = null;
+  for (const t of tiers) {
+    // "auto" is a per-turn router, not a single route — its price varies by
+    // message, so it's never the thing we flag as "cheapest".
+    if (t.id === "auto") continue;
+    if (t.providerRouteStatus !== "available") continue;
+    const price = t.listPriceInPerM + t.listPriceOutPerM;
+    if (price <= 0) continue;
+    if (best === null || price < best.price) {
+      best = { id: t.id, price };
+    }
+  }
+  return best?.id ?? null;
 }
 
 // Relative cost/latency hint for an effort row, surfacing the trade-off so a

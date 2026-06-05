@@ -755,6 +755,20 @@ def _budget_exceeded() -> AppError:
     )
 
 
+def _conversation_budget_exceeded() -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="CONVERSATION_BUDGET_EXCEEDED",
+            severity="warning",
+            title="Conversation limit reached",
+            body="This conversation has reached the per-conversation spend cap "
+            "you set. Raise or clear the cap in settings, or start a new chat.",
+            actions=[ErrorAction(label="View usage", kind="open_settings")],
+        ),
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+
+
 def _pro_required() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -1386,6 +1400,33 @@ async def send_message(
                     )
                     await event_db.commit()
                 raise _budget_exceeded()
+
+        # Per-conversation budget cap (D27). Layered OVER the monthly gate and
+        # independent of it: platform-key turns only (BYOK pays their own
+        # provider), non-temporary only (temp chats have no persisted cost
+        # ledger), and only when the user set a positive cap. Reaching the
+        # conversation's accumulated surviving-assistant cost refuses the next
+        # turn — same best-effort/post-hoc semantics as the monthly gate.
+        per_conversation_cap = user_prefs.per_conversation_budget_usd or 0.0
+        if per_conversation_cap > 0 and resolved_api_key is None and not is_temp:
+            conversation_cost = await usage_repo.get_conversation_cost(
+                db, conversation_id
+            )
+            if conversation_cost >= per_conversation_cap:
+                async with _derive_session_factory(db)() as event_db:
+                    await analytics_repo.record(
+                        event_db,
+                        user_id=user.id,
+                        event_type="budget.exceeded",
+                        properties={
+                            "conversationId": str(conversation_id),
+                            "requestedTierId": body.tier_id,
+                            "providerId": selected_provider_id,
+                            "scope": "conversation",
+                        },
+                    )
+                    await event_db.commit()
+                raise _conversation_budget_exceeded()
     else:
         _ensure_provider_usable(
             provider_id=selected_provider_id,

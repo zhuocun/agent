@@ -111,6 +111,14 @@ class Preferences(Base):
     monthly_budget_usd: Mapped[float | None] = mapped_column(
         Numeric(12, 6, asdecimal=False), nullable=True
     )
+    # User-set per-conversation platform-spend ceiling in USD. NULL means "no
+    # per-conversation cap". Mirrors `monthly_budget_usd`'s Numeric(12,6) money
+    # shape so the cap composes with the same fixed-precision arithmetic;
+    # `asdecimal=False` keeps SQLAlchemy returning plain Python floats for the
+    # send-gate comparison.
+    per_conversation_budget_usd: Mapped[float | None] = mapped_column(
+        Numeric(12, 6, asdecimal=False), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -81,6 +81,7 @@ async def put_preferences(
         ),
         retention_days=body.retention_days,
         monthly_budget_usd=body.monthly_budget_usd,
+        per_conversation_budget_usd=body.per_conversation_budget_usd,
     )
     safety_decision = check_user_turn(
         settings,

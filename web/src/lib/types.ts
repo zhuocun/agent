@@ -164,6 +164,11 @@ export interface ModelAttribution {
   // optional fields on the BE `terminal` frame's attribution.
   outputFormat?: "json_object" | "json_schema";
   outputValid?: boolean;
+  // Transparent long-term memory (D19): how many saved facts were injected into
+  // this turn. Present (and > 0) only when memory was applied — the FE renders
+  // the "Memory used here" chip from this turn-level count. Mirrors the new
+  // optional field on the BE `terminal` frame's attribution.
+  memoryApplied?: number;
 }
 
 // A single web-search result surfaced as a source card under a grounded
@@ -357,6 +362,10 @@ export interface Conversation {
   messages: ChatMessage[];
   selectedTierId: ModelTierId;
   isTemporary: boolean;
+  // Per-conversation retention override in days (D31). `null`/absent = inherit
+  // the user's global `UserPreferences.retentionDays`. Drives the kebab
+  // retention control + the "expires in ~N days" hint.
+  retentionDays?: number | null;
 }
 
 // A lightweight history-list entry for the sidebar (PRD 01 §4.2 / PRD 03).
@@ -370,6 +379,10 @@ export interface ConversationSummary {
   pinned?: boolean;
   matchSnippet?: string;
   matchedMessageId?: string | null;
+  // Per-conversation retention override in days (D31). `null`/absent = inherit
+  // the user's global retention. Echoed on the sidebar summary so the kebab
+  // control + "expires in ~N days" hint render without a follow-up GET.
+  retentionDays?: number | null;
 }
 
 // User-editable preferences surfaced in the settings panel (PRD 06 §5.7 / PRD 05).
@@ -391,6 +404,21 @@ export interface UserPreferences {
   // refuses the next platform-key turn once a conversation's accumulated
   // surviving-assistant cost reaches this cap (PRD 05 §4.5 D27).
   perConversationBudgetUsd: number | null;
+  // Transparent long-term memory opt-in (D19). OFF by default. When on (and the
+  // turn isn't temporary) the BE injects the user's saved facts into the turn.
+  memoryEnabled: boolean;
+}
+
+// A single editable, attributed long-term-memory fact (D19). The glass-box
+// differentiator: every fact the assistant may use is a row the user can read,
+// edit, and delete. Mirrors api/app/schemas/memory.py `MemoryFact`.
+export interface MemoryFact {
+  id: string;
+  content: string;
+  source: "manual" | "conversation";
+  sourceConversationId?: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
 }
 
 // Account / billing identity for the sidebar footer + settings (PRD 05 / PRD 07 §5.8).

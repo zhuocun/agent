@@ -37,6 +37,7 @@ import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { DegradedStatusBanner } from "@/components/chat/degraded-status-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { ActivityDialog } from "@/components/chat/activity-dialog";
+import { MemoryDialog } from "@/components/chat/memory-dialog";
 import { ModelDirectoryDialog } from "@/components/chat/model-directory-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
@@ -450,6 +451,7 @@ export function ChatThread() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const [modelDirectoryOpen, setModelDirectoryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -1889,6 +1891,39 @@ export function ChatThread() {
     });
   };
 
+  // Set (number) or clear (null) a conversation's per-conversation retention
+  // override (D31). Optimistic, with the same rollback-on-failure discipline as
+  // rename / pin. The PATCH carries `retentionDays` three-valued: `null` clears
+  // the override so the conversation inherits the global retention.
+  const handleSetConversationRetention = (
+    id: string,
+    retentionDays: number | null,
+  ) => {
+    const previous = conversations;
+    const target = previous.find((c) => c.id === id);
+    if (!target || (target.retentionDays ?? null) === retentionDays) return;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, retentionDays } : c)),
+    );
+    void patchConversation(id, { retentionDays }).catch((cause) => {
+      setConversations(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError
+            ? cause.title
+            : "Couldn't update retention",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
+    });
+  };
+
   const handlePreferencesChange = (next: UserPreferences) => {
     if (!bootstrap) return;
     const previous = bootstrap.preferences;
@@ -2530,6 +2565,7 @@ export function ChatThread() {
             onRenameConversation={handleRenameConversation}
             onDeleteConversation={handleDeleteConversation}
             onTogglePinConversation={handleTogglePinConversation}
+            onSetConversationRetention={handleSetConversationRetention}
             onCopyConversation={handleCopyConversationById}
             onDownloadConversation={handleDownloadConversationById}
             onOpenSettings={handleOpenSettings}
@@ -2736,6 +2772,7 @@ export function ChatThread() {
                       onToolDecision={(d) => handleToolDecision(m.id, d)}
                       onFeedback={(f) => setFeedback(m.id, f)}
                       onAttributionOpen={handleAttributionOpen}
+                      onMemoryOpen={() => setMemoryOpen(true)}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
                     />
@@ -2826,6 +2863,10 @@ export function ChatThread() {
           setSettingsOpen(false);
           setActivityOpen(true);
         }}
+        onOpenMemory={() => {
+          setSettingsOpen(false);
+          setMemoryOpen(true);
+        }}
         onOpenModelDirectory={() => {
           setSettingsOpen(false);
           setModelDirectoryOpen(true);
@@ -2845,6 +2886,22 @@ export function ChatThread() {
             );
             trigger?.focus();
             trigger?.click();
+          });
+        }}
+      />
+
+      <MemoryDialog
+        open={memoryOpen}
+        onOpenChange={setMemoryOpen}
+        memoryEnabled={bootstrap?.preferences.memoryEnabled ?? false}
+        onMemoryEnabledChange={(next) => {
+          // Reuse the optimistic preferences flow (setBootstrap + PUT +
+          // rollback-on-error), exactly like the budget cap, so the toggle
+          // rides the existing wire path.
+          if (!bootstrap) return;
+          handlePreferencesChange({
+            ...bootstrap.preferences,
+            memoryEnabled: next,
           });
         }}
       />

@@ -97,6 +97,7 @@ def build_attribution(
     substituted_provider: str | None = None,
     substituted_model: str | None = None,
     substituted_display_label: str | None = None,
+    memory_applied: int = 0,
 ) -> ModelAttribution:
     """Assemble a ModelAttribution.
 
@@ -150,4 +151,8 @@ def build_attribution(
         cost_confidence=cost_confidence,
         breakdown=breakdown,
         substitution=sub_obj,
+        # Omit a zero count so memory-off turns keep the pre-memory wire shape;
+        # surface the positive count so the FE can render the "Memory used here"
+        # chip (D19).
+        memory_applied=memory_applied or None,
     )

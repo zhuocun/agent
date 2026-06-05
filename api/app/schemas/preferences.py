@@ -30,6 +30,10 @@ class UserPreferences(CamelModel):
     # (BYOK/temporary turns are exempt) once a conversation's accumulated
     # assistant cost reaches it.
     per_conversation_budget_usd: float | None = None
+    # Transparent long-term memory opt-in (D19). OFF by default. When True (and
+    # the turn is not temporary) the user's saved facts are injected into the
+    # turn — see `app.streaming.handler._apply_memory`.
+    memory_enabled: bool = False
 
 
 class UserPreferencesRequest(CamelModel):
@@ -47,3 +51,6 @@ class UserPreferencesRequest(CamelModel):
     # User-set per-conversation platform-spend ceiling in USD. Non-negative;
     # None clears it.
     per_conversation_budget_usd: Annotated[float, Field(ge=0)] | None = None
+    # Transparent long-term memory opt-in (D19). Optional for stale clients;
+    # omission preserves the existing saved value (mirrors `telemetry_enabled`).
+    memory_enabled: bool | None = None

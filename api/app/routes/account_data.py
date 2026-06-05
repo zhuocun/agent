@@ -22,7 +22,7 @@ untouched. Both routers share the `/api/account` prefix and are mounted in
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -40,6 +40,7 @@ from app.db.repositories import (
     api_keys,
     audit_events,
     conversations,
+    memory_facts,
     preferences,
     usage,
     users,
@@ -58,6 +59,7 @@ from app.schemas.account import (
     UsageRollupExport,
 )
 from app.schemas.conversation import Conversation as ConversationSchema
+from app.schemas.memory import MemoryFact as MemoryFactSchema
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 
@@ -113,14 +115,16 @@ async def export_account(
     credit_ledger = await usage.list_credit_entries_for_user(db, user_id=user.id)
     rollups = await usage.list_rollups_for_user(db, user.id)
     prefs = await preferences.get_or_default(db, user.id)
-    if prefs.retention_days is not None:
-        await conversations.delete_older_than_for_user(
-            db,
-            user_id=user.id,
-            cutoff=datetime.now(UTC) - timedelta(days=prefs.retention_days),
-        )
+    # Purge expired conversations (global window AND per-conversation overrides,
+    # D31) before snapshotting the export so it never ships already-expired data.
+    await conversations.delete_older_than_for_user(
+        db,
+        user_id=user.id,
+        global_retention_days=prefs.retention_days,
+    )
     audit_rows = await audit_events.list_for_user(db, user.id)
     analytics_rows = await analytics.list_for_user(db, user.id)
+    memory_rows = await memory_facts.list_for_user(db, user.id)
 
     # Full conversations with messages. N+1 is acceptable for an export: list
     # the summaries to learn the ids, then load each full conversation.
@@ -176,6 +180,21 @@ async def export_account(
                 properties=row.properties,
             )
             for row in analytics_rows
+        ],
+        memory_facts=[
+            MemoryFactSchema(
+                id=str(row.id),
+                content=row.content,
+                source="conversation" if row.source == "conversation" else "manual",
+                source_conversation_id=(
+                    str(row.source_conversation_id)
+                    if row.source_conversation_id is not None
+                    else None
+                ),
+                created_at=_iso(row.created_at),
+                updated_at=_iso(row.updated_at),
+            )
+            for row in memory_rows
         ],
         exported_at=datetime.now(UTC).isoformat(),
     )

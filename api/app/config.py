@@ -188,6 +188,9 @@ class Settings(BaseSettings):
     rate_limit_moderation_appeal: str = Field(
         default="10/minute", alias="RATE_LIMIT_MODERATION_APPEAL"
     )
+    # Memory-fact CRUD (D19). Anonymous-allowed (guests can keep memory too),
+    # caller-scoped writes/reads over a per-user ledger; bound abusive churn.
+    rate_limit_memory: str = Field(default="30/minute", alias="RATE_LIMIT_MEMORY")
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the
@@ -263,6 +266,29 @@ class Settings(BaseSettings):
     # create is orphaned from a prior crash). `<= 0` on EITHER this or
     # `stream_reap_after_seconds` disables the background loop.
     stream_reap_interval_seconds: int = Field(default=300, alias="STREAM_REAP_INTERVAL_SECONDS")
+
+    # Scheduled retention purge (D31). Retention is also enforced
+    # opportunistically on read paths (bootstrap / history reads / export), but
+    # a dormant account's expired conversations would otherwise linger on disk
+    # forever. This background sweep deletes expired conversations across ALL
+    # users on an interval, honoring the per-conversation `retention_days`
+    # override else the owner's global `preferences.retention_days`. The first
+    # sweep also runs once at startup. `<= 0` on the interval DISABLES the
+    # scheduled loop entirely (the opportunistic purges keep working unchanged) —
+    # default ON at one hour. Default-on is safe: with no retention configured by
+    # anyone, the candidate pre-filter matches no rows and the sweep is a no-op.
+    #
+    # Single-process caveat (same as the orphan-stream reaper): the loop runs
+    # in-process; behind multiple uvicorn workers each process sweeps
+    # independently — harmless because the deletes are idempotent, but a
+    # production-grade purge belongs in a single coordinated job (cron /
+    # Redis-locked worker) rather than every web process.
+    retention_purge_enabled: bool = Field(
+        default=True, alias="RETENTION_PURGE_ENABLED"
+    )
+    retention_purge_interval_seconds: int = Field(
+        default=3600, alias="RETENTION_PURGE_INTERVAL_SECONDS"
+    )
 
     # Auto-tier routing. When True (default), an `auto` request runs the v0
     # complexity heuristic (`providers/router.py`) and is served by the routed

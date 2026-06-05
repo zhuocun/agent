@@ -20,7 +20,7 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -38,6 +38,7 @@ from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import audit_events as audit_events_repo
 from app.db.repositories import billing as billing_repo
 from app.db.repositories import conversations as conversations_repo
+from app.db.repositories import memory_facts as memory_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import preferences as preferences_repo
 from app.db.repositories import streams as streams_repo
@@ -151,15 +152,17 @@ _TEMP_IDS: dict[UUID, set[UUID]] = defaultdict(set)
 
 
 async def _enforce_retention(db: AsyncSession, user_id: UUID) -> None:
-    """Apply the caller's finite retention preference before reading history."""
+    """Apply the caller's retention policy before reading history.
+
+    Honors BOTH the global `preferences.retention_days` and any per-conversation
+    `retention_days` override (D31), so the purge fires even when the user has no
+    global window but has set a finite window on an individual conversation.
+    """
     prefs = await preferences_repo.get_or_default(db, user_id)
-    if prefs.retention_days is None:
-        return
-    cutoff = datetime.now(UTC) - timedelta(days=prefs.retention_days)
     await conversations_repo.delete_older_than_for_user(
         db,
         user_id=user_id,
-        cutoff=cutoff,
+        global_retention_days=prefs.retention_days,
     )
 
 
@@ -967,19 +970,32 @@ async def patch_conversation(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationSchema:
-    """Rename and/or pin the conversation. Returns the full updated body so the
-    FE avoids a follow-up GET.
+    """Rename / pin / set the per-conversation retention. Returns the full
+    updated body so the FE avoids a follow-up GET.
 
-    Empty patch (`{}` or all-nulls) -> 400 INVALID_INPUT. Not-owned -> 404.
+    `retentionDays` is THREE-VALUED (D31): omitted leaves the override unchanged;
+    an integer sets it; explicit `null` CLEARS it (the conversation falls back to
+    the global retention). `model_fields_set` distinguishes "omitted" from an
+    explicit `null` so a clear is honored rather than swallowed.
+
+    Empty patch (`{}` or all-explicit-nulls) -> 400 INVALID_INPUT. The
+    retention-clear case (`{"retentionDays": null}`) is a MEANINGFUL patch and is
+    NOT rejected. Not-owned -> 404.
     """
+    retention_set = "retention_days" in body.model_fields_set
     patch_dict = body.model_dump(exclude_unset=True)
     # Reject `{}` AND `{"title": null, "pinned": null}` — both are no-ops.
     # `exclude_unset` keeps explicit nulls in the dict (they ARE "set"), so a
     # plain truthiness check would let `{title: null, pinned: null}` slip
-    # through to `update_for_user`, which would only bump `updated_at`.
-    if not any(v is not None for v in patch_dict.values()):
+    # through to `update_for_user`, which would only bump `updated_at`. A sent
+    # `retentionDays` (even `null`) IS a meaningful change, so it counts.
+    has_title_or_pinned = any(
+        patch_dict.get(k) is not None for k in ("title", "pinned")
+    )
+    if not has_title_or_pinned and not retention_set:
         raise _invalid_input(
-            "INVALID_INPUT", "PATCH body must include at least one of: title, pinned."
+            "INVALID_INPUT",
+            "PATCH body must include at least one of: title, pinned, retentionDays.",
         )
     updated_row = await conversations_repo.update_for_user(
         db,
@@ -987,6 +1003,9 @@ async def patch_conversation(
         user.id,
         title=body.title,
         pinned=body.pinned,
+        # Pass the value only when the field was sent; otherwise let the repo's
+        # `_UNSET` default leave the column untouched.
+        **({"retention_days": body.retention_days} if retention_set else {}),
     )
     if updated_row is None:
         raise not_found("conversation")
@@ -1866,6 +1885,15 @@ async def send_message(
                 },
             )
 
+    # Transparent long-term memory (D19): load the caller's saved facts to inject
+    # ONLY when memory is opt-in enabled AND the turn is not temporary. Temporary
+    # chats skip persistence (handler.py) and must skip injection too — they are
+    # the user's escape hatch from memory. The handler folds these into the user
+    # turn (`_apply_memory`) and surfaces the injected count on the attribution.
+    memory_facts: list[str] = []
+    if user_prefs.memory_enabled and not is_temp:
+        memory_facts = await memory_repo.list_for_injection(db, user.id)
+
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
     # appends every wire event to an in-process ReplayBuffer; this POST then
@@ -1902,6 +1930,7 @@ async def send_message(
             response_format=effective_response_format,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
+            memory_facts=memory_facts,
             reasoning_effort_override=reasoning_effort_override,
             thinking_override=thinking_override,
             monthly_quota_usd_override=effective_quota_usd,
@@ -1951,6 +1980,7 @@ async def send_message(
             response_format=effective_response_format,
             attachments=provider_attachments,
             custom_instructions=user_prefs.custom_instructions,
+            memory_facts=memory_facts,
             reasoning_effort_override=reasoning_effort_override,
             thinking_override=thinking_override,
             monthly_quota_usd_override=effective_quota_usd,

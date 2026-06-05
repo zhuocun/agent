@@ -14,6 +14,7 @@ from app.db.models import (
     BillingCustomer,
     BillingEntitlement,
     Conversation,
+    MemoryFact,
     Message,
     Preferences,
     Session,
@@ -38,8 +39,9 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
 
     Order: vote (by message id) -> stream (by conversation id) ->
     message (by conversation id) -> conversation -> analytics_event ->
-    api_key / usage ledgers / preferences / session -> audit purge -> user.
-    Flush only; the caller (request dependency) owns the commit.
+    api_key / usage ledgers / preferences / session / memory_fact ->
+    audit purge -> user. Flush only; the caller (request dependency) owns the
+    commit.
     """
     convo_id_stmt = select(Conversation.id).where(Conversation.user_id == user_id)
     convo_ids = (await db.execute(convo_id_stmt)).scalars().all()
@@ -64,6 +66,12 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
     await db.execute(delete(UsageRollup).where(UsageRollup.user_id == user_id))
     await db.execute(delete(Preferences).where(Preferences.user_id == user_id))
     await db.execute(delete(Session).where(Session.user_id == user_id))
+    # Memory ledger (D19). FK to users is CASCADE and to conversation is SET NULL,
+    # but SQLite (tests) enforces neither, so remove it explicitly — same
+    # explicit-cascade rationale as the rows above. Ordering vs. conversation is
+    # unconstrained (SET NULL, not RESTRICT), so deleting here is safe even after
+    # the conversation rows are gone.
+    await db.execute(delete(MemoryFact).where(MemoryFact.user_id == user_id))
     await db.execute(delete(AuditEvent).where(AuditEvent.user_id == user_id))
     await db.execute(delete(User).where(User.id == user_id))
     await db.flush()

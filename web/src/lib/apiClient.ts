@@ -14,6 +14,7 @@ import type {
   ConversationSummary,
   DataProcessingRollup,
   Feedback,
+  MemoryFact,
   ModelDirectoryEntry,
   ModelTier,
   ModelTierId,
@@ -49,6 +50,7 @@ export interface AccountExportResponse {
   preferences: UserPreferences;
   usage: UsageBudget;
   conversations: Conversation[];
+  memoryFacts?: MemoryFact[];
   exportedAt: string;
 }
 
@@ -316,7 +318,10 @@ export function branchConversation(
 
 export function patchConversation(
   id: string,
-  body: { title?: string; pinned?: boolean },
+  // `retentionDays` is THREE-VALUED to match the BE (D31): omit the key to
+  // leave it unchanged, send a number to set the per-conversation override, or
+  // send `null` to clear it (inherit the global retention).
+  body: { title?: string; pinned?: boolean; retentionDays?: number | null },
   signal?: AbortSignal,
 ): Promise<Conversation> {
   return apiClient.patch<Conversation>(
@@ -520,6 +525,41 @@ export function postModerationAppeal(
   signal?: AbortSignal,
 ): Promise<void> {
   return apiClient.post<void>("/api/account/moderation-appeal", body, signal);
+}
+
+// --- Transparent long-term memory (D19) -------------------------------------
+//
+// The editable, attributed fact ledger. All caller-scoped + anonymous-allowed;
+// each mutation emits a `memory.fact_*` audit event on the BE.
+
+export function fetchMemoryFacts(signal?: AbortSignal): Promise<MemoryFact[]> {
+  return apiClient.get<MemoryFact[]>("/api/account/memory", signal);
+}
+
+export function createMemoryFact(
+  content: string,
+  signal?: AbortSignal,
+): Promise<MemoryFact> {
+  return apiClient.post<MemoryFact>("/api/account/memory", { content }, signal);
+}
+
+export function updateMemoryFact(
+  id: string,
+  content: string,
+  signal?: AbortSignal,
+): Promise<MemoryFact> {
+  return apiClient.patch<MemoryFact>(
+    `/api/account/memory/${encodeURIComponent(id)}`,
+    { content },
+    signal,
+  );
+}
+
+export function deleteMemoryFact(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.del(`/api/account/memory/${encodeURIComponent(id)}`, signal);
 }
 
 // The model & data-policy directory: every provider route in the registry with

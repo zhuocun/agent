@@ -35,6 +35,7 @@ _VALID_BODY = {
     "customInstructions": "Answer tersely and use bullets.",
     "retentionDays": 90,
     "monthlyBudgetUsd": 25.0,
+    "perConversationBudgetUsd": 5.0,
 }
 
 
@@ -61,6 +62,7 @@ async def test_bootstrap_returns_defaults_when_no_row(
         "customInstructions": "",
         "retentionDays": None,
         "monthlyBudgetUsd": None,
+        "perConversationBudgetUsd": None,
     }
     # Bootstrap should NOT silently insert a row.
     assert await _row_count(session_factory) == 0

@@ -22,6 +22,7 @@ import type {
   PromptSuggestion,
   PublicConversation,
   ShareLinkResponse,
+  SpendAnalytics,
   UsageBudget,
   UserPreferences,
 } from "@/lib/types";
@@ -243,6 +244,20 @@ export function fetchAccountExport(
   signal?: AbortSignal,
 ): Promise<AccountExportResponse> {
   return apiClient.get<AccountExportResponse>("/api/account/export", signal);
+}
+
+// Fetch the caller's longitudinal spend analytics (PRD 05 §4.5 D27). `days` is
+// clamped server-side to 1..365 (default 30). Available to anonymous callers —
+// it's their own data.
+export function fetchSpendAnalytics(
+  days?: number,
+  signal?: AbortSignal,
+): Promise<SpendAnalytics> {
+  const path =
+    days === undefined
+      ? "/api/account/spend"
+      : `/api/account/spend?days=${encodeURIComponent(String(days))}`;
+  return apiClient.get<SpendAnalytics>(path, signal);
 }
 
 // Permanently delete the caller's account and all conversations. The BE requires

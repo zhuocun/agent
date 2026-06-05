@@ -304,6 +304,45 @@ export interface UsageLedgerEntry {
   createdAt: string;
 }
 
+// --- Longitudinal spend analytics (PRD 05 §4.5 D27) -------------------------
+//
+// Mirrors api/app/schemas/account.py `SpendAnalytics`. Two cost bases are
+// surfaced HONESTLY because they legitimately differ:
+//   - `cumulativeMeterUsd`: every generation triggered (incl. regenerated /
+//     deleted turns) — `sum(usage_rollup.cost_usd)`.
+//   - `survivingMessagesUsd`: only the assistant messages still in the threads —
+//     `sum(message.cost_usd)`.
+export interface SpendDayBucket {
+  date: string; // "YYYY-MM-DD" (UTC day)
+  costUsd: number;
+  messageCount: number;
+}
+
+export interface SpendModelBucket {
+  label: string;
+  tierId?: string | null;
+  providerId?: string | null;
+  costUsd: number;
+  messageCount: number;
+}
+
+export interface SpendConversationBucket {
+  conversationId: string;
+  title: string;
+  costUsd: number;
+  messageCount: number;
+}
+
+export interface SpendAnalytics {
+  rangeDays: number;
+  currency: string; // "USD"
+  survivingMessagesUsd: number;
+  cumulativeMeterUsd: number;
+  daily: SpendDayBucket[];
+  byModel: SpendModelBucket[];
+  byConversation: SpendConversationBucket[];
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -340,6 +379,10 @@ export interface UserPreferences {
   // settings budget UI; the BE enforces it (refusing turns once exceeded) and
   // echoes the effective figure back via `UsageBudget`.
   monthlyBudgetUsd: number | null;
+  // User-set per-conversation spend ceiling in USD, or null for no cap. The BE
+  // refuses the next platform-key turn once a conversation's accumulated
+  // surviving-assistant cost reaches this cap (PRD 05 §4.5 D27).
+  perConversationBudgetUsd: number | null;
 }
 
 // Account / billing identity for the sidebar footer + settings (PRD 05 / PRD 07 §5.8).

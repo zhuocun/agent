@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import weakref
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 from uuid import UUID
 
@@ -33,8 +33,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import UsageCreditLedger, UsageRollup, User
-from app.schemas.account import UsageBudget, UsageLedgerEntry
+from app.db.models import Conversation, Message, UsageCreditLedger, UsageRollup, User
+from app.schemas.account import (
+    SpendAnalytics,
+    SpendConversationBucket,
+    SpendDayBucket,
+    SpendModelBucket,
+    UsageBudget,
+    UsageLedgerEntry,
+)
 
 # Default monthly cap for the integer `used` meter. The FE renders
 # `used / limit` raw with no unit, so the number is informational. Cost-based
@@ -43,6 +50,15 @@ from app.schemas.account import UsageBudget, UsageLedgerEntry
 _DEFAULT_LIMIT = 1000
 _DEFAULT_PERIOD = "this month"
 _LEDGER_RECENT_LIMIT = 10
+# Spend-analytics range clamp (D27). Default 30 days; bounded to a sane window.
+_SPEND_MIN_DAYS = 1
+_SPEND_MAX_DAYS = 365
+_SPEND_DEFAULT_DAYS = 30
+_SPEND_CONVERSATION_LIMIT = 10
+# Bucket label for assistant rows that carry no attribution (stopped / never
+# costed turns). Grouped together so they're surfaced honestly rather than
+# dropped.
+_UNCOSTED_LABEL = "Stopped/uncosted"
 LedgerEntryType = Literal["grant", "platform_debit", "adjustment"]
 _ENTRY_TYPES: set[LedgerEntryType] = {"grant", "platform_debit", "adjustment"}
 _USAGE_LOCKS: weakref.WeakValueDictionary[UUID, asyncio.Lock] = (
@@ -512,6 +528,194 @@ async def get_current_budget(
         user_budget_usd=user_budget_usd,
         effective_quota_usd=effective or None,
         recent_ledger_entries=recent_entries,
+    )
+
+
+async def get_conversation_cost(db: AsyncSession, conversation_id: UUID) -> float:
+    """Return the accumulated surviving assistant cost for one conversation.
+
+    `sum(message.cost_usd)` over the conversation's assistant messages that
+    still carry a cost. Drives the per-conversation budget gate in
+    `send_message`. Counts only surviving messages, mirroring the
+    "surviving-messages" cost basis (a regenerated turn whose old assistant row
+    was deleted no longer counts here).
+    """
+    stmt = select(func.coalesce(func.sum(Message.cost_usd), 0)).where(
+        Message.conversation_id == conversation_id,
+        Message.role == "assistant",
+        Message.cost_usd.is_not(None),
+    )
+    total = (await db.execute(stmt)).scalar_one()
+    return _round_usd(float(total or 0.0))
+
+
+def _clamp_spend_days(days: int) -> int:
+    return max(_SPEND_MIN_DAYS, min(_SPEND_MAX_DAYS, days))
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Coerce a possibly-naive DB datetime to aware UTC for comparisons.
+
+    SQLite (tests) drops the `timezone=True` flag and returns naive datetimes,
+    while Postgres returns aware ones. Normalizing to aware UTC lets the Python
+    range filter / day bucketing work identically on both.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+async def get_spend_analytics(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    days: int = _SPEND_DEFAULT_DAYS,
+) -> SpendAnalytics:
+    """Aggregate the caller's spend over the trailing `days` window (D27).
+
+    Returns BOTH honest cost bases (see `SpendAnalytics` / module docstring):
+    the cumulative meter (`usage_rollup.cost_usd`) and the surviving-messages
+    sum (`sum(message.cost_usd)`). Daily / by-model / by-conversation buckets
+    are derived from the surviving assistant messages.
+
+    JSON-attribution grouping (by `attribution.servedModelLabel`) is done in
+    Python so the query stays SQLite-compatible (tests run on SQLite — no SQL
+    JSON ops). The date filter / day bucketing is also Python-side to avoid the
+    SQLite naive/aware datetime comparison quirk.
+    """
+    range_days = _clamp_spend_days(days)
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=range_days)
+
+    # Cumulative meter: rollup periods intersecting the range. Periods are
+    # calendar-month starts, so include every period at/after the month the
+    # range opens in.
+    meter_stmt = select(func.coalesce(func.sum(UsageRollup.cost_usd), 0)).where(
+        UsageRollup.user_id == user_id,
+        UsageRollup.period_start >= _month_start(cutoff),
+    )
+    cumulative_meter_usd = _round_usd(
+        float((await db.execute(meter_stmt)).scalar_one())
+    )
+
+    # Surviving assistant messages joined to the caller's owned conversations.
+    # Fetch the candidate rows and bucket in Python (cost lives on the row;
+    # model identity lives in the JSON attribution blob).
+    rows_stmt = (
+        select(
+            Message.cost_usd,
+            Message.attribution,
+            Message.created_at,
+            Conversation.id,
+            Conversation.title,
+        )
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(
+            Conversation.user_id == user_id,
+            Message.role == "assistant",
+        )
+        .order_by(Message.created_at.asc())
+    )
+    rows = (await db.execute(rows_stmt)).all()
+
+    surviving_total = 0.0
+    daily_cost: dict[str, float] = {}
+    daily_count: dict[str, int] = {}
+    model_buckets: dict[str, dict[str, object]] = {}
+    convo_cost: dict[str, float] = {}
+    convo_count: dict[str, int] = {}
+    convo_title: dict[str, str] = {}
+
+    for cost_value, attribution, created_at, conversation_id, title in rows:
+        created = _as_utc(created_at)
+        if created < cutoff:
+            continue
+        cost = float(cost_value) if cost_value is not None else 0.0
+        surviving_total += cost
+
+        day_key = created.date().isoformat()
+        daily_cost[day_key] = daily_cost.get(day_key, 0.0) + cost
+        daily_count[day_key] = daily_count.get(day_key, 0) + 1
+
+        attribution_dict = attribution if isinstance(attribution, dict) else None
+        if attribution_dict is None:
+            label = _UNCOSTED_LABEL
+            tier_id = None
+            provider_id = None
+        else:
+            raw_label = attribution_dict.get("servedModelLabel")
+            label = raw_label if isinstance(raw_label, str) and raw_label else _UNCOSTED_LABEL
+            raw_tier = attribution_dict.get("servedTierId")
+            tier_id = raw_tier if isinstance(raw_tier, str) else None
+            raw_provider = attribution_dict.get("providerId")
+            provider_id = raw_provider if isinstance(raw_provider, str) else None
+        bucket = model_buckets.get(label)
+        if bucket is None:
+            model_buckets[label] = {
+                "label": label,
+                "tier_id": tier_id,
+                "provider_id": provider_id,
+                "cost_usd": cost,
+                "message_count": 1,
+            }
+        else:
+            bucket["cost_usd"] = cast(float, bucket["cost_usd"]) + cost
+            bucket["message_count"] = cast(int, bucket["message_count"]) + 1
+
+        convo_key = str(conversation_id)
+        convo_cost[convo_key] = convo_cost.get(convo_key, 0.0) + cost
+        convo_count[convo_key] = convo_count.get(convo_key, 0) + 1
+        convo_title[convo_key] = title
+
+    # Daily buckets: zero-filled, ascending, one entry per UTC day in range.
+    daily: list[SpendDayBucket] = []
+    start_date = cutoff.date()
+    end_date = now.date()
+    cursor = start_date
+    while cursor <= end_date:
+        key = cursor.isoformat()
+        daily.append(
+            SpendDayBucket(
+                date=key,
+                cost_usd=_round_usd(daily_cost.get(key, 0.0)),
+                message_count=daily_count.get(key, 0),
+            )
+        )
+        cursor += timedelta(days=1)
+
+    by_model = [
+        SpendModelBucket(
+            label=cast(str, bucket["label"]),
+            tier_id=cast("str | None", bucket["tier_id"]),
+            provider_id=cast("str | None", bucket["provider_id"]),
+            cost_usd=_round_usd(cast(float, bucket["cost_usd"])),
+            message_count=cast(int, bucket["message_count"]),
+        )
+        for bucket in sorted(
+            model_buckets.values(),
+            key=lambda b: cast(float, b["cost_usd"]),
+            reverse=True,
+        )
+    ]
+
+    by_conversation = [
+        SpendConversationBucket(
+            conversation_id=key,
+            title=convo_title.get(key, "Untitled"),
+            cost_usd=_round_usd(convo_cost[key]),
+            message_count=convo_count.get(key, 0),
+        )
+        for key in sorted(convo_cost, key=lambda k: convo_cost[k], reverse=True)[
+            :_SPEND_CONVERSATION_LIMIT
+        ]
+    ]
+
+    return SpendAnalytics(
+        range_days=range_days,
+        currency="USD",
+        surviving_messages_usd=_round_usd(surviving_total),
+        cumulative_meter_usd=cumulative_meter_usd,
+        daily=daily,
+        by_model=by_model,
+        by_conversation=by_conversation,
     )
 
 

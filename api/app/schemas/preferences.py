@@ -25,6 +25,11 @@ class UserPreferences(CamelModel):
     # the operator's `USAGE_BUDGET_USD` applies, if any). When both are set the
     # lower one wins (see `usage._effective_quota_usd`).
     monthly_budget_usd: float | None = None
+    # User-set per-conversation platform-spend ceiling in USD. None means "no
+    # per-conversation cap". Enforced in the send-gate for platform-key turns
+    # (BYOK/temporary turns are exempt) once a conversation's accumulated
+    # assistant cost reaches it.
+    per_conversation_budget_usd: float | None = None
 
 
 class UserPreferencesRequest(CamelModel):
@@ -39,3 +44,6 @@ class UserPreferencesRequest(CamelModel):
     retention_days: Literal[30, 90] | None = None
     # User-set monthly platform-spend cap in USD. Non-negative; None clears it.
     monthly_budget_usd: Annotated[float, Field(ge=0)] | None = None
+    # User-set per-conversation platform-spend ceiling in USD. Non-negative;
+    # None clears it.
+    per_conversation_budget_usd: Annotated[float, Field(ge=0)] | None = None

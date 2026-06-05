@@ -23,9 +23,10 @@ untouched. Both routers share the `/api/account` prefix and are mounted in
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +54,7 @@ from app.schemas.account import (
     AnalyticsEventExport,
     AuditEventExport,
     ByokKeyMetadata,
+    SpendAnalytics,
     UsageRollupExport,
 )
 from app.schemas.conversation import Conversation as ConversationSchema
@@ -181,6 +183,25 @@ async def export_account(
         content=export.model_dump(by_alias=True),
         headers={"Content-Disposition": 'attachment; filename="account-export.json"'},
     )
+
+
+@router.get("/spend", response_model=SpendAnalytics)
+@limiter.limit(lambda: get_settings().rate_limit_export)
+async def account_spend(
+    request: Request,
+    response: Response,
+    days: Annotated[int, Query()] = 30,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SpendAnalytics:
+    """Return the caller's longitudinal spend analytics (PRD 05 §4.5 D27).
+
+    Allowed for anonymous users — they accrue spend too, and this is their own
+    data. `days` is clamped to 1..365 (default 30) in the repo rather than
+    rejected, so an out-of-range value degrades gracefully. Surfaces BOTH honest
+    cost bases (cumulative meter vs surviving messages); see `SpendAnalytics`.
+    """
+    return await usage.get_spend_analytics(db, user_id=user.id, days=days)
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)

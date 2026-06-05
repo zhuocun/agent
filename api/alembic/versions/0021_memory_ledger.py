@@ -1,7 +1,7 @@
 """Transparent long-term memory v1 (D19): fact ledger + opt-in toggle.
 
-Revision ID: 0020_memory_ledger
-Revises: 0019_preferences_per_conversation_budget
+Revision ID: 0021_memory_ledger
+Revises: 0020_conversation_retention
 Create Date: 2026-06-05 00:00:00.000000
 
 Adds:
@@ -27,8 +27,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0020_memory_ledger"
-down_revision: str | Sequence[str] | None = "0019_preferences_per_conversation_budget"
+revision: str = "0021_memory_ledger"
+down_revision: str | Sequence[str] | None = "0020_conversation_retention"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

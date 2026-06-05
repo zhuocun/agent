@@ -43,6 +43,7 @@ from app.db.repositories import messages as messages_repo
 from app.db.repositories import preferences as preferences_repo
 from app.db.repositories import projects as projects_repo
 from app.db.repositories import streams as streams_repo
+from app.db.repositories import tags as tags_repo
 from app.db.repositories import usage as usage_repo
 from app.db.repositories.usage import _effective_quota_usd
 from app.db.session import get_db
@@ -72,6 +73,8 @@ from app.safety import SafetyDecision, check_user_turn
 from app.schemas.common import ModelTierId, ReasoningEffortId, SubstitutionReasonCode
 from app.schemas.conversation import (
     BranchConversationRequest,
+    BulkActionRequest,
+    BulkActionResponse,
     ConversationSearchResult,
     CreateConversationRequest,
     PatchConversationRequest,
@@ -873,6 +876,17 @@ async def search_conversations(
     request: Request,
     response: Response,
     limit: Annotated[int, Query(ge=1, le=50)] = 25,
+    # Transparency-native advanced-search filters (D-advanced-search). All
+    # optional with `None` defaults so a bare `?q=` is the exact legacy search.
+    # Wire names are camelCase via the aliases; `dateFrom`/`dateTo` parse from
+    # ISO-8601, `projectId`/`tagId` from UUID strings, cost as floats.
+    served_model: Annotated[str | None, Query(alias="servedModel", max_length=64)] = None,
+    cost_min: Annotated[float | None, Query(alias="costMin", ge=0)] = None,
+    cost_max: Annotated[float | None, Query(alias="costMax", ge=0)] = None,
+    date_from: Annotated[datetime | None, Query(alias="dateFrom")] = None,
+    date_to: Annotated[datetime | None, Query(alias="dateTo")] = None,
+    project_id: Annotated[UUID | None, Query(alias="projectId")] = None,
+    tag_id: Annotated[UUID | None, Query(alias="tagId")] = None,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[ConversationSearchResult]:
@@ -882,7 +896,102 @@ async def search_conversations(
         user.id,
         query=q,
         limit=limit,
+        served_model=served_model,
+        cost_min=cost_min,
+        cost_max=cost_max,
+        date_from=date_from,
+        date_to=date_to,
+        project_id=project_id,
+        tag_id=tag_id,
     )
+
+
+@router.post("/bulk", response_model=BulkActionResponse)
+@limiter.limit(lambda: get_settings().rate_limit_conversations_bulk)
+async def bulk_conversation_action(
+    body: BulkActionRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BulkActionResponse:
+    """Apply a multi-select action over the caller's OWN conversations.
+
+    Declared BEFORE `GET /{conversation_id}` so the literal `/bulk` path isn't
+    shadowed by the `{conversation_id}` path param (same ordering reason `/search`
+    precedes `/{conversation_id}`).
+
+    Actions: archive / unarchive / delete / tag / untag. Every id is owner-scoped
+    in the repo — a forged id belonging to another user is silently ignored
+    (IDOR-safe), so `affected` may be lower than the number of ids sent without an
+    error and the response can't be used to probe foreign ids. For tag/untag the
+    target `tagId` must be the caller's own (404 otherwise — never leaks another
+    user's tag). Temporary chats (in-process synthetic ids) have no DB rows, so
+    they simply don't match and are ignored. Emits a single
+    `conversation.bulk_<action>` audit event.
+    """
+    # Parse the conversation ids; a non-UUID entry is a client bug (400) rather
+    # than a silent drop, so the FE learns it sent garbage.
+    try:
+        conversation_ids = [UUID(cid) for cid in body.conversation_ids]
+    except ValueError as exc:
+        raise _invalid_input(
+            "INVALID_INPUT", "conversationIds must all be UUIDs."
+        ) from exc
+
+    affected = 0
+    if body.action in ("archive", "unarchive"):
+        affected = await conversations_repo.bulk_set_archived(
+            db,
+            conversation_ids=conversation_ids,
+            user_id=user.id,
+            archived=body.action == "archive",
+        )
+    elif body.action == "delete":
+        affected = await conversations_repo.bulk_delete(
+            db,
+            conversation_ids=conversation_ids,
+            user_id=user.id,
+        )
+    else:  # "tag" / "untag" — `tag_id` is required (enforced by the schema).
+        # The schema's model_validator guarantees `tag_id` is present for these
+        # actions; re-check defensively so mypy sees a non-None value (and a
+        # malformed body can't NPE here).
+        if body.tag_id is None:  # pragma: no cover — schema guarantees this
+            raise _invalid_input(
+                "INVALID_INPUT", "tagId is required for tag/untag actions."
+            )
+        try:
+            tag_uuid = UUID(body.tag_id)
+        except ValueError as exc:
+            raise _invalid_input("INVALID_INPUT", "tagId must be a UUID.") from exc
+        # Validate the tag is the caller's own — 404 (never leaks another user's
+        # tag) if not. Owner-scoped fetch.
+        tag = await tags_repo.get_for_user(db, tag_id=tag_uuid, user_id=user.id)
+        if tag is None:
+            raise not_found("tag")
+        if body.action == "tag":
+            affected = await conversations_repo.bulk_add_tag(
+                db,
+                conversation_ids=conversation_ids,
+                user_id=user.id,
+                tag_id=tag_uuid,
+            )
+        else:
+            affected = await conversations_repo.bulk_remove_tag(
+                db,
+                conversation_ids=conversation_ids,
+                user_id=user.id,
+                tag_id=tag_uuid,
+            )
+
+    await audit_events_repo.record(
+        db,
+        user_id=user.id,
+        event_type=f"conversation.bulk_{body.action}",
+        details={"affected": affected},
+    )
+    return BulkActionResponse(affected=affected)
 
 
 @router.get("/{conversation_id}", response_model=ConversationSchema)
@@ -1020,7 +1129,7 @@ async def patch_conversation(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationSchema:
-    """Rename / pin / set the per-conversation retention / file under a Project.
+    """Rename / pin / archive / set retention / file under a Project / set tags.
     Returns the full updated body so the FE avoids a follow-up GET.
 
     `retentionDays` and `projectId` are THREE-VALUED (D31/D20): omitted leaves
@@ -1029,27 +1138,42 @@ async def patch_conversation(
     `model_fields_set` distinguishes "omitted" from an explicit `null` so a clear
     is honored rather than swallowed.
 
+    `archived` is a plain bool toggle (Conversation Org v2): omitted = unchanged;
+    `true`/`false` = set. `tagIds` is a FULL REPLACE of the conversation's tag
+    set when present (`[]` clears all); every id must be a tag the caller owns
+    (404 otherwise — never leaks another user's tag).
+
     Empty patch (`{}` or all-explicit-nulls) -> 400 INVALID_INPUT. The
-    retention-clear / project-detach cases (`{"retentionDays": null}` /
-    `{"projectId": null}`) are MEANINGFUL patches and are NOT rejected.
-    Not-owned conversation -> 404. Filing under a not-owned project -> 404.
+    retention-clear / project-detach / archive / tag cases are MEANINGFUL patches
+    and are NOT rejected. Not-owned conversation -> 404. Filing under a not-owned
+    project -> 404.
     """
     retention_set = "retention_days" in body.model_fields_set
     project_set = "project_id" in body.model_fields_set
+    archived_set = "archived" in body.model_fields_set
+    tag_ids_set = "tag_ids" in body.model_fields_set
     patch_dict = body.model_dump(exclude_unset=True)
     # Reject `{}` AND `{"title": null, "pinned": null}` — both are no-ops.
     # `exclude_unset` keeps explicit nulls in the dict (they ARE "set"), so a
     # plain truthiness check would let `{title: null, pinned: null}` slip
     # through to `update_for_user`, which would only bump `updated_at`. A sent
-    # `retentionDays` / `projectId` (even `null`) IS a meaningful change.
+    # `retentionDays` / `projectId` (even `null`), a sent `archived` bool, or a
+    # sent `tagIds` (even `[]`) IS a meaningful change.
     has_title_or_pinned = any(
         patch_dict.get(k) is not None for k in ("title", "pinned")
     )
-    if not has_title_or_pinned and not retention_set and not project_set:
+    has_archived = archived_set and body.archived is not None
+    if (
+        not has_title_or_pinned
+        and not retention_set
+        and not project_set
+        and not has_archived
+        and not tag_ids_set
+    ):
         raise _invalid_input(
             "INVALID_INPUT",
-            "PATCH body must include at least one of: title, pinned, "
-            "retentionDays, projectId.",
+            "PATCH body must include at least one of: title, pinned, archived, "
+            "retentionDays, projectId, tagIds.",
         )
     # Build the three-valued kwargs. Each is passed ONLY when it was sent;
     # otherwise the repo's `_UNSET` default leaves the column untouched.
@@ -1075,12 +1199,29 @@ async def patch_conversation(
             if project is None:
                 raise not_found("project")
             extra_kwargs["project_id"] = target_project_id
+    # Tag full-replace: parse ids, then verify EVERY id is the caller's own. A
+    # forged / foreign / unknown tag id 404s so a PATCH can never attach another
+    # user's tag (the same trust posture as `projectId`).
+    if tag_ids_set and body.tag_ids is not None:
+        try:
+            target_tag_ids = [UUID(tid) for tid in body.tag_ids]
+        except ValueError as exc:
+            raise _invalid_input(
+                "INVALID_INPUT", "tagIds must all be UUIDs."
+            ) from exc
+        owned = await conversations_repo.owned_tag_ids(
+            db, tag_ids=target_tag_ids, user_id=user.id
+        )
+        if len(owned) != len(set(target_tag_ids)):
+            raise not_found("tag")
+        extra_kwargs["tag_ids"] = target_tag_ids
     updated_row = await conversations_repo.update_for_user(
         db,
         conversation_id,
         user.id,
         title=body.title,
         pinned=body.pinned,
+        archived=body.archived if archived_set else None,
         **extra_kwargs,  # type: ignore[arg-type]
     )
     if updated_row is None:

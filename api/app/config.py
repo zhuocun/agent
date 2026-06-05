@@ -199,6 +199,16 @@ class Settings(BaseSettings):
     rate_limit_prompt_templates: str = Field(
         default="30/minute", alias="RATE_LIMIT_PROMPT_TEMPLATES"
     )
+    # Tag CRUD (Conversation Org v2). Anonymous-allowed (guests label
+    # conversations too), caller-scoped writes/reads over a per-user label set;
+    # bound churn.
+    rate_limit_tags: str = Field(default="30/minute", alias="RATE_LIMIT_TAGS")
+    # Bulk conversation actions (Conversation Org v2). A single call can fan out
+    # over many owned conversations (archive/unarchive/delete/tag/untag), so it
+    # gets its own bound to keep multi-select churn in check.
+    rate_limit_conversations_bulk: str = Field(
+        default="30/minute", alias="RATE_LIMIT_CONVERSATIONS_BULK"
+    )
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the

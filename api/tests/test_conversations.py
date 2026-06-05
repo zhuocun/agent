@@ -16,7 +16,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Conversation, Message, User
+from app.db.models import Conversation, ConversationTag, Message, Project, Tag, User
 from app.db.repositories import conversations as conversations_repo
 
 pytestmark = pytest.mark.asyncio
@@ -339,6 +339,301 @@ async def test_search_conversations_filters_false_positive_candidates_before_lim
     body = response.json()
     assert [item["id"] for item in body] == [real_conv_id]
     assert body[0]["matchSnippet"] == "The text appears in actual message content."
+
+
+# --- Advanced-search filters (cost / date / project / served-model) ---------
+#
+# These exercise the optional transparency-native filters added to
+# `GET /api/conversations/search`. Each asserts that (a) the filter narrows the
+# result set and (b) the *no-filter* call still returns both seeded rows — i.e.
+# the legacy behavior is unchanged. NO tag-filter test lives here: the
+# `conversation_tag` table is owned by a parallel workstream and is absent from
+# the test schema (`Base.metadata.create_all`), so that path is left for
+# orchestrator integration.
+
+
+async def _seed_search_conversation_with_assistant(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: object,
+    title: str,
+    assistant_text: str,
+    cost_usd: float,
+    served_tier_id: str,
+    served_model_label: str,
+    project_id: object | None = None,
+    updated_at: datetime | None = None,
+) -> tuple[str, str]:
+    """Seed a conversation with a searchable ASSISTANT message + attribution.
+
+    Returns (assistant_message_id_str, conversation_id_str). The assistant
+    message carries the searchable text in its parts plus a `cost_usd` column
+    value and an `attribution` blob with `servedTierId` / `servedModelLabel`, so
+    the cost / served-model filters have something to bind to.
+    """
+    async with session_factory() as session:
+        conversation = Conversation(
+            user_id=user_id,
+            title=title,
+            selected_tier_id="smart",
+            pinned=False,
+            project_id=project_id,
+        )
+        if updated_at is not None:
+            conversation.updated_at = updated_at
+        session.add(conversation)
+        await session.flush()
+
+        message = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            parts=[{"type": "text", "text": assistant_text}],
+            status="done",
+            attribution={
+                "requestedTierId": served_tier_id,
+                "servedTierId": served_tier_id,
+                "servedModelLabel": served_model_label,
+                "isByok": False,
+                "costUsd": cost_usd,
+                "costConfidence": "exact",
+            },
+            cost_usd=cost_usd,
+            created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        )
+        session.add(message)
+        await session.commit()
+        return str(message.id), str(conversation.id)
+
+
+async def test_search_filter_by_cost_range_narrows_results(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _bootstrap_user_id(client, session_factory)
+    cheap_msg, cheap_conv = await _seed_search_conversation_with_assistant(
+        session_factory,
+        user_id=user_id,
+        title="Cheap turn",
+        assistant_text="The widget pricing breakdown is here.",
+        cost_usd=0.002,
+        served_tier_id="fast",
+        served_model_label="DeepSeek V4 Flash",
+    )
+    _, expensive_conv = await _seed_search_conversation_with_assistant(
+        session_factory,
+        user_id=user_id,
+        title="Expensive turn",
+        assistant_text="The widget pricing breakdown is here.",
+        cost_usd=0.5,
+        served_tier_id="pro",
+        served_model_label="Claude Opus 4.6",
+    )
+
+    # No filter: both match the shared phrase.
+    baseline = await client.get(
+        "/api/conversations/search", params={"q": "widget pricing"}
+    )
+    assert baseline.status_code == 200, baseline.text
+    assert {item["id"] for item in baseline.json()} == {cheap_conv, expensive_conv}
+
+    # costMax excludes the expensive turn.
+    response = await client.get(
+        "/api/conversations/search",
+        params={"q": "widget pricing", "costMax": 0.01},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["id"] for item in body] == [cheap_conv]
+    assert body[0]["matchedMessageId"] == cheap_msg
+    assert body[0]["costUsd"] == pytest.approx(0.002)
+    assert body[0]["servedModelLabel"] == "DeepSeek V4 Flash"
+
+    # costMin excludes the cheap turn.
+    response = await client.get(
+        "/api/conversations/search",
+        params={"q": "widget pricing", "costMin": 0.01},
+    )
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()] == [expensive_conv]
+
+
+async def test_search_filter_by_date_range_narrows_results(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _bootstrap_user_id(client, session_factory)
+    _, old_conv = await _seed_search_conversation(
+        session_factory,
+        user_id=user_id,
+        title="Unrelated title",
+        user_text="The shared marker phrase appears here.",
+        updated_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+    )
+    _, new_conv = await _seed_search_conversation(
+        session_factory,
+        user_id=user_id,
+        title="Unrelated title",
+        user_text="The shared marker phrase appears here.",
+        updated_at=datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC),
+    )
+
+    baseline = await client.get(
+        "/api/conversations/search", params={"q": "marker phrase"}
+    )
+    assert baseline.status_code == 200, baseline.text
+    assert {item["id"] for item in baseline.json()} == {old_conv, new_conv}
+
+    # dateFrom keeps only the newer conversation (updated_at >= 2026-02-01).
+    response = await client.get(
+        "/api/conversations/search",
+        params={"q": "marker phrase", "dateFrom": "2026-02-01T00:00:00+00:00"},
+    )
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()] == [new_conv]
+
+    # dateTo keeps only the older conversation (updated_at <= 2026-02-01).
+    response = await client.get(
+        "/api/conversations/search",
+        params={"q": "marker phrase", "dateTo": "2026-02-01T00:00:00+00:00"},
+    )
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()] == [old_conv]
+
+
+async def test_search_filter_by_project_narrows_results(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _bootstrap_user_id(client, session_factory)
+    async with session_factory() as session:
+        project = Project(user_id=user_id, name="Research")
+        session.add(project)
+        await session.commit()
+        await session.refresh(project)
+        project_id = project.id
+
+    _, filed_conv = await _seed_search_conversation(
+        session_factory,
+        user_id=user_id,
+        title="Filed under project",
+        user_text="ordinary setup",
+    )
+    async with session_factory() as session:
+        convo = await session.get(Conversation, UUID(filed_conv))
+        assert convo is not None
+        convo.project_id = project_id
+        await session.commit()
+
+    _, unfiled_conv = await _seed_search_conversation(
+        session_factory,
+        user_id=user_id,
+        title="Unfiled project candidate",
+        user_text="ordinary setup",
+    )
+
+    baseline = await client.get(
+        "/api/conversations/search", params={"q": "project"}
+    )
+    assert baseline.status_code == 200, baseline.text
+    assert {item["id"] for item in baseline.json()} == {filed_conv, unfiled_conv}
+
+    response = await client.get(
+        "/api/conversations/search",
+        params={"q": "project", "projectId": str(project_id)},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["id"] for item in body] == [filed_conv]
+    assert body[0]["projectId"] == str(project_id)
+
+
+async def test_search_filter_by_served_model_narrows_results(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _bootstrap_user_id(client, session_factory)
+    _, fast_conv = await _seed_search_conversation_with_assistant(
+        session_factory,
+        user_id=user_id,
+        title="Fast served",
+        assistant_text="The served-model marker phrase is present.",
+        cost_usd=0.01,
+        served_tier_id="fast",
+        served_model_label="DeepSeek V4 Flash",
+    )
+    _, pro_conv = await _seed_search_conversation_with_assistant(
+        session_factory,
+        user_id=user_id,
+        title="Pro served",
+        assistant_text="The served-model marker phrase is present.",
+        cost_usd=0.01,
+        served_tier_id="pro",
+        served_model_label="Claude Opus 4.6",
+    )
+
+    baseline = await client.get(
+        "/api/conversations/search", params={"q": "served-model marker"}
+    )
+    assert baseline.status_code == 200, baseline.text
+    assert {item["id"] for item in baseline.json()} == {fast_conv, pro_conv}
+
+    response = await client.get(
+        "/api/conversations/search",
+        params={"q": "served-model marker", "servedModel": "pro"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["id"] for item in body] == [pro_conv]
+    assert body[0]["servedModelLabel"] == "Claude Opus 4.6"
+
+
+async def test_search_filter_by_tag_narrows_results(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The `tagId` filter narrows to conversations carrying that tag.
+
+    The `conversation_tag` join is created by the org-v2 workstream and merged
+    alongside advanced search in this wave, so this path — left untested in the
+    search worktree where the table was absent — is exercised here at integration.
+    """
+    user_id = await _bootstrap_user_id(client, session_factory)
+    async with session_factory() as session:
+        tag = Tag(user_id=user_id, name="urgent")
+        session.add(tag)
+        await session.commit()
+        await session.refresh(tag)
+        tag_id = tag.id
+
+    _, tagged_conv = await _seed_search_conversation(
+        session_factory,
+        user_id=user_id,
+        title="Tagged candidate",
+        user_text="ordinary setup",
+    )
+    async with session_factory() as session:
+        session.add(ConversationTag(conversation_id=UUID(tagged_conv), tag_id=tag_id))
+        await session.commit()
+
+    _, untagged_conv = await _seed_search_conversation(
+        session_factory,
+        user_id=user_id,
+        title="Untagged candidate",
+        user_text="ordinary setup",
+    )
+
+    baseline = await client.get("/api/conversations/search", params={"q": "candidate"})
+    assert baseline.status_code == 200, baseline.text
+    assert {item["id"] for item in baseline.json()} == {tagged_conv, untagged_conv}
+
+    response = await client.get(
+        "/api/conversations/search",
+        params={"q": "candidate", "tagId": str(tag_id)},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["id"] for item in body] == [tagged_conv]
+    assert str(tag_id) in body[0]["tagIds"]
 
 
 async def _bootstrap_user_id(

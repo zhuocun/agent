@@ -25,9 +25,20 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import String, delete, func, or_, select
 from sqlalchemy import cast as sa_cast
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
-from app.db.models import Conversation, Message, Preferences, Project, Stream, Vote
+from app.db.models import (
+    Conversation,
+    ConversationTag,
+    Message,
+    Preferences,
+    Project,
+    Stream,
+    Tag,
+    Vote,
+)
 from app.db.repositories import audit_events
 from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
@@ -148,16 +159,49 @@ def _message_snippet(parts: object, query: str) -> str | None:
     return None
 
 
+async def _tag_ids_by_conversation(
+    db: AsyncSession,
+    conversation_ids: Sequence[UUID],
+) -> dict[UUID, list[str]]:
+    """Batch-fetch assigned tag ids for a set of conversations (avoids N+1).
+
+    Returns a map conversation_id -> [tag_id_str, ...] for every conversation
+    that has at least one tag. Conversations with no tags are simply absent from
+    the map (the caller defaults to `[]`). Ordered by tag_id for stable output.
+    """
+    if not conversation_ids:
+        return {}
+    stmt = (
+        select(ConversationTag.conversation_id, ConversationTag.tag_id)
+        .where(ConversationTag.conversation_id.in_(conversation_ids))
+        .order_by(ConversationTag.tag_id.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+    result: dict[UUID, list[str]] = {}
+    for conversation_id, tag_id in rows:
+        result.setdefault(conversation_id, []).append(str(tag_id))
+    return result
+
+
 async def list_summaries_for_user(
     db: AsyncSession, user_id: UUID
 ) -> list[ConversationSummary]:
-    """Return sidebar summaries: pinned desc, then updated_at desc."""
+    """Return sidebar summaries: pinned desc, then updated_at desc.
+
+    Tag ids are batch-fetched in one extra query (not per-conversation) to avoid
+    an N+1. `archived` rides along so the sidebar can split the list into the
+    main recency buckets and the collapsible "Archived" section without a
+    follow-up GET.
+    """
     stmt = (
         select(Conversation)
         .where(Conversation.user_id == user_id)
         .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
     )
     rows = (await db.execute(stmt)).scalars().all()
+    tag_ids_by_conversation = await _tag_ids_by_conversation(
+        db, [row.id for row in rows]
+    )
     return [
         ConversationSummary(
             id=str(row.id),
@@ -167,9 +211,25 @@ async def list_summaries_for_user(
             pinned=row.pinned,
             retention_days=row.retention_days,
             project_id=str(row.project_id) if row.project_id is not None else None,
+            archived=row.archived,
+            tag_ids=tag_ids_by_conversation.get(row.id, []),
         )
         for row in rows
     ]
+
+
+def _attribution_str(attribution: object, key: str) -> str | None:
+    """Read a string field out of a message's JSON `attribution` blob, or None.
+
+    The attribution comes back as a plain dict (JSON column); the served-model
+    filter and the `servedModelLabel` transparency field both pull from it. Any
+    non-dict / non-string value yields None so a malformed legacy blob can never
+    raise here.
+    """
+    if not isinstance(attribution, dict):
+        return None
+    value = attribution.get(key)
+    return value if isinstance(value, str) else None
 
 
 async def search_for_user(
@@ -178,33 +238,92 @@ async def search_for_user(
     *,
     query: str,
     limit: int = 25,
+    served_model: str | None = None,
+    cost_min: float | None = None,
+    cost_max: float | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    project_id: UUID | None = None,
+    tag_id: UUID | None = None,
 ) -> list[ConversationSearchResult]:
-    """Search owned conversation titles and message JSON text.
+    """Search owned conversation titles and message JSON text, with filters.
 
-    The SQL predicate intentionally stays dialect-portable: title uses LIKE,
-    and message parts are cast to text for both SQLite local/tests and
-    Postgres prod. It is a broad candidate filter; final matching and the
-    public limit happen after snippets are generated from user-visible fields.
+    The text predicate is dialect-aware: on Postgres (prod) it uses native
+    full-text search (`to_tsvector @@ websearch_to_tsquery`) over the title and
+    the parts-cast-to-text; on SQLite (local/tests) it falls back to the
+    portable LIKE path. BOTH branches feed the same broad candidate filter, and
+    a Python precision re-filter then extracts user-visible text from the
+    multi-part JSON, drops JSON-key false positives, and builds snippets — that
+    re-filter is the precision gate on either dialect.
+
+    Optional transparency-native filters (all default `None` = no filter, so the
+    no-filter behavior is byte-for-byte the legacy search):
+    - `project_id` / `date_from` / `date_to` are conversation-level → applied as
+      SQL predicates on the candidate query (`Conversation.project_id`,
+      `Conversation.updated_at` inclusive range).
+    - `tag_id` is applied via an `IN (SELECT ...)` membership subquery over the
+      `conversation_tag` join.
+    - `cost_min` / `cost_max` constrain the MATCHED message's `cost_usd` → SQL
+      predicate on the message-match query.
+    - `served_model` constrains the MATCHED message's `attribution.servedTierId`
+      → Python post-filter in the re-filter loop (served-model lives in JSON,
+      not a column).
+
+    When a MESSAGE-LEVEL filter (`cost_*` / `served_model`) is set, a title-only
+    hit cannot qualify (it has no matched message to satisfy the constraint), so
+    the result must come from a message match.
     """
     stripped = query.strip()
     if not stripped or limit <= 0:
         return []
 
-    pattern = f"%{_escape_like(stripped.casefold())}%"
-    title_match = func.lower(Conversation.title).like(pattern, escape="\\")
-    message_match = func.lower(sa_cast(Message.parts, String)).like(
-        pattern, escape="\\"
+    is_postgres = db.bind is not None and db.bind.dialect.name == "postgresql"
+    parts_text = sa_cast(Message.parts, String)
+    if is_postgres:
+        tsquery = func.websearch_to_tsquery("english", stripped)
+        title_match = func.to_tsvector("english", Conversation.title).op("@@")(tsquery)
+        message_match = func.to_tsvector("english", parts_text).op("@@")(tsquery)
+    else:
+        pattern = f"%{_escape_like(stripped.casefold())}%"
+        title_match = func.lower(Conversation.title).like(pattern, escape="\\")
+        message_match = func.lower(parts_text).like(pattern, escape="\\")
+
+    # Conversation-level filters narrow the candidate scan directly.
+    candidate_filters: list[ColumnElement[bool]] = [
+        Conversation.user_id == user_id,
+        or_(title_match, message_match),
+    ]
+    if project_id is not None:
+        candidate_filters.append(Conversation.project_id == project_id)
+    if date_from is not None:
+        candidate_filters.append(Conversation.updated_at >= date_from)
+    if date_to is not None:
+        candidate_filters.append(Conversation.updated_at <= date_to)
+    if tag_id is not None:
+        # `tag_id` → conversations carrying that tag, via an `IN (SELECT ...)`
+        # membership subquery over the `conversation_tag` join. Covered by
+        # test_search_filter_by_tag_narrows_results (added at wave integration).
+        candidate_filters.append(
+            Conversation.id.in_(
+                select(ConversationTag.conversation_id).where(
+                    ConversationTag.tag_id == tag_id
+                )
+            )
+        )
+
+    # A title-only hit cannot carry a matched-message cost / served-model, so
+    # those filters force the result to come from a message match.
+    message_level_filter = (
+        cost_min is not None or cost_max is not None or served_model is not None
     )
+
     results: list[ConversationSearchResult] = []
     offset = 0
     while len(results) < limit:
         stmt = (
             select(Conversation)
             .outerjoin(Message, Message.conversation_id == Conversation.id)
-            .where(
-                Conversation.user_id == user_id,
-                or_(title_match, message_match),
-            )
+            .where(*candidate_filters)
             .distinct()
             .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
             .offset(offset)
@@ -216,12 +335,21 @@ async def search_for_user(
 
         offset += len(conversations)
         conversation_ids = [row.id for row in conversations]
+        message_filters: list[ColumnElement[bool]] = [
+            Message.conversation_id.in_(conversation_ids),
+            func.to_tsvector("english", parts_text).op("@@")(
+                func.websearch_to_tsquery("english", stripped)
+            )
+            if is_postgres
+            else func.lower(parts_text).like(pattern, escape="\\"),
+        ]
+        if cost_min is not None:
+            message_filters.append(Message.cost_usd >= cost_min)
+        if cost_max is not None:
+            message_filters.append(Message.cost_usd <= cost_max)
         messages_stmt = (
             select(Message)
-            .where(
-                Message.conversation_id.in_(conversation_ids),
-                func.lower(sa_cast(Message.parts, String)).like(pattern, escape="\\"),
-            )
+            .where(*message_filters)
             .order_by(Message.created_at.asc(), Message.id.asc())
         )
         matching_messages = (await db.execute(messages_stmt)).scalars().all()
@@ -232,23 +360,42 @@ async def search_for_user(
                 message
             )
 
+        # Tag chips + archive state ride along on each result so the advanced
+        # dialog renders them inline (and the tag filter round-trips visibly).
+        # Batched once per page — no N+1.
+        tag_ids_by_conversation = await _tag_ids_by_conversation(db, conversation_ids)
+
         for row in conversations:
-            title_snippet = _snippet_for(row.title, stripped)
-            matched_message_id: str | None = None
-            snippet = title_snippet
+            matched_message: Message | None = None
+            snippet: str | None = None
+
+            # Title-only snippet only when no message-level filter is in play —
+            # a cost / served-model constraint has nothing to bind to on a
+            # title hit. This keeps the legacy (no-filter) precedence exact.
+            if not message_level_filter:
+                snippet = _snippet_for(row.title, stripped)
 
             if snippet is None:
                 for message in messages_by_conversation.get(row.id, []):
+                    # Served-model is a JSON field, so it's a Python post-filter
+                    # on the matched message (after the SQL cost/text filters).
+                    if (
+                        served_model is not None
+                        and _attribution_str(message.attribution, "servedTierId")
+                        != served_model
+                    ):
+                        continue
                     message_snippet = _message_snippet(message.parts, stripped)
                     if message_snippet is None:
                         continue
                     snippet = message_snippet
-                    matched_message_id = str(message.id)
+                    matched_message = message
                     break
 
             if snippet is None:
                 continue
 
+            attribution = matched_message.attribution if matched_message else None
             results.append(
                 ConversationSearchResult(
                     id=str(row.id),
@@ -256,9 +403,23 @@ async def search_for_user(
                     updated_at=_iso(row.updated_at),
                     is_temporary=False,
                     pinned=row.pinned,
+                    archived=row.archived,
                     retention_days=row.retention_days,
+                    project_id=(
+                        str(row.project_id) if row.project_id is not None else None
+                    ),
+                    tag_ids=tag_ids_by_conversation.get(row.id, []),
                     match_snippet=snippet,
-                    matched_message_id=matched_message_id,
+                    matched_message_id=(
+                        str(matched_message.id) if matched_message else None
+                    ),
+                    served_model_label=_attribution_str(
+                        attribution, "servedModelLabel"
+                    ),
+                    cost_usd=matched_message.cost_usd if matched_message else None,
+                    matched_at=(
+                        _iso(matched_message.created_at) if matched_message else None
+                    ),
                 )
             )
             if len(results) >= limit:
@@ -417,6 +578,7 @@ async def get_for_user(
         )
         messages.append(chat_message)
 
+    tag_ids_by_conversation = await _tag_ids_by_conversation(db, [row.id])
     return ConversationSchema(
         id=str(row.id),
         title=row.title,
@@ -425,7 +587,35 @@ async def get_for_user(
         is_temporary=False,
         retention_days=row.retention_days,
         project_id=str(row.project_id) if row.project_id is not None else None,
+        archived=row.archived,
+        tag_ids=tag_ids_by_conversation.get(row.id, []),
     )
+
+
+async def _replace_tags(
+    db: AsyncSession,
+    conversation_id: UUID,
+    tag_ids: Sequence[UUID],
+) -> None:
+    """Full-replace a conversation's tag set with `tag_ids` (already validated).
+
+    The caller (route) has already verified the conversation is owned and that
+    every tag id belongs to the same user, so this is a pure write: delete the
+    existing join rows for the conversation, then insert the new set. Dedupes the
+    incoming ids so a repeated id can't trip the composite PK.
+    """
+    await db.execute(
+        delete(ConversationTag).where(
+            ConversationTag.conversation_id == conversation_id
+        )
+    )
+    seen: set[UUID] = set()
+    for tag_id in tag_ids:
+        if tag_id in seen:
+            continue
+        seen.add(tag_id)
+        db.add(ConversationTag(conversation_id=conversation_id, tag_id=tag_id))
+    await db.flush()
 
 
 async def update_for_user(
@@ -435,17 +625,22 @@ async def update_for_user(
     *,
     title: str | None = None,
     pinned: bool | None = None,
+    archived: bool | None = None,
     retention_days: int | None | _Unset = _UNSET,
     project_id: UUID | None | _Unset = _UNSET,
+    tag_ids: Sequence[UUID] | _Unset = _UNSET,
 ) -> Conversation | None:
-    """Update the owned conversation's title/pinned/retention/project. Returns the row.
+    """Update the owned conversation's title/pinned/archived/retention/project/tags.
 
-    `title` / `pinned` use `None` as "don't touch". `retention_days` and
+    `title` / `pinned` / `archived` use `None` as "don't touch" (each is a plain
+    field — for the bools there is no "clear" meaning). `retention_days` and
     `project_id` are three-valued — their `None` means "CLEAR" (inherit the
     global retention / un-file from the Project), so they use the `_UNSET`
-    sentinel for "don't touch" instead. Returns the refreshed ORM row, or None
-    if the row isn't owned/doesn't exist. Bumps `updated_at` so the sidebar's
-    pinned/updated ordering reflects the change.
+    sentinel for "don't touch" instead. `tag_ids` is a FULL REPLACE when present
+    (an explicit list, possibly empty = clear all) and `_UNSET` = leave the tags
+    unchanged; the caller MUST have validated tag ownership first. Returns the
+    refreshed ORM row, or None if the row isn't owned/doesn't exist. Bumps
+    `updated_at` so the sidebar's pinned/updated ordering reflects the change.
     """
     row = await owned_by(db, conversation_id, user_id)
     if row is None:
@@ -454,10 +649,14 @@ async def update_for_user(
         row.title = title
     if pinned is not None:
         row.pinned = pinned
+    if archived is not None:
+        row.archived = archived
     if not isinstance(retention_days, _Unset):
         row.retention_days = retention_days
     if not isinstance(project_id, _Unset):
         row.project_id = project_id
+    if not isinstance(tag_ids, _Unset):
+        await _replace_tags(db, conversation_id, tag_ids)
     # Touch updated_at — the column has a server_default but no onupdate hook,
     # so we set it explicitly. Naive datetime is fine for SQLite tests; Postgres
     # accepts tz-aware values via TIMESTAMP(timezone=True).
@@ -536,6 +735,13 @@ async def delete_for_user(
         await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
     await db.execute(delete(Stream).where(Stream.conversation_id == conversation_id))
     await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+    # conversation_tag join rows: explicit cleanup for SQLite (tests) which
+    # enforces no FK cascade. Idempotent on Postgres where the CASCADE fires.
+    await db.execute(
+        delete(ConversationTag).where(
+            ConversationTag.conversation_id == conversation_id
+        )
+    )
     await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await db.flush()
     return True
@@ -610,8 +816,163 @@ async def _purge_conversation_ids(
         await db.execute(delete(Vote).where(Vote.message_id.in_(msg_ids)))
     await db.execute(delete(Stream).where(Stream.conversation_id.in_(conversation_ids)))
     await db.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
+    # conversation_tag join rows are ON DELETE CASCADE on Postgres but SQLite
+    # (tests) enforces no cascade, so remove them explicitly before the parent
+    # conversation — idempotent on Postgres. This keeps both retention purge and
+    # bulk delete from orphaning tag assignments.
+    await db.execute(
+        delete(ConversationTag).where(
+            ConversationTag.conversation_id.in_(conversation_ids)
+        )
+    )
     await db.execute(delete(Conversation).where(Conversation.id.in_(conversation_ids)))
     await db.flush()
+
+
+async def _owned_conversation_ids(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+) -> list[UUID]:
+    """Filter `conversation_ids` down to the ones actually owned by `user_id`.
+
+    The trust boundary for every bulk action: a forged id belonging to another
+    user is silently dropped here (IDOR-safe) rather than erroring, so the bulk
+    response can't be used to probe whether a foreign id exists.
+    """
+    if not conversation_ids:
+        return []
+    stmt = select(Conversation.id).where(
+        Conversation.id.in_(conversation_ids),
+        Conversation.user_id == user_id,
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def bulk_set_archived(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+    archived: bool,
+) -> int:
+    """Archive / unarchive a batch of OWNED conversations. Returns the count.
+
+    Owner-scoped: only the caller's own conversations are touched; foreign ids
+    are silently ignored. Does NOT bump `updated_at` — archiving is an
+    organizational toggle, not new activity, so it shouldn't reorder the sidebar.
+    """
+    owned = await _owned_conversation_ids(
+        db, conversation_ids=conversation_ids, user_id=user_id
+    )
+    if not owned:
+        return 0
+    await db.execute(
+        sa_update(Conversation)
+        .where(Conversation.id.in_(owned))
+        .values(archived=archived)
+    )
+    await db.flush()
+    return len(owned)
+
+
+async def bulk_delete(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+) -> int:
+    """Delete a batch of OWNED conversations and their dependents. Returns count.
+
+    Owner-scoped: foreign ids are silently ignored. Reuses `_purge_conversation_ids`
+    (the same manual-cascade helper retention uses) after narrowing to the
+    caller's own ids, so the message/vote/stream/tag-join cleanup is identical.
+    """
+    owned = await _owned_conversation_ids(
+        db, conversation_ids=conversation_ids, user_id=user_id
+    )
+    if not owned:
+        return 0
+    await _purge_conversation_ids(db, owned)
+    return len(owned)
+
+
+async def bulk_add_tag(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+    tag_id: UUID,
+) -> int:
+    """Add `tag_id` to a batch of OWNED conversations. Returns conversations touched.
+
+    Owner-scoped on BOTH sides: the caller (route) has verified `tag_id` belongs
+    to the user, and foreign conversation ids are silently ignored here. Skips
+    pairs that already exist (idempotent) so a re-run never trips the composite
+    PK. Does not bump `updated_at` (tagging is organizational, not activity).
+    """
+    owned = await _owned_conversation_ids(
+        db, conversation_ids=conversation_ids, user_id=user_id
+    )
+    if not owned:
+        return 0
+    existing_stmt = select(ConversationTag.conversation_id).where(
+        ConversationTag.tag_id == tag_id,
+        ConversationTag.conversation_id.in_(owned),
+    )
+    already = set((await db.execute(existing_stmt)).scalars().all())
+    for conversation_id in owned:
+        if conversation_id in already:
+            continue
+        db.add(ConversationTag(conversation_id=conversation_id, tag_id=tag_id))
+    await db.flush()
+    return len(owned)
+
+
+async def bulk_remove_tag(
+    db: AsyncSession,
+    *,
+    conversation_ids: Sequence[UUID],
+    user_id: UUID,
+    tag_id: UUID,
+) -> int:
+    """Remove `tag_id` from a batch of OWNED conversations. Returns conversations touched.
+
+    Owner-scoped: foreign conversation ids are silently ignored. Idempotent —
+    removing a tag that isn't assigned is a no-op for that conversation.
+    """
+    owned = await _owned_conversation_ids(
+        db, conversation_ids=conversation_ids, user_id=user_id
+    )
+    if not owned:
+        return 0
+    await db.execute(
+        delete(ConversationTag).where(
+            ConversationTag.tag_id == tag_id,
+            ConversationTag.conversation_id.in_(owned),
+        )
+    )
+    await db.flush()
+    return len(owned)
+
+
+async def owned_tag_ids(
+    db: AsyncSession,
+    *,
+    tag_ids: Sequence[UUID],
+    user_id: UUID,
+) -> set[UUID]:
+    """Return the subset of `tag_ids` that belong to `user_id`.
+
+    Used by the PATCH tag-replace path to validate that every requested tag id is
+    the caller's own before assigning — the route 404s if any id is missing, so a
+    forged id can never attach another user's tag to a conversation.
+    """
+    if not tag_ids:
+        return set()
+    stmt = select(Tag.id).where(Tag.id.in_(tag_ids), Tag.user_id == user_id)
+    return set((await db.execute(stmt)).scalars().all())
 
 
 async def delete_older_than_for_user(

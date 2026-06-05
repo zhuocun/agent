@@ -10,6 +10,11 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
+  Archive,
+  ArchiveRestore,
+  Check,
+  ChevronDown,
+  ChevronRight,
   ClipboardCopy,
   Download,
   Folder,
@@ -25,12 +30,17 @@ import {
   Plus,
   Search,
   Settings,
+  SlidersHorizontal,
+  Tag as TagIcon,
+  Tags,
   Timer,
   Trash2,
   X,
 } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -59,6 +69,7 @@ import {
   type AccountInfo,
   type ConversationSummary,
   type ProjectSummary,
+  type Tag,
 } from "@/lib/types";
 
 // Width of the swipe-revealed trailing action tray (two 64px action buttons).
@@ -72,6 +83,10 @@ export interface SidebarProps {
   searchResults?: ConversationSummary[] | null;
   searchPending?: boolean;
   onSearchChange: (next: string) => void;
+  // Open the advanced history-search dialog (filters by model, cost, date,
+  // project, tag). Optional so a stale embedding of <Sidebar/> still type-checks;
+  // the affordance is hidden when it's not provided.
+  onOpenAdvancedSearch?: () => void;
   onSelect: (id: string) => void;
   onNewChat: () => void;
   onRenameConversation: (id: string, newTitle: string) => void;
@@ -92,6 +107,24 @@ export interface SidebarProps {
   onRenameProject?: (id: string, name: string) => void;
   onDeleteProject?: (id: string) => void;
   onManageProjects?: () => void;
+  // Tags (Conversation Org v2). `tags` is the caller's label set; the callbacks
+  // create/rename/delete a tag, set the active sidebar tag filter, replace a
+  // single conversation's tag set, and archive/unarchive a conversation. All
+  // optional so a stale embedding of <Sidebar/> still type-checks; the BULK
+  // callbacks receive the explicit id list and run the optimistic mutation in
+  // the parent. `activeTagId` reflects the current filter (null = all).
+  tags?: Tag[];
+  activeTagId?: string | null;
+  onSetTagFilter?: (tagId: string | null) => void;
+  onCreateTag?: (name: string) => void;
+  onRenameTag?: (id: string, name: string) => void;
+  onDeleteTag?: (id: string) => void;
+  onAssignConversationTags?: (id: string, tagIds: string[]) => void;
+  onArchiveConversation?: (id: string, archived: boolean) => void;
+  onBulkArchive?: (ids: string[], archived: boolean) => void;
+  onBulkDelete?: (ids: string[]) => void;
+  onBulkAddTag?: (ids: string[], tagId: string) => void;
+  onBulkRemoveTag?: (ids: string[], tagId: string) => void;
   onSignIn: () => void;
   onSignOut: () => void;
   onCollapse?: () => void; // desktop: hide the sidebar rail; omit the button if undefined
@@ -230,11 +263,17 @@ function ConversationRow({
   active,
   activeRowRef,
   projects,
+  tags,
+  selectionMode,
+  selected,
+  onToggleSelect,
   onSelect,
   onRename,
   onTogglePin,
   onSetRetention,
   onAssignProject,
+  onAssignTags,
+  onArchive,
   onCopy,
   onDownload,
   onRequestDelete,
@@ -243,11 +282,20 @@ function ConversationRow({
   active: boolean;
   activeRowRef?: React.RefObject<HTMLDivElement | null>;
   projects: ProjectSummary[];
+  tags: Tag[];
+  // Multi-select: when `selectionMode` is on, a leading checkbox replaces the
+  // pin glyph and a row tap toggles selection instead of opening the chat.
+  selectionMode: boolean;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
   onSelect: (id: string) => void;
   onRename: (id: string, newTitle: string) => void;
   onTogglePin: (id: string) => void;
   onSetRetention: (id: string, retentionDays: number | null) => void;
   onAssignProject?: (id: string, projectId: string | null) => void;
+  // Full-replace a conversation's tag set (Conversation Org v2).
+  onAssignTags?: (id: string, tagIds: string[]) => void;
+  onArchive?: (id: string, archived: boolean) => void;
   onCopy: (id: string) => void;
   onDownload: (id: string) => void;
   onRequestDelete: (conversation: ConversationSummary) => void;
@@ -337,6 +385,12 @@ function ConversationRow({
       swipe.close();
       return;
     }
+    // In multi-select mode a row tap toggles its checkbox instead of opening
+    // the conversation.
+    if (selectionMode) {
+      onToggleSelect(conversation.id);
+      return;
+    }
     onSelect(conversation.id);
   };
 
@@ -345,6 +399,14 @@ function ConversationRow({
   };
 
   const pinAction = conversation.pinned ? "Unpin" : "Pin";
+  const archived = conversation.archived === true;
+  // Resolve the conversation's assigned tag ids to the live tag objects so the
+  // row renders chips with the current name/color even after a rename.
+  const tagById = new Map(tags.map((t) => [t.id, t] as const));
+  const assignedTags = (conversation.tagIds ?? [])
+    .map((id) => tagById.get(id))
+    .filter((t): t is Tag => t !== undefined);
+  const assignedTagIds = new Set(conversation.tagIds ?? []);
   const matchSnippet = conversation.matchSnippet?.trim();
   // "expires in ~N days" hint for a per-conversation retention override (D31).
   // Suppressed while a search snippet is showing (the snippet wins the one line).
@@ -458,6 +520,25 @@ function ConversationRow({
             "after:pointer-events-none after:absolute after:inset-0 after:bg-foreground/[0.03] after:opacity-0 after:transition-opacity hover:after:opacity-100",
         )}
       >
+      {/* Multi-select checkbox renders as a SIBLING of the row button, never
+          nested inside it — a <button> can't contain another interactive
+          <button> (invalid HTML; the inner click gets swallowed). Mirrors the
+          rename-input sibling pattern below. */}
+      {selectionMode && !isRenaming ? (
+        <span
+          className="flex shrink-0 items-center pl-3"
+          // The checkbox handles its own click; stop it from also reaching the
+          // row's tap target.
+          onClick={stopBubble}
+        >
+          <Checkbox
+            checked={selected}
+            onCheckedChange={() => onToggleSelect(conversation.id)}
+            aria-label={`Select ${conversation.title}`}
+            data-testid="sidebar-conversation-checkbox"
+          />
+        </span>
+      ) : null}
       {isRenaming ? (
         // Inline-rename mode renders as a sibling subtree, NOT nested in the
         // click-to-select button. <button> cannot contain interactive
@@ -512,6 +593,31 @@ function ConversationRow({
             >
               {conversation.title}
             </span>
+            {assignedTags.length > 0 ? (
+              <span
+                className="mt-1 flex flex-wrap gap-1"
+                data-testid="sidebar-conversation-tags"
+              >
+                {assignedTags.map((tag) => (
+                  <Badge
+                    key={tag.id}
+                    variant="secondary"
+                    data-testid="sidebar-conversation-tag-chip"
+                    className="max-w-[10rem] truncate"
+                    style={
+                      tag.color
+                        ? {
+                            backgroundColor: `${tag.color}20`,
+                            color: tag.color,
+                          }
+                        : undefined
+                    }
+                  >
+                    {tag.name}
+                  </Badge>
+                ))}
+              </span>
+            ) : null}
             {matchSnippet ? (
               <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                 {matchSnippet}
@@ -629,6 +735,66 @@ function ConversationRow({
                 </DropdownMenuRadioGroup>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+          ) : null}
+          {onAssignTags && tags.length > 0 ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger
+                className="gap-2"
+                data-testid="sidebar-conversation-assign-tags"
+              >
+                <Tags className="size-4" aria-hidden />
+                <span>Assign tags</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                {tags.map((tag) => {
+                  const isAssigned = assignedTagIds.has(tag.id);
+                  return (
+                    <DropdownMenuItem
+                      key={tag.id}
+                      label={tag.name}
+                      // Toggle this tag in/out of the conversation's set, then
+                      // send the FULL replacement set (the BE PATCH replaces).
+                      // closeOnClick=false keeps the submenu open for multi-tag
+                      // edits.
+                      closeOnClick={false}
+                      onClick={() => {
+                        const next = isAssigned
+                          ? (conversation.tagIds ?? []).filter(
+                              (id) => id !== tag.id,
+                            )
+                          : [...(conversation.tagIds ?? []), tag.id];
+                        onAssignTags(conversation.id, next);
+                      }}
+                      className="gap-2"
+                      data-testid="sidebar-conversation-tag-option"
+                    >
+                      <span
+                        className="inline-flex size-4 shrink-0 items-center justify-center"
+                        aria-hidden
+                      >
+                        {isAssigned ? <Check className="size-4" /> : null}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : null}
+          {onArchive ? (
+            <DropdownMenuItem
+              label={archived ? "Unarchive" : "Archive"}
+              onClick={() => onArchive(conversation.id, !archived)}
+              className="gap-2"
+              data-testid="sidebar-conversation-archive"
+            >
+              {archived ? (
+                <ArchiveRestore className="size-4" aria-hidden />
+              ) : (
+                <Archive className="size-4" aria-hidden />
+              )}
+              <span>{archived ? "Unarchive" : "Archive"}</span>
+            </DropdownMenuItem>
           ) : null}
           <DropdownMenuItem
             label="Copy conversation"
@@ -908,6 +1074,7 @@ export function Sidebar({
   searchResults,
   searchPending = false,
   onSearchChange,
+  onOpenAdvancedSearch,
   onSelect,
   onNewChat,
   onRenameConversation,
@@ -923,6 +1090,18 @@ export function Sidebar({
   onRenameProject,
   onDeleteProject,
   onManageProjects,
+  tags = [],
+  activeTagId = null,
+  onSetTagFilter,
+  onCreateTag,
+  onRenameTag,
+  onDeleteTag,
+  onAssignConversationTags,
+  onArchiveConversation,
+  onBulkArchive,
+  onBulkDelete,
+  onBulkAddTag,
+  onBulkRemoveTag,
   onSignIn,
   onSignOut,
   onCollapse,
@@ -961,15 +1140,42 @@ export function Sidebar({
         )
         .map((r) => r.conversation)
     : displayConversations;
+  // Tag filter (Conversation Org v2): when a tag is active, only conversations
+  // carrying it survive (exiting snapshots always pass so a delete still
+  // animates out). Search is orthogonal — when searching, the tag filter is
+  // ignored so the query result is never silently narrowed.
+  const knownTagIds = new Set(tags.map((t) => t.id));
+  const activeTagFilter =
+    activeTagId && knownTagIds.has(activeTagId) ? activeTagId : null;
+  const tagFilteredRows =
+    activeTagFilter && !isSearching
+      ? displayRows.filter(
+          (r) =>
+            r.phase === "exit" ||
+            (r.conversation.tagIds ?? []).includes(activeTagFilter),
+        )
+      : displayRows;
+  const tagFilteredConversations = tagFilteredRows.map((r) => r.conversation);
+  // The base list for the non-search render: tag-filtered live rows.
+  const baseConversations = isSearching
+    ? filteredConversations
+    : tagFilteredConversations;
   // Conversations filed under a KNOWN project render in the Projects section, so
   // the recency groups exclude them to avoid double-listing. A conversation
   // whose `projectId` points at a project not in this list (e.g. a stale id)
-  // still falls through to the recency groups so it never disappears.
+  // still falls through to the recency groups so it never disappears. ARCHIVED
+  // conversations are pulled out into their own collapsible section, so the
+  // recency groups exclude them too (mirrors the project exclusion).
   const knownProjectIds = new Set(projects.map((p) => p.id));
+  const archivedConversations = isSearching
+    ? []
+    : baseConversations.filter((c) => c.archived === true);
   const recencyConversations = isSearching
     ? filteredConversations
-    : filteredConversations.filter(
-        (c) => !(c.projectId && knownProjectIds.has(c.projectId)),
+    : baseConversations.filter(
+        (c) =>
+          c.archived !== true &&
+          !(c.projectId && knownProjectIds.has(c.projectId)),
       );
   const groups = isSearching
     ? new Map<RecencyKey, ConversationSummary[]>()
@@ -991,9 +1197,12 @@ export function Sidebar({
 
   // Group conversations by project for the Projects section. Only conversations
   // actually filed under each project appear; the per-project bucket reuses the
-  // live `displayConversations` so optimistic assigns/detaches reflect instantly.
+  // live (tag-filtered) rows so optimistic assigns/detaches reflect instantly.
+  // Archived conversations are pulled out into the Archived section, so they're
+  // excluded here too.
   const conversationsByProject = new Map<string, ConversationSummary[]>();
-  for (const conversation of displayConversations) {
+  for (const conversation of tagFilteredConversations) {
+    if (conversation.archived === true) continue;
     const pid = conversation.projectId;
     if (!pid) continue;
     const bucket = conversationsByProject.get(pid);
@@ -1028,6 +1237,88 @@ export function Sidebar({
     setPendingProjectDelete(null);
   };
 
+  // Tags (Conversation Org v2): the inline create/rename dialog + the pending
+  // tag deletion confirmation, mirroring the project dialogs above.
+  const [tagDialog, setTagDialog] = useState<
+    { mode: "create" } | { mode: "rename"; id: string; name: string } | null
+  >(null);
+  const [tagDraft, setTagDraft] = useState("");
+  const [pendingTagDelete, setPendingTagDelete] = useState<Tag | null>(null);
+
+  const openCreateTag = () => {
+    setTagDraft("");
+    setTagDialog({ mode: "create" });
+  };
+  const openRenameTag = (tag: Tag) => {
+    setTagDraft(tag.name);
+    setTagDialog({ mode: "rename", id: tag.id, name: tag.name });
+  };
+  const submitTagDialog = () => {
+    const trimmed = tagDraft.trim();
+    if (!trimmed || !tagDialog) {
+      setTagDialog(null);
+      return;
+    }
+    if (tagDialog.mode === "create") {
+      onCreateTag?.(trimmed);
+    } else if (trimmed !== tagDialog.name) {
+      onRenameTag?.(tagDialog.id, trimmed);
+    }
+    setTagDialog(null);
+  };
+  const confirmTagDelete = () => {
+    if (!pendingTagDelete) return;
+    // Deleting the tag we're filtering by clears the filter so the list isn't
+    // stuck showing nothing.
+    if (activeTagId === pendingTagDelete.id) onSetTagFilter?.(null);
+    onDeleteTag?.(pendingTagDelete.id);
+    setPendingTagDelete(null);
+  };
+
+  // Archived section collapse (Conversation Org v2). Collapsed by default so the
+  // main list stays focused; the header toggles it open.
+  const [archivedOpen, setArchivedOpen] = useState(false);
+
+  // Multi-select (Conversation Org v2). Selection state lives here in the
+  // sidebar; the bulk action bar calls the parent's optimistic `onBulk*`
+  // handlers with the explicit id list, then clears the selection. Entering
+  // selection mode is implicit: the first selected id turns it on; clearing the
+  // last (or pressing Cancel) turns it off.
+  const [rawSelectedIds, setRawSelectedIds] = useState<Set<string>>(new Set());
+  // Selection mode is entered EXPLICITLY via the "Select" toggle (so checkboxes
+  // appear even before anything is picked — otherwise there'd be no way to start
+  // a selection on desktop). It also stays on while anything is selected.
+  const [selectionActive, setSelectionActive] = useState(false);
+  const bulkEnabled = Boolean(
+    onBulkArchive || onBulkDelete || onBulkAddTag || onBulkRemoveTag,
+  );
+  // Derive the EFFECTIVE selection by intersecting with the live conversation
+  // ids, so an id that vanished (e.g. after a bulk delete) can't keep selection
+  // mode alive or skew the count — without a setState-in-effect (lint rule).
+  const liveConversationIds = new Set(conversations.map((c) => c.id));
+  const selectedIds = new Set(
+    Array.from(rawSelectedIds).filter((id) => liveConversationIds.has(id)),
+  );
+  const selectionMode = bulkEnabled && (selectionActive || selectedIds.size > 0);
+  const toggleSelect = useCallback((id: string) => {
+    setRawSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const exitSelection = useCallback(() => {
+    setRawSelectedIds(new Set());
+    setSelectionActive(false);
+  }, []);
+  const selectedIdList = Array.from(selectedIds);
+  const runBulk = (fn?: (ids: string[]) => void) => {
+    if (!fn || selectedIdList.length === 0) return;
+    fn(selectedIdList);
+    exitSelection();
+  };
+
   const activeRowRef = useRef<HTMLDivElement | null>(null);
   // useLayoutEffect avoids a flash on mobile-drawer open: each drawer mount is a
   // fresh Sidebar instance, so the active row is pulled into view before paint.
@@ -1057,11 +1348,17 @@ export function Sidebar({
           active={conversation.id === activeId}
           activeRowRef={activeRowRef}
           projects={projects}
+          tags={tags}
+          selectionMode={selectionMode}
+          selected={selectedIds.has(conversation.id)}
+          onToggleSelect={toggleSelect}
           onSelect={onSelect}
           onRename={onRenameConversation}
           onTogglePin={onTogglePinConversation}
           onSetRetention={onSetConversationRetention}
           onAssignProject={onAssignConversationToProject}
+          onAssignTags={onAssignConversationTags}
+          onArchive={onArchiveConversation}
           onCopy={onCopyConversation}
           onDownload={onDownloadConversation}
           onRequestDelete={setPendingDelete}
@@ -1140,7 +1437,176 @@ export function Sidebar({
             </button>
           ) : null}
         </div>
+        {/* Advanced search opens the filter-rich dialog (model / cost / date /
+            project / tag) — the inline box stays a quick title/snippet search. */}
+        {onOpenAdvancedSearch ? (
+          <button
+            type="button"
+            onClick={onOpenAdvancedSearch}
+            data-testid="sidebar-advanced-search"
+            className="mt-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          >
+            <SlidersHorizontal aria-hidden className="size-3" />
+            <span>Advanced search</span>
+          </button>
+        ) : null}
       </div>
+
+      {/* Select toggle (Conversation Org v2). Entry point into multi-select; the
+          per-row checkboxes only render once selection mode is on. Hidden while
+          searching and once selection mode is already active (the bulk bar's
+          Cancel exits). */}
+      {bulkEnabled && !isSearching && !selectionMode ? (
+        <div className="px-2 pb-2">
+          <button
+            type="button"
+            onClick={() => setSelectionActive(true)}
+            data-testid="sidebar-select-toggle"
+            className="flex min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+          >
+            <Check className="size-3.5" aria-hidden />
+            <span>Select</span>
+          </button>
+        </div>
+      ) : null}
+
+      {/* Bulk action bar (Conversation Org v2). Shown in selection mode.
+          Archive / unarchive / delete + an "Add tag" submenu over the user's
+          tags; Cancel exits selection. */}
+      {selectionMode ? (
+        <div
+          className="mx-2 mb-2 flex items-center gap-1 rounded-2xl bg-muted/60 px-2 py-1.5"
+          data-testid="sidebar-bulk-bar"
+        >
+          <span
+            className="px-1 text-xs font-medium text-foreground"
+            data-testid="sidebar-bulk-count"
+          >
+            {selectedIds.size} selected
+          </span>
+          <div className="ml-auto flex items-center gap-0.5">
+            {onBulkArchive ? (
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-label="Archive selected"
+                  data-testid="sidebar-bulk-archive"
+                  onClick={() => runBulk((ids) => onBulkArchive(ids, true))}
+                  className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                >
+                  <Archive className="size-4" aria-hidden />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-label="Unarchive selected"
+                  data-testid="sidebar-bulk-unarchive"
+                  onClick={() => runBulk((ids) => onBulkArchive(ids, false))}
+                  className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                >
+                  <ArchiveRestore className="size-4" aria-hidden />
+                </Button>
+              </>
+            ) : null}
+            {(onBulkAddTag || onBulkRemoveTag) && tags.length > 0 ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      aria-label="Tag selected"
+                      data-testid="sidebar-bulk-tag"
+                      className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                    >
+                      <Tags className="size-4" aria-hidden />
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent align="end" className="w-48">
+                  {onBulkAddTag ? (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger
+                        className="gap-2"
+                        data-testid="sidebar-bulk-add-tag"
+                      >
+                        <TagIcon className="size-4" aria-hidden />
+                        <span>Add tag</span>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        {tags.map((tag) => (
+                          <DropdownMenuItem
+                            key={tag.id}
+                            label={tag.name}
+                            onClick={() =>
+                              runBulk((ids) => onBulkAddTag(ids, tag.id))
+                            }
+                            className="gap-2"
+                          >
+                            <span className="min-w-0 flex-1 truncate">
+                              {tag.name}
+                            </span>
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  ) : null}
+                  {onBulkRemoveTag ? (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger
+                        className="gap-2"
+                        data-testid="sidebar-bulk-remove-tag"
+                      >
+                        <TagIcon className="size-4" aria-hidden />
+                        <span>Remove tag</span>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        {tags.map((tag) => (
+                          <DropdownMenuItem
+                            key={tag.id}
+                            label={tag.name}
+                            onClick={() =>
+                              runBulk((ids) => onBulkRemoveTag(ids, tag.id))
+                            }
+                            className="gap-2"
+                          >
+                            <span className="min-w-0 flex-1 truncate">
+                              {tag.name}
+                            </span>
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+            {onBulkDelete ? (
+              <Button
+                type="button"
+                variant="ghost"
+                aria-label="Delete selected"
+                data-testid="sidebar-bulk-delete"
+                onClick={() => runBulk(onBulkDelete)}
+                className="size-8 rounded-full p-0 text-destructive hover:text-destructive"
+              >
+                <Trash2 className="size-4" aria-hidden />
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="ghost"
+              aria-label="Cancel selection"
+              data-testid="sidebar-bulk-cancel"
+              onClick={exitSelection}
+              className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-4" aria-hidden />
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <ScrollArea className="min-h-0 flex-1">
         <div
@@ -1278,29 +1744,193 @@ export function Sidebar({
                   )}
                 </div>
               ) : null}
+              {/* Tags (Conversation Org v2). A labeled, filterable label set:
+                  click a tag to filter the list to it; the kebab renames /
+                  deletes it; the header "+" creates one. */}
+              {onCreateTag || tags.length > 0 ? (
+                <div className="mb-6" data-testid="sidebar-tags">
+                  <div className="flex items-center justify-between px-2 pb-1 pt-1">
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      Tags
+                    </span>
+                    {onCreateTag ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        aria-label="New tag"
+                        data-testid="sidebar-new-tag"
+                        onClick={openCreateTag}
+                        className="size-7 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <Plus className="size-4" aria-hidden />
+                      </Button>
+                    ) : null}
+                  </div>
+                  {tags.length === 0 ? (
+                    <div className="px-2 py-2 text-xs text-muted-foreground">
+                      No tags yet
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-0.5">
+                      {tags.map((tag) => {
+                        const isActiveFilter = activeTagFilter === tag.id;
+                        return (
+                          <div
+                            key={tag.id}
+                            className="group/tag flex items-center gap-1 rounded-lg px-1"
+                            data-testid="sidebar-tag"
+                          >
+                            <button
+                              type="button"
+                              // Click toggles the filter: clicking the active
+                              // tag clears it (shows all again).
+                              onClick={() =>
+                                onSetTagFilter?.(isActiveFilter ? null : tag.id)
+                              }
+                              aria-pressed={isActiveFilter}
+                              data-testid="sidebar-tag-filter"
+                              className={cn(
+                                "flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]",
+                                isActiveFilter
+                                  ? "text-foreground"
+                                  : "text-sidebar-foreground",
+                              )}
+                            >
+                              <TagIcon
+                                className="size-3.5 shrink-0"
+                                aria-hidden
+                                style={
+                                  tag.color ? { color: tag.color } : undefined
+                                }
+                              />
+                              <span
+                                className="min-w-0 flex-1 truncate"
+                                data-testid="sidebar-tag-name"
+                              >
+                                {tag.name}
+                              </span>
+                              {isActiveFilter ? (
+                                <Check
+                                  className="size-3.5 shrink-0 text-brand"
+                                  aria-hidden
+                                />
+                              ) : null}
+                            </button>
+                            {onRenameTag || onDeleteTag ? (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger
+                                  render={
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      aria-label="Tag actions"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground md:opacity-0 md:group-hover/tag:opacity-100 md:aria-expanded:opacity-100"
+                                    >
+                                      <MoreHorizontal
+                                        className="size-4"
+                                        aria-hidden
+                                      />
+                                    </Button>
+                                  }
+                                />
+                                <DropdownMenuContent
+                                  align="end"
+                                  className="w-40"
+                                >
+                                  {onRenameTag ? (
+                                    <DropdownMenuItem
+                                      label="Rename tag"
+                                      onClick={() => openRenameTag(tag)}
+                                      className="gap-2"
+                                      data-testid="sidebar-tag-rename"
+                                    >
+                                      <Pencil className="size-4" aria-hidden />
+                                      <span>Rename</span>
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                  {onDeleteTag ? (
+                                    <DropdownMenuItem
+                                      label="Delete tag"
+                                      variant="destructive"
+                                      onClick={() => setPendingTagDelete(tag)}
+                                      className="gap-2"
+                                      data-testid="sidebar-tag-delete"
+                                    >
+                                      <Trash2 className="size-4" aria-hidden />
+                                      <span>Delete</span>
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : null}
               {displayConversations.length === 0 ? (
                 <div className="px-2 py-6 text-center text-sm text-muted-foreground">
                   No chats yet — start one above
                 </div>
-              ) : recencyConversations.length === 0 ? null : (
-                GROUP_ORDER.map((key) => {
-                  const items = groups.get(key);
-                  if (!items || items.length === 0) {
-                    return null;
-                  }
-                  return (
-                    // Ma: tripled inter-group gutter so the recency label gains
-                    // weight from surrounding silence, not from size or color.
-                    <div key={key} className="mb-6">
-                      <div className="px-2 pb-2 pt-1 text-xs font-semibold text-muted-foreground">
-                        {RECENCY_LABELS[key]}
+              ) : recencyConversations.length === 0 &&
+                archivedConversations.length === 0 ? (
+                activeTagFilter ? (
+                  <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                    No conversations with this tag
+                  </div>
+                ) : null
+              ) : (
+                <>
+                  {GROUP_ORDER.map((key) => {
+                    const items = groups.get(key);
+                    if (!items || items.length === 0) {
+                      return null;
+                    }
+                    return (
+                      // Ma: tripled inter-group gutter so the recency label
+                      // gains weight from surrounding silence, not size/color.
+                      <div key={key} className="mb-6">
+                        <div className="px-2 pb-2 pt-1 text-xs font-semibold text-muted-foreground">
+                          {RECENCY_LABELS[key]}
+                        </div>
+                        <div role="list" aria-label={RECENCY_LABELS[key]}>
+                          {items.map(renderRow)}
+                        </div>
                       </div>
-                      <div role="list" aria-label={RECENCY_LABELS[key]}>
-                        {items.map(renderRow)}
-                      </div>
+                    );
+                  })}
+                  {/* Archived (Conversation Org v2): a collapsible section below
+                      the recency groups. Excluded from the recency buckets. */}
+                  {archivedConversations.length > 0 ? (
+                    <div className="mb-6" data-testid="sidebar-archived">
+                      <button
+                        type="button"
+                        onClick={() => setArchivedOpen((v) => !v)}
+                        aria-expanded={archivedOpen}
+                        data-testid="sidebar-archived-toggle"
+                        className="flex w-full items-center gap-1 rounded-lg px-2 pb-2 pt-1 text-left text-xs font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+                      >
+                        {archivedOpen ? (
+                          <ChevronDown className="size-3.5" aria-hidden />
+                        ) : (
+                          <ChevronRight className="size-3.5" aria-hidden />
+                        )}
+                        <span>Archived</span>
+                        <span className="ml-1 font-normal">
+                          {archivedConversations.length}
+                        </span>
+                      </button>
+                      {archivedOpen ? (
+                        <div role="list" aria-label="Archived conversations">
+                          {archivedConversations.map(renderRow)}
+                        </div>
+                      ) : null}
                     </div>
-                  );
-                })
+                  ) : null}
+                </>
               )}
             </>
           )}
@@ -1499,6 +2129,101 @@ export function Sidebar({
               variant="destructive"
               onClick={confirmProjectDelete}
               data-testid="sidebar-project-delete-confirm"
+              className="h-11 rounded-full bg-destructive px-6 text-white hover:bg-destructive/90 dark:bg-destructive dark:text-white dark:hover:bg-destructive/90"
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tag create / rename prompt (Conversation Org v2). */}
+      <Dialog
+        open={tagDialog !== null}
+        onOpenChange={(next) => {
+          if (!next) setTagDialog(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>
+              {tagDialog?.mode === "rename" ? "Rename tag" : "New tag"}
+            </DialogTitle>
+            <DialogDescription>
+              Tags label conversations so you can filter the sidebar by them.
+            </DialogDescription>
+          </DialogHeader>
+          <input
+            type="text"
+            value={tagDraft}
+            placeholder="Tag name"
+            aria-label="Tag name"
+            data-testid="sidebar-tag-name-input"
+            autoFocus
+            maxLength={100}
+            onChange={(event) => setTagDraft(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submitTagDialog();
+              }
+            }}
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+          />
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setTagDialog(null)}
+              className="h-11 rounded-full px-6"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={submitTagDialog}
+              disabled={tagDraft.trim().length === 0}
+              data-testid="sidebar-tag-save"
+              className="h-11 rounded-full px-6"
+            >
+              {tagDialog?.mode === "rename" ? "Save" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tag delete confirmation (Conversation Org v2). Removes the label from
+          every conversation; the conversations themselves are kept. */}
+      <Dialog
+        open={pendingTagDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingTagDelete(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-sm" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Delete tag?</DialogTitle>
+            <DialogDescription>
+              {pendingTagDelete
+                ? `This deletes "${pendingTagDelete.name}" and removes it from all conversations. The conversations are kept.`
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setPendingTagDelete(null)}
+              className="h-11 rounded-full px-6"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={confirmTagDelete}
+              data-testid="sidebar-tag-delete-confirm"
               className="h-11 rounded-full bg-destructive px-6 text-white hover:bg-destructive/90 dark:bg-destructive dark:text-white dark:hover:bg-destructive/90"
             >
               Delete

@@ -10,6 +10,7 @@ import {
   MessageSquarePlus,
   Mic,
   PanelLeft,
+  Search,
   Settings as SettingsIcon,
   Sparkles,
   Sun,
@@ -39,6 +40,7 @@ import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { ActivityDialog } from "@/components/chat/activity-dialog";
 import { MemoryDialog } from "@/components/chat/memory-dialog";
 import { TemplateLibraryDialog } from "@/components/chat/template-library-dialog";
+import { HistorySearchDialog } from "@/components/chat/history-search-dialog";
 import { ModelDirectoryDialog } from "@/components/chat/model-directory-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
@@ -80,11 +82,14 @@ import {
   ApiError,
   ApiNetworkError,
   branchConversation,
+  bulkConversationAction,
   createConversation,
   deleteAccount,
   deleteConversation,
   createProject,
+  createTag,
   deleteProject,
+  deleteTag,
   fetchAccountExport,
   fetchBootstrap,
   fetchConversation,
@@ -94,6 +99,7 @@ import {
   putPreferences,
   searchConversations,
   updateProject,
+  updateTag,
   type BootstrapResponse,
   type ProjectUpdateInput,
 } from "@/lib/apiClient";
@@ -114,6 +120,7 @@ import type {
   ProviderTierOption,
   ReasoningEffortId,
   ShortcutId,
+  Tag,
   UsageBudget,
   UserPreferences,
 } from "@/lib/types";
@@ -218,6 +225,7 @@ const LABEL_BY_ID = ((): Record<ShortcutId, string> => {
   // Palette-only actions have no KEY_BINDINGS entry; label them here.
   out["open-settings"] = "Open settings";
   out["toggle-theme"] = "Toggle theme";
+  out["search-history"] = "Search history";
   return out;
 })();
 
@@ -233,6 +241,7 @@ const PALETTE_ACTION_META: Array<{
   hasBinding: boolean;
 }> = [
   { id: "new-chat", label: "New chat", icon: MessageSquarePlus, section: "Actions", hasBinding: true },
+  { id: "search-history", label: "Search history", icon: Search, section: "Actions", hasBinding: false },
   { id: "focus-composer", label: "Focus composer", icon: TextCursorInput, section: "Actions", hasBinding: true },
   { id: "copy-last-response", label: "Copy last response", icon: ClipboardCopy, section: "Actions", hasBinding: true },
   { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", hasBinding: true },
@@ -477,6 +486,7 @@ export function ChatThread() {
   const [activityOpen, setActivityOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [modelDirectoryOpen, setModelDirectoryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -694,6 +704,18 @@ export function ChatThread() {
           updatedAt: "",
         })),
       );
+    }
+  }, [bootstrap]);
+
+  // Tags (Conversation Org v2). Same hydrate-once-then-own-locally discipline as
+  // the projects list. `activeTagId` is the current sidebar filter (null = all).
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [activeTagId, setActiveTagId] = useState<string | null>(null);
+  const tagsHydratedRef = useRef(false);
+  useEffect(() => {
+    if (bootstrap && !tagsHydratedRef.current) {
+      tagsHydratedRef.current = true;
+      setTags(bootstrap.tags ?? []);
     }
   }, [bootstrap]);
 
@@ -2103,6 +2125,199 @@ export function ChatThread() {
     });
   };
 
+  // --- Tags + archive + bulk actions (Conversation Org v2) ------------------
+  //
+  // Each mutation follows the same optimistic shape as the project handlers:
+  // snapshot -> setState -> fire-and-forget -> rollback + toast on error.
+
+  // Small shared error toast for these handlers (rollback already applied).
+  const showMutationError = (cause: unknown, fallback: string) => {
+    if (cause instanceof ApiError) setLiveMessage(cause.title);
+    showToast({
+      severity: "error",
+      title: cause instanceof ApiError ? cause.title : fallback,
+      body:
+        cause instanceof ApiError
+          ? cause.body
+          : cause instanceof Error
+            ? cause.message
+            : undefined,
+    });
+  };
+
+  const handleSetTagFilter = (tagId: string | null) => {
+    setActiveTagId(tagId);
+  };
+
+  // Create a tag. Optimistic insert with a temp id swapped for the server row.
+  const handleCreateTag = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const tempId = `temp-tag-${crypto.randomUUID()}`;
+    const optimistic: Tag = {
+      id: tempId,
+      name: trimmed,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    setTags((prev) => [...prev, optimistic]);
+    void createTag({ name: trimmed })
+      .then((created) => {
+        setTags((prev) => prev.map((t) => (t.id === tempId ? created : t)));
+      })
+      .catch((cause) => {
+        setTags((prev) => prev.filter((t) => t.id !== tempId));
+        showMutationError(cause, "Couldn't create tag");
+      });
+  };
+
+  const handleRenameTag = (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const previous = tags;
+    const target = previous.find((t) => t.id === id);
+    if (!target || target.name === trimmed) return;
+    setTags((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, name: trimmed } : t)),
+    );
+    void updateTag(id, { name: trimmed }).catch((cause) => {
+      setTags(previous);
+      showMutationError(cause, "Couldn't rename tag");
+    });
+  };
+
+  // Delete a tag. Optimistically drop the tag AND strip it from every
+  // conversation's `tagIds` (the BE removes the join rows); rollback both.
+  const handleDeleteTag = (id: string) => {
+    const previousTags = tags;
+    const previousConversations = conversations;
+    if (activeTagId === id) setActiveTagId(null);
+    setTags((prev) => prev.filter((t) => t.id !== id));
+    setConversations((prev) =>
+      prev.map((c) =>
+        (c.tagIds ?? []).includes(id)
+          ? { ...c, tagIds: (c.tagIds ?? []).filter((tid) => tid !== id) }
+          : c,
+      ),
+    );
+    void deleteTag(id).catch((cause) => {
+      setTags(previousTags);
+      setConversations(previousConversations);
+      showMutationError(cause, "Couldn't delete tag");
+    });
+  };
+
+  // Full-replace a single conversation's tag set (PATCH tagIds).
+  const handleAssignConversationTags = (id: string, tagIds: string[]) => {
+    const previous = conversations;
+    const target = previous.find((c) => c.id === id);
+    if (!target) return;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, tagIds } : c)),
+    );
+    void patchConversation(id, { tagIds }).catch((cause) => {
+      setConversations(previous);
+      showMutationError(cause, "Couldn't update tags");
+    });
+  };
+
+  // Archive / unarchive a single conversation (PATCH archived).
+  const handleArchiveConversation = (id: string, archived: boolean) => {
+    const previous = conversations;
+    const target = previous.find((c) => c.id === id);
+    if (!target || (target.archived ?? false) === archived) return;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, archived } : c)),
+    );
+    void patchConversation(id, { archived }).catch((cause) => {
+      setConversations(previous);
+      showMutationError(
+        cause,
+        archived ? "Couldn't archive conversation" : "Couldn't unarchive conversation",
+      );
+    });
+  };
+
+  // Bulk archive/unarchive: snapshot the whole list, apply to all selected ids,
+  // one API call, rollback the whole snapshot on error.
+  const handleBulkArchive = (ids: string[], archived: boolean) => {
+    if (ids.length === 0) return;
+    const previous = conversations;
+    const idSet = new Set(ids);
+    setConversations((prev) =>
+      prev.map((c) => (idSet.has(c.id) ? { ...c, archived } : c)),
+    );
+    void bulkConversationAction({
+      conversationIds: ids,
+      action: archived ? "archive" : "unarchive",
+    }).catch((cause) => {
+      setConversations(previous);
+      showMutationError(cause, "Couldn't update conversations");
+    });
+  };
+
+  // Bulk delete: snapshot, drop all selected ids, one API call, rollback on
+  // error. If the active conversation was deleted, fall back to a new chat.
+  const handleBulkDelete = (ids: string[]) => {
+    if (ids.length === 0) return;
+    const previous = conversations;
+    const idSet = new Set(ids);
+    setConversations((prev) => prev.filter((c) => !idSet.has(c.id)));
+    if (activeConversationId && idSet.has(activeConversationId)) {
+      handleNewChat();
+    }
+    void bulkConversationAction({
+      conversationIds: ids,
+      action: "delete",
+    }).catch((cause) => {
+      setConversations(previous);
+      showMutationError(cause, "Couldn't delete conversations");
+    });
+  };
+
+  // Bulk add/remove a tag across the selected conversations.
+  const handleBulkAddTag = (ids: string[], tagId: string) => {
+    if (ids.length === 0) return;
+    const previous = conversations;
+    const idSet = new Set(ids);
+    setConversations((prev) =>
+      prev.map((c) =>
+        idSet.has(c.id) && !(c.tagIds ?? []).includes(tagId)
+          ? { ...c, tagIds: [...(c.tagIds ?? []), tagId] }
+          : c,
+      ),
+    );
+    void bulkConversationAction({
+      conversationIds: ids,
+      action: "tag",
+      tagId,
+    }).catch((cause) => {
+      setConversations(previous);
+      showMutationError(cause, "Couldn't tag conversations");
+    });
+  };
+
+  const handleBulkRemoveTag = (ids: string[], tagId: string) => {
+    if (ids.length === 0) return;
+    const previous = conversations;
+    const idSet = new Set(ids);
+    setConversations((prev) =>
+      prev.map((c) =>
+        idSet.has(c.id)
+          ? { ...c, tagIds: (c.tagIds ?? []).filter((tid) => tid !== tagId) }
+          : c,
+      ),
+    );
+    void bulkConversationAction({
+      conversationIds: ids,
+      action: "untag",
+      tagId,
+    }).catch((cause) => {
+      setConversations(previous);
+      showMutationError(cause, "Couldn't untag conversations");
+    });
+  };
+
   const handlePreferencesChange = (next: UserPreferences) => {
     if (!bootstrap) return;
     const previous = bootstrap.preferences;
@@ -2621,6 +2836,9 @@ export function ChatThread() {
       case "new-chat":
         handleNewChat();
         return;
+      case "search-history":
+        setSearchOpen(true);
+        return;
       case "focus-composer":
         handleFocusComposer();
         return;
@@ -2782,6 +3000,7 @@ export function ChatThread() {
             searchResults={visibleConversationSearchResults}
             searchPending={conversationSearchPending}
             onSearchChange={setConversationSearch}
+            onOpenAdvancedSearch={() => setSearchOpen(true)}
             onSelect={handleSelectConversation}
             onNewChat={handleNewChat}
             onRenameConversation={handleRenameConversation}
@@ -2797,6 +3016,18 @@ export function ChatThread() {
             onRenameProject={handleRenameProject}
             onDeleteProject={handleDeleteProject}
             onManageProjects={handleOpenSettings}
+            tags={tags}
+            activeTagId={activeTagId}
+            onSetTagFilter={handleSetTagFilter}
+            onCreateTag={handleCreateTag}
+            onRenameTag={handleRenameTag}
+            onDeleteTag={handleDeleteTag}
+            onAssignConversationTags={handleAssignConversationTags}
+            onArchiveConversation={handleArchiveConversation}
+            onBulkArchive={handleBulkArchive}
+            onBulkDelete={handleBulkDelete}
+            onBulkAddTag={handleBulkAddTag}
+            onBulkRemoveTag={handleBulkRemoveTag}
             onSignIn={() => setAuthOpen(true)}
             onSignOut={handleSignOut}
             onCollapse={() => {
@@ -3147,6 +3378,16 @@ export function ChatThread() {
       <TemplateLibraryDialog
         open={templatesOpen}
         onOpenChange={setTemplatesOpen}
+      />
+
+      <HistorySearchDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        projects={projects}
+        // Org v2 ships the tag list in the same wave; feed the live tags so the
+        // dialog's tag filter is populated (it hides the control when empty).
+        tags={tags}
+        onSelectConversation={handleSelectConversation}
       />
 
       <ModelDirectoryDialog

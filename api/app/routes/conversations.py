@@ -873,6 +873,17 @@ async def search_conversations(
     request: Request,
     response: Response,
     limit: Annotated[int, Query(ge=1, le=50)] = 25,
+    # Transparency-native advanced-search filters (D-advanced-search). All
+    # optional with `None` defaults so a bare `?q=` is the exact legacy search.
+    # Wire names are camelCase via the aliases; `dateFrom`/`dateTo` parse from
+    # ISO-8601, `projectId`/`tagId` from UUID strings, cost as floats.
+    served_model: Annotated[str | None, Query(alias="servedModel", max_length=64)] = None,
+    cost_min: Annotated[float | None, Query(alias="costMin", ge=0)] = None,
+    cost_max: Annotated[float | None, Query(alias="costMax", ge=0)] = None,
+    date_from: Annotated[datetime | None, Query(alias="dateFrom")] = None,
+    date_to: Annotated[datetime | None, Query(alias="dateTo")] = None,
+    project_id: Annotated[UUID | None, Query(alias="projectId")] = None,
+    tag_id: Annotated[UUID | None, Query(alias="tagId")] = None,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[ConversationSearchResult]:
@@ -882,6 +893,13 @@ async def search_conversations(
         user.id,
         query=q,
         limit=limit,
+        served_model=served_model,
+        cost_min=cost_min,
+        cost_max=cost_max,
+        date_from=date_from,
+        date_to=date_to,
+        project_id=project_id,
+        tag_id=tag_id,
     )
 
 

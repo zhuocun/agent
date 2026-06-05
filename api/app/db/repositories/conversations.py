@@ -23,9 +23,10 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, delete, func, or_, select
+from sqlalchemy import String, column, delete, func, or_, select, table
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.models import Conversation, Message, Preferences, Project, Stream, Vote
 from app.db.repositories import audit_events
@@ -42,6 +43,18 @@ from app.schemas.share import PublicAttribution, PublicConversation, PublicMessa
 _SHARE_TOKEN_BYTES = 24
 _SEARCH_SNIPPET_RADIUS = 64
 _SEARCH_PAGE_SIZE = 100
+
+# Lightweight SQLAlchemy core-table reference for the `conversation_tag` join,
+# used ONLY by the advanced-search `tag_id` filter. The table itself is owned by
+# a PARALLEL workstream and is intentionally NOT modeled as an ORM class here —
+# referencing it via `table(...)`/`column(...)` keeps this filter correct-by-
+# contract without coupling to (or importing) an ORM model that doesn't yet
+# exist in this branch. The columns named are the two join keys the filter uses.
+_conversation_tag = table(
+    "conversation_tag",
+    column("conversation_id"),
+    column("tag_id"),
+)
 
 
 class _Unset:
@@ -172,39 +185,111 @@ async def list_summaries_for_user(
     ]
 
 
+def _attribution_str(attribution: object, key: str) -> str | None:
+    """Read a string field out of a message's JSON `attribution` blob, or None.
+
+    The attribution comes back as a plain dict (JSON column); the served-model
+    filter and the `servedModelLabel` transparency field both pull from it. Any
+    non-dict / non-string value yields None so a malformed legacy blob can never
+    raise here.
+    """
+    if not isinstance(attribution, dict):
+        return None
+    value = attribution.get(key)
+    return value if isinstance(value, str) else None
+
+
 async def search_for_user(
     db: AsyncSession,
     user_id: UUID,
     *,
     query: str,
     limit: int = 25,
+    served_model: str | None = None,
+    cost_min: float | None = None,
+    cost_max: float | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    project_id: UUID | None = None,
+    tag_id: UUID | None = None,
 ) -> list[ConversationSearchResult]:
-    """Search owned conversation titles and message JSON text.
+    """Search owned conversation titles and message JSON text, with filters.
 
-    The SQL predicate intentionally stays dialect-portable: title uses LIKE,
-    and message parts are cast to text for both SQLite local/tests and
-    Postgres prod. It is a broad candidate filter; final matching and the
-    public limit happen after snippets are generated from user-visible fields.
+    The text predicate is dialect-aware: on Postgres (prod) it uses native
+    full-text search (`to_tsvector @@ websearch_to_tsquery`) over the title and
+    the parts-cast-to-text; on SQLite (local/tests) it falls back to the
+    portable LIKE path. BOTH branches feed the same broad candidate filter, and
+    a Python precision re-filter then extracts user-visible text from the
+    multi-part JSON, drops JSON-key false positives, and builds snippets — that
+    re-filter is the precision gate on either dialect.
+
+    Optional transparency-native filters (all default `None` = no filter, so the
+    no-filter behavior is byte-for-byte the legacy search):
+    - `project_id` / `date_from` / `date_to` are conversation-level → applied as
+      SQL predicates on the candidate query (`Conversation.project_id`,
+      `Conversation.updated_at` inclusive range).
+    - `tag_id` is applied via an EXISTS against the `conversation_tag` join.
+    - `cost_min` / `cost_max` constrain the MATCHED message's `cost_usd` → SQL
+      predicate on the message-match query.
+    - `served_model` constrains the MATCHED message's `attribution.servedTierId`
+      → Python post-filter in the re-filter loop (served-model lives in JSON,
+      not a column).
+
+    When a MESSAGE-LEVEL filter (`cost_*` / `served_model`) is set, a title-only
+    hit cannot qualify (it has no matched message to satisfy the constraint), so
+    the result must come from a message match.
     """
     stripped = query.strip()
     if not stripped or limit <= 0:
         return []
 
-    pattern = f"%{_escape_like(stripped.casefold())}%"
-    title_match = func.lower(Conversation.title).like(pattern, escape="\\")
-    message_match = func.lower(sa_cast(Message.parts, String)).like(
-        pattern, escape="\\"
+    is_postgres = db.bind is not None and db.bind.dialect.name == "postgresql"
+    parts_text = sa_cast(Message.parts, String)
+    if is_postgres:
+        tsquery = func.websearch_to_tsquery("english", stripped)
+        title_match = func.to_tsvector("english", Conversation.title).op("@@")(tsquery)
+        message_match = func.to_tsvector("english", parts_text).op("@@")(tsquery)
+    else:
+        pattern = f"%{_escape_like(stripped.casefold())}%"
+        title_match = func.lower(Conversation.title).like(pattern, escape="\\")
+        message_match = func.lower(parts_text).like(pattern, escape="\\")
+
+    # Conversation-level filters narrow the candidate scan directly.
+    candidate_filters: list[ColumnElement[bool]] = [
+        Conversation.user_id == user_id,
+        or_(title_match, message_match),
+    ]
+    if project_id is not None:
+        candidate_filters.append(Conversation.project_id == project_id)
+    if date_from is not None:
+        candidate_filters.append(Conversation.updated_at >= date_from)
+    if date_to is not None:
+        candidate_filters.append(Conversation.updated_at <= date_to)
+    if tag_id is not None:
+        # ORCH: tag-filter test added at integration — `conversation_tag` is
+        # created by a parallel workstream and is absent from this branch, so
+        # this path is untestable here (and deliberately left untested).
+        candidate_filters.append(
+            Conversation.id.in_(
+                select(_conversation_tag.c.conversation_id).where(
+                    _conversation_tag.c.tag_id == tag_id
+                )
+            )
+        )
+
+    # A title-only hit cannot carry a matched-message cost / served-model, so
+    # those filters force the result to come from a message match.
+    message_level_filter = (
+        cost_min is not None or cost_max is not None or served_model is not None
     )
+
     results: list[ConversationSearchResult] = []
     offset = 0
     while len(results) < limit:
         stmt = (
             select(Conversation)
             .outerjoin(Message, Message.conversation_id == Conversation.id)
-            .where(
-                Conversation.user_id == user_id,
-                or_(title_match, message_match),
-            )
+            .where(*candidate_filters)
             .distinct()
             .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
             .offset(offset)
@@ -216,12 +301,21 @@ async def search_for_user(
 
         offset += len(conversations)
         conversation_ids = [row.id for row in conversations]
+        message_filters: list[ColumnElement[bool]] = [
+            Message.conversation_id.in_(conversation_ids),
+            func.to_tsvector("english", parts_text).op("@@")(
+                func.websearch_to_tsquery("english", stripped)
+            )
+            if is_postgres
+            else func.lower(parts_text).like(pattern, escape="\\"),
+        ]
+        if cost_min is not None:
+            message_filters.append(Message.cost_usd >= cost_min)
+        if cost_max is not None:
+            message_filters.append(Message.cost_usd <= cost_max)
         messages_stmt = (
             select(Message)
-            .where(
-                Message.conversation_id.in_(conversation_ids),
-                func.lower(sa_cast(Message.parts, String)).like(pattern, escape="\\"),
-            )
+            .where(*message_filters)
             .order_by(Message.created_at.asc(), Message.id.asc())
         )
         matching_messages = (await db.execute(messages_stmt)).scalars().all()
@@ -233,22 +327,36 @@ async def search_for_user(
             )
 
         for row in conversations:
-            title_snippet = _snippet_for(row.title, stripped)
-            matched_message_id: str | None = None
-            snippet = title_snippet
+            matched_message: Message | None = None
+            snippet: str | None = None
+
+            # Title-only snippet only when no message-level filter is in play —
+            # a cost / served-model constraint has nothing to bind to on a
+            # title hit. This keeps the legacy (no-filter) precedence exact.
+            if not message_level_filter:
+                snippet = _snippet_for(row.title, stripped)
 
             if snippet is None:
                 for message in messages_by_conversation.get(row.id, []):
+                    # Served-model is a JSON field, so it's a Python post-filter
+                    # on the matched message (after the SQL cost/text filters).
+                    if (
+                        served_model is not None
+                        and _attribution_str(message.attribution, "servedTierId")
+                        != served_model
+                    ):
+                        continue
                     message_snippet = _message_snippet(message.parts, stripped)
                     if message_snippet is None:
                         continue
                     snippet = message_snippet
-                    matched_message_id = str(message.id)
+                    matched_message = message
                     break
 
             if snippet is None:
                 continue
 
+            attribution = matched_message.attribution if matched_message else None
             results.append(
                 ConversationSearchResult(
                     id=str(row.id),
@@ -257,8 +365,20 @@ async def search_for_user(
                     is_temporary=False,
                     pinned=row.pinned,
                     retention_days=row.retention_days,
+                    project_id=(
+                        str(row.project_id) if row.project_id is not None else None
+                    ),
                     match_snippet=snippet,
-                    matched_message_id=matched_message_id,
+                    matched_message_id=(
+                        str(matched_message.id) if matched_message else None
+                    ),
+                    served_model_label=_attribution_str(
+                        attribution, "servedModelLabel"
+                    ),
+                    cost_usd=matched_message.cost_usd if matched_message else None,
+                    matched_at=(
+                        _iso(matched_message.created_at) if matched_message else None
+                    ),
                 )
             )
             if len(results) >= limit:

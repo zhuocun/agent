@@ -25,6 +25,7 @@ import type {
   PromptSuggestion,
   PromptTemplate,
   PublicConversation,
+  SearchFilters,
   ShareLinkResponse,
   SpendAnalytics,
   UsageBudget,
@@ -294,6 +295,30 @@ export function searchConversations(
   signal?: AbortSignal,
 ): Promise<ConversationSummary[]> {
   const params = new URLSearchParams({ q: query });
+  return apiClient.get<ConversationSummary[]>(
+    `/api/conversations/search?${params.toString()}`,
+    signal,
+  );
+}
+
+// Advanced history search: the same `/api/conversations/search` wire path as
+// `searchConversations`, extended with the transparency-native filters. Each
+// filter is appended only when set, so an empty `filters` produces the exact
+// same request as the plain search. Backs the advanced-search dialog (NOT the
+// sidebar box / Cmd+K palette, which keep using `searchConversations`).
+export function searchHistory(
+  query: string,
+  filters: SearchFilters,
+  signal?: AbortSignal,
+): Promise<ConversationSummary[]> {
+  const params = new URLSearchParams({ q: query });
+  if (filters.servedModel) params.set("servedModel", filters.servedModel);
+  if (filters.costMin != null) params.set("costMin", String(filters.costMin));
+  if (filters.costMax != null) params.set("costMax", String(filters.costMax));
+  if (filters.dateFrom) params.set("dateFrom", filters.dateFrom);
+  if (filters.dateTo) params.set("dateTo", filters.dateTo);
+  if (filters.projectId) params.set("projectId", filters.projectId);
+  if (filters.tagId) params.set("tagId", filters.tagId);
   return apiClient.get<ConversationSummary[]>(
     `/api/conversations/search?${params.toString()}`,
     signal,

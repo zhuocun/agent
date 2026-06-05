@@ -64,6 +64,8 @@ The open market gap is **multi-model + transparency + privacy + cost control**. 
 
 2026 guidance: segment by **sophistication / automation preference**, not demographics. Our differentiation maps directly onto the power-user segment, which converts and is cheap to serve via BYOK/usage-based pricing. The bet: a defensible, profitable beachhead beats subsidizing casual users against incumbents. **Keep a simple default mode** so down-market expansion is a setting, not a rebuild.
 
+> **Teams on-ramp (feature-expansion §4.5 / D29).** The **Teams / small orgs** row gets a *minimal prosumer realization* — shared credit pool + shared Projects + owner/member roles (P2). It deliberately serves only the prosumer subset of that persona's needs (shared workspace + pooled billing) and **declines** the SSO / per-seat / SOC2 / DPA parts, which stay on the **Enterprise** row (non-goal this phase). BYOK stays personal; the workspace primitive is the expandable seam, not an enterprise build.
+
 ---
 
 ## 4. Phased Roadmap (P0 / P1 / P2)
@@ -148,6 +150,47 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 - **Typed multi-part message model** (P0 data layer) is a prerequisite for tools (P1), structured citations (P1), interactive viz (P2), and generative UI (P2). It is one decision shared across PRD 01 (UX) and PRD 04 (data model) — make it once in the data layer and reference from both. Render only the text/code/reasoning subset at P0.
 - **US-state-law AI-interaction disclosure** now rests on **CA SB 243** (live now, only if companion/minors — see §9.11) plus generic AI-interaction-disclosure good practice; it remains a **P0 launch-gate for the US market** sitting next to the EU AI Act note below — not EU-only. **CO SB 205 is no longer a live gate** (enforcement stayed Apr 27 2026; repealed/replaced by SB 26-189 → Jan 1 2027, narrowed to ADMT — likely out of scope for a general chat product; watch its Jan-2027 ADMT scope). Our P0 disclosure covers the core requirement (see §7.5).
 - **EU AI-interaction disclosure** (Art. 50(1)) is **FIRM at 2 Aug 2026** — the firm EU P0 launch-gate (cheap, already P0) `[VERIFY]`. **EU AI Act content-marking** (Art. 50(2), machine-readable AI-content labels) should be designed alongside any **image/media generation** and only attaches **if/when we ship AI-generated media** (narrow for a P0 text-relay chat). Its date is **legally UNSETTLED for a new launch**: the 7-May-2026 Digital Omnibus is provisional pending Official Journal; readings range from no-grace → 2 Aug 2026 (compliance read) to ~2 Dec 2026 (architecture read). **Do not pick one — it needs legal sign-off before EU-launch scope is locked.** Keep `[VERIFY]` (see §7.5).
+- **Feature-expansion clusters (PRD 00 §11 D19–D32) — added dependencies:** memory / Projects / advanced-search (P1) sit on the context-assembly seam (PRD 02 FR-37 cache-stable prefix) + new tables (`memory_fact` / `project` / `tag`), and must be in the export/erase cascade from first ship (PRD 04 §5.7). The **RAG cluster** (P2) is gated on object storage + a worker/queue + pgvector — the *same* object-storage gate as in-thread image generation. **Prosumer shared workspaces** (P2, D29) depend on **Projects** (P1, D20). **Spend analytics / value-aware picker / budget guardrails** (P1, D27) ride the shipped per-message cost + attribution + auto-router (no new routing brain). **Content-marking** (D32) is designed-for now but built only with image generation and after EU legal sign-off.
+
+### 4.5 Feature-expansion backlog (this brainstorm — D19–D32; specced, NOT built)
+
+The feature-expansion pass (PRD 00 §11 **D19–D32**) specced a set of net-new, on-strategy features — each deepening one of the six wedges (multi-model · transparency · cost · privacy · mobile-web · accessibility), none yet built. The table below is the roadmap placement; **full specs live in the workstream PRDs** (01/02/03/04/06/07/08). It expands several summary rows in §4.3 — the Projects/Spaces + memory-transparency row, the slash-commands/prompt-library + customizable-shortcuts row, the richer-usage-credit row, the web-search "no inline `[n]` markers yet" note, and the P2 Artifacts/Canvas/RAG/voice/image-gen/MCP/teams cluster row — into per-feature detail. Same P0/P1/P2 legend; **P2\*** = P2 stretch/later.
+
+| Feature / capability | Phase | Source | Notes / dependencies |
+|---|---|---|---|
+| Transparent long-term memory (editable ledger + per-fact provenance + "memory used here" indicator) | **P1** | 00 D19, 01 §4.8, 02 §4.11/FR-40, 04 §6, 07 §6.4 | Opt-in / off-by-default; cache-stable injection (FR-37); excluded from temporary chats; export/erase-complete. |
+| Projects/Spaces (containers + scoped instructions/tier/retention/budget) | **P1** | 00 D20, 01 §4.5, 02 §4.5/FR-21, 04 §6 | Single-level; memory stays account-global; advances FR-21's *Projects* to P1 (personas stay P2). |
+| Conversation org v2 (tags, archive, bulk actions) | **P1** | 00 D20, 01 §4.5, 04 §6 | Pin shipped; nested folders deferred. |
+| Advanced history search (served-model/cost/date/tag/project filters + Postgres FTS) | **P1** | 00 D21, 01 §4.5/§8, 04 §6 | Transparency-native filters; vector/semantic deferred P2. Resolves the PRD 01 §8 search-scope question. |
+| Dictation (STT) + read-aloud (TTS) | **P1** | 00 D22, 01 §4.6, 02 §5.2, 03 §4.7 | Split out of the FR-33 P2 lump; Web Speech default + server/BYOK track; editable transcript, never auto-send. |
+| Prompt library + user-authored templates | **P1** | 00 D23, 01 §4.3, 02 | Variable placeholders; same popover as the shipped slash prefill; pure composer prefill (no model/cost change). |
+| Customizable keyboard shortcuts | **P1** | 00 D23, 01 §5.5 | Remaps the shipped fixed set; reserved-combo guard; overrides on `preferences`. |
+| Inline `[n]` citation markers (clickable, hover/tap-to-source) | **P1** | 00 D24, 01 §4.11/§5.6, 02 §4.7, 07 §4.3 | Render-layer upgrade over the shipped source list; closes the §4.3 web-search named gap. |
+| Citation transparency contract (grounded-vs-ungrounded honesty + provenance + share rules) | **P1** | 00 D24, 07 §4.3, 02 §4.7 | Source-side of the transparency contract; ships with inline markers. |
+| Spend-analytics dashboard (longitudinal by day/model/conversation; burn-down; export) | **P1** | 00 D27, 05 §6, 01 §4, 04 §6, 07 | Aggregates `message.cost_usd` + attribution; optional `usage_daily_rollup`; must label cumulative-meter vs surviving-message basis. Sibling of "Richer usage-credit UX". |
+| Value-aware model picker + "cheapest capable route" suggestion + saved comparisons | **P1** | 00 D27, 05 §5.4, 02 §4.2, 01 §4.3 | Consumes `provider_options` + auto-router; opt-in, never silent. |
+| Budget alerts + soft/hard cap + per-conversation cap | **P1** | 00 D27, 05 §5.4, 08 | Layered over the shipped hard gate; default behavior unchanged. |
+| Annual Pro + plan lifecycle (proration/pause/cancel/dunning) | **P1** | 00 D28, 05 §5.1, 04 §5.6 | Extends shipped Stripe Checkout/Portal/webhooks + `BillingEntitlement`; annual price configurable. |
+| Data-access activity log (incl. which provider processed which message) | **P1** | 00 D30, 07 §6.5, 04, 05 §7.4 | Read route + more event emits over the write-only `AuditEvent` trail; user-facing, distinct from enterprise audit. |
+| Model & data-policy directory (catalog + compare) | **P1** | 00 D30, 02 §5.4, 07, 06 | Registry-driven; no hardcoded model facts (SR-3). |
+| Granular retention + ephemeral/incognito chat (durable `expires_at` + scheduled purge) | **P1** | 00 D31, 05 §7.3, 04 §5.7, 02 FR-41 | Fixes opportunistic-only purge; per-conversation override + sensitive tagging. |
+| Transparent moderation + appeal | **P1** | 00 D30, 08 §5.6, 07 §7 | Surface why (category + source), never silent; request-review path; `SAFETY_BLOCKED` as-built. |
+| Platform incident & status transparency (public `/api/status` + degraded banner) | **P1** | 00 D30, 08 §10, 07 §5 | Derived from `Stream` telemetry; wires the `PROVIDER_ERROR` "Status link". |
+| Multi-format export (PDF/.docx) | **P1** | 00 D31, 07 §6.4, 01 §4.10 | Honors cost asymmetry (private retains cost; share-safe strips it). |
+| Custom assistants / personas (reusable model+prompt+tool bundle) | **P2** | 00 D23, 02 FR-21, 01 | Labeled default; served-badge supersedes the pinned label; gated on real-provider tool wiring. |
+| Artifacts / canvas (editable, versioned side-panel) | **P2** | 00 D23, 01 §4.12, 02 | Conversation-bound; builds on typed-parts (D7); not a doc-editor product. |
+| Code execution (sandboxed, HITL tool) | **P2** | 00 D23, 02 §4.6, 01 | Tool in the shipped agent loop; isolation / no-egress / bounded; gated on real-provider wiring. |
+| MCP **action** connectors (approval-gated) | **P2** | 00 D23, 02 §4.12/FR-22 | Action/tool only; no background automation; secrets via the BYOK crypto path. |
+| File/document RAG (chunk/embed/retrieve/cite; pgvector; BYO-embedding) | **P2** | 00 D25, 02 FR-29, 04 §5.3/§5.4/§6, 07 | Needs object storage + worker/queue + pgvector; FR-29 large-context bridge first. |
+| Retrieval privacy & index-control (manifest, per-corpus delete, no-train embeddings) | **P2** | 00 D25, 04 §5.7, 02 §6.2, 05 §7.3 | Ships WITH RAG; privacy precondition of indexing. |
+| Retrieval cost transparency (search-fee + embedding on the meter) | **P2** | 00 D25, 07 §4.1, 02 FR-2b/FR-36, 04 §6 | Rides RAG; the web-search-fee slice can land earlier with inline markers. |
+| Unified hands-free voice mode (STT→model→TTS, barge-in) | **P2** | 00 D22, 02, 03 | Served model + cost preserved in voice; turn-based v1 (no realtime infra). |
+| In-thread image generation (attribution + cost + provenance) | **P2** | 00 D22/D32, 02 FR-33, 04 §5.4, 07 §6.4 | Needs object storage; carries the content-marking obligation (D32). |
+| Cross-tool memory import (paste/upload → review → ledger) | **P2** | 00 D19, 01 §4.8, 04 §6 | Acquisition lever; review-before-save; format-tolerant; lands after core memory. |
+| Referral credit grants + giftable credit packs | **P2** | 00 D28, 05 §5.1/§6.2 | Idempotent `grant` ledger entries; anti-abuse is a launch requirement. |
+| Lightweight shared workspaces (shared credit pool + shared Projects + owner/member) | **P2** | 00 D29, 05 §3/§4.4, 04 §6 | Prosumer-only; **excludes SSO/SCIM/SOC2/audit/DPA/seats**; depends on Projects (D20). |
+| Content-marking / provenance (EU AI Act Art. 50(2)) | **P2 (legally gated)** | 00 D32, 05 §7.5, 07 §6.4, 08 | Designed-for now; built with image-gen AND after legal sign-off; date unsettled (`[VERIFY]`). |
+| Read-only data-source connectors (URL/Drive/Notion → citable corpus) | **P2\* (stretch)** | 00 D26, 02 §4.13, 04 §5.4 | Read-only/least-privilege; distinct from MCP action connectors; needs RAG + privacy panel first. |
 
 ---
 
@@ -160,6 +203,8 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 - **Metered Pro subscription:** all frontier models, **explicit metered caps with transparent USD credit overage** (not a flat "generous limits" plan — see §5.2 / the P0 metered-overage primitive in §4.3), the transparency dashboard (model used + token cost), and (P1) multi-model comparison. Pulling metering forward to P0 resolves the prior §5.1-vs-§5.2 flat-Pro-vs-hard-metering inconsistency and matches the 2026 credit-economy pivot (Copilot 6/1/26, Anthropic, Cursor — §5.2). Enforcement mechanism is owned by PRD 04; the monetization/roadmap decision is owned here.
 - **BYOK option:** user plugs in their own provider keys; **we add zero token markup**. Monetize via a small flat platform fee or bundle into Pro. Near-zero COGS revenue line that converts power users cheaply and **directly de-risks our biggest margin threat**. **Routing BYOK via OpenRouter is free for the first 1M BYOK requests/mo (then 5% of equivalent cost)** — materially lowers BYOK infra cost and supports the $0-markup promise. `[VERIFY]`.
 - **Usage credits:** the **minimal metered-overage / USD credit primitive is now P0** (so Pro's caps have transparent overage); **richer prepaid credit-pack UX (top-up flows, Poe-style packs) is P1** for occasional heavy users who don't subscribe.
+- **Subscription lifecycle + growth loops (feature-expansion §4.5 / D28):** complete the metered-Pro story with **annual Pro** + first-party **proration / pause / cancel / dunning** (P1), and add **referral credit grants + giftable credit packs** as idempotent entries on the same USD ledger (P2; anti-abuse a launch requirement). Both extend the shipped Stripe + credit spine — no new money primitive; the annual price feeds the §9.1 open band. **Lightweight prosumer shared workspaces** (P2 / D29) pool credits on the same primitive — explicitly **NOT enterprise** (no SSO/SCIM/SOC2/per-seat; BYOK stays personal).
+- **Longitudinal cost transparency (P1 / D27):** a user-facing **spend-analytics dashboard** (spend by day/model/conversation, budget burn-down, BYOK-savings split, CSV/JSON export) is the natural extension of the per-message transparency wedge to a retention/activation surface — over already-captured cost+attribution, no new money primitive.
 - **Defer:** ads (a **trust liability we decline even as OpenAI leans in** — §2.2) and enterprise seats (P2; long cycle/compliance).
 
 *Implementation status: shipped behind default-off `BILLING_BACKEND` (`stripe`/`fake`) — Stripe Checkout (`pro_subscription` + `credit_purchase`), Billing Portal, signature-verified idempotent webhooks granting USD credits / Pro entitlements, and a `usage_credit_ledger` (grant/platform_debit/adjustment) read by the budget gate (`api/app/routes/billing.py`). The "richer prepaid credit-pack UX" remains the P1 layer.*
@@ -198,6 +243,7 @@ Legend: **P0** = MVP / must-have to be credible · **P1** = fast-follow · **P2*
 2. **Daily/rolling message + token caps** with clear in-UI remaining-quota display (doubles as transparency). `[VERIFY]` exact caps via cost modeling against single-digit conversion.
 3. **Routing-by-default:** classify easy queries to the cheapest capable model; escalate only on explicit user choice or detected complexity.
 4. **Reasoning/thinking gated:** thinking tokens bill as output — gate behind a tier/toggle and meter visibly.
+5. **Value-aware selection + proactive guardrails (feature-expansion §4.5 / D27):** surface comparable price/latency/quality in the picker and an **opt-in "cheapest capable route"** suggestion (reuses the existing Auto-router classification — no second routing brain; never silently switches, per §7/no-silent-downgrade), plus **budget threshold / soft-cap / per-conversation-cap alerts** layered over the shipped hard gate (default behavior unchanged). Turns routing-as-margin-lever into a user-facing cost-savings tool and warns *before* the wall, not just at it.
 5. **Multimodal gated:** vision/file/voice carry 5–10x infra impact — meter and gate (P1+).
 6. **Guest rate-limiting:** cap anonymous traffic to control spend before account creation.
 
@@ -237,6 +283,10 @@ Instrument **first** for AI-native economics and retention: (1) Day-1 success / 
 - **Model-comparison usage** (validates multi-model positioning).
 - **Accessibility / i18n usage by locale** (validates a11y + localization investment; localization can affect up to ~30% of retention in multilingual platforms `[VERIFY]`).
 - **BYOK adoption rate** (margin de-risking) and credit-pack purchase behavior.
+- **Spend-dashboard engagement** (opened usage insights; D27) — a first-week activation + retention signal — plus **budget-alert engagement** (threshold opt-in, soft-cap acknowledgements).
+- **Annual-plan mix + ARPU lift** and **dunning recovery rate** (D28); **referral viral coefficient** (invites → qualified signups) + **gift-credit redemption**.
+- **Grounded-answer citation rate** (inline `[n]` resolution; D24) and **memory adoption** (opt-in rate, facts/user; D19).
+- **Trust-surface engagement** (activity-log / model-directory views, route-switch-after-provenance; D30) and **STT/TTS usage** (D22).
 
 ### 6.3 Instrumentation notes
 - Capture **model used + token cost per message** server-side from day one (also powers the user-facing transparency surface).
@@ -274,6 +324,8 @@ A **stated differentiation lever**: leaders have measured gaps (unlabeled icon b
 - **[MVP]** **One-click export & delete.**
 - **[MVP]** **Optional no-telemetry mode** (Mistral-style differentiation).
 - **[MVP]** GDPR essentials for EU users: consent, access, deletion, data minimization.
+- **[P1]** (feature-expansion §4.5 / **D19, D31**) Opt-in **long-term memory** as a user-visible, editable, per-fact-attributed store (off by default), complete in export/erase and excluded from temporary chats; **per-conversation retention overrides + ephemeral/incognito chat + a scheduled purge** make retention actually enforced (not merely opportunistic on active users) and controllable per thread.
+- **[P2]** (**D25**) **RAG indexing privacy** — a per-corpus index manifest (what's indexed, where embeddings live, retention, no-train embedding route), per-document/corpus delete with cross-store fan-out, and explicit indexing consent; shipped *with* retrieval, not after.
 - **[Later]** Contractual no-train guarantees for Team/Enterprise; data residency options; DPA availability.
 - *Context (narrow scope):* a **2026 SDNY district-court opinion (Rakoff, Feb 2026)** held that some AI-chat documents are **not attorney-client privileged** (not binding federal precedent), and a separate discovery order (Stein, Jan 2026) compelled OpenAI to produce a 20M-log sample with no user notice. `[VERIFY]` This strengthens the case for an explicit, user-controlled privacy posture — but the marketing claim must be **"we minimise what exists to be compelled (short retention, no-train, delete)," NOT "your chats are confidential/privileged."** We'd be subject to the same discovery.
 - *Right-sizing the claim:* incumbents now match no-train **at enterprise/team tiers** (OpenAI + Anthropic) and offer temporary-chat modes; Mistral owns the EU-sovereign niche. Our consumer/prosumer no-train-by-default is still ahead of *consumer* defaults but is **not unique** — position privacy as **"least-data-retained + EU-friendly + transparent,"** a prosumer/EU play, not a mass-consumer "confidential" promise.
@@ -284,6 +336,7 @@ A **stated differentiation lever**: leaders have measured gaps (unlabeled icon b
 - **[MVP]** **BYOK guest gate:** key storage only for **non-anonymous** accounts; guests must complete account link before keys are accepted (PRD 04).
 - **[MVP]** **Surface model used + token cost** on every response; **never silently downgrade** the model (Perplexity's mistake) — the trust surface is a product feature, not just a setting.
 - **[MVP]** Baseline abuse monitoring + an abuse-reporting path.
+- **[P1]** (feature-expansion §4.5 / **D30**) **User-facing trust surfaces:** a data-access **activity log** (logins, exports, deletions, BYOK-key use, and *which provider processed which message*), a **model/data-policy directory**, **transparent moderation** (surface the why — category + source; never a silent block or silent edit; request-review path), and **incident/status transparency** (public `/api/status` + degraded-provider banner). These are prosumer trust surfaces — explicitly distinct from the **[Later]** enterprise audit/SOC 2 console below.
 - **[Later]** SSO/SAML, audit logs, SOC 2 path, DPA (Team/Enterprise, P2).
 
 ### 7.5 Content moderation, US state law & EU AI Act compliance

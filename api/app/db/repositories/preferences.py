@@ -40,6 +40,7 @@ _DEFAULTS = UserPreferences(
     custom_instructions="",
     retention_days=None,
     monthly_budget_usd=None,
+    per_conversation_budget_usd=None,
 )
 
 
@@ -60,6 +61,7 @@ def _row_to_schema(row: Preferences) -> UserPreferences:
         custom_instructions=row.custom_instructions or "",
         retention_days=retention_days,
         monthly_budget_usd=row.monthly_budget_usd,
+        per_conversation_budget_usd=row.per_conversation_budget_usd,
     )
 
 
@@ -93,6 +95,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
                 custom_instructions=prefs.custom_instructions,
                 retention_days=prefs.retention_days,
                 monthly_budget_usd=prefs.monthly_budget_usd,
+                per_conversation_budget_usd=prefs.per_conversation_budget_usd,
             )
         )
     else:
@@ -105,6 +108,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
         row.custom_instructions = prefs.custom_instructions
         row.retention_days = prefs.retention_days
         row.monthly_budget_usd = prefs.monthly_budget_usd
+        row.per_conversation_budget_usd = prefs.per_conversation_budget_usd
         # `updated_at` has no onupdate hook; touch it explicitly so the column
         # reflects the actual mutation time.
         row.updated_at = datetime.now(UTC)

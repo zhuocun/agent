@@ -20,6 +20,7 @@ import {
   getUsagePresentation,
   UsageMeter,
 } from "@/components/chat/usage-meter";
+import { SpendDialog } from "@/components/chat/spend-dialog";
 import { MODEL_TIERS } from "@/lib/model-tiers";
 import {
   createBillingCheckout,
@@ -259,14 +260,88 @@ function BudgetEditor({
   );
 }
 
+// Per-conversation spend-cap editor (PRD 05 §4.5 D27). Mirrors `BudgetEditor`
+// but writes the `perConversationBudgetUsd` preference: the BE refuses the next
+// platform-key turn once a single conversation's accumulated cost reaches it.
+function PerConversationBudgetEditor({
+  value,
+  onSave,
+}: {
+  value: number | null;
+  onSave: (value: number | null) => void;
+}): JSX.Element {
+  const inputId = useId();
+  const [draft, setDraft] = useState<string>(
+    value != null ? String(value) : "",
+  );
+
+  function save(): void {
+    const trimmed = draft.trim();
+    if (trimmed === "") {
+      onSave(null);
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    onSave(parsed);
+  }
+
+  return (
+    <div className="space-y-1.5 border-t border-border/50 pt-2">
+      <label htmlFor={inputId} className="text-xs font-medium">
+        Per-conversation cap
+      </label>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-xs text-muted-foreground"
+          >
+            $
+          </span>
+          <input
+            id={inputId}
+            type="number"
+            inputMode="decimal"
+            min={0}
+            step="0.01"
+            value={draft}
+            placeholder="No cap"
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            data-testid="conversation-cap-input"
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-sm tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+          />
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={save}
+          data-testid="conversation-cap-save"
+        >
+          Save
+        </Button>
+      </div>
+      <p className="text-xs leading-snug text-muted-foreground">
+        Pause platform-key turns in any single chat once its spend reaches this
+        cap. Leave empty for no per-conversation cap.
+      </p>
+    </div>
+  );
+}
+
 function UsageDetails({
   usage,
   anonymous,
   onSaveBudget,
+  perConversationBudgetUsd,
+  onSavePerConversationBudget,
 }: {
   usage: UsageBudget;
   anonymous: boolean;
   onSaveBudget: (value: number | null) => void;
+  perConversationBudgetUsd: number | null;
+  onSavePerConversationBudget: (value: number | null) => void;
 }): JSX.Element {
   if (usage.isByok) {
     return (
@@ -291,6 +366,9 @@ function UsageDetails({
                 {formatUsd(usage.creditBalanceUsd)}
               </span>
             </p>
+            <div className="pt-1">
+              <SpendDialog />
+            </div>
           </div>
         </div>
       </div>
@@ -405,6 +483,13 @@ function UsageDetails({
         </div>
       ) : null}
       <BudgetEditor usage={usage} onSaveBudget={onSaveBudget} />
+      <PerConversationBudgetEditor
+        value={perConversationBudgetUsd}
+        onSave={onSavePerConversationBudget}
+      />
+      <div className="border-t border-border/50 pt-3">
+        <SpendDialog />
+      </div>
     </div>
   );
 }
@@ -544,6 +629,12 @@ export function SettingsDialog({
               usage={usage}
               anonymous={anonymous}
               onSaveBudget={onSaveBudget}
+              perConversationBudgetUsd={preferences.perConversationBudgetUsd}
+              onSavePerConversationBudget={(value) =>
+                onPreferencesChange(
+                  mergePreferenceDraft({ perConversationBudgetUsd: value }),
+                )
+              }
             />
 
             <div className="flex flex-wrap gap-2">

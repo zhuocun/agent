@@ -77,6 +77,49 @@ class UsageBudget(CamelModel):
     recent_ledger_entries: list[UsageLedgerEntry] = Field(default_factory=list)
 
 
+class SpendDayBucket(CamelModel):
+    date: str  # "YYYY-MM-DD" (UTC day)
+    cost_usd: float
+    message_count: int
+
+
+class SpendModelBucket(CamelModel):
+    label: str
+    tier_id: str | None = None
+    provider_id: str | None = None
+    cost_usd: float
+    message_count: int
+
+
+class SpendConversationBucket(CamelModel):
+    conversation_id: str
+    title: str
+    cost_usd: float
+    message_count: int
+
+
+class SpendAnalytics(CamelModel):
+    """Longitudinal spend analytics for the caller (PRD 05 §4.5 D27).
+
+    Two cost bases are surfaced HONESTLY because they legitimately differ
+    (see `app/db/repositories/usage.py` module docstring):
+
+    - `cumulative_meter_usd`: `sum(usage_rollup.cost_usd)` over the periods
+      intersecting the range — every generation triggered, including
+      regenerated/edited turns whose assistant messages were later deleted.
+    - `surviving_messages_usd`: `sum(message.cost_usd)` over the caller's
+      assistant messages STILL in their threads within the range.
+    """
+
+    range_days: int
+    currency: Literal["USD"] = "USD"
+    surviving_messages_usd: float
+    cumulative_meter_usd: float
+    daily: list[SpendDayBucket] = Field(default_factory=list)
+    by_model: list[SpendModelBucket] = Field(default_factory=list)
+    by_conversation: list[SpendConversationBucket] = Field(default_factory=list)
+
+
 class AccountExportMetadata(CamelModel):
     id: str
     created_at: str

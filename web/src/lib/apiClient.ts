@@ -20,6 +20,8 @@ import type {
   ModelTierId,
   ModerationAppealRequest,
   PlatformStatus,
+  Project,
+  ProjectSummary,
   PromptSuggestion,
   PublicConversation,
   ShareLinkResponse,
@@ -37,6 +39,9 @@ export interface BootstrapResponse {
   modelTiers: ModelTier[];
   suggestions: PromptSuggestion[];
   conversations: ConversationSummary[];
+  // Projects/Spaces (D20). May be absent on a stale BE; the FE treats a missing
+  // value as an empty list.
+  projects?: ProjectSummary[];
 }
 
 export type BillingCheckoutKind = "pro_subscription" | "credit_purchase";
@@ -51,6 +56,7 @@ export interface AccountExportResponse {
   usage: UsageBudget;
   conversations: Conversation[];
   memoryFacts?: MemoryFact[];
+  projects?: Project[];
   exportedAt: string;
 }
 
@@ -298,6 +304,9 @@ export function createConversation(
     selectedTierId: ModelTierId;
     isTemporary?: boolean;
     providerId?: string;
+    // Project/Space to file the new conversation under (D20). When the project
+    // has a `defaultTierId`, the BE pre-seeds the conversation's tier from it.
+    projectId?: string;
   },
   signal?: AbortSignal,
 ): Promise<Conversation> {
@@ -318,10 +327,15 @@ export function branchConversation(
 
 export function patchConversation(
   id: string,
-  // `retentionDays` is THREE-VALUED to match the BE (D31): omit the key to
-  // leave it unchanged, send a number to set the per-conversation override, or
-  // send `null` to clear it (inherit the global retention).
-  body: { title?: string; pinned?: boolean; retentionDays?: number | null },
+  // `retentionDays` and `projectId` are THREE-VALUED to match the BE
+  // (D31/D20): omit the key to leave it unchanged, send a value to set it, or
+  // send `null` to clear it (retention -> inherit global; project -> un-file).
+  body: {
+    title?: string;
+    pinned?: boolean;
+    retentionDays?: number | null;
+    projectId?: string | null;
+  },
   signal?: AbortSignal,
 ): Promise<Conversation> {
   return apiClient.patch<Conversation>(
@@ -560,6 +574,59 @@ export function deleteMemoryFact(
   signal?: AbortSignal,
 ): Promise<void> {
   return apiClient.del(`/api/account/memory/${encodeURIComponent(id)}`, signal);
+}
+
+// --- Projects/Spaces (D20) --------------------------------------------------
+//
+// Thin scoping containers for conversations. All caller-scoped +
+// anonymous-allowed; each mutation emits a `project.*` audit event on the BE.
+// The four settings on create/patch are OPTIONAL; on PATCH they are
+// THREE-VALUED (omit = unchanged, value = set, `null` = clear back to inherit).
+
+export interface ProjectCreateInput {
+  name: string;
+  customInstructions?: string | null;
+  defaultTierId?: ModelTierId | null;
+  retentionDays?: number | null;
+  perConversationBudgetUsd?: number | null;
+}
+
+export interface ProjectUpdateInput {
+  name?: string;
+  customInstructions?: string | null;
+  defaultTierId?: ModelTierId | null;
+  retentionDays?: number | null;
+  perConversationBudgetUsd?: number | null;
+}
+
+export function fetchProjects(signal?: AbortSignal): Promise<Project[]> {
+  return apiClient.get<Project[]>("/api/projects", signal);
+}
+
+export function createProject(
+  body: ProjectCreateInput,
+  signal?: AbortSignal,
+): Promise<Project> {
+  return apiClient.post<Project>("/api/projects", body, signal);
+}
+
+export function updateProject(
+  id: string,
+  body: ProjectUpdateInput,
+  signal?: AbortSignal,
+): Promise<Project> {
+  return apiClient.patch<Project>(
+    `/api/projects/${encodeURIComponent(id)}`,
+    body,
+    signal,
+  );
+}
+
+export function deleteProject(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.del(`/api/projects/${encodeURIComponent(id)}`, signal);
 }
 
 // The model & data-policy directory: every provider route in the registry with

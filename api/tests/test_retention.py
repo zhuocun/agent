@@ -500,6 +500,51 @@ async def test_fleet_sweep_project_retention_is_cross_user_isolated(
     _ = a_expired
 
 
+async def test_fleet_sweep_uses_each_conversations_own_project_retention(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """CROSS-USER SAFETY (stronger): when BOTH users own projects, the fleet-wide
+    sweep must resolve each conversation's retention from ITS OWN project — never
+    a different user's. User A owns a SHORT (7d) project; User B owns a LONG
+    (3650d) project; both conversations are 30 days old. A's must purge (its own
+    7d window expired) and B's must survive (its own 3650d window), proving the
+    LEFT JOIN keys strictly on `conversation.project_id == project.id` and can
+    never borrow A's short window for B's row.
+    """
+    user_a = await _seed_user(session_factory, global_retention_days=None)
+    user_b = await _seed_user(session_factory, global_retention_days=None)
+
+    project_a = await _seed_project(
+        session_factory, user_id=user_a, retention_days=7
+    )
+    project_b = await _seed_project(
+        session_factory, user_id=user_b, retention_days=3650
+    )
+    # A's conversation under A's 7-day project, 30 days old => expired.
+    a_expired = await _seed_conversation(
+        session_factory,
+        user_id=user_a,
+        updated_age=timedelta(days=30),
+        project_id=project_a,
+    )
+    # B's conversation under B's 3650-day project, 30 days old => must KEEP.
+    b_kept = await _seed_conversation(
+        session_factory,
+        user_id=user_b,
+        updated_age=timedelta(days=30),
+        project_id=project_b,
+    )
+
+    async with session_factory() as session:
+        purged = await conversations_repo.delete_expired_all_users(session)
+        await session.commit()
+
+    # A's expired under its own short window; B's retained under its own long one.
+    assert purged == 1
+    assert await _conversation_ids(session_factory) == {b_kept}
+    _ = a_expired
+
+
 async def test_sweep_emits_no_audit_when_nothing_purged(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

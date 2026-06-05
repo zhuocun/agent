@@ -35,6 +35,7 @@ from app.config import Settings, get_settings
 from app.db.models import Message, User
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import api_keys as api_keys_repo
+from app.db.repositories import audit_events as audit_events_repo
 from app.db.repositories import billing as billing_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import messages as messages_repo
@@ -479,6 +480,36 @@ def _safety_blocked(decision: SafetyDecision) -> AppError:
         ),
         status.HTTP_400_BAD_REQUEST,
     )
+
+
+async def _record_moderation_blocked(
+    db: AsyncSession,
+    *,
+    user: User,
+    decision: SafetyDecision,
+    conversation_id: UUID,
+) -> None:
+    """Persist a `moderation.blocked` audit event for a blocked turn.
+
+    Uses an INDEPENDENT session (mirroring the `budget.exceeded` analytics
+    write) so the record survives the request rollback that the subsequent
+    `_safety_blocked` AppError triggers, while staying bound to the same engine
+    as `db` (so tests observe it on their per-test SQLite file). Content-free:
+    only the reason code, source, and conversation id are stored.
+    """
+    details: dict[str, str] = {"conversationId": str(conversation_id)}
+    if decision.reason_code:
+        details["reasonCode"] = decision.reason_code
+    if decision.source:
+        details["source"] = decision.source
+    async with _derive_session_factory(db)() as event_db:
+        await audit_events_repo.record(
+            event_db,
+            user_id=user.id,
+            event_type="moderation.blocked",
+            details=details,
+        )
+        await event_db.commit()
 
 
 def _request_fingerprint(
@@ -1004,6 +1035,12 @@ async def create_share_link(
     token = await conversations_repo.mint_share_token(db, conversation_id, user.id)
     if token is None:
         raise not_found("conversation")
+    await audit_events_repo.record(
+        db,
+        user_id=user.id,
+        event_type="share.mint",
+        details={"conversationId": str(conversation_id)},
+    )
     return ShareLinkResponse(share_token=token, share_path=f"/share/{token}")
 
 
@@ -1025,6 +1062,12 @@ async def delete_share_link(
     revoked = await conversations_repo.revoke_share_token(db, conversation_id, user.id)
     if not revoked:
         raise not_found("conversation")
+    await audit_events_repo.record(
+        db,
+        user_id=user.id,
+        event_type="share.revoke",
+        details={"conversationId": str(conversation_id)},
+    )
     return None
 
 
@@ -1423,6 +1466,9 @@ async def send_message(
             custom_instructions=user_prefs.custom_instructions,
         )
         if not safety_decision.allowed:
+            await _record_moderation_blocked(
+                db, user=user, decision=safety_decision, conversation_id=conversation_id
+            )
             raise _safety_blocked(safety_decision)
     elif (body.regenerate or body.continue_turn or body.tool_approval is not None) and not is_temp:
         # Regenerate / continue / toolApproval all re-stream against the persisted
@@ -1438,6 +1484,9 @@ async def send_message(
                 custom_instructions=user_prefs.custom_instructions,
             )
             if not safety_decision.allowed:
+                await _record_moderation_blocked(
+                    db, user=user, decision=safety_decision, conversation_id=conversation_id
+                )
                 raise _safety_blocked(safety_decision)
 
     provider = build_provider(
@@ -1522,6 +1571,7 @@ async def send_message(
             resume_seed,
         ) = await _prepare_resume_tool(
             db=db,
+            user=user,
             conversation_id=conversation_id,
             decision=body.tool_approval,
             settings=settings,
@@ -2140,6 +2190,7 @@ def _find_pending_tool_call(
 async def _prepare_resume_tool(
     *,
     db: AsyncSession,
+    user: User,
     conversation_id: UUID,
     decision: ToolApprovalDecision,
     settings: Settings,
@@ -2215,6 +2266,9 @@ async def _prepare_resume_tool(
                 custom_instructions=custom_instructions,
             )
             if not safety_decision.allowed:
+                await _record_moderation_blocked(
+                    db, user=user, decision=safety_decision, conversation_id=conversation_id
+                )
                 raise _safety_blocked(safety_decision)
 
     # Link to the SAME user message the paused turn answered (fallback to the

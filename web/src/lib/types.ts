@@ -453,6 +453,87 @@ export interface PublicConversation {
   messages: PublicMessage[];
 }
 
+// --- Trust surfaces (PRD 07 §6.5 / PRD 05 §7.4 / PRD 08 §5.6) ----------------
+//
+// The data-access activity log, the per-message processing-provenance rollup,
+// and the moderation-appeal capture. Mirror api/app/schemas/activity.py. None
+// of these carry message content — only event-relevant ids/labels and counts.
+
+// One row of the data-access activity log (an audit-event projection). `details`
+// is an opaque, content-free bag of event-relevant ids/labels (e.g. provider,
+// conversationId, reasonCode) keyed per `eventType`.
+export interface ActivityEvent {
+  id: string;
+  eventType: string;
+  details: Record<string, unknown>;
+  createdAt: string; // ISO
+}
+
+// One provider's slice of "where your messages were processed". `jurisdiction`
+// is read from the LIVE provider registry (data residency); `null` means the
+// provider has no published policy ("policy unavailable").
+export interface DataProcessingBucket {
+  providerId: string;
+  providerLabel: string;
+  jurisdiction: string | null;
+  messageCount: number;
+  isByokCount: number;
+  platformCount: number;
+  substitutionCount: number;
+}
+
+export interface DataProcessingRollup {
+  totalAttributed: number;
+  byProvider: DataProcessingBucket[];
+}
+
+// Request-review capture for a blocked turn. All fields optional — the FE
+// forwards whatever the error envelope carried plus an optional free-text note.
+export interface ModerationAppealRequest {
+  reasonCode?: string;
+  source?: string;
+  note?: string;
+}
+
+// --- Model & data-policy directory (PRD 05 §4.5 / PRD 07 §5) -----------------
+//
+// A browsable catalog of every provider route in the registry plus its tiers'
+// capabilities + list prices, so a user can compare data policies and pricing.
+// Mirrors api/app/schemas/directory.py. A route with `dataPolicy: null` has no
+// published policy and the UI renders "policy unavailable" — never a guess.
+
+export interface ModelDirectoryTier {
+  tierId: ModelTierId;
+  modelLabel: string;
+  listPriceInPerM: number;
+  listPriceOutPerM: number;
+  supportsWebSearch: boolean;
+  supportsAttachments: boolean;
+  supportsVision: boolean;
+}
+
+export interface ModelDirectoryEntry {
+  providerId: string;
+  label: string;
+  status: ProviderRouteStatus;
+  defaultRouteEligible: boolean;
+  dataPolicy: ProviderDataPolicy | null;
+  tiers: ModelDirectoryTier[];
+}
+
+// --- Public platform status (PRD 08 §10) ------------------------------------
+//
+// The calm health verdict behind the /status page + degraded banner. Derived
+// server-side from recent Stream telemetry; carries no user/conversation
+// content. Mirrors api/app/schemas/status.py.
+export interface PlatformStatus {
+  status: "operational" | "degraded";
+  windowSeconds: number;
+  sampleSize: number;
+  errorCount: number;
+  updatedAt: string; // ISO
+}
+
 // Minting a share token for a conversation returns a RELATIVE path only; the
 // FE assembles the absolute URL from its own origin (the BE never knows the
 // public origin). Re-minting an already-shared conversation is idempotent and

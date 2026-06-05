@@ -178,6 +178,16 @@ class Settings(BaseSettings):
     # First-party telemetry endpoint. Payload validation keeps events small and
     # content-free; this bounds accidental frontend loops.
     rate_limit_analytics: str = Field(default="60/minute", alias="RATE_LIMIT_ANALYTICS")
+    # Trust-surface reads (activity log, data-processing rollup). Anonymous-
+    # allowed and aggregate over the caller's own rows; bound abusive polling.
+    rate_limit_trust_read: str = Field(
+        default="60/minute", alias="RATE_LIMIT_TRUST_READ"
+    )
+    # Moderation-appeal capture: anonymous-allowed WRITE (inserts an audit row),
+    # so it gets the tightest bound on this surface.
+    rate_limit_moderation_appeal: str = Field(
+        default="10/minute", alias="RATE_LIMIT_MODERATION_APPEAL"
+    )
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the
@@ -321,6 +331,16 @@ class Settings(BaseSettings):
     # Per-tool execution timeout (seconds). A tool whose executor exceeds this is
     # cancelled and reported as a failed result rather than hanging the turn.
     tool_timeout_seconds: float = Field(default=10.0, alias="TOOL_TIMEOUT_SECONDS")
+
+    # Public platform-status derivation (PRD 08 §10). The `/api/status` route
+    # derives platform health from recent `Stream` telemetry with one COUNT
+    # query: it reports `degraded` only when the recent window holds a MEANINGFUL
+    # sample (>= `status_min_sample` streams) AND the error ratio EXCEEDS
+    # `status_error_ratio`; otherwise `operational`. Defaults are deliberately
+    # conservative so a couple of stray errors never trips the public banner.
+    status_window_seconds: int = Field(default=900, alias="STATUS_WINDOW_SECONDS")
+    status_min_sample: int = Field(default=5, alias="STATUS_MIN_SAMPLE")
+    status_error_ratio: float = Field(default=0.5, alias="STATUS_ERROR_RATIO")
 
     @property
     def deepseek_key(self) -> str | None:

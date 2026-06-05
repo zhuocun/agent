@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
+import Link from "next/link";
+import { Activity, AlertTriangle, Loader2, RotateCcw } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import { SourcesPanel } from "@/components/chat/sources-panel";
@@ -16,7 +17,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import type { ApiError } from "@/lib/apiClient";
+import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
 import { cn } from "@/lib/utils";
 import type {
   ChatMessage,
@@ -70,6 +71,41 @@ interface AssistantMessageProps {
 // disclosure. Short bodies sit inline next to the chip; longer bodies (full
 // sentences, links, etc.) would dominate the message footer otherwise.
 const ERROR_BODY_INLINE_MAX = 80;
+
+// Calm, non-judgmental language for a SAFETY_BLOCKED turn. The BE envelope's
+// `meta.source` says WHICH input tripped the rule; `meta.reasonCode` is the
+// category. Never a silent/generic block — we always say the why.
+function safetySourceLabel(source?: string): string {
+  switch (source) {
+    case "message":
+      return "your message";
+    case "attachment":
+      return "an attachment";
+    case "custom_instructions":
+      return "your custom instructions";
+    default:
+      return "your input";
+  }
+}
+
+function safetyReasonLabel(reasonCode?: string): string {
+  switch (reasonCode) {
+    case "configured_blocklist":
+      return "matched a content safety rule";
+    default:
+      return reasonCode
+        ? `matched a safety rule (${reasonCode})`
+        : "matched a safety rule";
+  }
+}
+
+function metaString(
+  meta: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = meta?.[key];
+  return typeof value === "string" ? value : undefined;
+}
 
 export function AssistantMessage({
   message,
@@ -279,6 +315,33 @@ function ErrorFooter({
 
   const retryDisabled = secondsLeft > 0;
 
+  // SAFETY_BLOCKED: surface the WHY (category + which input) in calm language
+  // and offer a request-review action. Mapped from the error envelope's meta.
+  const isSafetyBlocked = error?.code === "SAFETY_BLOCKED";
+  // PROVIDER_UPSTREAM is a platform/provider-side failure, so offer a quiet
+  // link to the public status page where the user can see if it's a known
+  // incident (PRD 08 §10). Calm, non-blocking — sits beside Retry.
+  const isProviderError = error?.code === "PROVIDER_UPSTREAM";
+  const safetyReasonCode = metaString(error?.meta, "reasonCode");
+  const safetySource = metaString(error?.meta, "source");
+  const [appealStatus, setAppealStatus] = useState<
+    "idle" | "pending" | "done" | "error"
+  >("idle");
+
+  const requestReview = async (): Promise<void> => {
+    if (appealStatus === "pending" || appealStatus === "done") return;
+    setAppealStatus("pending");
+    try {
+      await postModerationAppeal({
+        reasonCode: safetyReasonCode,
+        source: safetySource,
+      });
+      setAppealStatus("done");
+    } catch {
+      setAppealStatus("error");
+    }
+  };
+
   return (
     <div className="space-y-2 pt-1" data-testid="assistant-error">
       <div className="flex flex-wrap items-center gap-2">
@@ -314,7 +377,60 @@ function ErrorFooter({
             </span>
           </Button>
         ) : null}
+        {isProviderError ? (
+          <Button
+            nativeButton={false}
+            render={<Link href="/status" />}
+            variant="ghost"
+            size="sm"
+            className="rounded-full"
+            data-testid="assistant-error-status"
+          >
+            <Activity aria-hidden />
+            <span>Check status</span>
+          </Button>
+        ) : null}
       </div>
+      {isSafetyBlocked ? (
+        <div
+          className="space-y-2 rounded-xl border border-warning-foreground/20 bg-warning/40 px-3 py-2"
+          data-testid="safety-blocked-detail"
+        >
+          <p className="text-xs leading-snug text-warning-foreground">
+            We couldn&apos;t send this because {safetySourceLabel(safetySource)}{" "}
+            {safetyReasonLabel(safetyReasonCode)}. You can edit and try again, or
+            ask us to review this decision.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {appealStatus === "done" ? (
+              <p
+                role="status"
+                className="text-xs text-muted-foreground"
+                data-testid="safety-appeal-confirmation"
+              >
+                Thanks — we&apos;ll review this block.
+              </p>
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => void requestReview()}
+                disabled={appealStatus === "pending"}
+                className="rounded-full"
+                data-testid="safety-request-review"
+              >
+                {appealStatus === "pending" ? "Sending…" : "Request review"}
+              </Button>
+            )}
+            {appealStatus === "error" ? (
+              <p role="alert" className="text-xs text-destructive">
+                Couldn&apos;t send your request. Please try again.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {hasLongBody ? (
         <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
           <CollapsibleTrigger

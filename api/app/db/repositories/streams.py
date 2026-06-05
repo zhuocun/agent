@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, select, update
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -147,6 +147,37 @@ async def reap_stale_active(
     # `CursorResult` at runtime (the only kind that carries `rowcount`); cast so
     # the attribute is typed without laundering through `Any`.
     return cast("CursorResult[Any]", result).rowcount
+
+
+async def recent_health(
+    db: AsyncSession,
+    *,
+    window_seconds: int,
+) -> dict[str, int]:
+    """Return stream-lifecycle counts within a recent window (PRD 08 §10).
+
+    Cheap, platform-level health signal for the public `/api/status` route:
+    ONE grouped COUNT over `stream` rows created within `window_seconds`,
+    returning `{total, errors, active}`. `Stream` has no provider column, so
+    this is intentionally PLATFORM-LEVEL telemetry, never per-provider.
+
+    Dialect-safe (Postgres prod + SQLite tests): the cutoff is computed in
+    Python and bound as a parameter, and the aggregation is a plain
+    `GROUP BY status` rather than a dialect-specific `FILTER`/`CASE`.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+    stmt = (
+        select(Stream.status, func.count())
+        .where(Stream.created_at >= cutoff)
+        .group_by(Stream.status)
+    )
+    rows = (await db.execute(stmt)).all()
+    by_status = {status: int(count) for status, count in rows}
+    return {
+        "total": sum(by_status.values()),
+        "errors": by_status.get("error", 0),
+        "active": by_status.get("active", 0),
+    }
 
 
 async def get_by_id(

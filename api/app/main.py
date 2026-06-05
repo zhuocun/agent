@@ -37,14 +37,17 @@ from app.middleware.ratelimit import RateLimitMiddleware, limiter
 from app.middleware.request_id import RequestIDMiddleware
 from app.observability import init_sentry, instrument_fastapi
 from app.routes.account import router as account_router
+from app.routes.account_activity import router as account_activity_router
 from app.routes.account_data import router as account_data_router
 from app.routes.analytics import router as analytics_router
 from app.routes.billing import router as billing_router
 from app.routes.bootstrap import router as bootstrap_router
 from app.routes.conversations import router as conversations_router
 from app.routes.feedback import router as feedback_router
+from app.routes.models import router as models_router
 from app.routes.preferences import router as preferences_router
 from app.routes.share import router as share_router
+from app.routes.status import router as status_router
 from app.streaming.handler import cancel_all_producers
 from app.streaming.reaper import reap_once, run_reaper_loop
 from app.streaming.state import close_stream_state, configure_stream_state
@@ -193,12 +196,18 @@ def create_app() -> FastAPI:
     app.include_router(preferences_router)
     app.include_router(account_router)
     app.include_router(account_data_router)
+    app.include_router(account_activity_router)
     app.include_router(analytics_router)
     app.include_router(billing_router)
     app.include_router(auth_router)
+    # Model & data-policy directory (anonymous-allowed, registry-derived).
+    app.include_router(models_router)
     # Public-by-link share read. Distinct prefix (/api/share), NO current_user
-    # dependency — it's the one unauthenticated read in the API.
+    # dependency — it's one of the two unauthenticated reads in the API.
     app.include_router(share_router)
+    # Public platform status. NO current_user dependency — the second
+    # unauthenticated read, used by the public status page + degraded banner.
+    app.include_router(status_router)
 
     @app.get("/healthz", tags=["meta"])
     async def healthz() -> dict[str, str]:

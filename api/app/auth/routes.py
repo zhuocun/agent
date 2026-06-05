@@ -48,7 +48,7 @@ from app.auth.dependency import current_session, current_user
 from app.config import Settings, get_settings
 from app.db.models import Session as DbSession
 from app.db.models import User
-from app.db.repositories import users
+from app.db.repositories import audit_events, users
 from app.db.session import get_db
 from app.errors import AppError, ErrorEnvelope
 from app.middleware.ratelimit import limiter
@@ -339,6 +339,8 @@ async def upgrade(
         raise _email_taken() from exc
     await db.refresh(user)
 
+    await audit_events.record(db, user_id=user.id, event_type="auth.upgrade")
+
     # Re-sign + re-set the cookie after the upgrade succeeded. Documented in
     # the route docstring: defensive against signature drift / key rotation.
     if session is not None:
@@ -435,6 +437,8 @@ async def login(
         # Already this user (re-login). Refresh the cookie window defensively.
         _resign_session_cookie(response, settings, session)
 
+    await audit_events.record(db, user_id=target.id, event_type="auth.login")
+
     # Login mutates/deletes rows; commit explicitly (mirrors `signout`) rather
     # than relying solely on the request dependency's end-of-request commit.
     await db.commit()
@@ -455,6 +459,9 @@ async def signout(
 ) -> None:
     """Clear the cookie and revoke the current session row."""
     if session is not None:
+        await audit_events.record(
+            db, user_id=session.user_id, event_type="auth.signout"
+        )
         await db.execute(delete(DbSession).where(DbSession.id == session.id))
         await db.commit()
     cookie_name = settings.cookie_name or COOKIE_NAME_DEFAULT

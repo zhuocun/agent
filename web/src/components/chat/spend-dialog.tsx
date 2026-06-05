@@ -195,7 +195,7 @@ export function SpendDialog(): JSX.Element {
           <div className="grid grid-cols-2 gap-2">
             <div className="glass-clear rounded-2xl px-3.5 py-3">
               <p className="text-xs text-muted-foreground">
-                Cumulative meter
+                <span>Cumulative meter</span>
                 <span className="ml-1 text-2xs opacity-70">(month-to-date)</span>
               </p>
               <p

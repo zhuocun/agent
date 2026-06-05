@@ -57,8 +57,18 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
 
     body = response.json()
     # camelCase envelope.
-    for key in ("account", "preferences", "usage", "modelTiers", "suggestions", "conversations"):
+    for key in (
+        "account",
+        "preferences",
+        "usage",
+        "modelTiers",
+        "suggestions",
+        "conversations",
+        "projects",
+    ):
         assert key in body, f"missing top-level key {key!r}"
+    # No projects yet for a fresh anonymous user.
+    assert body["projects"] == []
 
     account = body["account"]
     assert account["name"] == "Guest"

@@ -371,6 +371,81 @@ async def test_per_conversation_cap_byok_exempt(
     assert frames[-1][1]["attribution"]["isByok"] is True
 
 
+# Project-scoped per-conversation budget sub-cap (D20) -------------------------
+
+
+async def test_project_budget_overrides_pref_cap(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A Project's `perConversationBudgetUsd` OVERRIDES the user-pref cap for a
+    conversation filed under it (D20): a tiny project sub-cap blocks the next
+    turn even though the user pref cap is generous (here, unset)."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+
+    # Project with a tiny sub-cap; user pref cap stays unset (generous).
+    project = await client.post(
+        "/api/projects", json={"name": "Capped", "perConversationBudgetUsd": 0.0000001}
+    )
+    project_id = project.json()["id"]
+    created = await client.post(
+        "/api/conversations",
+        json={"selectedTierId": "smart", "isTemporary": False, "projectId": project_id},
+    )
+    conv_id = created.json()["id"]
+
+    # Turn 1 passes (accumulated cost starts at 0 < sub-cap) and writes a cost
+    # over the sub-cap.
+    await _collect_sse(client, f"/api/conversations/{conv_id}/messages", _send_body())
+
+    # Turn 2 in the SAME conversation: the project sub-cap refuses it.
+    resp = await client.post(
+        f"/api/conversations/{conv_id}/messages", json=_send_body()
+    )
+    assert resp.status_code == 429, resp.text
+    assert resp.json()["error"]["code"] == "CONVERSATION_BUDGET_EXCEEDED"
+
+    # A conversation NOT filed under the project is unaffected by the sub-cap
+    # (and the user has no pref cap), so it streams freely.
+    other_id = await _seed_conversation(session_factory, user_id=user_id)
+    frames = await _collect_sse(
+        client, f"/api/conversations/{other_id}/messages", _send_body()
+    )
+    assert frames[-1][0] == "terminal"
+
+
+async def test_project_budget_overrides_even_a_large_pref_cap(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The project sub-cap wins even when the user pref cap is LARGE: the
+    override is "project if set, else pref", not "min of the two"."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+
+    # Generous user pref cap that on its own would never block a fake turn.
+    await _set_per_conversation_budget(session_factory, user_id=user_id, cap=1000.0)
+
+    project = await client.post(
+        "/api/projects", json={"name": "Tight", "perConversationBudgetUsd": 0.0000001}
+    )
+    project_id = project.json()["id"]
+    created = await client.post(
+        "/api/conversations",
+        json={"selectedTierId": "smart", "isTemporary": False, "projectId": project_id},
+    )
+    conv_id = created.json()["id"]
+
+    await _collect_sse(client, f"/api/conversations/{conv_id}/messages", _send_body())
+    resp = await client.post(
+        f"/api/conversations/{conv_id}/messages", json=_send_body()
+    )
+    # The tiny project sub-cap fires despite the huge pref cap.
+    assert resp.status_code == 429, resp.text
+    assert resp.json()["error"]["code"] == "CONVERSATION_BUDGET_EXCEEDED"
+
+
 async def test_preferences_round_trip_per_conversation_budget(
     client: AsyncClient,
 ) -> None:

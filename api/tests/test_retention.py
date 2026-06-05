@@ -28,7 +28,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import AuditEvent, Conversation, Preferences, User
+from app.db.models import AuditEvent, Conversation, Preferences, Project, User
 from app.db.repositories import conversations as conversations_repo
 from app.maintenance.purge import purge_once, run_purge_loop
 
@@ -66,6 +66,7 @@ async def _seed_conversation(
     user_id: UUID,
     updated_age: timedelta,
     retention_days: int | None = None,
+    project_id: UUID | None = None,
     title: str = "chat",
 ) -> UUID:
     async with session_factory() as session:
@@ -75,12 +76,32 @@ async def _seed_conversation(
             selected_tier_id="smart",
             pinned=False,
             retention_days=retention_days,
+            project_id=project_id,
             updated_at=datetime.now(UTC) - updated_age,
         )
         session.add(convo)
         await session.commit()
         await session.refresh(convo)
         return convo.id
+
+
+async def _seed_project(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: UUID,
+    retention_days: int | None = None,
+    name: str = "project",
+) -> UUID:
+    async with session_factory() as session:
+        project = Project(
+            user_id=user_id,
+            name=name,
+            retention_days=retention_days,
+        )
+        session.add(project)
+        await session.commit()
+        await session.refresh(project)
+        return project.id
 
 
 async def _conversation_ids(
@@ -311,6 +332,217 @@ async def test_sweep_spans_multiple_users(
     # One audit row per owner, with that owner's own count.
     assert sorted(await _purge_audit_counts(session_factory, user_a)) == [2]
     assert sorted(await _purge_audit_counts(session_factory, user_b)) == [1]
+
+
+# Project-tier retention precedence (D20): conv > project > global ------------
+
+
+async def test_project_retention_expires_without_global(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A Project's retention expires a conversation even when the owner has NO
+    global retention and the conversation has no per-conversation override."""
+    user_id = await _seed_user(session_factory, global_retention_days=None)
+    project_id = await _seed_project(
+        session_factory, user_id=user_id, retention_days=7
+    )
+    # 10 days old, filed under the 7-day project => expired by the project tier.
+    expired_id = await _seed_conversation(
+        session_factory,
+        user_id=user_id,
+        updated_age=timedelta(days=10),
+        project_id=project_id,
+    )
+    # Same owner, no project + no global => retained forever.
+    kept_id = await _seed_conversation(
+        session_factory, user_id=user_id, updated_age=timedelta(days=10)
+    )
+
+    async with session_factory() as session:
+        purged = await conversations_repo.delete_expired_all_users(session)
+        await session.commit()
+
+    assert purged == 1
+    assert await _conversation_ids(session_factory) == {kept_id}
+    _ = expired_id
+
+
+async def test_conversation_override_beats_project_retention(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The per-conversation override wins OVER the project tier (conv > project):
+    a longer override spares a conversation the project window would purge."""
+    user_id = await _seed_user(session_factory, global_retention_days=None)
+    project_id = await _seed_project(
+        session_factory, user_id=user_id, retention_days=7
+    )
+    # 10 days old, project says 7 (would purge) but a 90-day override keeps it.
+    kept_id = await _seed_conversation(
+        session_factory,
+        user_id=user_id,
+        updated_age=timedelta(days=10),
+        retention_days=90,
+        project_id=project_id,
+    )
+    # Same project, no override => the 7-day project window purges it.
+    purged_id = await _seed_conversation(
+        session_factory,
+        user_id=user_id,
+        updated_age=timedelta(days=10),
+        project_id=project_id,
+    )
+
+    async with session_factory() as session:
+        purged = await conversations_repo.delete_expired_all_users(session)
+        await session.commit()
+
+    assert purged == 1
+    assert await _conversation_ids(session_factory) == {kept_id}
+    _ = purged_id
+
+
+async def test_project_retention_beats_global(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The project tier wins OVER the global (project > global): a longer project
+    window spares a conversation the global window would purge."""
+    user_id = await _seed_user(session_factory, global_retention_days=30)
+    project_id = await _seed_project(
+        session_factory, user_id=user_id, retention_days=90
+    )
+    # 40 days old: expired under the 30-day global, but the 90-day project keeps it.
+    kept_id = await _seed_conversation(
+        session_factory,
+        user_id=user_id,
+        updated_age=timedelta(days=40),
+        project_id=project_id,
+    )
+    # No project: the 30-day global purges it.
+    purged_id = await _seed_conversation(
+        session_factory, user_id=user_id, updated_age=timedelta(days=40)
+    )
+
+    async with session_factory() as session:
+        purged = await conversations_repo.delete_expired_all_users(session)
+        await session.commit()
+
+    assert purged == 1
+    assert await _conversation_ids(session_factory) == {kept_id}
+    _ = purged_id
+
+
+async def test_per_user_purge_honors_project_retention(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The opportunistic per-user purge uses the project tier too (D20)."""
+    user_id = await _seed_user(session_factory)
+    project_id = await _seed_project(
+        session_factory, user_id=user_id, retention_days=7
+    )
+    purged_id = await _seed_conversation(
+        session_factory,
+        user_id=user_id,
+        updated_age=timedelta(days=10),
+        project_id=project_id,
+    )
+    kept_id = await _seed_conversation(
+        session_factory, user_id=user_id, updated_age=timedelta(days=10)
+    )
+
+    async with session_factory() as session:
+        count = await conversations_repo.delete_older_than_for_user(
+            session, user_id=user_id, global_retention_days=None
+        )
+        await session.commit()
+
+    assert count == 1
+    assert await _conversation_ids(session_factory) == {kept_id}
+    _ = purged_id
+
+
+async def test_fleet_sweep_project_retention_is_cross_user_isolated(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """CROSS-USER SAFETY: the fleet-wide sweep's project LEFT JOIN must never let
+    one user's Project retention affect another user's conversation.
+
+    User A owns a SHORT-retention (7d) Project. User B owns a conversation that
+    is NOT filed under any project and has no global/own retention. Even though
+    A's aggressive 7-day window exists in the same sweep, B's conversation (older
+    than 7 days) must be RETAINED — its `project_id` is NULL so the join yields
+    no project retention for it, and A's project can never bleed across.
+    """
+    user_a = await _seed_user(session_factory, global_retention_days=None)
+    user_b = await _seed_user(session_factory, global_retention_days=None)
+
+    project_a = await _seed_project(
+        session_factory, user_id=user_a, retention_days=7
+    )
+    # A's conversation under A's 7-day project, 30 days old => expired.
+    a_expired = await _seed_conversation(
+        session_factory,
+        user_id=user_a,
+        updated_age=timedelta(days=30),
+        project_id=project_a,
+    )
+    # B's conversation: unfiled, no retention anywhere, 30 days old => must KEEP.
+    b_kept = await _seed_conversation(
+        session_factory, user_id=user_b, updated_age=timedelta(days=30)
+    )
+
+    async with session_factory() as session:
+        purged = await conversations_repo.delete_expired_all_users(session)
+        await session.commit()
+
+    # Only A's conversation is purged; B's survives untouched by A's project.
+    assert purged == 1
+    assert await _conversation_ids(session_factory) == {b_kept}
+    _ = a_expired
+
+
+async def test_fleet_sweep_uses_each_conversations_own_project_retention(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """CROSS-USER SAFETY (stronger): when BOTH users own projects, the fleet-wide
+    sweep must resolve each conversation's retention from ITS OWN project — never
+    a different user's. User A owns a SHORT (7d) project; User B owns a LONG
+    (3650d) project; both conversations are 30 days old. A's must purge (its own
+    7d window expired) and B's must survive (its own 3650d window), proving the
+    LEFT JOIN keys strictly on `conversation.project_id == project.id` and can
+    never borrow A's short window for B's row.
+    """
+    user_a = await _seed_user(session_factory, global_retention_days=None)
+    user_b = await _seed_user(session_factory, global_retention_days=None)
+
+    project_a = await _seed_project(
+        session_factory, user_id=user_a, retention_days=7
+    )
+    project_b = await _seed_project(
+        session_factory, user_id=user_b, retention_days=3650
+    )
+    # A's conversation under A's 7-day project, 30 days old => expired.
+    a_expired = await _seed_conversation(
+        session_factory,
+        user_id=user_a,
+        updated_age=timedelta(days=30),
+        project_id=project_a,
+    )
+    # B's conversation under B's 3650-day project, 30 days old => must KEEP.
+    b_kept = await _seed_conversation(
+        session_factory,
+        user_id=user_b,
+        updated_age=timedelta(days=30),
+        project_id=project_b,
+    )
+
+    async with session_factory() as session:
+        purged = await conversations_repo.delete_expired_all_users(session)
+        await session.commit()
+
+    # A's expired under its own short window; B's retained under its own long one.
+    assert purged == 1
+    assert await _conversation_ids(session_factory) == {b_kept}
+    _ = a_expired
 
 
 async def test_sweep_emits_no_audit_when_nothing_purged(

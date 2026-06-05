@@ -191,6 +191,14 @@ class Settings(BaseSettings):
     # Memory-fact CRUD (D19). Anonymous-allowed (guests can keep memory too),
     # caller-scoped writes/reads over a per-user ledger; bound abusive churn.
     rate_limit_memory: str = Field(default="30/minute", alias="RATE_LIMIT_MEMORY")
+    # Project/Space CRUD (D20). Anonymous-allowed (guests can file conversations
+    # too), caller-scoped writes/reads over a per-user container set; bound churn.
+    rate_limit_projects: str = Field(default="30/minute", alias="RATE_LIMIT_PROJECTS")
+    # Prompt-template CRUD (D23). Anonymous-allowed (guests author templates
+    # too), caller-scoped writes/reads over a per-user library; bound churn.
+    rate_limit_prompt_templates: str = Field(
+        default="30/minute", alias="RATE_LIMIT_PROMPT_TEMPLATES"
+    )
 
     # Cost-based usage budget cap (USD per calendar-month period). When a user's
     # accumulated `usage_rollup.cost_usd` for the period reaches this value, the

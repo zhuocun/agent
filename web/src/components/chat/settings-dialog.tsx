@@ -30,9 +30,12 @@ import {
 import {
   isAnonymousAccount,
   type AccountInfo,
+  type ModelTierId,
+  type Project,
   type UserPreferences,
   type UsageBudget,
 } from "@/lib/types";
+import type { ProjectUpdateInput } from "@/lib/apiClient";
 import { cn } from "@/lib/utils";
 
 export interface SettingsDialogProps {
@@ -58,9 +61,20 @@ export interface SettingsDialogProps {
   // Open the "Memory" manager (closing settings first): the opt-in toggle +
   // the editable, attributed fact ledger (D19).
   onOpenMemory: () => void;
+  // Open the "Prompt templates" manager (closing settings first): the editable
+  // library of user-authored, reusable prompt templates (D23).
+  onOpenTemplates: () => void;
   // Open the read-only "Models & data policies" directory (closing settings
   // first). Browsable catalog of provider routes, policies, and prices.
   onOpenModelDirectory: () => void;
+  // Projects/Spaces (D20). The caller's projects + an updater that PATCHes a
+  // project's settings (default tier, retention, budget sub-cap, shared
+  // instructions). Optional so embeddings that predate D20 still type-check.
+  projects?: Project[];
+  onUpdateProject?: (id: string, patch: ProjectUpdateInput) => void;
+  // Open the editable "Keyboard shortcuts" dialog (closing settings first):
+  // remap any action, with a reserved-combo guard and reset-to-defaults (D23).
+  onOpenShortcuts: () => void;
 }
 
 // Derive avatar initials from a display name (first + last token), capped at
@@ -339,6 +353,279 @@ function PerConversationBudgetEditor({
   );
 }
 
+// Tier options for a Project's create-time default (D20), including the
+// "Inherit" choice (`null` = use the user's global default tier). The concrete
+// tiers mirror the global tier picker's `MODEL_TIERS`.
+const PROJECT_TIER_OPTIONS: Array<{ value: ModelTierId | null; label: string }> = [
+  { value: null, label: "Inherit" },
+  ...MODEL_TIERS.map((tier) => ({ value: tier.id, label: tier.label })),
+];
+
+// Retention options for a Project (D20). `null` = inherit the user-global
+// retention. Mirrors the per-conversation retention choices.
+const PROJECT_RETENTION_OPTIONS: Array<{ value: number | null; label: string }> = [
+  { value: null, label: "Inherit" },
+  { value: 30, label: "30 days" },
+  { value: 90, label: "90 days" },
+];
+
+// The per-project settings panel (D20). A project selector plus the four wedge
+// controls — shared instructions, default tier, retention, and a
+// per-conversation budget sub-cap — each writing to the project PATCH endpoint
+// via `onUpdate`. Mirrors the global controls; every setting is OPTIONAL and
+// `null` means "inherit the user-global value". Keyed editors reset their local
+// draft when the selected project changes.
+function ProjectSettingsPanel({
+  projects,
+  onUpdate,
+}: {
+  projects: Project[];
+  onUpdate: (id: string, patch: ProjectUpdateInput) => void;
+}): JSX.Element {
+  const selectId = useId();
+  const instructionsId = useId();
+  const [selectedId, setSelectedId] = useState<string>(projects[0]?.id ?? "");
+  // Keep a valid selection as the project list changes (create/delete).
+  const selected =
+    projects.find((p) => p.id === selectedId) ?? projects[0] ?? null;
+
+  if (projects.length === 0) {
+    return (
+      <p className="text-xs leading-snug text-muted-foreground">
+        No projects yet. Create one from the sidebar to scope a default model,
+        retention, budget, and shared instructions for a group of chats.
+      </p>
+    );
+  }
+
+  if (!selected) return <></>;
+
+  return (
+    <div className="space-y-4" data-testid="project-settings-panel">
+      <SettingRow
+        label="Project"
+        helper="Settings below apply to this project's chats."
+        htmlFor={selectId}
+        control={
+          <select
+            id={selectId}
+            value={selected.id}
+            onChange={(event) => setSelectedId(event.currentTarget.value)}
+            data-testid="project-settings-select"
+            className="h-9 max-w-[12rem] truncate rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25"
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        }
+      />
+
+      <SettingRow
+        label="Default model"
+        helper="Tier new chats in this project start with."
+        control={
+          <div
+            className="flex flex-wrap gap-1 rounded-full border border-border/70 bg-secondary/40 p-0.5"
+            role="group"
+            aria-label="Project default model"
+          >
+            {PROJECT_TIER_OPTIONS.map((option) => {
+              const active = (selected.defaultTierId ?? null) === option.value;
+              return (
+                <button
+                  key={option.label}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() =>
+                    onUpdate(selected.id, { defaultTierId: option.value })
+                  }
+                  className={cn(
+                    "rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                    active
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        }
+      />
+
+      <SettingRow
+        label="Retention"
+        helper="Overrides your global retention for this project's chats."
+        control={
+          <div
+            className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5"
+            role="group"
+            aria-label="Project retention"
+          >
+            {PROJECT_RETENTION_OPTIONS.map((option) => {
+              const active = (selected.retentionDays ?? null) === option.value;
+              return (
+                <button
+                  key={option.label}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() =>
+                    onUpdate(selected.id, { retentionDays: option.value })
+                  }
+                  className={cn(
+                    "min-w-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                    active
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        }
+      />
+
+      <ProjectBudgetEditor
+        key={`budget-${selected.id}`}
+        value={selected.perConversationBudgetUsd ?? null}
+        onSave={(value) =>
+          onUpdate(selected.id, { perConversationBudgetUsd: value })
+        }
+      />
+
+      <div className="space-y-2">
+        <label htmlFor={instructionsId} className="text-sm font-medium">
+          Shared instructions
+        </label>
+        <ProjectInstructionsEditor
+          key={`instructions-${selected.id}`}
+          id={instructionsId}
+          value={selected.customInstructions ?? ""}
+          onCommit={(value) =>
+            onUpdate(selected.id, {
+              customInstructions: value.trim().length > 0 ? value : null,
+            })
+          }
+        />
+        <p className="text-xs leading-snug text-muted-foreground">
+          Appended to your global custom instructions for every chat in this
+          project.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// A keyed textarea for a Project's shared instructions, committing on blur (the
+// same draft/commit discipline as the global custom-instructions field).
+function ProjectInstructionsEditor({
+  id,
+  value,
+  onCommit,
+}: {
+  id: string;
+  value: string;
+  onCommit: (value: string) => void;
+}): JSX.Element {
+  const [draft, setDraft] = useState(value);
+  return (
+    <>
+      <textarea
+        id={id}
+        value={draft}
+        maxLength={CUSTOM_INSTRUCTIONS_LIMIT}
+        rows={4}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onBlur={() => {
+          if (draft !== value) onCommit(draft);
+        }}
+        data-testid="project-instructions-input"
+        className="min-h-24 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+        placeholder="Context, tone, or constraints shared across this project"
+      />
+      <div className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+        {draft.length}/{CUSTOM_INSTRUCTIONS_LIMIT}
+      </div>
+    </>
+  );
+}
+
+// A keyed per-conversation budget sub-cap editor for a Project (D20). Mirrors
+// `PerConversationBudgetEditor` but its empty value means "inherit the user
+// preference" rather than "no cap".
+function ProjectBudgetEditor({
+  value,
+  onSave,
+}: {
+  value: number | null;
+  onSave: (value: number | null) => void;
+}): JSX.Element {
+  const inputId = useId();
+  const [draft, setDraft] = useState<string>(
+    value != null ? String(value) : "",
+  );
+
+  function save(): void {
+    const trimmed = draft.trim();
+    if (trimmed === "") {
+      onSave(null);
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    onSave(parsed);
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <label htmlFor={inputId} className="text-xs font-medium">
+        Per-conversation cap
+      </label>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <span
+            aria-hidden
+            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-xs text-muted-foreground"
+          >
+            $
+          </span>
+          <input
+            id={inputId}
+            type="number"
+            inputMode="decimal"
+            min={0}
+            step="0.01"
+            value={draft}
+            placeholder="Inherit"
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            data-testid="project-cap-input"
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-sm tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+          />
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={save}
+          data-testid="project-cap-save"
+        >
+          Save
+        </Button>
+      </div>
+      <p className="text-xs leading-snug text-muted-foreground">
+        Overrides your per-conversation cap for this project&apos;s chats. Empty
+        inherits your preference.
+      </p>
+    </div>
+  );
+}
+
 function UsageDetails({
   usage,
   anonymous,
@@ -520,7 +807,11 @@ export function SettingsDialog({
   onDeleteAccount,
   onOpenActivity,
   onOpenMemory,
+  onOpenTemplates,
   onOpenModelDirectory,
+  projects = [],
+  onUpdateProject,
+  onOpenShortcuts,
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
   const autoExpandId = useId();
@@ -816,6 +1107,21 @@ export function SettingsDialog({
                 />
               }
             />
+            <SettingRow
+              label="Keyboard shortcuts"
+              helper="View and rebind shortcuts. Enter and Escape stay reserved."
+              control={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="open-shortcuts-button"
+                  onClick={onOpenShortcuts}
+                >
+                  Customize
+                </Button>
+              }
+            />
             <div className="space-y-2">
               <label
                 htmlFor={customInstructionsId}
@@ -840,6 +1146,22 @@ export function SettingsDialog({
               </div>
             </div>
           </section>
+
+          {/* Projects/Spaces (D20). Per-project scoping of the wedge controls.
+              Only rendered when an updater is wired (the parent owns the PATCH);
+              the panel itself handles the empty-project case with a hint. */}
+          {onUpdateProject ? (
+            <>
+              <Separator />
+              <section className="space-y-4" data-testid="settings-projects-section">
+                <SectionHeading>Projects</SectionHeading>
+                <ProjectSettingsPanel
+                  projects={projects}
+                  onUpdate={onUpdateProject}
+                />
+              </section>
+            </>
+          ) : null}
 
           <Separator />
 
@@ -925,6 +1247,21 @@ export function SettingsDialog({
                   size="sm"
                   data-testid="open-memory-button"
                   onClick={onOpenMemory}
+                >
+                  Manage
+                </Button>
+              }
+            />
+            <SettingRow
+              label="Prompt templates"
+              helper="Create and edit reusable prompts you can drop into the composer."
+              control={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="open-templates-button"
+                  onClick={onOpenTemplates}
                 >
                   Manage
                 </Button>

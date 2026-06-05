@@ -109,6 +109,7 @@ function bootstrapPayload(overrides: Record<string, unknown> = {}) {
       telemetryEnabled: true,
       customInstructions: "",
       retentionDays: 30,
+      keyboardShortcuts: {},
     },
     usage: {
       used: 0,
@@ -148,6 +149,7 @@ test.describe("provider selection", () => {
             telemetryEnabled: true,
             customInstructions: "",
             retentionDays: 30,
+            keyboardShortcuts: {},
           },
           usage: {
             used: 0,
@@ -336,6 +338,7 @@ test.describe("provider selection", () => {
             telemetryEnabled: true,
             customInstructions: "",
             retentionDays: 30,
+            keyboardShortcuts: {},
           },
           usage: {
             used: 0,

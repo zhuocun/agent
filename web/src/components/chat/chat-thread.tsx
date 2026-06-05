@@ -38,6 +38,7 @@ import { DegradedStatusBanner } from "@/components/chat/degraded-status-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
 import { ActivityDialog } from "@/components/chat/activity-dialog";
 import { MemoryDialog } from "@/components/chat/memory-dialog";
+import { TemplateLibraryDialog } from "@/components/chat/template-library-dialog";
 import { ModelDirectoryDialog } from "@/components/chat/model-directory-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
@@ -64,6 +65,16 @@ import {
   useKeyboardShortcuts,
   type Shortcut,
 } from "@/lib/use-keyboard-shortcuts";
+import {
+  clearOverride,
+  defaultsFromBindings,
+  deserializeShortcuts,
+  resetAllOverrides,
+  resolveBindings,
+  serializeShortcuts,
+  setOverride,
+  type RebindableBinding,
+} from "@/lib/shortcut-defaults";
 import { useApiStream, type TerminalResult } from "@/lib/stream-client";
 import {
   ApiError,
@@ -72,6 +83,8 @@ import {
   createConversation,
   deleteAccount,
   deleteConversation,
+  createProject,
+  deleteProject,
   fetchAccountExport,
   fetchBootstrap,
   fetchConversation,
@@ -80,7 +93,9 @@ import {
   postAuthSignout,
   putPreferences,
   searchConversations,
+  updateProject,
   type BootstrapResponse,
+  type ProjectUpdateInput,
 } from "@/lib/apiClient";
 import { REASONING_EFFORTS } from "@/lib/reasoning-efforts";
 import { reportTelemetry } from "@/lib/telemetry";
@@ -91,11 +106,14 @@ import type {
   ChatMessage,
   ConversationSummary,
   Feedback,
+  KeyboardShortcuts,
   MessagePart,
   ModelTier,
   ModelTierId,
+  Project,
   ProviderTierOption,
   ReasoningEffortId,
+  ShortcutId,
   UsageBudget,
   UserPreferences,
 } from "@/lib/types";
@@ -103,24 +121,9 @@ import type {
 // `KEY_BINDINGS` carries the static keystroke metadata; `runAction(id)` owns
 // the live handler. The split keeps the descriptor array free of state
 // closures, which the React Compiler would otherwise flag as ref-tainted.
-type ShortcutId =
-  | "palette"
-  | "new-chat"
-  | "focus-composer"
-  | "copy-last-response"
-  | "copy-last-code"
-  | "toggle-sidebar"
-  | "custom-instructions"
-  | "delete-chat"
-  | "toggle-dictation"
-  | "shortcuts"
-  | "open-settings"
-  | "toggle-theme";
-
-type KeyBinding = Omit<Shortcut, "handler"> & {
-  id: ShortcutId;
-  label: string;
-};
+// `ShortcutId` is the persistence-safe action id union, shared from `types.ts`
+// so the override map / rebind dialog / resolver agree on it (D23).
+type KeyBinding = RebindableBinding;
 const KEY_BINDINGS: KeyBinding[] = [
   {
     id: "palette",
@@ -203,33 +206,43 @@ const KEY_BINDINGS: KeyBinding[] = [
   },
 ];
 
-// Lookup helper for grouping the palette / dialog views.
-const BINDING_BY_ID = (id: ShortcutId): KeyBinding => {
-  const found = KEY_BINDINGS.find((b) => b.id === id);
-  if (!found) throw new Error(`Missing binding for shortcut ${id}`);
-  return found;
-};
+// The built-in default keystroke for every action, keyed by id. This is the
+// merge base for the user's `keyboardShortcuts` overrides (D23); the EFFECTIVE
+// bindings (defaults + overrides) drive the live matcher, palette, and dialog.
+const DEFAULT_BINDINGS = defaultsFromBindings(KEY_BINDINGS);
+
+// Human label per action id (stable; never overridden).
+const LABEL_BY_ID = ((): Record<ShortcutId, string> => {
+  const out = {} as Record<ShortcutId, string>;
+  for (const b of KEY_BINDINGS) out[b.id] = b.label;
+  // Palette-only actions have no KEY_BINDINGS entry; label them here.
+  out["open-settings"] = "Open settings";
+  out["toggle-theme"] = "Toggle theme";
+  return out;
+})();
 
 // Palette rows. "Hidden" entries (the palette itself) are omitted; settings/
-// theme entries are palette-only (no global shortcut).
+// theme entries are palette-only (`hasBinding: false` ⇒ no global shortcut, so
+// no keycap hint). The effective keystroke is resolved at render from the live
+// bindings, not baked in here.
 const PALETTE_ACTION_META: Array<{
   id: ShortcutId;
   label: string;
   icon: CommandAction["icon"];
   section: "Actions" | "Settings";
-  binding?: KeyBinding;
+  hasBinding: boolean;
 }> = [
-  { id: "new-chat", label: "New chat", icon: MessageSquarePlus, section: "Actions", binding: BINDING_BY_ID("new-chat") },
-  { id: "focus-composer", label: "Focus composer", icon: TextCursorInput, section: "Actions", binding: BINDING_BY_ID("focus-composer") },
-  { id: "copy-last-response", label: "Copy last response", icon: ClipboardCopy, section: "Actions", binding: BINDING_BY_ID("copy-last-response") },
-  { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", binding: BINDING_BY_ID("copy-last-code") },
-  { id: "toggle-sidebar", label: "Toggle sidebar", icon: PanelLeft, section: "Actions", binding: BINDING_BY_ID("toggle-sidebar") },
-  { id: "delete-chat", label: "Delete current chat", icon: Trash2, section: "Actions", binding: BINDING_BY_ID("delete-chat") },
-  { id: "toggle-dictation", label: "Toggle dictation", icon: Mic, section: "Actions", binding: BINDING_BY_ID("toggle-dictation") },
-  { id: "custom-instructions", label: "Open custom instructions", icon: Sparkles, section: "Settings", binding: BINDING_BY_ID("custom-instructions") },
-  { id: "shortcuts", label: "Show all shortcuts", icon: KeyRound, section: "Settings", binding: BINDING_BY_ID("shortcuts") },
-  { id: "open-settings", label: "Open settings", icon: SettingsIcon, section: "Settings" },
-  { id: "toggle-theme", label: "Toggle theme", icon: Sun, section: "Settings" },
+  { id: "new-chat", label: "New chat", icon: MessageSquarePlus, section: "Actions", hasBinding: true },
+  { id: "focus-composer", label: "Focus composer", icon: TextCursorInput, section: "Actions", hasBinding: true },
+  { id: "copy-last-response", label: "Copy last response", icon: ClipboardCopy, section: "Actions", hasBinding: true },
+  { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", hasBinding: true },
+  { id: "toggle-sidebar", label: "Toggle sidebar", icon: PanelLeft, section: "Actions", hasBinding: true },
+  { id: "delete-chat", label: "Delete current chat", icon: Trash2, section: "Actions", hasBinding: true },
+  { id: "toggle-dictation", label: "Toggle dictation", icon: Mic, section: "Actions", hasBinding: true },
+  { id: "custom-instructions", label: "Open custom instructions", icon: Sparkles, section: "Settings", hasBinding: true },
+  { id: "shortcuts", label: "Show all shortcuts", icon: KeyRound, section: "Settings", hasBinding: true },
+  { id: "open-settings", label: "Open settings", icon: SettingsIcon, section: "Settings", hasBinding: false },
+  { id: "toggle-theme", label: "Toggle theme", icon: Sun, section: "Settings", hasBinding: false },
 ];
 
 // Shortcuts dialog grouping. Ordered to match the PRD §5.5 table loosely:
@@ -239,6 +252,13 @@ const SHORTCUT_DIALOG_SECTIONS: { heading: string; ids: ShortcutId[] }[] = [
   { heading: "Navigation", ids: ["new-chat", "focus-composer", "toggle-sidebar"] },
   { heading: "Editing", ids: ["copy-last-response", "copy-last-code", "toggle-dictation", "delete-chat"] },
 ];
+
+// Every rebindable action surfaced in the shortcuts dialog (= the union of all
+// section ids). Used to validate/coerce a deserialized override map and to drive
+// duplicate detection across the full set.
+const REBINDABLE_IDS: ShortcutId[] = SHORTCUT_DIALOG_SECTIONS.flatMap(
+  (section) => section.ids,
+);
 
 // Local-only id generator for optimistic message bubbles before the server
 // echoes the real uuid. Never sent to the server (clientMessageId uses
@@ -406,6 +426,10 @@ export function ChatThread() {
   const effortAtSendRef = useRef<ReasoningEffortId>(selectedReasoningEffortId);
   const selectedTierIdRef = useRef<ModelTierId>(selectedTierId);
   const selectedProviderIdRef = useRef<string | undefined>(selectedProviderId);
+  // Live mirror of the project context for a NEW chat (D20), so the send path's
+  // `useCallback` reads the current value without re-creating on every list
+  // change. Synced in an effect once `activeProjectId` is derived below.
+  const activeProjectIdRef = useRef<string | null>(null);
   // The optimistic id of the user message we just sent — set on send, cleared
   // on terminal (after we replace it with the server-issued uuid). Reconciling
   // user + assistant ids happens together on the `terminal` callback so the
@@ -452,6 +476,7 @@ export function ChatThread() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   const [modelDirectoryOpen, setModelDirectoryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -648,6 +673,27 @@ export function ChatThread() {
     if (bootstrap && !conversationsHydratedRef.current) {
       conversationsHydratedRef.current = true;
       setConversations(bootstrap.conversations);
+    }
+  }, [bootstrap]);
+
+  // Projects/Spaces (D20). Same hydrate-once-then-own-locally discipline as the
+  // conversation list. `Project` (the full shape) is a superset of the bootstrap
+  // `ProjectSummary`, so the summaries hydrate this list directly.
+  const [projects, setProjects] = useState<Project[]>([]);
+  const projectsHydratedRef = useRef(false);
+  useEffect(() => {
+    if (bootstrap && !projectsHydratedRef.current) {
+      projectsHydratedRef.current = true;
+      setProjects(
+        (bootstrap.projects ?? []).map((p) => ({
+          ...p,
+          // ProjectSummary omits timestamps; fill placeholders so the FE `Project`
+          // shape is satisfied. They are only used by the export view, never the
+          // sidebar/settings, so the empty string is inert here.
+          createdAt: "",
+          updatedAt: "",
+        })),
+      );
     }
   }, [bootstrap]);
 
@@ -973,10 +1019,17 @@ export function ChatThread() {
       let conversationId = activeConversationId;
       if (!conversationId) {
         try {
+          // File a fresh (non-temporary) chat under the active project context
+          // (D20) when one exists; temp chats can't carry a project.
+          const projectIdForCreate =
+            !isTemporary && activeProjectIdRef.current
+              ? activeProjectIdRef.current
+              : undefined;
           const created = await createConversation({
             selectedTierId: args.tierId,
             isTemporary,
             providerId: args.providerId,
+            ...(projectIdForCreate ? { projectId: projectIdForCreate } : {}),
           });
           // Stop pressed during the create round-trip — abandon this turn
           // before arming the stream. handleStop already cleared the optimistic
@@ -995,6 +1048,7 @@ export function ChatThread() {
               title: created.title,
               updatedAt: new Date().toISOString(),
               pinned: false,
+              projectId: created.projectId ?? null,
             };
             setConversations((prev) => [summary, ...prev]);
           }
@@ -1924,6 +1978,131 @@ export function ChatThread() {
     });
   };
 
+  // --- Projects/Spaces (D20) -------------------------------------------------
+
+  // File (projectId) or un-file (null) a conversation. Optimistic + rollback +
+  // toast, mirroring `handleSetConversationRetention`.
+  const handleAssignConversationToProject = (
+    id: string,
+    projectId: string | null,
+  ) => {
+    const previous = conversations;
+    const target = previous.find((c) => c.id === id);
+    if (!target || (target.projectId ?? null) === projectId) return;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, projectId } : c)),
+    );
+    void patchConversation(id, { projectId }).catch((cause) => {
+      setConversations(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't move conversation",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
+    });
+  };
+
+  // Create a project. Optimistic insert with a temporary id replaced by the
+  // server row on success; rollback + toast on failure.
+  const handleCreateProject = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const tempId = `temp-project-${crypto.randomUUID()}`;
+    const optimistic: Project = {
+      id: tempId,
+      name: trimmed,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    setProjects((prev) => [optimistic, ...prev]);
+    void createProject({ name: trimmed })
+      .then((created) => {
+        setProjects((prev) =>
+          prev.map((p) => (p.id === tempId ? created : p)),
+        );
+      })
+      .catch((cause) => {
+        setProjects((prev) => prev.filter((p) => p.id !== tempId));
+        if (cause instanceof ApiError) setLiveMessage(cause.title);
+        showToast({
+          severity: "error",
+          title:
+            cause instanceof ApiError ? cause.title : "Couldn't create project",
+          body:
+            cause instanceof ApiError
+              ? cause.body
+              : cause instanceof Error
+                ? cause.message
+                : undefined,
+        });
+      });
+  };
+
+  // Shared optimistic project-settings update (rename + the settings panel).
+  const handleUpdateProject = (id: string, patch: ProjectUpdateInput) => {
+    const previous = projects;
+    const target = previous.find((p) => p.id === id);
+    if (!target) return;
+    setProjects((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+    );
+    void updateProject(id, patch).catch((cause) => {
+      setProjects(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't update project",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
+    });
+  };
+
+  const handleRenameProject = (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    handleUpdateProject(id, { name: trimmed });
+  };
+
+  // Delete a project. Conversations are un-filed (BE SET NULL); reflect that
+  // locally by clearing membership on any conversation that pointed at it.
+  const handleDeleteProject = (id: string) => {
+    const previousProjects = projects;
+    const previousConversations = conversations;
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    setConversations((prev) =>
+      prev.map((c) => (c.projectId === id ? { ...c, projectId: null } : c)),
+    );
+    void deleteProject(id).catch((cause) => {
+      setProjects(previousProjects);
+      setConversations(previousConversations);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError ? cause.title : "Couldn't delete project",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
+    });
+  };
+
   const handlePreferencesChange = (next: UserPreferences) => {
     if (!bootstrap) return;
     const previous = bootstrap.preferences;
@@ -2374,6 +2553,23 @@ export function ChatThread() {
     ? conversations.find((c) => c.id === activeConversationId)?.title ?? null
     : null;
 
+  // Project/Space context for a NEW chat (D20): when the user is viewing a
+  // conversation filed under a known project, a fresh chat started from that
+  // context inherits the project (so the BE pre-seeds its default tier and
+  // scopes its instructions/retention/budget). On the welcome screen (no active
+  // conversation) a new chat is unfiled. A `projectId` pointing at a project not
+  // in the current list (stale) is treated as unfiled.
+  const activeProjectId: string | null = (() => {
+    if (!activeConversationId) return null;
+    const active = conversations.find((c) => c.id === activeConversationId);
+    const pid = active?.projectId ?? null;
+    if (pid && projects.some((p) => p.id === pid)) return pid;
+    return null;
+  })();
+  useEffect(() => {
+    activeProjectIdRef.current = activeProjectId;
+  }, [activeProjectId]);
+
   // Custom instructions live inside the settings dialog in MVP; wiring the
   // shortcut now so muscle memory transfers when a dedicated panel ships.
   const handleOpenCustomInstructions = () => {
@@ -2458,8 +2654,21 @@ export function ChatThread() {
     }
   };
 
-  const boundShortcuts = KEY_BINDINGS.map((b) => ({
-    ...b,
+  // The EFFECTIVE bindings = built-in defaults merged with the user's saved
+  // overrides (D23). Drives the live keydown matcher, the palette keycaps, and
+  // the shortcuts dialog so a remap takes effect everywhere at once.
+  // `preferences` can be null before the bootstrap render-gate below, so fall
+  // back to "no overrides". `deserializeShortcuts` hardens the wire value: it
+  // drops unknown action ids and malformed combos so a stale/forward-compatible
+  // payload can never crash the resolver.
+  const shortcutOverrides: KeyboardShortcuts = deserializeShortcuts(
+    preferences?.keyboardShortcuts,
+    REBINDABLE_IDS,
+  );
+  const effectiveBindings = resolveBindings(DEFAULT_BINDINGS, shortcutOverrides);
+
+  const boundShortcuts: Shortcut[] = KEY_BINDINGS.map((b) => ({
+    ...effectiveBindings[b.id],
     handler: () => runAction(b.id),
   }));
   useKeyboardShortcuts(boundShortcuts);
@@ -2471,26 +2680,39 @@ export function ChatThread() {
     id: meta.id,
     label: meta.label,
     icon: meta.icon,
-    shortcut: meta.binding,
+    shortcut: meta.hasBinding ? effectiveBindings[meta.id] : undefined,
     section: meta.section,
     run: () => runAction(meta.id),
   }));
 
   // Sections rendered by the shortcuts dialog (Hidden entries surface here
   // too so power users see Cmd+K listed). Ordered to match the PRD §5.5 table.
+  // Each row carries its id + effective keystroke so the dialog can render
+  // (and, in editable mode, rebind) it.
   const shortcutSections: ShortcutSection[] = SHORTCUT_DIALOG_SECTIONS.map(
     (section) => ({
       heading: section.heading,
-      items: section.ids.map((id) => {
-        const binding = KEY_BINDINGS.find((b) => b.id === id);
-        if (!binding) throw new Error(`Missing binding for shortcut ${id}`);
-        return {
-          label: binding.label,
-          shortcut: binding,
-        };
-      }),
+      items: section.ids.map((id) => ({
+        id,
+        label: LABEL_BY_ID[id],
+        shortcut: effectiveBindings[id],
+        isOverridden: shortcutOverrides[id] != null,
+      })),
     }),
   );
+
+  // Persist a new override map through the SAME optimistic preferences flow as
+  // every other setting (`handlePreferencesChange` does setBootstrap + PUT +
+  // rollback-on-error). The rebind dialog hands us the already-guarded map;
+  // `serializeShortcuts` canonicalizes it — dropping any override that equals
+  // its default — so the stored column stays minimal and self-healing.
+  const handleShortcutsChange = (next: KeyboardShortcuts): void => {
+    if (!bootstrap) return;
+    handlePreferencesChange({
+      ...bootstrap.preferences,
+      keyboardShortcuts: serializeShortcuts(next, DEFAULT_BINDINGS),
+    });
+  };
 
   // --- Render guards ------------------------------------------------------
   // Bootstrap is the gate: nothing renders the main shell until we have the
@@ -2569,6 +2791,12 @@ export function ChatThread() {
             onCopyConversation={handleCopyConversationById}
             onDownloadConversation={handleDownloadConversationById}
             onOpenSettings={handleOpenSettings}
+            projects={projects}
+            onAssignConversationToProject={handleAssignConversationToProject}
+            onCreateProject={handleCreateProject}
+            onRenameProject={handleRenameProject}
+            onDeleteProject={handleDeleteProject}
+            onManageProjects={handleOpenSettings}
             onSignIn={() => setAuthOpen(true)}
             onSignOut={handleSignOut}
             onCollapse={() => {
@@ -2867,9 +3095,19 @@ export function ChatThread() {
           setSettingsOpen(false);
           setMemoryOpen(true);
         }}
+        onOpenTemplates={() => {
+          setSettingsOpen(false);
+          setTemplatesOpen(true);
+        }}
         onOpenModelDirectory={() => {
           setSettingsOpen(false);
           setModelDirectoryOpen(true);
+        }}
+        projects={projects}
+        onUpdateProject={handleUpdateProject}
+        onOpenShortcuts={() => {
+          setSettingsOpen(false);
+          setShortcutsDialogOpen(true);
         }}
       />
 
@@ -2906,6 +3144,11 @@ export function ChatThread() {
         }}
       />
 
+      <TemplateLibraryDialog
+        open={templatesOpen}
+        onOpenChange={setTemplatesOpen}
+      />
+
       <ModelDirectoryDialog
         open={modelDirectoryOpen}
         onOpenChange={setModelDirectoryOpen}
@@ -2937,6 +3180,18 @@ export function ChatThread() {
         open={shortcutsDialogOpen}
         onOpenChange={setShortcutsDialogOpen}
         shortcuts={shortcutSections}
+        editable
+        effectiveBindings={effectiveBindings}
+        labelFor={(id) => LABEL_BY_ID[id]}
+        onRebind={(id, combo) => {
+          handleShortcutsChange(setOverride(shortcutOverrides, id, combo));
+        }}
+        onResetAction={(id) => {
+          handleShortcutsChange(clearOverride(shortcutOverrides, id));
+        }}
+        onResetAll={() => {
+          handleShortcutsChange(resetAllOverrides());
+        }}
       />
 
       <Dialog

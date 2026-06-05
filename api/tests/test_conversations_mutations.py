@@ -802,3 +802,117 @@ async def test_replay_null_attribution_done_row_does_not_500(
         assert resp.status_code != 500, body
         assert resp.status_code == 409, body
         assert json.loads(body)["error"]["code"] == "DUPLICATE_IN_FLIGHT"
+
+
+# Project/Space membership via PATCH + create-in-project (D20) ------------------
+
+
+async def test_create_in_project_preseeds_tier(client: AsyncClient) -> None:
+    """Creating a conversation under a Project with a `defaultTierId` pre-seeds
+    the new conversation's `selectedTierId` from it (a create-time default)."""
+    await client.get("/api/bootstrap")
+    project = await client.post(
+        "/api/projects", json={"name": "Fast lane", "defaultTierId": "fast"}
+    )
+    project_id = project.json()["id"]
+
+    # Create asking for "smart" but filed under the project whose default is "fast".
+    created = await client.post(
+        "/api/conversations",
+        json={"selectedTierId": "smart", "isTemporary": False, "projectId": project_id},
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert body["projectId"] == project_id
+    # The project's create-time default wins for the new conversation's tier.
+    assert body["selectedTierId"] == "fast"
+
+    # GET round-trips both the membership and the pre-seeded tier.
+    fetched = await client.get(f"/api/conversations/{body['id']}")
+    assert fetched.json()["projectId"] == project_id
+    assert fetched.json()["selectedTierId"] == "fast"
+
+
+async def test_create_in_project_without_default_tier_keeps_requested(
+    client: AsyncClient,
+) -> None:
+    """A Project with no `defaultTierId` leaves the requested tier untouched."""
+    await client.get("/api/bootstrap")
+    project = await client.post("/api/projects", json={"name": "No default"})
+    project_id = project.json()["id"]
+
+    created = await client.post(
+        "/api/conversations",
+        json={"selectedTierId": "smart", "isTemporary": False, "projectId": project_id},
+    )
+    assert created.json()["selectedTierId"] == "smart"
+    assert created.json()["projectId"] == project_id
+
+
+async def test_create_in_missing_project_is_404(client: AsyncClient) -> None:
+    """Filing a new conversation under a not-owned / missing project is a 404."""
+    await client.get("/api/bootstrap")
+    resp = await client.post(
+        "/api/conversations",
+        json={"selectedTierId": "smart", "isTemporary": False, "projectId": str(uuid4())},
+    )
+    assert resp.status_code == 404
+
+
+async def test_patch_assigns_and_detaches_project(client: AsyncClient) -> None:
+    """PATCH `projectId` files the conversation; explicit `null` detaches it."""
+    await client.get("/api/bootstrap")
+    project = await client.post("/api/projects", json={"name": "Inbox"})
+    project_id = project.json()["id"]
+    created = await client.post(
+        "/api/conversations", json={"selectedTierId": "smart", "isTemporary": False}
+    )
+    convo_id = created.json()["id"]
+    assert created.json()["projectId"] is None
+
+    # Assign.
+    assigned = await client.patch(
+        f"/api/conversations/{convo_id}", json={"projectId": project_id}
+    )
+    assert assigned.status_code == 200
+    assert assigned.json()["projectId"] == project_id
+
+    # Sidebar summary carries the membership on the next bootstrap.
+    boot = await client.get("/api/bootstrap")
+    summary = next(c for c in boot.json()["conversations"] if c["id"] == convo_id)
+    assert summary["projectId"] == project_id
+
+    # Detach (explicit null).
+    detached = await client.patch(
+        f"/api/conversations/{convo_id}", json={"projectId": None}
+    )
+    assert detached.status_code == 200
+    assert detached.json()["projectId"] is None
+
+
+async def test_patch_to_missing_project_is_404(client: AsyncClient) -> None:
+    """Filing under a not-owned / missing project via PATCH is a 404."""
+    await client.get("/api/bootstrap")
+    created = await client.post(
+        "/api/conversations", json={"selectedTierId": "smart", "isTemporary": False}
+    )
+    convo_id = created.json()["id"]
+    resp = await client.patch(
+        f"/api/conversations/{convo_id}", json={"projectId": str(uuid4())}
+    )
+    assert resp.status_code == 404
+
+
+async def test_patch_project_only_is_meaningful(client: AsyncClient) -> None:
+    """A PATCH carrying ONLY `projectId` is a meaningful change, not a 400."""
+    await client.get("/api/bootstrap")
+    project = await client.post("/api/projects", json={"name": "P"})
+    project_id = project.json()["id"]
+    created = await client.post(
+        "/api/conversations", json={"selectedTierId": "smart", "isTemporary": False}
+    )
+    convo_id = created.json()["id"]
+    resp = await client.patch(
+        f"/api/conversations/{convo_id}", json={"projectId": project_id}
+    )
+    assert resp.status_code == 200

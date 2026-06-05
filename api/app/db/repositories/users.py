@@ -17,6 +17,8 @@ from app.db.models import (
     MemoryFact,
     Message,
     Preferences,
+    Project,
+    PromptTemplate,
     Session,
     Stream,
     UsageCreditLedger,
@@ -39,7 +41,7 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
 
     Order: vote (by message id) -> stream (by conversation id) ->
     message (by conversation id) -> conversation -> analytics_event ->
-    api_key / usage ledgers / preferences / session / memory_fact ->
+    api_key / usage ledgers / preferences / session / memory_fact / project ->
     audit purge -> user. Flush only; the caller (request dependency) owns the
     commit.
     """
@@ -72,6 +74,15 @@ async def delete_user_and_data(db: AsyncSession, *, user_id: UUID) -> None:
     # unconstrained (SET NULL, not RESTRICT), so deleting here is safe even after
     # the conversation rows are gone.
     await db.execute(delete(MemoryFact).where(MemoryFact.user_id == user_id))
+    # Projects/Spaces (D20). FK to users is CASCADE; `conversation.project_id` is
+    # SET NULL, but the owner's conversations are already deleted above, so the
+    # ordering is unconstrained. SQLite (tests) enforces neither, so remove the
+    # ledger explicitly — same explicit-cascade rationale as the rows above.
+    await db.execute(delete(Project).where(Project.user_id == user_id))
+    # Prompt library (D23). FK to users is CASCADE, but SQLite (tests) does not
+    # enforce it, so remove it explicitly — same explicit-cascade rationale as
+    # the rows above.
+    await db.execute(delete(PromptTemplate).where(PromptTemplate.user_id == user_id))
     await db.execute(delete(AuditEvent).where(AuditEvent.user_id == user_id))
     await db.execute(delete(User).where(User.id == user_id))
     await db.flush()

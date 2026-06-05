@@ -61,6 +61,9 @@ class Conversation(CamelModel):
     # user's global `preferences.retention_days`. Surfaced so the FE can show
     # "expires in ~N days" and pre-fill the per-conversation retention control.
     retention_days: int | None = None
+    # Project/Space membership (D20). `None` = unfiled. Surfaced so the FE can
+    # group the conversation under its Project and default the picker to it.
+    project_id: str | None = None
 
 
 class ConversationSummary(CamelModel):
@@ -73,6 +76,9 @@ class ConversationSummary(CamelModel):
     # summary so the kebab control + "expires in ~N days" hint render without a
     # follow-up GET. `None` = inherit the user's global retention.
     retention_days: int | None = None
+    # Project/Space membership (D20), echoed on the sidebar summary so the
+    # Projects grouping renders without a follow-up GET. `None` = unfiled.
+    project_id: str | None = None
 
 
 class ConversationSearchResult(ConversationSummary):
@@ -86,6 +92,11 @@ class CreateConversationRequest(CamelModel):
     selected_tier_id: ModelTierId
     is_temporary: bool = False
     provider_id: str | None = None
+    # Optional Project/Space to file the new conversation under (D20). When the
+    # project has a `defaultTierId`, the route pre-seeds the conversation's
+    # `selectedTierId` from it (a create-time default, not a send-path lock).
+    # Ignored on the temporary branch (temp chats have no persisted row).
+    project_id: str | None = None
 
 
 class BranchConversationRequest(CamelModel):
@@ -119,6 +130,11 @@ class PatchConversationRequest(CamelModel):
     # so the field type permits `None` while the bound (>= 1) only applies when
     # an integer is sent. Capped at 3650 (~10y) as a sanity bound.
     retention_days: Annotated[int, Field(ge=1, le=3650)] | None = None
+    # Project/Space membership (D20). THREE-VALUED on the wire like
+    # `retentionDays`: omitted = leave unchanged; a project id (UUID string) =
+    # file the conversation under it; explicit `null` = un-file (detach). The
+    # route reads `model_fields_set` to tell "omitted" from an explicit `null`.
+    project_id: str | None = None
 
 
 class SendMessageRequest(CamelModel):

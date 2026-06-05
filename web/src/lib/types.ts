@@ -366,6 +366,9 @@ export interface Conversation {
   // the user's global `UserPreferences.retentionDays`. Drives the kebab
   // retention control + the "expires in ~N days" hint.
   retentionDays?: number | null;
+  // Project/Space membership (D20). `null`/absent = unfiled. Drives the
+  // Projects grouping in the sidebar + the "Assign to project" control.
+  projectId?: string | null;
 }
 
 // A lightweight history-list entry for the sidebar (PRD 01 §4.2 / PRD 03).
@@ -383,6 +386,35 @@ export interface ConversationSummary {
   // the user's global retention. Echoed on the sidebar summary so the kebab
   // control + "expires in ~N days" hint render without a follow-up GET.
   retentionDays?: number | null;
+  // Project/Space membership (D20). `null`/absent = unfiled. Echoed on the
+  // sidebar summary so the Projects grouping renders without a follow-up GET.
+  projectId?: string | null;
+}
+
+// A Project/Space (D20): a thin scoping container that groups conversations and
+// scopes the existing wedge controls — default tier, retention, per-conversation
+// budget sub-cap, and shared custom instructions. Every setting is OPTIONAL and
+// `null` means "inherit the user-global value" (a labeled default, not a lock).
+export interface Project {
+  id: string;
+  name: string;
+  customInstructions?: string | null;
+  defaultTierId?: ModelTierId | null;
+  retentionDays?: number | null;
+  perConversationBudgetUsd?: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// The bootstrap sidebar shape for a Project: the settings ride along so the
+// FE pickers can render, but the timestamps stay out.
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  customInstructions?: string | null;
+  defaultTierId?: ModelTierId | null;
+  retentionDays?: number | null;
+  perConversationBudgetUsd?: number | null;
 }
 
 // User-editable preferences surfaced in the settings panel (PRD 06 §5.7 / PRD 05).
@@ -407,7 +439,47 @@ export interface UserPreferences {
   // Transparent long-term memory opt-in (D19). OFF by default. When on (and the
   // turn isn't temporary) the BE injects the user's saved facts into the turn.
   memoryEnabled: boolean;
+  // User remaps of the app's keyboard shortcuts (D23). Keyed by stable
+  // `ShortcutId` -> an override combo. An empty/missing entry for an action
+  // means "use the built-in default". Optional on the wire so older bootstrap
+  // payloads (and partial test stubs) still parse; the resolver treats a missing
+  // map as empty. See `web/src/lib/shortcut-defaults.ts`.
+  keyboardShortcuts?: KeyboardShortcuts;
 }
+
+// Stable, persistence-safe identifiers for each rebindable action (D23). These
+// are the keys of the `keyboardShortcuts` override map and MUST stay in sync
+// with the `ShortcutId` union driving `KEY_BINDINGS` in chat-thread.tsx. Kept
+// here so the override map, the rebind dialog, and the resolver can share one
+// type without importing the heavy chat-thread module.
+export type ShortcutId =
+  | "palette"
+  | "new-chat"
+  | "focus-composer"
+  | "copy-last-response"
+  | "copy-last-code"
+  | "toggle-sidebar"
+  | "custom-instructions"
+  | "delete-chat"
+  | "toggle-dictation"
+  | "shortcuts"
+  | "open-settings"
+  | "toggle-theme";
+
+// A single user-supplied shortcut override (D23). Mirrors the matcher-
+// significant fields of `ShortcutKeys` (`web/src/lib/use-keyboard-shortcuts.ts`)
+// and the BE `ShortcutOverride` schema. `allowInInput` is intentionally NOT part
+// of an override — it's a per-action trait owned by the built-in default.
+export interface ShortcutOverride {
+  key: string;
+  mod?: boolean; // Cmd on Mac, Ctrl elsewhere
+  shift?: boolean;
+}
+
+// The override map persisted on `preferences.keyboardShortcuts`. Mirrors the BE
+// `KeyboardShortcuts` type. Permissive on the value side; unknown action ids are
+// ignored by the resolver.
+export type KeyboardShortcuts = Partial<Record<ShortcutId, ShortcutOverride>>;
 
 // A single editable, attributed long-term-memory fact (D19). The glass-box
 // differentiator: every fact the assistant may use is a row the user can read,
@@ -417,6 +489,20 @@ export interface MemoryFact {
   content: string;
   source: "manual" | "conversation";
   sourceConversationId?: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+// A user-authored, reusable prompt template (D23). Selecting one prefills the
+// composer with `body` — a PURE composer prefill, NO model/cost/provider
+// change. `body` may carry literal variable placeholders (e.g. `{{topic}}`)
+// the user fills in after insertion. Mirrors
+// api/app/schemas/prompt_template.py `PromptTemplate`.
+export interface PromptTemplate {
+  id: string;
+  title: string;
+  body: string;
+  description?: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO
 }

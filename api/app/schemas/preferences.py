@@ -11,6 +11,32 @@ from app.schemas.common import CamelModel, ModelTierId
 CustomInstructions = Annotated[str, StringConstraints(max_length=4000)]
 
 
+class ShortcutOverride(CamelModel):
+    """A single user-supplied keyboard-shortcut override (D23).
+
+    Mirrors the FE `ShortcutKeys` shape that the live keydown matcher and the
+    shortcuts dialog consume (`web/src/lib/use-keyboard-shortcuts.ts`). Only the
+    matcher-significant fields are persisted: `key` is required; `mod` (Cmd on
+    Mac / Ctrl elsewhere) and `shift` default to False. `allowInInput` is NOT
+    stored — it is a per-action display/behavior trait owned by the built-in
+    default, never by an override.
+    """
+
+    # The matcher lower-cases single-character keys and compares named keys
+    # verbatim, so keep the value permissive but non-empty.
+    key: Annotated[str, StringConstraints(min_length=1, max_length=32)]
+    mod: bool = False
+    shift: bool = False
+
+
+# The override map: stable `ShortcutId` -> override combo. Keyed by the FE's
+# action ids; values validated as `ShortcutOverride`. An empty/missing entry for
+# an action means "use the built-in default". Unknown ids are accepted (and
+# simply ignored by the FE resolver) so a newer client that adds an action can
+# round-trip its overrides through an older server without data loss.
+KeyboardShortcuts = dict[str, ShortcutOverride]
+
+
 class UserPreferences(CamelModel):
     default_tier_id: ModelTierId
     temporary_by_default: bool
@@ -34,6 +60,11 @@ class UserPreferences(CamelModel):
     # the turn is not temporary) the user's saved facts are injected into the
     # turn — see `app.streaming.handler._apply_memory`.
     memory_enabled: bool = False
+    # User remaps of the app's keyboard shortcuts (D23). Empty map = every action
+    # uses its built-in default; each entry overrides one action's combo. The
+    # effective binding (default merged with override) drives both the live
+    # matcher and the shortcuts dialog on the FE.
+    keyboard_shortcuts: KeyboardShortcuts = Field(default_factory=dict)
 
 
 class UserPreferencesRequest(CamelModel):
@@ -54,3 +85,8 @@ class UserPreferencesRequest(CamelModel):
     # Transparent long-term memory opt-in (D19). Optional for stale clients;
     # omission preserves the existing saved value (mirrors `telemetry_enabled`).
     memory_enabled: bool | None = None
+    # Keyboard-shortcut remaps (D23). Optional for stale clients; omission
+    # preserves the existing saved map (mirrors `telemetry_enabled`). When
+    # present the map fully replaces the saved one (an empty map clears all
+    # overrides back to defaults).
+    keyboard_shortcuts: KeyboardShortcuts | None = None

@@ -127,6 +127,13 @@ class Preferences(Base):
     memory_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # User remaps of the app's keyboard shortcuts (D23). Map of stable action id
+    # -> override combo `{key, mod?, shift?}`. Empty map (the default) means
+    # every action uses its built-in default. `server_default="'{}'"` backfills
+    # existing rows so the column is never NULL.
+    keyboard_shortcuts: Mapped[dict[str, Any]] = mapped_column(
+        JsonVariant, nullable=False, default=dict, server_default=text("'{}'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

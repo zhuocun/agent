@@ -24,9 +24,42 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Preferences
 from app.schemas.common import ModelTierId
-from app.schemas.preferences import UserPreferences
+from app.schemas.preferences import (
+    KeyboardShortcuts,
+    ShortcutOverride,
+    UserPreferences,
+)
 
 _VALID_TIERS: tuple[ModelTierId, ...] = ("fast", "smart", "pro", "auto")
+
+
+def _coerce_shortcuts(raw: object) -> KeyboardShortcuts:
+    """Best-effort coerce a stored JSON value into the override map.
+
+    The column is `NOT NULL DEFAULT '{}'`, but a manual DB edit or schema drift
+    could leave a non-conforming value. Skip any entry that doesn't validate
+    (non-string id, malformed combo) rather than 500 the read — the same safety
+    posture the tier/retention fallbacks take above.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: KeyboardShortcuts = {}
+    for action_id, combo in raw.items():
+        if not isinstance(action_id, str) or not isinstance(combo, dict):
+            continue
+        try:
+            out[action_id] = ShortcutOverride.model_validate(combo)
+        except ValueError:
+            continue
+    return out
+
+
+def _shortcuts_to_db(shortcuts: KeyboardShortcuts) -> dict[str, object]:
+    """Serialize the override map to a JSON-storable plain dict."""
+    return {
+        action_id: combo.model_dump(by_alias=True)
+        for action_id, combo in shortcuts.items()
+    }
 
 
 # Mirror web/src/lib/mock-data.ts:MOCK_PREFERENCES.
@@ -42,6 +75,7 @@ _DEFAULTS = UserPreferences(
     monthly_budget_usd=None,
     per_conversation_budget_usd=None,
     memory_enabled=False,
+    keyboard_shortcuts={},
 )
 
 
@@ -64,6 +98,7 @@ def _row_to_schema(row: Preferences) -> UserPreferences:
         monthly_budget_usd=row.monthly_budget_usd,
         per_conversation_budget_usd=row.per_conversation_budget_usd,
         memory_enabled=row.memory_enabled,
+        keyboard_shortcuts=_coerce_shortcuts(row.keyboard_shortcuts),
     )
 
 
@@ -99,6 +134,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
                 monthly_budget_usd=prefs.monthly_budget_usd,
                 per_conversation_budget_usd=prefs.per_conversation_budget_usd,
                 memory_enabled=prefs.memory_enabled,
+                keyboard_shortcuts=_shortcuts_to_db(prefs.keyboard_shortcuts),
             )
         )
     else:
@@ -113,6 +149,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
         row.monthly_budget_usd = prefs.monthly_budget_usd
         row.per_conversation_budget_usd = prefs.per_conversation_budget_usd
         row.memory_enabled = prefs.memory_enabled
+        row.keyboard_shortcuts = _shortcuts_to_db(prefs.keyboard_shortcuts)
         # `updated_at` has no onupdate hook; touch it explicitly so the column
         # reflects the actual mutation time.
         row.updated_at = datetime.now(UTC)

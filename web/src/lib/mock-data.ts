@@ -16,6 +16,7 @@ export const MOCK_PREFERENCES: UserPreferences = {
   monthlyBudgetUsd: null,
   perConversationBudgetUsd: null,
   memoryEnabled: false,
+  keyboardShortcuts: {},
 };
 
 // Native slash commands (PRD 01 §4.3 / §5.3). Templates end with a trailing

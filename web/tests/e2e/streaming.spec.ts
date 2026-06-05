@@ -216,8 +216,31 @@ test.describe("streaming", () => {
     await expect(sourceCards.first()).toBeVisible({ timeout: 15_000 });
     expect(await sourceCards.count()).toBeGreaterThanOrEqual(1);
 
+    // Provenance label ("From the web") renders on the sources panel.
+    await expect(assistant.getByTestId("sources-provenance")).toHaveText(
+      "From the web",
+    );
+
+    // Inline `[n]` citation markers: the fake grounded answer cites [1][2], so
+    // those tokens render as interactive chips bound to source ids 1 and 2.
+    // Activating one reveals (keeps visible) the matching source card.
+    const citationMarkers = assistant.getByTestId("citation-marker");
+    await expect(citationMarkers.first()).toBeVisible({ timeout: 15_000 });
+    expect(await citationMarkers.count()).toBeGreaterThanOrEqual(2);
+    await citationMarkers.first().click();
+    // Activating the marker reveals the matching card: the panel stays visible
+    // and the card picks up the transient highlight ring (primary box-shadow).
+    const revealedCard = assistant.locator('[data-source-id="1"]').first();
+    await expect(revealedCard).toBeVisible();
+    await expect
+      .poll(async () =>
+        revealedCard.evaluate((el) => getComputedStyle(el).boxShadow),
+      )
+      .not.toBe("none");
+
     // (d) BE round-trip: the assistant row persists a `sources` part whose
-    // items carry the contract shape (id/title/url, optional snippet/domain).
+    // items carry the contract shape (id/title/url, optional snippet/domain,
+    // plus provenance) and `requested: true`.
     expect(createdConvoId).toBeTruthy();
     const fetched = await page.request.get(
       `${BE_URL}/api/conversations/${createdConvoId}`,
@@ -228,7 +251,13 @@ test.describe("streaming", () => {
       role: string;
       parts: Array<{
         type: string;
-        items?: Array<{ id: number; title: string; url: string }>;
+        requested?: boolean;
+        items?: Array<{
+          id: number;
+          title: string;
+          url: string;
+          provenance?: string;
+        }>;
       }>;
     }> = body.messages;
 
@@ -236,12 +265,16 @@ test.describe("streaming", () => {
     expect(assistantMsg).toBeTruthy();
     const sourcesPart = assistantMsg!.parts.find((p) => p.type === "sources");
     expect(sourcesPart).toBeTruthy();
+    // Grounded turn: web search was effective (`requested`) and resolved items.
+    expect(sourcesPart!.requested).toBe(true);
     expect(Array.isArray(sourcesPart!.items)).toBe(true);
     expect((sourcesPart!.items ?? []).length).toBeGreaterThanOrEqual(1);
     const first = (sourcesPart!.items ?? [])[0];
     expect(typeof first.id).toBe("number");
     expect(typeof first.title).toBe("string");
     expect(typeof first.url).toBe("string");
+    // Provenance defaults to "web" and round-trips through persistence.
+    expect(first.provenance).toBe("web");
 
     // The sources part is ordered AFTER the answer text part (contract: sources
     // render after the answer).

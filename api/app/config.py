@@ -264,6 +264,29 @@ class Settings(BaseSettings):
     # `stream_reap_after_seconds` disables the background loop.
     stream_reap_interval_seconds: int = Field(default=300, alias="STREAM_REAP_INTERVAL_SECONDS")
 
+    # Scheduled retention purge (D31). Retention is also enforced
+    # opportunistically on read paths (bootstrap / history reads / export), but
+    # a dormant account's expired conversations would otherwise linger on disk
+    # forever. This background sweep deletes expired conversations across ALL
+    # users on an interval, honoring the per-conversation `retention_days`
+    # override else the owner's global `preferences.retention_days`. The first
+    # sweep also runs once at startup. `<= 0` on the interval DISABLES the
+    # scheduled loop entirely (the opportunistic purges keep working unchanged) —
+    # default ON at one hour. Default-on is safe: with no retention configured by
+    # anyone, the candidate pre-filter matches no rows and the sweep is a no-op.
+    #
+    # Single-process caveat (same as the orphan-stream reaper): the loop runs
+    # in-process; behind multiple uvicorn workers each process sweeps
+    # independently — harmless because the deletes are idempotent, but a
+    # production-grade purge belongs in a single coordinated job (cron /
+    # Redis-locked worker) rather than every web process.
+    retention_purge_enabled: bool = Field(
+        default=True, alias="RETENTION_PURGE_ENABLED"
+    )
+    retention_purge_interval_seconds: int = Field(
+        default=3600, alias="RETENTION_PURGE_INTERVAL_SECONDS"
+    )
+
     # Auto-tier routing. When True (default), an `auto` request runs the v0
     # complexity heuristic (`providers/router.py`) and is served by the routed
     # concrete tier (fast / smart / pro). When False, `auto` falls back to its

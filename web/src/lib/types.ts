@@ -349,6 +349,10 @@ export interface Conversation {
   messages: ChatMessage[];
   selectedTierId: ModelTierId;
   isTemporary: boolean;
+  // Per-conversation retention override in days (D31). `null`/absent = inherit
+  // the user's global `UserPreferences.retentionDays`. Drives the kebab
+  // retention control + the "expires in ~N days" hint.
+  retentionDays?: number | null;
 }
 
 // A lightweight history-list entry for the sidebar (PRD 01 §4.2 / PRD 03).
@@ -362,6 +366,10 @@ export interface ConversationSummary {
   pinned?: boolean;
   matchSnippet?: string;
   matchedMessageId?: string | null;
+  // Per-conversation retention override in days (D31). `null`/absent = inherit
+  // the user's global retention. Echoed on the sidebar summary so the kebab
+  // control + "expires in ~N days" hint render without a follow-up GET.
+  retentionDays?: number | null;
 }
 
 // User-editable preferences surfaced in the settings panel (PRD 06 §5.7 / PRD 05).

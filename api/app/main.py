@@ -33,6 +33,7 @@ from app.config import Settings, get_settings
 from app.db.session import get_session_factory
 from app.errors import register_exception_handlers
 from app.logging_setup import configure_logging
+from app.maintenance.purge import purge_once, run_purge_loop
 from app.middleware.ratelimit import RateLimitMiddleware, limiter
 from app.middleware.request_id import RequestIDMiddleware
 from app.observability import init_sentry, instrument_fastapi
@@ -56,7 +57,8 @@ _log = structlog.get_logger(__name__)
 
 
 def _build_lifespan(settings: Settings) -> Any:
-    """Build the ASGI lifespan: orphan-stream reaper + resumable-producer cleanup.
+    """Build the ASGI lifespan: orphan-stream reaper + scheduled retention purge
+    + resumable-producer cleanup.
 
     Two reaper trigger seams (see `app.streaming.reaper`):
 
@@ -76,6 +78,13 @@ def _build_lifespan(settings: Settings) -> Any:
     production-grade reaper belongs in a single coordinated job; see the
     `stream_reap_after_seconds` doc in `app.config`.
 
+    A SECOND pair of seams runs the scheduled retention purge (D31; see
+    `app.maintenance.purge`): a startup sweep plus a detached interval loop that
+    delete expired conversations across all users (per-conversation override
+    else the owner's global retention). Gated on `retention_purge_enabled` AND
+    `retention_purge_interval_seconds > 0`; cancelled cleanly on shutdown. The
+    opportunistic read-path purges keep working regardless of this flag.
+
     Shutdown also cancels any detached resumable-stream producers
     (`cancel_all_producers`). When `resumable_streams_enabled` is on, the
     provider pump runs as a detached task that outlives its originating request;
@@ -89,6 +98,7 @@ def _build_lifespan(settings: Settings) -> Any:
         ttl_seconds = settings.stream_reap_after_seconds
         interval_seconds = settings.stream_reap_interval_seconds
         task: asyncio.Task[None] | None = None
+        purge_task: asyncio.Task[None] | None = None
         if ttl_seconds > 0:
             older_than = timedelta(seconds=ttl_seconds)
             factory = get_session_factory()
@@ -103,13 +113,29 @@ def _build_lifespan(settings: Settings) -> Any:
                         interval_seconds=interval_seconds,
                     )
                 )
+        # Scheduled retention purge (D31). Independent of the reaper gate: a
+        # startup sweep plus a detached interval loop deleting expired
+        # conversations across all users. The opportunistic read-path purges
+        # keep working regardless of this flag.
+        purge_interval = settings.retention_purge_interval_seconds
+        if settings.retention_purge_enabled and purge_interval > 0:
+            purge_factory = get_session_factory()
+            # Startup sweep — best-effort, never blocks boot.
+            await purge_once(purge_factory)
+            purge_task = asyncio.create_task(
+                run_purge_loop(
+                    purge_factory,
+                    interval_seconds=purge_interval,
+                )
+            )
         try:
             yield
         finally:
-            if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+            for background_task in (task, purge_task):
+                if background_task is not None:
+                    background_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await background_task
             # Cancel any detached resumable-stream producers (no-op when the
             # resumable flag is off — the producer set is empty).
             await cancel_all_producers()

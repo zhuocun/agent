@@ -17,7 +17,7 @@ M2 adds:
 from __future__ import annotations
 
 import secrets
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -27,7 +27,7 @@ from sqlalchemy import String, delete, func, or_, select
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Message, Stream, Vote
+from app.db.models import Conversation, Message, Preferences, Stream, Vote
 from app.db.repositories import audit_events
 from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
@@ -42,6 +42,18 @@ from app.schemas.share import PublicAttribution, PublicConversation, PublicMessa
 _SHARE_TOKEN_BYTES = 24
 _SEARCH_SNIPPET_RADIUS = 64
 _SEARCH_PAGE_SIZE = 100
+
+
+class _Unset:
+    """Sentinel distinguishing "don't touch" from an explicit `None`.
+
+    Needed for the nullable `retention_days` patch: `None` is a meaningful value
+    ("clear the per-conversation override"), so a default of `None` could not
+    also mean "leave the column unchanged."
+    """
+
+
+_UNSET = _Unset()
 
 
 def _iso(dt: datetime) -> str:
@@ -153,6 +165,7 @@ async def list_summaries_for_user(
             updated_at=_iso(row.updated_at),
             is_temporary=False,
             pinned=row.pinned,
+            retention_days=row.retention_days,
         )
         for row in rows
     ]
@@ -242,6 +255,7 @@ async def search_for_user(
                     updated_at=_iso(row.updated_at),
                     is_temporary=False,
                     pinned=row.pinned,
+                    retention_days=row.retention_days,
                     match_snippet=snippet,
                     matched_message_id=matched_message_id,
                 )
@@ -396,6 +410,7 @@ async def get_for_user(
         messages=messages,
         selected_tier_id=_coerce_tier(row.selected_tier_id),
         is_temporary=False,
+        retention_days=row.retention_days,
     )
 
 
@@ -406,9 +421,13 @@ async def update_for_user(
     *,
     title: str | None = None,
     pinned: bool | None = None,
+    retention_days: int | None | _Unset = _UNSET,
 ) -> Conversation | None:
-    """Update the owned conversation's title/pinned. None args mean "don't touch."
+    """Update the owned conversation's title/pinned/retention. Returns the row.
 
+    `title` / `pinned` use `None` as "don't touch". `retention_days` is
+    three-valued — its `None` means "CLEAR the override (inherit the global
+    retention)", so it uses the `_UNSET` sentinel for "don't touch" instead.
     Returns the refreshed ORM row, or None if the row isn't owned/doesn't exist.
     Bumps `updated_at` so the sidebar's pinned/updated ordering reflects the
     rename or pin/unpin.
@@ -420,6 +439,8 @@ async def update_for_user(
         row.title = title
     if pinned is not None:
         row.pinned = pinned
+    if not isinstance(retention_days, _Unset):
+        row.retention_days = retention_days
     # Touch updated_at — the column has a server_default but no onupdate hook,
     # so we set it explicitly. Naive datetime is fine for SQLite tests; Postgres
     # accepts tz-aware values via TIMESTAMP(timezone=True).
@@ -503,26 +524,60 @@ async def delete_for_user(
     return True
 
 
-async def delete_older_than_for_user(
-    db: AsyncSession,
-    *,
-    user_id: UUID,
-    cutoff: datetime,
-) -> int:
-    """Delete conversations older than `cutoff` for a user's retention policy.
+def _effective_retention_days(
+    conversation_retention_days: int | None,
+    global_retention_days: int | None,
+) -> int | None:
+    """Resolve a conversation's effective retention window in days (D31).
 
-    Retention is keyed on `updated_at`: an old conversation that was recently
-    renamed, pinned, or continued is still active data. SQLite tests do not rely
-    on FK cascades, so the dependent rows are removed explicitly.
+    The per-conversation override wins when set; otherwise the user's global
+    `preferences.retention_days` applies. `None` from BOTH means "retain
+    forever" — the conversation never expires.
     """
-    stmt = select(Conversation.id).where(
-        Conversation.user_id == user_id,
-        Conversation.updated_at < cutoff,
-    )
-    conversation_ids = (await db.execute(stmt)).scalars().all()
-    if not conversation_ids:
-        return 0
+    if conversation_retention_days is not None:
+        return conversation_retention_days
+    return global_retention_days
 
+
+def _is_expired(
+    *,
+    updated_at: datetime,
+    conversation_retention_days: int | None,
+    global_retention_days: int | None,
+    now: datetime,
+) -> bool:
+    """True iff a conversation is past its effective retention window.
+
+    Expiry is keyed on `updated_at` (mirroring the rest of retention): an old
+    conversation that was recently renamed, pinned, or continued is still active
+    data. The cutoff is computed in Python (a plain `timedelta` subtraction) so
+    no dialect-specific date arithmetic is needed — the same approach the
+    orphan-stream reaper uses.
+
+    `updated_at` may be naive (SQLite test rows) or tz-aware (Postgres). Compare
+    against a `now` of the matching awareness so the subtraction never raises a
+    naive/aware mismatch.
+    """
+    days = _effective_retention_days(conversation_retention_days, global_retention_days)
+    if days is None:
+        return False
+    reference = now if updated_at.tzinfo is not None else now.replace(tzinfo=None)
+    return updated_at < reference - timedelta(days=days)
+
+
+async def _purge_conversation_ids(
+    db: AsyncSession,
+    conversation_ids: Sequence[UUID],
+) -> None:
+    """Manual cascade-delete a set of conversations and their dependents.
+
+    SQLite (tests) does not enforce FK cascades by default, so dependent rows
+    are removed explicitly in FK order (vote -> stream/message -> conversation).
+    On Postgres the ON DELETE CASCADE also fires; the explicit deletes are
+    idempotent there too.
+    """
+    if not conversation_ids:
+        return
     msg_id_stmt = select(Message.id).where(
         Message.conversation_id.in_(conversation_ids)
     )
@@ -533,15 +588,123 @@ async def delete_older_than_for_user(
     await db.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
     await db.execute(delete(Conversation).where(Conversation.id.in_(conversation_ids)))
     await db.flush()
+
+
+async def delete_older_than_for_user(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    global_retention_days: int | None,
+) -> int:
+    """Purge a user's expired conversations honoring the per-conversation override.
+
+    Each conversation expires once `now - updated_at` exceeds its effective
+    retention window — its own `retention_days` if set, else the caller's global
+    `preferences.retention_days` (D31). When BOTH are NULL the conversation is
+    retained forever. This is the opportunistic per-user purge invoked on read
+    paths (bootstrap, history reads, export); the scheduled
+    `delete_expired_all_users` sweep enforces the same rule across every user.
+
+    A single user-scoped candidate fetch (id, updated_at, retention_days), then
+    the expiry decision in Python — no dialect-specific date math. Emits the
+    user-facing `retention.purge` audit event only when something was actually
+    deleted, so the common no-op read path stays silent.
+    """
+    now = datetime.now(UTC)
+    stmt = select(
+        Conversation.id,
+        Conversation.updated_at,
+        Conversation.retention_days,
+    ).where(Conversation.user_id == user_id)
+    rows = (await db.execute(stmt)).all()
+    expired_ids = [
+        row.id
+        for row in rows
+        if _is_expired(
+            updated_at=row.updated_at,
+            conversation_retention_days=row.retention_days,
+            global_retention_days=global_retention_days,
+            now=now,
+        )
+    ]
+    if not expired_ids:
+        return 0
+
+    await _purge_conversation_ids(db, expired_ids)
     # Record the purge on the user-facing activity log — only when something
     # was actually deleted, so the common no-op read path stays silent.
     await audit_events.record(
         db,
         user_id=user_id,
         event_type="retention.purge",
-        details={"purgedConversations": len(conversation_ids)},
+        details={"purgedConversations": len(expired_ids)},
     )
-    return len(conversation_ids)
+    return len(expired_ids)
+
+
+async def delete_expired_all_users(db: AsyncSession) -> int:
+    """Scheduled sweep: purge expired conversations across ALL users (D31).
+
+    Each conversation expires by its effective retention window — its own
+    `retention_days` override if set, else the owning user's global
+    `preferences.retention_days` (a missing preferences row => no global window).
+    Conversations with no finite window from either source are retained forever.
+
+    Candidate pre-filter (SQL): only rows that have SOME finite window can
+    possibly expire, i.e. the conversation override is set OR the owner's global
+    preference is set. A LEFT JOIN to `preferences` exposes the per-owner global
+    in the same scan, and the expiry decision is finished in Python (plain
+    `timedelta` subtraction — no dialect-specific date arithmetic). The purge
+    is grouped per user so each owner gets exactly one `retention.purge` audit
+    event carrying their own deleted count.
+
+    Returns the total number of conversations purged across all users. Owns no
+    session of its own — the caller (the scheduled-purge loop) provides one and
+    commits.
+    """
+    now = datetime.now(UTC)
+    stmt = (
+        select(
+            Conversation.id,
+            Conversation.user_id,
+            Conversation.updated_at,
+            Conversation.retention_days,
+            Preferences.retention_days.label("global_retention_days"),
+        )
+        .outerjoin(Preferences, Preferences.user_id == Conversation.user_id)
+        .where(
+            or_(
+                Conversation.retention_days.is_not(None),
+                Preferences.retention_days.is_not(None),
+            )
+        )
+    )
+    rows = (await db.execute(stmt)).all()
+
+    expired_by_user: dict[UUID, list[UUID]] = {}
+    for row in rows:
+        if _is_expired(
+            updated_at=row.updated_at,
+            conversation_retention_days=row.retention_days,
+            global_retention_days=row.global_retention_days,
+            now=now,
+        ):
+            expired_by_user.setdefault(row.user_id, []).append(row.id)
+
+    if not expired_by_user:
+        return 0
+
+    total = 0
+    for owner_id, conversation_ids in expired_by_user.items():
+        await _purge_conversation_ids(db, conversation_ids)
+        await audit_events.record(
+            db,
+            user_id=owner_id,
+            event_type="retention.purge",
+            details={"purgedConversations": len(conversation_ids)},
+        )
+        total += len(conversation_ids)
+    return total
 
 
 async def mint_share_token(

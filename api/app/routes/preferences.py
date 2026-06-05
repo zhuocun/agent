@@ -12,8 +12,6 @@ hit (see `app.routes.bootstrap`).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,10 +90,12 @@ async def put_preferences(
         raise _safety_blocked(safety_decision)
 
     await preferences_repo.upsert(db, user.id, merged)
-    if body.retention_days is not None:
-        await conversations_repo.delete_older_than_for_user(
-            db,
-            user_id=user.id,
-            cutoff=datetime.now(UTC) - timedelta(days=body.retention_days),
-        )
+    # Opportunistic purge with the newly-saved global window. Honors any
+    # per-conversation `retention_days` override too (D31), so lowering the
+    # global window (or having only per-conversation windows) takes effect now.
+    await conversations_repo.delete_older_than_for_user(
+        db,
+        user_id=user.id,
+        global_retention_days=merged.retention_days,
+    )
     return None

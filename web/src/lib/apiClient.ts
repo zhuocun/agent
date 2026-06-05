@@ -316,7 +316,10 @@ export function branchConversation(
 
 export function patchConversation(
   id: string,
-  body: { title?: string; pinned?: boolean },
+  // `retentionDays` is THREE-VALUED to match the BE (D31): omit the key to
+  // leave it unchanged, send a number to set the per-conversation override, or
+  // send `null` to clear it (inherit the global retention).
+  body: { title?: string; pinned?: boolean; retentionDays?: number | null },
   signal?: AbortSignal,
 ): Promise<Conversation> {
   return apiClient.patch<Conversation>(

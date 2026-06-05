@@ -1876,6 +1876,39 @@ export function ChatThread() {
     });
   };
 
+  // Set (number) or clear (null) a conversation's per-conversation retention
+  // override (D31). Optimistic, with the same rollback-on-failure discipline as
+  // rename / pin. The PATCH carries `retentionDays` three-valued: `null` clears
+  // the override so the conversation inherits the global retention.
+  const handleSetConversationRetention = (
+    id: string,
+    retentionDays: number | null,
+  ) => {
+    const previous = conversations;
+    const target = previous.find((c) => c.id === id);
+    if (!target || (target.retentionDays ?? null) === retentionDays) return;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, retentionDays } : c)),
+    );
+    void patchConversation(id, { retentionDays }).catch((cause) => {
+      setConversations(previous);
+      if (cause instanceof ApiError) setLiveMessage(cause.title);
+      showToast({
+        severity: "error",
+        title:
+          cause instanceof ApiError
+            ? cause.title
+            : "Couldn't update retention",
+        body:
+          cause instanceof ApiError
+            ? cause.body
+            : cause instanceof Error
+              ? cause.message
+              : undefined,
+      });
+    });
+  };
+
   const handlePreferencesChange = (next: UserPreferences) => {
     if (!bootstrap) return;
     const previous = bootstrap.preferences;
@@ -2514,6 +2547,7 @@ export function ChatThread() {
             onRenameConversation={handleRenameConversation}
             onDeleteConversation={handleDeleteConversation}
             onTogglePinConversation={handleTogglePinConversation}
+            onSetConversationRetention={handleSetConversationRetention}
             onCopyConversation={handleCopyConversationById}
             onDownloadConversation={handleDownloadConversationById}
             onOpenSettings={handleOpenSettings}

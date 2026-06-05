@@ -51,6 +51,13 @@ class SourcesPart(CamelModel):
 
     type: Literal["sources"] = "sources"
     items: list[SourceItem]
+    # Honesty rule (PRD 07 §4.3): `requested=True` means web search was
+    # EFFECTIVE for this turn. A turn is grounded iff `items` is non-empty; an
+    # empty `items` with `requested=True` is the ungrounded state ("Answered
+    # without live sources"). When search was never requested, no sources part
+    # is persisted at all, so this defaults to False for any legacy/non-search
+    # part and never has to be backfilled.
+    requested: bool = False
 
 
 class AttachmentPart(CamelModel):

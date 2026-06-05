@@ -1140,6 +1140,11 @@ async def _maybe_replay(
         texts: list[str] = []
         status_part: dict[str, object] | None = None
         sources_items: list[dict[str, object]] = []
+        # Whether a `sources` part was persisted at all, and whether it marked
+        # web search as effective. An empty `items` with `requested=True` is the
+        # ungrounded turn, which must still replay its `sources` frame so a
+        # reconnecting client renders "Answered without live sources".
+        sources_requested = False
         tool_parts: list[dict[str, object]] = []
         for part in cast(list[dict[str, object]], assistant_row.parts or []):
             ptype = part.get("type")
@@ -1151,6 +1156,7 @@ async def _maybe_replay(
                 status_part = part
             elif ptype == "sources":
                 sources_items = cast(list[dict[str, object]], part.get("items", []) or [])
+                sources_requested = bool(part.get("requested", False))
             elif ptype in ("tool_call", "tool_result"):
                 tool_parts.append(part)
         return _replay_response(
@@ -1161,6 +1167,7 @@ async def _maybe_replay(
             attribution_dict=cast(dict[str, object], assistant_row.attribution),
             status_part=status_part,
             sources_items=sources_items,
+            sources_requested=sources_requested,
             tool_parts=tool_parts,
         )
     # User message exists but no completed assistant row: prior is in flight
@@ -2382,6 +2389,7 @@ def _replay_response(
     attribution_dict: dict[str, object],
     status_part: dict[str, object] | None = None,
     sources_items: list[dict[str, object]] | None = None,
+    sources_requested: bool = False,
     tool_parts: list[dict[str, object]] | None = None,
 ) -> EventSourceResponse:
     """Replay a prior terminal as a single combined frame.
@@ -2419,10 +2427,16 @@ def _replay_response(
         yield encode_answer_delta(AnswerDeltaEvent(text=answer_text))
         # Persisted `sources` part replays after the answer, mirroring the live
         # order [text] [sources]. `SourceItem.model_validate` re-validates the
-        # stored dicts so a malformed row can't emit a broken wire frame.
-        if items:
+        # stored dicts so a malformed row can't emit a broken wire frame. An
+        # ungrounded turn persists an empty `items` with `requested=True`, so we
+        # replay the frame whenever EITHER items exist OR web search was
+        # effective — never letting the ungrounded marker silently drop.
+        if items or sources_requested:
             yield encode_sources(
-                SourcesEvent(items=[SourceItem.model_validate(it) for it in items])
+                SourcesEvent(
+                    items=[SourceItem.model_validate(it) for it in items],
+                    requested=sources_requested,
+                )
             )
         yield encode_terminal(
             TerminalEvent(

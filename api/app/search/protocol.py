@@ -14,7 +14,7 @@ would create an import cycle).
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
@@ -26,6 +26,14 @@ class SourceItem(BaseModel):
     inline citations like `[1]` / `[2]` keyed on it). `title` / `url` are
     required; `snippet` (a short excerpt) and `domain` (the URL's host) are
     optional display affordances.
+
+    `provenance` is the source's origin class (PRD 07 §4.3 transparency
+    contract): `web` is the only live one today; `knowledge` (private RAG) and
+    `connector` (third-party docs) are RESERVED in the enum so the field
+    round-trips everywhere now without a later schema migration. Defaulting to
+    `web` means the search protocol, the provider `Sources` event, the
+    `SourcesEvent` SSE payload, the persisted `SourcesPart`, and the public-share
+    `PublicMessage.parts` all carry it for free.
     """
 
     id: int
@@ -33,6 +41,7 @@ class SourceItem(BaseModel):
     url: str
     snippet: str | None = None
     domain: str | None = None
+    provenance: Literal["web", "knowledge", "connector"] = "web"
 
 
 class SearchProvider(Protocol):

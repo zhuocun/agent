@@ -168,6 +168,11 @@ export interface SourceItem {
   url: string;
   snippet?: string;
   domain?: string;
+  // Origin class (PRD 07 §4.3 transparency contract). `web` is the only live
+  // one today; `knowledge` (private RAG) and `connector` (third-party docs) are
+  // RESERVED so the field round-trips now without a later migration. Absent is
+  // treated as `web` by the UI.
+  provenance?: "web" | "knowledge" | "connector";
 }
 
 export type JsonValue =
@@ -199,7 +204,10 @@ export type MessagePart =
   // Web-search sources, rendered AFTER the answer text. Added to the shared
   // `MessagePart` union so it auto-flows to the share surface (`PublicMessage`
   // reuses `MessagePart`) and round-trips via GET /api/conversations/:id.
-  | { type: "sources"; items: SourceItem[] }
+  // `requested` is True when web search was EFFECTIVE for the turn: grounded ⇔
+  // `items` non-empty; an empty `items` with `requested` is the ungrounded
+  // state the UI marks "Answered without live sources".
+  | { type: "sources"; items: SourceItem[]; requested?: boolean }
   // User attachment metadata. Outgoing send requests may add transient payload
   // fields; the server strips those before persistence.
   | AttachmentPart

@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { RotateCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { RotateCw, SearchX } from "lucide-react";
 import Link from "next/link";
 import { Loader2, MessageSquareText } from "lucide-react";
 
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
-import { SourcesPanel } from "@/components/chat/sources-panel";
+import {
+  SourcesPanel,
+  type SourcesPanelHandle,
+} from "@/components/chat/sources-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { PublicAttributionRow } from "@/components/share/public-attribution-row";
@@ -177,6 +180,12 @@ function ConversationBody({
 }
 
 function PublicMessageItem({ message }: { message: PublicMessage }) {
+  // Hooks must run unconditionally, so they sit above the user-message early
+  // return (harmless for user turns, which have no sources).
+  const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
+  const sourceItems =
+    message.parts.find((p) => p.type === "sources")?.items ?? [];
+
   if (message.role === "user") {
     const text = message.parts
       .filter((p) => p.type === "text")
@@ -221,15 +230,28 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
         if (part.type === "text") {
           return part.text ? (
             <div key={idx} data-testid="public-assistant-answer">
-              <MarkdownRenderer>{part.text}</MarkdownRenderer>
+              <MarkdownRenderer
+                sources={sourceItems}
+                onCitationClick={(id) =>
+                  sourcesPanelRef.current?.revealSource(id)
+                }
+              >
+                {part.text}
+              </MarkdownRenderer>
             </div>
           ) : null;
         }
         if (part.type === "sources") {
           // Citations are not cost-bearing, so they survive the share strip and
           // render with the same primitive as the private thread — a shared
-          // grounded answer keeps its sources.
-          return <SourcesPanel key={idx} items={part.items} />;
+          // grounded answer keeps its sources, and an ungrounded turn keeps its
+          // honesty marker.
+          if (part.items.length === 0) {
+            return part.requested ? <PublicUngroundedMarker key={idx} /> : null;
+          }
+          return (
+            <SourcesPanel key={idx} ref={sourcesPanelRef} items={part.items} />
+          );
         }
         if (part.type === "tool_call" || part.type === "tool_result") {
           return <ToolPartView key={idx} part={part} />;
@@ -244,6 +266,20 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
           <PublicAttributionRow attribution={message.attribution} />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// Mirror of the private thread's ungrounded honesty marker (PRD 07 §4.3) so a
+// shared ungrounded turn reads "Answered without live sources" too.
+function PublicUngroundedMarker() {
+  return (
+    <div
+      className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+      data-testid="ungrounded-marker"
+    >
+      <SearchX aria-hidden className="size-3.5" />
+      <span>Answered without live sources</span>
     </div>
   );
 }

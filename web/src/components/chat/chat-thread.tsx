@@ -740,9 +740,16 @@ export function ChatThread() {
       });
     }
     if (result.answer) parts.push({ type: "text", text: result.answer });
-    // Sources part follows the answer text (contract ordering).
-    if (result.sources.length > 0) {
-      parts.push({ type: "sources", items: result.sources });
+    // Sources part follows the answer text (contract ordering). Emit it whenever
+    // web search was effective — even with zero sources — so the ungrounded
+    // marker ("Answered without live sources") survives the commit; grounded ⇔
+    // non-empty items.
+    if (result.sources.length > 0 || result.sourcesRequested) {
+      parts.push({
+        type: "sources",
+        items: result.sources,
+        requested: result.sourcesRequested,
+      });
     }
 
     const serverAssistantId = result.serverAssistantMessageId ?? assistantId;
@@ -1256,9 +1263,15 @@ export function ChatThread() {
     }
     if (state.answer) parts.push({ type: "text", text: state.answer });
     // Sources render AFTER the answer text (contract: sources part follows the
-    // answer). They stream in once the search resolves.
-    if (state.sources.length > 0) {
-      parts.push({ type: "sources", items: state.sources });
+    // answer). They stream in once the search resolves. When web search was
+    // effective but resolved nothing, the empty + requested part drives the
+    // live ungrounded marker.
+    if (state.sources.length > 0 || state.sourcesRequested) {
+      parts.push({
+        type: "sources",
+        items: state.sources,
+        requested: state.sourcesRequested,
+      });
     }
     return {
       id: pendingId,

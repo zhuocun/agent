@@ -27,6 +27,7 @@ import type {
   PublicConversation,
   ShareLinkResponse,
   SpendAnalytics,
+  Tag,
   UsageBudget,
   UserPreferences,
 } from "@/lib/types";
@@ -43,6 +44,9 @@ export interface BootstrapResponse {
   // Projects/Spaces (D20). May be absent on a stale BE; the FE treats a missing
   // value as an empty list.
   projects?: ProjectSummary[];
+  // Tags (Conversation Org v2). May be absent on a stale BE; the FE treats a
+  // missing value as an empty list.
+  tags?: Tag[];
 }
 
 export type BillingCheckoutKind = "pro_subscription" | "credit_purchase";
@@ -58,6 +62,7 @@ export interface AccountExportResponse {
   conversations: Conversation[];
   memoryFacts?: MemoryFact[];
   projects?: Project[];
+  tags?: Tag[];
   exportedAt: string;
 }
 
@@ -331,11 +336,16 @@ export function patchConversation(
   // `retentionDays` and `projectId` are THREE-VALUED to match the BE
   // (D31/D20): omit the key to leave it unchanged, send a value to set it, or
   // send `null` to clear it (retention -> inherit global; project -> un-file).
+  // `archived` is a plain bool toggle; `tagIds` is a FULL REPLACE of the
+  // conversation's tag set (omit = unchanged, `[]` = clear all) — Conversation
+  // Org v2.
   body: {
     title?: string;
     pinned?: boolean;
     retentionDays?: number | null;
     projectId?: string | null;
+    archived?: boolean;
+    tagIds?: string[];
   },
   signal?: AbortSignal,
 ): Promise<Conversation> {
@@ -628,6 +638,84 @@ export function deleteProject(
   signal?: AbortSignal,
 ): Promise<void> {
   return apiClient.del(`/api/projects/${encodeURIComponent(id)}`, signal);
+}
+
+// --- Tags (Conversation Org v2) ---------------------------------------------
+//
+// User-scoped labels assignable to conversations. All caller-scoped +
+// anonymous-allowed; each mutation emits a `tag.*` audit event on the BE.
+// `color` is optional on create/patch; on PATCH it is THREE-VALUED (omit =
+// unchanged, value = set, `null` = clear the color).
+
+export interface TagCreateInput {
+  name: string;
+  color?: string | null;
+}
+
+export interface TagUpdateInput {
+  name?: string;
+  color?: string | null;
+}
+
+export function fetchTags(signal?: AbortSignal): Promise<Tag[]> {
+  return apiClient.get<Tag[]>("/api/tags", signal);
+}
+
+export function createTag(
+  body: TagCreateInput,
+  signal?: AbortSignal,
+): Promise<Tag> {
+  return apiClient.post<Tag>("/api/tags", body, signal);
+}
+
+export function updateTag(
+  id: string,
+  body: TagUpdateInput,
+  signal?: AbortSignal,
+): Promise<Tag> {
+  return apiClient.patch<Tag>(
+    `/api/tags/${encodeURIComponent(id)}`,
+    body,
+    signal,
+  );
+}
+
+export function deleteTag(id: string, signal?: AbortSignal): Promise<void> {
+  return apiClient.del(`/api/tags/${encodeURIComponent(id)}`, signal);
+}
+
+// --- Bulk conversation actions (Conversation Org v2) ------------------------
+//
+// Multi-select over the caller's OWN conversations. Foreign ids are silently
+// ignored by the BE (IDOR-safe), so `affected` may be lower than the number of
+// ids sent. `tagId` is required for the `tag`/`untag` actions.
+
+export type BulkConversationAction =
+  | "archive"
+  | "unarchive"
+  | "delete"
+  | "tag"
+  | "untag";
+
+export interface BulkConversationInput {
+  conversationIds: string[];
+  action: BulkConversationAction;
+  tagId?: string;
+}
+
+export interface BulkConversationResponse {
+  affected: number;
+}
+
+export function bulkConversationAction(
+  body: BulkConversationInput,
+  signal?: AbortSignal,
+): Promise<BulkConversationResponse> {
+  return apiClient.post<BulkConversationResponse>(
+    "/api/conversations/bulk",
+    body,
+    signal,
+  );
 }
 
 // --- Prompt library (D23) ---------------------------------------------------

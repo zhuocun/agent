@@ -39,9 +39,15 @@ class SourcesEvent(CamelModel):
     returned. `SourceItem`'s fields are all single lowercase words, so the wire
     camelCase form is identical to snake_case — no aliases needed; we serialize
     the `SourceItem` models directly.
+
+    `requested` mirrors `SourcesPart.requested`: True when web search was
+    effective for the turn. Grounded ⇔ `items` non-empty; an empty `items` with
+    `requested=True` is the ungrounded state the FE renders as "Answered without
+    live sources".
     """
 
     items: list[SourceItem]
+    requested: bool = False
 
 
 class ToolCallEvent(ToolCallPart):

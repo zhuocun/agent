@@ -73,6 +73,10 @@ export interface ApiStreamState {
   // Web-search source cards, accumulated from `sources` SSE events. Empty until
   // the BE emits sources.
   sources: SourceItem[];
+  // True once a `sources` frame marked web search as effective for the turn.
+  // Distinguishes the ungrounded state (`sources` empty + `sourcesRequested`)
+  // from a plain non-search turn (`sources` empty + `!sourcesRequested`).
+  sourcesRequested: boolean;
   // Tool/function transcript parts emitted by the backend tool loop.
   toolParts: ToolTranscriptPart[];
 }
@@ -92,6 +96,10 @@ export interface TerminalResult {
   searchStatus: SearchStatus | null;
   // Final web-search sources (if any) so finalized messages keep their cards.
   sources: SourceItem[];
+  // Whether web search was effective for the turn — drives the grounded vs
+  // ungrounded ("Answered without live sources") distinction on the committed
+  // message.
+  sourcesRequested: boolean;
   // Final tool/function transcript parts.
   toolParts: ToolTranscriptPart[];
   // From `submitted` — always present once the server sent the first frame.
@@ -161,6 +169,7 @@ const INITIAL: ApiStreamState = {
   answer: "",
   searchStatus: null,
   sources: [],
+  sourcesRequested: false,
   toolParts: [],
 };
 
@@ -302,11 +311,24 @@ function parseStatus(value: unknown): SearchStatus | null {
   return { label, state };
 }
 
-// `sources` payload narrows to `{ items: SourceItem[] }`. Each item must carry
-// a numeric id plus string title + url; `snippet` / `domain` are optional.
-// Malformed items are dropped rather than failing the whole stream — sources
-// are a non-essential enrichment, not load-bearing answer content.
-function parseSources(value: unknown): SourceItem[] | null {
+function readProvenance(value: unknown): SourceItem["provenance"] | undefined {
+  return value === "web" || value === "knowledge" || value === "connector"
+    ? value
+    : undefined;
+}
+
+// `sources` payload narrows to `{ items: SourceItem[], requested?: boolean }`.
+// Each item must carry a numeric id plus string title + url; `snippet` /
+// `domain` / `provenance` are optional. Malformed items are dropped rather than
+// failing the whole stream — sources are a non-essential enrichment, not
+// load-bearing answer content. `requested` flags whether web search was
+// effective so an empty list can still surface the ungrounded marker.
+interface ParsedSources {
+  items: SourceItem[];
+  requested: boolean;
+}
+
+function parseSources(value: unknown): ParsedSources | null {
   if (!isRecord(value)) return null;
   const items = value.items;
   if (!Array.isArray(items)) return null;
@@ -319,15 +341,17 @@ function parseSources(value: unknown): SourceItem[] | null {
     if (typeof id !== "number" || title === null || url === null) continue;
     const snippet = readStringField(raw, "snippet");
     const domain = readStringField(raw, "domain");
+    const provenance = readProvenance(raw.provenance);
     out.push({
       id,
       title,
       url,
       ...(snippet !== null ? { snippet } : {}),
       ...(domain !== null ? { domain } : {}),
+      ...(provenance ? { provenance } : {}),
     });
   }
-  return out;
+  return { items: out, requested: value.requested === true };
 }
 
 function readToolStatus(value: unknown): ToolTranscriptPart["status"] | undefined {
@@ -440,6 +464,7 @@ export function useApiStream(
   // handlers read the authoritative latest value, never stale React state.
   const searchStatusRef = useRef<SearchStatus | null>(null);
   const sourcesRef = useRef<SourceItem[]>([]);
+  const sourcesRequestedRef = useRef(false);
   const toolPartsRef = useRef<ToolTranscriptPart[]>([]);
   const reasoningStartedAtRef = useRef<number | null>(null);
   // `submitted` lands the user message id; we keep it for the terminal so the
@@ -496,6 +521,7 @@ export function useApiStream(
         answer: answerRef.current,
         searchStatus: searchStatusRef.current,
         sources: sourcesRef.current,
+        sourcesRequested: sourcesRequestedRef.current,
         toolParts: toolPartsRef.current,
         serverUserMessageId: serverUserIdRef.current,
         ...extras,
@@ -511,6 +537,7 @@ export function useApiStream(
     reasoningStartedAtRef.current = null;
     searchStatusRef.current = null;
     sourcesRef.current = [];
+    sourcesRequestedRef.current = false;
     toolPartsRef.current = [];
     serverUserIdRef.current = undefined;
     streamIdRef.current = undefined;
@@ -525,6 +552,7 @@ export function useApiStream(
     reasoningStartedAtRef.current = null;
     searchStatusRef.current = null;
     sourcesRef.current = [];
+    sourcesRequestedRef.current = false;
     toolPartsRef.current = [];
     serverUserIdRef.current = undefined;
     streamIdRef.current = streamId;
@@ -680,10 +708,18 @@ export function useApiStream(
         case "sources": {
           // Web-search source cards. The BE emits the full set in one frame;
           // we replace (not append) so a re-emit can't duplicate cards.
+          // `requested` is sticky: once the turn is marked grounded-or-not it
+          // stays so even if a later frame's items differ.
           const parsed = parseSources(payload);
           if (parsed === null) return false;
-          sourcesRef.current = parsed;
-          setState((s) => ({ ...s, sources: parsed }));
+          sourcesRef.current = parsed.items;
+          if (parsed.requested) sourcesRequestedRef.current = true;
+          const requested = sourcesRequestedRef.current;
+          setState((s) => ({
+            ...s,
+            sources: parsed.items,
+            sourcesRequested: requested,
+          }));
           return false;
         }
         case "tool_call": {

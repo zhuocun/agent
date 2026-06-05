@@ -66,6 +66,8 @@ function deriveMessage(
   const answer = terminal?.answer ?? state.answer;
   const searchStatus = terminal?.searchStatus ?? state.searchStatus;
   const sources = terminal?.sources ?? state.sources;
+  const sourcesRequested =
+    terminal?.sourcesRequested ?? state.sourcesRequested;
   const toolParts = terminal?.toolParts ?? state.toolParts;
 
   if (reasoning) {
@@ -81,7 +83,9 @@ function deriveMessage(
     });
   }
   if (answer) parts.push({ type: "text", text: answer });
-  if (sources.length > 0) parts.push({ type: "sources", items: sources });
+  if (sources.length > 0 || sourcesRequested) {
+    parts.push({ type: "sources", items: sources, requested: sourcesRequested });
+  }
 
   return {
     id,

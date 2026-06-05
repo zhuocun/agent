@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Loader2, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Loader2, RotateCcw, SearchX } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
-import { SourcesPanel } from "@/components/chat/sources-panel";
+import {
+  SourcesPanel,
+  type SourcesPanelHandle,
+} from "@/components/chat/sources-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
 import { AttributionRow } from "@/components/chat/attribution-row";
@@ -100,6 +103,19 @@ export function AssistantMessage({
     [message.parts],
   );
 
+  // Source list for this message (if any) drives the inline `[n]` citation
+  // chips inside the answer markdown. Inline markers reveal the matching card
+  // via the SourcesPanel's imperative handle.
+  const sourceItems = useMemo(
+    () =>
+      message.parts.find(
+        (p): p is Extract<MessagePart, { type: "sources" }> =>
+          p.type === "sources",
+      )?.items ?? [],
+    [message.parts],
+  );
+  const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
+
   const hasContent = message.parts.some(
     (p) => (p.type === "text" || p.type === "reasoning") && p.text.length > 0,
   );
@@ -141,7 +157,14 @@ export function AssistantMessage({
         if (part.type === "text") {
           return part.text ? (
             <div key={idx} data-testid="assistant-answer">
-              <MarkdownRenderer>{part.text}</MarkdownRenderer>
+              <MarkdownRenderer
+                sources={sourceItems}
+                onCitationClick={(id) =>
+                  sourcesPanelRef.current?.revealSource(id)
+                }
+              >
+                {part.text}
+              </MarkdownRenderer>
             </div>
           ) : null;
         }
@@ -150,8 +173,17 @@ export function AssistantMessage({
         }
         if (part.type === "sources") {
           // Rendered AFTER the answer text (the part ordering — text then
-          // sources — is established upstream in chat-thread.tsx).
-          return <SourcesPanel key={idx} items={part.items} />;
+          // sources — is established upstream in chat-thread.tsx). Honesty rule
+          // (PRD 07 §4.3): an empty list with `requested` is the ungrounded
+          // state — show the calm "Answered without live sources" chip instead
+          // of an (empty) sources panel. A non-requested empty list renders
+          // nothing (SourcesPanel already no-ops on empty).
+          if (part.items.length === 0) {
+            return part.requested ? <UngroundedMarker key={idx} /> : null;
+          }
+          return (
+            <SourcesPanel key={idx} ref={sourcesPanelRef} items={part.items} />
+          );
         }
         if (part.type === "tool_call" || part.type === "tool_result") {
           return (
@@ -213,6 +245,21 @@ function StatusLine({ label, state }: { label: string; state: "active" | "done" 
         <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden />
       ) : null}
       <span>{label}</span>
+    </div>
+  );
+}
+
+// Honesty marker for an ungrounded web-search turn (PRD 07 §4.3): web search
+// was requested but resolved zero usable sources. Calm and informational — NOT
+// an error — so an ungrounded answer never gets to look cited.
+function UngroundedMarker() {
+  return (
+    <div
+      className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+      data-testid="ungrounded-marker"
+    >
+      <SearchX aria-hidden className="size-3.5" />
+      <span>Answered without live sources</span>
     </div>
   );
 }

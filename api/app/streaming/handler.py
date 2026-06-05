@@ -490,6 +490,14 @@ async def stream_and_persist(
     # persist sites append no status/sources parts and the stream is unchanged.
     latest_status: tuple[str, str] | None = None
     search_items: list[SourceItem] = []
+    # Whether a provider `Sources` event arrived this turn. Distinct from
+    # `search_items` being empty: a provider may emit `Sources([])`, and the
+    # honesty rule (PRD 07 §4.3) still needs to know that web search RAN. When
+    # web search was effective (`web_search`) but no `Sources` event ever
+    # arrived, the done-path synthesizes a final empty `sources` frame so the
+    # ungrounded state ("Answered without live sources") survives the live turn,
+    # reload, replay, and public share.
+    saw_sources_event = False
     tool_parts: list[dict[str, Any]] = []
     # HITL pause state (tools only). Set when the agent loop emits an
     # `AwaitingApproval` sentinel: the turn ends in the NEW terminal state
@@ -652,10 +660,13 @@ async def stream_and_persist(
         Order for a web-search turn: [reasoning?] [tool transcript*]
         [status(done)] [text] [sources]. The status part is appended only if a
         `StatusUpdate` was seen (recording the FINAL line — `state="done"` for
-        a completed search), and the sources part only if a `Sources` event was
-        seen. On a non-web-search turn none of those enrichment parts are
-        present, so the parts are exactly [reasoning?] [text] as before — the
-        regression-critical no-op invariant.
+        a completed search). The sources part is appended whenever web search
+        was EFFECTIVE for the turn (`web_search`) — carrying the resolved items
+        plus `requested=True` — so the grounded list AND the ungrounded
+        (`items=[]`, `requested=True`) state both persist. On a non-web-search
+        turn none of those enrichment parts are present, so the parts are
+        exactly [reasoning?] [text] as before — the regression-critical no-op
+        invariant.
         Shared by the terminal-success and stop-path persist sites so they can
         never drift.
         """
@@ -667,11 +678,12 @@ async def stream_and_persist(
             label, _state = latest_status
             parts.append({"type": "status", "label": label, "state": "done"})
         parts.append({"type": "text", "text": "".join(answer_buf)})
-        if search_items:
+        if web_search or search_items:
             parts.append(
                 {
                     "type": "sources",
                     "items": [it.model_dump(exclude_none=True) for it in search_items],
+                    "requested": web_search,
                 }
             )
         return parts
@@ -741,7 +753,7 @@ async def stream_and_persist(
         latest cumulative usage even on stopped turns.
         """
         nonlocal final_usage, first_answer_ms, sub_code, sub_provider, sub_model, sub_label
-        nonlocal latest_status, search_items
+        nonlocal latest_status, search_items, saw_sources_event
         if isinstance(ev, ReasoningDelta):
             reasoning_buf.append(ev.text)
         elif isinstance(ev, AnswerDelta):
@@ -752,6 +764,7 @@ async def stream_and_persist(
             latest_status = (ev.label, ev.state)
         elif isinstance(ev, Sources):
             search_items = list(ev.items)
+            saw_sources_event = True
         elif isinstance(ev, ToolCall):
             tool_parts.append(_tool_call_part(ev).model_dump(by_alias=True, exclude_none=True))
         elif isinstance(ev, ToolResult):
@@ -1054,9 +1067,14 @@ async def stream_and_persist(
             elif isinstance(ev, Sources):
                 # Resolved citation list. Emit the `sources` SSE event and stash
                 # the items for the persisted `sources` part (appended after the
-                # text part at the persist sites).
+                # text part at the persist sites). `requested` mirrors whether
+                # web search was effective for the turn (it is, here) so the FE
+                # can tell grounded from ungrounded on the live stream.
                 search_items = list(ev.items)
-                yield encode_sources(SourcesEvent(items=list(ev.items)))
+                saw_sources_event = True
+                yield encode_sources(
+                    SourcesEvent(items=list(ev.items), requested=web_search)
+                )
             elif isinstance(ev, ToolCall):
                 call_part = _tool_call_part(ev)
                 tool_parts.append(call_part.model_dump(by_alias=True, exclude_none=True))
@@ -1190,6 +1208,16 @@ async def stream_and_persist(
             if stream_id is not None:
                 await clear_stop_async(stream_id)
             return
+
+        # Honesty rule (PRD 07 §4.3): web search was effective for this turn but
+        # NO `Sources` event arrived — the answer is ungrounded. Emit a final
+        # `sources` frame with empty items + `requested=True` so the live turn
+        # is visibly marked "Answered without live sources" rather than looking
+        # cited. The matching empty `SourcesPart` persists via `_build_parts`
+        # (gated on `web_search`), so the ungrounded state survives reload,
+        # replay, and public share too.
+        if web_search and not saw_sources_event:
+            yield encode_sources(SourcesEvent(items=[], requested=True))
 
         # Provider finished cleanly. Compute attribution and emit terminal.
         breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)

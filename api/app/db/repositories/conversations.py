@@ -28,6 +28,7 @@ from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Message, Stream, Vote
+from app.db.repositories import audit_events
 from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.conversation import ConversationSearchResult, ConversationSummary
@@ -532,6 +533,14 @@ async def delete_older_than_for_user(
     await db.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
     await db.execute(delete(Conversation).where(Conversation.id.in_(conversation_ids)))
     await db.flush()
+    # Record the purge on the user-facing activity log — only when something
+    # was actually deleted, so the common no-op read path stays silent.
+    await audit_events.record(
+        db,
+        user_id=user_id,
+        event_type="retention.purge",
+        details={"purgedConversations": len(conversation_ids)},
+    )
     return len(conversation_ids)
 
 

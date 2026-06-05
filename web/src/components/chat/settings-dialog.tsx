@@ -52,6 +52,12 @@ export interface SettingsDialogProps {
   onRequestSignIn: () => void;
   onExportData: () => void;
   onDeleteAccount: () => void;
+  // Open the read-only "Activity & data access" surface (closing settings
+  // first). Lists the data-access log + the processing-provenance rollup.
+  onOpenActivity: () => void;
+  // Open the read-only "Models & data policies" directory (closing settings
+  // first). Browsable catalog of provider routes, policies, and prices.
+  onOpenModelDirectory: () => void;
 }
 
 // Derive avatar initials from a display name (first + last token), capped at
@@ -509,6 +515,8 @@ export function SettingsDialog({
   onRequestSignIn,
   onExportData,
   onDeleteAccount,
+  onOpenActivity,
+  onOpenModelDirectory,
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
   const autoExpandId = useId();
@@ -760,6 +768,21 @@ export function SettingsDialog({
               }
             />
             <SettingRow
+              label="Models & data policies"
+              helper="Compare each provider's data handling, capabilities, and prices."
+              control={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="open-model-directory-button"
+                  onClick={onOpenModelDirectory}
+                >
+                  Browse
+                </Button>
+              }
+            />
+            <SettingRow
               label="Send on Enter"
               helper="When off, press ⌘/Ctrl+Enter to send."
               htmlFor={sendOnEnterId}
@@ -884,6 +907,21 @@ export function SettingsDialog({
               parent owns the download / confirm-dialog / reset side effects. */}
           <section className="space-y-4">
             <SectionHeading>Your data</SectionHeading>
+            <SettingRow
+              label="Activity & data access"
+              helper="See sensitive account actions and where your messages were processed."
+              control={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="open-activity-button"
+                  onClick={onOpenActivity}
+                >
+                  View
+                </Button>
+              }
+            />
             <SettingRow
               label="Export your data"
               helper="Download your account, preferences, and conversations as JSON."

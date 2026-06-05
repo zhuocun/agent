@@ -16,6 +16,7 @@ from typing import Literal
 
 from app.config import Settings, get_settings
 from app.schemas.common import CostHint, ModelTierId, SpeedHint
+from app.schemas.directory import ProviderDirectoryEntry, ProviderDirectoryTier
 from app.schemas.tier import ModelTier, ProviderDataPolicy, ProviderRouteOption
 from app.search.factory import search_enabled
 
@@ -725,6 +726,61 @@ def list_tiers(
             )
         )
     return tiers
+
+
+def list_provider_directory(
+    settings: Settings | None = None,
+) -> list[ProviderDirectoryEntry]:
+    """Build the model & data-policy directory catalog (PRD 05 §4.5 / PRD 07 §5).
+
+    Emits EVERY route in `PROVIDER_ROUTES` (including `pending`/`unavailable`
+    ones) with its data policy and the per-tier capabilities + list prices
+    drawn straight from `TIER_BINDINGS`. A route with no available adapter
+    (e.g. the pending Gemini route) yields an empty `tiers` list and
+    `data_policy=None` rather than a fabricated entry — the FE renders "policy
+    unavailable" in that case.
+
+    `status` is the registry's STATIC catalog status, not a runtime key probe,
+    so the directory is deterministic regardless of which provider keys are
+    configured. Capability flags are the model's inherent capabilities from the
+    binding (web search here means "the route can ground a turn", not gated on a
+    configured search backend — that runtime gate lives in `list_tiers`).
+    """
+    s = settings if settings is not None else get_settings()
+    entries: list[ProviderDirectoryEntry] = []
+    for route in PROVIDER_ROUTES:
+        tiers: list[ProviderDirectoryTier] = []
+        for base in TIER_BINDINGS:
+            binding = _binding_for_provider(
+                base.tier.id,
+                provider_id=route.provider_id,
+                settings=s,
+                explicit_provider_override=True,
+            )
+            if binding is None:
+                continue
+            tiers.append(
+                ProviderDirectoryTier(
+                    tier_id=base.tier.id,
+                    model_label=binding.model_label,
+                    list_price_in_per_m=binding.list_price_in_per_m,
+                    list_price_out_per_m=binding.list_price_out_per_m,
+                    supports_web_search=binding.supports_web_search,
+                    supports_attachments=binding.supports_attachments,
+                    supports_vision=binding.supports_vision,
+                )
+            )
+        entries.append(
+            ProviderDirectoryEntry(
+                provider_id=route.provider_id,
+                label=route.label,
+                status=route.status,
+                default_route_eligible=route.default_route_eligible,
+                data_policy=route.data_policy,
+                tiers=tiers,
+            )
+        )
+    return entries
 
 
 def get_binding(

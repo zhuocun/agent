@@ -33,7 +33,10 @@ import { UserMessage } from "@/components/chat/user-message";
 import { AssistantMessage } from "@/components/chat/assistant-message";
 import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
+import { DegradedStatusBanner } from "@/components/chat/degraded-status-banner";
 import { SettingsDialog } from "@/components/chat/settings-dialog";
+import { ActivityDialog } from "@/components/chat/activity-dialog";
+import { ModelDirectoryDialog } from "@/components/chat/model-directory-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
 import { AiDisclosure } from "@/components/chat/ai-disclosure";
@@ -433,6 +436,8 @@ export function ChatThread() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [modelDirectoryOpen, setModelDirectoryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [isTemporary, setIsTemporary] = useState(false);
@@ -2609,6 +2614,7 @@ export function ChatThread() {
               {isTemporary ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
               ) : null}
+              <DegradedStatusBanner />
             </div>
           </div>
 
@@ -2800,6 +2806,36 @@ export function ChatThread() {
           setSettingsOpen(false);
           setPendingDeleteAccount(true);
         }}
+        onOpenActivity={() => {
+          setSettingsOpen(false);
+          setActivityOpen(true);
+        }}
+        onOpenModelDirectory={() => {
+          setSettingsOpen(false);
+          setModelDirectoryOpen(true);
+        }}
+      />
+
+      <ActivityDialog
+        open={activityOpen}
+        onOpenChange={setActivityOpen}
+        onSwitchRoute={() => {
+          // Reuse the composer's existing model picker: close this surface and
+          // open the picker trigger so the user can switch their route.
+          setActivityOpen(false);
+          window.requestAnimationFrame(() => {
+            const trigger = document.querySelector<HTMLElement>(
+              '[data-testid="model-mode-trigger"]',
+            );
+            trigger?.focus();
+            trigger?.click();
+          });
+        }}
+      />
+
+      <ModelDirectoryDialog
+        open={modelDirectoryOpen}
+        onOpenChange={setModelDirectoryOpen}
       />
 
       <AuthDialog

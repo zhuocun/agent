@@ -109,7 +109,13 @@ async def test_byok_writes_audit_events(
 
     async with session_factory() as session:
         rows = (
-            (await session.execute(select(AuditEvent).order_by(AuditEvent.created_at.asc())))
+            (
+                await session.execute(
+                    select(AuditEvent)
+                    .where(AuditEvent.event_type.like("byok.%"))
+                    .order_by(AuditEvent.created_at.asc())
+                )
+            )
             .scalars()
             .all()
         )

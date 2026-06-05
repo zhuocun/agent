@@ -9,11 +9,16 @@
 // See node_modules/next/dist/docs/01-app/02-guides/environment-variables.md.
 import type {
   AccountInfo,
+  ActivityEvent,
   Conversation,
   ConversationSummary,
+  DataProcessingRollup,
   Feedback,
+  ModelDirectoryEntry,
   ModelTier,
   ModelTierId,
+  ModerationAppealRequest,
+  PlatformStatus,
   PromptSuggestion,
   PublicConversation,
   ShareLinkResponse,
@@ -473,6 +478,69 @@ export function postAuthLogin(
 
 export function postAuthSignout(signal?: AbortSignal): Promise<void> {
   return apiClient.post<void>("/api/auth/signout", undefined, signal);
+}
+
+// --- Trust surfaces ---------------------------------------------------------
+
+// The data-access activity log: the caller's own audit events, newest-first.
+// Anonymous-allowed; the BE scopes to the caller and never returns another
+// user's rows. `before` is the ISO `createdAt` of the oldest row seen so far,
+// used as a keyset cursor for "Load more".
+export function fetchActivity(
+  before?: string,
+  limit?: number,
+  signal?: AbortSignal,
+): Promise<ActivityEvent[]> {
+  const params = new URLSearchParams();
+  if (before) params.set("before", before);
+  if (limit) params.set("limit", String(limit));
+  const query = params.toString();
+  return apiClient.get<ActivityEvent[]>(
+    `/api/account/activity${query ? `?${query}` : ""}`,
+    signal,
+  );
+}
+
+// "Where your messages were processed": a provider rollup computed from the
+// caller's persisted per-message attribution, with the jurisdiction read from
+// the live provider registry. Anonymous-allowed.
+export function fetchDataProcessing(
+  signal?: AbortSignal,
+): Promise<DataProcessingRollup> {
+  return apiClient.get<DataProcessingRollup>(
+    "/api/account/data-processing",
+    signal,
+  );
+}
+
+// Request review of a blocked turn. Records a `moderation.appeal` audit event
+// and resolves on the BE's 204.
+export function postModerationAppeal(
+  body: ModerationAppealRequest,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.post<void>("/api/account/moderation-appeal", body, signal);
+}
+
+// The model & data-policy directory: every provider route in the registry with
+// its data policy and per-tier capabilities + list prices. Anonymous-allowed;
+// the catalog is identical for every caller (registry-derived).
+export function fetchModelDirectory(
+  signal?: AbortSignal,
+): Promise<ModelDirectoryEntry[]> {
+  return apiClient.get<ModelDirectoryEntry[]>(
+    "/api/models/directory",
+    signal,
+  );
+}
+
+// Public platform health summary backing the /status page + degraded banner.
+// PUBLIC on the BE (no auth/cookie) — it routes through the same same-origin
+// `/api/*` wire path as everything else and works unauthenticated.
+export function fetchPlatformStatus(
+  signal?: AbortSignal,
+): Promise<PlatformStatus> {
+  return apiClient.get<PlatformStatus>("/api/status", signal);
 }
 
 // Public-by-link read. UNAUTHENTICATED on the BE (no cookie minted) — the share

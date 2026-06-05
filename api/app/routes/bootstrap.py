@@ -11,8 +11,6 @@ user actually calls `PUT /api/preferences`.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,12 +35,14 @@ async def bootstrap(
     account = await account_info_for_user(db, user, settings)
     usable_provider_ids = await usable_provider_ids_for_user(db, user, settings)
     prefs = await preferences.get_or_default(db, user.id)
-    if prefs.retention_days is not None:
-        await conversations.delete_older_than_for_user(
-            db,
-            user_id=user.id,
-            cutoff=datetime.now(UTC) - timedelta(days=prefs.retention_days),
-        )
+    # Opportunistic retention purge: honors the global preference AND any
+    # per-conversation `retention_days` override (D31), so it runs even when the
+    # user has no global window but set one on an individual conversation.
+    await conversations.delete_older_than_for_user(
+        db,
+        user_id=user.id,
+        global_retention_days=prefs.retention_days,
+    )
     budget = await usage.get_current_budget(
         db,
         user.id,

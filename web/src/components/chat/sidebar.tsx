@@ -23,6 +23,7 @@ import {
   Plus,
   Search,
   Settings,
+  Timer,
   Trash2,
   X,
 } from "lucide-react";
@@ -40,7 +41,12 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -68,6 +74,8 @@ export interface SidebarProps {
   onRenameConversation: (id: string, newTitle: string) => void;
   onDeleteConversation: (id: string) => void;
   onTogglePinConversation: (id: string) => void;
+  // Set (number) or clear (null) the per-conversation retention override (D31).
+  onSetConversationRetention: (id: string, retentionDays: number | null) => void;
   onCopyConversation: (id: string) => void;
   onDownloadConversation: (id: string) => void;
   onOpenSettings: () => void;
@@ -157,6 +165,42 @@ function groupConversations(
   return groups;
 }
 
+// Per-conversation retention options (D31) surfaced in the kebab submenu.
+// `value` is the wire `retentionDays`: `null` clears the override so the
+// conversation inherits the user's global retention; a number sets a durable
+// per-conversation window. Mirrors the global retention choices (30 / 90) plus
+// the "inherit" reset.
+const RETENTION_OPTIONS: { value: number | null; label: string }[] = [
+  { value: null, label: "Use default" },
+  { value: 30, label: "30 days" },
+  { value: 90, label: "90 days" },
+];
+
+// Stable string key for a (nullable) retention value, so the radio group can
+// round-trip `null` through base-ui's string-valued RadioGroup.
+function retentionKey(value: number | null | undefined): string {
+  return value == null ? "default" : String(value);
+}
+
+// "expires in ~N days" / "expires today" hint for a conversation whose override
+// is set. Computed from `updatedAt + retentionDays` (retention is keyed on
+// `updatedAt`, matching the BE purge). Returns null when no override is set or
+// the timestamp is unparseable. Past-due collapses to "expires soon" rather
+// than a negative count (the scheduled purge will remove it on the next sweep).
+function expiresHint(
+  retentionDays: number | null | undefined,
+  updatedAt: string,
+): string | null {
+  if (retentionDays == null) return null;
+  const updatedMs = Date.parse(updatedAt);
+  if (Number.isNaN(updatedMs)) return null;
+  const expiresMs = updatedMs + retentionDays * 86_400_000;
+  const dayDiff = Math.ceil((expiresMs - Date.now()) / 86_400_000);
+  if (dayDiff <= 0) return "expires soon";
+  if (dayDiff === 1) return "expires in ~1 day";
+  return `expires in ~${dayDiff} days`;
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) {
@@ -175,6 +219,7 @@ function ConversationRow({
   onSelect,
   onRename,
   onTogglePin,
+  onSetRetention,
   onCopy,
   onDownload,
   onRequestDelete,
@@ -185,6 +230,7 @@ function ConversationRow({
   onSelect: (id: string) => void;
   onRename: (id: string, newTitle: string) => void;
   onTogglePin: (id: string) => void;
+  onSetRetention: (id: string, retentionDays: number | null) => void;
   onCopy: (id: string) => void;
   onDownload: (id: string) => void;
   onRequestDelete: (conversation: ConversationSummary) => void;
@@ -283,6 +329,12 @@ function ConversationRow({
 
   const pinAction = conversation.pinned ? "Unpin" : "Pin";
   const matchSnippet = conversation.matchSnippet?.trim();
+  // "expires in ~N days" hint for a per-conversation retention override (D31).
+  // Suppressed while a search snippet is showing (the snippet wins the one line).
+  const retentionExpiresHint = expiresHint(
+    conversation.retentionDays,
+    conversation.updatedAt,
+  );
 
   // Reduced motion → snap instantly; otherwise ease the reveal/settle. While
   // actively dragging we never transition (the finger is the clock).
@@ -447,6 +499,16 @@ function ConversationRow({
               <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                 {matchSnippet}
               </span>
+            ) : retentionExpiresHint ? (
+              <span
+                // E2E + a11y target: the per-conversation retention countdown,
+                // shown only when an override is set (D31).
+                data-testid="sidebar-conversation-retention-hint"
+                className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground"
+              >
+                <Timer className="size-3 shrink-0" aria-hidden />
+                {retentionExpiresHint}
+              </span>
             ) : null}
           </span>
         </button>
@@ -491,6 +553,32 @@ function ConversationRow({
             )}
             <span>{pinAction}</span>
           </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="gap-2" data-testid="sidebar-conversation-retention">
+              <Timer className="size-4" aria-hidden />
+              <span>Retention</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuRadioGroup
+                value={retentionKey(conversation.retentionDays)}
+                onValueChange={(next) => {
+                  onSetRetention(
+                    conversation.id,
+                    next === "default" ? null : Number(next),
+                  );
+                }}
+              >
+                {RETENTION_OPTIONS.map((option) => (
+                  <DropdownMenuRadioItem
+                    key={retentionKey(option.value)}
+                    value={retentionKey(option.value)}
+                  >
+                    {option.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
           <DropdownMenuItem
             label="Copy conversation"
             onClick={() => onCopy(conversation.id)}
@@ -774,6 +862,7 @@ export function Sidebar({
   onRenameConversation,
   onDeleteConversation,
   onTogglePinConversation,
+  onSetConversationRetention,
   onCopyConversation,
   onDownloadConversation,
   onOpenSettings,
@@ -853,6 +942,7 @@ export function Sidebar({
           onSelect={onSelect}
           onRename={onRenameConversation}
           onTogglePin={onTogglePinConversation}
+          onSetRetention={onSetConversationRetention}
           onCopy={onCopyConversation}
           onDownload={onDownloadConversation}
           onRequestDelete={setPendingDelete}

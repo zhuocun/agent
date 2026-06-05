@@ -147,6 +147,14 @@ class Conversation(Base):
     # NULL". The UNIQUE index makes the token an unguessable primary lookup key
     # and guards against the astronomically unlikely random collision.
     share_token: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Per-conversation retention override (D31). NULL = "inherit the user's
+    # global `preferences.retention_days`" (which is itself NULL = retain
+    # forever). When set to an integer N, this conversation expires once
+    # `now - updated_at > N days`, regardless of the global preference — so a
+    # user can keep one thread longer (or purge it sooner) than their default.
+    # Keyed on `updated_at` to match the global opportunistic purge: a recently
+    # renamed / pinned / continued conversation is still active data.
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

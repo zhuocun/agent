@@ -57,6 +57,10 @@ class Conversation(CamelModel):
     messages: list[ChatMessage]
     selected_tier_id: ModelTierId
     is_temporary: bool
+    # Per-conversation retention override in days (D31). `None` = inherit the
+    # user's global `preferences.retention_days`. Surfaced so the FE can show
+    # "expires in ~N days" and pre-fill the per-conversation retention control.
+    retention_days: int | None = None
 
 
 class ConversationSummary(CamelModel):
@@ -65,6 +69,10 @@ class ConversationSummary(CamelModel):
     updated_at: str
     is_temporary: bool | None = None
     pinned: bool | None = None
+    # Per-conversation retention override in days (D31), echoed on the sidebar
+    # summary so the kebab control + "expires in ~N days" hint render without a
+    # follow-up GET. `None` = inherit the user's global retention.
+    retention_days: int | None = None
 
 
 class ConversationSearchResult(ConversationSummary):
@@ -104,6 +112,13 @@ class PatchConversationRequest(CamelModel):
         | None
     ) = None
     pinned: bool | None = None
+    # Per-conversation retention override in days (D31). THREE-VALUED on the
+    # wire: omitted = leave unchanged; an integer 1..3650 = set the override;
+    # explicit `null` = CLEAR the override (inherit the global retention). The
+    # route reads `model_fields_set` to tell "omitted" from an explicit `null`,
+    # so the field type permits `None` while the bound (>= 1) only applies when
+    # an integer is sent. Capped at 3650 (~10y) as a sanity bound.
+    retention_days: Annotated[int, Field(ge=1, le=3650)] | None = None
 
 
 class SendMessageRequest(CamelModel):

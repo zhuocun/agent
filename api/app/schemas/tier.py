@@ -35,6 +35,9 @@ class ProviderRouteOption(CamelModel):
     supports_web_search: bool = False
     supports_attachments: bool = False
     supports_vision: bool = False
+    # Output modalities this route can PRODUCE (D22 precondition). Defaults to
+    # ["text"] — every wired route is text-out today. Mirrors `ModelTier` below.
+    modalities_out: list[str] = Field(default_factory=lambda: ["text"])
     default_route_eligible: bool = False
     data_policy: ProviderDataPolicy | None = None
     # List prices (USD per million tokens) for this route, so the FE can render a
@@ -72,6 +75,13 @@ class ModelTier(CamelModel):
     # transcript text) without being multimodal. The FE composer auto-removes
     # image attachments (keeping PDFs/text) when this is False.
     supports_vision: bool = False
+    # Output modalities this tier's served model can PRODUCE (D22 precondition).
+    # Defaults to ["text"]; every wired route is text-out today. Documents the
+    # output-modality contract so a future audio/image-out route surfaces
+    # honestly. Voice in v1 (dictation + read-aloud) is ON-DEVICE in the browser
+    # (Web Speech API) and is NOT a provider output modality, so no tier reports
+    # audio here.
+    modalities_out: list[str] = Field(default_factory=lambda: ["text"])
     # Active provider route metadata. Populated by `list_tiers` from the backend
     # registry so the FE can disclose the route/policy without hardcoded model
     # facts. Empty defaults keep canonical tier objects backend-independent.

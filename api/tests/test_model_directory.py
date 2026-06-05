@@ -54,6 +54,10 @@ async def test_directory_lists_all_registry_providers_with_policies_and_prices(
     assert fast["listPriceInPerM"] == 0.14
     assert fast["listPriceOutPerM"] == 0.28
     assert fast["supportsWebSearch"] is True
+    # `modalitiesOut` (D22 precondition) is surfaced per directory tier. Every
+    # wired route is text-out today, so every tier reports exactly ["text"].
+    for tier in deepseek["tiers"]:
+        assert tier["modalitiesOut"] == ["text"]
 
     # Pro tier carries the frontier price.
     assert tiers_by_id["pro"]["listPriceInPerM"] == 0.435

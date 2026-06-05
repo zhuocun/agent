@@ -46,6 +46,11 @@ export interface ModelTier {
   // auto-removes image attachments while keeping PDFs/text. Filled by the BE
   // from the active provider backend.
   supportsVision?: boolean;
+  // Output modalities this tier's served model can PRODUCE (D22 precondition).
+  // Defaults to ["text"] — every wired route is text-out today. Voice in v1
+  // (dictation + read-aloud) runs ON-DEVICE in the browser via the Web Speech
+  // API, so it is NOT reflected here as a provider output modality.
+  modalitiesOut?: string[];
   // Active backend route metadata. Mirrors api/app/schemas/tier.py and is
   // populated from the provider registry in bootstrap.
   providerId: string;
@@ -68,6 +73,9 @@ export interface ProviderTierOption {
   supportsWebSearch: boolean;
   supportsAttachments: boolean;
   supportsVision?: boolean;
+  // Output modalities this route's model can PRODUCE (D22 precondition).
+  // Defaults to ["text"] — mirrors `ModelTier` above.
+  modalitiesOut?: string[];
   defaultRouteEligible: boolean;
   dataPolicy: ProviderDataPolicy | null;
   // Per-million-token LIST prices for this provider route's model. Mirror
@@ -561,6 +569,9 @@ export interface ModelDirectoryTier {
   supportsWebSearch: boolean;
   supportsAttachments: boolean;
   supportsVision: boolean;
+  // Output modalities this tier's model can PRODUCE (D22 precondition).
+  // Defaults to ["text"] — every wired route is text-out today.
+  modalitiesOut?: string[];
 }
 
 export interface ModelDirectoryEntry {

@@ -9,8 +9,10 @@ import {
   GitBranch,
   Loader2,
   RotateCcw,
+  Square,
   ThumbsDown,
   ThumbsUp,
+  Volume2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -27,6 +29,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useSpeechSynthesis } from "@/lib/use-speech-synthesis";
 import { cn } from "@/lib/utils";
 import type {
   Feedback,
@@ -103,6 +106,7 @@ export function MessageActions({
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  const speech = useSpeechSynthesis();
 
   const handleCopy = async () => {
     const markCopied = () => {
@@ -142,6 +146,12 @@ export function MessageActions({
           <Copy className="size-4" />
         )}
       </IconAction>
+
+      <ReadAloud
+        speaking={speech.speaking}
+        supported={speech.supported}
+        onToggle={() => speech.toggle(text)}
+      />
 
       {canContinue ? (
         <IconAction
@@ -300,6 +310,63 @@ function RegenerateMenu({
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
+  );
+}
+
+// Read-aloud (TTS) control. Speaks the assistant message text with the browser
+// `speechSynthesis` voice and toggles play/stop. This is ON-DEVICE — the
+// browser/OS speaks locally and NO provider is involved — so the tooltip says
+// so honestly and never implies a served model or cost (D22 transparency
+// spine). Feature-detects: when speechSynthesis is unavailable the control is
+// disabled with an explanatory tooltip. Kept distinct from the generic
+// `IconAction` so the tooltip can carry the transparency note while the
+// aria-label stays concise.
+function ReadAloud({
+  speaking,
+  supported,
+  onToggle,
+}: {
+  speaking: boolean;
+  supported: boolean;
+  onToggle: () => void;
+}) {
+  const label = !supported
+    ? "Read aloud not supported in this browser"
+    : speaking
+      ? "Stop reading"
+      : "Read aloud";
+  const tooltip = !supported
+    ? "Read aloud isn't supported in this browser"
+    : speaking
+      ? "Stop reading · spoken on your device by your browser"
+      : "Read aloud · spoken on your device by your browser";
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={onToggle}
+            disabled={!supported}
+            data-testid="read-aloud"
+            aria-label={label}
+            aria-pressed={supported ? speaking : undefined}
+            className={cn(
+              "size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9",
+              speaking && "bg-foreground/[0.06] text-foreground",
+            )}
+          >
+            {speaking ? (
+              <Square className="size-4 fill-current" />
+            ) : (
+              <Volume2 className="size-4" />
+            )}
+          </Button>
+        }
+      />
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
   );
 }
 

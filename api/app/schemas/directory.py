@@ -26,6 +26,9 @@ class ProviderDirectoryTier(CamelModel):
     supports_web_search: bool = False
     supports_attachments: bool = False
     supports_vision: bool = False
+    # Output modalities this tier's model can PRODUCE (D22 precondition).
+    # Defaults to ["text"] — every wired route is text-out today.
+    modalities_out: list[str] = Field(default_factory=lambda: ["text"])
 
 
 class ProviderDirectoryEntry(CamelModel):

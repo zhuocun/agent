@@ -10,6 +10,7 @@ from app.schemas.common import CamelModel
 from app.schemas.conversation import Conversation
 from app.schemas.memory import MemoryFact
 from app.schemas.preferences import UserPreferences
+from app.schemas.project import Project
 
 
 class AccountByokKey(CamelModel):
@@ -175,6 +176,9 @@ class AccountExport(CamelModel):
     analytics_events: list[AnalyticsEventExport]
     # Transparent long-term memory (D19): the caller's full editable fact ledger.
     memory_facts: list[MemoryFact]
+    # Projects/Spaces (D20): the caller's full set of scoping containers. Present
+    # from first ship so an export is never silently missing project metadata.
+    projects: list[Project]
     exported_at: str
 
 

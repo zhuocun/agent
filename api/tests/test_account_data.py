@@ -214,6 +214,7 @@ async def test_export_returns_data_with_attachment_and_no_secrets(
         "conversations",
         "auditEvents",
         "analyticsEvents",
+        "projects",
         "exportedAt",
     ):
         assert key in body, f"missing top-level key {key!r}"

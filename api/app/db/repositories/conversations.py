@@ -27,7 +27,7 @@ from sqlalchemy import String, delete, func, or_, select
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Message, Preferences, Stream, Vote
+from app.db.models import Conversation, Message, Preferences, Project, Stream, Vote
 from app.db.repositories import audit_events
 from app.schemas.common import ModelTierId
 from app.schemas.conversation import Conversation as ConversationSchema
@@ -166,6 +166,7 @@ async def list_summaries_for_user(
             is_temporary=False,
             pinned=row.pinned,
             retention_days=row.retention_days,
+            project_id=str(row.project_id) if row.project_id is not None else None,
         )
         for row in rows
     ]
@@ -271,13 +272,22 @@ async def create_for_user(
     *,
     user_id: UUID,
     selected_tier_id: ModelTierId,
+    project_id: UUID | None = None,
 ) -> Conversation:
-    """Persist a new conversation. Returns the row with id/timestamps set."""
+    """Persist a new conversation. Returns the row with id/timestamps set.
+
+    `selected_tier_id` is passed in already-resolved by the route — when filing
+    under a Project with a `default_tier_id`, the route pre-seeds it from the
+    project's create-time default (a labeled default, not a send-path lock). The
+    repo does not load the project itself; it just persists the membership +
+    pre-seeded tier.
+    """
     convo = Conversation(
         user_id=user_id,
         title="New chat",
         selected_tier_id=selected_tier_id,
         pinned=False,
+        project_id=project_id,
     )
     db.add(convo)
     await db.flush()
@@ -325,6 +335,9 @@ async def branch_for_user(
         title=source.title,
         selected_tier_id=source.selected_tier_id,
         pinned=False,
+        # A branch inherits the source's Project membership (D20) so it stays
+        # grouped alongside its origin in the sidebar.
+        project_id=source.project_id,
         created_at=now,
         updated_at=now,
     )
@@ -411,6 +424,7 @@ async def get_for_user(
         selected_tier_id=_coerce_tier(row.selected_tier_id),
         is_temporary=False,
         retention_days=row.retention_days,
+        project_id=str(row.project_id) if row.project_id is not None else None,
     )
 
 
@@ -422,15 +436,16 @@ async def update_for_user(
     title: str | None = None,
     pinned: bool | None = None,
     retention_days: int | None | _Unset = _UNSET,
+    project_id: UUID | None | _Unset = _UNSET,
 ) -> Conversation | None:
-    """Update the owned conversation's title/pinned/retention. Returns the row.
+    """Update the owned conversation's title/pinned/retention/project. Returns the row.
 
-    `title` / `pinned` use `None` as "don't touch". `retention_days` is
-    three-valued — its `None` means "CLEAR the override (inherit the global
-    retention)", so it uses the `_UNSET` sentinel for "don't touch" instead.
-    Returns the refreshed ORM row, or None if the row isn't owned/doesn't exist.
-    Bumps `updated_at` so the sidebar's pinned/updated ordering reflects the
-    rename or pin/unpin.
+    `title` / `pinned` use `None` as "don't touch". `retention_days` and
+    `project_id` are three-valued — their `None` means "CLEAR" (inherit the
+    global retention / un-file from the Project), so they use the `_UNSET`
+    sentinel for "don't touch" instead. Returns the refreshed ORM row, or None
+    if the row isn't owned/doesn't exist. Bumps `updated_at` so the sidebar's
+    pinned/updated ordering reflects the change.
     """
     row = await owned_by(db, conversation_id, user_id)
     if row is None:
@@ -441,6 +456,8 @@ async def update_for_user(
         row.pinned = pinned
     if not isinstance(retention_days, _Unset):
         row.retention_days = retention_days
+    if not isinstance(project_id, _Unset):
+        row.project_id = project_id
     # Touch updated_at — the column has a server_default but no onupdate hook,
     # so we set it explicitly. Naive datetime is fine for SQLite tests; Postgres
     # accepts tz-aware values via TIMESTAMP(timezone=True).
@@ -526,16 +543,20 @@ async def delete_for_user(
 
 def _effective_retention_days(
     conversation_retention_days: int | None,
+    project_retention_days: int | None,
     global_retention_days: int | None,
 ) -> int | None:
-    """Resolve a conversation's effective retention window in days (D31).
+    """Resolve a conversation's effective retention window in days (D31/D20).
 
-    The per-conversation override wins when set; otherwise the user's global
-    `preferences.retention_days` applies. `None` from BOTH means "retain
-    forever" — the conversation never expires.
+    Precedence is conv > project > global: the per-conversation override wins
+    when set; otherwise the conversation's Project retention (D20) applies; else
+    the user's global `preferences.retention_days`. `None` from ALL THREE means
+    "retain forever" — the conversation never expires.
     """
     if conversation_retention_days is not None:
         return conversation_retention_days
+    if project_retention_days is not None:
+        return project_retention_days
     return global_retention_days
 
 
@@ -543,6 +564,7 @@ def _is_expired(
     *,
     updated_at: datetime,
     conversation_retention_days: int | None,
+    project_retention_days: int | None,
     global_retention_days: int | None,
     now: datetime,
 ) -> bool:
@@ -558,7 +580,9 @@ def _is_expired(
     against a `now` of the matching awareness so the subtraction never raises a
     naive/aware mismatch.
     """
-    days = _effective_retention_days(conversation_retention_days, global_retention_days)
+    days = _effective_retention_days(
+        conversation_retention_days, project_retention_days, global_retention_days
+    )
     if days is None:
         return False
     reference = now if updated_at.tzinfo is not None else now.replace(tzinfo=None)
@@ -605,17 +629,26 @@ async def delete_older_than_for_user(
     paths (bootstrap, history reads, export); the scheduled
     `delete_expired_all_users` sweep enforces the same rule across every user.
 
-    A single user-scoped candidate fetch (id, updated_at, retention_days), then
-    the expiry decision in Python — no dialect-specific date math. Emits the
+    A single user-scoped candidate fetch (id, updated_at, retention_days, the
+    conversation's Project retention via a LEFT JOIN), then the expiry decision
+    in Python — no dialect-specific date math. The Project is the conversation's
+    own (`conversation.project_id == project.id`); because Project assignment is
+    owner-scoped, `project.user_id` always equals this user, so the middle
+    retention tier can never be borrowed from another user's Project. Emits the
     user-facing `retention.purge` audit event only when something was actually
     deleted, so the common no-op read path stays silent.
     """
     now = datetime.now(UTC)
-    stmt = select(
-        Conversation.id,
-        Conversation.updated_at,
-        Conversation.retention_days,
-    ).where(Conversation.user_id == user_id)
+    stmt = (
+        select(
+            Conversation.id,
+            Conversation.updated_at,
+            Conversation.retention_days,
+            Project.retention_days.label("project_retention_days"),
+        )
+        .outerjoin(Project, Project.id == Conversation.project_id)
+        .where(Conversation.user_id == user_id)
+    )
     rows = (await db.execute(stmt)).all()
     expired_ids = [
         row.id
@@ -623,6 +656,7 @@ async def delete_older_than_for_user(
         if _is_expired(
             updated_at=row.updated_at,
             conversation_retention_days=row.retention_days,
+            project_retention_days=row.project_retention_days,
             global_retention_days=global_retention_days,
             now=now,
         )
@@ -646,17 +680,25 @@ async def delete_expired_all_users(db: AsyncSession) -> int:
     """Scheduled sweep: purge expired conversations across ALL users (D31).
 
     Each conversation expires by its effective retention window — its own
-    `retention_days` override if set, else the owning user's global
-    `preferences.retention_days` (a missing preferences row => no global window).
-    Conversations with no finite window from either source are retained forever.
+    `retention_days` override if set, else its Project's `retention_days` (D20),
+    else the owning user's global `preferences.retention_days` (a missing
+    preferences row => no global window). Conversations with no finite window
+    from any source are retained forever.
 
     Candidate pre-filter (SQL): only rows that have SOME finite window can
-    possibly expire, i.e. the conversation override is set OR the owner's global
-    preference is set. A LEFT JOIN to `preferences` exposes the per-owner global
-    in the same scan, and the expiry decision is finished in Python (plain
-    `timedelta` subtraction — no dialect-specific date arithmetic). The purge
-    is grouped per user so each owner gets exactly one `retention.purge` audit
-    event carrying their own deleted count.
+    possibly expire, i.e. the conversation override is set OR its Project
+    retention is set OR the owner's global preference is set. A LEFT JOIN to
+    `preferences` exposes the per-owner global in the same scan; a LEFT JOIN to
+    `project` (on `conversation.project_id == project.id`) exposes the
+    conversation's own Project retention. CROSS-USER SAFETY: the project join is
+    on the conversation's `project_id`, and Project assignment is owner-scoped
+    (`project.user_id == conversation.user_id` always holds), so one user's
+    Project can never set a retention window on another user's conversation — the
+    middle tier is strictly the conversation's own owner's Project. The expiry
+    decision is finished in Python (plain `timedelta` subtraction — no
+    dialect-specific date arithmetic). The purge is grouped per user so each
+    owner gets exactly one `retention.purge` audit event carrying their own
+    deleted count.
 
     Returns the total number of conversations purged across all users. Owns no
     session of its own — the caller (the scheduled-purge loop) provides one and
@@ -669,12 +711,15 @@ async def delete_expired_all_users(db: AsyncSession) -> int:
             Conversation.user_id,
             Conversation.updated_at,
             Conversation.retention_days,
+            Project.retention_days.label("project_retention_days"),
             Preferences.retention_days.label("global_retention_days"),
         )
         .outerjoin(Preferences, Preferences.user_id == Conversation.user_id)
+        .outerjoin(Project, Project.id == Conversation.project_id)
         .where(
             or_(
                 Conversation.retention_days.is_not(None),
+                Project.retention_days.is_not(None),
                 Preferences.retention_days.is_not(None),
             )
         )
@@ -686,6 +731,7 @@ async def delete_expired_all_users(db: AsyncSession) -> int:
         if _is_expired(
             updated_at=row.updated_at,
             conversation_retention_days=row.retention_days,
+            project_retention_days=row.project_retention_days,
             global_retention_days=row.global_retention_days,
             now=now,
         ):

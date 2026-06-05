@@ -48,6 +48,7 @@ from app.routes.conversations import router as conversations_router
 from app.routes.feedback import router as feedback_router
 from app.routes.models import router as models_router
 from app.routes.preferences import router as preferences_router
+from app.routes.projects import router as projects_router
 from app.routes.share import router as share_router
 from app.routes.status import router as status_router
 from app.streaming.handler import cancel_all_producers
@@ -225,6 +226,7 @@ def create_app() -> FastAPI:
     app.include_router(account_data_router)
     app.include_router(account_activity_router)
     app.include_router(account_memory_router)
+    app.include_router(projects_router)
     app.include_router(analytics_router)
     app.include_router(billing_router)
     app.include_router(auth_router)

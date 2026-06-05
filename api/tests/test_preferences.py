@@ -37,6 +37,12 @@ _VALID_BODY = {
     "monthlyBudgetUsd": 25.0,
     "perConversationBudgetUsd": 5.0,
     "memoryEnabled": True,
+    # Fully-specified combos (all three fields) so the round-trip equality below
+    # holds — the server normalizes a partial combo by filling mod/shift=False.
+    "keyboardShortcuts": {
+        "new-chat": {"key": "j", "mod": True, "shift": True},
+        "toggle-sidebar": {"key": "b", "mod": True, "shift": False},
+    },
 }
 
 
@@ -65,6 +71,7 @@ async def test_bootstrap_returns_defaults_when_no_row(
         "monthlyBudgetUsd": None,
         "perConversationBudgetUsd": None,
         "memoryEnabled": False,
+        "keyboardShortcuts": {},
     }
     # Bootstrap should NOT silently insert a row.
     assert await _row_count(session_factory) == 0
@@ -348,3 +355,87 @@ async def test_preferences_row_has_user_fk(
         prefs = (await s.execute(select(Preferences))).scalar_one()
         assert isinstance(prefs.user_id, UUID)
         assert prefs.user_id == user.id
+
+
+async def test_keyboard_shortcuts_default_empty_map(client: AsyncClient) -> None:
+    """No row -> bootstrap surfaces an empty override map (use built-in defaults)."""
+    boot = await client.get("/api/bootstrap")
+    assert boot.json()["preferences"]["keyboardShortcuts"] == {}
+
+
+async def test_keyboard_shortcuts_round_trip(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A remap map round-trips through PUT + bootstrap, normalized to full combos."""
+    await client.get("/api/bootstrap")
+    body = dict(_VALID_BODY)
+    body["keyboardShortcuts"] = {
+        "new-chat": {"key": "j", "mod": True, "shift": True},
+        # Partial combo: server fills mod/shift defaults.
+        "toggle-sidebar": {"key": "b", "mod": True},
+    }
+    assert (await client.put("/api/preferences", json=body)).status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.json()["preferences"]["keyboardShortcuts"] == {
+        "new-chat": {"key": "j", "mod": True, "shift": True},
+        "toggle-sidebar": {"key": "b", "mod": True, "shift": False},
+    }
+
+    # The override map persists as a JSON object on the row.
+    async with session_factory() as s:
+        prefs = (await s.execute(select(Preferences))).scalar_one()
+        assert prefs.keyboard_shortcuts["new-chat"]["key"] == "j"
+
+
+async def test_keyboard_shortcuts_empty_map_clears_overrides(
+    client: AsyncClient,
+) -> None:
+    """Sending an empty map replaces a saved map (reset-to-defaults)."""
+    await client.get("/api/bootstrap")
+    saved = dict(_VALID_BODY)
+    saved["keyboardShortcuts"] = {"new-chat": {"key": "j", "mod": True, "shift": True}}
+    assert (await client.put("/api/preferences", json=saved)).status_code == 204
+
+    cleared = dict(_VALID_BODY)
+    cleared["keyboardShortcuts"] = {}
+    assert (await client.put("/api/preferences", json=cleared)).status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.json()["preferences"]["keyboardShortcuts"] == {}
+
+
+async def test_put_omitted_keyboard_shortcuts_preserves_existing(
+    client: AsyncClient,
+) -> None:
+    """Omission (stale client) preserves the saved map, like telemetry/memory."""
+    await client.get("/api/bootstrap")
+    first = dict(_VALID_BODY)
+    first["keyboardShortcuts"] = {"new-chat": {"key": "j", "mod": True, "shift": True}}
+    assert (await client.put("/api/preferences", json=first)).status_code == 204
+
+    stale_client_body = dict(_VALID_BODY)
+    stale_client_body.pop("keyboardShortcuts")
+    stale_client_body["defaultTierId"] = "fast"
+    assert (
+        await client.put("/api/preferences", json=stale_client_body)
+    ).status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    prefs = boot.json()["preferences"]
+    assert prefs["defaultTierId"] == "fast"
+    assert prefs["keyboardShortcuts"] == {
+        "new-chat": {"key": "j", "mod": True, "shift": True},
+    }
+
+
+async def test_put_rejects_malformed_keyboard_shortcuts(client: AsyncClient) -> None:
+    """A combo missing the required `key` is rejected as INVALID_INPUT."""
+    await client.get("/api/bootstrap")
+    bad = dict(_VALID_BODY)
+    bad["keyboardShortcuts"] = {"new-chat": {"mod": True}}  # no `key`
+
+    response = await client.put("/api/preferences", json=bad)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INPUT"

@@ -85,6 +85,11 @@ async def put_preferences(
             if body.memory_enabled is not None
             else existing.memory_enabled
         ),
+        keyboard_shortcuts=(
+            body.keyboard_shortcuts
+            if body.keyboard_shortcuts is not None
+            else existing.keyboard_shortcuts
+        ),
     )
     safety_decision = check_user_turn(
         settings,

@@ -72,6 +72,9 @@ export interface SettingsDialogProps {
   // instructions). Optional so embeddings that predate D20 still type-check.
   projects?: Project[];
   onUpdateProject?: (id: string, patch: ProjectUpdateInput) => void;
+  // Open the editable "Keyboard shortcuts" dialog (closing settings first):
+  // remap any action, with a reserved-combo guard and reset-to-defaults (D23).
+  onOpenShortcuts: () => void;
 }
 
 // Derive avatar initials from a display name (first + last token), capped at
@@ -808,6 +811,7 @@ export function SettingsDialog({
   onOpenModelDirectory,
   projects = [],
   onUpdateProject,
+  onOpenShortcuts,
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
   const autoExpandId = useId();
@@ -1101,6 +1105,21 @@ export function SettingsDialog({
                     )
                   }
                 />
+              }
+            />
+            <SettingRow
+              label="Keyboard shortcuts"
+              helper="View and rebind shortcuts. Enter and Escape stay reserved."
+              control={
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  data-testid="open-shortcuts-button"
+                  onClick={onOpenShortcuts}
+                >
+                  Customize
+                </Button>
               }
             />
             <div className="space-y-2">

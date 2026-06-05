@@ -65,6 +65,16 @@ import {
   useKeyboardShortcuts,
   type Shortcut,
 } from "@/lib/use-keyboard-shortcuts";
+import {
+  clearOverride,
+  defaultsFromBindings,
+  deserializeShortcuts,
+  resetAllOverrides,
+  resolveBindings,
+  serializeShortcuts,
+  setOverride,
+  type RebindableBinding,
+} from "@/lib/shortcut-defaults";
 import { useApiStream, type TerminalResult } from "@/lib/stream-client";
 import {
   ApiError,
@@ -96,12 +106,14 @@ import type {
   ChatMessage,
   ConversationSummary,
   Feedback,
+  KeyboardShortcuts,
   MessagePart,
   ModelTier,
   ModelTierId,
   Project,
   ProviderTierOption,
   ReasoningEffortId,
+  ShortcutId,
   UsageBudget,
   UserPreferences,
 } from "@/lib/types";
@@ -109,24 +121,9 @@ import type {
 // `KEY_BINDINGS` carries the static keystroke metadata; `runAction(id)` owns
 // the live handler. The split keeps the descriptor array free of state
 // closures, which the React Compiler would otherwise flag as ref-tainted.
-type ShortcutId =
-  | "palette"
-  | "new-chat"
-  | "focus-composer"
-  | "copy-last-response"
-  | "copy-last-code"
-  | "toggle-sidebar"
-  | "custom-instructions"
-  | "delete-chat"
-  | "toggle-dictation"
-  | "shortcuts"
-  | "open-settings"
-  | "toggle-theme";
-
-type KeyBinding = Omit<Shortcut, "handler"> & {
-  id: ShortcutId;
-  label: string;
-};
+// `ShortcutId` is the persistence-safe action id union, shared from `types.ts`
+// so the override map / rebind dialog / resolver agree on it (D23).
+type KeyBinding = RebindableBinding;
 const KEY_BINDINGS: KeyBinding[] = [
   {
     id: "palette",
@@ -209,33 +206,43 @@ const KEY_BINDINGS: KeyBinding[] = [
   },
 ];
 
-// Lookup helper for grouping the palette / dialog views.
-const BINDING_BY_ID = (id: ShortcutId): KeyBinding => {
-  const found = KEY_BINDINGS.find((b) => b.id === id);
-  if (!found) throw new Error(`Missing binding for shortcut ${id}`);
-  return found;
-};
+// The built-in default keystroke for every action, keyed by id. This is the
+// merge base for the user's `keyboardShortcuts` overrides (D23); the EFFECTIVE
+// bindings (defaults + overrides) drive the live matcher, palette, and dialog.
+const DEFAULT_BINDINGS = defaultsFromBindings(KEY_BINDINGS);
+
+// Human label per action id (stable; never overridden).
+const LABEL_BY_ID = ((): Record<ShortcutId, string> => {
+  const out = {} as Record<ShortcutId, string>;
+  for (const b of KEY_BINDINGS) out[b.id] = b.label;
+  // Palette-only actions have no KEY_BINDINGS entry; label them here.
+  out["open-settings"] = "Open settings";
+  out["toggle-theme"] = "Toggle theme";
+  return out;
+})();
 
 // Palette rows. "Hidden" entries (the palette itself) are omitted; settings/
-// theme entries are palette-only (no global shortcut).
+// theme entries are palette-only (`hasBinding: false` ⇒ no global shortcut, so
+// no keycap hint). The effective keystroke is resolved at render from the live
+// bindings, not baked in here.
 const PALETTE_ACTION_META: Array<{
   id: ShortcutId;
   label: string;
   icon: CommandAction["icon"];
   section: "Actions" | "Settings";
-  binding?: KeyBinding;
+  hasBinding: boolean;
 }> = [
-  { id: "new-chat", label: "New chat", icon: MessageSquarePlus, section: "Actions", binding: BINDING_BY_ID("new-chat") },
-  { id: "focus-composer", label: "Focus composer", icon: TextCursorInput, section: "Actions", binding: BINDING_BY_ID("focus-composer") },
-  { id: "copy-last-response", label: "Copy last response", icon: ClipboardCopy, section: "Actions", binding: BINDING_BY_ID("copy-last-response") },
-  { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", binding: BINDING_BY_ID("copy-last-code") },
-  { id: "toggle-sidebar", label: "Toggle sidebar", icon: PanelLeft, section: "Actions", binding: BINDING_BY_ID("toggle-sidebar") },
-  { id: "delete-chat", label: "Delete current chat", icon: Trash2, section: "Actions", binding: BINDING_BY_ID("delete-chat") },
-  { id: "toggle-dictation", label: "Toggle dictation", icon: Mic, section: "Actions", binding: BINDING_BY_ID("toggle-dictation") },
-  { id: "custom-instructions", label: "Open custom instructions", icon: Sparkles, section: "Settings", binding: BINDING_BY_ID("custom-instructions") },
-  { id: "shortcuts", label: "Show all shortcuts", icon: KeyRound, section: "Settings", binding: BINDING_BY_ID("shortcuts") },
-  { id: "open-settings", label: "Open settings", icon: SettingsIcon, section: "Settings" },
-  { id: "toggle-theme", label: "Toggle theme", icon: Sun, section: "Settings" },
+  { id: "new-chat", label: "New chat", icon: MessageSquarePlus, section: "Actions", hasBinding: true },
+  { id: "focus-composer", label: "Focus composer", icon: TextCursorInput, section: "Actions", hasBinding: true },
+  { id: "copy-last-response", label: "Copy last response", icon: ClipboardCopy, section: "Actions", hasBinding: true },
+  { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", hasBinding: true },
+  { id: "toggle-sidebar", label: "Toggle sidebar", icon: PanelLeft, section: "Actions", hasBinding: true },
+  { id: "delete-chat", label: "Delete current chat", icon: Trash2, section: "Actions", hasBinding: true },
+  { id: "toggle-dictation", label: "Toggle dictation", icon: Mic, section: "Actions", hasBinding: true },
+  { id: "custom-instructions", label: "Open custom instructions", icon: Sparkles, section: "Settings", hasBinding: true },
+  { id: "shortcuts", label: "Show all shortcuts", icon: KeyRound, section: "Settings", hasBinding: true },
+  { id: "open-settings", label: "Open settings", icon: SettingsIcon, section: "Settings", hasBinding: false },
+  { id: "toggle-theme", label: "Toggle theme", icon: Sun, section: "Settings", hasBinding: false },
 ];
 
 // Shortcuts dialog grouping. Ordered to match the PRD §5.5 table loosely:
@@ -245,6 +252,13 @@ const SHORTCUT_DIALOG_SECTIONS: { heading: string; ids: ShortcutId[] }[] = [
   { heading: "Navigation", ids: ["new-chat", "focus-composer", "toggle-sidebar"] },
   { heading: "Editing", ids: ["copy-last-response", "copy-last-code", "toggle-dictation", "delete-chat"] },
 ];
+
+// Every rebindable action surfaced in the shortcuts dialog (= the union of all
+// section ids). Used to validate/coerce a deserialized override map and to drive
+// duplicate detection across the full set.
+const REBINDABLE_IDS: ShortcutId[] = SHORTCUT_DIALOG_SECTIONS.flatMap(
+  (section) => section.ids,
+);
 
 // Local-only id generator for optimistic message bubbles before the server
 // echoes the real uuid. Never sent to the server (clientMessageId uses
@@ -2640,8 +2654,21 @@ export function ChatThread() {
     }
   };
 
-  const boundShortcuts = KEY_BINDINGS.map((b) => ({
-    ...b,
+  // The EFFECTIVE bindings = built-in defaults merged with the user's saved
+  // overrides (D23). Drives the live keydown matcher, the palette keycaps, and
+  // the shortcuts dialog so a remap takes effect everywhere at once.
+  // `preferences` can be null before the bootstrap render-gate below, so fall
+  // back to "no overrides". `deserializeShortcuts` hardens the wire value: it
+  // drops unknown action ids and malformed combos so a stale/forward-compatible
+  // payload can never crash the resolver.
+  const shortcutOverrides: KeyboardShortcuts = deserializeShortcuts(
+    preferences?.keyboardShortcuts,
+    REBINDABLE_IDS,
+  );
+  const effectiveBindings = resolveBindings(DEFAULT_BINDINGS, shortcutOverrides);
+
+  const boundShortcuts: Shortcut[] = KEY_BINDINGS.map((b) => ({
+    ...effectiveBindings[b.id],
     handler: () => runAction(b.id),
   }));
   useKeyboardShortcuts(boundShortcuts);
@@ -2653,26 +2680,39 @@ export function ChatThread() {
     id: meta.id,
     label: meta.label,
     icon: meta.icon,
-    shortcut: meta.binding,
+    shortcut: meta.hasBinding ? effectiveBindings[meta.id] : undefined,
     section: meta.section,
     run: () => runAction(meta.id),
   }));
 
   // Sections rendered by the shortcuts dialog (Hidden entries surface here
   // too so power users see Cmd+K listed). Ordered to match the PRD §5.5 table.
+  // Each row carries its id + effective keystroke so the dialog can render
+  // (and, in editable mode, rebind) it.
   const shortcutSections: ShortcutSection[] = SHORTCUT_DIALOG_SECTIONS.map(
     (section) => ({
       heading: section.heading,
-      items: section.ids.map((id) => {
-        const binding = KEY_BINDINGS.find((b) => b.id === id);
-        if (!binding) throw new Error(`Missing binding for shortcut ${id}`);
-        return {
-          label: binding.label,
-          shortcut: binding,
-        };
-      }),
+      items: section.ids.map((id) => ({
+        id,
+        label: LABEL_BY_ID[id],
+        shortcut: effectiveBindings[id],
+        isOverridden: shortcutOverrides[id] != null,
+      })),
     }),
   );
+
+  // Persist a new override map through the SAME optimistic preferences flow as
+  // every other setting (`handlePreferencesChange` does setBootstrap + PUT +
+  // rollback-on-error). The rebind dialog hands us the already-guarded map;
+  // `serializeShortcuts` canonicalizes it — dropping any override that equals
+  // its default — so the stored column stays minimal and self-healing.
+  const handleShortcutsChange = (next: KeyboardShortcuts): void => {
+    if (!bootstrap) return;
+    handlePreferencesChange({
+      ...bootstrap.preferences,
+      keyboardShortcuts: serializeShortcuts(next, DEFAULT_BINDINGS),
+    });
+  };
 
   // --- Render guards ------------------------------------------------------
   // Bootstrap is the gate: nothing renders the main shell until we have the
@@ -3065,6 +3105,10 @@ export function ChatThread() {
         }}
         projects={projects}
         onUpdateProject={handleUpdateProject}
+        onOpenShortcuts={() => {
+          setSettingsOpen(false);
+          setShortcutsDialogOpen(true);
+        }}
       />
 
       <ActivityDialog
@@ -3136,6 +3180,18 @@ export function ChatThread() {
         open={shortcutsDialogOpen}
         onOpenChange={setShortcutsDialogOpen}
         shortcuts={shortcutSections}
+        editable
+        effectiveBindings={effectiveBindings}
+        labelFor={(id) => LABEL_BY_ID[id]}
+        onRebind={(id, combo) => {
+          handleShortcutsChange(setOverride(shortcutOverrides, id, combo));
+        }}
+        onResetAction={(id) => {
+          handleShortcutsChange(clearOverride(shortcutOverrides, id));
+        }}
+        onResetAll={() => {
+          handleShortcutsChange(resetAllOverrides());
+        }}
       />
 
       <Dialog

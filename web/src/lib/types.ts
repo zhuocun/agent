@@ -439,7 +439,47 @@ export interface UserPreferences {
   // Transparent long-term memory opt-in (D19). OFF by default. When on (and the
   // turn isn't temporary) the BE injects the user's saved facts into the turn.
   memoryEnabled: boolean;
+  // User remaps of the app's keyboard shortcuts (D23). Keyed by stable
+  // `ShortcutId` -> an override combo. An empty/missing entry for an action
+  // means "use the built-in default". Optional on the wire so older bootstrap
+  // payloads (and partial test stubs) still parse; the resolver treats a missing
+  // map as empty. See `web/src/lib/shortcut-defaults.ts`.
+  keyboardShortcuts?: KeyboardShortcuts;
 }
+
+// Stable, persistence-safe identifiers for each rebindable action (D23). These
+// are the keys of the `keyboardShortcuts` override map and MUST stay in sync
+// with the `ShortcutId` union driving `KEY_BINDINGS` in chat-thread.tsx. Kept
+// here so the override map, the rebind dialog, and the resolver can share one
+// type without importing the heavy chat-thread module.
+export type ShortcutId =
+  | "palette"
+  | "new-chat"
+  | "focus-composer"
+  | "copy-last-response"
+  | "copy-last-code"
+  | "toggle-sidebar"
+  | "custom-instructions"
+  | "delete-chat"
+  | "toggle-dictation"
+  | "shortcuts"
+  | "open-settings"
+  | "toggle-theme";
+
+// A single user-supplied shortcut override (D23). Mirrors the matcher-
+// significant fields of `ShortcutKeys` (`web/src/lib/use-keyboard-shortcuts.ts`)
+// and the BE `ShortcutOverride` schema. `allowInInput` is intentionally NOT part
+// of an override — it's a per-action trait owned by the built-in default.
+export interface ShortcutOverride {
+  key: string;
+  mod?: boolean; // Cmd on Mac, Ctrl elsewhere
+  shift?: boolean;
+}
+
+// The override map persisted on `preferences.keyboardShortcuts`. Mirrors the BE
+// `KeyboardShortcuts` type. Permissive on the value side; unknown action ids are
+// ignored by the resolver.
+export type KeyboardShortcuts = Partial<Record<ShortcutId, ShortcutOverride>>;
 
 // A single editable, attributed long-term-memory fact (D19). The glass-box
 // differentiator: every fact the assistant may use is a row the user can read,

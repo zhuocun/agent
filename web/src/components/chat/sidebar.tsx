@@ -12,6 +12,7 @@ import {
 import {
   Archive,
   ArchiveRestore,
+  Boxes,
   Check,
   ChevronDown,
   ChevronRight,
@@ -676,111 +677,141 @@ function ConversationRow({
             )}
             <span>{pinAction}</span>
           </DropdownMenuItem>
+          {/* M2: the three low-frequency config submenus (Retention, Assign
+              to project, Assign tags) are tiered one level deeper under a single
+              "Organize…" disclosure, so the kebab opens to a short frequent
+              list (Rename / Pin / Archive / Copy / Download / Delete) with one
+              extra step to reach the rarely-touched config. The inner
+              SubTriggers KEEP their original testids
+              (sidebar-conversation-retention / -assign-project / -assign-tags)
+              so the wire contract is unchanged — only an "Organize…" hop is
+              added in front of them. The whole group is hidden only when none of
+              its three controls is wired (retention is always present, so the
+              "Organize…" entry shows whenever the row kebab does). */}
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="gap-2" data-testid="sidebar-conversation-retention">
-              <Timer className="size-4" aria-hidden />
-              <span>Retention</span>
+            <DropdownMenuSubTrigger
+              className="gap-2"
+              data-testid="sidebar-conversation-organize"
+            >
+              <SlidersHorizontal className="size-4" aria-hidden />
+              <span>Organize…</span>
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              <DropdownMenuRadioGroup
-                value={retentionKey(conversation.retentionDays)}
-                onValueChange={(next) => {
-                  onSetRetention(
-                    conversation.id,
-                    next === "default" ? null : Number(next),
-                  );
-                }}
-              >
-                {RETENTION_OPTIONS.map((option) => (
-                  <DropdownMenuRadioItem
-                    key={retentionKey(option.value)}
-                    value={retentionKey(option.value)}
+            <DropdownMenuSubContent className="w-44">
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger
+                  className="gap-2"
+                  data-testid="sidebar-conversation-retention"
+                >
+                  <Timer className="size-4" aria-hidden />
+                  <span>Retention</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuRadioGroup
+                    value={retentionKey(conversation.retentionDays)}
+                    onValueChange={(next) => {
+                      onSetRetention(
+                        conversation.id,
+                        next === "default" ? null : Number(next),
+                      );
+                    }}
                   >
-                    {option.label}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
+                    {RETENTION_OPTIONS.map((option) => (
+                      <DropdownMenuRadioItem
+                        key={retentionKey(option.value)}
+                        value={retentionKey(option.value)}
+                      >
+                        {option.label}
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+              {onAssignProject ? (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="gap-2"
+                    data-testid="sidebar-conversation-assign-project"
+                  >
+                    <Folder className="size-4" aria-hidden />
+                    <span>Assign to project</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuRadioGroup
+                      // The wire `projectId` is nullable; round-trip `null`
+                      // ("No project") through base-ui's string RadioGroup with
+                      // the sentinel "none".
+                      value={conversation.projectId ?? "none"}
+                      onValueChange={(next) => {
+                        onAssignProject(
+                          conversation.id,
+                          next === "none" ? null : next,
+                        );
+                      }}
+                    >
+                      <DropdownMenuRadioItem value="none">
+                        No project
+                      </DropdownMenuRadioItem>
+                      {projects.map((project) => (
+                        <DropdownMenuRadioItem
+                          key={project.id}
+                          value={project.id}
+                        >
+                          {project.name}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
+              {onAssignTags && tags.length > 0 ? (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger
+                    className="gap-2"
+                    data-testid="sidebar-conversation-assign-tags"
+                  >
+                    <Tags className="size-4" aria-hidden />
+                    <span>Assign tags</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    {tags.map((tag) => {
+                      const isAssigned = assignedTagIds.has(tag.id);
+                      return (
+                        <DropdownMenuItem
+                          key={tag.id}
+                          label={tag.name}
+                          // Toggle this tag in/out of the conversation's set,
+                          // then send the FULL replacement set (the BE PATCH
+                          // replaces). closeOnClick=false keeps the submenu open
+                          // for multi-tag edits.
+                          closeOnClick={false}
+                          onClick={() => {
+                            const next = isAssigned
+                              ? (conversation.tagIds ?? []).filter(
+                                  (id) => id !== tag.id,
+                                )
+                              : [...(conversation.tagIds ?? []), tag.id];
+                            onAssignTags(conversation.id, next);
+                          }}
+                          className="gap-2"
+                          data-testid="sidebar-conversation-tag-option"
+                        >
+                          <span
+                            className="inline-flex size-4 shrink-0 items-center justify-center"
+                            aria-hidden
+                          >
+                            {isAssigned ? <Check className="size-4" /> : null}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate">
+                            {tag.name}
+                          </span>
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
             </DropdownMenuSubContent>
           </DropdownMenuSub>
-          {onAssignProject ? (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger
-                className="gap-2"
-                data-testid="sidebar-conversation-assign-project"
-              >
-                <Folder className="size-4" aria-hidden />
-                <span>Assign to project</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuRadioGroup
-                  // The wire `projectId` is nullable; round-trip `null`
-                  // ("No project") through base-ui's string RadioGroup with the
-                  // sentinel "none".
-                  value={conversation.projectId ?? "none"}
-                  onValueChange={(next) => {
-                    onAssignProject(
-                      conversation.id,
-                      next === "none" ? null : next,
-                    );
-                  }}
-                >
-                  <DropdownMenuRadioItem value="none">
-                    No project
-                  </DropdownMenuRadioItem>
-                  {projects.map((project) => (
-                    <DropdownMenuRadioItem key={project.id} value={project.id}>
-                      {project.name}
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          ) : null}
-          {onAssignTags && tags.length > 0 ? (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger
-                className="gap-2"
-                data-testid="sidebar-conversation-assign-tags"
-              >
-                <Tags className="size-4" aria-hidden />
-                <span>Assign tags</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                {tags.map((tag) => {
-                  const isAssigned = assignedTagIds.has(tag.id);
-                  return (
-                    <DropdownMenuItem
-                      key={tag.id}
-                      label={tag.name}
-                      // Toggle this tag in/out of the conversation's set, then
-                      // send the FULL replacement set (the BE PATCH replaces).
-                      // closeOnClick=false keeps the submenu open for multi-tag
-                      // edits.
-                      closeOnClick={false}
-                      onClick={() => {
-                        const next = isAssigned
-                          ? (conversation.tagIds ?? []).filter(
-                              (id) => id !== tag.id,
-                            )
-                          : [...(conversation.tagIds ?? []), tag.id];
-                        onAssignTags(conversation.id, next);
-                      }}
-                      className="gap-2"
-                      data-testid="sidebar-conversation-tag-option"
-                    >
-                      <span
-                        className="inline-flex size-4 shrink-0 items-center justify-center"
-                        aria-hidden
-                      >
-                        {isAssigned ? <Check className="size-4" /> : null}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate">{tag.name}</span>
-                    </DropdownMenuItem>
-                  );
-                })}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          ) : null}
           {onArchive ? (
             <DropdownMenuItem
               label={archived ? "Unarchive" : "Archive"}
@@ -1213,6 +1244,7 @@ export function Sidebar({
   const openCreateProject = () => {
     setProjectDraft("");
     setProjectDialog({ mode: "create" });
+    setCollectionsOpen(true);
   };
   const openRenameProject = (project: ProjectSummary) => {
     setProjectDraft(project.name);
@@ -1248,6 +1280,7 @@ export function Sidebar({
   const openCreateTag = () => {
     setTagDraft("");
     setTagDialog({ mode: "create" });
+    setCollectionsOpen(true);
   };
   const openRenameTag = (tag: Tag) => {
     setTagDraft(tag.name);
@@ -1278,6 +1311,30 @@ export function Sidebar({
   // Archived section collapse (Conversation Org v2). Collapsed by default so the
   // main list stays focused; the header toggles it open.
   const [archivedOpen, setArchivedOpen] = useState(false);
+
+  // M3: Collections finder. Projects (containers) and Tags (filters) used to be
+  // two always-present labeled sections stacked above the recency list — two
+  // parallel organization systems competing for the top of the rail. They now
+  // collapse behind ONE quiet "Collections" disclosure that, at rest, leaves the
+  // recency-grouped conversations as the figure. Expanding it progressively
+  // discloses BOTH systems with their full existing CRUD + the per-tag filter.
+  // Collapsed by default. We auto-open it the first time a CRUD dialog is
+  // launched (create/rename) so the freshly-created project/tag is visible when
+  // the dialog closes; an explicit user toggle thereafter is respected.
+  const [collectionsOpen, setCollectionsOpen] = useState(false);
+  const hasCollections =
+    Boolean(onCreateProject) ||
+    projects.length > 0 ||
+    Boolean(onCreateTag) ||
+    tags.length > 0;
+  // The active tag filter must stay VISIBLE even when Collections is collapsed —
+  // burying an in-effect filter behind a closed disclosure is a usability
+  // regression (a frequent action whose state would otherwise be invisible). We
+  // resolve its display name from the live tag set and surface a clearable chip
+  // on the collapsed Collections row.
+  const activeFilterTag = activeTagFilter
+    ? tags.find((t) => t.id === activeTagFilter) ?? null
+    : null;
 
   // Multi-select (Conversation Org v2). Selection state lives here in the
   // sidebar; the bulk action bar calls the parent's optimistic `onBulk*`
@@ -1650,11 +1707,79 @@ export function Sidebar({
             )
           ) : (
             <>
-              {/* Projects/Spaces (D20). Rendered above the recency groups. Each
-                  project is a labeled container with its filed conversations and
-                  a kebab to manage settings / rename / delete. */}
+              {/* M3: Collections finder. ONE quiet disclosure replaces the two
+                  always-present "Projects" + "Tags" sections. At rest the rail
+                  shows only the recency list + this single collapsed entry; the
+                  active tag filter (a FREQUENT action) stays visible as a
+                  clearable chip on the collapsed row so an in-effect filter is
+                  never buried. Expanding discloses BOTH organization systems
+                  with their full CRUD and the per-tag filter, one interaction
+                  deep. */}
+              {hasCollections ? (
+                <div className="mb-6" data-testid="sidebar-collections">
+                  <div className="group/collections-head flex items-center gap-1 px-2 pb-1 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setCollectionsOpen((v) => !v)}
+                      aria-expanded={collectionsOpen}
+                      aria-controls="sidebar-collections-panel"
+                      data-testid="sidebar-collections-toggle"
+                      className="flex min-h-9 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+                    >
+                      {collectionsOpen ? (
+                        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+                      ) : (
+                        <ChevronRight className="size-3.5 shrink-0" aria-hidden />
+                      )}
+                      <Boxes className="size-3.5 shrink-0" aria-hidden />
+                      <span>Collections</span>
+                      {/* Active-filter visibility while collapsed: the filtered
+                          tag's name rides on the collapsed row so the user can
+                          see (and the chip's × can clear) the in-effect filter
+                          without expanding. Hidden when expanded — the live
+                          per-tag toggle below carries the state then. */}
+                      {!collectionsOpen && activeFilterTag ? (
+                        <span
+                          className="ml-1 inline-flex min-w-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground"
+                          data-testid="sidebar-collections-active-filter"
+                        >
+                          <TagIcon
+                            className="size-3 shrink-0"
+                            aria-hidden
+                            style={
+                              activeFilterTag.color
+                                ? { color: activeFilterTag.color }
+                                : undefined
+                            }
+                          />
+                          <span className="min-w-0 max-w-[8rem] truncate">
+                            {activeFilterTag.name}
+                          </span>
+                        </span>
+                      ) : null}
+                    </button>
+                    {/* Clearing an active filter from the collapsed row stays a
+                        ONE-interaction reach for the frequent un-filter case. */}
+                    {!collectionsOpen && activeFilterTag ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        aria-label={`Clear ${activeFilterTag.name} filter`}
+                        data-testid="sidebar-collections-clear-filter"
+                        onClick={() => onSetTagFilter?.(null)}
+                        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <X className="size-4" aria-hidden />
+                      </Button>
+                    ) : null}
+                  </div>
+                  {collectionsOpen ? (
+                    <div id="sidebar-collections-panel">
+                      {/* Projects/Spaces (D20). Each project is a labeled
+                  container with its filed conversations and a kebab to manage
+                  settings / rename / delete. */}
               {onCreateProject || projects.length > 0 ? (
-                <div className="mb-6" data-testid="sidebar-projects">
+                <div className="mb-4" data-testid="sidebar-projects">
                   <div className="group/proj-head flex items-center justify-between px-2 pb-1 pt-1">
                     <span className="text-xs font-semibold text-muted-foreground">
                       Projects
@@ -1908,6 +2033,13 @@ export function Sidebar({
                   )}
                 </div>
               ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {/* Recency-grouped conversations stay the figure at rest: they
+                  render OUTSIDE the Collections disclosure (as its sibling), so
+                  collapsing Collections never hides the conversation list. */}
               {displayConversations.length === 0 ? (
                 <div className="px-2 py-6 text-center text-sm text-muted-foreground">
                   No chats yet — start one above

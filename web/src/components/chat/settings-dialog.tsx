@@ -117,40 +117,83 @@ export type SettingsTab =
   | "shortcuts"
   | "activity";
 
-const SETTINGS_TABS: Array<{
+type SettingsTabDef = {
   id: SettingsTab;
   label: string;
   icon: typeof Brain;
   // Preserve the exact testids the e2e specs click to switch into each surface.
   testId?: string;
+};
+
+// The hub's tabs, organized into named clusters so the strip reads as a small
+// hierarchy of related areas rather than six undifferentiated peers. Grouping is
+// regrouping only — every tab (and its testid) is preserved; nothing is removed
+// or hidden. The clusters:
+//   • Workspace  — your settings + your live usage (General, Activity)
+//   • Knowledge  — what the assistant draws on (Memory, Templates, Models)
+//   • Reference  — the keyboard map (Shortcuts)
+// A single flat `SETTINGS_TABS` is still derived from the groups so the
+// roving-tabindex keyboard nav and the active-tab lookup keep treating the strip
+// as one continuous tablist (arrow keys cross cluster boundaries).
+const SETTINGS_TAB_GROUPS: Array<{
+  id: string;
+  label: string;
+  tabs: SettingsTabDef[];
 }> = [
-  { id: "general", label: "General", icon: SlidersHorizontal },
-  { id: "memory", label: "Memory", icon: Brain, testId: "open-memory-button" },
   {
-    id: "templates",
-    label: "Templates",
-    icon: FileText,
-    testId: "open-templates-button",
+    id: "workspace",
+    label: "Workspace",
+    tabs: [
+      { id: "general", label: "General", icon: SlidersHorizontal },
+      {
+        id: "activity",
+        label: "Activity",
+        icon: Activity,
+        testId: "open-activity-button",
+      },
+    ],
   },
   {
-    id: "models",
-    label: "Models",
-    icon: ModelsIcon,
-    testId: "open-model-directory-button",
+    id: "knowledge",
+    label: "Knowledge",
+    tabs: [
+      {
+        id: "memory",
+        label: "Memory",
+        icon: Brain,
+        testId: "open-memory-button",
+      },
+      {
+        id: "templates",
+        label: "Templates",
+        icon: FileText,
+        testId: "open-templates-button",
+      },
+      {
+        id: "models",
+        label: "Models",
+        icon: ModelsIcon,
+        testId: "open-model-directory-button",
+      },
+    ],
   },
   {
-    id: "shortcuts",
-    label: "Shortcuts",
-    icon: Keyboard,
-    testId: "open-shortcuts-button",
-  },
-  {
-    id: "activity",
-    label: "Activity",
-    icon: Activity,
-    testId: "open-activity-button",
+    id: "reference",
+    label: "Reference",
+    tabs: [
+      {
+        id: "shortcuts",
+        label: "Shortcuts",
+        icon: Keyboard,
+        testId: "open-shortcuts-button",
+      },
+    ],
   },
 ];
+
+const SETTINGS_TABS: SettingsTabDef[] = SETTINGS_TAB_GROUPS.flatMap(
+  (group) => group.tabs,
+);
 
 // Derive avatar initials from a display name (first + last token), capped at
 // two letters. Falls back gracefully for single-word or empty names.
@@ -200,6 +243,27 @@ function SectionHeading({ children }: { children: ReactNode }): JSX.Element {
     <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
       {children}
     </h3>
+  );
+}
+
+// A group heading sits one level ABOVE SectionHeading: it clusters the General
+// panel's many sections into a few labeled domains so the panel reads as a short
+// hierarchy instead of a flat seven-section scroll. Rendered in foreground weight
+// (vs. SectionHeading's muted uppercase) so the two levels are visually distinct.
+function GroupHeading({
+  children,
+  helper,
+}: {
+  children: ReactNode;
+  helper?: ReactNode;
+}): JSX.Element {
+  return (
+    <div className="space-y-0.5">
+      <h2 className="text-sm font-semibold text-foreground">{children}</h2>
+      {helper ? (
+        <p className="text-xs text-muted-foreground">{helper}</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -1005,62 +1069,105 @@ export function SettingsDialog({
         </DialogHeader>
 
         {/* Tab strip — the single nav rail that switches hub sections in place
-            instead of fanning out into sibling modals. A horizontally
-            scrollable strip so it works as a bottom sheet on mobile; each
-            trigger meets the 44px touch-target minimum. Keyboard: roving
-            arrow-key navigation via aria + the browser's native focus order
-            (semantic <button>s with role="tab"/aria-selected). */}
+            instead of fanning out into sibling modals. The tabs are now arranged
+            into named clusters (Workspace / Knowledge / Reference) so the strip
+            reads as a small hierarchy rather than six equal peers; each cluster
+            carries a quiet label and a vertical divider separates clusters. It
+            stays ONE tablist — arrow-key roving still walks the flat tab order
+            across cluster boundaries. A horizontally scrollable strip so it works
+            as a bottom sheet on mobile; each trigger meets the 44px touch-target
+            minimum. Keyboard: roving arrow-key navigation via aria + the
+            browser's native focus order (semantic <button>s with
+            role="tab"/aria-selected). */}
         <div
           role="tablist"
           aria-label="Settings sections"
           id={tablistId}
-          className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1"
+          className="-mx-1 flex items-end gap-3 overflow-x-auto px-1 pb-1"
         >
-          {SETTINGS_TABS.map((tab) => {
-            const selected = activeTab === tab.id;
-            const Icon = tab.icon;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                id={`${tablistId}-${tab.id}`}
-                aria-selected={selected}
-                aria-controls={`${tablistId}-${tab.id}-panel`}
-                tabIndex={selected ? 0 : -1}
-                data-testid={tab.testId}
-                onClick={() => setActiveTab(tab.id)}
-                onKeyDown={(event) => {
-                  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
-                    return;
-                  }
-                  event.preventDefault();
-                  const index = SETTINGS_TABS.findIndex((t) => t.id === tab.id);
-                  const delta = event.key === "ArrowRight" ? 1 : -1;
-                  const next =
-                    SETTINGS_TABS[
-                      (index + delta + SETTINGS_TABS.length) %
-                        SETTINGS_TABS.length
-                    ]!;
-                  setActiveTab(next.id);
-                  // Move focus to the newly selected tab (roving tabindex).
-                  document.getElementById(`${tablistId}-${next.id}`)?.focus();
-                }}
-                className={cn(
-                  "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium whitespace-nowrap transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
-                  selected
-                    ? "bg-secondary text-foreground"
-                    : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
-                )}
+          {SETTINGS_TAB_GROUPS.map((group, groupIndex) => (
+            <div
+              key={group.id}
+              role="presentation"
+              className={cn(
+                "flex shrink-0 flex-col gap-1",
+                groupIndex > 0 &&
+                  "border-l border-border/60 pl-3",
+              )}
+            >
+              {/* Cluster label — quiet, uppercase, matches SectionHeading. Not a
+                  tab; purely a visual grouping cue. */}
+              <span
+                aria-hidden
+                className="px-2 text-2xs font-semibold tracking-wide text-muted-foreground/80 uppercase"
               >
-                <Icon aria-hidden className="size-4 shrink-0" />
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
+                {group.label}
+              </span>
+              <div className="flex gap-1">
+                {group.tabs.map((tab) => {
+                  const selected = activeTab === tab.id;
+                  const Icon = tab.icon;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      id={`${tablistId}-${tab.id}`}
+                      aria-selected={selected}
+                      aria-controls={`${tablistId}-${tab.id}-panel`}
+                      tabIndex={selected ? 0 : -1}
+                      data-testid={tab.testId}
+                      onClick={() => setActiveTab(tab.id)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key !== "ArrowRight" &&
+                          event.key !== "ArrowLeft"
+                        ) {
+                          return;
+                        }
+                        event.preventDefault();
+                        const index = SETTINGS_TABS.findIndex(
+                          (t) => t.id === tab.id,
+                        );
+                        const delta = event.key === "ArrowRight" ? 1 : -1;
+                        const next =
+                          SETTINGS_TABS[
+                            (index + delta + SETTINGS_TABS.length) %
+                              SETTINGS_TABS.length
+                          ]!;
+                        setActiveTab(next.id);
+                        // Move focus to the newly selected tab (roving tabindex).
+                        document
+                          .getElementById(`${tablistId}-${next.id}`)
+                          ?.focus();
+                      }}
+                      className={cn(
+                        "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium whitespace-nowrap transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+                        selected
+                          ? "bg-secondary text-foreground"
+                          : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
+                      )}
+                    >
+                      <Icon aria-hidden className="size-4 shrink-0" />
+                      <span>{tab.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
 
-        {/* General tab — the existing scrollable settings panel. */}
+        {/* General tab — the existing scrollable settings panel, now organized
+            into three labeled domains (GroupHeading) so it reads as a short
+            hierarchy instead of a flat seven-section scroll:
+              • Account & plan   — Account, Bring your own key
+              • Workspace        — Appearance, Chat, Projects
+              • Privacy & data   — Privacy & data, Your data
+            Every section (and its testids/content) is preserved verbatim — this
+            is grouping only. Sections still reach the same default panel on open,
+            so the specs that click export/delete/budget/spend/project controls
+            right after opening Settings keep working. */}
         <div
           role="tabpanel"
           id={`${tablistId}-general-panel`}
@@ -1068,10 +1175,16 @@ export function SettingsDialog({
           hidden={activeTab !== "general"}
           className={cn(
             activeTab === "general"
-              ? "-mr-2 max-h-[60dvh] space-y-6 overflow-y-auto pr-2 sm:max-h-[70dvh]"
+              ? "-mr-2 max-h-[60dvh] space-y-8 overflow-y-auto pr-2 sm:max-h-[70dvh]"
               : undefined,
           )}
         >
+          {/* ── Account & plan ─────────────────────────────────────────── */}
+          <div className="space-y-5">
+            <GroupHeading helper="Who you are, your plan, usage, and your provider key.">
+              Account &amp; plan
+            </GroupHeading>
+
           {/* Account */}
           <section className="space-y-3">
             <SectionHeading>Account</SectionHeading>
@@ -1198,8 +1311,13 @@ export function SettingsDialog({
               onRequestSignIn={onRequestSignIn}
             />
           </section>
+          </div>
 
-          <Separator />
+          {/* ── Workspace ──────────────────────────────────────────────── */}
+          <div className="space-y-5">
+            <GroupHeading helper="How chats look and behave, plus per-project overrides.">
+              Workspace
+            </GroupHeading>
 
           {/* Appearance */}
           <section className="space-y-3">
@@ -1299,8 +1417,13 @@ export function SettingsDialog({
               </section>
             </>
           ) : null}
+          </div>
 
-          <Separator />
+          {/* ── Privacy & data ─────────────────────────────────────────── */}
+          <div className="space-y-5">
+            <GroupHeading helper="What's kept, what's shared, and exporting or deleting it all.">
+              Privacy &amp; data
+            </GroupHeading>
 
           {/* Privacy & data */}
           <section className="space-y-4">
@@ -1401,6 +1524,7 @@ export function SettingsDialog({
               }
             />
           </section>
+          </div>
         </div>
 
         {/* Folded-in surfaces. Each panel is mounted only while its tab is

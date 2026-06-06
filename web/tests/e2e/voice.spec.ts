@@ -122,16 +122,17 @@ test.describe("voice v1 — feature detection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    // (a) Dictation control renders in the composer and is enabled.
+    // (a) Dictation control lives behind the composer "More actions" (+)
+    // disclosure; open it, then assert the control renders and is enabled.
+    await page.getByTestId("composer-more-actions").click();
     const mic = page.getByTestId("composer-dictate");
     await expect(mic).toBeVisible();
     await expect(mic).toBeEnabled();
     await expect(mic).toHaveAttribute("aria-label", "Start dictation");
     await expect(mic).toHaveAttribute("aria-pressed", "false");
 
-    // On-device transparency: the tooltip must say the browser/device does it,
-    // and must NOT imply a provider/model. Hover to surface the tooltip.
-    await mic.hover();
+    // On-device transparency: an always-visible row must say the browser/device
+    // does it, and must NOT imply a provider/model.
     await expect(
       page.getByText("voice is processed on your device by your browser"),
     ).toBeVisible();
@@ -144,13 +145,16 @@ test.describe("voice v1 — feature detection", () => {
     await mic.click();
     await expect(mic).toHaveAttribute("aria-pressed", "false");
 
-    // (b) Read-aloud renders on an assistant message and is enabled.
+    // (b) Read-aloud renders on an assistant message and is enabled. Close the
+    // + popover first so sending isn't blocked, then open the message "…"
+    // overflow menu where read-aloud now lives.
+    await page.keyboard.press("Escape");
     await sendMessage(page, "Hello voice");
+    await page.getByTestId("message-actions-overflow").last().click();
     const readAloud = page.getByTestId("read-aloud").last();
     await expect(readAloud).toBeVisible();
     await expect(readAloud).toBeEnabled();
     await expect(readAloud).toHaveAttribute("aria-label", "Read aloud");
-    await readAloud.hover();
     await expect(
       page.getByText("spoken on your device by your browser"),
     ).toBeVisible();
@@ -163,7 +167,9 @@ test.describe("voice v1 — feature detection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    // Dictation control is present but disabled (graceful degradation).
+    // Dictation control is present but disabled (graceful degradation). It
+    // lives behind the composer "More actions" (+) disclosure; open it first.
+    await page.getByTestId("composer-more-actions").click();
     const mic = page.getByTestId("composer-dictate");
     await expect(mic).toBeVisible();
     await expect(mic).toBeDisabled();
@@ -172,8 +178,12 @@ test.describe("voice v1 — feature detection", () => {
       "Dictation not supported in this browser",
     );
 
-    // Read-aloud on an assistant message is present but disabled.
+    // Read-aloud on an assistant message is present but disabled. Close the +
+    // popover first so sending isn't blocked, then open the message "…" overflow
+    // menu where read-aloud now lives.
+    await page.keyboard.press("Escape");
     await sendMessage(page, "Hello no voice");
+    await page.getByTestId("message-actions-overflow").last().click();
     const readAloud = page.getByTestId("read-aloud").last();
     await expect(readAloud).toBeVisible();
     await expect(readAloud).toBeDisabled();

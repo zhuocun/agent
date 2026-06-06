@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Activity, AlertTriangle, Brain, Loader2, RotateCcw, SearchX } from "lucide-react";
+import { Activity, AlertTriangle, Brain, CircleStop, Loader2, RotateCcw, SearchX } from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import {
@@ -246,7 +246,15 @@ export function AssistantMessage({
       {isFinal && !isErrored ? (
         <div className="space-y-2 pt-1">
           {message.attribution || isStopped ? (
-            <div className="flex flex-wrap items-center gap-2">
+            // Unified footer byline (W4): the always-visible attribution summary
+            // (model + cost) and the MemoryUsed / Stopped indicators all share
+            // ONE row and ONE grammar — glyph + muted text, no filled chrome.
+            // Previously the chips were filled pills sitting next to a bare
+            // typographic byline (two visual grammars); now they read as further
+            // clauses of the same line. The attribution model+cost summary itself
+            // is untouched and stays always-visible — only the chips around it
+            // changed styling/placement.
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               {message.attribution ? (
                 <AttributionRow
                   attribution={message.attribution}
@@ -310,13 +318,20 @@ function UngroundedMarker() {
   );
 }
 
+// "Stopped" indicator: shown when a turn was halted before it finished. Rendered
+// INLINE (CircleStop glyph + muted text, no filled background) so it joins the
+// SAME byline grammar as the attribution clauses (attribution-row.tsx) and the
+// MemoryUsedChip — the footer carries zero filled chrome at rest, instead of
+// mixing a bare typographic byline with a lone filled pill (the two-grammars
+// regression W4 set out to fix). testid preserved.
 function StoppedChip() {
   return (
     <span
-      className="inline-flex items-center rounded-full bg-foreground/[0.06] px-2 py-0.5 text-xs text-muted-foreground"
+      className="inline-flex items-center gap-1 text-xs text-muted-foreground/80"
       data-testid="stopped-chip"
     >
-      Stopped
+      <CircleStop aria-hidden className="size-3" />
+      <span>Stopped</span>
     </span>
   );
 }

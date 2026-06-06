@@ -4,10 +4,10 @@ import { useState } from "react";
 import {
   ArrowRight,
   Check,
-  ChevronDown,
   Copy,
   GitBranch,
   Loader2,
+  MoreHorizontal,
   RotateCcw,
   Square,
   ThumbsDown,
@@ -134,11 +134,27 @@ export function MessageActions({
     }
   };
 
+  // Internal hierarchy (W1): the toolbar shows a small set of PRIMARY actions
+  // inline at rest — Copy, the two ratings, and the one-click Regenerate (with
+  // the CURRENT tier). Everything secondary — Read aloud, Continue, Branch, and
+  // the "regenerate with a DIFFERENT model" tier/provider choices — folds behind
+  // a single "…" overflow menu so the densest pattern on the work surface stops
+  // presenting 5-7 equal-weight buttons. Secondary items stay MOUNTED inside the
+  // popup (DropdownMenu provides reduced-motion, focus trap+restore, keyboard).
+  //
+  // The overflow holds content only when there's something to fold: read-aloud
+  // is always there; Continue/Branch when offered; and the model-choice list
+  // when the split-regenerate variant is active.
+  const hasModelChoice = Boolean(
+    canRegenerate && onRegenerateWith && regenerateOptions,
+  );
+
   return (
     <div role="toolbar" aria-label="Message actions" className="group/actions inline-flex items-center gap-0.5 rounded-full p-0.5">
       <IconAction
         label={copied ? "Copied" : copyFailed ? "Copy failed" : "Copy"}
         onClick={handleCopy}
+        testId="copy"
       >
         {copied ? (
           <Check className="size-4 text-success" />
@@ -147,47 +163,9 @@ export function MessageActions({
         )}
       </IconAction>
 
-      <ReadAloud
-        speaking={speech.speaking}
-        supported={speech.supported}
-        onToggle={() => speech.toggle(text)}
-      />
-
-      {canContinue ? (
-        <IconAction
-          label="Continue"
-          onClick={onContinue}
-          testId="continue-turn"
-        >
-          <ArrowRight className="size-4" />
-        </IconAction>
-      ) : null}
-
       {canRegenerate ? (
-        onRegenerateWith && regenerateOptions ? (
-          <RegenerateMenu
-            onRegenerate={onRegenerate}
-            onRegenerateWith={onRegenerateWith}
-            options={regenerateOptions}
-          />
-        ) : (
-          <IconAction label="Regenerate" onClick={onRegenerate}>
-            <RotateCcw className="size-4" />
-          </IconAction>
-        )
-      ) : null}
-
-      {onBranch ? (
-        <IconAction
-          label={isBranching ? "Branching" : "Branch in new chat"}
-          disabled={!canBranch || isBranching}
-          onClick={onBranch}
-        >
-          {isBranching ? (
-            <Loader2 className="size-4 motion-safe:animate-spin" />
-          ) : (
-            <GitBranch className="size-4" />
-          )}
+        <IconAction label="Regenerate" onClick={onRegenerate}>
+          <RotateCcw className="size-4" />
         </IconAction>
       ) : null}
 
@@ -206,167 +184,230 @@ export function MessageActions({
       >
         <ThumbsDown className="size-4" />
       </IconAction>
+
+      <OverflowMenu
+        text={text}
+        speech={speech}
+        canContinue={canContinue}
+        onContinue={onContinue}
+        canBranch={canBranch}
+        isBranching={isBranching}
+        onBranch={onBranch}
+        modelChoice={
+          hasModelChoice
+            ? {
+                onRegenerateWith: onRegenerateWith!,
+                options: regenerateOptions!,
+              }
+            : undefined
+        }
+      />
     </div>
   );
 }
 
-// Split Regenerate control (Feature 4): a primary button that regenerates with
-// the current tier, plus a chevron that opens a menu to regenerate with a
-// different model (or provider route). Mirrors the model-mode-picker dropdown.
-function RegenerateMenu({
-  onRegenerate,
-  onRegenerateWith,
-  options,
+// Secondary actions, folded behind a single "…" overflow (W1). Reuses the
+// shared DropdownMenu primitive (reduced-motion + focus trap/restore + keyboard
+// for free). The trigger itself follows the sanctioned hover/focus disclosure
+// idiom on desktop and is always painted on touch, so it never hides the only
+// route to Read aloud / Continue / Branch / model-choice on a touch device.
+// All reparented items keep their original data-testid and accessible names.
+function OverflowMenu({
+  text,
+  speech,
+  canContinue,
+  onContinue,
+  canBranch,
+  isBranching,
+  onBranch,
+  modelChoice,
 }: {
-  onRegenerate?: () => void;
-  onRegenerateWith: (tierId: ModelTierId, providerId?: string) => void;
-  options: {
-    tiers: ModelTier[];
-    providerOptions: ProviderTierOption[];
-    selectedTierId: ModelTierId;
+  text: string;
+  speech: ReturnType<typeof useSpeechSynthesis>;
+  canContinue?: boolean;
+  onContinue?: () => void;
+  canBranch?: boolean;
+  isBranching?: boolean;
+  onBranch?: () => void;
+  modelChoice?: {
+    onRegenerateWith: (tierId: ModelTierId, providerId?: string) => void;
+    options: {
+      tiers: ModelTier[];
+      providerOptions: ProviderTierOption[];
+      selectedTierId: ModelTierId;
+    };
   };
 }) {
+  const readAloudLabel = !speech.supported
+    ? "Read aloud not supported in this browser"
+    : speech.speaking
+      ? "Stop reading"
+      : "Read aloud";
+  const readAloudHint = !speech.supported
+    ? "Isn't supported in this browser"
+    : "Spoken on your device by your browser";
+
   // Only offer provider items when there's a genuine choice (>1 available
   // route) — a single provider would just duplicate the tier row.
-  const availableProviders = options.providerOptions.filter(
-    (provider) => provider.status === "available",
-  );
+  const availableProviders =
+    modelChoice?.options.providerOptions.filter(
+      (provider) => provider.status === "available",
+    ) ?? [];
   const showProviders = availableProviders.length > 1;
 
   return (
-    <div className="inline-flex items-center">
-      {/* Primary: regenerate with the current tier (back-compat behaviour). */}
-      <IconAction label="Regenerate" onClick={onRegenerate}>
-        <RotateCcw className="size-4" />
-      </IconAction>
-      <DropdownMenu>
-        <DropdownMenuTrigger
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger
           render={
-            <Button
-              type="button"
-              variant="ghost"
-              aria-label="Regenerate with a different model"
-              data-testid="regenerate-with-trigger"
-              className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
-            >
-              <ChevronDown className="size-4" />
-            </Button>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-label="More actions"
+                  data-testid="message-actions-overflow"
+                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              }
+            />
           }
         />
-        <DropdownMenuContent
-          align="start"
-          sideOffset={8}
-          className="w-60 max-w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl"
-        >
-          <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-2xs font-semibold">
-              Regenerate with
-            </DropdownMenuLabel>
-            {options.tiers.map((tier) => (
-              <DropdownMenuItem
-                key={tier.id}
-                label={tier.label}
-                onClick={() => onRegenerateWith(tier.id)}
-                data-testid={`regenerate-with-tier-${tier.id}`}
-                className="py-2"
-              >
-                <div className="min-w-0 flex-1">
-                  <span className="truncate font-medium">{tier.label}</span>
-                  {tier.modelLabel ? (
-                    <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
-                      {tier.modelLabel}
-                    </p>
-                  ) : null}
-                </div>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuGroup>
-          {showProviders ? (
+        <TooltipContent>More actions</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent
+        align="start"
+        sideOffset={8}
+        className="w-60 max-w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl"
+      >
+        <DropdownMenuGroup>
+          <DropdownMenuItem
+            label={readAloudLabel}
+            aria-label={readAloudLabel}
+            aria-pressed={speech.supported ? speech.speaking : undefined}
+            disabled={!speech.supported}
+            // On-device TTS (D22): never implies a served model or cost. The
+            // hint says the browser/OS speaks locally.
+            closeOnClick={false}
+            onClick={() => speech.toggle(text)}
+            data-testid="read-aloud"
+            className="py-2"
+          >
+            {speech.speaking ? (
+              <Square className="size-4 fill-current" />
+            ) : (
+              <Volume2 className="size-4" />
+            )}
+            <div className="min-w-0 flex-1">
+              <span className="truncate font-medium">{readAloudLabel}</span>
+              <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                {readAloudHint}
+              </p>
+            </div>
+          </DropdownMenuItem>
+
+          {canContinue ? (
+            <DropdownMenuItem
+              label="Continue"
+              aria-label="Continue"
+              onClick={onContinue}
+              data-testid="continue-turn"
+              className="py-2"
+            >
+              <ArrowRight className="size-4" />
+              <span className="truncate font-medium">Continue</span>
+            </DropdownMenuItem>
+          ) : null}
+
+          {onBranch ? (
+            <DropdownMenuItem
+              label={isBranching ? "Branching" : "Branch in new chat"}
+              aria-label={isBranching ? "Branching" : "Branch in new chat"}
+              disabled={!canBranch || isBranching}
+              onClick={onBranch}
+              data-testid="branch"
+              className="py-2"
+            >
+              {isBranching ? (
+                <Loader2 className="size-4 motion-safe:animate-spin" />
+              ) : (
+                <GitBranch className="size-4" />
+              )}
+              <span className="truncate font-medium">
+                {isBranching ? "Branching" : "Branch in new chat"}
+              </span>
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuGroup>
+
+        {modelChoice ? (
+          <>
             <DropdownMenuGroup>
               <DropdownMenuLabel className="text-2xs font-semibold">
-                Provider
+                Regenerate with
               </DropdownMenuLabel>
-              {availableProviders.map((provider) => (
+              {/* The split-regenerate trigger keeps its testid so the model
+                  CHOICE list (a different model than the current tier) is still
+                  reachable — it now lives inside the overflow rather than as a
+                  sibling chevron. The one-click current-tier Regenerate stays
+                  inline as a primary action above. */}
+              <span className="sr-only" data-testid="regenerate-with-trigger" />
+              {modelChoice.options.tiers.map((tier) => (
                 <DropdownMenuItem
-                  key={provider.providerId}
-                  label={provider.label}
-                  onClick={() =>
-                    onRegenerateWith(options.selectedTierId, provider.providerId)
-                  }
+                  key={tier.id}
+                  label={tier.label}
+                  onClick={() => modelChoice.onRegenerateWith(tier.id)}
+                  data-testid={`regenerate-with-tier-${tier.id}`}
                   className="py-2"
                 >
                   <div className="min-w-0 flex-1">
-                    <span className="truncate font-medium">{provider.label}</span>
-                    {provider.modelLabel ? (
+                    <span className="truncate font-medium">{tier.label}</span>
+                    {tier.modelLabel ? (
                       <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
-                        {provider.modelLabel}
+                        {tier.modelLabel}
                       </p>
                     ) : null}
                   </div>
                 </DropdownMenuItem>
               ))}
             </DropdownMenuGroup>
-          ) : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
-  );
-}
-
-// Read-aloud (TTS) control. Speaks the assistant message text with the browser
-// `speechSynthesis` voice and toggles play/stop. This is ON-DEVICE — the
-// browser/OS speaks locally and NO provider is involved — so the tooltip says
-// so honestly and never implies a served model or cost (D22 transparency
-// spine). Feature-detects: when speechSynthesis is unavailable the control is
-// disabled with an explanatory tooltip. Kept distinct from the generic
-// `IconAction` so the tooltip can carry the transparency note while the
-// aria-label stays concise.
-function ReadAloud({
-  speaking,
-  supported,
-  onToggle,
-}: {
-  speaking: boolean;
-  supported: boolean;
-  onToggle: () => void;
-}) {
-  const label = !supported
-    ? "Read aloud not supported in this browser"
-    : speaking
-      ? "Stop reading"
-      : "Read aloud";
-  const tooltip = !supported
-    ? "Read aloud isn't supported in this browser"
-    : speaking
-      ? "Stop reading · spoken on your device by your browser"
-      : "Read aloud · spoken on your device by your browser";
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={onToggle}
-            disabled={!supported}
-            data-testid="read-aloud"
-            aria-label={label}
-            aria-pressed={supported ? speaking : undefined}
-            className={cn(
-              "size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9",
-              speaking && "bg-foreground/[0.06] text-foreground",
-            )}
-          >
-            {speaking ? (
-              <Square className="size-4 fill-current" />
-            ) : (
-              <Volume2 className="size-4" />
-            )}
-          </Button>
-        }
-      />
-      <TooltipContent>{tooltip}</TooltipContent>
-    </Tooltip>
+            {showProviders ? (
+              <DropdownMenuGroup>
+                <DropdownMenuLabel className="text-2xs font-semibold">
+                  Provider
+                </DropdownMenuLabel>
+                {availableProviders.map((provider) => (
+                  <DropdownMenuItem
+                    key={provider.providerId}
+                    label={provider.label}
+                    onClick={() =>
+                      modelChoice.onRegenerateWith(
+                        modelChoice.options.selectedTierId,
+                        provider.providerId,
+                      )
+                    }
+                    className="py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="truncate font-medium">
+                        {provider.label}
+                      </span>
+                      {provider.modelLabel ? (
+                        <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                          {provider.modelLabel}
+                        </p>
+                      ) : null}
+                    </div>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
+            ) : null}
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

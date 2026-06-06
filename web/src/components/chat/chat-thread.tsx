@@ -3,17 +3,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import {
+  Activity as ActivityIcon,
+  Boxes,
+  Brain,
   ClipboardCopy,
   Code2,
+  DollarSign,
+  FileText,
+  FolderPlus,
   KeyRound,
   LoaderCircle,
   MessageSquarePlus,
   Mic,
   PanelLeft,
-  Search,
   Settings as SettingsIcon,
+  SlidersHorizontal,
   Sparkles,
   Sun,
+  Tag as TagIcon,
   TextCursorInput,
   Trash2,
 } from "lucide-react";
@@ -237,7 +244,6 @@ const PALETTE_ACTION_META: Array<{
   hasBinding: boolean;
 }> = [
   { id: "new-chat", label: "New chat", icon: MessageSquarePlus, section: "Actions", hasBinding: true },
-  { id: "search-history", label: "Search history", icon: Search, section: "Actions", hasBinding: false },
   { id: "focus-composer", label: "Focus composer", icon: TextCursorInput, section: "Actions", hasBinding: true },
   { id: "copy-last-response", label: "Copy last response", icon: ClipboardCopy, section: "Actions", hasBinding: true },
   { id: "copy-last-code", label: "Copy last code block", icon: Code2, section: "Actions", hasBinding: true },
@@ -249,6 +255,16 @@ const PALETTE_ACTION_META: Array<{
   { id: "open-settings", label: "Open settings", icon: SettingsIcon, section: "Settings", hasBinding: false },
   { id: "toggle-theme", label: "Toggle theme", icon: Sun, section: "Settings", hasBinding: false },
 ];
+
+// Keyword aliases for the shortcut-bound palette rows so type-to-find lands
+// them from synonyms / destination names that aren't in the visible label.
+const PALETTE_ACTION_KEYWORDS: Partial<Record<ShortcutId, string[]>> = {
+  shortcuts: ["shortcuts", "keyboard", "keys", "hotkeys", "bindings"],
+  "custom-instructions": ["custom instructions", "system prompt", "persona"],
+  "open-settings": ["settings", "preferences", "options"],
+  "new-chat": ["new chat", "new conversation"],
+  "toggle-theme": ["theme", "dark mode", "light mode", "appearance"],
+};
 
 // Shortcuts dialog grouping. Ordered to match the PRD §5.5 table loosely:
 // general (palette/shortcuts/custom-instructions) → navigation → editing.
@@ -492,6 +508,17 @@ export function ChatThread() {
   const [settingsInitialTab, setSettingsInitialTab] =
     useState<SettingsTab>("general");
   const [searchOpen, setSearchOpen] = useState(false);
+  // Quick-create surface summoned from the command palette ("New project" /
+  // "New tag"). The sidebar owns its own inline create dialog; this is the
+  // palette's equivalent entry point so those destinations are reachable from
+  // the universal action spine without the sidebar being open. It does NOT
+  // duplicate the create logic — it reuses `handleCreateProject` /
+  // `handleCreateTag` — and uses the shared Base UI Dialog (focus trap + Esc +
+  // focus-restore + reduced-motion all inherited).
+  const [paletteCreate, setPaletteCreate] = useState<
+    null | "project" | "tag"
+  >(null);
+  const [paletteCreateDraft, setPaletteCreateDraft] = useState("");
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [isTemporary, setIsTemporary] = useState(false);
@@ -2069,6 +2096,29 @@ export function ChatThread() {
     });
   };
 
+  // Palette "New project" / "New tag" entry points. Open the small quick-create
+  // surface; the actual create runs through the shared `handleCreateProject` /
+  // `handleCreateTag` handlers on submit (no logic duplicated).
+  const handlePaletteNewProject = () => {
+    setPaletteCreateDraft("");
+    setPaletteCreate("project");
+  };
+  const handlePaletteNewTag = () => {
+    setPaletteCreateDraft("");
+    setPaletteCreate("tag");
+  };
+  const handlePaletteCreateSubmit = () => {
+    const trimmed = paletteCreateDraft.trim();
+    if (!trimmed) {
+      setPaletteCreate(null);
+      return;
+    }
+    if (paletteCreate === "project") handleCreateProject(trimmed);
+    else if (paletteCreate === "tag") handleCreateTag(trimmed);
+    setPaletteCreate(null);
+    setPaletteCreateDraft("");
+  };
+
   // Create a project. Optimistic insert with a temporary id replaced by the
   // server row on success; rollback + toast on failure.
   const handleCreateProject = (name: string) => {
@@ -2938,14 +2988,111 @@ export function ChatThread() {
   // Palette actions: every keyboard-bound entry that isn't "Hidden", plus
   // the palette-only Settings/Theme entries. Icon set is hand-picked to stay
   // visually quiet (no emoji, all stroke icons).
-  const paletteActions: CommandAction[] = PALETTE_ACTION_META.map((meta) => ({
-    id: meta.id,
-    label: meta.label,
-    icon: meta.icon,
-    shortcut: meta.hasBinding ? effectiveBindings[meta.id] : undefined,
-    section: meta.section,
-    run: () => runAction(meta.id),
-  }));
+  const shortcutBoundActions: CommandAction[] = PALETTE_ACTION_META.map(
+    (meta) => ({
+      id: meta.id,
+      label: meta.label,
+      icon: meta.icon,
+      shortcut: meta.hasBinding ? effectiveBindings[meta.id] : undefined,
+      section: meta.section,
+      keywords: PALETTE_ACTION_KEYWORDS[meta.id],
+      run: () => runAction(meta.id),
+    }),
+  );
+
+  // Palette-only management destinations (M1 — the palette is the universal
+  // action spine). Each routes into the EXISTING Settings-tab hub via
+  // `openSettings(tab)` — no logic is duplicated; these are thin entry points to
+  // the same surfaces the hub already owns. They carry their own `run` closures
+  // (no `ShortcutId`, no global keystroke) and rich keyword aliases so
+  // type-to-find lands them from synonyms ("usage" → Spend, "filters" →
+  // Advanced search). Spend has no dedicated tab; its dashboard (UsageDetails +
+  // SpendDialog + BudgetEditor) lives on the General tab, so "Spend" deep-links
+  // there — NOT the Activity tab, which is the data-access/audit log.
+  const managementActions: CommandAction[] = [
+    {
+      id: "palette-advanced-search",
+      label: "Advanced search",
+      icon: SlidersHorizontal,
+      section: "Actions",
+      keywords: [
+        "advanced search",
+        "search history",
+        "filter",
+        "filters",
+        "find",
+        "model",
+        "cost",
+        "date",
+        "project",
+      ],
+      // Switches the palette into its in-place filter mode (the folded history
+      // search) — handled in the palette, so `run` is a no-op fallback.
+      entersFilterMode: true,
+      run: () => undefined,
+    },
+    {
+      id: "palette-memory",
+      label: "Memory",
+      icon: Brain,
+      section: "Settings",
+      keywords: ["memory", "facts", "remember", "knowledge"],
+      run: () => openSettings("memory"),
+    },
+    {
+      id: "palette-templates",
+      label: "Templates",
+      icon: FileText,
+      section: "Settings",
+      keywords: ["templates", "prompt", "prompts", "snippets"],
+      run: () => openSettings("templates"),
+    },
+    {
+      id: "palette-models",
+      label: "Models",
+      icon: Boxes,
+      section: "Settings",
+      keywords: ["models", "model directory", "tiers", "providers"],
+      run: () => openSettings("models"),
+    },
+    {
+      id: "palette-activity",
+      label: "Activity",
+      icon: ActivityIcon,
+      section: "Settings",
+      keywords: ["activity", "data access", "events", "audit", "log"],
+      run: () => openSettings("activity"),
+    },
+    {
+      id: "palette-spend",
+      label: "Spend",
+      icon: DollarSign,
+      section: "Settings",
+      keywords: ["spend", "usage", "cost", "billing", "budget", "analytics"],
+      run: () => openSettings("general"),
+    },
+    {
+      id: "palette-new-project",
+      label: "New project",
+      icon: FolderPlus,
+      section: "Actions",
+      keywords: ["new project", "create project", "collection", "folder"],
+      run: handlePaletteNewProject,
+    },
+    {
+      id: "palette-new-tag",
+      label: "New tag",
+      icon: TagIcon,
+      section: "Actions",
+      keywords: ["new tag", "create tag", "label"],
+      run: handlePaletteNewTag,
+    },
+  ];
+
+  const paletteActions: CommandAction[] = [
+    ...shortcutBoundActions,
+    ...managementActions,
+  ];
 
   // Sections rendered by the shortcuts dialog (Hidden entries surface here
   // too so power users see Cmd+K listed). Ordered to match the PRD §5.5 table.
@@ -3435,7 +3582,79 @@ export function ChatThread() {
         conversations={conversations}
         activeId={activeConversationId}
         onSelectConversation={handleSelectConversation}
+        // Filter-mode (folded advanced search) data sources.
+        projects={projects}
+        tags={tags}
       />
+
+      {/* Quick-create surface for the palette's "New project" / "New tag"
+          actions. Uses the shared Base UI Dialog so focus trap, Esc-to-close,
+          focus-restore to the invoker, and the reduced-motion transition are all
+          inherited (no bespoke a11y plumbing). Submit reuses the existing
+          create handlers — no logic duplicated. */}
+      <Dialog
+        open={paletteCreate !== null}
+        onOpenChange={(next) => {
+          if (!next) {
+            setPaletteCreate(null);
+            setPaletteCreateDraft("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-sm" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>
+              {paletteCreate === "tag" ? "New tag" : "New project"}
+            </DialogTitle>
+            <DialogDescription>
+              {paletteCreate === "tag"
+                ? "Name the tag. You can apply it to conversations from the sidebar."
+                : "Name the project. You can file conversations into it from the sidebar."}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handlePaletteCreateSubmit();
+            }}
+          >
+            <input
+              type="text"
+              autoComplete="off"
+              autoFocus
+              value={paletteCreateDraft}
+              onChange={(e) => setPaletteCreateDraft(e.target.value)}
+              data-testid="palette-create-name-input"
+              aria-label={
+                paletteCreate === "tag" ? "Tag name" : "Project name"
+              }
+              placeholder={paletteCreate === "tag" ? "Tag name" : "Project name"}
+              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-sm text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] sm:h-9"
+            />
+            <DialogFooter className="mt-4">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setPaletteCreate(null);
+                  setPaletteCreateDraft("");
+                }}
+                className="rounded-full"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={paletteCreateDraft.trim().length === 0}
+                data-testid="palette-create-submit"
+                className="rounded-full"
+              >
+                Create
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={pendingDeleteConversationId !== null}

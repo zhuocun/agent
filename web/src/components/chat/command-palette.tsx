@@ -3,19 +3,27 @@
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
+  ChevronLeft,
   LoaderCircle,
   MessageSquare,
   Search,
+  SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { searchConversations } from "@/lib/apiClient";
+import { Badge } from "@/components/ui/badge";
+import { searchConversations, searchHistory } from "@/lib/apiClient";
 import { useSwipeDismiss } from "@/lib/use-swipe-dismiss";
 import { useVisualViewport } from "@/lib/use-visual-viewport";
 import { KeyCaps } from "@/components/chat/key-caps";
 import type { ShortcutKeys } from "@/lib/use-keyboard-shortcuts";
-import type { ConversationSummary } from "@/lib/types";
+import type {
+  ConversationSummary,
+  ModelTierId,
+  Project,
+  SearchFilters,
+} from "@/lib/types";
 
 // A palette action — one of the global handlers exposed to the keyboard layer
 // AND surfaced as a row inside the palette. `shortcut` is the descriptor used
@@ -26,7 +34,24 @@ export interface CommandAction {
   icon?: LucideIcon;
   shortcut?: ShortcutKeys;
   section: "Actions" | "Settings";
+  // Extra search terms (synonyms / destinations) so type-to-find matches an
+  // action even when the typed word isn't in its visible label — e.g. "usage"
+  // or "billing" finding "Spend", "search" finding "Advanced search". Never
+  // rendered; only folded into the fuzzy match below.
+  keywords?: string[];
+  // When true, selecting the row switches the palette INTO its in-place filter
+  // mode (the folded advanced history search) instead of closing the palette and
+  // invoking `run`. Used by the "Advanced search" row so the action spine and the
+  // filter surface live in one summon. `run` is unused for these rows.
+  entersFilterMode?: boolean;
   run: () => void;
+}
+
+// A tag the filter mode can narrow by. Kept structural (only `{ id, name }`
+// matters here) so the palette doesn't depend on the org-v2 ORM type.
+export interface PaletteFilterTag {
+  id: string;
+  name: string;
 }
 
 export interface CommandPaletteProps {
@@ -36,6 +61,42 @@ export interface CommandPaletteProps {
   conversations: ConversationSummary[];
   activeId: string | null;
   onSelectConversation: (id: string) => void;
+  // Filter-mode data (the folded-in advanced history search). Optional so the
+  // palette degrades to action+conversation search if a host doesn't wire them.
+  projects?: Project[];
+  tags?: PaletteFilterTag[];
+}
+
+// Served-model filter options mirror the `ModelTierId` union (the BE matches the
+// matched message's `attribution.servedTierId`). Friendly labels only — never a
+// raw model id. Carried verbatim from the former HistorySearchDialog.
+const SERVED_MODEL_OPTIONS: { value: ModelTierId; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "fast", label: "Fast" },
+  { value: "smart", label: "Smart" },
+  { value: "pro", label: "Pro" },
+];
+
+// Filter-control styling — copied from the former dialog so the inputs read as
+// part of the same surface family.
+const FILTER_INPUT_CLASS =
+  "w-full min-w-0 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25";
+const FILTER_SELECT_CLASS =
+  "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25";
+
+// Date input <-> ISO. The native date input gives `YYYY-MM-DD`; the BE parses
+// ISO-8601. `dateTo` widens to end-of-day so an inclusive "to" matches any time
+// on that calendar day.
+function toIsoStart(date: string): string | undefined {
+  return date ? new Date(`${date}T00:00:00`).toISOString() : undefined;
+}
+function toIsoEnd(date: string): string | undefined {
+  return date ? new Date(`${date}T23:59:59.999`).toISOString() : undefined;
+}
+function parseCost(value: string): number | undefined {
+  if (value.trim() === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 // Flat list item — either an action or a conversation. The list is rendered
@@ -63,7 +124,9 @@ function buildItems(
   const q = query.trim().toLowerCase();
   const match = (s: string): boolean => (q ? s.toLowerCase().includes(q) : true);
 
-  const actionItems = actions.filter((a) => match(a.label));
+  const actionItems = actions.filter(
+    (a) => match(a.label) || (a.keywords ?? []).some((k) => match(k)),
+  );
 
   const useRemoteConversations = q.length > 0 && remoteConversations !== null;
   // Newest first. Sort a copy so the parent's array stays untouched. Remote
@@ -125,6 +188,8 @@ export function CommandPalette({
   conversations,
   activeId,
   onSelectConversation,
+  projects = [],
+  tags = [],
 }: CommandPaletteProps): JSX.Element {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -132,6 +197,24 @@ export function CommandPalette({
   const [remoteConversationState, setRemoteConversationState] =
     useState<RemoteConversationState | null>(null);
   const [searchPending, setSearchPending] = useState(false);
+  // Progressively-disclosed filter mode (the folded-in advanced history search).
+  // Default false: the palette is the action/conversation listbox. When true the
+  // body swaps to the transparency-native filter form + a results list of real
+  // focusable buttons — a clean MODE SWITCH so the listbox `aria-activedescendant`
+  // model and the form's native-focus model never coexist (only one is live at a
+  // time, so neither a11y model regresses).
+  const [filterMode, setFilterMode] = useState(false);
+  const [servedModel, setServedModel] = useState<ModelTierId | "">("");
+  const [costMin, setCostMin] = useState("");
+  const [costMax, setCostMax] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [tagId, setTagId] = useState("");
+  const [filterResults, setFilterResults] = useState<ConversationSummary[]>([]);
+  const [filterPending, setFilterPending] = useState(false);
+  const [filterError, setFilterError] = useState<string | null>(null);
+  const [filterSearched, setFilterSearched] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
   const optionIdPrefix = useId();
@@ -149,7 +232,10 @@ export function CommandPalette({
 
   useEffect(() => {
     const q = query.trim();
-    if (!open || q.length === 0) {
+    // In filter mode a separate effect (below) drives the search via
+    // `searchHistory` with the filter payload, so the plain conversation search
+    // stands down to avoid a double-fetch.
+    if (!open || filterMode || q.length === 0) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSearchPending(false);
       return;
@@ -174,7 +260,58 @@ export function CommandPalette({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [open, query]);
+  }, [open, query, filterMode]);
+
+  // Filter-mode search: the folded-in advanced history search. Debounced, runs
+  // whenever the (open) palette is in filter mode with a non-empty query or its
+  // filters change. Empty query clears results without hitting the BE (the `q`
+  // param is required server-side). Mirrors the former HistorySearchDialog.
+  const filters: SearchFilters = useMemo(
+    () => ({
+      servedModel: servedModel || undefined,
+      costMin: parseCost(costMin),
+      costMax: parseCost(costMax),
+      dateFrom: toIsoStart(dateFrom),
+      dateTo: toIsoEnd(dateTo),
+      projectId: projectId || undefined,
+      tagId: tagId || undefined,
+    }),
+    [servedModel, costMin, costMax, dateFrom, dateTo, projectId, tagId],
+  );
+
+  useEffect(() => {
+    if (!open || !filterMode) return;
+    const q = query.trim();
+    if (q.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setFilterResults([]);
+      setFilterPending(false);
+      setFilterSearched(false);
+      return;
+    }
+    setFilterPending(true);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void searchHistory(q, filters, controller.signal)
+        .then((rows) => {
+          if (controller.signal.aborted) return;
+          setFilterResults(rows);
+          setFilterError(null);
+          setFilterPending(false);
+          setFilterSearched(true);
+        })
+        .catch(() => {
+          if (controller.signal.aborted) return;
+          setFilterError("Couldn't run that search. Please try again.");
+          setFilterPending(false);
+          setFilterSearched(true);
+        });
+    }, 200);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [open, filterMode, query, filters]);
 
   const { sheetRef, handleProps, contentProps } = useSwipeDismiss({
     enabled: isMobile,
@@ -223,14 +360,49 @@ export function CommandPalette({
   const activeOptionId =
     flat.length > 0 ? `${optionIdPrefix}-${clampedIndex}` : undefined;
 
-  // Closing the palette clears search + selection — done here (event-driven)
-  // rather than in an effect to avoid the cascading-render lint.
+  // Reset the filter sub-state (controls + results). Shared by "exit filter
+  // mode" and "palette close" so a re-entry always starts clean.
+  const resetFilters = (): void => {
+    setServedModel("");
+    setCostMin("");
+    setCostMax("");
+    setDateFrom("");
+    setDateTo("");
+    setProjectId("");
+    setTagId("");
+    setFilterResults([]);
+    setFilterPending(false);
+    setFilterError(null);
+    setFilterSearched(false);
+  };
+
+  // Closing the palette clears search + selection + filter mode — done here
+  // (event-driven) rather than in an effect to avoid the cascading-render lint.
   const handleOpenChange = (next: boolean): void => {
     if (!next) {
       setQuery("");
       setSelectedIndex(0);
+      setFilterMode(false);
+      resetFilters();
     }
     onOpenChange(next);
+  };
+
+  // Enter filter mode: keep the typed query (so a started search carries over),
+  // re-focus the input. Exit: drop the filters and return to the listbox.
+  const enterFilterMode = (): void => {
+    setFilterMode(true);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+  const exitFilterMode = (): void => {
+    setFilterMode(false);
+    resetFilters();
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const handleSelectFilterResult = (id: string): void => {
+    handleOpenChange(false);
+    requestAnimationFrame(() => onSelectConversation(id));
   };
 
   // Keep a stable ref so the swipe hook's onDismiss always calls the latest
@@ -242,6 +414,14 @@ export function CommandPalette({
 
   const runItem = (item: Item): void => {
     if (item.kind === "action") {
+      // "Advanced search" stays IN the palette: swap to filter mode rather than
+      // closing + dispatching, so the listbox→filter-form transition is the
+      // single in-place disclosure (one surface in motion).
+      if (item.action.entersFilterMode) {
+        setQuery("");
+        enterFilterMode();
+        return;
+      }
       handleOpenChange(false);
       // Defer execution until after Base UI's close-on-select finishes so a
       // newly-opened dialog (e.g. settings) doesn't race the palette's exit
@@ -255,6 +435,10 @@ export function CommandPalette({
 
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    // In filter mode the body is a native form (selects/date inputs/focusable
+    // result buttons), not a listbox, so the combobox arrow/Enter handling stands
+    // down — Tab + native focus drive it instead.
+    if (filterMode) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       if (flat.length === 0) return;
@@ -278,6 +462,11 @@ export function CommandPalette({
         />
         <DialogPrimitive.Popup
           ref={sheetRef}
+          // In filter mode the popup IS the advanced-search surface, so carry the
+          // former dialog's testid here (the e2e specs scope filter assertions to
+          // `search-dialog`). Default mode leaves it off so palette assertions are
+          // unaffected.
+          data-testid={filterMode ? "search-dialog" : undefined}
           // Override glass-regular's blur with the denser dialog blur (same
           // trick as DialogContent so the popup reads as the canonical "modal"
           // glass surface).
@@ -307,27 +496,45 @@ export function CommandPalette({
             className="mx-auto mt-2.5 h-1.5 w-9 shrink-0 cursor-grab touch-none rounded-full bg-foreground/25 sm:hidden"
           />
           <DialogPrimitive.Title className="sr-only">
-            Command palette
+            {filterMode ? "Search history" : "Command palette"}
           </DialogPrimitive.Title>
           <DialogPrimitive.Description className="sr-only">
-            Search actions and conversations. Use arrow keys to navigate, Enter
-            to select, Escape to close.
+            {filterMode
+              ? "Search your conversations and filter by model, cost, date, or project. Escape to close."
+              : "Search actions and conversations. Use arrow keys to navigate, Enter to select, Escape to close."}
           </DialogPrimitive.Description>
 
           <div className="relative flex shrink-0 items-center border-b border-foreground/10 px-5">
-            <Search
-              aria-hidden
-              className="pointer-events-none size-4 shrink-0 text-muted-foreground"
-            />
+            {filterMode ? (
+              <button
+                type="button"
+                onClick={exitFilterMode}
+                aria-label="Back to commands"
+                className="-ml-1.5 mr-1 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+              >
+                <ChevronLeft aria-hidden className="size-4" />
+              </button>
+            ) : (
+              <Search
+                aria-hidden
+                className="pointer-events-none size-4 shrink-0 text-muted-foreground"
+              />
+            )}
             <input
               ref={inputRef}
               type="text"
-              role="combobox"
-              aria-haspopup="listbox"
-              aria-expanded={open}
-              aria-controls={listboxId}
-              aria-activedescendant={activeOptionId}
-              aria-autocomplete="list"
+              // Combobox/listbox ARIA only applies to the default (listbox) mode.
+              // In filter mode the input is a plain search field over a native
+              // form, so the combobox wiring is dropped to keep the two focus
+              // models from overlapping.
+              role={filterMode ? undefined : "combobox"}
+              aria-haspopup={filterMode ? undefined : "listbox"}
+              aria-expanded={filterMode ? undefined : open}
+              aria-controls={filterMode ? undefined : listboxId}
+              aria-activedescendant={filterMode ? undefined : activeOptionId}
+              aria-autocomplete={filterMode ? undefined : "list"}
+              aria-label={filterMode ? "Search query" : undefined}
+              data-testid={filterMode ? "search-query-input" : undefined}
               autoFocus
               value={query}
               onChange={(e) => {
@@ -335,22 +542,249 @@ export function CommandPalette({
                 setSelectedIndex(0);
               }}
               onKeyDown={onInputKeyDown}
-              placeholder="Search actions and conversations…"
+              placeholder={
+                filterMode
+                  ? "Search conversations…"
+                  : "Search actions and conversations…"
+              }
               className="block w-full bg-transparent py-4 pl-3 pr-2 text-lg text-foreground outline-none placeholder:text-muted-foreground"
             />
-            {searchPending ? (
+            {(filterMode ? filterPending : searchPending) ? (
               <LoaderCircle
                 aria-hidden
                 className="ml-2 size-4 shrink-0 text-muted-foreground motion-safe:animate-spin"
               />
             ) : null}
+            {!filterMode ? (
+              <button
+                type="button"
+                onClick={enterFilterMode}
+                aria-label="Advanced search filters"
+                data-testid="palette-filter-toggle"
+                className="ml-2 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+              >
+                <SlidersHorizontal aria-hidden className="size-4" />
+              </button>
+            ) : null}
           </div>
 
           <div
             className="min-h-0 flex-1 overflow-y-auto py-2"
-            aria-busy={searchPending || undefined}
+            aria-busy={(filterMode ? filterPending : searchPending) || undefined}
           >
-            {flat.length === 0 ? (
+            {filterMode ? (
+              <div className="space-y-4 px-5 py-2">
+                {/* Filters — native form controls (real focus, Tab order). */}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Model
+                    </span>
+                    <select
+                      value={servedModel}
+                      onChange={(e) =>
+                        setServedModel(e.currentTarget.value as ModelTierId | "")
+                      }
+                      className={FILTER_SELECT_CLASS}
+                      data-testid="search-filter-model"
+                    >
+                      <option value="">Any model</option>
+                      {SERVED_MODEL_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-sm">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Project
+                    </span>
+                    <select
+                      value={projectId}
+                      onChange={(e) => setProjectId(e.currentTarget.value)}
+                      className={FILTER_SELECT_CLASS}
+                      data-testid="search-filter-project"
+                    >
+                      <option value="">Any project</option>
+                      {projects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div className="space-y-1 text-sm">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Cost (USD)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        inputMode="decimal"
+                        value={costMin}
+                        onChange={(e) => setCostMin(e.currentTarget.value)}
+                        placeholder="Min"
+                        aria-label="Minimum cost"
+                        className={FILTER_INPUT_CLASS}
+                        data-testid="search-filter-cost-min"
+                      />
+                      <span aria-hidden className="text-muted-foreground">
+                        –
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        inputMode="decimal"
+                        value={costMax}
+                        onChange={(e) => setCostMax(e.currentTarget.value)}
+                        placeholder="Max"
+                        aria-label="Maximum cost"
+                        className={FILTER_INPUT_CLASS}
+                        data-testid="search-filter-cost-max"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 text-sm">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Date
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="date"
+                        value={dateFrom}
+                        onChange={(e) => setDateFrom(e.currentTarget.value)}
+                        aria-label="From date"
+                        className={FILTER_INPUT_CLASS}
+                        data-testid="search-filter-date-from"
+                      />
+                      <span aria-hidden className="text-muted-foreground">
+                        –
+                      </span>
+                      <input
+                        type="date"
+                        value={dateTo}
+                        onChange={(e) => setDateTo(e.currentTarget.value)}
+                        aria-label="To date"
+                        className={FILTER_INPUT_CLASS}
+                        data-testid="search-filter-date-to"
+                      />
+                    </div>
+                  </div>
+
+                  {tags.length > 0 ? (
+                    <label className="space-y-1 text-sm">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Tag
+                      </span>
+                      <select
+                        value={tagId}
+                        onChange={(e) => setTagId(e.currentTarget.value)}
+                        className={FILTER_SELECT_CLASS}
+                        data-testid="search-filter-tag"
+                      >
+                        <option value="">Any tag</option>
+                        {tags.map((tag) => (
+                          <option key={tag.id} value={tag.id}>
+                            {tag.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+
+                {filterError ? (
+                  <p role="alert" className="text-sm text-destructive">
+                    {filterError}
+                  </p>
+                ) : null}
+
+                {/* Results */}
+                <section aria-busy={filterPending || undefined}>
+                  {filterPending ? (
+                    <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <LoaderCircle
+                        aria-hidden
+                        className="size-4 motion-safe:animate-spin"
+                      />
+                      Searching…
+                    </p>
+                  ) : filterSearched &&
+                    filterError === null &&
+                    filterResults.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No matches — try a different term or loosen the filters.
+                    </p>
+                  ) : filterResults.length > 0 ? (
+                    <ul className="space-y-2" data-testid="search-results">
+                      {filterResults.map((result) => {
+                        const snippet = result.matchSnippet?.trim();
+                        return (
+                          <li key={result.id}>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectFilterResult(result.id)}
+                              className="glass-clear flex w-full items-start gap-3 rounded-2xl px-3.5 py-3 text-left outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)]"
+                              data-testid="search-result"
+                              data-conversation-id={result.id}
+                            >
+                              <MessageSquare
+                                aria-hidden
+                                className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                              />
+                              <span className="min-w-0 flex-1 space-y-1">
+                                <span className="block truncate text-sm font-medium">
+                                  {result.title}
+                                </span>
+                                {snippet ? (
+                                  <span className="block truncate text-xs text-muted-foreground">
+                                    {snippet}
+                                  </span>
+                                ) : null}
+                                {result.servedModelLabel ||
+                                result.costUsd != null ||
+                                result.matchedAt ? (
+                                  <span className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                    {result.servedModelLabel ? (
+                                      <Badge variant="secondary">
+                                        {result.servedModelLabel}
+                                      </Badge>
+                                    ) : null}
+                                    {result.costUsd != null ? (
+                                      <Badge variant="outline">
+                                        ${result.costUsd.toFixed(4)}
+                                      </Badge>
+                                    ) : null}
+                                    {result.matchedAt ? (
+                                      <span className="text-2xs text-muted-foreground">
+                                        {new Date(
+                                          result.matchedAt,
+                                        ).toLocaleDateString()}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Type to search your conversation history.
+                    </p>
+                  )}
+                </section>
+              </div>
+            ) : flat.length === 0 ? (
               <div className="px-5 py-8 text-center text-sm text-muted-foreground">
                 {searchPending
                   ? "Searching…"
@@ -466,9 +900,18 @@ export function CommandPalette({
           </div>
 
           <div className="shrink-0 border-t border-foreground/10 px-5 py-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] text-2xs text-muted-foreground sm:pb-2">
-            <span className="font-mono">↑↓</span> to navigate ·{" "}
-            <span className="font-mono">↵</span> to select ·{" "}
-            <span className="font-mono">Esc</span> to close
+            {filterMode ? (
+              <>
+                <span className="font-mono">Tab</span> to move between filters ·{" "}
+                <span className="font-mono">Esc</span> to close
+              </>
+            ) : (
+              <>
+                <span className="font-mono">↑↓</span> to navigate ·{" "}
+                <span className="font-mono">↵</span> to select ·{" "}
+                <span className="font-mono">Esc</span> to close
+              </>
+            )}
           </div>
         </DialogPrimitive.Popup>
       </DialogPrimitive.Portal>

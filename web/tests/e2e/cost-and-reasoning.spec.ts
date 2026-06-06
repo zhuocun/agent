@@ -422,8 +422,10 @@ test.describe("regenerate with model", () => {
       "DeepSeek V4 Flash",
     );
 
-    // Open the regenerate split menu and pick Pro.
-    await page.getByTestId("regenerate-with-trigger").click();
+    // Open the message "…" overflow menu (the regenerate split control lives
+    // there now) and pick Pro. The menu portals to body, so the tier item
+    // resolves via page.getByTestId.
+    await page.getByTestId("message-actions-overflow").last().click();
     await page.getByTestId("regenerate-with-tier-pro").click();
 
     // A new bubble streams; the attribution now shows the Pro served model.

@@ -36,6 +36,10 @@ test.describe("projects / spaces", () => {
         r.url() === `${BE_URL}/api/projects` &&
         r.request().method() === "POST",
     );
+    // Projects + Tags now live inside the collapsed-by-default "Collections"
+    // disclosure; expand it before the first projects interaction (it stays open
+    // for the rest of the test).
+    await page.getByTestId("sidebar-collections-toggle").click();
     await page.getByTestId("sidebar-new-project").click();
     const nameInput = page.getByTestId("sidebar-project-name-input");
     await expect(nameInput).toBeVisible();
@@ -51,6 +55,8 @@ test.describe("projects / spaces", () => {
     const row = page.locator(`[data-conversation-id="${convoId}"]`);
     await expect(row).toBeVisible();
     await row.getByRole("button", { name: "Conversation actions" }).click();
+    // Config items moved under the kebab's "Organize…" submenu.
+    await page.getByTestId("sidebar-conversation-organize").click();
     await page.getByTestId("sidebar-conversation-assign-project").click();
     const projectItem = page.getByRole("menuitemradio", { name: "Research" });
     await expect(projectItem).toBeVisible();

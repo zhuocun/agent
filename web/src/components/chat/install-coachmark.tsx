@@ -65,7 +65,10 @@ export function InstallCoachmark(): React.JSX.Element | null {
       aria-live="polite"
       className={cn(
         "pointer-events-auto fixed inset-x-3 z-30",
-        "bottom-[calc(env(safe-area-inset-bottom)+0.75rem)]",
+        // Sit ABOVE the composer capsule, not on top of it. `--bottom-inset` is
+        // the safe-area floor; the composer chrome occupies ~5rem above it (the
+        // same offset the toast stack clears), so reuse it here.
+        "bottom-[calc(var(--bottom-inset)+5rem)]",
         "mx-auto flex max-w-md items-center gap-3 rounded-2xl",
         // `glass-regular` supplies the translucent material: saturated/
         // contrasted backdrop-filter, the inset hairline rim, the top highlight,

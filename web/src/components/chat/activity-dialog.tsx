@@ -273,7 +273,7 @@ export function ActivityDialog({
                       </span>
                       <time
                         dateTime={event.createdAt}
-                        className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground"
+                        className="shrink-0 font-mono text-2xs tabular-nums text-muted-foreground"
                       >
                         {formatTimestamp(event.createdAt)}
                       </time>

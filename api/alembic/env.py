@@ -56,9 +56,39 @@ def _do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
+def _ensure_wide_alembic_version(connection: Connection) -> None:
+    """Widen Alembic's version-tracking column on Postgres.
+
+    Alembic creates `alembic_version.version_num` as VARCHAR(32), but a couple
+    of this project's revision ids are longer (e.g.
+    `0019_preferences_per_conversation_budget` is 40 chars). SQLite ignores
+    VARCHAR length, so tests / local dev never notice; Postgres rejects the
+    write with `StringDataRightTruncationError` — which silently blocked prod
+    from migrating past 0018. Ensure the version table exists with a wide column
+    (fresh DB) and widen an existing narrow one (prod) BEFORE Alembic touches
+    it. No-op off Postgres; widening a varchar is a metadata-only change. The
+    constraint name matches Alembic's default so its own `checkfirst` create
+    sees the table and skips re-creating it.
+    """
+    if connection.dialect.name != "postgresql":
+        return
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS alembic_version ("
+        " version_num VARCHAR(255) NOT NULL,"
+        " CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)"
+    )
+
+
 async def run_migrations_online() -> None:
     """Run migrations against a live async engine."""
     engine = create_async_engine(_get_url(), future=True)
+    # Widen the version column first, in its own committed transaction, so the
+    # long revision ids fit on Postgres before Alembic writes them.
+    async with engine.begin() as connection:
+        await connection.run_sync(_ensure_wide_alembic_version)
     async with engine.connect() as connection:
         await connection.run_sync(_do_run_migrations)
     await engine.dispose()

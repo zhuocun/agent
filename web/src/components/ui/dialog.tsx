@@ -107,7 +107,7 @@ function DialogContent({
           // Desktop (sm+): restore the centered modal — reset the sheet anchor,
           // radius and slide, and swap back to the scale+fade transition. The
           // centering -translate keeps composing with scale during the anim.
-          "sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-3xl sm:rounded-b-3xl sm:p-6 sm:pb-6 sm:transition-all sm:duration-300 sm:ease-[var(--ease-ios-smooth)] sm:data-[ending-style]:scale-95 sm:data-[ending-style]:opacity-0 sm:data-[starting-style]:scale-95 sm:data-[starting-style]:opacity-0",
+          "sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:max-h-none sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-3xl sm:rounded-b-3xl sm:p-6 sm:pb-6 sm:transition-[transform,opacity] sm:duration-300 sm:ease-[var(--ease-ios-smooth)] sm:data-[ending-style]:scale-95 sm:data-[ending-style]:opacity-0 sm:data-[starting-style]:scale-95 sm:data-[starting-style]:opacity-0",
           className
         )}
         {...contentProps}

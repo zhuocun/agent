@@ -65,7 +65,7 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
     status === "succeeded" || status === "failed" || status === "cancelled";
 
   const outerClassName = cn(
-    "flex max-w-full items-start gap-2 rounded-md border px-3 py-2 text-sm",
+    "flex max-w-full items-start gap-2 rounded-xl border px-3 py-2.5 text-sm",
     destructive
       ? "border-destructive/20 bg-destructive/5 text-destructive"
       : "border-foreground/[0.06] bg-foreground/[0.02] text-muted-foreground",

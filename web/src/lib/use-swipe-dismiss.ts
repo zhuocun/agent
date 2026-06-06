@@ -94,7 +94,7 @@ export function useSwipeDismiss({
     const el = sheetRef.current;
     if (!el) return;
     el.style.transition = withTransition
-      ? "transform 0.35s cubic-bezier(0.32,0.72,0,1)"
+      ? "transform 0.35s var(--ease-ios-sheet)"
       : "none";
     el.style.transform = dy > 0 ? `translateY(${dy}px)` : "";
   }, []);

@@ -86,14 +86,14 @@ export function WelcomeScreen({
             // one unit; the children's already-finished enter animations don't
             // replay. Max-width must match the resting variant exactly, or the
             // group snaps width at the exit seam.
-            ? "animate-welcome-exit flex w-full max-w-md flex-col items-center text-center transition-[opacity,transform] duration-200 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] opacity-0 -translate-y-2"
+            ? "animate-welcome-exit flex w-full max-w-md flex-col items-center text-center transition-[opacity,transform] duration-200 ease-[var(--ease-welcome)] opacity-0 -translate-y-2"
             // Entrance choreography lives on each child below (staggered via
             // inline animationDelay). The wrapper itself carries layout only.
             : "flex w-full max-w-md flex-col items-center text-center"
         }
       >
         <p
-          className="animate-welcome-enter mb-3 text-sm font-medium tracking-tight text-muted-foreground"
+          className="animate-welcome-enter mb-3 text-sm font-medium text-muted-foreground"
           style={{ animationDelay: "0ms" }}
         >
           {today}

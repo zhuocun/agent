@@ -129,7 +129,7 @@ export const SourcesPanel = forwardRef<SourcesPanelHandle, SourcesPanelProps>(
           <span>{label}</span>
           <ChevronDown
             aria-hidden
-            className="size-3.5 transition-transform duration-300 ease-[var(--ease-ios-spring)] group-data-[panel-open]/sources-trigger:rotate-180"
+            className="size-3.5 transition-transform duration-300 ease-[var(--ease-ios-spring)] group-data-[panel-open]/sources-trigger:rotate-180 motion-reduce:transition-none"
           />
         </CollapsibleTrigger>
 

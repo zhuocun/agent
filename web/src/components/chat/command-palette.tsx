@@ -458,6 +458,7 @@ export function CommandPalette({
     <DialogPrimitive.Root open={open} onOpenChange={handleOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Backdrop
+          data-slot="dialog-backdrop"
           className="fixed inset-0 z-50 bg-foreground/45 backdrop-blur-sm transition-opacity duration-200 data-[ending-style]:opacity-0 data-[starting-style]:opacity-0"
         />
         <DialogPrimitive.Popup
@@ -467,6 +468,7 @@ export function CommandPalette({
           // `search-dialog`). Default mode leaves it off so palette assertions are
           // unaffected.
           data-testid={filterMode ? "search-dialog" : undefined}
+          data-slot="dialog-content"
           // Override glass-regular's blur with the denser dialog blur (same
           // trick as DialogContent so the popup reads as the canonical "modal"
           // glass surface).
@@ -483,10 +485,10 @@ export function CommandPalette({
             // Mobile (default): iOS bottom sheet — full-width, bottom-pinned,
             // rounded top, slides up with iOS sheet easing, swipe-to-dismiss.
             "glass-strong fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] w-full flex-col gap-0 overflow-hidden rounded-t-3xl rounded-b-none p-0 text-foreground",
-            "transition-[transform,opacity] duration-[400ms] ease-[cubic-bezier(0.32,0.72,0,1)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
+            "transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
             // Desktop (sm+): centered top-anchored modal with scale+fade. The
             // -translate-x keeps composing with scale during the anim.
-            "sm:inset-x-auto sm:bottom-auto sm:top-[20dvh] sm:left-1/2 sm:max-h-[60dvh] sm:max-w-xl sm:-translate-x-1/2 sm:rounded-3xl sm:transition-all sm:duration-200 sm:data-[ending-style]:scale-95 sm:data-[ending-style]:opacity-0 sm:data-[starting-style]:scale-95 sm:data-[starting-style]:opacity-0"
+            "sm:inset-x-auto sm:bottom-auto sm:top-[20dvh] sm:left-1/2 sm:max-h-[60dvh] sm:max-w-xl sm:-translate-x-1/2 sm:rounded-3xl sm:transition-[transform,opacity] sm:duration-200 sm:data-[ending-style]:scale-95 sm:data-[ending-style]:opacity-0 sm:data-[starting-style]:scale-95 sm:data-[starting-style]:opacity-0"
           )}
         >
           {/* Grabber: drag affordance + swipe-to-dismiss handle, mobile only. */}

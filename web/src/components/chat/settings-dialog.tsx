@@ -1099,7 +1099,7 @@ export function SettingsDialog({
                   tab; purely a visual grouping cue. */}
               <span
                 aria-hidden
-                className="px-2 text-2xs font-semibold tracking-wide text-muted-foreground/80 uppercase"
+                className="px-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
               >
                 {group.label}
               </span>

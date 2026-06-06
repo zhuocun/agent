@@ -1105,7 +1105,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       </div>
       {costEstimate ? (
         <p
-          className="mt-1 px-2 text-right text-[11px] leading-snug text-muted-foreground/80"
+          className="mt-1 px-2 text-right text-2xs leading-snug text-muted-foreground/80"
           data-testid="cost-estimate"
         >
           {costEstimate.usd === null ? (

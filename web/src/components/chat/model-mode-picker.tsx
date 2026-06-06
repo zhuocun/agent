@@ -169,7 +169,7 @@ export function ModelModePicker({
           {showProviderPicker ? (
             <>
               <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-[11px] font-semibold">
+                <DropdownMenuLabel className="text-2xs font-semibold">
                   Provider
                 </DropdownMenuLabel>
                 {providerOptions.map((p) => {
@@ -462,7 +462,7 @@ function DropdownRow({
           {description}
         </p>
         {meta ? (
-          <p className="mt-0.5 truncate text-[11px] leading-snug text-muted-foreground/80 group-focus/dropdown-menu-item:text-accent-foreground/70">
+          <p className="mt-0.5 truncate text-2xs leading-snug text-muted-foreground/80 group-focus/dropdown-menu-item:text-accent-foreground/70">
             {meta}
           </p>
         ) : null}
@@ -474,7 +474,7 @@ function DropdownRow({
 function DataPolicyRow({ policy }: { policy: ProviderDataPolicy }): JSX.Element {
   return (
     <div className="px-3 py-2">
-      <p className="text-[11px] font-semibold text-muted-foreground">
+      <p className="text-2xs font-semibold text-muted-foreground">
         Data policy
       </p>
       <p className="mt-0.5 text-xs leading-snug text-muted-foreground">

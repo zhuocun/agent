@@ -150,7 +150,7 @@ function StatusIcon({
 
 function StatusPill({ status }: { status: ToolRunStatus }) {
   return (
-    <span className="inline-flex h-5 items-center rounded-full bg-foreground/[0.06] px-2 text-[11px] text-muted-foreground">
+    <span className="inline-flex h-5 items-center rounded-full bg-foreground/[0.06] px-2 text-2xs text-muted-foreground">
       {statusLabel(status)}
     </span>
   );
@@ -162,7 +162,7 @@ function ApprovalPill({ state }: { state: ToolApprovalState }) {
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center gap-1 rounded-full px-2 text-[11px]",
+        "inline-flex h-5 items-center gap-1 rounded-full px-2 text-2xs",
         approved && "bg-success/10 text-success",
         rejected && "bg-destructive/10 text-destructive",
         !approved && !rejected && "bg-warning text-warning-foreground",

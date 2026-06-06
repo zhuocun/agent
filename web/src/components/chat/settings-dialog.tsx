@@ -549,7 +549,7 @@ function ProjectInstructionsEditor({
         className="min-h-24 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
         placeholder="Context, tone, or constraints shared across this project"
       />
-      <div className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+      <div className="text-right font-mono text-2xs tabular-nums text-muted-foreground">
         {draft.length}/{CUSTOM_INSTRUCTIONS_LIMIT}
       </div>
     </>
@@ -918,7 +918,7 @@ export function SettingsDialog({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <p className="truncate text-sm font-medium">{account.name}</p>
-                  <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
+                  <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground ring-1 ring-border">
                     {billing.planLabel}
                   </span>
                 </div>
@@ -1141,7 +1141,7 @@ export function SettingsDialog({
                 className="min-h-28 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
                 placeholder="Preferred tone, formatting, and context for future chats"
               />
-              <div className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+              <div className="text-right font-mono text-2xs tabular-nums text-muted-foreground">
                 {customInstructionsDraft.length}/{CUSTOM_INSTRUCTIONS_LIMIT}
               </div>
             </div>

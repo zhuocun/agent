@@ -3,13 +3,7 @@
 import { useEffect, useState, type JSX } from "react";
 import { FileText, Pencil, Plus, Trash2, X } from "lucide-react";
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
   createPromptTemplate,
@@ -28,14 +22,20 @@ export interface TemplateLibraryDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
+export interface TemplateLibraryBodyProps {
+  // Drives the load lifecycle. When hosted in the Settings hub this is the "is
+  // the Templates tab active" flag; standalone it mirrors dialog open.
+  active: boolean;
+}
+
 // The prompt library (D23): user-authored, reusable templates. Lists / creates
 // / edits / deletes the caller's templates. All endpoints are caller-scoped +
 // anonymous-allowed. Selecting a template (from the composer picker) prefills
 // the composer — this dialog is the editable store behind that affordance.
-export function TemplateLibraryDialog({
-  open,
-  onOpenChange,
-}: TemplateLibraryDialogProps): JSX.Element {
+export function TemplateLibraryBody({
+  active,
+}: TemplateLibraryBodyProps): JSX.Element {
+  const open = active;
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   // `loaded` flips true after the first fetch settles (success OR error) so the
   // loading state is derived without a synchronous setState in the effect body
@@ -77,25 +77,6 @@ export function TemplateLibraryDialog({
   }, [open]);
 
   const loading = open && !loaded && error === null;
-
-  const handleOpenChange = (next: boolean): void => {
-    if (!next) {
-      // Reset transient state so a re-open refetches from a clean slate.
-      setTemplates([]);
-      setLoaded(false);
-      setError(null);
-      setDraftTitle("");
-      setDraftBody("");
-      setDraftDescription("");
-      setAdding(false);
-      setEditingId(null);
-      setEditingTitle("");
-      setEditingBody("");
-      setEditingDescription("");
-      setBusyId(null);
-    }
-    onOpenChange(next);
-  };
 
   const handleAdd = async (): Promise<void> => {
     const title = draftTitle.trim();
@@ -175,21 +156,17 @@ export function TemplateLibraryDialog({
     draftTitle.trim().length > 0 && draftBody.trim().length > 0 && !adding;
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        className="max-h-[80dvh] sm:max-h-none"
-        data-testid="template-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle>Prompt templates</DialogTitle>
-          <DialogDescription>
-            Reusable prompts you can drop into the composer. Use{" "}
-            <code className="font-mono text-xs">{"{{placeholders}}"}</code> for
-            the parts you fill in each time.
-          </DialogDescription>
-        </DialogHeader>
+    <div data-testid="template-dialog">
+      <div className="flex flex-col gap-1.5 text-center sm:text-left">
+        <h2 className="text-lg leading-none font-semibold">Prompt templates</h2>
+        <p className="text-sm text-muted-foreground">
+          Reusable prompts you can drop into the composer. Use{" "}
+          <code className="font-mono text-xs">{"{{placeholders}}"}</code> for the
+          parts you fill in each time.
+        </p>
+      </div>
 
-        <div className="-mr-2 max-h-[60dvh] space-y-5 overflow-y-auto pr-2 sm:max-h-[70dvh]">
+      <div className="-mr-2 mt-4 max-h-[60dvh] space-y-5 overflow-y-auto pr-2 sm:max-h-[70dvh]">
           {/* Add a template */}
           <div className="space-y-2">
             <label
@@ -371,7 +348,21 @@ export function TemplateLibraryDialog({
               </ul>
             )}
           </section>
-        </div>
+      </div>
+    </div>
+  );
+}
+
+// Standalone dialog wrapper — preserved for any standalone caller. The body is
+// the same one the Settings hub hosts as a tab.
+export function TemplateLibraryDialog({
+  open,
+  onOpenChange,
+}: TemplateLibraryDialogProps): JSX.Element {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[80dvh] sm:max-h-none">
+        {open ? <TemplateLibraryBody active={open} /> : null}
       </DialogContent>
     </Dialog>
   );

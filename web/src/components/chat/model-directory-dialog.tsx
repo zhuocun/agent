@@ -3,13 +3,7 @@
 import { useEffect, useState, type JSX } from "react";
 import { Check, Database, Minus, ShieldCheck, ShieldOff } from "lucide-react";
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { fetchModelDirectory } from "@/lib/apiClient";
 import type {
@@ -22,6 +16,12 @@ import { cn } from "@/lib/utils";
 export interface ModelDirectoryDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+export interface ModelDirectoryBodyProps {
+  // Drives the load lifecycle. When hosted in the Settings hub this is the "is
+  // the Models tab active" flag; standalone it mirrors dialog open.
+  active: boolean;
 }
 
 // Per-million-token list price, shown so a user can compare routes. The BE
@@ -200,10 +200,10 @@ function ProviderCard({
 // registry-derived catalog of every provider route with its data policy and
 // per-tier capabilities + list prices, so a user can compare routes before
 // choosing one. Anonymous-allowed; the catalog is identical for every caller.
-export function ModelDirectoryDialog({
-  open,
-  onOpenChange,
-}: ModelDirectoryDialogProps): JSX.Element {
+export function ModelDirectoryBody({
+  active,
+}: ModelDirectoryBodyProps): JSX.Element {
+  const open = active;
   const [entries, setEntries] = useState<ModelDirectoryEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -232,40 +232,43 @@ export function ModelDirectoryDialog({
 
   const loading = open && !loaded && error === null;
 
-  const handleOpenChange = (next: boolean): void => {
-    if (!next) {
-      setEntries([]);
-      setLoaded(false);
-      setError(null);
-    }
-    onOpenChange(next);
-  };
-
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        className="max-h-[80dvh] sm:max-h-none"
-        data-testid="model-directory-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle>Models &amp; data policies</DialogTitle>
-          <DialogDescription>
-            Compare each provider route&apos;s data handling, capabilities, and
-            list prices. Facts come straight from the live model registry.
-          </DialogDescription>
-        </DialogHeader>
+    <div data-testid="model-directory-dialog">
+      <div className="flex flex-col gap-1.5 text-center sm:text-left">
+        <h2 className="text-lg leading-none font-semibold">
+          Models &amp; data policies
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Compare each provider route&apos;s data handling, capabilities, and
+          list prices. Facts come straight from the live model registry.
+        </p>
+      </div>
 
-        <div className="-mr-2 max-h-[60dvh] space-y-3 overflow-y-auto pr-2 sm:max-h-[70dvh]">
-          {loading ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : error ? (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          ) : (
-            <SectionListing entries={entries} />
-          )}
-        </div>
+      <div className="-mr-2 mt-4 max-h-[60dvh] space-y-3 overflow-y-auto pr-2 sm:max-h-[70dvh]">
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : error ? (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        ) : (
+          <SectionListing entries={entries} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Standalone dialog wrapper — preserved for any standalone caller. The body is
+// the same one the Settings hub hosts as a tab.
+export function ModelDirectoryDialog({
+  open,
+  onOpenChange,
+}: ModelDirectoryDialogProps): JSX.Element {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[80dvh] sm:max-h-none">
+        {open ? <ModelDirectoryBody active={open} /> : null}
       </DialogContent>
     </Dialog>
   );

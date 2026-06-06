@@ -1,7 +1,19 @@
 "use client";
 
 import { useId, useState, type JSX, type ReactNode } from "react";
-import { CreditCard, Gauge, Key, LogOut, Receipt } from "lucide-react";
+import {
+  Activity,
+  Brain,
+  CreditCard,
+  FileText,
+  Gauge,
+  Key,
+  Keyboard,
+  LogOut,
+  Database as ModelsIcon,
+  Receipt,
+  SlidersHorizontal,
+} from "lucide-react";
 
 import {
   Dialog,
@@ -21,6 +33,14 @@ import {
   UsageMeter,
 } from "@/components/chat/usage-meter";
 import { SpendDialog } from "@/components/chat/spend-dialog";
+import { MemoryBody } from "@/components/chat/memory-dialog";
+import { TemplateLibraryBody } from "@/components/chat/template-library-dialog";
+import { ActivityBody } from "@/components/chat/activity-dialog";
+import { ModelDirectoryBody } from "@/components/chat/model-directory-dialog";
+import {
+  ShortcutsBody,
+  type ShortcutsBodyProps,
+} from "@/components/chat/shortcuts-dialog";
 import { MODEL_TIERS } from "@/lib/model-tiers";
 import {
   createBillingCheckout,
@@ -55,27 +75,82 @@ export interface SettingsDialogProps {
   onRequestSignIn: () => void;
   onExportData: () => void;
   onDeleteAccount: () => void;
-  // Open the read-only "Activity & data access" surface (closing settings
-  // first). Lists the data-access log + the processing-provenance rollup.
-  onOpenActivity: () => void;
-  // Open the "Memory" manager (closing settings first): the opt-in toggle +
-  // the editable, attributed fact ledger (D19).
-  onOpenMemory: () => void;
-  // Open the "Prompt templates" manager (closing settings first): the editable
-  // library of user-authored, reusable prompt templates (D23).
-  onOpenTemplates: () => void;
-  // Open the read-only "Models & data policies" directory (closing settings
-  // first). Browsable catalog of provider routes, policies, and prices.
-  onOpenModelDirectory: () => void;
   // Projects/Spaces (D20). The caller's projects + an updater that PATCHes a
   // project's settings (default tier, retention, budget sub-cap, shared
   // instructions). Optional so embeddings that predate D20 still type-check.
   projects?: Project[];
   onUpdateProject?: (id: string, patch: ProjectUpdateInput) => void;
-  // Open the editable "Keyboard shortcuts" dialog (closing settings first):
-  // remap any action, with a reserved-combo guard and reset-to-defaults (D23).
-  onOpenShortcuts: () => void;
+
+  // --- Folded-in hub surfaces ---------------------------------------------
+  // Memory/Templates/Models/Shortcuts/Activity used to be sibling dialogs the
+  // user was bounced into by closing Settings. They are now tabs inside this
+  // one hub ("one deep place"). The controls that used to open the sibling
+  // dialogs now switch tabs in place; these props feed the hosted bodies.
+
+  // Deep-link the hub to a specific tab on open (e.g. the "Memory used here"
+  // chip opens straight to Memory). Defaults to the General tab.
+  initialTab?: SettingsTab;
+  // Memory tab (D19): the opt-in state + a persister wired through the parent's
+  // existing preferences flow (so the toggle round-trips to the BE).
+  memoryEnabled: boolean;
+  onMemoryEnabledChange: (next: boolean) => void;
+  // Activity tab: open the model picker so the user can switch their route.
+  // Wired by the parent to the composer picker; when absent the affordance hides.
+  onActivitySwitchRoute?: () => void;
+  // Shortcuts tab (D23): the editable rebind surface's data + handlers.
+  shortcuts: ShortcutsBodyProps["shortcuts"];
+  shortcutsEditable?: ShortcutsBodyProps["editable"];
+  effectiveBindings?: ShortcutsBodyProps["effectiveBindings"];
+  shortcutLabelFor?: ShortcutsBodyProps["labelFor"];
+  onRebindShortcut?: ShortcutsBodyProps["onRebind"];
+  onResetShortcut?: ShortcutsBodyProps["onResetAction"];
+  onResetAllShortcuts?: ShortcutsBodyProps["onResetAll"];
 }
+
+// The hub's sections. "general" is the existing scrollable settings panel; the
+// rest are the surfaces folded in from former sibling dialogs.
+export type SettingsTab =
+  | "general"
+  | "memory"
+  | "templates"
+  | "models"
+  | "shortcuts"
+  | "activity";
+
+const SETTINGS_TABS: Array<{
+  id: SettingsTab;
+  label: string;
+  icon: typeof Brain;
+  // Preserve the exact testids the e2e specs click to switch into each surface.
+  testId?: string;
+}> = [
+  { id: "general", label: "General", icon: SlidersHorizontal },
+  { id: "memory", label: "Memory", icon: Brain, testId: "open-memory-button" },
+  {
+    id: "templates",
+    label: "Templates",
+    icon: FileText,
+    testId: "open-templates-button",
+  },
+  {
+    id: "models",
+    label: "Models",
+    icon: ModelsIcon,
+    testId: "open-model-directory-button",
+  },
+  {
+    id: "shortcuts",
+    label: "Shortcuts",
+    icon: Keyboard,
+    testId: "open-shortcuts-button",
+  },
+  {
+    id: "activity",
+    label: "Activity",
+    icon: Activity,
+    testId: "open-activity-button",
+  },
+];
 
 // Derive avatar initials from a display name (first + last token), capped at
 // two letters. Falls back gracefully for single-word or empty names.
@@ -805,13 +880,19 @@ export function SettingsDialog({
   onRequestSignIn,
   onExportData,
   onDeleteAccount,
-  onOpenActivity,
-  onOpenMemory,
-  onOpenTemplates,
-  onOpenModelDirectory,
   projects = [],
   onUpdateProject,
-  onOpenShortcuts,
+  initialTab = "general",
+  memoryEnabled,
+  onMemoryEnabledChange,
+  onActivitySwitchRoute,
+  shortcuts,
+  shortcutsEditable,
+  effectiveBindings,
+  shortcutLabelFor,
+  onRebindShortcut,
+  onResetShortcut,
+  onResetAllShortcuts,
 }: SettingsDialogProps): JSX.Element {
   const sendOnEnterId = useId();
   const autoExpandId = useId();
@@ -842,6 +923,20 @@ export function SettingsDialog({
   const [customInstructionsDraft, setCustomInstructionsDraft] = useState(
     preferences.customInstructions,
   );
+
+  // Active hub section. On each open transition we snap to `initialTab` so a
+  // deep-link (e.g. the "Memory used here" chip) lands on the right tab and a
+  // re-open from the menu always starts on General. Implemented with the
+  // render-phase "adjust state on prop change" pattern (a tracked previous-open
+  // flag) rather than an effect, to satisfy react-hooks/set-state-in-effect.
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setActiveTab(initialTab);
+  }
+
+  const tablistId = useId();
 
   function mergePreferenceDraft(
     patch: Partial<UserPreferences> = {},
@@ -900,11 +995,79 @@ export function SettingsDialog({
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Account, appearance, and privacy preferences.
+            Account, appearance, privacy, and everything you used to reach
+            through a separate window — now in one place.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="-mr-2 max-h-[60dvh] space-y-6 overflow-y-auto pr-2 sm:max-h-[70dvh]">
+        {/* Tab strip — the single nav rail that switches hub sections in place
+            instead of fanning out into sibling modals. A horizontally
+            scrollable strip so it works as a bottom sheet on mobile; each
+            trigger meets the 44px touch-target minimum. Keyboard: roving
+            arrow-key navigation via aria + the browser's native focus order
+            (semantic <button>s with role="tab"/aria-selected). */}
+        <div
+          role="tablist"
+          aria-label="Settings sections"
+          id={tablistId}
+          className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1"
+        >
+          {SETTINGS_TABS.map((tab) => {
+            const selected = activeTab === tab.id;
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                id={`${tablistId}-${tab.id}`}
+                aria-selected={selected}
+                aria-controls={`${tablistId}-${tab.id}-panel`}
+                tabIndex={selected ? 0 : -1}
+                data-testid={tab.testId}
+                onClick={() => setActiveTab(tab.id)}
+                onKeyDown={(event) => {
+                  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
+                    return;
+                  }
+                  event.preventDefault();
+                  const index = SETTINGS_TABS.findIndex((t) => t.id === tab.id);
+                  const delta = event.key === "ArrowRight" ? 1 : -1;
+                  const next =
+                    SETTINGS_TABS[
+                      (index + delta + SETTINGS_TABS.length) %
+                        SETTINGS_TABS.length
+                    ]!;
+                  setActiveTab(next.id);
+                  // Move focus to the newly selected tab (roving tabindex).
+                  document.getElementById(`${tablistId}-${next.id}`)?.focus();
+                }}
+                className={cn(
+                  "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium whitespace-nowrap transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+                  selected
+                    ? "bg-secondary text-foreground"
+                    : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
+                )}
+              >
+                <Icon aria-hidden className="size-4 shrink-0" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* General tab — the existing scrollable settings panel. */}
+        <div
+          role="tabpanel"
+          id={`${tablistId}-general-panel`}
+          aria-labelledby={`${tablistId}-general`}
+          hidden={activeTab !== "general"}
+          className={cn(
+            activeTab === "general"
+              ? "-mr-2 max-h-[60dvh] space-y-6 overflow-y-auto pr-2 sm:max-h-[70dvh]"
+              : undefined,
+          )}
+        >
           {/* Account */}
           <section className="space-y-3">
             <SectionHeading>Account</SectionHeading>
@@ -1070,8 +1233,7 @@ export function SettingsDialog({
                   type="button"
                   variant="secondary"
                   size="sm"
-                  data-testid="open-model-directory-button"
-                  onClick={onOpenModelDirectory}
+                  onClick={() => setActiveTab("models")}
                 >
                   Browse
                 </Button>
@@ -1115,8 +1277,7 @@ export function SettingsDialog({
                   type="button"
                   variant="secondary"
                   size="sm"
-                  data-testid="open-shortcuts-button"
-                  onClick={onOpenShortcuts}
+                  onClick={() => setActiveTab("shortcuts")}
                 >
                   Customize
                 </Button>
@@ -1245,8 +1406,7 @@ export function SettingsDialog({
                   type="button"
                   variant="secondary"
                   size="sm"
-                  data-testid="open-memory-button"
-                  onClick={onOpenMemory}
+                  onClick={() => setActiveTab("memory")}
                 >
                   Manage
                 </Button>
@@ -1260,8 +1420,7 @@ export function SettingsDialog({
                   type="button"
                   variant="secondary"
                   size="sm"
-                  data-testid="open-templates-button"
-                  onClick={onOpenTemplates}
+                  onClick={() => setActiveTab("templates")}
                 >
                   Manage
                 </Button>
@@ -1275,8 +1434,7 @@ export function SettingsDialog({
                   type="button"
                   variant="secondary"
                   size="sm"
-                  data-testid="open-activity-button"
-                  onClick={onOpenActivity}
+                  onClick={() => setActiveTab("activity")}
                 >
                   View
                 </Button>
@@ -1314,6 +1472,72 @@ export function SettingsDialog({
             />
           </section>
         </div>
+
+        {/* Folded-in surfaces. Each panel is mounted only while its tab is
+            active so the body's fetch-on-open lifecycle fires exactly as it did
+            when these were standalone dialogs, and so transient edit state is
+            discarded on tab switch (the former dialogs reset on close). */}
+        {activeTab === "memory" ? (
+          <div
+            role="tabpanel"
+            id={`${tablistId}-memory-panel`}
+            aria-labelledby={`${tablistId}-memory`}
+          >
+            <MemoryBody
+              active
+              memoryEnabled={memoryEnabled}
+              onMemoryEnabledChange={onMemoryEnabledChange}
+            />
+          </div>
+        ) : null}
+
+        {activeTab === "templates" ? (
+          <div
+            role="tabpanel"
+            id={`${tablistId}-templates-panel`}
+            aria-labelledby={`${tablistId}-templates`}
+          >
+            <TemplateLibraryBody active />
+          </div>
+        ) : null}
+
+        {activeTab === "models" ? (
+          <div
+            role="tabpanel"
+            id={`${tablistId}-models-panel`}
+            aria-labelledby={`${tablistId}-models`}
+          >
+            <ModelDirectoryBody active />
+          </div>
+        ) : null}
+
+        {activeTab === "shortcuts" ? (
+          <div
+            role="tabpanel"
+            id={`${tablistId}-shortcuts-panel`}
+            aria-labelledby={`${tablistId}-shortcuts`}
+          >
+            <ShortcutsBody
+              shortcuts={shortcuts}
+              editable={shortcutsEditable}
+              effectiveBindings={effectiveBindings}
+              labelFor={shortcutLabelFor}
+              onRebind={onRebindShortcut}
+              onResetAction={onResetShortcut}
+              onResetAll={onResetAllShortcuts}
+            />
+          </div>
+        ) : null}
+
+        {activeTab === "activity" ? (
+          <div
+            role="tabpanel"
+            id={`${tablistId}-activity-panel`}
+            aria-labelledby={`${tablistId}-activity`}
+          >
+            <ActivityBody active onSwitchRoute={onActivitySwitchRoute} />
+          </div>
+        ) : null}
       </DialogContent>
     </Dialog>
   );

@@ -3,13 +3,7 @@
 import { useEffect, useId, useState, type JSX } from "react";
 import { Brain, Pencil, Plus, Trash2, X } from "lucide-react";
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,15 +25,28 @@ export interface MemoryDialogProps {
   onMemoryEnabledChange: (next: boolean) => void;
 }
 
+export interface MemoryBodyProps {
+  // Drives the load/reset lifecycle. When hosted inside the Settings hub this
+  // is the "is the Memory tab active" flag; standalone it mirrors dialog open.
+  active: boolean;
+  memoryEnabled: boolean;
+  onMemoryEnabledChange: (next: boolean) => void;
+}
+
 // The editable, attributed fact ledger (D19) — the glass-box differentiator
 // made operable. Lists/adds/edits/deletes the caller's saved facts and exposes
 // the opt-in toggle. All endpoints are caller-scoped + anonymous-allowed.
-export function MemoryDialog({
-  open,
-  onOpenChange,
+//
+// The inner body is extracted so the Settings hub can host it as a tab while the
+// `<MemoryDialog>` wrapper below stays exported for any standalone caller. The
+// `memory-dialog` testid lives on the body's root so `getByTestId('memory-dialog')`
+// resolves whether the body sits in its own dialog or inside the Settings hub.
+export function MemoryBody({
+  active,
   memoryEnabled,
   onMemoryEnabledChange,
-}: MemoryDialogProps): JSX.Element {
+}: MemoryBodyProps): JSX.Element {
+  const open = active;
   const toggleId = useId();
   const [facts, setFacts] = useState<MemoryFact[]>([]);
   // `loaded` flips true after the first fetch settles (success OR error) so the
@@ -77,21 +84,6 @@ export function MemoryDialog({
   }, [open]);
 
   const loading = open && !loaded && error === null;
-
-  const handleOpenChange = (next: boolean): void => {
-    if (!next) {
-      // Reset transient state so a re-open refetches from a clean slate.
-      setFacts([]);
-      setLoaded(false);
-      setError(null);
-      setDraft("");
-      setAdding(false);
-      setEditingId(null);
-      setEditingText("");
-      setBusyId(null);
-    }
-    onOpenChange(next);
-  };
 
   const handleAdd = async (): Promise<void> => {
     const content = draft.trim();
@@ -153,21 +145,17 @@ export function MemoryDialog({
   const showEmpty = !loading && !error && facts.length === 0;
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        className="max-h-[80dvh] sm:max-h-none"
-        data-testid="memory-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle>Memory</DialogTitle>
-          <DialogDescription>
-            The facts the assistant can remember about you. Add, edit, or remove
-            them anytime — they&apos;re only used when memory is on, and never in
-            temporary chats.
-          </DialogDescription>
-        </DialogHeader>
+    <div data-testid="memory-dialog">
+      <div className="flex flex-col gap-1.5 text-center sm:text-left">
+        <h2 className="text-lg leading-none font-semibold">Memory</h2>
+        <p className="text-sm text-muted-foreground">
+          The facts the assistant can remember about you. Add, edit, or remove
+          them anytime — they&apos;re only used when memory is on, and never in
+          temporary chats.
+        </p>
+      </div>
 
-        <div className="-mr-2 max-h-[60dvh] space-y-5 overflow-y-auto pr-2 sm:max-h-[70dvh]">
+      <div className="-mr-2 mt-4 max-h-[60dvh] space-y-5 overflow-y-auto pr-2 sm:max-h-[70dvh]">
           {/* Opt-in toggle */}
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
@@ -317,7 +305,31 @@ export function MemoryDialog({
               </ul>
             )}
           </section>
-        </div>
+      </div>
+    </div>
+  );
+}
+
+// Standalone dialog wrapper — preserved so existing/standalone callers keep
+// working. The body is the same one the Settings hub hosts as a tab; here it is
+// wrapped in its own Dialog. `active` mirrors the dialog's open state so the
+// fetch lifecycle fires on open.
+export function MemoryDialog({
+  open,
+  onOpenChange,
+  memoryEnabled,
+  onMemoryEnabledChange,
+}: MemoryDialogProps): JSX.Element {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[80dvh] sm:max-h-none">
+        {open ? (
+          <MemoryBody
+            active={open}
+            memoryEnabled={memoryEnabled}
+            onMemoryEnabledChange={onMemoryEnabledChange}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );

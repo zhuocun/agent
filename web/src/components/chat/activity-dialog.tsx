@@ -3,13 +3,7 @@
 import { useEffect, useState, type JSX } from "react";
 import { Globe, ShieldCheck } from "lucide-react";
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { fetchActivity, fetchDataProcessing } from "@/lib/apiClient";
 import type { ActivityEvent, DataProcessingRollup } from "@/lib/types";
@@ -20,6 +14,13 @@ export interface ActivityDialogProps {
   onOpenChange: (open: boolean) => void;
   // Open the model picker so the user can switch their route. Wired by the
   // parent to the existing composer picker; when absent the affordance hides.
+  onSwitchRoute?: () => void;
+}
+
+export interface ActivityBodyProps {
+  // Drives the load lifecycle. When hosted in the Settings hub this is the "is
+  // the Activity tab active" flag; standalone it mirrors dialog open.
+  active: boolean;
   onSwitchRoute?: () => void;
 }
 
@@ -82,11 +83,11 @@ function SectionHeading({ children }: { children: string }): JSX.Element {
 // Read-only: the data-access log + the "where your messages were processed"
 // rollup. Both endpoints accept anonymous callers and only ever return the
 // caller's own data.
-export function ActivityDialog({
-  open,
-  onOpenChange,
+export function ActivityBody({
+  active,
   onSwitchRoute,
-}: ActivityDialogProps): JSX.Element {
+}: ActivityBodyProps): JSX.Element {
+  const open = active;
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [rollup, setRollup] = useState<DataProcessingRollup | null>(null);
   // `loaded` flips true after the first fetch settles (success OR error); the
@@ -129,20 +130,6 @@ export function ActivityDialog({
 
   const loading = open && !loaded && error === null;
 
-  // Reset transient state on close so a re-open refetches from a clean slate.
-  // Driven from the close path (an event handler, not an effect).
-  const handleOpenChange = (next: boolean): void => {
-    if (!next) {
-      setEvents([]);
-      setRollup(null);
-      setLoaded(false);
-      setHasMore(false);
-      setError(null);
-      setLoadingMore(false);
-    }
-    onOpenChange(next);
-  };
-
   const handleLoadMore = async (): Promise<void> => {
     const oldest = events[events.length - 1];
     if (!oldest || loadingMore) return;
@@ -168,20 +155,18 @@ export function ActivityDialog({
   const buckets = rollup?.byProvider ?? [];
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        className="max-h-[80dvh] sm:max-h-none"
-        data-testid="activity-dialog"
-      >
-        <DialogHeader>
-          <DialogTitle>Activity &amp; data access</DialogTitle>
-          <DialogDescription>
-            A record of sensitive actions on your account, and where your
-            messages were processed. Only you can see this.
-          </DialogDescription>
-        </DialogHeader>
+    <div data-testid="activity-dialog">
+      <div className="flex flex-col gap-1.5 text-center sm:text-left">
+        <h2 className="text-lg leading-none font-semibold">
+          Activity &amp; data access
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          A record of sensitive actions on your account, and where your messages
+          were processed. Only you can see this.
+        </p>
+      </div>
 
-        <div className="-mr-2 max-h-[60dvh] space-y-6 overflow-y-auto pr-2 sm:max-h-[70dvh]">
+      <div className="-mr-2 mt-4 max-h-[60dvh] space-y-6 overflow-y-auto pr-2 sm:max-h-[70dvh]">
           {/* Where your messages were processed */}
           <section className="space-y-3">
             <SectionHeading>Where your messages were processed</SectionHeading>
@@ -296,7 +281,22 @@ export function ActivityDialog({
               </>
             )}
           </section>
-        </div>
+      </div>
+    </div>
+  );
+}
+
+// Standalone dialog wrapper — preserved for any standalone caller. The body is
+// the same one the Settings hub hosts as a tab.
+export function ActivityDialog({
+  open,
+  onOpenChange,
+  onSwitchRoute,
+}: ActivityDialogProps): JSX.Element {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[80dvh] sm:max-h-none">
+        {open ? <ActivityBody active={open} onSwitchRoute={onSwitchRoute} /> : null}
       </DialogContent>
     </Dialog>
   );

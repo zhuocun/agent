@@ -31,7 +31,6 @@ interface AppHeaderProps {
   onNewChat?: () => void;
   onOpenMobileNav?: () => void;
   onOpenSidebar?: () => void;
-  onOpenSettings?: () => void;
   onToggleTemporary?: () => void;
   onCopyConversation?: () => void;
   canCopyConversation?: boolean;
@@ -75,7 +74,6 @@ export function AppHeader({
   onNewChat,
   onOpenMobileNav,
   onOpenSidebar,
-  onOpenSettings,
   onToggleTemporary,
   onCopyConversation,
   canCopyConversation,
@@ -201,9 +199,6 @@ export function AppHeader({
                   <span>Share chat</span>
                 </DropdownMenuItem>
               ) : null}
-              <DropdownMenuItem onClick={onOpenSettings}>
-                Settings
-              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

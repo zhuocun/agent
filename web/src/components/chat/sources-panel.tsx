@@ -20,9 +20,13 @@ import type { SourceItem } from "@/lib/types";
 
 export interface SourcesPanelProps {
   items: SourceItem[];
-  // Open by default once the answer has settled so the grounding is visible
-  // without a tap; the user can still collapse it. Mirrors ReasoningPanel's
-  // `defaultOpen` knob.
+  // Collapsed at rest so the thread stays quiet (progressive disclosure):
+  // the always-visible "N sources" + Globe trigger is the summary, and the
+  // per-source cards expand on a tap. Brings sources into parity with the
+  // reasoning panel, which also defaults collapsed post-stream. An inline
+  // `[n]` citation still reveals its card — `revealSource` opens the panel
+  // and `keepMounted` keeps the card refs populated while collapsed. Mirrors
+  // ReasoningPanel's `defaultOpen` knob.
   defaultOpen?: boolean;
 }
 
@@ -53,7 +57,7 @@ function provenanceLabel(p: SourceItem["provenance"]): string {
 // disclosure whose trigger states the count and whose body is a keyboard-
 // navigable list of source cards (favicon + linked title + domain + snippet).
 export const SourcesPanel = forwardRef<SourcesPanelHandle, SourcesPanelProps>(
-  function SourcesPanel({ items, defaultOpen = true }, ref) {
+  function SourcesPanel({ items, defaultOpen = false }, ref) {
     const [open, setOpen] = useState(defaultOpen);
     const [highlightId, setHighlightId] = useState<number | null>(null);
     const cardRefs = useRef(new Map<number, HTMLElement | null>());

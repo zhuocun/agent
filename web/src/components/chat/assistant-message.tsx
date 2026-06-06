@@ -333,13 +333,19 @@ function MemoryUsedChip({
 }) {
   const label = `Memory used here · ${count} ${count === 1 ? "fact" : "facts"}`;
   return (
+    // Rendered INLINE (Brain glyph + muted text, no filled background) to match
+    // the byline's BYOK/substitution/JSON clauses (attribution-row.tsx) so the
+    // attribution row carries zero filled chrome at rest — a lone filled pill
+    // next to a bare typographic byline was the regression to avoid. Stays a
+    // <button> with its onClick/onOpen open contract, keyboard operability, and
+    // testid intact.
     <button
       type="button"
       onClick={onOpen}
       aria-label={`${label}. Open memory manager.`}
       data-testid="memory-used-chip"
       className={cn(
-        "inline-flex items-center gap-1 rounded-full bg-foreground/[0.06] px-2 py-0.5 text-xs text-muted-foreground",
+        "inline-flex items-center gap-1 text-xs text-muted-foreground/80",
         "outline-none transition-colors hover:text-foreground",
         "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
       )}

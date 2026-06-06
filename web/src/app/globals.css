@@ -104,9 +104,16 @@
   --ease-ios-sheet: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-ios-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
+  /* Welcome-moment curve — a slightly punchier decelerate than ease-ios-smooth,
+     reserved for the first-run greeting's enter/exit (Decision 08/11: the
+     welcome state owns a little personality). Named so the enter keyframe below
+     and the welcome-screen exit transition share one source instead of each
+     repeating the raw cubic-bezier literal. */
+  --ease-welcome: cubic-bezier(0.16, 1, 0.3, 1);
+
   --animate-shimmer: shimmer 2s linear infinite;
   --animate-caret: caret 1s steps(1) infinite;
-  --animate-welcome-enter: welcome-enter 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-welcome-enter: welcome-enter 360ms var(--ease-welcome) both;
   --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
   /* Entrance choreography — `animate-message-in` for chat bubbles,
      `animate-toast-in` for toasts/pops. Both decelerate (smooth curve). */
@@ -823,6 +830,21 @@ input[type="search"]::-webkit-search-decoration {
   /* Toast entrance — same treatment: cross-fade only, no translate/scale pop. */
   .animate-toast-in {
     animation-name: toast-in-reduced;
+  }
+
+  /* tw-animate-css enter/exit pops (dropdown menus, tooltips, the composer &
+     attribution-row popovers) drive a composed zoom+fade(+slide) keyframe via
+     the `animate-in` / `animate-out` utilities. Under reduced motion collapse
+     that keyframe to instant: the surface still appears and dismisses as a
+     discrete state change, just without the scale/slide pop. This is scoped to
+     the pop utilities — NOT the rejected universal `* { animation: none }` kill
+     — and held at a 0.01ms hair (not 0) so the animationend event still fires
+     and base-ui unmounts the closed surface cleanly. (This is the global guard
+     the composer/attribution popover comments refer to.) */
+  [class*="animate-in"],
+  [class*="animate-out"] {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
   }
 
   /* Skeleton shimmer — freeze the sweep to a static muted block (no moving

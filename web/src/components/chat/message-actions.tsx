@@ -345,7 +345,7 @@ function OverflowMenu({
         {modelChoice ? (
           <>
             <DropdownMenuGroup>
-              <DropdownMenuLabel className="text-2xs font-semibold">
+              <DropdownMenuLabel className="text-2xs font-semibold tracking-wide uppercase">
                 Regenerate with
               </DropdownMenuLabel>
               {/* The split-regenerate trigger keeps its testid so the model
@@ -375,7 +375,7 @@ function OverflowMenu({
             </DropdownMenuGroup>
             {showProviders ? (
               <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-2xs font-semibold">
+                <DropdownMenuLabel className="text-2xs font-semibold tracking-wide uppercase">
                   Provider
                 </DropdownMenuLabel>
                 {availableProviders.map((provider) => (

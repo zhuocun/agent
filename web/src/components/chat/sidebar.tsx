@@ -421,7 +421,7 @@ function ConversationRow({
   const slideTransition =
     swipe.dragging || swipe.reducedMotion
       ? undefined
-      : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)";
+      : "transform 200ms var(--ease-ios-smooth)";
 
   return (
     <div
@@ -1740,7 +1740,7 @@ export function Sidebar({
                           per-tag toggle below carries the state then. */}
                       {!collectionsOpen && activeFilterTag ? (
                         <span
-                          className="ml-1 inline-flex min-w-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground"
+                          className="ml-1 inline-flex min-w-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-2xs font-medium text-foreground"
                           data-testid="sidebar-collections-active-filter"
                         >
                           <TagIcon

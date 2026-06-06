@@ -260,7 +260,7 @@ export function SpendDialog(): JSX.Element {
               </p>
             )}
             {data && data.daily.length > 0 ? (
-              <div className="flex justify-between text-[0.65rem] text-muted-foreground">
+              <div className="flex justify-between text-2xs text-muted-foreground">
                 <span>{formatDayLabel(data.daily[0]!.date)}</span>
                 <span>
                   {formatDayLabel(data.daily[data.daily.length - 1]!.date)}

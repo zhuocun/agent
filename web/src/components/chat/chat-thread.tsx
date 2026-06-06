@@ -291,6 +291,13 @@ type ConversationSearchState = {
 const DEFAULT_TIER_ID: ModelTierId = "auto";
 const PREFERRED_PROVIDER_STORAGE_KEY = "olune.preferredProviderId";
 
+// Upper bound on the first-paint bootstrap fetch. The production BE scales to
+// zero (Fly + Neon), so the first hit after an idle spell boots a machine + a
+// cold DB before any response — generous enough to clear a normal cold start
+// (~5–20 s) yet short enough that a genuinely stalled boot surfaces the retry
+// UI instead of an unbounded spinner ("the page keeps loading").
+const BOOTSTRAP_TIMEOUT_MS = 30_000;
+
 function readStoredPreferredProviderId(): string | undefined {
   if (typeof window === "undefined") return undefined;
   try {
@@ -550,6 +557,16 @@ export function ChatThread() {
     bootstrapInFlightRef.current = true;
     const controller = new AbortController();
     bootstrapControllerRef.current = controller;
+    // Cold-start guard: bound the request so a slow/stalled cold boot can't
+    // strand the user on an indefinite first-paint spinner. On timeout we abort
+    // and fall through to the retry UI below — a now-warm machine answers the
+    // retry quickly. `timedOut` distinguishes this abort from the unmount /
+    // explicit-retry aborts (which stay silent).
+    let timedOut = false;
+    const timeoutId = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, BOOTSTRAP_TIMEOUT_MS);
     void (async () => {
       try {
         const result = await fetchBootstrap(controller.signal);
@@ -566,7 +583,26 @@ export function ChatThread() {
         );
         setIsTemporary(result.preferences.temporaryByDefault);
       } catch (cause) {
-        if (controller.signal.aborted) return;
+        // Aborted: either our timeout fired (surface the retry UI) or the effect
+        // was torn down / superseded by an explicit retry (stay silent — the
+        // re-run owns the next fetch).
+        if (controller.signal.aborted) {
+          if (timedOut) {
+            setBootstrapError(
+              new ApiError(
+                {
+                  code: "TIMEOUT",
+                  severity: "error",
+                  title: "Taking longer than usual",
+                  body:
+                    "The server is taking a while to respond — this can happen on the first visit after a quiet spell. Try again.",
+                },
+                0,
+              ),
+            );
+          }
+          return;
+        }
         if (cause instanceof ApiError) {
           setBootstrapError(cause);
         } else if (cause instanceof ApiNetworkError) {
@@ -586,6 +622,7 @@ export function ChatThread() {
           throw cause;
         }
       } finally {
+        window.clearTimeout(timeoutId);
         // Only clear the latch if a newer attempt hasn't already replaced this
         // controller (the retry handler aborts + supersedes synchronously). (P1-5)
         if (bootstrapControllerRef.current === controller) {
@@ -595,6 +632,7 @@ export function ChatThread() {
       }
     })();
     return () => {
+      window.clearTimeout(timeoutId);
       controller.abort();
     };
   }, [bootstrapAttempt]);

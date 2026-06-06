@@ -148,8 +148,12 @@ the sandbox; use the GitHub MCP tools or `git push` + GitHub web.
 - **Driver**: SQLAlchemy 2.0 async + asyncpg. Connection string uses
   `postgresql+asyncpg://...?ssl=require` (asyncpg uses `ssl`, not `sslmode`).
 - **Migrations**: Alembic under `api/alembic/versions/`. Head as of this writing
-  is `0010_active_stream_unique`. The Dockerfile runs `uv run alembic upgrade
-  head` before launching uvicorn, so each deploy brings the schema forward.
+  is `0025_conversation_tags_archive`. Migrations run once per deploy via the Fly
+  `[deploy] release_command` in `fly.toml` (`uv run alembic upgrade head`) on a
+  temporary release machine, BEFORE the app machines roll out — not on every
+  machine boot. This keeps the schema-upgrade step off the cold-start request
+  path (the Dockerfile CMD is just uvicorn). A failing migration fails the
+  deploy rather than shipping a half-migrated app.
 - **Tests** run on SQLite (`aiosqlite`) — `tests/conftest.py` builds the schema
   via `Base.metadata.create_all`, not Alembic, for speed. Use the SQLAlchemy
   `JSONB().with_variant(JSON(), "sqlite")` pattern when adding JSON columns.
@@ -163,7 +167,11 @@ the sandbox; use the GitHub MCP tools or `git push` + GitHub web.
 In order from cheapest to most invasive.
 
 1. **Hit `/healthz`** — `curl https://olune-agent-server.fly.dev/healthz`.
-   Cold start ~5–20 s (min_machines_running=0), warm ~0.5 s.
+   Warm ~0.5 s. `min_machines_running=1` keeps one machine warm so the first
+   visit after an idle spell doesn't cold-boot on the request path; a cold boot
+   (e.g. a fresh deploy or a Fly-initiated stop) is still ~5–20 s, and the FE
+   bounds its first-paint bootstrap fetch (`BOOTSTRAP_TIMEOUT_MS`) so a stalled
+   boot surfaces a retry instead of an unbounded spinner.
 2. **Read Fly logs** — `flyctl logs -a olune-agent-server`. Structured JSON via
    structlog. Filter for the request id from the FE's response header
    `X-Request-ID`.

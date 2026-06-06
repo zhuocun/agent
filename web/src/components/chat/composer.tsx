@@ -19,9 +19,11 @@ import {
   LoaderCircle,
   Mic,
   Paperclip,
+  Plus,
   Square,
   X,
 } from "lucide-react";
+import { Popover } from "@base-ui/react/popover";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -286,6 +288,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [templateSelectedIndex, setTemplateSelectedIndex] = useState(0);
   const templateListboxId = useId();
   const templateOptionPrefix = useId();
+  // Disclosure for the secondary-control cluster (Attach / Templates / Dictate /
+  // Compare). Open only matters in the collapsed (non-empty draft) state; the
+  // empty composer renders the cluster inline and never reads this.
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const prevStreamingRef = useRef(isStreaming);
   const supportsAttachmentsRef = useRef(supportsAttachments);
   const supportsVisionRef = useRef(supportsVision);
@@ -662,6 +668,123 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     !attachedSendBlocked &&
     !attachmentReadPending;
 
+  // Quiet-down disclosure (00-principles.md:9, 02-patterns.md:158-164): the
+  // instant the user starts typing, the secondary cluster (Attach / Templates /
+  // Dictate / Compare) folds into a single "More actions" disclosure so the
+  // composer reads as `[+] [textarea] [Send]`. The empty / at-rest composer is
+  // UNCHANGED — every control stays inline and visible (load-bearing for e2e).
+  const collapseSecondary = value.length > 0;
+  // An ACTIVE recording must stay one tap from stop, so the mic never hides
+  // mid-listen even when the rest of the cluster has folded away (constraint 4).
+  const keepDictateInline = dictation.listening;
+  // Whether the disclosure has anything left to host. Attach is gated by tier;
+  // Dictate may stay pinned inline while listening; Compare only exists when a
+  // handler is provided. Templates is always present.
+  const hasCollapsibleControls =
+    supportsAttachments || !keepDictateInline || Boolean(onToggleCompare);
+
+  // ---- Secondary-control renderers ---------------------------------------
+  // Each control is rendered identically inline (empty composer) and inside the
+  // disclosure popover (while composing), preserving its exact data-testid +
+  // aria contract in both homes. `inSheet` only relaxes the rounded-pill icon
+  // button into a full-width labelled row for the popover layout.
+  const attachButton = (
+    <Button
+      type="button"
+      variant="ghost"
+      onClick={() => {
+        fileInputRef.current?.click();
+        setMoreActionsOpen(false);
+      }}
+      disabled={isStreaming}
+      aria-label="Attach file"
+      className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+    >
+      <Paperclip className="size-4" />
+    </Button>
+  );
+
+  const templatesButton = (
+    <Button
+      type="button"
+      variant="ghost"
+      onClick={openTemplatePicker}
+      // Disabled mid-stream (parity with attach/dictation). The brand
+      // tint gives sighted users the same "open" signal aria-pressed
+      // conveys to AT.
+      disabled={isStreaming}
+      aria-pressed={templatePickerOpen}
+      aria-haspopup="listbox"
+      aria-label="Insert a prompt template"
+      data-testid="composer-templates"
+      className={cn(
+        "size-11 shrink-0 rounded-full p-0",
+        templatePickerOpen
+          ? "text-brand hover:text-brand"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      <Library className="size-4" />
+    </Button>
+  );
+
+  const dictateButton = (
+    <Button
+      type="button"
+      variant="ghost"
+      onClick={() => dictation.toggle()}
+      // Feature-detect: when the browser lacks the Web Speech
+      // recognition API the control is disabled and the tooltip
+      // explains why. Also disabled mid-stream (parity with attach).
+      disabled={!dictation.supported || isStreaming}
+      // aria-pressed conveys the recording state to AT; the brand tint
+      // gives the same "on" signal to sighted users.
+      aria-pressed={dictation.listening}
+      aria-label={
+        !dictation.supported
+          ? "Dictation not supported in this browser"
+          : dictation.listening
+            ? "Stop dictation"
+            : "Start dictation"
+      }
+      data-testid="composer-dictate"
+      className={cn(
+        "size-11 shrink-0 rounded-full p-0",
+        dictation.listening
+          ? "text-brand hover:text-brand"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      <Mic
+        className={cn(
+          "size-4",
+          dictation.listening && "motion-safe:animate-pulse",
+        )}
+      />
+    </Button>
+  );
+
+  const compareButton = onToggleCompare ? (
+    <Button
+      type="button"
+      variant="ghost"
+      onClick={onToggleCompare}
+      // aria-pressed conveys the toggle state to AT; the brand tint
+      // gives sighted users the same "on" signal.
+      aria-pressed={compareEnabled}
+      aria-label="Compare two models"
+      data-testid="compare-toggle"
+      className={cn(
+        "size-11 shrink-0 rounded-full p-0",
+        compareEnabled
+          ? "text-brand hover:text-brand"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      <Columns2 className="size-4" />
+    </Button>
+  ) : null;
+
   // Pre-send cost/token estimate (Feature 2). Recomputed as the draft + the
   // selected tier change. Only shown once there's something to estimate; the
   // tier object carries the (bootstrap-supplied) per-M list prices. `usd` is
@@ -887,138 +1010,168 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         style={grown ? { borderRadius: "1.75rem" } : undefined}
         className="glass-capsule group flex items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
       >
+        {/* Hidden file input: MUST stay mounted whenever the tier supports
+            attachments, independent of collapse state — Playwright drives it
+            directly via setInputFiles, and the disclosure popover unmounts on
+            close. Keeping it here (a sibling of the cluster) keeps it always
+            available. */}
         {supportsAttachments ? (
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept={ACCEPTED_ATTACHMENT_TYPES}
-              data-testid="composer-file-input"
-              className="sr-only"
-              onChange={(e) => onPickFiles(e.target.files)}
-            />
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isStreaming}
-                    aria-label="Attach file"
-                    className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <Paperclip className="size-4" />
-                  </Button>
-                }
-              />
-              <TooltipContent>Attach image, PDF, or text file</TooltipContent>
-            </Tooltip>
-          </>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={ACCEPTED_ATTACHMENT_TYPES}
+            data-testid="composer-file-input"
+            className="sr-only"
+            onChange={(e) => onPickFiles(e.target.files)}
+          />
         ) : null}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={openTemplatePicker}
-                // Disabled mid-stream (parity with attach/dictation). The brand
-                // tint gives sighted users the same "open" signal aria-pressed
-                // conveys to AT.
-                disabled={isStreaming}
-                aria-pressed={templatePickerOpen}
-                aria-haspopup="listbox"
-                aria-label="Insert a prompt template"
-                data-testid="composer-templates"
-                className={cn(
-                  "size-11 shrink-0 rounded-full p-0",
-                  templatePickerOpen
-                    ? "text-brand hover:text-brand"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
+        {/* At rest (empty draft): full inline cluster — the inviting state,
+            unchanged from before and load-bearing for e2e. It UNMOUNTS the
+            moment the draft becomes non-empty so the composer "quiets down" to
+            `[+] [textarea] [Send]`. Unmounting (rather than hiding) is
+            deliberate: it keeps each secondary control — and its `data-testid`
+            / accessible name — mounted in exactly ONE place (here when empty,
+            the disclosure popover when composing), so there are never duplicate
+            controls in the DOM or stray hidden tab stops. The disclosure
+            ("+") in the next branch fades in to replace it. */}
+        {!collapseSecondary ? (
+          <div className="flex items-end gap-2">
+            {supportsAttachments ? (
+              <Tooltip>
+                <TooltipTrigger render={attachButton} />
+                <TooltipContent>Attach image, PDF, or text file</TooltipContent>
+              </Tooltip>
+            ) : null}
+            <Tooltip>
+              <TooltipTrigger render={templatesButton} />
+              <TooltipContent>Insert a prompt template</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger render={dictateButton} />
+              <TooltipContent>
+                {!dictation.supported
+                  ? "Dictation isn't supported in this browser"
+                  : dictation.listening
+                    ? "Stop dictation · processed on your device by your browser"
+                    : "Dictate · voice is processed on your device by your browser"}
+              </TooltipContent>
+            </Tooltip>
+            {compareButton ? (
+              <Tooltip>
+                <TooltipTrigger render={compareButton} />
+                <TooltipContent>
+                  {compareEnabled ? "Exit compare mode" : "Compare two models"}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+          </div>
+        ) : null}
+        {/* Composing (non-empty draft): the cluster has folded into a single
+            "More actions" disclosure. Send/Stop stays primary; every secondary
+            feature is one tap away inside the popover. An ACTIVE recording keeps
+            its mic pinned inline (alongside the disclosure) so it's stoppable in
+            one tap. The disclosure fades/expands in as the inline cluster fades
+            out; motion-reduce makes the swap instant. */}
+        {collapseSecondary ? (
+          <div className="flex items-end gap-2 transition-opacity duration-300 ease-ios-smooth motion-reduce:transition-none">
+            {keepDictateInline ? (
+              <Tooltip>
+                <TooltipTrigger render={dictateButton} />
+                <TooltipContent>
+                  Stop dictation · processed on your device by your browser
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            {hasCollapsibleControls ? (
+              <Popover.Root
+                open={moreActionsOpen}
+                onOpenChange={setMoreActionsOpen}
               >
-                <Library className="size-4" />
-              </Button>
-            }
-          />
-          <TooltipContent>Insert a prompt template</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => dictation.toggle()}
-                // Feature-detect: when the browser lacks the Web Speech
-                // recognition API the control is disabled and the tooltip
-                // explains why. Also disabled mid-stream (parity with attach).
-                disabled={!dictation.supported || isStreaming}
-                // aria-pressed conveys the recording state to AT; the brand tint
-                // gives the same "on" signal to sighted users.
-                aria-pressed={dictation.listening}
-                aria-label={
-                  !dictation.supported
-                    ? "Dictation not supported in this browser"
-                    : dictation.listening
-                      ? "Stop dictation"
-                      : "Start dictation"
-                }
-                data-testid="composer-dictate"
-                className={cn(
-                  "size-11 shrink-0 rounded-full p-0",
-                  dictation.listening
-                    ? "text-brand hover:text-brand"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <Mic
-                  className={cn(
-                    "size-4",
-                    dictation.listening && "motion-safe:animate-pulse",
-                  )}
-                />
-              </Button>
-            }
-          />
-          <TooltipContent>
-            {!dictation.supported
-              ? "Dictation isn't supported in this browser"
-              : dictation.listening
-                ? "Stop dictation · processed on your device by your browser"
-                : "Dictate · voice is processed on your device by your browser"}
-          </TooltipContent>
-        </Tooltip>
-        {onToggleCompare ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={onToggleCompare}
-                  // aria-pressed conveys the toggle state to AT; the brand tint
-                  // gives sighted users the same "on" signal.
-                  aria-pressed={compareEnabled}
-                  aria-label="Compare two models"
-                  data-testid="compare-toggle"
-                  className={cn(
-                    "size-11 shrink-0 rounded-full p-0",
-                    compareEnabled
-                      ? "text-brand hover:text-brand"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <Columns2 className="size-4" />
-                </Button>
-              }
-            />
-            <TooltipContent>
-              {compareEnabled ? "Exit compare mode" : "Compare two models"}
-            </TooltipContent>
-          </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Popover.Trigger
+                        render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            disabled={isStreaming}
+                            aria-label="More actions"
+                            aria-haspopup="dialog"
+                            data-testid="composer-more-actions"
+                            className={cn(
+                              "size-11 shrink-0 rounded-full p-0",
+                              moreActionsOpen
+                                ? "text-foreground"
+                                : "text-muted-foreground hover:text-foreground",
+                            )}
+                          >
+                            <Plus className="size-4 transition-transform duration-300 ease-ios-spring data-[popup-open]:rotate-45 motion-reduce:transition-none" />
+                          </Button>
+                        }
+                      />
+                    }
+                  />
+                  <TooltipContent>More actions</TooltipContent>
+                </Tooltip>
+                <Popover.Portal>
+                  <Popover.Positioner
+                    side="top"
+                    align="start"
+                    sideOffset={8}
+                    className="z-[60] outline-none"
+                  >
+                    <Popover.Popup
+                      // Small anchored actions popover. On mobile this sits in
+                      // the thumb zone just above the composer; each row keeps a
+                      // ≥44px target (size-11). Matches the attribution-row
+                      // glass + zoom/fade enter pattern; motion-reduce path is
+                      // provided by the global reduced-motion CSS for animate-in.
+                      className={cn(
+                        "glass-strong flex origin-(--transform-origin) flex-col gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] outline-none",
+                        "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
+                        "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+                      )}
+                    >
+                      {supportsAttachments ? (
+                        <div className="flex items-center gap-2">
+                          {attachButton}
+                          <span className="pr-2 text-sm text-foreground">
+                            Attach file
+                          </span>
+                        </div>
+                      ) : null}
+                      <div className="flex items-center gap-2">
+                        {templatesButton}
+                        <span className="pr-2 text-sm text-foreground">
+                          Prompt template
+                        </span>
+                      </div>
+                      {keepDictateInline ? null : (
+                        <div className="flex items-center gap-2">
+                          {dictateButton}
+                          <span className="pr-2 text-sm text-foreground">
+                            {!dictation.supported
+                              ? "Dictation unavailable"
+                              : "Dictate"}
+                          </span>
+                        </div>
+                      )}
+                      {compareButton ? (
+                        <div className="flex items-center gap-2">
+                          {compareButton}
+                          <span className="pr-2 text-sm text-foreground">
+                            {compareEnabled ? "Exit compare" : "Compare models"}
+                          </span>
+                        </div>
+                      ) : null}
+                    </Popover.Popup>
+                  </Popover.Positioner>
+                </Popover.Portal>
+              </Popover.Root>
+            ) : null}
+          </div>
         ) : null}
         <label htmlFor="composer-input" className="sr-only">
           Message Olune

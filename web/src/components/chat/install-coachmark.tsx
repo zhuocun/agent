@@ -83,7 +83,7 @@ export function InstallCoachmark(): React.JSX.Element | null {
         className="size-4 shrink-0 text-brand"
         strokeWidth={2}
       />
-      <p className="min-w-0 flex-1 text-[13px] leading-snug">
+      <p className="min-w-0 flex-1 text-sm leading-snug">
         Install Olune: tap{" "}
         <span className="font-medium">Share</span>, then{" "}
         <span className="font-medium">Add to Home Screen</span>.

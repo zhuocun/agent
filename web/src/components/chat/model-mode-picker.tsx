@@ -617,7 +617,7 @@ function providerDescription(provider: ProviderTierOption): string {
 // animated/pulsing, per 02-patterns §73).
 function ValueBadge({ label }: { label: string }): JSX.Element {
   return (
-    <span className="shrink-0 rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-brand uppercase">
+    <span className="shrink-0 rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
       {label}
     </span>
   );

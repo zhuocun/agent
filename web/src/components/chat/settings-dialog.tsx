@@ -714,6 +714,14 @@ function UsageDetails({
   perConversationBudgetUsd: number | null;
   onSavePerConversationBudget: (value: number | null) => void;
 }): JSX.Element {
+  // `SpendDialog` is the same self-contained trigger+dialog regardless of
+  // branch, so it lives in a single `spendDialog` element mounted once into
+  // whichever branch renders — no duplicated source mount. Each branch keeps its
+  // own framing (BYOK nests it in the content column at `pt-1`; the
+  // platform-credit branch sits it full-width above a top border), so the
+  // shared element is dropped into the placement each branch already used.
+  const spendDialog = <SpendDialog />;
+
   if (usage.isByok) {
     return (
       <div className="glass-clear space-y-2 rounded-2xl px-3.5 py-3">
@@ -737,9 +745,7 @@ function UsageDetails({
                 {formatUsd(usage.creditBalanceUsd)}
               </span>
             </p>
-            <div className="pt-1">
-              <SpendDialog />
-            </div>
+            <div className="pt-1">{spendDialog}</div>
           </div>
         </div>
       </div>
@@ -858,9 +864,7 @@ function UsageDetails({
         value={perConversationBudgetUsd}
         onSave={onSavePerConversationBudget}
       />
-      <div className="border-t border-border/50 pt-3">
-        <SpendDialog />
-      </div>
+      <div className="border-t border-border/50 pt-3">{spendDialog}</div>
     </div>
   );
 }
@@ -1226,20 +1230,6 @@ export function SettingsDialog({
               }
             />
             <SettingRow
-              label="Models & data policies"
-              helper="Compare each provider's data handling, capabilities, and prices."
-              control={
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setActiveTab("models")}
-                >
-                  Browse
-                </Button>
-              }
-            />
-            <SettingRow
               label="Send on Enter"
               helper="When off, press ⌘/Ctrl+Enter to send."
               htmlFor={sendOnEnterId}
@@ -1267,20 +1257,6 @@ export function SettingsDialog({
                     )
                   }
                 />
-              }
-            />
-            <SettingRow
-              label="Keyboard shortcuts"
-              helper="View and rebind shortcuts. Enter and Escape stay reserved."
-              control={
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setActiveTab("shortcuts")}
-                >
-                  Customize
-                </Button>
               }
             />
             <div className="space-y-2">
@@ -1394,52 +1370,6 @@ export function SettingsDialog({
               parent owns the download / confirm-dialog / reset side effects. */}
           <section className="space-y-4">
             <SectionHeading>Your data</SectionHeading>
-            <SettingRow
-              label="Memory"
-              helper={
-                preferences.memoryEnabled
-                  ? "On — review and edit the facts the assistant remembers about you."
-                  : "Off — opt in and manage the facts the assistant can remember."
-              }
-              control={
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setActiveTab("memory")}
-                >
-                  Manage
-                </Button>
-              }
-            />
-            <SettingRow
-              label="Prompt templates"
-              helper="Create and edit reusable prompts you can drop into the composer."
-              control={
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setActiveTab("templates")}
-                >
-                  Manage
-                </Button>
-              }
-            />
-            <SettingRow
-              label="Activity & data access"
-              helper="See sensitive account actions and where your messages were processed."
-              control={
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setActiveTab("activity")}
-                >
-                  View
-                </Button>
-              }
-            />
             <SettingRow
               label="Export your data"
               helper="Download your account, preferences, and conversations as JSON."

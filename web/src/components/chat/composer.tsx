@@ -758,7 +758,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       <Mic
         className={cn(
           "size-4",
-          dictation.listening && "motion-safe:animate-pulse",
+          dictation.listening && "motion-safe:animate-pulse-soft",
         )}
       />
     </Button>
@@ -976,7 +976,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             <span className="glass-regular inline-flex h-9 max-w-full items-center gap-2 rounded-full px-3 text-xs text-muted-foreground shadow-[var(--glass-highlight)]">
               <LoaderCircle
                 aria-hidden
-                className="size-3.5 shrink-0 animate-spin"
+                className="size-3.5 shrink-0 motion-safe:animate-spin"
               />
               <span>
                 {pendingAttachmentReads === 1

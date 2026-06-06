@@ -10,6 +10,10 @@ import { cn } from "@/lib/utils";
 
 export interface DegradedStatusBannerProps {
   className?: string;
+  // Fired whenever the banner's effective visibility changes (degraded and not
+  // dismissed). Lets a parent share one prioritized slot between this and other
+  // status pills without duplicating the poll.
+  onActiveChange?: (active: boolean) => void;
 }
 
 // Light poll interval. Calm, never spammy: one fetch on mount, then once a
@@ -23,9 +27,15 @@ const POLL_INTERVAL_MS = 60_000;
 // re-checks — so a user is never permanently blind to an ongoing incident.
 export function DegradedStatusBanner({
   className,
+  onActiveChange,
 }: DegradedStatusBannerProps): JSX.Element | null {
   const [degraded, setDegraded] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+
+  const active = degraded && !dismissed;
+  useEffect(() => {
+    onActiveChange?.(active);
+  }, [active, onActiveChange]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -51,7 +61,7 @@ export function DegradedStatusBanner({
     };
   }, []);
 
-  if (!degraded || dismissed) return null;
+  if (!active) return null;
 
   return (
     <div className={cn("flex justify-center px-3 pt-1", className)}>

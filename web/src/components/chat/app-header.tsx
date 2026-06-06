@@ -145,11 +145,14 @@ export function AppHeader({
             type="button"
             aria-label="New chat"
             onClick={onNewChat}
-            className={cn(PILL_HALF)}
+            className={cn(PILL_HALF, sidebarOpen && "md:hidden")}
           >
             <SquarePen className="size-[18px]" strokeWidth={2.25} />
           </button>
-          <span aria-hidden className="h-4 w-px bg-foreground/10" />
+          <span
+            aria-hidden
+            className={cn("h-4 w-px bg-foreground/10", sidebarOpen && "md:hidden")}
+          />
           <DropdownMenu>
             <DropdownMenuTrigger
               render={

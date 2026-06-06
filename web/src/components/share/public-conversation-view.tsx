@@ -199,7 +199,7 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
       >
         <div
           data-testid="public-user-message"
-          className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground shadow-[var(--glass-highlight),inset_0_0_0_1px_var(--glass-border)] md:text-[0.9375rem]"
+          className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem]"
         >
           {text}
         </div>

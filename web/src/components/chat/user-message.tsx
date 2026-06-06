@@ -179,11 +179,10 @@ export function UserMessage({
     return (
       <div className="flex justify-end" role="article" aria-label="You">
         <div className="w-full max-w-[85%] space-y-2">
-          {/* Edit reuses the SAME tinted-glass material as the display bubble
-              (see below) so entering edit doesn't change the bubble's surface —
-              only its contents. brand-muted wash + inset top highlight + 1px
-              hairline read it as the user's raised glass object. */}
-          <div className="rounded-3xl bg-brand-muted px-5 py-3 shadow-[var(--glass-highlight),inset_0_0_0_1px_var(--glass-border)]">
+          {/* Edit reuses the SAME flat surface as the display bubble (see
+              below) so entering edit doesn't change the bubble's surface — only
+              its contents. A flat brand-muted wash, no highlight or hairline. */}
+          <div className="rounded-3xl bg-brand-muted px-5 py-3">
             <label className="block">
               <span className="sr-only">Edit message</span>
               <textarea
@@ -231,17 +230,17 @@ export function UserMessage({
       role="article"
       aria-label="You"
     >
-      {/* The user's bubble reads as a faint brand-tinted glass object, not a
-          flat gray fill: `bg-brand-muted` (themed light/dark) is the user's
-          single-accent "voice," and the inset top highlight + 1px hairline
-          give it raised glass dimensionality. Tail-less + continuous
-          rounded-3xl is the modern iOS-26 direction. `text-foreground` stays
-          legible over the wash in both themes (pale-blue/near-black in light,
-          mid-blue/near-white in dark). Kept deliberately subtle — a wash, not
-          a saturated blue bubble. */}
+      {/* The user's bubble is a flat, faint brand-tinted wash, not a raised
+          glass object: `bg-brand-muted` (themed light/dark) is the user's
+          single-accent "voice." Message surfaces stay flat — no highlight, no
+          hairline (see docs/design/03-anti-patterns.md §B). Tail-less +
+          continuous rounded-3xl is the modern iOS-26 direction.
+          `text-foreground` stays legible over the wash in both themes
+          (pale-blue/near-black in light, mid-blue/near-white in dark). Kept
+          deliberately subtle — a wash, not a saturated blue bubble. */}
       <div
         data-testid="user-message-text"
-        className="max-w-[85%] space-y-3 rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground shadow-[var(--glass-highlight),inset_0_0_0_1px_var(--glass-border)] md:text-[0.9375rem]"
+        className="max-w-[85%] space-y-3 rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem]"
       >
         {text ? <div className="whitespace-pre-wrap break-words">{text}</div> : null}
         {attachments.length > 0 ? (

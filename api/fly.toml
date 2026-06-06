@@ -5,6 +5,14 @@ kill_timeout = "30s"
 
 [build]
 
+# Run DB migrations once per deploy, on a temporary release machine, BEFORE the
+# new app machines roll out. Keeps `alembic upgrade head` off every machine
+# boot (the Dockerfile CMD is now just uvicorn), so a cold start doesn't stall
+# the first request behind a migration check against a cold cross-region DB. A
+# failing migration fails the deploy instead of shipping a half-migrated app.
+[deploy]
+  release_command = "uv run alembic upgrade head"
+
 [env]
   PORT = "8000"
   COOKIE_SECURE = "true"
@@ -21,7 +29,11 @@ kill_timeout = "30s"
   force_https = true
   auto_stop_machines = "stop"
   auto_start_machines = true
-  min_machines_running = 0
+  # Keep one machine warm so the FIRST visit after an idle spell doesn't cold-
+  # boot a machine (+ cold DB) on the request path — the dominant cause of the
+  # "page keeps loading" first-paint stall. Extra bursts still autoscale up and
+  # idle ones still stop; only the floor changes from 0 to 1.
+  min_machines_running = 1
   processes = ["app"]
 
   [http_service.concurrency]

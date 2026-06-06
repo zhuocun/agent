@@ -28,5 +28,10 @@ RUN uv sync --frozen --no-dev
 
 EXPOSE 8000
 
-# Run alembic upgrade then start uvicorn. Fly.io sets PORT.
-CMD ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Start uvicorn. Fly.io sets PORT. Migrations run once per deploy via the Fly
+# `[deploy] release_command` (see fly.toml), NOT on every machine boot — so a
+# cold start (a fresh deploy, or a Fly-initiated machine stop) doesn't pay
+# `alembic upgrade head` against a cold cross-region DB before it can serve the
+# first request. `flyctl deploy` runs the release command on a temporary machine
+# and only rolls out the app machines once it succeeds.
+CMD ["sh", "-c", "uv run uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

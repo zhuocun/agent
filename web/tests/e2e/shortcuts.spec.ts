@@ -17,9 +17,13 @@ async function openShortcutsDialog(page: import("@playwright/test").Page) {
   const settings = page.getByRole("dialog", { name: "Settings" });
   await expect(settings).toBeVisible();
   await settings.getByTestId("open-shortcuts-button").click();
-  const dialog = page.getByRole("dialog", { name: "Keyboard shortcuts" });
-  await expect(dialog).toBeVisible();
-  return dialog;
+  // Shortcuts is now a tab inside the Settings hub (not a standalone dialog):
+  // assert the Shortcuts heading and return the Settings dialog handle so the
+  // shortcut-* testids resolve within it.
+  await expect(
+    settings.getByRole("heading", { name: "Keyboard shortcuts" }),
+  ).toBeVisible();
+  return settings;
 }
 
 test.describe("keyboard shortcuts customization", () => {

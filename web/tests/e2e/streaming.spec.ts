@@ -212,6 +212,9 @@ test.describe("streaming", () => {
 
     const sourcesPanel = assistant.getByTestId("sources-panel");
     await expect(sourcesPanel).toBeVisible({ timeout: 15_000 });
+    // Sources collapse by default at rest (parity with the reasoning panel);
+    // expand the panel before asserting the per-source cards are visible.
+    await sourcesPanel.getByRole("button").first().click();
     const sourceCards = assistant.getByTestId("source-card");
     await expect(sourceCards.first()).toBeVisible({ timeout: 15_000 });
     expect(await sourceCards.count()).toBeGreaterThanOrEqual(1);

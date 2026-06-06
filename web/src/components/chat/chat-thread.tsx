@@ -36,12 +36,11 @@ import { AssistantMessage } from "@/components/chat/assistant-message";
 import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { DegradedStatusBanner } from "@/components/chat/degraded-status-banner";
-import { SettingsDialog } from "@/components/chat/settings-dialog";
-import { ActivityDialog } from "@/components/chat/activity-dialog";
-import { MemoryDialog } from "@/components/chat/memory-dialog";
-import { TemplateLibraryDialog } from "@/components/chat/template-library-dialog";
+import {
+  SettingsDialog,
+  type SettingsTab,
+} from "@/components/chat/settings-dialog";
 import { HistorySearchDialog } from "@/components/chat/history-search-dialog";
-import { ModelDirectoryDialog } from "@/components/chat/model-directory-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
 import { AiDisclosure } from "@/components/chat/ai-disclosure";
@@ -59,10 +58,7 @@ import {
   CommandPalette,
   type CommandAction,
 } from "@/components/chat/command-palette";
-import {
-  ShortcutsDialog,
-  type ShortcutSection,
-} from "@/components/chat/shortcuts-dialog";
+import type { ShortcutSection } from "@/components/chat/shortcuts-dialog";
 import {
   useKeyboardShortcuts,
   type Shortcut,
@@ -490,11 +486,12 @@ export function ChatThread() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [memoryOpen, setMemoryOpen] = useState(false);
-  const [templatesOpen, setTemplatesOpen] = useState(false);
+  // Which Settings hub tab to land on when it opens. Memory/Templates/Models/
+  // Shortcuts/Activity are folded into the hub as tabs, so deep-links (the
+  // "Memory used here" chip, the shortcuts hotkey) set this before opening.
+  const [settingsInitialTab, setSettingsInitialTab] =
+    useState<SettingsTab>("general");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [modelDirectoryOpen, setModelDirectoryOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [isTemporary, setIsTemporary] = useState(false);
@@ -505,7 +502,6 @@ export function ChatThread() {
   const [conversationSearchState, setConversationSearchState] =
     useState<ConversationSearchState | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [shortcutsDialogOpen, setShortcutsDialogOpen] = useState(false);
   // Both the shortcut and the palette's "Delete current chat" route through
   // this confirm — never delete without it (data-loss guard).
   const [pendingDeleteConversationId, setPendingDeleteConversationId] =
@@ -2402,7 +2398,11 @@ export function ChatThread() {
 
   const settingsOpenRef = useRef(settingsOpen);
 
-  const openSettings = () => {
+  // Open the Settings hub, optionally deep-linked to a tab. Memory/Templates/
+  // Models/Shortcuts/Activity are tabs in the hub now, so their entry points
+  // pass the target tab here instead of opening a sibling dialog.
+  const openSettings = (tab: SettingsTab = "general") => {
+    setSettingsInitialTab(tab);
     if (!settingsOpenRef.current) {
       settingsOpenRef.current = true;
       reportTelemetry(preferences, "settings.opened");
@@ -2899,7 +2899,9 @@ export function ChatThread() {
         composerRef.current?.toggleDictation();
         return;
       case "shortcuts":
-        setShortcutsDialogOpen((v) => !v);
+        // Folded into the Settings hub: the hotkey/palette open the hub on the
+        // Shortcuts tab rather than a standalone dialog.
+        openSettings("shortcuts");
         return;
       case "open-settings":
         handleOpenSettings();
@@ -3136,7 +3138,6 @@ export function ChatThread() {
                 onOpenMobileNav={() => setMobileNavOpen(true)}
                 onOpenSidebar={() => setSidebarOpen(true)}
                 onNewChat={handleNewChat}
-                onOpenSettings={handleOpenSettings}
                 isTemporary={isTemporary}
                 onToggleTemporary={handleToggleTemporary}
                 onCopyConversation={handleCopyConversation}
@@ -3269,7 +3270,7 @@ export function ChatThread() {
                       onToolDecision={(d) => handleToolDecision(m.id, d)}
                       onFeedback={(f) => setFeedback(m.id, f)}
                       onAttributionOpen={handleAttributionOpen}
-                      onMemoryOpen={() => setMemoryOpen(true)}
+                      onMemoryOpen={() => openSettings("memory")}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
                     />
@@ -3340,6 +3341,7 @@ export function ChatThread() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={handleSettingsOpenChange}
+        initialTab={settingsInitialTab}
         preferences={preferences}
         onPreferencesChange={handlePreferencesChange}
         account={account}
@@ -3356,50 +3358,11 @@ export function ChatThread() {
           setSettingsOpen(false);
           setPendingDeleteAccount(true);
         }}
-        onOpenActivity={() => {
-          setSettingsOpen(false);
-          setActivityOpen(true);
-        }}
-        onOpenMemory={() => {
-          setSettingsOpen(false);
-          setMemoryOpen(true);
-        }}
-        onOpenTemplates={() => {
-          setSettingsOpen(false);
-          setTemplatesOpen(true);
-        }}
-        onOpenModelDirectory={() => {
-          setSettingsOpen(false);
-          setModelDirectoryOpen(true);
-        }}
         projects={projects}
         onUpdateProject={handleUpdateProject}
-        onOpenShortcuts={() => {
-          setSettingsOpen(false);
-          setShortcutsDialogOpen(true);
-        }}
-      />
-
-      <ActivityDialog
-        open={activityOpen}
-        onOpenChange={setActivityOpen}
-        onSwitchRoute={() => {
-          // Reuse the composer's existing model picker: close this surface and
-          // open the picker trigger so the user can switch their route.
-          setActivityOpen(false);
-          window.requestAnimationFrame(() => {
-            const trigger = document.querySelector<HTMLElement>(
-              '[data-testid="model-mode-trigger"]',
-            );
-            trigger?.focus();
-            trigger?.click();
-          });
-        }}
-      />
-
-      <MemoryDialog
-        open={memoryOpen}
-        onOpenChange={setMemoryOpen}
+        // Folded-in hub surfaces (formerly sibling dialogs). The Settings hub
+        // now hosts Memory / Templates / Models / Shortcuts / Activity as tabs,
+        // so these props feed the in-place bodies instead of opening a sibling.
         memoryEnabled={bootstrap?.preferences.memoryEnabled ?? false}
         onMemoryEnabledChange={(next) => {
           // Reuse the optimistic preferences flow (setBootstrap + PUT +
@@ -3411,11 +3374,31 @@ export function ChatThread() {
             memoryEnabled: next,
           });
         }}
-      />
-
-      <TemplateLibraryDialog
-        open={templatesOpen}
-        onOpenChange={setTemplatesOpen}
+        onActivitySwitchRoute={() => {
+          // Reuse the composer's existing model picker: close the hub and open
+          // the picker trigger so the user can switch their route.
+          setSettingsOpen(false);
+          window.requestAnimationFrame(() => {
+            const trigger = document.querySelector<HTMLElement>(
+              '[data-testid="model-mode-trigger"]',
+            );
+            trigger?.focus();
+            trigger?.click();
+          });
+        }}
+        shortcuts={shortcutSections}
+        shortcutsEditable
+        effectiveBindings={effectiveBindings}
+        shortcutLabelFor={(id) => LABEL_BY_ID[id]}
+        onRebindShortcut={(id, combo) => {
+          handleShortcutsChange(setOverride(shortcutOverrides, id, combo));
+        }}
+        onResetShortcut={(id) => {
+          handleShortcutsChange(clearOverride(shortcutOverrides, id));
+        }}
+        onResetAllShortcuts={() => {
+          handleShortcutsChange(resetAllOverrides());
+        }}
       />
 
       <HistorySearchDialog
@@ -3426,11 +3409,6 @@ export function ChatThread() {
         // dialog's tag filter is populated (it hides the control when empty).
         tags={tags}
         onSelectConversation={handleSelectConversation}
-      />
-
-      <ModelDirectoryDialog
-        open={modelDirectoryOpen}
-        onOpenChange={setModelDirectoryOpen}
       />
 
       <AuthDialog
@@ -3453,24 +3431,6 @@ export function ChatThread() {
         conversations={conversations}
         activeId={activeConversationId}
         onSelectConversation={handleSelectConversation}
-      />
-
-      <ShortcutsDialog
-        open={shortcutsDialogOpen}
-        onOpenChange={setShortcutsDialogOpen}
-        shortcuts={shortcutSections}
-        editable
-        effectiveBindings={effectiveBindings}
-        labelFor={(id) => LABEL_BY_ID[id]}
-        onRebind={(id, combo) => {
-          handleShortcutsChange(setOverride(shortcutOverrides, id, combo));
-        }}
-        onResetAction={(id) => {
-          handleShortcutsChange(clearOverride(shortcutOverrides, id));
-        }}
-        onResetAll={() => {
-          handleShortcutsChange(resetAllOverrides());
-        }}
       />
 
       <Dialog

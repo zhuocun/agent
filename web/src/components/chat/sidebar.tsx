@@ -1377,7 +1377,14 @@ export function Sidebar({
     >
       <div className="flex items-center justify-between p-3">
         <div className="flex items-center">
-          <span className="text-sm font-semibold">Olune</span>
+          {/* Wordmark demoted to a quiet label (anti-pattern G: personality
+              must not stand on the working surface for the life of the session).
+              Distinctiveness lives in the empty/welcome state, not here — so the
+              brand recedes to a small, muted, normal-weight cap-tracked label
+              that reads as orientation, not as a logo asking to be looked at. */}
+          <span className="text-xs font-normal uppercase tracking-wide text-muted-foreground/70">
+            Olune
+          </span>
         </div>
         {onCollapse ? (
           <Button
@@ -1409,6 +1416,13 @@ export function Sidebar({
         </button>
       </div>
 
+      {/* Search + list-management toolbar region. The quick-search input and
+          New-chat row above are primary and always paint; the low-frequency
+          management affordances inside this region (Advanced search, Select)
+          defer via the dual-disclosure idiom — persistent on touch, hover/focus
+          -revealed on desktop — so the rail quiets at rest. `group/toolbar`
+          scopes the reveal to this region (not the whole sidebar). */}
+      <div className="group/toolbar">
       <div className="px-2 pb-2">
         <div className="relative">
           <Search
@@ -1444,7 +1458,12 @@ export function Sidebar({
             type="button"
             onClick={onOpenAdvancedSearch}
             data-testid="sidebar-advanced-search"
-            className="mt-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+            className={cn(
+              "mt-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+              // Persistent on touch; hover/focus-revealed on desktop. Element
+              // stays mounted (opacity only) so it's clickable + e2e-safe.
+              "opacity-100 md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+            )}
           >
             <SlidersHorizontal aria-hidden className="size-3" />
             <span>Advanced search</span>
@@ -1462,13 +1481,19 @@ export function Sidebar({
             type="button"
             onClick={() => setSelectionActive(true)}
             data-testid="sidebar-select-toggle"
-            className="flex min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left text-xs font-medium text-muted-foreground outline-none transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+            className={cn(
+              "flex min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left text-xs font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)]",
+              // Persistent on touch; hover/focus-revealed on desktop. Element
+              // stays mounted (opacity only) so it's clickable + e2e-safe.
+              "opacity-100 md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+            )}
           >
             <Check className="size-3.5" aria-hidden />
             <span>Select</span>
           </button>
         </div>
       ) : null}
+      </div>{/* /group/toolbar */}
 
       {/* Bulk action bar (Conversation Org v2). Shown in selection mode.
           Archive / unarchive / delete + an "Add tag" submenu over the user's
@@ -1630,7 +1655,7 @@ export function Sidebar({
                   a kebab to manage settings / rename / delete. */}
               {onCreateProject || projects.length > 0 ? (
                 <div className="mb-6" data-testid="sidebar-projects">
-                  <div className="flex items-center justify-between px-2 pb-1 pt-1">
+                  <div className="group/proj-head flex items-center justify-between px-2 pb-1 pt-1">
                     <span className="text-xs font-semibold text-muted-foreground">
                       Projects
                     </span>
@@ -1641,7 +1666,13 @@ export function Sidebar({
                         aria-label="New project"
                         data-testid="sidebar-new-project"
                         onClick={openCreateProject}
-                        className="size-7 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
+                        className={cn(
+                          "size-7 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground",
+                          // Persistent on touch; hover/focus-revealed on desktop
+                          // (reveals on hover of the section header row). Stays
+                          // mounted (opacity only) so it's clickable + e2e-safe.
+                          "opacity-100 md:opacity-0 md:group-hover/proj-head:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+                        )}
                       >
                         <FolderPlus className="size-4" aria-hidden />
                       </Button>
@@ -1749,7 +1780,7 @@ export function Sidebar({
                   deletes it; the header "+" creates one. */}
               {onCreateTag || tags.length > 0 ? (
                 <div className="mb-6" data-testid="sidebar-tags">
-                  <div className="flex items-center justify-between px-2 pb-1 pt-1">
+                  <div className="group/tags-head flex items-center justify-between px-2 pb-1 pt-1">
                     <span className="text-xs font-semibold text-muted-foreground">
                       Tags
                     </span>
@@ -1760,7 +1791,13 @@ export function Sidebar({
                         aria-label="New tag"
                         data-testid="sidebar-new-tag"
                         onClick={openCreateTag}
-                        className="size-7 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
+                        className={cn(
+                          "size-7 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground",
+                          // Persistent on touch; hover/focus-revealed on desktop
+                          // (reveals on hover of the section header row). Stays
+                          // mounted (opacity only) so it's clickable + e2e-safe.
+                          "opacity-100 md:opacity-0 md:group-hover/tags-head:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+                        )}
                       >
                         <Plus className="size-4" aria-hidden />
                       </Button>

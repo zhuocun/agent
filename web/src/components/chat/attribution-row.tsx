@@ -140,9 +140,21 @@ export function AttributionRow({
           <span className="underline-offset-4 group-hover:underline">
             {servedModelLabel}
           </span>
+          {/* The chevron is secondary ornament — it advertises that the row
+              expands, but the model label + cost (the transparency summary)
+              carry the meaning at rest. So it follows the sanctioned
+              hover/focus disclosure idiom: hidden on desktop until the message
+              is hovered or anything inside it is focused, always-on on touch.
+              The whole trigger stays clickable regardless; only the chevron
+              stops painting at rest. The popup-open rotate is preserved for
+              when the row is expanded. */}
           <ChevronDown
             aria-hidden
-            className="size-3.5 opacity-70 transition-transform data-[popup-open]:rotate-180"
+            className={cn(
+              "size-3.5 opacity-70 transition-[transform,opacity] data-[popup-open]:rotate-180",
+              "md:opacity-0 md:group-hover/msg:opacity-70 group-focus-visible:opacity-70 [@media(hover:none)]:opacity-70",
+              "data-[popup-open]:opacity-70",
+            )}
           />
           {Dot}
           <span className="font-mono tabular-nums">{costText}</span>

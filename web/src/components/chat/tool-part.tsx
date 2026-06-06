@@ -3,6 +3,7 @@
 import {
   Check,
   CheckCircle2,
+  ChevronDown,
   CircleDashed,
   Loader2,
   ShieldCheck,
@@ -13,6 +14,11 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import type {
   MessagePart,
@@ -50,61 +56,128 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
     approvalState === "pending" &&
     onDecision !== undefined;
   const toolCallId = part.type === "tool_call" ? part.id : undefined;
+  // Settled tool runs carry no live info, so collapse their detail + pills
+  // behind a one-line summary (progressive disclosure) and let the user expand
+  // on a tap. `running` and `awaiting_approval` stay always-expanded: they
+  // carry live state and (for awaiting_approval) the approve/deny controls that
+  // must stay reachable, so collapsing them would regress the HITL flow.
+  const isTerminal =
+    status === "succeeded" || status === "failed" || status === "cancelled";
 
+  const outerClassName = cn(
+    "flex max-w-full items-start gap-2 rounded-md border px-3 py-2 text-sm",
+    destructive
+      ? "border-destructive/20 bg-destructive/5 text-destructive"
+      : "border-foreground/[0.06] bg-foreground/[0.02] text-muted-foreground",
+  );
+
+  // The summary line (icon + label + role + status word) is shared between the
+  // always-expanded layout and the collapsible trigger so the resting row reads
+  // identically in both modes.
+  const summaryRow = (
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <span className="truncate font-medium text-foreground">{label}</span>
+      <span className="text-xs text-muted-foreground">
+        {isResult ? "result" : "tool call"}
+      </span>
+      <StatusPill status={status} />
+      {approvalState !== "not_required" ? (
+        <ApprovalPill state={approvalState} />
+      ) : null}
+    </div>
+  );
+
+  const detailBody = (
+    <>
+      {detail ? (
+        <p className="mt-1 line-clamp-2 break-words text-xs leading-snug text-muted-foreground">
+          {detail}
+        </p>
+      ) : null}
+      {showApprovalControls && toolCallId ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => onDecision({ toolCallId, decision: "approve" })}
+            data-testid="tool-approve"
+            className="rounded-full"
+          >
+            <Check aria-hidden />
+            <span>Approve</span>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onDecision({ toolCallId, decision: "deny" })}
+            data-testid="tool-deny"
+            className="rounded-full"
+          >
+            <X aria-hidden />
+            <span>Deny</span>
+          </Button>
+        </div>
+      ) : null}
+    </>
+  );
+
+  // Live (running / awaiting_approval) states render fully expanded so their
+  // detail and approve/deny controls are always reachable.
+  if (!isTerminal) {
+    return (
+      <div data-testid={isResult ? "tool-result-part" : "tool-call-part"} className={outerClassName}>
+        <StatusIcon status={status} destructive={destructive} />
+        <div className="min-w-0 flex-1">
+          {summaryRow}
+          {detailBody}
+        </div>
+      </div>
+    );
+  }
+
+  // Settled states collapse the detail behind the summary. The trigger reuses
+  // the summary row and adds a chevron; clicking it expands the detail. The
+  // panel height/opacity tween on the iOS "smooth" curve; reduced-motion users
+  // get the instant collapse — globals.css zeroes the transition on
+  // `[data-slot="collapsible-content"]` (the panel primitive carries that slot)
+  // under `prefers-reduced-motion`, and the chevron rotation degrades via
+  // `motion-reduce:transition-none`.
   return (
-    <div
+    <Collapsible
       data-testid={isResult ? "tool-result-part" : "tool-call-part"}
-      className={cn(
-        "flex max-w-full items-start gap-2 rounded-md border px-3 py-2 text-sm",
-        destructive
-          ? "border-destructive/20 bg-destructive/5 text-destructive"
-          : "border-foreground/[0.06] bg-foreground/[0.02] text-muted-foreground",
-      )}
+      className={outerClassName}
     >
       <StatusIcon status={status} destructive={destructive} />
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <span className="truncate font-medium text-foreground">{label}</span>
-          <span className="text-xs text-muted-foreground">
-            {isResult ? "result" : "tool call"}
-          </span>
-          <StatusPill status={status} />
-          {approvalState !== "not_required" ? (
-            <ApprovalPill state={approvalState} />
-          ) : null}
-        </div>
-        {detail ? (
-          <p className="mt-1 line-clamp-2 break-words text-xs leading-snug text-muted-foreground">
-            {detail}
-          </p>
-        ) : null}
-        {showApprovalControls && toolCallId ? (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => onDecision({ toolCallId, decision: "approve" })}
-              data-testid="tool-approve"
-              className="rounded-full"
-            >
-              <Check aria-hidden />
-              <span>Approve</span>
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => onDecision({ toolCallId, decision: "deny" })}
-              data-testid="tool-deny"
-              className="rounded-full"
-            >
-              <X aria-hidden />
-              <span>Deny</span>
-            </Button>
-          </div>
-        ) : null}
+        <CollapsibleTrigger
+          className={cn(
+            "group/tool-trigger flex w-full min-w-0 items-center gap-1.5 text-left",
+            "bg-transparent outline-none",
+            "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+          )}
+          aria-label={`${label}, ${statusLabel(status)} — show details`}
+        >
+          {summaryRow}
+          <ChevronDown
+            aria-hidden
+            className="ml-auto size-3.5 shrink-0 transition-transform duration-300 ease-[var(--ease-ios-spring)] motion-reduce:transition-none group-data-[panel-open]/tool-trigger:rotate-180"
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent
+          keepMounted
+          className={cn(
+            "overflow-hidden",
+            "transition-[height,opacity] duration-200 ease-[var(--ease-ios-smooth)]",
+            "h-[var(--collapsible-panel-height)] opacity-100",
+            "data-[starting-style]:h-0 data-[starting-style]:opacity-0",
+            "data-[ending-style]:h-0 data-[ending-style]:opacity-0",
+          )}
+        >
+          {detailBody}
+        </CollapsibleContent>
       </div>
-    </div>
+    </Collapsible>
   );
 }
 

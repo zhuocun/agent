@@ -489,7 +489,7 @@ function ConversationRow({
             onRequestDelete(conversation);
             swipe.close();
           }}
-          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-destructive text-xs font-medium text-white transition-transform duration-100 touch-manipulation active:scale-[0.97]"
+          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-destructive text-xs font-medium text-destructive-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97]"
         >
           <Trash2 className="size-4" aria-hidden />
           <span>Delete</span>
@@ -2071,7 +2071,7 @@ export function Sidebar({
               // Solid native-destructive fill (not the soft tint the variant
               // uses elsewhere) so the primary commit action reads clearly; 44px
               // iOS touch target.
-              className="h-11 rounded-full bg-destructive px-6 text-white hover:bg-destructive/90 dark:bg-destructive dark:text-white dark:hover:bg-destructive/90"
+              className="h-11 rounded-full bg-destructive px-6 text-destructive-foreground hover:bg-destructive/90 dark:bg-destructive dark:text-destructive-foreground dark:hover:bg-destructive/90"
             >
               Delete
             </Button>
@@ -2166,7 +2166,7 @@ export function Sidebar({
               variant="destructive"
               onClick={confirmProjectDelete}
               data-testid="sidebar-project-delete-confirm"
-              className="h-11 rounded-full bg-destructive px-6 text-white hover:bg-destructive/90 dark:bg-destructive dark:text-white dark:hover:bg-destructive/90"
+              className="h-11 rounded-full bg-destructive px-6 text-destructive-foreground hover:bg-destructive/90 dark:bg-destructive dark:text-destructive-foreground dark:hover:bg-destructive/90"
             >
               Delete
             </Button>
@@ -2261,7 +2261,7 @@ export function Sidebar({
               variant="destructive"
               onClick={confirmTagDelete}
               data-testid="sidebar-tag-delete-confirm"
-              className="h-11 rounded-full bg-destructive px-6 text-white hover:bg-destructive/90 dark:bg-destructive dark:text-white dark:hover:bg-destructive/90"
+              className="h-11 rounded-full bg-destructive px-6 text-destructive-foreground hover:bg-destructive/90 dark:bg-destructive dark:text-destructive-foreground dark:hover:bg-destructive/90"
             >
               Delete
             </Button>

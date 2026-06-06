@@ -495,6 +495,10 @@ export function ChatThread() {
   const [authOpen, setAuthOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [isTemporary, setIsTemporary] = useState(false);
+  // Lifted from DegradedStatusBanner so the two top status pills can share one
+  // prioritized slot (degraded > temporary) instead of stacking into a
+  // multi-banner wall. The banner stays always-mounted and self-renders null.
+  const [degradedActive, setDegradedActive] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
   >(null);
@@ -3161,10 +3165,10 @@ export function ChatThread() {
                 jsonModeEnabled={jsonModeEnabled}
                 onToggleJsonMode={setJsonModeEnabled}
               />
-              {isTemporary ? (
+              {isTemporary && !degradedActive ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
               ) : null}
-              <DegradedStatusBanner />
+              <DegradedStatusBanner onActiveChange={setDegradedActive} />
             </div>
           </div>
 

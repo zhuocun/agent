@@ -505,7 +505,10 @@ test.describe("streaming", () => {
     await expect(page.getByTestId("user-message-text")).toHaveCount(1);
 
     // The Continue affordance is present on the stopped turn; Regenerate too.
-    const continueBtn = stopped.getByTestId("continue-turn");
+    // Both live behind the message "…" overflow menu now, which portals to body,
+    // so the item resolves via page.getByTestId rather than the message subtree.
+    await stopped.getByTestId("message-actions-overflow").click();
+    const continueBtn = page.getByTestId("continue-turn");
     await expect(continueBtn).toBeVisible();
     await continueBtn.click();
 

@@ -94,7 +94,9 @@ test.describe("prompt library + user-authored templates", () => {
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("template-dialog")).toHaveCount(0);
 
-    // Open the composer's template picker and choose the template.
+    // Open the composer's template picker and choose the template. The
+    // templates control lives behind the "More actions" (+) disclosure.
+    await page.getByTestId("composer-more-actions").click();
     await page.getByTestId("composer-templates").click();
     const picker = page.getByTestId("template-picker");
     await expect(picker).toBeVisible();

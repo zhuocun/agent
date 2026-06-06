@@ -72,8 +72,12 @@ test.describe("compare mode", () => {
       }
     });
 
-    // Enable compare mode.
+    // Enable compare mode. The toggle lives behind the composer "More actions"
+    // (+) disclosure; open it first, and close the popover afterward so it
+    // doesn't overlap the compare-tier-bar.
+    await page.getByTestId("composer-more-actions").click();
     await page.getByTestId("compare-toggle").click();
+    await page.keyboard.press("Escape");
     await expect(page.getByTestId("compare-toggle")).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -135,7 +139,9 @@ test.describe("compare mode", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
+    await page.getByTestId("composer-more-actions").click();
     await page.getByTestId("compare-toggle").click();
+    await page.keyboard.press("Escape");
     await expect(page.getByTestId("compare-tier-bar")).toBeVisible();
 
     // Open slot 0's picker. The anonymous (non-entitled) user can't use Pro, so
@@ -159,7 +165,9 @@ test.describe("compare mode", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
+    await page.getByTestId("composer-more-actions").click();
     await page.getByTestId("compare-toggle").click();
+    await page.keyboard.press("Escape");
     await pickCompareTier(page, 0, "Fast");
     await pickCompareTier(page, 1, "Smart");
 

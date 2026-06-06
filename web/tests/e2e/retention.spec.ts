@@ -28,10 +28,12 @@ test.describe("per-conversation retention", () => {
     const row = page.locator(`[data-conversation-id="${convoId}"]`);
     await expect(row).toBeVisible();
 
-    // Open the row's kebab, then the Retention submenu. Clicking the submenu
-    // trigger opens it (base-ui submenus don't toggle-close on click when
-    // open-on-hover is enabled); wait for a radio item to confirm it's open.
+    // Open the row's kebab, then the "Organize…" submenu (config items moved
+    // under it), then the Retention submenu. Clicking the submenu trigger opens
+    // it (base-ui submenus don't toggle-close on click when open-on-hover is
+    // enabled); wait for a radio item to confirm it's open.
     await row.getByRole("button", { name: "Conversation actions" }).click();
+    await page.getByTestId("sidebar-conversation-organize").click();
     await page.getByTestId("sidebar-conversation-retention").click();
     const thirtyDays = page.getByRole("menuitemradio", { name: "30 days" });
     await expect(thirtyDays).toBeVisible();

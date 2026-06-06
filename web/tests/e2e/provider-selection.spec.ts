@@ -201,7 +201,11 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
+    // Attach now lives behind the composer's "More actions" (+) disclosure; open
+    // it to assert the provider's attachment capability, then close it again.
+    await page.getByTestId("composer-more-actions").click();
     await expect(page.getByRole("button", { name: "Attach file" })).toBeVisible();
+    await page.keyboard.press("Escape");
 
     await page.getByTestId("model-mode-trigger").click();
     await page.getByTestId("web-search-toggle").click();
@@ -212,7 +216,11 @@ test.describe("provider selection", () => {
     await expect(page.getByText("Gemini", { exact: true })).toBeVisible();
     await page.getByText("OpenAI", { exact: true }).click();
 
+    // Switched to a provider without attachment support: Attach is gone from the
+    // disclosure too. Open it to assert absence, then close it.
+    await page.getByTestId("composer-more-actions").click();
     await expect(page.getByRole("button", { name: "Attach file" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
 
     await page.getByTestId("model-mode-trigger").click();
     await expect(page.getByTestId("web-search-toggle")).toHaveCount(0);

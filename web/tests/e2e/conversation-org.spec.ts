@@ -41,6 +41,9 @@ test.describe("conversation org v2", () => {
       (r) =>
         r.url() === `${BE_URL}/api/tags` && r.request().method() === "POST",
     );
+    // Projects + Tags now live inside the collapsed-by-default "Collections"
+    // disclosure; expand it before the first tags interaction.
+    await page.getByTestId("sidebar-collections-toggle").click();
     await page.getByTestId("sidebar-new-tag").click();
     const tagNameInput = page.getByTestId("sidebar-tag-name-input");
     await expect(tagNameInput).toBeVisible();
@@ -55,6 +58,8 @@ test.describe("conversation org v2", () => {
     const row = page.locator(`[data-conversation-id="${convoId}"]`);
     await expect(row).toBeVisible();
     await row.getByRole("button", { name: "Conversation actions" }).click();
+    // Config items moved under the kebab's "Organize…" submenu.
+    await page.getByTestId("sidebar-conversation-organize").click();
     await page.getByTestId("sidebar-conversation-assign-tags").click();
 
     const assignPatch = page.waitForResponse(
@@ -67,7 +72,10 @@ test.describe("conversation org v2", () => {
     expect(assignResponse.status()).toBe(200);
     expect((await assignResponse.json()).tagIds).toHaveLength(1);
 
-    // Close the still-open submenu (closeOnClick=false keeps it open).
+    // Close the still-open menus (closeOnClick=false keeps them open). Config
+    // items now sit one level deeper under "Organize…", so there are three open
+    // levels to dismiss: assign-tags submenu → Organize submenu → root kebab.
+    await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
@@ -232,6 +240,8 @@ test.describe("conversation org v2", () => {
       (r) =>
         r.url() === `${BE_URL}/api/tags` && r.request().method() === "POST",
     );
+    // Tags live inside the collapsed-by-default "Collections" disclosure.
+    await page.getByTestId("sidebar-collections-toggle").click();
     await page.getByTestId("sidebar-new-tag").click();
     await page.getByTestId("sidebar-tag-name-input").fill("Exported");
     await page.getByTestId("sidebar-tag-save").click();

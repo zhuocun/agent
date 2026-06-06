@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type JSX, type ReactNode } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Globe, Braces } from "lucide-react";
 
 import {
   Dialog,
@@ -18,7 +18,6 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
@@ -146,7 +145,15 @@ export function ModelModePicker({
     <>
       {/* Desktop: hover/click dropdown anchored to the trigger. Density-splits-
           by-input-modality (02-patterns §D) — hover does not exist on touch so
-          the mobile branch below renders a bottom sheet instead. */}
+          the mobile branch below renders a bottom sheet instead.
+
+          Redesign (00-principles §20/§91, 02-patterns §75-86): the surface is a
+          QUICK SWITCH, not a settings panel. Tier choice leads as the primary
+          group; every row collapses to a single scannable line (long copy is
+          shown only for the SELECTED tier, demoted everywhere else); group
+          headers + spacing replace full-bleed rules as the delineation lever.
+          Provider / Reasoning / Web search / JSON all stay directly visible and
+          clickable on open — none is behind a collapsed disclosure. */}
       <DropdownMenu>
         <DropdownMenuTrigger
           disabled={disabled}
@@ -164,63 +171,52 @@ export function ModelModePicker({
         <DropdownMenuContent
           align="start"
           sideOffset={8}
-          className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl"
+          className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl p-1.5"
         >
-          {showProviderPicker ? (
-            <>
-              <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-2xs font-semibold">
-                  Provider
-                </DropdownMenuLabel>
-                {providerOptions.map((p) => {
-                  const available = p.status === "available";
-                  return (
-                    <DropdownRow
-                      key={p.providerId}
-                      label={p.label}
-                      description={providerDescription(p)}
-                      selected={p.providerId === provider?.providerId}
-                      disabled={!available}
-                      onSelect={() => handleSelectProvider(p.providerId)}
-                    />
-                  );
-                })}
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-            </>
-          ) : null}
+          {/* Model tier — the primary decision, so it leads. Each row is one
+              tight line (label · model · price); the longer description renders
+              ONLY under the selected tier, in a quieter treatment. */}
           <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-2xs font-semibold">
-              Model
-            </DropdownMenuLabel>
+            <GroupHeading>Model</GroupHeading>
             {tiers.map((t) => (
-              <DropdownRow
+              <TierRow
                 key={t.id}
-                label={t.label}
-                description={t.description}
-                meta={tierMeta(t)}
+                tier={t}
                 badge={t.id === cheapestTierId ? "Cheapest" : undefined}
                 selected={t.id === selectedTierId}
                 onSelect={() => handleSelectTier(t.id)}
               />
             ))}
           </DropdownMenuGroup>
-          {dataPolicy ? (
-            <>
-              <DropdownMenuSeparator />
-              <DataPolicyRow policy={dataPolicy} />
-            </>
+
+          {showProviderPicker ? (
+            <DropdownMenuGroup className="mt-1">
+              <GroupHeading>Provider</GroupHeading>
+              {providerOptions.map((p) => {
+                const available = p.status === "available";
+                return (
+                  <CompactRow
+                    key={p.providerId}
+                    label={p.label}
+                    meta={providerDescription(p)}
+                    selected={p.providerId === provider?.providerId}
+                    disabled={!available}
+                    onSelect={() => handleSelectProvider(p.providerId)}
+                  />
+                );
+              })}
+            </DropdownMenuGroup>
           ) : null}
-          <DropdownMenuSeparator />
-          <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-2xs font-semibold">
-              Reasoning effort
-            </DropdownMenuLabel>
+
+          {dataPolicy ? <DataPolicyRow policy={dataPolicy} /> : null}
+
+          {/* Reasoning effort — always present; one compact line per row. */}
+          <DropdownMenuGroup className="mt-1">
+            <GroupHeading>Reasoning effort</GroupHeading>
             {efforts.map((e) => (
-              <DropdownRow
+              <CompactRow
                 key={e.id}
                 label={e.label}
-                description={e.description}
                 meta={effortMeta(e)}
                 selected={e.id === selectedEffortId}
                 disabled={!effortSupported}
@@ -228,73 +224,34 @@ export function ModelModePicker({
               />
             ))}
             {!effortSupported ? (
-              <p className="px-3 py-1.5 text-xs leading-snug text-muted-foreground">
+              <p className="px-2 pt-1 text-2xs leading-snug text-muted-foreground">
                 This model ignores reasoning effort.
               </p>
             ) : null}
           </DropdownMenuGroup>
-          {showWebSearch ? (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-2xs font-semibold">
-                  Web search
-                </DropdownMenuLabel>
-                {/* `closeOnClick={false}` keeps the menu open so toggling
-                    search on/off doesn't dismiss the picker mid-decision. The
-                    checkbox item exposes role="menuitemcheckbox"/aria-checked
-                    and renders its own check indicator on the right (so no
-                    inline glyph here — that would double the check). */}
-                <DropdownMenuCheckboxItem
-                  checked={searchEnabled}
-                  closeOnClick={false}
-                  onCheckedChange={(next) => onToggleSearch(next)}
-                  className="py-2"
-                  data-testid="web-search-toggle"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">
-                        {searchEnabled ? "On" : "Off"}
-                      </span>
-                    </div>
-                    <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
-                      Ground answers with a live web search.
-                    </p>
-                  </div>
-                </DropdownMenuCheckboxItem>
-              </DropdownMenuGroup>
-            </>
-          ) : null}
-          {/* JSON output is NOT tier-gated (unlike web search above) — every
-              tier accepts it, so this section always renders. */}
-          <DropdownMenuSeparator />
-          <DropdownMenuGroup>
-            <DropdownMenuLabel className="text-2xs font-semibold">
-              JSON output
-            </DropdownMenuLabel>
-            {/* Mirrors the web-search toggle: `closeOnClick={false}` keeps the
-                menu open across the flip, and the checkbox item exposes
-                role="menuitemcheckbox"/aria-checked with its own check
-                indicator (no inline glyph). */}
-            <DropdownMenuCheckboxItem
+
+          {/* Toggles — grouped, switch-like, immediately visible. Web search is
+              tier-gated; JSON output always renders. `closeOnClick={false}`
+              keeps the menu open across a flip so the state change is seen. */}
+          <DropdownMenuGroup className="mt-1.5">
+            {showWebSearch ? (
+              <ToggleRow
+                icon={Globe}
+                label="Web search"
+                description="Ground answers with a live web search."
+                checked={searchEnabled}
+                onToggle={onToggleSearch}
+                testId="web-search-toggle"
+              />
+            ) : null}
+            <ToggleRow
+              icon={Braces}
+              label="JSON output"
+              description="Ask the model to reply with a JSON object."
               checked={jsonModeEnabled}
-              closeOnClick={false}
-              onCheckedChange={(next) => onToggleJsonMode(next)}
-              className="py-2"
-              data-testid="json-mode-toggle"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium">
-                    {jsonModeEnabled ? "On" : "Off"}
-                  </span>
-                </div>
-                <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
-                  Ask the model to reply with a JSON object.
-                </p>
-              </div>
-            </DropdownMenuCheckboxItem>
+              onToggle={onToggleJsonMode}
+              testId="json-mode-toggle"
+            />
           </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -308,11 +265,8 @@ export function ModelModePicker({
           and a 80dvh cap (vs the shell's 90dvh) so the sheet sits a touch lower.
           We re-state the shell's safe-area `pb` explicitly because a bare `p-4`
           shorthand would twMerge-clobber it and drop the last row under the home
-          indicator; `sm:p-6` then restores even padding on the desktop modal. The
-          old `top-auto bottom-0 translate-*-0 rounded-t-3xl rounded-b-none`
-          overrides just re-stated the shell's own geometry — dropping them lets
-          the picker inherit the shell's clean grabber + swipe path. Each row
-          still meets the PRD 06 §3.3 44px touch floor. */}
+          indicator; `sm:p-6` then restores even padding on the desktop modal.
+          Each row still meets the PRD 06 §3.3 44px touch floor. */}
       <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
         <DialogTrigger
           disabled={disabled}
@@ -335,6 +289,27 @@ export function ModelModePicker({
             </DialogDescription>
           </DialogHeader>
           <div className="-mx-1 flex flex-col gap-4 overflow-y-auto">
+            {/* Tier leads on mobile too. The full description rides only on the
+                selected row; the rest carry the compact model · price meta. */}
+            <SheetSection title="Model">
+              {tiers.map((t) => {
+                const selected = t.id === selectedTierId;
+                return (
+                  <SheetRow
+                    key={t.id}
+                    label={t.label}
+                    description={
+                      selected
+                        ? [t.description, tierMeta(t)].filter(Boolean).join(" · ")
+                        : tierMeta(t)
+                    }
+                    badge={t.id === cheapestTierId ? "Cheapest" : undefined}
+                    selected={selected}
+                    onSelect={() => handleSelectTier(t.id)}
+                  />
+                );
+              })}
+            </SheetSection>
             {showProviderPicker ? (
               <SheetSection title="Provider">
                 {providerOptions.map((p) => {
@@ -352,20 +327,6 @@ export function ModelModePicker({
                 })}
               </SheetSection>
             ) : null}
-            <SheetSection title="Model">
-              {tiers.map((t) => (
-                <SheetRow
-                  key={t.id}
-                  label={t.label}
-                  description={[t.description, tierMeta(t)]
-                    .filter(Boolean)
-                    .join(" · ")}
-                  badge={t.id === cheapestTierId ? "Cheapest" : undefined}
-                  selected={t.id === selectedTierId}
-                  onSelect={() => handleSelectTier(t.id)}
-                />
-              ))}
-            </SheetSection>
             {dataPolicy ? (
               <SheetSection title="Data policy">
                 <li>
@@ -380,9 +341,7 @@ export function ModelModePicker({
                 <SheetRow
                   key={e.id}
                   label={e.label}
-                  description={[e.description, effortMeta(e)]
-                    .filter(Boolean)
-                    .join(" · ")}
+                  description={effortMeta(e) ?? ""}
                   selected={e.id === selectedEffortId}
                   disabled={!effortSupported}
                   onSelect={() => handleSelectEffort(e.id)}
@@ -426,19 +385,73 @@ export function ModelModePicker({
   );
 }
 
-function DropdownRow({
-  label,
-  description,
-  meta,
+// Group heading for the dropdown. A tight, quiet caption that delineates groups
+// via typographic hierarchy + spacing rather than full-bleed rules
+// (00-principles §20). Reuses the menu label primitive for role/semantics.
+function GroupHeading({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <DropdownMenuLabel className="px-2 pt-1 pb-0.5 text-2xs font-semibold tracking-wide text-muted-foreground uppercase">
+      {children}
+    </DropdownMenuLabel>
+  );
+}
+
+// The primary tier row: a single scannable line (label · model · price) with a
+// trailing check. The longer marketing `description` is revealed ONLY for the
+// selected tier, in a lighter caption — matching visual weight to the user's
+// current intent (02-patterns §75-86) instead of repeating prose on every row.
+function TierRow({
+  tier,
   badge,
+  selected,
+  onSelect,
+}: {
+  tier: ModelTier;
+  badge?: string;
+  selected: boolean;
+  onSelect: () => void;
+}): JSX.Element {
+  const meta = tierMeta(tier);
+  return (
+    <DropdownMenuItem
+      label={tier.label}
+      onClick={onSelect}
+      className="py-1.5"
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 font-medium">{tier.label}</span>
+          {meta ? (
+            <span className="min-w-0 truncate text-2xs text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
+              {meta}
+            </span>
+          ) : null}
+          {badge ? <ValueBadge label={badge} /> : null}
+          {selected ? (
+            <Check aria-hidden className="ml-auto size-4 shrink-0 text-foreground" />
+          ) : null}
+        </div>
+        {selected && tier.description ? (
+          <p className="mt-0.5 text-2xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+            {tier.description}
+          </p>
+        ) : null}
+      </div>
+    </DropdownMenuItem>
+  );
+}
+
+// A secondary single-line row (Provider / Reasoning effort): label on the left,
+// a compact muted meta clause, trailing check. No wrapped description block.
+function CompactRow({
+  label,
+  meta,
   selected,
   disabled,
   onSelect,
 }: {
   label: string;
-  description: string;
   meta?: string;
-  badge?: string;
   selected: boolean;
   disabled?: boolean;
   onSelect: () => void;
@@ -448,37 +461,73 @@ function DropdownRow({
       label={label}
       onClick={onSelect}
       disabled={disabled}
-      className="py-2"
+      className="py-1.5"
     >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate font-medium">{label}</span>
-          {badge ? <ValueBadge label={badge} /> : null}
-          {selected ? (
-            <Check aria-hidden className="ml-auto size-4 text-foreground" />
-          ) : null}
-        </div>
-        <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
-          {description}
-        </p>
-        {meta ? (
-          <p className="mt-0.5 truncate text-2xs leading-snug text-muted-foreground/80 group-focus/dropdown-menu-item:text-accent-foreground/70">
-            {meta}
-          </p>
-        ) : null}
-      </div>
+      <span className="shrink-0 font-medium">{label}</span>
+      {meta ? (
+        <span className="min-w-0 truncate text-2xs text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
+          {meta}
+        </span>
+      ) : null}
+      {selected ? (
+        <Check aria-hidden className="ml-auto size-4 shrink-0 text-foreground" />
+      ) : null}
     </DropdownMenuItem>
   );
 }
 
+// Switch-like toggle row for Web search / JSON output. `closeOnClick={false}`
+// keeps the menu open so the on/off flip is visible mid-decision; the checkbox
+// item exposes role="menuitemcheckbox"/aria-checked and renders its own check
+// indicator on the right. A leading Lucide icon (currentColor) anchors the row;
+// the compact On/Off state sits inline so the row stays a single line.
+function ToggleRow({
+  icon: Icon,
+  label,
+  description,
+  checked,
+  onToggle,
+  testId,
+}: {
+  icon: typeof Globe;
+  label: string;
+  description: string;
+  checked: boolean;
+  onToggle: (next: boolean) => void;
+  testId: string;
+}): JSX.Element {
+  return (
+    <DropdownMenuCheckboxItem
+      checked={checked}
+      closeOnClick={false}
+      onCheckedChange={(next) => onToggle(next)}
+      className="py-1.5"
+      data-testid={testId}
+      aria-label={`${label}: ${checked ? "on" : "off"}`}
+    >
+      <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="font-medium">{label}</span>
+          <span className="text-2xs text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
+            {checked ? "On" : "Off"}
+          </span>
+        </div>
+        <p className="truncate text-2xs leading-snug text-muted-foreground">
+          {description}
+        </p>
+      </div>
+    </DropdownMenuCheckboxItem>
+  );
+}
+
+// Data policy line for the dropdown — display only. Sits inline (label + value)
+// rather than as its own boxed section so it reads as a quiet footnote.
 function DataPolicyRow({ policy }: { policy: ProviderDataPolicy }): JSX.Element {
   return (
-    <div className="px-3 py-2">
-      <p className="text-2xs font-semibold text-muted-foreground">
-        Data policy
-      </p>
-      <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
-        {policy.policyLabel}
+    <div className="mt-1 px-2 py-1">
+      <p className="text-2xs leading-snug text-muted-foreground">
+        <span className="font-semibold">Data policy:</span> {policy.policyLabel}
       </p>
     </div>
   );
@@ -528,7 +577,7 @@ function SheetRow({
         aria-pressed={selected}
         data-testid={testId}
         className={cn(
-          "flex min-h-11 w-full items-start gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+          "flex min-h-11 w-full items-start gap-3 rounded-xl px-4 py-2.5 text-left transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           selected && "bg-foreground/[0.06]",
           disabled && "cursor-not-allowed opacity-50",
         )}
@@ -540,9 +589,11 @@ function SheetRow({
             </span>
             {badge ? <ValueBadge label={badge} /> : null}
           </div>
-          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
-            {description}
-          </p>
+          {description ? (
+            <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+              {description}
+            </p>
+          ) : null}
         </div>
         {selected ? (
           <Check
@@ -562,7 +613,8 @@ function providerDescription(provider: ProviderTierOption): string {
 }
 
 // A subtle "Cheapest" (or similar) pill rendered next to a model row's label.
-// Purely informational — selection never changes on its own.
+// Purely informational — selection never changes on its own. STATIC chip (never
+// animated/pulsing, per 02-patterns §73).
 function ValueBadge({ label }: { label: string }): JSX.Element {
   return (
     <span className="shrink-0 rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-brand uppercase">

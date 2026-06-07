@@ -26,6 +26,13 @@ import { Popover } from "@base-ui/react/popover";
 
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  DialogTrigger,
+  useIsMobileSheet,
+} from "@/components/ui/dialog";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -42,6 +49,7 @@ import { MOCK_COMMANDS } from "@/lib/mock-data";
 import { estimateTurnCost } from "@/lib/cost-estimate";
 import { fetchPromptTemplates } from "@/lib/apiClient";
 import { useSpeechRecognition } from "@/lib/use-speech-recognition";
+import { haptic } from "@/lib/use-haptic";
 import type {
   AttachmentPart,
   ModelTier,
@@ -293,6 +301,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // state drives the disclosure in every state (there is no inline-at-rest
     // path any more).
     const [moreActionsOpen, setMoreActionsOpen] = useState(false);
+    // Below the `sm` breakpoint, the secondary cluster opens as a bottom sheet
+    // (matches every other modal surface in the app); desktop keeps the
+    // anchored popover behaviour.
+    const moreActionsAsSheet = useIsMobileSheet();
     const prevStreamingRef = useRef(isStreaming);
     const supportsAttachmentsRef = useRef(supportsAttachments);
     const supportsVisionRef = useRef(supportsVision);
@@ -585,6 +597,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         return;
       if (pendingAttachmentReads > 0) return;
       if (attachments.length > 0 && !supportsAttachments) return;
+      haptic("selection");
       onSend(text, attachments);
       prevValueRef.current = "";
       setValue("");
@@ -1047,97 +1060,126 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               </Tooltip>
             ) : null}
             {hasCollapsibleControls ? (
-              <Popover.Root
-                open={moreActionsOpen}
-                onOpenChange={setMoreActionsOpen}
-              >
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Popover.Trigger
-                        render={
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            disabled={isStreaming}
-                            aria-label="More actions"
-                            aria-haspopup="dialog"
-                            data-testid="composer-more-actions"
-                            className={cn(
-                              "size-11 shrink-0 rounded-full p-0",
-                              moreActionsOpen
-                                ? "text-foreground"
-                                : "text-muted-foreground hover:text-foreground",
-                            )}
-                          >
-                            <Plus className="size-4 transition-transform duration-300 ease-ios-spring data-[popup-open]:rotate-45 motion-reduce:transition-none" />
-                          </Button>
-                        }
-                      />
-                    }
-                  />
-                  <TooltipContent>More actions</TooltipContent>
-                </Tooltip>
-                <Popover.Portal>
-                  <Popover.Positioner
-                    side="top"
-                    align="start"
-                    sideOffset={8}
-                    className="z-[60] outline-none"
+              (() => {
+                const moreActionsTrigger = (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={isStreaming}
+                    aria-label="More actions"
+                    aria-haspopup="dialog"
+                    data-testid="composer-more-actions"
+                    className={cn(
+                      "size-11 shrink-0 rounded-full p-0",
+                      moreActionsOpen
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
                   >
-                    <Popover.Popup
-                      // Small anchored actions popover. On mobile this sits in
-                      // the thumb zone just above the composer; each row keeps a
-                      // ≥44px target (size-11). Matches the attribution-row
-                      // glass + zoom/fade enter pattern; motion-reduce path is
-                      // provided by the global reduced-motion CSS for animate-in.
-                      className={cn(
-                        "glass-strong flex origin-(--transform-origin) flex-col gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] outline-none",
-                        "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
-                        "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-                      )}
-                    >
-                      {supportsAttachments ? (
-                        <div className="flex items-center gap-2">
-                          {attachButton}
-                          <span className="pr-2 text-sm text-foreground">
-                            Attach file
-                          </span>
-                        </div>
-                      ) : null}
+                    <Plus className="size-4 transition-transform duration-300 ease-ios-spring data-[popup-open]:rotate-45 motion-reduce:transition-none" />
+                  </Button>
+                );
+                const moreActionsRows = (
+                  <>
+                    {supportsAttachments ? (
                       <div className="flex items-center gap-2">
-                        {templatesButton}
+                        {attachButton}
                         <span className="pr-2 text-sm text-foreground">
-                          Prompt template
+                          Attach file
                         </span>
                       </div>
-                      {keepDictateInline ? null : (
-                        <div className="flex items-center gap-2">
-                          {dictateButton}
-                          <span className="flex flex-col pr-2 text-left">
-                            <span className="text-sm text-foreground">
-                              {!dictation.supported
-                                ? "Dictation unavailable"
-                                : "Dictate"}
-                            </span>
-                            {/* On-device transparency (carried over from the
-                                former inline-mic tooltip): state that the
-                                browser/device does the work, never a
-                                provider/model. Always visible in the open row —
-                                strictly better than a hover-only tooltip for
-                                touch + AT. */}
-                            {dictation.supported ? (
-                              <span className="text-2xs text-muted-foreground">
-                                Voice is processed on your device by your browser
-                              </span>
-                            ) : null}
+                    ) : null}
+                    <div className="flex items-center gap-2">
+                      {templatesButton}
+                      <span className="pr-2 text-sm text-foreground">
+                        Prompt template
+                      </span>
+                    </div>
+                    {keepDictateInline ? null : (
+                      <div className="flex items-center gap-2">
+                        {dictateButton}
+                        <span className="flex flex-col pr-2 text-left">
+                          <span className="text-sm text-foreground">
+                            {!dictation.supported
+                              ? "Dictation unavailable"
+                              : "Dictate"}
                           </span>
+                          {/* On-device transparency (carried over from the
+                              former inline-mic tooltip): state that the
+                              browser/device does the work, never a
+                              provider/model. Always visible in the open row —
+                              strictly better than a hover-only tooltip for
+                              touch + AT. */}
+                          {dictation.supported ? (
+                            <span className="text-2xs text-muted-foreground">
+                              Voice is processed on your device by your browser
+                            </span>
+                          ) : null}
+                        </span>
+                      </div>
+                    )}
+                  </>
+                );
+                if (moreActionsAsSheet) {
+                  // Mobile: present as the same bottom-sheet pattern every other
+                  // modal surface uses, so the disclosure lives in the thumb
+                  // zone with a full-width slide-up + swipe-to-dismiss.
+                  return (
+                    <Dialog
+                      open={moreActionsOpen}
+                      onOpenChange={setMoreActionsOpen}
+                    >
+                      <DialogTrigger render={moreActionsTrigger} />
+                      <DialogContent
+                        showCloseButton={false}
+                        className="gap-2 p-4 pb-[max(env(safe-area-inset-bottom),1rem)]"
+                      >
+                        <DialogTitle className="sr-only">
+                          More actions
+                        </DialogTitle>
+                        <div className="flex flex-col gap-1">
+                          {moreActionsRows}
                         </div>
-                      )}
-                    </Popover.Popup>
-                  </Popover.Positioner>
-                </Popover.Portal>
-              </Popover.Root>
+                      </DialogContent>
+                    </Dialog>
+                  );
+                }
+                return (
+                  <Popover.Root
+                    open={moreActionsOpen}
+                    onOpenChange={setMoreActionsOpen}
+                  >
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={<Popover.Trigger render={moreActionsTrigger} />}
+                      />
+                      <TooltipContent>More actions</TooltipContent>
+                    </Tooltip>
+                    <Popover.Portal>
+                      <Popover.Positioner
+                        side="top"
+                        align="start"
+                        sideOffset={8}
+                        className="z-[60] outline-none"
+                      >
+                        <Popover.Popup
+                          // Small anchored actions popover (desktop only on the
+                          // sm+ breakpoint). Matches the attribution-row glass
+                          // + zoom/fade enter; motion-reduce path is provided
+                          // by the global reduced-motion CSS for animate-in.
+                          className={cn(
+                            "glass-strong flex origin-(--transform-origin) flex-col gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] outline-none",
+                            "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
+                            "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+                          )}
+                        >
+                          {moreActionsRows}
+                        </Popover.Popup>
+                      </Popover.Positioner>
+                    </Popover.Portal>
+                  </Popover.Root>
+                );
+              })()
             ) : null}
           </div>
           <label htmlFor="composer-input" className="sr-only">

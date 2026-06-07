@@ -132,6 +132,7 @@ test.describe("bootstrap", () => {
     await page.getByRole("menuitem", { name: "Settings" }).click();
 
     const dialog = page.getByRole("dialog", { name: "Settings" });
+    await dialog.getByTestId("custom-instructions-toggle").click();
     await dialog
       .getByLabel("Custom instructions", { exact: true })
       .fill("Always answer with concise bullets.");

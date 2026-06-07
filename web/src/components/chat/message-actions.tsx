@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -67,6 +67,22 @@ interface MessageActionsProps {
   onFeedback?: (next: Feedback) => void;
 }
 
+// SSR-safe `(hover: none)` detector. Used to collapse the inline toolbar to
+// Copy + "…" on touch devices (iOS-native progressive disclosure) while
+// preserving the full inline toolbar on hover-capable pointers (desktop).
+function useIsTouchDevice(): boolean {
+  const [touch, setTouch] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(hover: none)");
+    const sync = () => setTouch(mq.matches);
+    sync();
+    mq.addEventListener?.("change", sync);
+    return () => mq.removeEventListener?.("change", sync);
+  }, []);
+  return touch;
+}
+
 // Legacy clipboard fallback for insecure origins / denied permission, where
 // `navigator.clipboard` is unavailable. Selects an off-screen textarea and
 // runs `document.execCommand("copy")`. Returns whether the copy succeeded.
@@ -107,6 +123,11 @@ export function MessageActions({
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const speech = useSpeechSynthesis();
+  // Touch surfaces fold Regenerate + the two ratings into the overflow so the
+  // inline strip is just Copy + "…" (max 2 hit-targets per iOS-native chat
+  // convention). Hover surfaces keep the full inline toolbar so a mouse can
+  // single-click the primary actions without opening a menu.
+  const isTouch = useIsTouchDevice();
 
   const handleCopy = async () => {
     const markCopied = () => {
@@ -163,27 +184,31 @@ export function MessageActions({
         )}
       </IconAction>
 
-      {canRegenerate ? (
+      {!isTouch && canRegenerate ? (
         <IconAction label="Regenerate" onClick={onRegenerate}>
           <RotateCcw className="size-4" />
         </IconAction>
       ) : null}
 
-      <IconAction
-        label="Helpful"
-        pressed={feedback === "up"}
-        onClick={() => onFeedback?.(feedback === "up" ? null : "up")}
-      >
-        <ThumbsUp className="size-4" />
-      </IconAction>
+      {!isTouch ? (
+        <>
+          <IconAction
+            label="Helpful"
+            pressed={feedback === "up"}
+            onClick={() => onFeedback?.(feedback === "up" ? null : "up")}
+          >
+            <ThumbsUp className="size-4" />
+          </IconAction>
 
-      <IconAction
-        label="Not helpful"
-        pressed={feedback === "down"}
-        onClick={() => onFeedback?.(feedback === "down" ? null : "down")}
-      >
-        <ThumbsDown className="size-4" />
-      </IconAction>
+          <IconAction
+            label="Not helpful"
+            pressed={feedback === "down"}
+            onClick={() => onFeedback?.(feedback === "down" ? null : "down")}
+          >
+            <ThumbsDown className="size-4" />
+          </IconAction>
+        </>
+      ) : null}
 
       <OverflowMenu
         text={text}
@@ -193,6 +218,19 @@ export function MessageActions({
         canBranch={canBranch}
         isBranching={isBranching}
         onBranch={onBranch}
+        // On touch the inline strip drops Regenerate + ratings; the menu picks
+        // them up so they remain reachable behind one tap on the always-shown
+        // "…" trigger.
+        touchPrimary={
+          isTouch
+            ? {
+                canRegenerate: !!canRegenerate,
+                onRegenerate,
+                feedback,
+                onFeedback,
+              }
+            : undefined
+        }
         modelChoice={
           hasModelChoice
             ? {
@@ -220,6 +258,7 @@ function OverflowMenu({
   canBranch,
   isBranching,
   onBranch,
+  touchPrimary,
   modelChoice,
 }: {
   text: string;
@@ -229,6 +268,15 @@ function OverflowMenu({
   canBranch?: boolean;
   isBranching?: boolean;
   onBranch?: () => void;
+  // Present only on touch: the inline strip dropped Regenerate + the ratings
+  // to fit two hit-targets, and they reappear here at the top of the menu so
+  // they stay one tap deep.
+  touchPrimary?: {
+    canRegenerate: boolean;
+    onRegenerate?: () => void;
+    feedback: Feedback;
+    onFeedback?: (next: Feedback) => void;
+  };
   modelChoice?: {
     onRegenerateWith: (tierId: ModelTierId, providerId?: string) => void;
     options: {
@@ -282,6 +330,57 @@ function OverflowMenu({
         sideOffset={8}
         className="w-60 max-w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl"
       >
+        {touchPrimary ? (
+          <DropdownMenuGroup>
+            {touchPrimary.canRegenerate ? (
+              <DropdownMenuItem
+                label="Regenerate"
+                aria-label="Regenerate"
+                onClick={touchPrimary.onRegenerate}
+                className="py-2"
+              >
+                <RotateCcw className="size-4" />
+                <span className="truncate font-medium">Regenerate</span>
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem
+              label="Helpful"
+              aria-label="Helpful"
+              aria-pressed={touchPrimary.feedback === "up"}
+              closeOnClick={false}
+              onClick={() =>
+                touchPrimary.onFeedback?.(
+                  touchPrimary.feedback === "up" ? null : "up",
+                )
+              }
+              className="py-2"
+            >
+              <ThumbsUp className="size-4" />
+              <span className="truncate font-medium">Helpful</span>
+              {touchPrimary.feedback === "up" ? (
+                <Check className="ml-auto size-4 text-success" aria-hidden />
+              ) : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              label="Not helpful"
+              aria-label="Not helpful"
+              aria-pressed={touchPrimary.feedback === "down"}
+              closeOnClick={false}
+              onClick={() =>
+                touchPrimary.onFeedback?.(
+                  touchPrimary.feedback === "down" ? null : "down",
+                )
+              }
+              className="py-2"
+            >
+              <ThumbsDown className="size-4" />
+              <span className="truncate font-medium">Not helpful</span>
+              {touchPrimary.feedback === "down" ? (
+                <Check className="ml-auto size-4 text-success" aria-hidden />
+              ) : null}
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+        ) : null}
         <DropdownMenuGroup>
           <DropdownMenuItem
             label={readAloudLabel}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Activity, AlertTriangle, Brain, CircleStop, Loader2, RotateCcw, SearchX } from "lucide-react";
 
@@ -168,6 +168,30 @@ export function AssistantMessage({
   // tracks the same set so AT users hear the bubble settle on any terminal.
   const isFinal = isDone || isStopped || isErrored;
 
+  // Tap-to-activate the message toolbar on touch surfaces. On hover-capable
+  // pointers we leave the desktop hover idiom alone (group-hover/msg reveals
+  // the toolbar), so the click handler is a no-op there to keep the existing
+  // behavior pixel-identical for desktop and avoid sticky-after-hover UX.
+  // Per-message local state keeps the wiring contained: tapping a different
+  // bubble simply activates that one without coordinating with siblings.
+  const [active, setActive] = useState(false);
+  const handleToggleActive = useCallback((e: React.MouseEvent) => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    if (!window.matchMedia("(hover: none)").matches) return;
+    const target = e.target as HTMLElement | null;
+    // Ignore taps that land on interactive children (toolbar buttons, links,
+    // tool-call controls, the dropdown trigger). Those run their own handler
+    // and shouldn't double-toggle the toolbar's visibility.
+    if (
+      target?.closest(
+        "button, a, [role='button'], [role='menuitem'], [role='menuitemcheckbox'], textarea, input, select, [contenteditable='true']",
+      )
+    ) {
+      return;
+    }
+    setActive((v) => !v);
+  }, []);
+
   return (
     <div
       className="group/msg space-y-3 break-words text-foreground"
@@ -179,6 +203,8 @@ export function AssistantMessage({
       // the in-flight turn without depending on the aria-label.
       data-testid="assistant-message"
       data-status={status}
+      data-active={active ? "true" : undefined}
+      onClick={handleToggleActive}
     >
       {showTyping ? <TypingIndicator /> : null}
 
@@ -270,7 +296,15 @@ export function AssistantMessage({
               {isStopped ? <StoppedChip /> : null}
             </div>
           ) : null}
-          <div className="flex flex-wrap items-center gap-2 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 [@media(hover:none)]:opacity-100">
+          {/* iOS-native progressive disclosure: the toolbar is hidden at rest
+              on every pointer (no more permanently-painted 5-icon strip on
+              touch). It reveals on focus-within (keyboard), on hover (desktop
+              mouse), or when the message is tapped active (touch). Kept as
+              an opacity-only transition — pointer-events stay auto so the
+              overflow button remains hit-testable by Playwright without a
+              prior synthetic hover, matching the desktop pattern before this
+              redesign. */}
+          <div className="flex flex-wrap items-center gap-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
             <MessageActions
               text={answerText}
               feedback={message.feedback ?? null}

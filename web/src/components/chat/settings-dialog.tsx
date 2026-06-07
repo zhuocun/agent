@@ -1399,17 +1399,28 @@ export function SettingsDialog({
 
           <Separator />
 
-          {/* Bring your own key — PRD 04 §5.2 / PRD 02 FR-6. Anonymous sessions
-              are gated inside ByokForm with a sign-in CTA. */}
-          <section className="space-y-3">
-            <SectionHeading>Bring your own key</SectionHeading>
-            <ByokForm
-              account={account}
-              preferences={preferences}
-              onAccountChange={onAccountChange}
-              onRequestSignIn={onRequestSignIn}
-            />
-          </section>
+          {/* BYOK is power-user territory — collapsed by default so the General
+              tab reads as account + workspace, not a key-management console. */}
+          <Collapsible className="space-y-3">
+            <CollapsibleTrigger
+              data-testid="byok-section-toggle"
+              className="flex w-full items-center gap-2 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+            >
+              <ChevronRight
+                aria-hidden
+                className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+              />
+              Bring your own key
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-3">
+              <ByokForm
+                account={account}
+                preferences={preferences}
+                onAccountChange={onAccountChange}
+                onRequestSignIn={onRequestSignIn}
+              />
+            </CollapsibleContent>
+          </Collapsible>
           </div>
 
           {/* ── Workspace ──────────────────────────────────────────────── */}
@@ -1476,29 +1487,36 @@ export function SettingsDialog({
                 />
               }
             />
-            <div className="space-y-2">
-              <label
-                htmlFor={customInstructionsId}
-                className="text-sm font-medium"
+            <Collapsible className="space-y-2">
+              <CollapsibleTrigger
+                data-testid="custom-instructions-toggle"
+                className="flex w-full items-center gap-2 text-left text-sm font-medium transition-colors hover:text-foreground"
               >
+                <ChevronRight
+                  aria-hidden
+                  className="size-3.5 shrink-0 text-muted-foreground transition-transform [[data-panel-open]_&]:rotate-90"
+                />
                 Custom instructions
-              </label>
-              <textarea
-                id={customInstructionsId}
-                value={customInstructionsDraft}
-                maxLength={CUSTOM_INSTRUCTIONS_LIMIT}
-                rows={5}
-                onChange={(event) =>
-                  setCustomInstructionsDraft(event.currentTarget.value)
-                }
-                onBlur={commitCustomInstructions}
-                className="min-h-28 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
-                placeholder="Preferred tone, formatting, and context for future chats"
-              />
-              <div className="text-right font-mono text-2xs tabular-nums text-muted-foreground">
-                {customInstructionsDraft.length}/{CUSTOM_INSTRUCTIONS_LIMIT}
-              </div>
-            </div>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-2">
+                <textarea
+                  id={customInstructionsId}
+                  aria-label="Custom instructions"
+                  value={customInstructionsDraft}
+                  maxLength={CUSTOM_INSTRUCTIONS_LIMIT}
+                  rows={5}
+                  onChange={(event) =>
+                    setCustomInstructionsDraft(event.currentTarget.value)
+                  }
+                  onBlur={commitCustomInstructions}
+                  className="min-h-28 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+                  placeholder="Preferred tone, formatting, and context for future chats"
+                />
+                <div className="text-right font-mono text-2xs tabular-nums text-muted-foreground">
+                  {customInstructionsDraft.length}/{CUSTOM_INSTRUCTIONS_LIMIT}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </section>
 
           {/* Projects/Spaces (D20). Per-project scoping of the wedge controls.

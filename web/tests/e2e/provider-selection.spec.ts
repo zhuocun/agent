@@ -307,8 +307,10 @@ test.describe("provider selection", () => {
       "data:text/plain;base64,",
     );
     await expect(page.getByText("Request only")).toBeVisible();
+    // The trigger at rest carries only the served model label; cost, BYOK
+    // and JSON metadata moved into the popover header.
     await expect(page.getByTestId("message-attribution")).toHaveText(
-      "DeepSeek V4 Flash·<$0.0001",
+      "DeepSeek V4 Flash",
     );
 
     await page.getByTestId("composer-file-input").setInputFiles({
@@ -606,6 +608,7 @@ test.describe("provider selection", () => {
         ).length,
       )
       .toBe(1);
+    await page.getByTestId("byok-section-toggle").click();
     await page.getByLabel("Provider").selectOption("openai");
     await page.getByLabel("API key").fill("sk-test-1234");
     await page.getByRole("button", { name: "Add key" }).click();

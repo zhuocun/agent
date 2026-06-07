@@ -364,9 +364,11 @@ test.describe("streaming", () => {
     await expect(answer).toContainText("ok", { timeout: 15_000 });
     await expect(answer).toContainText("items");
 
-    // (c) The "JSON" attribution chip appears on the assistant message (valid
-    // JSON → no "(invalid)" affordance).
-    const jsonChip = assistant.getByTestId("json-output-chip");
+    // (c) The "JSON" attribution chip appears in the attribution popover
+    // (valid JSON → no "(invalid)" affordance). The chip lives in the
+    // popover header now — open the attribution to surface it.
+    await assistant.getByTestId("message-attribution").click();
+    const jsonChip = page.getByTestId("json-output-chip");
     await expect(jsonChip).toBeVisible({ timeout: 15_000 });
     await expect(jsonChip).toContainText("JSON");
     await expect(jsonChip).not.toContainText("invalid");

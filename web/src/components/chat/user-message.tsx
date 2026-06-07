@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Check,
   Copy,
@@ -85,6 +85,25 @@ export function UserMessage({
   const [copyFailed, setCopyFailed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Tap-to-activate the message toolbar on touch surfaces (iOS-native
+  // progressive disclosure: the row is empty at rest, tap to reveal). Desktop
+  // keeps the hover idiom unchanged — the handler no-ops on hover-capable
+  // pointers so hovering away still hides the toolbar.
+  const [active, setActive] = useState(false);
+  const handleToggleActive = useCallback((e: React.MouseEvent) => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    if (!window.matchMedia("(hover: none)").matches) return;
+    const target = e.target as HTMLElement | null;
+    if (
+      target?.closest(
+        "button, a, [role='button'], [role='menuitem'], textarea, input, select, [contenteditable='true']",
+      )
+    ) {
+      return;
+    }
+    setActive((v) => !v);
+  }, []);
 
   const editable = !!onEdit && !!canEdit;
   const trimmed = draft.trim();
@@ -229,6 +248,8 @@ export function UserMessage({
       className="group/msg flex flex-col items-end gap-1"
       role="article"
       aria-label="You"
+      data-active={active ? "true" : undefined}
+      onClick={handleToggleActive}
     >
       {/* The user's bubble is a flat, faint brand-tinted wash, not a raised
           glass object: `bg-brand-muted` (themed light/dark) is the user's
@@ -271,7 +292,12 @@ export function UserMessage({
           </div>
         ) : null}
       </div>
-      <div className="opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 [@media(hover:none)]:opacity-100">
+      {/* Toolbar hides at rest on every pointer (matches the assistant row's
+          iOS-native progressive disclosure). Reveals on focus-within
+          (keyboard), on hover (desktop mouse), or when the bubble is tapped
+          active (touch). Opacity-only — pointer-events stay auto so the
+          actions remain hit-testable without a prior synthetic hover. */}
+      <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
         <Tooltip>
           <TooltipTrigger
             render={

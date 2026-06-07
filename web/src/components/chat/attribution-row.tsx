@@ -49,9 +49,9 @@ function assertServedTier(id: ModelTierId): ServedTierId {
   return id;
 }
 
-// Bare interpunct used between byline segments. Local to the trigger so we
-// don't ship a one-character component, but extracted so the markup reads as
-// typography rather than a chain of repeated spans.
+// Bare interpunct used between byline segments. Local to the popover header so
+// we don't ship a one-character component, but extracted so the markup reads
+// as typography rather than a chain of repeated spans.
 const Dot = (
   <span aria-hidden className="text-muted-foreground/60">
     ·
@@ -82,11 +82,10 @@ export function AttributionRow({
     ? `Your ${providerLabel} key`
     : "Your API key";
 
-  // Brief: byline reads as typography, not a stack of chips. Substitution
-  // collapses into a leading muted clause ("substituted from Pro: …"). The
-  // visible identity stays intentionally compact: one served model label plus
-  // cost. Provider/tier details remain in the accessible label and full
-  // attribution payload without repeating model-ish names in every message.
+  // Brief: at rest the trigger is one served model label plus a hover-revealed
+  // chevron. Cost, BYOK and JSON metadata move into the popover header so the
+  // byline reads as typography rather than a stack of chips. Substitution and
+  // anomaly clauses stay inline — they're user-facing alerts, not metadata.
   const substitutionPrefix = substitution
     ? `substituted from ${requestedTierLabelFor(attribution.requestedTierId)}: `
     : null;
@@ -140,14 +139,9 @@ export function AttributionRow({
           <span className="underline-offset-4 group-hover:underline">
             {servedModelLabel}
           </span>
-          {/* The chevron is secondary ornament — it advertises that the row
-              expands, but the model label + cost (the transparency summary)
-              carry the meaning at rest. So it follows the sanctioned
-              hover/focus disclosure idiom: hidden on desktop until the message
-              is hovered or anything inside it is focused, always-on on touch.
-              The whole trigger stays clickable regardless; only the chevron
-              stops painting at rest. The popup-open rotate is preserved for
-              when the row is expanded. */}
+          {/* Chevron advertises the expandable details. Hidden on desktop until
+              the message is hovered or anything inside it is focused; always
+              on for touch. The whole trigger stays clickable regardless. */}
           <ChevronDown
             aria-hidden
             className={cn(
@@ -156,8 +150,6 @@ export function AttributionRow({
               "data-[popup-open]:opacity-70",
             )}
           />
-          {Dot}
-          <span className="font-mono tabular-nums">{costText}</span>
         </Popover.Trigger>
 
         <Popover.Portal>
@@ -169,43 +161,58 @@ export function AttributionRow({
                 "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
               )}
             >
-              <CostBreakdownDetails attribution={attribution} />
+              <div className="space-y-2 p-3">
+                {/* Metadata header — the chip-y bits (cost, BYOK, JSON,
+                    provider/tier) live here so the byline at rest stays
+                    clean. Cost reads in monospace so it lines up like the
+                    breakdown rows below. */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    {servedModelLabel}
+                  </span>
+                  {providerLabel && providerLabel !== servedModelLabel ? (
+                    <>
+                      {Dot}
+                      <span>{providerLabel}</span>
+                    </>
+                  ) : null}
+                  {tierLabel !== servedModelLabel ? (
+                    <>
+                      {Dot}
+                      <span>{tierLabel}</span>
+                    </>
+                  ) : null}
+                  {Dot}
+                  <span className="font-mono tabular-nums">{costText}</span>
+                  {isByok ? (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground/80">
+                      <Key aria-hidden className="size-3" />
+                      <span>{byokLabel}</span>
+                    </span>
+                  ) : null}
+                  {showJsonChip ? (
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1",
+                        jsonInvalid ? "text-warning" : "text-muted-foreground/80",
+                      )}
+                      data-testid="json-output-chip"
+                    >
+                      {jsonInvalid ? (
+                        <TriangleAlert aria-hidden className="size-3" />
+                      ) : (
+                        <Braces aria-hidden className="size-3" />
+                      )}
+                      <span>{jsonInvalid ? "JSON (invalid)" : "JSON"}</span>
+                    </span>
+                  ) : null}
+                </div>
+                <CostBreakdownDetails attribution={attribution} />
+              </div>
             </Popover.Popup>
           </Popover.Positioner>
         </Popover.Portal>
       </Popover.Root>
-
-      {isByok ? (
-        // Rendered INLINE (Key glyph + muted text, no filled background) so the
-        // byline carries zero filled chrome at rest — matching the substitution
-        // clause's treatment. A lone filled pill next to a bare typographic line
-        // was the regression to avoid (Opp 4).
-        <span className="inline-flex items-center gap-1 text-muted-foreground/80">
-          <Key aria-hidden className="size-3" />
-          <span>{byokLabel}</span>
-        </span>
-      ) : null}
-
-      {showJsonChip ? (
-        // Rendered INLINE (glyph + muted text, no filled background) to match the
-        // BYOK/substitution treatment so the byline keeps zero filled chrome at
-        // rest. The invalid variant swaps to the warning glyph + tint and states
-        // "(invalid)" in text, so the failure reads without relying on color.
-        <span
-          className={cn(
-            "inline-flex items-center gap-1",
-            jsonInvalid ? "text-warning" : "text-muted-foreground/80",
-          )}
-          data-testid="json-output-chip"
-        >
-          {jsonInvalid ? (
-            <TriangleAlert aria-hidden className="size-3" />
-          ) : (
-            <Braces aria-hidden className="size-3" />
-          )}
-          <span>{jsonInvalid ? "JSON (invalid)" : "JSON"}</span>
-        </span>
-      ) : null}
     </div>
   );
 }

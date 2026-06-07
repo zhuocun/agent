@@ -596,7 +596,7 @@ function ConversationRow({
             </span>
             {assignedTags.length > 0 ? (
               <span
-                className="mt-1 flex flex-wrap gap-1"
+                className="mt-1 hidden flex-wrap gap-1 md:flex"
                 data-testid="sidebar-conversation-tags"
               >
                 {assignedTags.map((tag) => (

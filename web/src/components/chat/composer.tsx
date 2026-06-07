@@ -301,6 +301,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // state drives the disclosure in every state (there is no inline-at-rest
     // path any more).
     const [moreActionsOpen, setMoreActionsOpen] = useState(false);
+    const [isDesktop, setIsDesktop] = useState(false);
+    useEffect(() => {
+      if (typeof window === "undefined" || !window.matchMedia) return;
+      const mq = window.matchMedia("(min-width: 768px)");
+      const sync = () => setIsDesktop(mq.matches);
+      sync();
+      mq.addEventListener("change", sync);
+      return () => mq.removeEventListener("change", sync);
+    }, []);
     const prevStreamingRef = useRef(isStreaming);
     const supportsAttachmentsRef = useRef(supportsAttachments);
     const supportsVisionRef = useRef(supportsVision);
@@ -1164,7 +1173,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                           </span>
                         </div>
                       )}
-                      {compareButton ? (
+                      {compareButton && isDesktop ? (
                         <div className="flex items-center gap-2">
                           {compareButton}
                           <span className="pr-2 text-sm text-foreground">

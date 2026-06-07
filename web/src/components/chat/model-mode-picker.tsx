@@ -1,7 +1,13 @@
 "use client";
 
 import { useState, type JSX, type ReactNode } from "react";
-import { Check, ChevronDown, Globe, Braces } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Globe, Braces } from "lucide-react";
+
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 
 import {
   Dialog,
@@ -327,15 +333,6 @@ export function ModelModePicker({
                 })}
               </SheetSection>
             ) : null}
-            {dataPolicy ? (
-              <SheetSection title="Data policy">
-                <li>
-                  <p className="px-4 py-2 text-xs leading-snug text-muted-foreground">
-                    {dataPolicy.policyLabel}
-                  </p>
-                </li>
-              </SheetSection>
-            ) : null}
             <SheetSection title="Reasoning effort">
               {efforts.map((e) => (
                 <SheetRow
@@ -357,8 +354,6 @@ export function ModelModePicker({
             </SheetSection>
             {showWebSearch ? (
               <SheetSection title="Web search">
-                {/* Toggle stays in-sheet (no auto-dismiss) so the user can see
-                    the On/Off state flip before closing. */}
                 <SheetRow
                   label={searchEnabled ? "On" : "Off"}
                   description="Ground answers with a live web search."
@@ -368,16 +363,37 @@ export function ModelModePicker({
                 />
               </SheetSection>
             ) : null}
-            {/* JSON output isn't tier-gated, so this section always renders. */}
-            <SheetSection title="JSON output">
-              <SheetRow
-                label={jsonModeEnabled ? "On" : "Off"}
-                description="Ask the model to reply with a JSON object."
-                selected={jsonModeEnabled}
-                onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
-                testId="json-mode-toggle"
-              />
-            </SheetSection>
+            <Collapsible>
+                <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-foreground/[0.04]">
+                  <ChevronRight
+                    aria-hidden
+                    className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                  />
+                  Advanced
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="flex flex-col gap-4 pt-2">
+                    {dataPolicy ? (
+                      <SheetSection title="Data policy">
+                        <li>
+                          <p className="px-4 py-2 text-xs leading-snug text-muted-foreground">
+                            {dataPolicy.policyLabel}
+                          </p>
+                        </li>
+                      </SheetSection>
+                    ) : null}
+                    <SheetSection title="JSON output">
+                      <SheetRow
+                        label={jsonModeEnabled ? "On" : "Off"}
+                        description="Ask the model to reply with a JSON object."
+                        selected={jsonModeEnabled}
+                        onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
+                        testId="json-mode-toggle"
+                      />
+                    </SheetSection>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
           </div>
         </DialogContent>
       </Dialog>

@@ -128,7 +128,7 @@ export function WelcomeScreen({
                     <button
                       type="button"
                       onClick={() => onPromptSelect?.(s.prompt)}
-                      className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-sm leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
+                      className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
                       style={{ animationDelay: `${150 + index * 60}ms` }}
                     >
                       <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -146,7 +146,7 @@ export function WelcomeScreen({
                   <button
                     type="button"
                     onClick={() => onPromptSelect?.(label)}
-                    className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-sm leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
+                    className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
                     style={{ animationDelay: `${150 + index * 60}ms` }}
                   >
                     <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />

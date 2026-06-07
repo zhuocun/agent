@@ -208,6 +208,9 @@ test.describe("provider selection", () => {
     await page.keyboard.press("Escape");
 
     await page.getByTestId("model-mode-trigger").click();
+    // Provider + web search now live behind the "Advanced" collapsible
+    // (progressive disclosure); expand it before reaching either.
+    await page.getByTestId("picker-advanced").click();
     await page.getByTestId("web-search-toggle").click();
     await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
       "aria-checked",
@@ -315,6 +318,8 @@ test.describe("provider selection", () => {
     });
     await expect(page.getByText("draft.txt")).toBeVisible();
     await page.getByTestId("model-mode-trigger").click();
+    // Provider rows live behind "Advanced" (progressive disclosure).
+    await page.getByTestId("picker-advanced").click();
     await page.getByText("OpenAI", { exact: true }).click();
     await expect(
       page.getByText("Attachments were removed because the current model does not support files."),
@@ -410,6 +415,8 @@ test.describe("provider selection", () => {
     await waitForBootstrap(page);
 
     await page.getByTestId("model-mode-trigger").click();
+    // Provider rows live behind "Advanced" (progressive disclosure).
+    await page.getByTestId("picker-advanced").click();
     await page.getByText("OpenAI", { exact: true }).click();
     await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
 
@@ -472,6 +479,8 @@ test.describe("provider selection", () => {
     await waitForBootstrap(page);
 
     await page.getByTestId("model-mode-trigger").click();
+    // Provider rows live behind "Advanced" (progressive disclosure).
+    await page.getByTestId("picker-advanced").click();
     await page.getByText("OpenAI", { exact: true }).click();
     await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
 
@@ -623,6 +632,8 @@ test.describe("provider selection", () => {
 
     await page.keyboard.press("Escape");
     await page.getByTestId("model-mode-trigger").click();
+    // Provider rows live behind "Advanced" (progressive disclosure).
+    await page.getByTestId("picker-advanced").click();
     await expect(page.getByText("OpenAI", { exact: true })).toBeVisible();
   });
 
@@ -643,6 +654,13 @@ test.describe("provider selection", () => {
 
     await page.getByRole("button", { name: /Model Auto/ }).click();
     const dialog = page.getByRole("dialog");
+    // Provider now lives behind the "Advanced" collapsible on mobile too
+    // (progressive disclosure); expand it before asserting the provider rows.
+    // The mobile bottom sheet's swipe-to-dismiss (useSwipeDismiss) takes pointer
+    // capture on pointerdown, which suppresses Playwright's *synthesized* click
+    // on sheet-body buttons; dispatch the click directly so the collapsible's
+    // real handler runs (a real tap/click on a device generates it natively).
+    await dialog.getByTestId("picker-advanced").dispatchEvent("click");
     await expect(dialog).toContainText("Provider");
     await expect(dialog.getByText("OpenAI", { exact: true })).toBeVisible();
     await expect(dialog.getByText("Gemini", { exact: true })).toBeVisible();

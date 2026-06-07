@@ -12,7 +12,6 @@ import {
 } from "react";
 import {
   ArrowUp,
-  Columns2,
   FileText,
   Image as ImageIcon,
   Library,
@@ -77,15 +76,10 @@ interface ComposerProps {
   // the composer auto-removes only IMAGE attachments (PDFs/text stay) with a
   // clear notice. Defaults to true so callers that don't pass it are unaffected.
   supportsVision?: boolean;
-  // Compare-mode affordance. When `onToggleCompare` is provided the composer
-  // renders a "Compare" toggle next to the model controls; `compareEnabled`
-  // drives its pressed state. Left undefined on surfaces that don't offer
-  // compare (the toggle is simply absent).
-  compareEnabled?: boolean;
-  onToggleCompare?: () => void;
   // The provider-effective tier the next turn will use. When present (and not in
   // compare mode), the composer shows a muted pre-send cost/token estimate
   // computed from the live draft (Feature 2). Absent ⇒ no estimate line.
+  // Compare mode is toggled from the command palette, not the composer.
   estimateTier?: ModelTier;
 }
 
@@ -248,8 +242,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       sendOnEnter = true,
       supportsAttachments = false,
       supportsVision = true,
-      compareEnabled = false,
-      onToggleCompare,
       estimateTier,
     },
     forwardedRef,
@@ -295,21 +287,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     const [templateSelectedIndex, setTemplateSelectedIndex] = useState(0);
     const templateListboxId = useId();
     const templateOptionPrefix = useId();
-    // Disclosure for the secondary-control cluster (Attach / Templates / Dictate /
-    // Compare). The cluster ALWAYS lives behind this "More actions" ("+")
+    // Disclosure for the secondary-control cluster (Attach / Templates /
+    // Dictate). The cluster ALWAYS lives behind this "More actions" ("+")
     // popover — in BOTH the empty/at-rest and composing states — so this open
     // state drives the disclosure in every state (there is no inline-at-rest
     // path any more).
     const [moreActionsOpen, setMoreActionsOpen] = useState(false);
-    const [isDesktop, setIsDesktop] = useState(false);
-    useEffect(() => {
-      if (typeof window === "undefined" || !window.matchMedia) return;
-      const mq = window.matchMedia("(min-width: 768px)");
-      const sync = () => setIsDesktop(mq.matches);
-      sync();
-      mq.addEventListener("change", sync);
-      return () => mq.removeEventListener("change", sync);
-    }, []);
     const prevStreamingRef = useRef(isStreaming);
     const supportsAttachmentsRef = useRef(supportsAttachments);
     const supportsVisionRef = useRef(supportsVision);
@@ -704,7 +687,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       !attachmentReadPending;
 
     // Quiet-down disclosure (00-principles.md:9, 02-patterns.md:158-164): the
-    // secondary cluster (Attach / Templates / Dictate / Compare) ALWAYS lives
+    // secondary cluster (Attach / Templates / Dictate) ALWAYS lives
     // behind a single "More actions" ("+") disclosure so the composer reads as
     // `[+] [textarea] [Send]` in BOTH the empty/at-rest and composing states.
     // This is the architectural register of the redesign: the at-rest composer no
@@ -717,10 +700,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // mid-listen even when the rest of the cluster has folded away (constraint 4).
     const keepDictateInline = dictation.listening;
     // Whether the disclosure has anything left to host. Attach is gated by tier;
-    // Dictate may stay pinned inline while listening; Compare only exists when a
-    // handler is provided. Templates is always present.
-    const hasCollapsibleControls =
-      supportsAttachments || !keepDictateInline || Boolean(onToggleCompare);
+    // Dictate may stay pinned inline while listening. Templates is always
+    // present, so the disclosure is effectively always available.
+    const hasCollapsibleControls = supportsAttachments || !keepDictateInline;
 
     // ---- Secondary-control renderers ---------------------------------------
     // Each control is rendered inside the "More actions" disclosure popover (its
@@ -804,27 +786,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         />
       </Button>
     );
-
-    const compareButton = onToggleCompare ? (
-      <Button
-        type="button"
-        variant="ghost"
-        onClick={onToggleCompare}
-        // aria-pressed conveys the toggle state to AT; the brand tint
-        // gives sighted users the same "on" signal.
-        aria-pressed={compareEnabled}
-        aria-label="Compare two models"
-        data-testid="compare-toggle"
-        className={cn(
-          "size-11 shrink-0 rounded-full p-0",
-          compareEnabled
-            ? "text-brand hover:text-brand"
-            : "text-muted-foreground hover:text-foreground",
-        )}
-      >
-        <Columns2 className="size-4" />
-      </Button>
-    ) : null;
 
     // Pre-send cost/token estimate (Feature 2). Recomputed as the draft + the
     // selected tier change. Only shown once there's something to estimate; the
@@ -949,7 +910,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     };
 
     return (
-      <div className="relative mx-auto w-full max-w-3xl px-4 pt-1">
+      <div className="group/composer relative mx-auto w-full max-w-3xl px-4 pt-1">
         <SlashCommandsPopover
           open={slashOpen}
           commands={MOCK_COMMANDS}
@@ -1173,14 +1134,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                           </span>
                         </div>
                       )}
-                      {compareButton && isDesktop ? (
-                        <div className="flex items-center gap-2">
-                          {compareButton}
-                          <span className="pr-2 text-sm text-foreground">
-                            {compareEnabled ? "Exit compare" : "Compare models"}
-                          </span>
-                        </div>
-                      ) : null}
                     </Popover.Popup>
                   </Popover.Positioner>
                 </Popover.Portal>
@@ -1272,7 +1225,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         </div>
         {costEstimate ? (
           <p
-            className="mt-1 px-2 text-right text-2xs leading-snug tabular-nums text-muted-foreground/80"
+            // Calmer default: the estimate is hidden at rest on desktop and only
+            // fades in while the composer is focused. Touch devices (no hover)
+            // always show it since they have no persistent focus-within signal.
+            className={cn(
+              "mt-1 px-2 text-right text-2xs leading-snug tabular-nums text-muted-foreground/80",
+              "opacity-0 transition-opacity duration-300 group-focus-within/composer:opacity-100 [@media(hover:none)]:opacity-100",
+            )}
             data-testid="cost-estimate"
           >
             {costEstimate.usd === null ? (

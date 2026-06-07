@@ -23,6 +23,9 @@ async function openShortcutsDialog(page: import("@playwright/test").Page) {
   await expect(
     settings.getByRole("heading", { name: "Keyboard shortcuts" }),
   ).toBeVisible();
+  // Rebinding is read-only by default now — opt into editing via "Customize"
+  // before the per-row capture controls (shortcut-rebind-*) are rendered.
+  await settings.getByTestId("shortcuts-customize-toggle").click();
   return settings;
 }
 

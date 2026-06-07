@@ -27,6 +27,11 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { ByokForm } from "@/components/chat/byok-form";
 import { TierPicker } from "@/components/chat/tier-picker";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
@@ -891,75 +896,94 @@ function UsageDetails({
           </p>
         </div>
       </div>
-      <dl className="grid grid-cols-2 gap-2 text-xs">
-        <div>
-          <dt className="text-muted-foreground">Used</dt>
-          <dd className="mt-0.5 font-mono tabular-nums">
-            {budget.used.toLocaleString()}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Remaining</dt>
-          <dd
-            className={cn(
-              "mt-0.5 font-mono tabular-nums",
-              isExhausted
-                ? "text-destructive"
-                : isNearLimit
-                  ? "text-warning"
-                  : "text-foreground",
-            )}
-          >
-            {budget.remaining.toLocaleString()}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Limit</dt>
-          <dd className="mt-0.5 font-mono tabular-nums">
-            {budget.limit.toLocaleString()}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Period</dt>
-          <dd className="mt-0.5">{usage.periodLabel}</dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Spend</dt>
-          <dd className="mt-0.5 font-mono tabular-nums">
-            {formatUsd(usage.monthlySpendUsd)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Credits</dt>
-          <dd className="mt-0.5 font-mono tabular-nums">
-            {formatUsd(usage.creditBalanceUsd)}
-          </dd>
-        </div>
-      </dl>
-      {usage.recentLedgerEntries && usage.recentLedgerEntries.length > 0 ? (
-        <div className="space-y-1 border-t border-border/50 pt-2 text-xs">
-          {usage.recentLedgerEntries.slice(0, 3).map((entry) => (
-            <div key={entry.id} className="flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate text-muted-foreground">
-                {entry.description ?? ledgerEntryLabel(entry.entryType)}
-              </span>
-              <span
+      <Collapsible className="space-y-3">
+        <CollapsibleTrigger
+          data-testid="spending-details-toggle"
+          className="flex w-full items-center gap-2 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+        >
+          <ChevronRight
+            aria-hidden
+            className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+          />
+          Spending details
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-3">
+          <dl className="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <dt className="text-muted-foreground">Used</dt>
+              <dd className="mt-0.5 font-mono tabular-nums">
+                {budget.used.toLocaleString()}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Remaining</dt>
+              <dd
                 className={cn(
-                  "shrink-0 font-mono tabular-nums",
-                  entry.amountUsd < 0 ? "text-muted-foreground" : "text-foreground",
+                  "mt-0.5 font-mono tabular-nums",
+                  isExhausted
+                    ? "text-destructive"
+                    : isNearLimit
+                      ? "text-warning"
+                      : "text-foreground",
                 )}
               >
-                {formatUsd(entry.amountUsd)}
-              </span>
+                {budget.remaining.toLocaleString()}
+              </dd>
             </div>
-          ))}
-        </div>
-      ) : null}
-      <BudgetEditor usage={usage} onSaveBudget={onSaveBudget} />
-      <PerConversationBudgetEditor
-        value={perConversationBudgetUsd}
-        onSave={onSavePerConversationBudget}
-      />
+            <div>
+              <dt className="text-muted-foreground">Limit</dt>
+              <dd className="mt-0.5 font-mono tabular-nums">
+                {budget.limit.toLocaleString()}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Period</dt>
+              <dd className="mt-0.5">{usage.periodLabel}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Spend</dt>
+              <dd className="mt-0.5 font-mono tabular-nums">
+                {formatUsd(usage.monthlySpendUsd)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Credits</dt>
+              <dd className="mt-0.5 font-mono tabular-nums">
+                {formatUsd(usage.creditBalanceUsd)}
+              </dd>
+            </div>
+          </dl>
+          {usage.recentLedgerEntries && usage.recentLedgerEntries.length > 0 ? (
+            <div className="space-y-1 border-t border-border/50 pt-2 text-xs">
+              {usage.recentLedgerEntries.slice(0, 3).map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between gap-3"
+                >
+                  <span className="min-w-0 truncate text-muted-foreground">
+                    {entry.description ?? ledgerEntryLabel(entry.entryType)}
+                  </span>
+                  <span
+                    className={cn(
+                      "shrink-0 font-mono tabular-nums",
+                      entry.amountUsd < 0
+                        ? "text-muted-foreground"
+                        : "text-foreground",
+                    )}
+                  >
+                    {formatUsd(entry.amountUsd)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <BudgetEditor usage={usage} onSaveBudget={onSaveBudget} />
+          <PerConversationBudgetEditor
+            value={perConversationBudgetUsd}
+            onSave={onSavePerConversationBudget}
+          />
+        </CollapsibleContent>
+      </Collapsible>
       <div className="border-t border-border/50 pt-3">{spendDialog}</div>
     </div>
   );
@@ -1531,34 +1555,52 @@ export function SettingsDialog({
                 />
               }
             />
-            <SettingRow
-              label="Help improve Olune"
-              helper="Your conversations are never used to train models unless this is on."
-              htmlFor={trainingId}
-              control={
-                <Switch
-                  id={trainingId}
-                  checked={preferences.trainingOptIn}
-                  onCheckedChange={(checked) =>
-                    onPreferencesChange(mergePreferenceDraft({ trainingOptIn: checked }))
+            <Collapsible className="space-y-4">
+              <CollapsibleTrigger
+                data-testid="advanced-privacy-toggle"
+                className="flex w-full items-center gap-2 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+              >
+                <ChevronRight
+                  aria-hidden
+                  className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                />
+                Advanced privacy
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-4">
+                <SettingRow
+                  label="Help improve Olune"
+                  helper="Your conversations are never used to train models unless this is on."
+                  htmlFor={trainingId}
+                  control={
+                    <Switch
+                      id={trainingId}
+                      checked={preferences.trainingOptIn}
+                      onCheckedChange={(checked) =>
+                        onPreferencesChange(
+                          mergePreferenceDraft({ trainingOptIn: checked }),
+                        )
+                      }
+                    />
                   }
                 />
-              }
-            />
-            <SettingRow
-              label="Product telemetry"
-              helper="Share content-free usage events that help improve launch reliability."
-              htmlFor={telemetryId}
-              control={
-                <Switch
-                  id={telemetryId}
-                  checked={preferences.telemetryEnabled}
-                  onCheckedChange={(checked) =>
-                    onPreferencesChange(mergePreferenceDraft({ telemetryEnabled: checked }))
+                <SettingRow
+                  label="Product telemetry"
+                  helper="Share content-free usage events that help improve launch reliability."
+                  htmlFor={telemetryId}
+                  control={
+                    <Switch
+                      id={telemetryId}
+                      checked={preferences.telemetryEnabled}
+                      onCheckedChange={(checked) =>
+                        onPreferencesChange(
+                          mergePreferenceDraft({ telemetryEnabled: checked }),
+                        )
+                      }
+                    />
                   }
                 />
-              }
-            />
+              </CollapsibleContent>
+            </Collapsible>
           </section>
 
           <Separator />

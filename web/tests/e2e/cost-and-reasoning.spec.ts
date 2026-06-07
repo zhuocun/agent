@@ -215,6 +215,9 @@ test.describe("reasoning effort", () => {
     // cost/latency hint (REASONING_EFFORTS: Extended ⇒ cost high, latency slow).
     await page.getByTestId("model-mode-trigger").click();
     const menu = pickerMenu(page);
+    // Reasoning effort now lives behind the "Advanced" collapsible (progressive
+    // disclosure); expand it before the effort rows are reachable.
+    await menu.getByTestId("picker-advanced").click();
     await expect(
       menu.getByText("Cost high · Latency slow", { exact: true }),
     ).toBeVisible();
@@ -341,6 +344,10 @@ test.describe("monthly budget cap", () => {
     await page.getByRole("menuitem", { name: "Settings" }).click();
     const dialog = page.getByRole("dialog", { name: "Settings" });
     await expect(dialog).toBeVisible();
+
+    // The budget cap editor now lives behind the collapsed "Spending details"
+    // disclosure — expand it before interacting with the cap input.
+    await dialog.getByTestId("spending-details-toggle").click();
 
     const capInput = page.getByTestId("budget-cap-input");
     await capInput.fill("1");

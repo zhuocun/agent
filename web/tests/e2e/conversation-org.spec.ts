@@ -58,26 +58,25 @@ test.describe("conversation org v2", () => {
     const row = page.locator(`[data-conversation-id="${convoId}"]`);
     await expect(row).toBeVisible();
     await row.getByRole("button", { name: "Conversation actions" }).click();
-    // Config items moved under the kebab's "Organize…" submenu.
+    // "Organize…" now opens a flat dialog (no nested submenus); the "Assign
+    // tags" section lists checkbox toggle rows. Toggle "Work" on.
     await page.getByTestId("sidebar-conversation-organize").click();
-    await page.getByTestId("sidebar-conversation-assign-tags").click();
+    const tagsGroup = page.getByTestId("sidebar-conversation-assign-tags");
+    await expect(tagsGroup).toBeVisible();
 
     const assignPatch = page.waitForResponse(
       (r) =>
         r.url() === `${BE_URL}/api/conversations/${convoId}` &&
         r.request().method() === "PATCH",
     );
-    await page.getByRole("menuitem", { name: "Work" }).click();
+    await tagsGroup.getByRole("checkbox", { name: "Work" }).click();
     const assignResponse = await assignPatch;
     expect(assignResponse.status()).toBe(200);
     expect((await assignResponse.json()).tagIds).toHaveLength(1);
 
-    // Close the still-open menus (closeOnClick=false keeps them open). Config
-    // items now sit one level deeper under "Organize…", so there are three open
-    // levels to dismiss: assign-tags submenu → Organize submenu → root kebab.
+    // Close the organize dialog (toggling a tag leaves it open for multi-edits).
     await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
-    await page.keyboard.press("Escape");
+    await expect(tagsGroup).toHaveCount(0);
 
     // The conversation row shows a tag chip.
     await expect(

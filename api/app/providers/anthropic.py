@@ -25,6 +25,7 @@ from functools import lru_cache
 from typing import Any, cast
 
 import anthropic
+import structlog
 from anthropic import AsyncAnthropic
 
 from app.errors import AppError, ErrorEnvelope
@@ -46,6 +47,8 @@ from app.providers.protocol import (
 )
 from app.providers.steering import steer_user_text
 from app.search.protocol import SourceItem
+
+_log = structlog.get_logger(__name__)
 
 # Anthropic's server-side web-search tool (hosted; the model runs the search and
 # streams `server_tool_use` / `web_search_tool_result` content blocks back). We
@@ -191,6 +194,7 @@ def _safe_int(value: Any) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
+        _log.debug("usage.coerce_failed", value=repr(value))
         return 0
 
 
@@ -268,13 +272,13 @@ def _retry_after_ms(exc: anthropic.APIStatusError) -> int | None:
         try:
             return int(float(ms_header))
         except (TypeError, ValueError):
-            pass
+            _log.debug("retry_after.parse_failed", header="retry-after-ms", value=repr(ms_header))
     sec_header = headers.get("retry-after")
     if sec_header is not None:
         try:
             return int(float(sec_header) * 1000)
         except (TypeError, ValueError):
-            pass
+            _log.debug("retry_after.parse_failed", header="retry-after", value=repr(sec_header))
     return None
 
 

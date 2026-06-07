@@ -48,7 +48,6 @@ import {
   SettingsDialog,
   type SettingsTab,
 } from "@/components/chat/settings-dialog";
-import { HistorySearchDialog } from "@/components/chat/history-search-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
 import { AiDisclosure } from "@/components/chat/ai-disclosure";
@@ -508,7 +507,11 @@ export function ChatThread() {
   // "Memory used here" chip, the shortcuts hotkey) set this before opening.
   const [settingsInitialTab, setSettingsInitialTab] =
     useState<SettingsTab>("general");
-  const [searchOpen, setSearchOpen] = useState(false);
+  // Advanced history search is now folded into the command palette's filter
+  // mode (no separate dialog). When the host summons the palette for search —
+  // from the sidebar "Advanced search" affordance or the search-history
+  // shortcut — it flips this so the palette opens straight into filter mode.
+  const [paletteFilterMode, setPaletteFilterMode] = useState(false);
   // Quick-create surface summoned from the command palette ("New project" /
   // "New tag"). The sidebar owns its own inline create dialog; this is the
   // palette's equivalent entry point so those destinations are reachable from
@@ -2924,13 +2927,19 @@ export function ChatThread() {
   const runAction = (id: ShortcutId): void => {
     switch (id) {
       case "palette":
+        // Plain palette summon always lands in the default action/conversation
+        // listbox (never filter mode).
+        setPaletteFilterMode(false);
         setPaletteOpen((v) => !v);
         return;
       case "new-chat":
         handleNewChat();
         return;
       case "search-history":
-        setSearchOpen(true);
+        // Search history opens the palette straight into filter mode (the
+        // folded advanced history search) — no separate dialog.
+        setPaletteFilterMode(true);
+        setPaletteOpen(true);
         return;
       case "focus-composer":
         handleFocusComposer();
@@ -3200,7 +3209,10 @@ export function ChatThread() {
             searchResults={visibleConversationSearchResults}
             searchPending={conversationSearchPending}
             onSearchChange={setConversationSearch}
-            onOpenAdvancedSearch={() => setSearchOpen(true)}
+            onOpenAdvancedSearch={() => {
+              setPaletteFilterMode(true);
+              setPaletteOpen(true);
+            }}
             onSelect={handleSelectConversation}
             onNewChat={handleNewChat}
             onRenameConversation={handleRenameConversation}
@@ -3559,16 +3571,6 @@ export function ChatThread() {
         }}
       />
 
-      <HistorySearchDialog
-        open={searchOpen}
-        onOpenChange={setSearchOpen}
-        projects={projects}
-        // Org v2 ships the tag list in the same wave; feed the live tags so the
-        // dialog's tag filter is populated (it hides the control when empty).
-        tags={tags}
-        onSelectConversation={handleSelectConversation}
-      />
-
       <AuthDialog
         open={authOpen}
         onOpenChange={setAuthOpen}
@@ -3584,7 +3586,12 @@ export function ChatThread() {
 
       <CommandPalette
         open={paletteOpen}
-        onOpenChange={setPaletteOpen}
+        onOpenChange={(next) => {
+          setPaletteOpen(next);
+          // Reset the filter-mode intent on close so the next plain summon opens
+          // in the default listbox.
+          if (!next) setPaletteFilterMode(false);
+        }}
         actions={paletteActions}
         conversations={conversations}
         activeId={activeConversationId}
@@ -3592,6 +3599,7 @@ export function ChatThread() {
         // Filter-mode (folded advanced search) data sources.
         projects={projects}
         tags={tags}
+        openInFilterMode={paletteFilterMode}
       />
 
       {/* Quick-create surface for the palette's "New project" / "New tag"

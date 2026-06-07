@@ -54,8 +54,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -303,6 +301,11 @@ function ConversationRow({
 }): React.JSX.Element {
   const [isRenaming, setIsRenaming] = useState(false);
   const [draft, setDraft] = useState(conversation.title);
+  // M-flatten: the three low-frequency config controls (Retention, Assign to
+  // project, Assign tags) used to live in a 3-level nested kebab submenu. They
+  // now open a single shared Dialog (bottom sheet on mobile, centered modal on
+  // desktop) with three flat iOS inset-grouped sections.
+  const [organizeOpen, setOrganizeOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   // Blur fires on Escape (cancel), on Enter (submit-then-unmount synthetic
   // blur), and on click-away (submit). Track which exit path is in flight so
@@ -677,141 +680,21 @@ function ConversationRow({
             )}
             <span>{pinAction}</span>
           </DropdownMenuItem>
-          {/* M2: the three low-frequency config submenus (Retention, Assign
-              to project, Assign tags) are tiered one level deeper under a single
-              "Organize…" disclosure, so the kebab opens to a short frequent
-              list (Rename / Pin / Archive / Copy / Download / Delete) with one
-              extra step to reach the rarely-touched config. The inner
-              SubTriggers KEEP their original testids
-              (sidebar-conversation-retention / -assign-project / -assign-tags)
-              so the wire contract is unchanged — only an "Organize…" hop is
-              added in front of them. The whole group is hidden only when none of
-              its three controls is wired (retention is always present, so the
-              "Organize…" entry shows whenever the row kebab does). */}
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger
-              className="gap-2"
-              data-testid="sidebar-conversation-organize"
-            >
-              <SlidersHorizontal className="size-4" aria-hidden />
-              <span>Organize…</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="w-44">
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger
-                  className="gap-2"
-                  data-testid="sidebar-conversation-retention"
-                >
-                  <Timer className="size-4" aria-hidden />
-                  <span>Retention</span>
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuRadioGroup
-                    value={retentionKey(conversation.retentionDays)}
-                    onValueChange={(next) => {
-                      onSetRetention(
-                        conversation.id,
-                        next === "default" ? null : Number(next),
-                      );
-                    }}
-                  >
-                    {RETENTION_OPTIONS.map((option) => (
-                      <DropdownMenuRadioItem
-                        key={retentionKey(option.value)}
-                        value={retentionKey(option.value)}
-                      >
-                        {option.label}
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              {onAssignProject ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger
-                    className="gap-2"
-                    data-testid="sidebar-conversation-assign-project"
-                  >
-                    <Folder className="size-4" aria-hidden />
-                    <span>Assign to project</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent>
-                    <DropdownMenuRadioGroup
-                      // The wire `projectId` is nullable; round-trip `null`
-                      // ("No project") through base-ui's string RadioGroup with
-                      // the sentinel "none".
-                      value={conversation.projectId ?? "none"}
-                      onValueChange={(next) => {
-                        onAssignProject(
-                          conversation.id,
-                          next === "none" ? null : next,
-                        );
-                      }}
-                    >
-                      <DropdownMenuRadioItem value="none">
-                        No project
-                      </DropdownMenuRadioItem>
-                      {projects.map((project) => (
-                        <DropdownMenuRadioItem
-                          key={project.id}
-                          value={project.id}
-                        >
-                          {project.name}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
-              {onAssignTags && tags.length > 0 ? (
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger
-                    className="gap-2"
-                    data-testid="sidebar-conversation-assign-tags"
-                  >
-                    <Tags className="size-4" aria-hidden />
-                    <span>Assign tags</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent>
-                    {tags.map((tag) => {
-                      const isAssigned = assignedTagIds.has(tag.id);
-                      return (
-                        <DropdownMenuItem
-                          key={tag.id}
-                          label={tag.name}
-                          // Toggle this tag in/out of the conversation's set,
-                          // then send the FULL replacement set (the BE PATCH
-                          // replaces). closeOnClick=false keeps the submenu open
-                          // for multi-tag edits.
-                          closeOnClick={false}
-                          onClick={() => {
-                            const next = isAssigned
-                              ? (conversation.tagIds ?? []).filter(
-                                  (id) => id !== tag.id,
-                                )
-                              : [...(conversation.tagIds ?? []), tag.id];
-                            onAssignTags(conversation.id, next);
-                          }}
-                          className="gap-2"
-                          data-testid="sidebar-conversation-tag-option"
-                        >
-                          <span
-                            className="inline-flex size-4 shrink-0 items-center justify-center"
-                            aria-hidden
-                          >
-                            {isAssigned ? <Check className="size-4" /> : null}
-                          </span>
-                          <span className="min-w-0 flex-1 truncate">
-                            {tag.name}
-                          </span>
-                        </DropdownMenuItem>
-                      );
-                    })}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ) : null}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+          {/* M-flatten: the three low-frequency config controls (Retention,
+              Assign to project, Assign tags) used to live in a 3-level nested
+              submenu. They now open a single shared Dialog with three flat
+              iOS inset-grouped sections (rendered below the menu). The kebab
+              keeps just a short frequent list (Rename / Pin / Organize… /
+              Archive / Copy / Download / Delete). */}
+          <DropdownMenuItem
+            label="Organize…"
+            onClick={() => setOrganizeOpen(true)}
+            className="gap-2"
+            data-testid="sidebar-conversation-organize"
+          >
+            <SlidersHorizontal className="size-4" aria-hidden />
+            <span>Organize…</span>
+          </DropdownMenuItem>
           {onArchive ? (
             <DropdownMenuItem
               label={archived ? "Unarchive" : "Archive"}
@@ -855,6 +738,164 @@ function ConversationRow({
         </DropdownMenuContent>
       </DropdownMenu>
       </div>
+
+      {/* Flat "Organize…" sheet: replaces the former 3-level nested submenus.
+          Three iOS inset-grouped sections (Retention / Assign to project /
+          Assign tags), each a `glass-clear` card with hairline-separated rows.
+          The original e2e testids are preserved on the section group containers
+          + the tag rows so the wire contract is unchanged. */}
+      <Dialog open={organizeOpen} onOpenChange={setOrganizeOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Organize conversation</DialogTitle>
+            <DialogDescription className="truncate">
+              {conversation.title}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5">
+            {/* Retention */}
+            <section className="space-y-2">
+              <h3 className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                Retention
+              </h3>
+              <div
+                role="radiogroup"
+                aria-label="Retention"
+                className="glass-clear overflow-hidden rounded-2xl"
+                data-testid="sidebar-conversation-retention"
+              >
+                {RETENTION_OPTIONS.map((option, index) => {
+                  const selected =
+                    retentionKey(conversation.retentionDays) ===
+                    retentionKey(option.value);
+                  return (
+                    <button
+                      key={retentionKey(option.value)}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() =>
+                        onSetRetention(conversation.id, option.value)
+                      }
+                      className={cn(
+                        "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left text-sm outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                        index > 0 && "border-t border-border/60",
+                      )}
+                    >
+                      <span className="min-w-0 flex-1">{option.label}</span>
+                      {selected ? (
+                        <Check
+                          className="size-4 shrink-0 text-brand"
+                          aria-hidden
+                        />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* Assign to project */}
+            {onAssignProject ? (
+              <section className="space-y-2">
+                <h3 className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                  Assign to project
+                </h3>
+                <div
+                  role="radiogroup"
+                  aria-label="Assign to project"
+                  className="glass-clear overflow-hidden rounded-2xl"
+                  data-testid="sidebar-conversation-assign-project"
+                >
+                  {[{ id: "none", name: "No project" }, ...projects].map(
+                    (project, index) => {
+                      const value = project.id === "none" ? null : project.id;
+                      const selected =
+                        (conversation.projectId ?? null) === value;
+                      return (
+                        <button
+                          key={project.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          onClick={() =>
+                            onAssignProject(conversation.id, value)
+                          }
+                          className={cn(
+                            "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left text-sm outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                            index > 0 && "border-t border-border/60",
+                          )}
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {project.name}
+                          </span>
+                          {selected ? (
+                            <Check
+                              className="size-4 shrink-0 text-brand"
+                              aria-hidden
+                            />
+                          ) : null}
+                        </button>
+                      );
+                    },
+                  )}
+                </div>
+              </section>
+            ) : null}
+
+            {/* Assign tags */}
+            {onAssignTags && tags.length > 0 ? (
+              <section className="space-y-2">
+                <h3 className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                  Assign tags
+                </h3>
+                <div
+                  className="glass-clear overflow-hidden rounded-2xl"
+                  data-testid="sidebar-conversation-assign-tags"
+                >
+                  {tags.map((tag, index) => {
+                    const isAssigned = assignedTagIds.has(tag.id);
+                    return (
+                      <button
+                        key={tag.id}
+                        type="button"
+                        role="checkbox"
+                        aria-checked={isAssigned}
+                        // Toggle this tag in/out of the conversation's set, then
+                        // send the FULL replacement set (the BE PATCH replaces).
+                        onClick={() => {
+                          const next = isAssigned
+                            ? (conversation.tagIds ?? []).filter(
+                                (id) => id !== tag.id,
+                              )
+                            : [...(conversation.tagIds ?? []), tag.id];
+                          onAssignTags(conversation.id, next);
+                        }}
+                        className={cn(
+                          "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left text-sm outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                          index > 0 && "border-t border-border/60",
+                        )}
+                        data-testid="sidebar-conversation-tag-option"
+                      >
+                        <span className="min-w-0 flex-1 truncate">
+                          {tag.name}
+                        </span>
+                        {isAssigned ? (
+                          <Check
+                            className="size-4 shrink-0 text-brand"
+                            aria-hidden
+                          />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

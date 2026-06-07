@@ -28,14 +28,14 @@ test.describe("per-conversation retention", () => {
     const row = page.locator(`[data-conversation-id="${convoId}"]`);
     await expect(row).toBeVisible();
 
-    // Open the row's kebab, then the "Organize…" submenu (config items moved
-    // under it), then the Retention submenu. Clicking the submenu trigger opens
-    // it (base-ui submenus don't toggle-close on click when open-on-hover is
-    // enabled); wait for a radio item to confirm it's open.
+    // Open the row's kebab, then "Organize…" — which now opens a flat dialog
+    // (no nested submenus) with a Retention section. The retention radio rows are
+    // visible immediately; pick "30 days".
     await row.getByRole("button", { name: "Conversation actions" }).click();
     await page.getByTestId("sidebar-conversation-organize").click();
-    await page.getByTestId("sidebar-conversation-retention").click();
-    const thirtyDays = page.getByRole("menuitemradio", { name: "30 days" });
+    const retentionGroup = page.getByTestId("sidebar-conversation-retention");
+    await expect(retentionGroup).toBeVisible();
+    const thirtyDays = retentionGroup.getByRole("radio", { name: "30 days" });
     await expect(thirtyDays).toBeVisible();
 
     // Pick "30 days" and watch the PATCH in flight before asserting the UI.

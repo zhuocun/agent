@@ -55,10 +55,12 @@ test.describe("projects / spaces", () => {
     const row = page.locator(`[data-conversation-id="${convoId}"]`);
     await expect(row).toBeVisible();
     await row.getByRole("button", { name: "Conversation actions" }).click();
-    // Config items moved under the kebab's "Organize…" submenu.
+    // "Organize…" now opens a flat dialog (no nested submenus); the "Assign to
+    // project" section lists radio rows. Pick "Research".
     await page.getByTestId("sidebar-conversation-organize").click();
-    await page.getByTestId("sidebar-conversation-assign-project").click();
-    const projectItem = page.getByRole("menuitemradio", { name: "Research" });
+    const projectGroup = page.getByTestId("sidebar-conversation-assign-project");
+    await expect(projectGroup).toBeVisible();
+    const projectItem = projectGroup.getByRole("radio", { name: "Research" });
     await expect(projectItem).toBeVisible();
 
     const assignPatch = page.waitForResponse(
@@ -71,6 +73,11 @@ test.describe("projects / spaces", () => {
     expect(assignResponse.status()).toBe(200);
     const assignedProjectId = (await assignResponse.json()).projectId as string;
     expect(assignedProjectId).toBeTruthy();
+
+    // Close the organize dialog (a selection leaves it open) before touching the
+    // sidebar again.
+    await page.keyboard.press("Escape");
+    await expect(projectGroup).toHaveCount(0);
 
     // The conversation now renders grouped under the project (the project
     // section lists its filed conversations).

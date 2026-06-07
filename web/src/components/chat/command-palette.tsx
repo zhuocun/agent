@@ -65,6 +65,11 @@ export interface CommandPaletteProps {
   // palette degrades to action+conversation search if a host doesn't wire them.
   projects?: Project[];
   tags?: PaletteFilterTag[];
+  // When the palette opens with this true, it lands directly in filter mode
+  // (the folded advanced history search) instead of the action/conversation
+  // listbox. Lets the host summon the palette straight into "search history"
+  // from the sidebar affordance or the search-history keyboard shortcut.
+  openInFilterMode?: boolean;
 }
 
 // Served-model filter options mirror the `ModelTierId` union (the BE matches the
@@ -190,6 +195,7 @@ export function CommandPalette({
   onSelectConversation,
   projects = [],
   tags = [],
+  openInFilterMode = false,
 }: CommandPaletteProps): JSX.Element {
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -399,6 +405,20 @@ export function CommandPalette({
     resetFilters();
     requestAnimationFrame(() => inputRef.current?.focus());
   };
+
+  // When the host summons the palette with `openInFilterMode`, land directly in
+  // filter mode on each fresh open (the consolidated "advanced history search"
+  // entry point). Tracked on an open→close edge so re-renders while open don't
+  // re-trigger and so a later normal open (openInFilterMode flipped off) starts
+  // in the default listbox.
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (open && !wasOpenRef.current && openInFilterMode) {
+      setQuery("");
+      enterFilterMode();
+    }
+    wasOpenRef.current = open;
+  }, [open, openInFilterMode]);
 
   const handleSelectFilterResult = (id: string): void => {
     handleOpenChange(false);

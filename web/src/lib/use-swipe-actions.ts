@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { haptic } from "@/lib/use-haptic";
+
 /**
  * Reusable pointer-driven "swipe left to reveal trailing actions" gesture,
  * tuned to feel like the native iOS list-row swipe.
@@ -238,6 +240,7 @@ export function useSwipeActions(
 
       // Full swipe (measured from gesture start) fires the destructive action.
       if (-totalDx >= fullSwipeThreshold) {
+        haptic("impact");
         onFullSwipeRef.current();
         // Reset position; the row will typically unmount as a result.
         setOffset(0);
@@ -248,6 +251,7 @@ export function useSwipeActions(
       // Settle open or closed based on the current revealed amount.
       const revealed = -offset;
       if (revealed >= revealThreshold) {
+        if (!open) haptic("selection");
         setOffset(-actionsWidth);
         setOpen(true);
       } else {
@@ -255,7 +259,7 @@ export function useSwipeActions(
         setOpen(false);
       }
     },
-    [fullSwipeRatio, fullSwipeFloor, revealThreshold, actionsWidth, offset],
+    [fullSwipeRatio, fullSwipeFloor, revealThreshold, actionsWidth, offset, open],
   );
 
   return {

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, type PointerEvent } from "react";
 
+import { haptic } from "@/lib/use-haptic";
+
 export interface UseSwipeDismissOptions {
   /**
    * Whether the swipe gesture is currently active (the sheet is presented as a
@@ -139,6 +141,7 @@ export function useSwipeDismiss({
           el.style.transform = "";
         }
         drag.current = null;
+        haptic("light");
         onDismissRef.current();
         return;
       }

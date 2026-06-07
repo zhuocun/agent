@@ -1487,10 +1487,7 @@ export function SettingsDialog({
                 />
               }
             />
-            <Collapsible
-              className="space-y-2"
-              defaultOpen={customInstructionsDraft.trim().length > 0}
-            >
+            <Collapsible className="space-y-2">
               <CollapsibleTrigger
                 data-testid="custom-instructions-toggle"
                 className="flex w-full items-center gap-2 text-left text-sm font-medium transition-colors hover:text-foreground"
@@ -1504,6 +1501,7 @@ export function SettingsDialog({
               <CollapsibleContent className="space-y-2">
                 <textarea
                   id={customInstructionsId}
+                  aria-label="Custom instructions"
                   value={customInstructionsDraft}
                   maxLength={CUSTOM_INSTRUCTIONS_LIMIT}
                   rows={5}

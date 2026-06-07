@@ -608,6 +608,7 @@ test.describe("provider selection", () => {
         ).length,
       )
       .toBe(1);
+    await page.getByTestId("byok-section-toggle").click();
     await page.getByLabel("Provider").selectOption("openai");
     await page.getByLabel("API key").fill("sk-test-1234");
     await page.getByRole("button", { name: "Add key" }).click();

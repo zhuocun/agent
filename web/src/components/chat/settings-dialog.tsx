@@ -215,6 +215,18 @@ const SETTINGS_TABS: SettingsTabDef[] = SETTINGS_TAB_GROUPS.flatMap(
   (group) => group.tabs,
 );
 
+function tabPanelLabelProps(
+  tabId: SettingsTab,
+  tablistId: string,
+  isDesktop: boolean,
+): { "aria-labelledby"?: string; "aria-label"?: string } {
+  if (isDesktop) {
+    return { "aria-labelledby": `${tablistId}-${tabId}` };
+  }
+  const label = SETTINGS_TABS.find((tab) => tab.id === tabId)?.label;
+  return label ? { "aria-label": label } : {};
+}
+
 // Derive avatar initials from a display name (first + last token), capped at
 // two letters. Falls back gracefully for single-word or empty names.
 function initials(name: string): string {
@@ -1141,6 +1153,8 @@ export function SettingsDialog({
         {!isDesktop && !mobileShowList ? (
           <button
             type="button"
+            data-testid="settings-back-button"
+            aria-label="Back to Settings"
             onClick={() => setMobileShowList(true)}
             className="inline-flex items-center gap-1 -ml-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
           >
@@ -1232,7 +1246,7 @@ export function SettingsDialog({
         <div
           role="tabpanel"
           id={`${tablistId}-general-panel`}
-          aria-labelledby={`${tablistId}-general`}
+          {...tabPanelLabelProps("general", tablistId, isDesktop)}
           hidden={activeTab !== "general" || (!isDesktop && mobileShowList)}
           className={cn(
             activeTab === "general" && (isDesktop || !mobileShowList)
@@ -1597,7 +1611,7 @@ export function SettingsDialog({
           <div
             role="tabpanel"
             id={`${tablistId}-memory-panel`}
-            aria-labelledby={`${tablistId}-memory`}
+            {...tabPanelLabelProps("memory", tablistId, isDesktop)}
           >
             <MemoryBody
               active
@@ -1611,7 +1625,7 @@ export function SettingsDialog({
           <div
             role="tabpanel"
             id={`${tablistId}-templates-panel`}
-            aria-labelledby={`${tablistId}-templates`}
+            {...tabPanelLabelProps("templates", tablistId, isDesktop)}
           >
             <TemplateLibraryBody active />
           </div>
@@ -1621,7 +1635,7 @@ export function SettingsDialog({
           <div
             role="tabpanel"
             id={`${tablistId}-models-panel`}
-            aria-labelledby={`${tablistId}-models`}
+            {...tabPanelLabelProps("models", tablistId, isDesktop)}
           >
             <ModelDirectoryBody active />
           </div>
@@ -1631,7 +1645,7 @@ export function SettingsDialog({
           <div
             role="tabpanel"
             id={`${tablistId}-shortcuts-panel`}
-            aria-labelledby={`${tablistId}-shortcuts`}
+            {...tabPanelLabelProps("shortcuts", tablistId, isDesktop)}
           >
             <ShortcutsBody
               shortcuts={shortcuts}
@@ -1649,7 +1663,7 @@ export function SettingsDialog({
           <div
             role="tabpanel"
             id={`${tablistId}-activity-panel`}
-            aria-labelledby={`${tablistId}-activity`}
+            {...tabPanelLabelProps("activity", tablistId, isDesktop)}
           >
             <ActivityBody active onSwitchRoute={onActivitySwitchRoute} />
           </div>

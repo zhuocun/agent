@@ -364,36 +364,36 @@ export function ModelModePicker({
               </SheetSection>
             ) : null}
             <Collapsible>
-                <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-foreground/[0.04]">
-                  <ChevronRight
-                    aria-hidden
-                    className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
-                  />
-                  Advanced
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <div className="flex flex-col gap-4 pt-2">
-                    {dataPolicy ? (
-                      <SheetSection title="Data policy">
-                        <li>
-                          <p className="px-4 py-2 text-xs leading-snug text-muted-foreground">
-                            {dataPolicy.policyLabel}
-                          </p>
-                        </li>
-                      </SheetSection>
-                    ) : null}
-                    <SheetSection title="JSON output">
-                      <SheetRow
-                        label={jsonModeEnabled ? "On" : "Off"}
-                        description="Ask the model to reply with a JSON object."
-                        selected={jsonModeEnabled}
-                        onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
-                        testId="json-mode-toggle"
-                      />
+              <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-foreground/[0.04]">
+                <ChevronRight
+                  aria-hidden
+                  className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                />
+                Advanced
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="flex flex-col gap-4 pt-2">
+                  {dataPolicy ? (
+                    <SheetSection title="Data policy">
+                      <li>
+                        <p className="px-4 py-2 text-xs leading-snug text-muted-foreground">
+                          {dataPolicy.policyLabel}
+                        </p>
+                      </li>
                     </SheetSection>
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
+                  ) : null}
+                  <SheetSection title="JSON output">
+                    <SheetRow
+                      label={jsonModeEnabled ? "On" : "Off"}
+                      description="Ask the model to reply with a JSON object."
+                      selected={jsonModeEnabled}
+                      onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
+                      testId="json-mode-toggle"
+                    />
+                  </SheetSection>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
         </DialogContent>
       </Dialog>

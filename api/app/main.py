@@ -36,6 +36,7 @@ from app.logging_setup import configure_logging
 from app.maintenance.purge import purge_once, run_purge_loop
 from app.middleware.ratelimit import RateLimitMiddleware, limiter
 from app.middleware.request_id import RequestIDMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.observability import init_sentry, instrument_fastapi
 from app.routes.account import router as account_router
 from app.routes.account_activity import router as account_activity_router
@@ -191,6 +192,11 @@ def create_app() -> FastAPI:
     # so the last `add_middleware` becomes the outermost — we register CORS
     # AFTER request_id (and SlowAPIMiddleware) below.
     app.add_middleware(RequestIDMiddleware)
+    # [security headers] Defensive response headers (X-Content-Type-Options,
+    # X-Frame-Options, Referrer-Policy, Permissions-Policy). Registered AFTER
+    # RequestID (LIFO -> runs outside it) but BEFORE CORS (runs inside it) so
+    # preflight responses aren't polluted while every real response gets hardened.
+    app.add_middleware(SecurityHeadersMiddleware)
     # [ratelimit] limiter + middleware + handler.
     # `RateLimitMiddleware` (a thin SlowAPIMiddleware subclass — see
     # `app/middleware/ratelimit.py`) runs INSIDE CORS so preflight OPTIONS

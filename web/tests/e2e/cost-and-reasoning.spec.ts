@@ -342,6 +342,10 @@ test.describe("monthly budget cap", () => {
     const dialog = page.getByRole("dialog", { name: "Settings" });
     await expect(dialog).toBeVisible();
 
+    // The budget cap editor now lives behind the collapsed "Spending details"
+    // disclosure — expand it before interacting with the cap input.
+    await dialog.getByTestId("spending-details-toggle").click();
+
     const capInput = page.getByTestId("budget-cap-input");
     await capInput.fill("1");
     await page.getByTestId("budget-cap-save").click();

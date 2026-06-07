@@ -8,6 +8,7 @@ import {
   Brain,
   ClipboardCopy,
   Code2,
+  Columns2,
   DollarSign,
   FileText,
   FolderPlus,
@@ -3072,6 +3073,14 @@ export function ChatThread() {
       run: () => openSettings("general"),
     },
     {
+      id: "palette-compare",
+      label: compareMode ? "Exit compare" : "Compare models",
+      icon: Columns2,
+      section: "Actions",
+      keywords: ["compare", "compare models", "side by side", "two models", "ab"],
+      run: handleToggleCompare,
+    },
+    {
       id: "palette-new-project",
       label: "New project",
       icon: FolderPlus,
@@ -3477,8 +3486,6 @@ export function ChatThread() {
                   !compareMode && selectedTierSupportsAttachments
                 }
                 supportsVision={selectedTierSupportsVision}
-                compareEnabled={compareMode}
-                onToggleCompare={handleToggleCompare}
                 // Pre-send estimate uses the provider-effective selected tier;
                 // suppressed in compare mode (two tiers, no single estimate).
                 estimateTier={compareMode ? undefined : selectedModelTier}
@@ -3538,7 +3545,7 @@ export function ChatThread() {
           });
         }}
         shortcuts={shortcutSections}
-        shortcutsEditable
+        shortcutsEditable={false}
         effectiveBindings={effectiveBindings}
         shortcutLabelFor={(id) => LABEL_BY_ID[id]}
         onRebindShortcut={(id, combo) => {

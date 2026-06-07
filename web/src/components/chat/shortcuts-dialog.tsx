@@ -263,11 +263,18 @@ export function ShortcutsBody({
   // At most one row captures at a time (id of the capturing row, or null).
   const [capturingId, setCapturingId] = useState<ShortcutId | null>(null);
 
-  const canEdit =
-    editable &&
-    effectiveBindings != null &&
-    onRebind != null &&
-    onResetAction != null;
+  // Whether the rebind handlers are wired at all — only then can the surface
+  // offer customization.
+  const canCustomize =
+    effectiveBindings != null && onRebind != null && onResetAction != null;
+
+  // Read-only by default: rebinding controls stay folded behind an explicit
+  // "Customize" step so the common case (looking a shortcut up) isn't cluttered
+  // with capture affordances. `editable` only sets the INITIAL mode, so a caller
+  // can still open straight into editing if it wants.
+  const [customizing, setCustomizing] = useState(editable && canCustomize);
+
+  const canEdit = canCustomize && customizing;
 
   const anyOverridden = shortcuts.some((section) =>
     section.items.some((row) => row.isOverridden),
@@ -277,15 +284,33 @@ export function ShortcutsBody({
 
   return (
     <div>
-      <div className="flex flex-col gap-1.5 text-center sm:text-left">
-        <h2 className="text-lg leading-none font-semibold">
-          Keyboard shortcuts
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {canEdit
-            ? "Rebind any action — press a key combination to record it. Enter and Escape stay reserved for sending and stopping."
-            : "Every action below is reachable without the mouse."}
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col gap-1.5 text-center sm:text-left">
+          <h2 className="text-lg leading-none font-semibold">
+            Keyboard shortcuts
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {canEdit
+              ? "Rebind any action — press a key combination to record it. Enter and Escape stay reserved for sending and stopping."
+              : "Every action below is reachable without the mouse."}
+          </p>
+        </div>
+        {canCustomize ? (
+          <Button
+            type="button"
+            variant={canEdit ? "secondary" : "ghost"}
+            size="sm"
+            data-testid="shortcuts-customize-toggle"
+            aria-pressed={canEdit}
+            onClick={() => {
+              stopCapture();
+              setCustomizing((prev) => !prev);
+            }}
+            className="shrink-0"
+          >
+            {canEdit ? "Done" : "Customize"}
+          </Button>
+        ) : null}
       </div>
       <div className="-mr-2 mt-4 max-h-[60dvh] space-y-5 overflow-y-auto pr-2">
         {shortcuts.map((section) => (

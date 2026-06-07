@@ -52,6 +52,19 @@ async function pickCompareTier(
   ).toHaveCount(0);
 }
 
+// Enter compare mode via the command palette (Cmd/Ctrl+K). Compare is no longer
+// a composer affordance — it lives only in the palette — so every test summons
+// it the same way: open the palette, filter to the "Compare models" action, run
+// it, and wait for the compare-tier-bar to confirm compare mode is live.
+async function enableCompare(page: Page): Promise<void> {
+  await page.keyboard.press("ControlOrMeta+k");
+  const input = page.getByPlaceholder("Search actions and conversations…");
+  await expect(input).toBeVisible();
+  await input.fill("Compare");
+  await page.getByRole("option", { name: "Compare models" }).click();
+  await expect(page.getByTestId("compare-tier-bar")).toBeVisible();
+}
+
 test.describe("compare mode", () => {
   test("two distinct tiers fan out to two temporary-path streams; both 200, two attributions, no history leak", async ({
     page,
@@ -72,17 +85,8 @@ test.describe("compare mode", () => {
       }
     });
 
-    // Enable compare mode. The toggle lives behind the composer "More actions"
-    // (+) disclosure; open it first, and close the popover afterward so it
-    // doesn't overlap the compare-tier-bar.
-    await page.getByTestId("composer-more-actions").click();
-    await page.getByTestId("compare-toggle").click();
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("compare-toggle")).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    await expect(page.getByTestId("compare-tier-bar")).toBeVisible();
+    // Enable compare mode via the command palette (its only entry point).
+    await enableCompare(page);
 
     // Pick two DISTINCT, free tiers (Fast vs Smart).
     await pickCompareTier(page, 0, "Fast");
@@ -139,10 +143,7 @@ test.describe("compare mode", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await page.getByTestId("composer-more-actions").click();
-    await page.getByTestId("compare-toggle").click();
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("compare-tier-bar")).toBeVisible();
+    await enableCompare(page);
 
     // Open slot 0's picker. The anonymous (non-entitled) user can't use Pro, so
     // Pro must not appear as a selectable option — it would only graceful-402.
@@ -165,9 +166,7 @@ test.describe("compare mode", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await page.getByTestId("composer-more-actions").click();
-    await page.getByTestId("compare-toggle").click();
-    await page.keyboard.press("Escape");
+    await enableCompare(page);
     await pickCompareTier(page, 0, "Fast");
     await pickCompareTier(page, 1, "Smart");
 

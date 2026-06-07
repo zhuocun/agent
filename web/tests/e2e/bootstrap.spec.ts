@@ -104,6 +104,8 @@ test.describe("bootstrap", () => {
     await expect(
       dialog.getByText("Platform-key requests count toward this monthly cap."),
     ).toBeVisible();
+    // Detailed usage stats live behind the collapsed "Spending details" disclosure.
+    await dialog.getByTestId("spending-details-toggle").click();
     await expect(dialog.getByText("Used", { exact: true })).toBeVisible();
     await expect(dialog.getByText("Remaining", { exact: true })).toBeVisible();
     await expect(dialog.getByText("Limit", { exact: true })).toBeVisible();

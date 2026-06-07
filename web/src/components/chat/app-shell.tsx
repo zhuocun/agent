@@ -1,10 +1,20 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useVisualViewport } from "@/lib/use-visual-viewport";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
+
+// Touch-only iOS-style "drag from the left edge to reveal the drawer". A
+// pointer that lands inside this many px of the main column's left edge arms
+// the gesture; horizontal-dominant movement past the threshold commits and
+// pops the drawer open. We claim only horizontal-dominant drags so vertical
+// scrolling is never hijacked.
+const EDGE_ZONE_PX = 20;
+const EDGE_OPEN_THRESHOLD_PX = 32;
+const EDGE_AXIS_SLOP_PX = 8;
 
 export interface AppShellProps {
   sidebar: React.ReactNode; // a <Sidebar .../> element
@@ -94,9 +104,98 @@ export function AppShell({
         </DrawerContent>
       </Drawer>
 
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+        <EdgeSwipeZone
+          onOpen={() => {
+            haptic("selection");
+            onMobileNavOpenChange(true);
+          }}
+          disabled={mobileNavOpen}
+        />
         {children}
       </main>
     </div>
+  );
+}
+
+interface EdgeSwipeZoneProps {
+  onOpen: () => void;
+  disabled: boolean;
+}
+
+function EdgeSwipeZone({
+  onOpen,
+  disabled,
+}: EdgeSwipeZoneProps): React.JSX.Element {
+  const gesture = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    axis: "undecided" | "horizontal" | "vertical";
+    committed: boolean;
+  } | null>(null);
+
+  const onOpenRef = useRef(onOpen);
+  useEffect(() => {
+    onOpenRef.current = onOpen;
+  });
+
+  const reset = useCallback(() => {
+    gesture.current = null;
+  }, []);
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (disabled) return;
+      // Touch / pen only — desktop mouse uses the sidebar rail directly.
+      if (e.pointerType === "mouse") return;
+      gesture.current = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        axis: "undecided",
+        committed: false,
+      };
+    },
+    [disabled],
+  );
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    const g = gesture.current;
+    if (!g || g.pointerId !== e.pointerId || g.committed) return;
+    const dx = e.clientX - g.startX;
+    const dy = e.clientY - g.startY;
+
+    if (g.axis === "undecided") {
+      if (Math.abs(dx) < EDGE_AXIS_SLOP_PX && Math.abs(dy) < EDGE_AXIS_SLOP_PX) {
+        return;
+      }
+      if (Math.abs(dx) > Math.abs(dy) && dx > 0) {
+        g.axis = "horizontal";
+      } else {
+        // Vertical or leftward drag — release the gesture so the main column
+        // keeps owning the scroll / horizontal swipes for child surfaces.
+        g.axis = "vertical";
+        return;
+      }
+    }
+
+    if (g.axis === "horizontal" && dx >= EDGE_OPEN_THRESHOLD_PX) {
+      g.committed = true;
+      onOpenRef.current();
+    }
+  }, []);
+
+  return (
+    <div
+      aria-hidden
+      data-testid="edge-swipe-zone"
+      className="pointer-events-auto absolute inset-y-0 left-0 z-10 touch-pan-y md:hidden"
+      style={{ width: EDGE_ZONE_PX }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={reset}
+      onPointerCancel={reset}
+    />
   );
 }

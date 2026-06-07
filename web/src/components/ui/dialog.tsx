@@ -198,4 +198,5 @@ export {
   DialogFooter,
   DialogTitle,
   DialogDescription,
+  useIsMobileSheet,
 }

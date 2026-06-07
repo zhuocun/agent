@@ -18,6 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ConversationTag, Tag
+from app.db.repositories._helpers import flush_and_refresh, get_owned
+from app.db.repositories._sentinel import UNSET, _Unset
 
 
 async def list_for_user(
@@ -40,11 +42,7 @@ async def get_for_user(
     user_id: UUID,
 ) -> Tag | None:
     """Return one tag by id IFF it belongs to `user_id`, else None."""
-    stmt = select(Tag).where(
-        Tag.id == tag_id,
-        Tag.user_id == user_id,
-    )
-    return (await db.execute(stmt)).scalar_one_or_none()
+    return await get_owned(db, Tag, row_id=tag_id, user_id=user_id)
 
 
 async def create_for_user(
@@ -56,22 +54,7 @@ async def create_for_user(
 ) -> Tag:
     row = Tag(user_id=user_id, name=name, color=color)
     db.add(row)
-    await db.flush()
-    await db.refresh(row)
-    return row
-
-
-class _Unset:
-    """Sentinel distinguishing "don't touch" from an explicit `None`.
-
-    `color` is nullable and `None` is meaningful ("clear the color"), so a
-    default of `None` could not also mean "leave the column unchanged." A PATCH
-    that omits `color` must leave it alone; a PATCH that sends `null` must clear
-    it.
-    """
-
-
-_UNSET = _Unset()
+    return await flush_and_refresh(db, row)
 
 
 async def update_for_user(
@@ -80,12 +63,12 @@ async def update_for_user(
     tag_id: UUID,
     user_id: UUID,
     name: str | None = None,
-    color: str | None | _Unset = _UNSET,
+    color: str | None | _Unset = UNSET,
 ) -> Tag | None:
     """Update an owned tag. Returns the refreshed row, or None if not owned.
 
     `name` uses `None` as "don't touch" (it is non-nullable, so a clear is
-    meaningless). `color` is three-valued via the `_UNSET` sentinel: omitted
+    meaningless). `color` is three-valued via the `UNSET` sentinel: omitted
     leaves the column unchanged; an explicit `None` clears it. `updated_at` is
     touched manually (no onupdate hook).
     """
@@ -97,9 +80,7 @@ async def update_for_user(
     if not isinstance(color, _Unset):
         row.color = color
     row.updated_at = datetime.now(UTC)
-    await db.flush()
-    await db.refresh(row)
-    return row
+    return await flush_and_refresh(db, row)
 
 
 async def delete_for_user(

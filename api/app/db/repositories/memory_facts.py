@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MemoryFact
+from app.db.repositories._helpers import delete_owned, flush_and_refresh, get_owned
 
 # Cap on facts injected into a single turn. Memory is wrapped into the user turn
 # (no system-prompt seam in this codebase), so a runaway ledger must not blow out
@@ -64,11 +65,7 @@ async def get_for_user(
     user_id: UUID,
 ) -> MemoryFact | None:
     """Return one fact by id IFF it belongs to `user_id`, else None."""
-    stmt = select(MemoryFact).where(
-        MemoryFact.id == fact_id,
-        MemoryFact.user_id == user_id,
-    )
-    return (await db.execute(stmt)).scalar_one_or_none()
+    return await get_owned(db, MemoryFact, row_id=fact_id, user_id=user_id)
 
 
 async def add(
@@ -86,9 +83,7 @@ async def add(
         source_conversation_id=source_conversation_id,
     )
     db.add(row)
-    await db.flush()
-    await db.refresh(row)
-    return row
+    return await flush_and_refresh(db, row)
 
 
 async def update_content(
@@ -103,12 +98,8 @@ async def update_content(
     if row is None:
         return None
     row.content = content
-    # `updated_at` has no onupdate hook; touch it explicitly (mirrors the
-    # preferences repo) so the column reflects the mutation time.
     row.updated_at = datetime.now(UTC)
-    await db.flush()
-    await db.refresh(row)
-    return row
+    return await flush_and_refresh(db, row)
 
 
 async def delete(
@@ -118,9 +109,4 @@ async def delete(
     user_id: UUID,
 ) -> bool:
     """Delete a fact. Returns True if a row was removed, False if not owned."""
-    row = await get_for_user(db, fact_id=fact_id, user_id=user_id)
-    if row is None:
-        return False
-    await db.delete(row)
-    await db.flush()
-    return True
+    return await delete_owned(db, MemoryFact, row_id=fact_id, user_id=user_id)

@@ -40,7 +40,8 @@ from app.db.models import (
     Vote,
 )
 from app.db.repositories import audit_events
-from app.schemas.common import ModelTierId
+from app.db.repositories._sentinel import UNSET, _Unset
+from app.schemas.common import ModelTierId, coerce_tier
 from app.schemas.conversation import Conversation as ConversationSchema
 from app.schemas.conversation import ConversationSearchResult, ConversationSummary
 from app.schemas.message import ChatMessage, MessagePart
@@ -55,28 +56,8 @@ _SEARCH_SNIPPET_RADIUS = 64
 _SEARCH_PAGE_SIZE = 100
 
 
-class _Unset:
-    """Sentinel distinguishing "don't touch" from an explicit `None`.
-
-    Needed for the nullable `retention_days` patch: `None` is a meaningful value
-    ("clear the per-conversation override"), so a default of `None` could not
-    also mean "leave the column unchanged."
-    """
-
-
-_UNSET = _Unset()
-
-
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
-
-
-def _coerce_tier(tier_id: str) -> ModelTierId:
-    if tier_id not in ("fast", "smart", "pro", "auto"):
-        # Repositories return wire schemas; fall back to "auto" if the DB row
-        # somehow holds an unknown tier id (defensive — M1 inserts validate).
-        return "auto"
-    return cast(ModelTierId, tier_id)
 
 
 def _escape_like(value: str) -> str:
@@ -583,7 +564,7 @@ async def get_for_user(
         id=str(row.id),
         title=row.title,
         messages=messages,
-        selected_tier_id=_coerce_tier(row.selected_tier_id),
+        selected_tier_id=coerce_tier(row.selected_tier_id),
         is_temporary=False,
         retention_days=row.retention_days,
         project_id=str(row.project_id) if row.project_id is not None else None,
@@ -626,18 +607,18 @@ async def update_for_user(
     title: str | None = None,
     pinned: bool | None = None,
     archived: bool | None = None,
-    retention_days: int | None | _Unset = _UNSET,
-    project_id: UUID | None | _Unset = _UNSET,
-    tag_ids: Sequence[UUID] | _Unset = _UNSET,
+    retention_days: int | None | _Unset = UNSET,
+    project_id: UUID | None | _Unset = UNSET,
+    tag_ids: Sequence[UUID] | _Unset = UNSET,
 ) -> Conversation | None:
     """Update the owned conversation's title/pinned/archived/retention/project/tags.
 
     `title` / `pinned` / `archived` use `None` as "don't touch" (each is a plain
     field — for the bools there is no "clear" meaning). `retention_days` and
     `project_id` are three-valued — their `None` means "CLEAR" (inherit the
-    global retention / un-file from the Project), so they use the `_UNSET`
+    global retention / un-file from the Project), so they use the `UNSET`
     sentinel for "don't touch" instead. `tag_ids` is a FULL REPLACE when present
-    (an explicit list, possibly empty = clear all) and `_UNSET` = leave the tags
+    (an explicit list, possibly empty = clear all) and `UNSET` = leave the tags
     unchanged; the caller MUST have validated tag ownership first. Returns the
     refreshed ORM row, or None if the row isn't owned/doesn't exist. Bumps
     `updated_at` so the sidebar's pinned/updated ordering reflects the change.

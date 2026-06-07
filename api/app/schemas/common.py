@@ -44,6 +44,18 @@ class CamelModel(BaseModel):
 
 # Wire enums kept tight to what the FE renders. See web/src/lib/types.ts.
 ModelTierId = Literal["fast", "smart", "pro", "auto"]
+VALID_TIER_IDS: tuple[ModelTierId, ...] = ("fast", "smart", "pro", "auto")
+
+
+def coerce_tier(tier_id: str, *, fallback: ModelTierId = "auto") -> ModelTierId:
+    """Validate ``tier_id`` against known tiers; return *fallback* on mismatch.
+
+    Used by the conversations and preferences repositories to safely narrow a
+    free-form DB string to the ``ModelTierId`` literal.
+    """
+    if tier_id in VALID_TIER_IDS:
+        return tier_id
+    return fallback
 # Per-turn reasoning-effort override the FE composer can attach. `auto` defers to
 # the tier binding's default; `minimal` forces thinking OFF for a real latency
 # win; `standard`/`extended` map to provider effort levels. Providers that don't

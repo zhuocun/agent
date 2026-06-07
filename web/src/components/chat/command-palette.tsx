@@ -901,7 +901,7 @@ export function CommandPalette({
             )}
           </div>
 
-          <div className="shrink-0 border-t border-foreground/10 px-5 py-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] text-2xs text-muted-foreground sm:pb-2">
+          <div className="hidden shrink-0 border-t border-foreground/10 px-5 py-2 text-2xs text-muted-foreground sm:block">
             {filterMode ? (
               <>
                 <span className="font-mono">Tab</span> to move between filters ·{" "}

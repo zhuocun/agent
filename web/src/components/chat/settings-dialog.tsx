@@ -1,9 +1,11 @@
 "use client";
 
-import { useId, useState, type JSX, type ReactNode } from "react";
+import { useEffect, useId, useState, type JSX, type ReactNode } from "react";
 import {
   Activity,
   Brain,
+  ChevronLeft,
+  ChevronRight,
   CreditCard,
   FileText,
   Gauge,
@@ -57,6 +59,24 @@ import {
 } from "@/lib/types";
 import type { ProjectUpdateInput } from "@/lib/apiClient";
 import { cn } from "@/lib/utils";
+
+/**
+ * SSR-safe breakpoint hook for the md (768px) boundary. Returns `true` at
+ * desktop widths (>= 768px), `false` on mobile. Mirrors the matchMedia pattern
+ * used in chat-thread.tsx and dialog.tsx.
+ */
+function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(min-width: 768px)");
+    const sync = () => setIsDesktop(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  return isDesktop;
+}
 
 export interface SettingsDialogProps {
   open: boolean;
@@ -992,16 +1012,31 @@ export function SettingsDialog({
     preferences.customInstructions,
   );
 
+  const isDesktop = useIsDesktop();
+
   // Active hub section. On each open transition we snap to `initialTab` so a
   // deep-link (e.g. the "Memory used here" chip) lands on the right tab and a
   // re-open from the menu always starts on General. Implemented with the
   // render-phase "adjust state on prop change" pattern (a tracked previous-open
   // flag) rather than an effect, to satisfy react-hooks/set-state-in-effect.
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
+  // On mobile, whether we're showing the grouped list (true) or a tab's content
+  // (false). Deep links (initialTab !== "general") skip straight to content.
+  const [mobileShowList, setMobileShowList] = useState(
+    initialTab === "general",
+  );
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
-    if (open) setActiveTab(initialTab);
+    if (open) {
+      setActiveTab(initialTab);
+      setMobileShowList(initialTab === "general");
+    }
+  }
+
+  function selectTab(tab: SettingsTab): void {
+    setActiveTab(tab);
+    if (!isDesktop) setMobileShowList(false);
   }
 
   const tablistId = useId();
@@ -1063,22 +1098,59 @@ export function SettingsDialog({
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Account, appearance, privacy, and everything you used to reach
-            through a separate window — now in one place.
+            Account, appearance, and preferences.
           </DialogDescription>
         </DialogHeader>
 
-        {/* Tab strip — the single nav rail that switches hub sections in place
-            instead of fanning out into sibling modals. The tabs are now arranged
-            into named clusters (Workspace / Knowledge / Reference) so the strip
-            reads as a small hierarchy rather than six equal peers; each cluster
-            carries a quiet label and a vertical divider separates clusters. It
-            stays ONE tablist — arrow-key roving still walks the flat tab order
-            across cluster boundaries. A horizontally scrollable strip so it works
-            as a bottom sheet on mobile; each trigger meets the 44px touch-target
-            minimum. Keyboard: roving arrow-key navigation via aria + the
-            browser's native focus order (semantic <button>s with
-            role="tab"/aria-selected). */}
+        {/* Mobile drill-down list — iOS Settings-style grouped rows. Shown only
+            below md when no tab content is active (mobileShowList). */}
+        {!isDesktop && mobileShowList ? (
+          <nav aria-label="Settings sections" className="space-y-4">
+            {SETTINGS_TAB_GROUPS.map((group) => (
+              <div key={group.id} className="space-y-1">
+                <span className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                  {group.label}
+                </span>
+                <div className="overflow-hidden rounded-xl border border-border/60 bg-secondary/30">
+                  {group.tabs.map((tab, tabIndex) => {
+                    const Icon = tab.icon;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        data-testid={tab.testId}
+                        onClick={() => selectTab(tab.id)}
+                        className={cn(
+                          "flex w-full items-center gap-3 px-4 py-3 text-left text-sm font-medium text-foreground transition-colors active:bg-secondary/60",
+                          tabIndex > 0 && "border-t border-border/40",
+                        )}
+                      >
+                        <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="flex-1">{tab.label}</span>
+                        <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </nav>
+        ) : null}
+
+        {/* Mobile back button — shown when drilled into a tab's content. */}
+        {!isDesktop && !mobileShowList ? (
+          <button
+            type="button"
+            onClick={() => setMobileShowList(true)}
+            className="inline-flex items-center gap-1 -ml-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ChevronLeft aria-hidden className="size-4" />
+            <span>Settings</span>
+          </button>
+        ) : null}
+
+        {/* Desktop tab strip — the horizontal nav rail. Hidden below md. */}
+        {isDesktop ? (
         <div
           role="tablist"
           aria-label="Settings sections"
@@ -1095,8 +1167,6 @@ export function SettingsDialog({
                   "border-l border-border/60 pl-3",
               )}
             >
-              {/* Cluster label — quiet, uppercase, matches SectionHeading. Not a
-                  tab; purely a visual grouping cue. */}
               <span
                 aria-hidden
                 className="px-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
@@ -1117,7 +1187,7 @@ export function SettingsDialog({
                       aria-controls={`${tablistId}-${tab.id}-panel`}
                       tabIndex={selected ? 0 : -1}
                       data-testid={tab.testId}
-                      onClick={() => setActiveTab(tab.id)}
+                      onClick={() => selectTab(tab.id)}
                       onKeyDown={(event) => {
                         if (
                           event.key !== "ArrowRight" &&
@@ -1135,8 +1205,7 @@ export function SettingsDialog({
                             (index + delta + SETTINGS_TABS.length) %
                               SETTINGS_TABS.length
                           ]!;
-                        setActiveTab(next.id);
-                        // Move focus to the newly selected tab (roving tabindex).
+                        selectTab(next.id);
                         document
                           .getElementById(`${tablistId}-${next.id}`)
                           ?.focus();
@@ -1157,24 +1226,16 @@ export function SettingsDialog({
             </div>
           ))}
         </div>
+        ) : null}
 
-        {/* General tab — the existing scrollable settings panel, now organized
-            into three labeled domains (GroupHeading) so it reads as a short
-            hierarchy instead of a flat seven-section scroll:
-              • Account & plan   — Account, Bring your own key
-              • Workspace        — Appearance, Chat, Projects
-              • Privacy & data   — Privacy & data, Your data
-            Every section (and its testids/content) is preserved verbatim — this
-            is grouping only. Sections still reach the same default panel on open,
-            so the specs that click export/delete/budget/spend/project controls
-            right after opening Settings keep working. */}
+        {/* General tab — the existing scrollable settings panel. */}
         <div
           role="tabpanel"
           id={`${tablistId}-general-panel`}
           aria-labelledby={`${tablistId}-general`}
-          hidden={activeTab !== "general"}
+          hidden={activeTab !== "general" || (!isDesktop && mobileShowList)}
           className={cn(
-            activeTab === "general"
+            activeTab === "general" && (isDesktop || !mobileShowList)
               ? "-mr-2 max-h-[60dvh] space-y-8 overflow-y-auto pr-2 sm:max-h-[70dvh]"
               : undefined,
           )}
@@ -1530,8 +1591,9 @@ export function SettingsDialog({
         {/* Folded-in surfaces. Each panel is mounted only while its tab is
             active so the body's fetch-on-open lifecycle fires exactly as it did
             when these were standalone dialogs, and so transient edit state is
-            discarded on tab switch (the former dialogs reset on close). */}
-        {activeTab === "memory" ? (
+            discarded on tab switch (the former dialogs reset on close).
+            On mobile, hidden when showing the drill-down list. */}
+        {activeTab === "memory" && (isDesktop || !mobileShowList) ? (
           <div
             role="tabpanel"
             id={`${tablistId}-memory-panel`}
@@ -1545,7 +1607,7 @@ export function SettingsDialog({
           </div>
         ) : null}
 
-        {activeTab === "templates" ? (
+        {activeTab === "templates" && (isDesktop || !mobileShowList) ? (
           <div
             role="tabpanel"
             id={`${tablistId}-templates-panel`}
@@ -1555,7 +1617,7 @@ export function SettingsDialog({
           </div>
         ) : null}
 
-        {activeTab === "models" ? (
+        {activeTab === "models" && (isDesktop || !mobileShowList) ? (
           <div
             role="tabpanel"
             id={`${tablistId}-models-panel`}
@@ -1565,7 +1627,7 @@ export function SettingsDialog({
           </div>
         ) : null}
 
-        {activeTab === "shortcuts" ? (
+        {activeTab === "shortcuts" && (isDesktop || !mobileShowList) ? (
           <div
             role="tabpanel"
             id={`${tablistId}-shortcuts-panel`}
@@ -1583,7 +1645,7 @@ export function SettingsDialog({
           </div>
         ) : null}
 
-        {activeTab === "activity" ? (
+        {activeTab === "activity" && (isDesktop || !mobileShowList) ? (
           <div
             role="tabpanel"
             id={`${tablistId}-activity-panel`}

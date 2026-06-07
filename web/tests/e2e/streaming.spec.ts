@@ -170,6 +170,9 @@ test.describe("streaming", () => {
     // supports search, so the "Web search" section is present. Desktop project
     // (Desktop Chrome) → the dropdown variant; open it, then click the toggle.
     await page.getByTestId("model-mode-trigger").click();
+    // Web search now lives behind the "Advanced" collapsible (progressive
+    // disclosure); expand it before the toggle is reachable.
+    await page.getByTestId("picker-advanced").click();
     const toggle = page.getByTestId("web-search-toggle");
     await expect(toggle).toBeVisible({ timeout: 5_000 });
     await toggle.click();
@@ -327,6 +330,9 @@ test.describe("streaming", () => {
     // "JSON output" section is NOT tier-gated, so it's always present. Desktop
     // project (Desktop Chrome) → the dropdown variant; open it, click the toggle.
     await page.getByTestId("model-mode-trigger").click();
+    // JSON output now lives behind the "Advanced" collapsible (progressive
+    // disclosure); expand it before the toggle is reachable.
+    await page.getByTestId("picker-advanced").click();
     const toggle = page.getByTestId("json-mode-toggle");
     await expect(toggle).toBeVisible({ timeout: 5_000 });
     await toggle.click();

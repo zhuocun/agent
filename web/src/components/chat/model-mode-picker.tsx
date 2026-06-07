@@ -47,8 +47,9 @@ export interface ModelModePickerProps {
   selectedEffortId: ReasoningEffortId;
   onSelectEffort: (id: ReasoningEffortId) => void;
   // False when the served provider ignores reasoning effort (e.g. Anthropic).
-  // The effort rows are then rendered DISABLED with a one-line note — never an
-  // error. Defaults to true (supported) when omitted.
+  // The whole Reasoning-effort section is then OMITTED (progressive disclosure,
+  // 00-principles §20) rather than shown as disabled rows — never an error.
+  // Defaults to true (supported) when omitted.
   effortSupported?: boolean;
   // Web-search toggle. The "Web search" section is shown ONLY when the
   // currently-selected tier reports `supportsWebSearch`; on a tier that can't
@@ -153,13 +154,12 @@ export function ModelModePicker({
           by-input-modality (02-patterns §D) — hover does not exist on touch so
           the mobile branch below renders a bottom sheet instead.
 
-          Redesign (00-principles §20/§91, 02-patterns §75-86): the surface is a
-          QUICK SWITCH, not a settings panel. Tier choice leads as the primary
-          group; every row collapses to a single scannable line (long copy is
-          shown only for the SELECTED tier, demoted everywhere else); group
-          headers + spacing replace full-bleed rules as the delineation lever.
-          Provider / Reasoning / Web search / JSON all stay directly visible and
-          clickable on open — none is behind a collapsed disclosure. */}
+          Progressive disclosure (00-principles §20, 02-patterns §75-86): the
+          surface opens as a one-decision QUICK SWITCH. Only the Model tier group
+          is shown at the first level; Provider, Reasoning effort, Data policy,
+          Web search, and JSON output all live behind the "Advanced" collapsible
+          so secondary controls never compete with the primary tier choice. This
+          matches the mobile sheet's disclosure, just rendered as a dropdown. */}
       <DropdownMenu>
         <DropdownMenuTrigger
           disabled={disabled}
@@ -179,9 +179,9 @@ export function ModelModePicker({
           sideOffset={8}
           className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl p-1.5"
         >
-          {/* Model tier — the primary decision, so it leads. Each row is one
-              tight line (label · model · price); the longer description renders
-              ONLY under the selected tier, in a quieter treatment. */}
+          {/* Model tier — the only first-level decision, so it leads. Each row
+              is one tight line (label · model · price); the longer description
+              renders ONLY under the selected tier, in a quieter treatment. */}
           <DropdownMenuGroup>
             <GroupHeading>Model</GroupHeading>
             {tiers.map((t) => (
@@ -195,70 +195,88 @@ export function ModelModePicker({
             ))}
           </DropdownMenuGroup>
 
-          {showProviderPicker ? (
-            <DropdownMenuGroup className="mt-1">
-              <GroupHeading>Provider</GroupHeading>
-              {providerOptions.map((p) => {
-                const available = p.status === "available";
-                return (
-                  <CompactRow
-                    key={p.providerId}
-                    label={p.label}
-                    meta={providerDescription(p)}
-                    selected={p.providerId === provider?.providerId}
-                    disabled={!available}
-                    onSelect={() => handleSelectProvider(p.providerId)}
+          {/* Advanced — progressive disclosure (00-principles §20). Provider,
+              reasoning effort, data policy, and the web-search / JSON-output
+              toggles collapse here so the picker opens minimal; power users
+              expand to reach them. Mirrors the mobile sheet's Advanced section
+              for cross-modality parity. */}
+          <Collapsible className="mt-1">
+            <CollapsibleTrigger
+              data-testid="picker-advanced"
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
+            >
+              <ChevronRight
+                aria-hidden
+                className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+              />
+              Advanced
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              {showProviderPicker ? (
+                <DropdownMenuGroup className="mt-1">
+                  <GroupHeading>Provider</GroupHeading>
+                  {providerOptions.map((p) => {
+                    const available = p.status === "available";
+                    return (
+                      <CompactRow
+                        key={p.providerId}
+                        label={p.label}
+                        meta={providerDescription(p)}
+                        selected={p.providerId === provider?.providerId}
+                        disabled={!available}
+                        onSelect={() => handleSelectProvider(p.providerId)}
+                      />
+                    );
+                  })}
+                </DropdownMenuGroup>
+              ) : null}
+
+              {dataPolicy ? <DataPolicyRow policy={dataPolicy} /> : null}
+
+              {/* Reasoning effort — omitted ENTIRELY when the served provider
+                  ignores it (effortSupported=false): per progressive disclosure
+                  (00-principles §20) we hide the whole section rather than show
+                  disabled rows plus a note. */}
+              {effortSupported ? (
+                <DropdownMenuGroup className="mt-1">
+                  <GroupHeading>Reasoning effort</GroupHeading>
+                  {efforts.map((e) => (
+                    <CompactRow
+                      key={e.id}
+                      label={e.label}
+                      meta={effortMeta(e)}
+                      selected={e.id === selectedEffortId}
+                      onSelect={() => onSelectEffort(e.id)}
+                    />
+                  ))}
+                </DropdownMenuGroup>
+              ) : null}
+
+              {/* Toggles — grouped, switch-like. Web search is tier-gated; JSON
+                  output always renders. `closeOnClick={false}` keeps the menu
+                  open across a flip so the state change is seen. */}
+              <DropdownMenuGroup className="mt-1.5">
+                {showWebSearch ? (
+                  <ToggleRow
+                    icon={Globe}
+                    label="Web search"
+                    description="Ground answers with a live web search."
+                    checked={searchEnabled}
+                    onToggle={onToggleSearch}
+                    testId="web-search-toggle"
                   />
-                );
-              })}
-            </DropdownMenuGroup>
-          ) : null}
-
-          {dataPolicy ? <DataPolicyRow policy={dataPolicy} /> : null}
-
-          {/* Reasoning effort — always present; one compact line per row. */}
-          <DropdownMenuGroup className="mt-1">
-            <GroupHeading>Reasoning effort</GroupHeading>
-            {efforts.map((e) => (
-              <CompactRow
-                key={e.id}
-                label={e.label}
-                meta={effortMeta(e)}
-                selected={e.id === selectedEffortId}
-                disabled={!effortSupported}
-                onSelect={() => onSelectEffort(e.id)}
-              />
-            ))}
-            {!effortSupported ? (
-              <p className="px-2 pt-1 text-2xs leading-snug text-muted-foreground">
-                This model ignores reasoning effort.
-              </p>
-            ) : null}
-          </DropdownMenuGroup>
-
-          {/* Toggles — grouped, switch-like, immediately visible. Web search is
-              tier-gated; JSON output always renders. `closeOnClick={false}`
-              keeps the menu open across a flip so the state change is seen. */}
-          <DropdownMenuGroup className="mt-1.5">
-            {showWebSearch ? (
-              <ToggleRow
-                icon={Globe}
-                label="Web search"
-                description="Ground answers with a live web search."
-                checked={searchEnabled}
-                onToggle={onToggleSearch}
-                testId="web-search-toggle"
-              />
-            ) : null}
-            <ToggleRow
-              icon={Braces}
-              label="JSON output"
-              description="Ask the model to reply with a JSON object."
-              checked={jsonModeEnabled}
-              onToggle={onToggleJsonMode}
-              testId="json-mode-toggle"
-            />
-          </DropdownMenuGroup>
+                ) : null}
+                <ToggleRow
+                  icon={Braces}
+                  label="JSON output"
+                  description="Ask the model to reply with a JSON object."
+                  checked={jsonModeEnabled}
+                  onToggle={onToggleJsonMode}
+                  testId="json-mode-toggle"
+                />
+              </DropdownMenuGroup>
+            </CollapsibleContent>
+          </Collapsible>
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -295,8 +313,9 @@ export function ModelModePicker({
             </DialogDescription>
           </DialogHeader>
           <div className="-mx-1 flex flex-col gap-4 overflow-y-auto">
-            {/* Tier leads on mobile too. The full description rides only on the
-                selected row; the rest carry the compact model · price meta. */}
+            {/* Tier leads on mobile too, and is the ONLY section shown by
+                default. The full description rides only on the selected row; the
+                rest carry the compact model · price meta. */}
             <SheetSection title="Model">
               {tiers.map((t) => {
                 const selected = t.id === selectedTierId;
@@ -316,55 +335,16 @@ export function ModelModePicker({
                 );
               })}
             </SheetSection>
-            {showProviderPicker ? (
-              <SheetSection title="Provider">
-                {providerOptions.map((p) => {
-                  const available = p.status === "available";
-                  return (
-                    <SheetRow
-                      key={p.providerId}
-                      label={p.label}
-                      description={providerDescription(p)}
-                      selected={p.providerId === provider?.providerId}
-                      disabled={!available}
-                      onSelect={() => handleSelectProvider(p.providerId)}
-                    />
-                  );
-                })}
-              </SheetSection>
-            ) : null}
-            <SheetSection title="Reasoning effort">
-              {efforts.map((e) => (
-                <SheetRow
-                  key={e.id}
-                  label={e.label}
-                  description={effortMeta(e) ?? ""}
-                  selected={e.id === selectedEffortId}
-                  disabled={!effortSupported}
-                  onSelect={() => handleSelectEffort(e.id)}
-                />
-              ))}
-              {!effortSupported ? (
-                <li>
-                  <p className="px-4 py-2 text-xs leading-snug text-muted-foreground">
-                    This model ignores reasoning effort.
-                  </p>
-                </li>
-              ) : null}
-            </SheetSection>
-            {showWebSearch ? (
-              <SheetSection title="Web search">
-                <SheetRow
-                  label={searchEnabled ? "On" : "Off"}
-                  description="Ground answers with a live web search."
-                  selected={searchEnabled}
-                  onSelect={() => onToggleSearch(!searchEnabled)}
-                  testId="web-search-toggle"
-                />
-              </SheetSection>
-            ) : null}
+            {/* Advanced — progressive disclosure (00-principles §20). Provider,
+                reasoning effort, web search, data policy, and JSON output all
+                collapse here for iOS-native simplicity: the sheet opens showing
+                only the Model tier, and power users expand to reach everything
+                else. Parity with the desktop dropdown's Advanced section. */}
             <Collapsible>
-              <CollapsibleTrigger className="flex w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-foreground/[0.04]">
+              <CollapsibleTrigger
+                data-testid="picker-advanced"
+                className="flex w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-foreground/[0.04]"
+              >
                 <ChevronRight
                   aria-hidden
                   className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
@@ -373,6 +353,50 @@ export function ModelModePicker({
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <div className="flex flex-col gap-4 pt-2">
+                  {showProviderPicker ? (
+                    <SheetSection title="Provider">
+                      {providerOptions.map((p) => {
+                        const available = p.status === "available";
+                        return (
+                          <SheetRow
+                            key={p.providerId}
+                            label={p.label}
+                            description={providerDescription(p)}
+                            selected={p.providerId === provider?.providerId}
+                            disabled={!available}
+                            onSelect={() => handleSelectProvider(p.providerId)}
+                          />
+                        );
+                      })}
+                    </SheetSection>
+                  ) : null}
+                  {/* Reasoning effort — omitted ENTIRELY when the served provider
+                      ignores it (effortSupported=false), rather than rendering
+                      disabled rows plus a note (00-principles §20). */}
+                  {effortSupported ? (
+                    <SheetSection title="Reasoning effort">
+                      {efforts.map((e) => (
+                        <SheetRow
+                          key={e.id}
+                          label={e.label}
+                          description={effortMeta(e) ?? ""}
+                          selected={e.id === selectedEffortId}
+                          onSelect={() => handleSelectEffort(e.id)}
+                        />
+                      ))}
+                    </SheetSection>
+                  ) : null}
+                  {showWebSearch ? (
+                    <SheetSection title="Web search">
+                      <SheetRow
+                        label={searchEnabled ? "On" : "Off"}
+                        description="Ground answers with a live web search."
+                        selected={searchEnabled}
+                        onSelect={() => onToggleSearch(!searchEnabled)}
+                        testId="web-search-toggle"
+                      />
+                    </SheetSection>
+                  ) : null}
                   {dataPolicy ? (
                     <SheetSection title="Data policy">
                       <li>

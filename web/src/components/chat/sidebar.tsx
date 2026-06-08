@@ -1427,7 +1427,7 @@ export function Sidebar({
   const exitSelection = useCallback(() => {
     setRawSelectedIds(new Set());
     setSelectionActive(false);
-  }, []);
+  }, [setSelectionActive]);
   const selectedIdList = Array.from(selectedIds);
   const runBulk = (fn?: (ids: string[]) => void) => {
     if (!fn || selectedIdList.length === 0) return;

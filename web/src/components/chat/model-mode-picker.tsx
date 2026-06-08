@@ -201,37 +201,12 @@ export function ModelModePicker({
             ))}
           </DropdownMenuGroup>
 
-          {/* First-level toggles — Web search + JSON output are tap-and-go
-              switches users reach for mid-prompt, so they sit OUT of Advanced.
-              Web search is tier-gated; JSON output always renders.
-              `closeOnClick={false}` keeps the menu open across a flip so the
-              state change is seen. */}
-          <DropdownMenuGroup className="mt-1.5">
-            {showWebSearch ? (
-              <ToggleRow
-                icon={Globe}
-                label="Web search"
-                description="Ground answers with a live web search."
-                checked={searchEnabled}
-                onToggle={onToggleSearch}
-                testId="web-search-toggle"
-              />
-            ) : null}
-            <ToggleRow
-              icon={Braces}
-              label="JSON output"
-              description="Ask the model to reply with a JSON object."
-              checked={jsonModeEnabled}
-              onToggle={onToggleJsonMode}
-              testId="json-mode-toggle"
-            />
-          </DropdownMenuGroup>
-
-          {/* Advanced — progressive disclosure (00-principles §20). Provider,
-              reasoning effort, and data policy collapse here so the picker
-              opens minimal; power users expand to reach them. Mirrors the
-              mobile sheet's Advanced section for cross-modality parity. */}
-          <Collapsible className="mt-1">
+          {/* Advanced — progressive disclosure (00-principles §20). Web search,
+              JSON output, provider, reasoning effort, and data policy collapse
+              here so the picker opens with a single tier decision; power users
+              expand to reach the rest. Mirrors the mobile sheet's Advanced
+              section for cross-modality parity. */}
+          <Collapsible className="mt-1.5">
             <CollapsibleTrigger
               data-testid="picker-advanced"
               className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
@@ -243,6 +218,26 @@ export function ModelModePicker({
               Advanced
             </CollapsibleTrigger>
             <CollapsibleContent>
+              <DropdownMenuGroup className="mt-1">
+                {showWebSearch ? (
+                  <ToggleRow
+                    icon={Globe}
+                    label="Web search"
+                    description="Ground answers with a live web search."
+                    checked={searchEnabled}
+                    onToggle={onToggleSearch}
+                    testId="web-search-toggle"
+                  />
+                ) : null}
+                <ToggleRow
+                  icon={Braces}
+                  label="JSON output"
+                  description="Ask the model to reply with a JSON object."
+                  checked={jsonModeEnabled}
+                  onToggle={onToggleJsonMode}
+                  testId="json-mode-toggle"
+                />
+              </DropdownMenuGroup>
               {showProviderPicker ? (
                 <DropdownMenuGroup className="mt-1">
                   <GroupHeading>Provider</GroupHeading>
@@ -342,33 +337,10 @@ export function ModelModePicker({
                 );
               })}
             </SheetSection>
-            {/* First-level toggles — Web search + JSON output are tap-and-go
-                switches users reach for mid-prompt, so they sit OUT of Advanced
-                in the mobile sheet too. Mirrors the desktop dropdown order. */}
-            {showWebSearch ? (
-              <SheetSection title="Web search">
-                <SheetRow
-                  label={searchEnabled ? "On" : "Off"}
-                  description="Ground answers with a live web search."
-                  selected={searchEnabled}
-                  onSelect={() => onToggleSearch(!searchEnabled)}
-                  testId="web-search-toggle"
-                />
-              </SheetSection>
-            ) : null}
-            <SheetSection title="JSON output">
-              <SheetRow
-                label={jsonModeEnabled ? "On" : "Off"}
-                description="Ask the model to reply with a JSON object."
-                selected={jsonModeEnabled}
-                onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
-                testId="json-mode-toggle"
-              />
-            </SheetSection>
-            {/* Advanced — progressive disclosure (00-principles §20). Provider,
-                reasoning effort, and data policy collapse here for iOS-native
-                simplicity: the sheet opens showing only the Model tier and the
-                two switches, and power users expand to reach the rest. Parity
+            {/* Advanced — progressive disclosure (00-principles §20). Web search,
+                JSON output, provider, reasoning effort, and data policy collapse
+                here for iOS-native simplicity: the sheet opens showing only the
+                Model tier, and power users expand to reach the rest. Parity
                 with the desktop dropdown's Advanced section. */}
             <Collapsible>
               <CollapsibleTrigger
@@ -383,6 +355,26 @@ export function ModelModePicker({
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <div className="flex flex-col gap-4 pt-2">
+                  {showWebSearch ? (
+                    <SheetSection title="Web search">
+                      <SheetRow
+                        label={searchEnabled ? "On" : "Off"}
+                        description="Ground answers with a live web search."
+                        selected={searchEnabled}
+                        onSelect={() => onToggleSearch(!searchEnabled)}
+                        testId="web-search-toggle"
+                      />
+                    </SheetSection>
+                  ) : null}
+                  <SheetSection title="JSON output">
+                    <SheetRow
+                      label={jsonModeEnabled ? "On" : "Off"}
+                      description="Ask the model to reply with a JSON object."
+                      selected={jsonModeEnabled}
+                      onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
+                      testId="json-mode-toggle"
+                    />
+                  </SheetSection>
                   {showProviderPicker ? (
                     <SheetSection title="Provider">
                       {providerOptions.map((p) => {

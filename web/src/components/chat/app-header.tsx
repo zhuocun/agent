@@ -65,10 +65,10 @@ const FLOAT_BUTTON =
   "glass-regular size-[45px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent";
 
 const FLOAT_BUTTON_TOUCH =
-  "glass-regular size-[45px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden";
+  "size-11 rounded-lg p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground active:bg-foreground/[0.06] aria-expanded:bg-transparent md:hidden";
 
 const PILL_HALF =
-  "inline-flex h-[45px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none active:not-aria-[haspopup]:scale-[0.97]";
+  "inline-flex h-11 w-11 select-none items-center justify-center rounded-lg text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none active:not-aria-[haspopup]:scale-[0.97] md:h-[45px] md:w-[54px] md:rounded-full";
 
 export function AppHeader({
   onNewChat,
@@ -99,7 +99,7 @@ export function AppHeader({
   onToggleJsonMode,
 }: AppHeaderProps) {
   return (
-    <header className="relative flex h-[46px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
+    <header className="relative flex h-11 shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
       <div className="flex flex-1 items-center justify-start gap-2">
         <Button
           type="button"
@@ -140,7 +140,7 @@ export function AppHeader({
       </div>
 
       <div className="flex flex-1 items-center justify-end">
-        <div className="glass-regular inline-flex h-[45px] items-center rounded-full">
+        <div className="inline-flex h-11 items-center md:h-[45px] md:glass-regular md:rounded-full">
           <button
             type="button"
             aria-label="New chat"

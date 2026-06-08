@@ -1026,8 +1026,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           // focus-within stack — iOS text fields don't glow. The thin lit edge
           // (`--focus-glow-edge`) + highlight + ambient/key shadows remain; the
           // brand send button is the real focus signal.
-          style={grown ? { borderRadius: "1.75rem" } : undefined}
-          className="glass-capsule group flex items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+          style={
+            grown
+              ? { borderRadius: isMobile ? "1.25rem" : "1.75rem" }
+              : undefined
+          }
+          className="group flex items-end gap-2 rounded-2xl px-2 py-1.5 transition-shadow duration-300 ease-out glass-regular focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] md:glass-capsule md:rounded-full"
         >
           {/* Hidden file input: MUST stay mounted whenever the tier supports
             attachments, independent of collapse state — Playwright drives it
@@ -1262,8 +1266,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             // fades in while the composer is focused. Touch devices (no hover)
             // always show it since they have no persistent focus-within signal.
             className={cn(
-              "mt-1 px-2 text-right text-2xs leading-snug tabular-nums text-muted-foreground/80",
-              "opacity-0 transition-opacity duration-300 group-focus-within/composer:opacity-100 [@media(hover:none)]:opacity-100",
+              "mt-1 hidden px-2 text-right text-2xs leading-snug tabular-nums text-muted-foreground/80 md:block",
+              "opacity-0 transition-opacity duration-300 group-focus-within/composer:opacity-100",
             )}
             data-testid="cost-estimate"
           >

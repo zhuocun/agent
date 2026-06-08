@@ -118,16 +118,22 @@ export function ModelModePicker({
   // the model state once rather than stuttering. The accessible triggerLabel
   // above still announces both values for screen-reader users.
   const showEffort = effort?.label && effort.label !== tier?.label;
+  // Mobile minimalism: under md the trigger collapses to just the tier label so
+  // the bar reads as one tap-target word; the provider + effort meta only return
+  // at md+ where there's room for the full state line. The accessible
+  // `triggerLabel` (above) still announces every value to AT regardless.
   const triggerInner = (
     <>
       <span className="truncate font-medium text-foreground">{tier?.label}</span>
       {providerLabel ? (
-        <span className="hidden max-w-24 truncate text-muted-foreground sm:inline">
+        <span className="hidden max-w-24 truncate text-muted-foreground md:inline">
           {providerLabel}
         </span>
       ) : null}
       {showEffort ? (
-        <span className="text-muted-foreground">{effort.label}</span>
+        <span className="hidden text-muted-foreground md:inline">
+          {effort.label}
+        </span>
       ) : null}
       <ChevronDown aria-hidden className="size-4 text-muted-foreground" />
     </>
@@ -195,11 +201,36 @@ export function ModelModePicker({
             ))}
           </DropdownMenuGroup>
 
+          {/* First-level toggles — Web search + JSON output are tap-and-go
+              switches users reach for mid-prompt, so they sit OUT of Advanced.
+              Web search is tier-gated; JSON output always renders.
+              `closeOnClick={false}` keeps the menu open across a flip so the
+              state change is seen. */}
+          <DropdownMenuGroup className="mt-1.5">
+            {showWebSearch ? (
+              <ToggleRow
+                icon={Globe}
+                label="Web search"
+                description="Ground answers with a live web search."
+                checked={searchEnabled}
+                onToggle={onToggleSearch}
+                testId="web-search-toggle"
+              />
+            ) : null}
+            <ToggleRow
+              icon={Braces}
+              label="JSON output"
+              description="Ask the model to reply with a JSON object."
+              checked={jsonModeEnabled}
+              onToggle={onToggleJsonMode}
+              testId="json-mode-toggle"
+            />
+          </DropdownMenuGroup>
+
           {/* Advanced — progressive disclosure (00-principles §20). Provider,
-              reasoning effort, data policy, and the web-search / JSON-output
-              toggles collapse here so the picker opens minimal; power users
-              expand to reach them. Mirrors the mobile sheet's Advanced section
-              for cross-modality parity. */}
+              reasoning effort, and data policy collapse here so the picker
+              opens minimal; power users expand to reach them. Mirrors the
+              mobile sheet's Advanced section for cross-modality parity. */}
           <Collapsible className="mt-1">
             <CollapsibleTrigger
               data-testid="picker-advanced"
@@ -251,30 +282,6 @@ export function ModelModePicker({
                   ))}
                 </DropdownMenuGroup>
               ) : null}
-
-              {/* Toggles — grouped, switch-like. Web search is tier-gated; JSON
-                  output always renders. `closeOnClick={false}` keeps the menu
-                  open across a flip so the state change is seen. */}
-              <DropdownMenuGroup className="mt-1.5">
-                {showWebSearch ? (
-                  <ToggleRow
-                    icon={Globe}
-                    label="Web search"
-                    description="Ground answers with a live web search."
-                    checked={searchEnabled}
-                    onToggle={onToggleSearch}
-                    testId="web-search-toggle"
-                  />
-                ) : null}
-                <ToggleRow
-                  icon={Braces}
-                  label="JSON output"
-                  description="Ask the model to reply with a JSON object."
-                  checked={jsonModeEnabled}
-                  onToggle={onToggleJsonMode}
-                  testId="json-mode-toggle"
-                />
-              </DropdownMenuGroup>
             </CollapsibleContent>
           </Collapsible>
         </DropdownMenuContent>
@@ -335,11 +342,34 @@ export function ModelModePicker({
                 );
               })}
             </SheetSection>
+            {/* First-level toggles — Web search + JSON output are tap-and-go
+                switches users reach for mid-prompt, so they sit OUT of Advanced
+                in the mobile sheet too. Mirrors the desktop dropdown order. */}
+            {showWebSearch ? (
+              <SheetSection title="Web search">
+                <SheetRow
+                  label={searchEnabled ? "On" : "Off"}
+                  description="Ground answers with a live web search."
+                  selected={searchEnabled}
+                  onSelect={() => onToggleSearch(!searchEnabled)}
+                  testId="web-search-toggle"
+                />
+              </SheetSection>
+            ) : null}
+            <SheetSection title="JSON output">
+              <SheetRow
+                label={jsonModeEnabled ? "On" : "Off"}
+                description="Ask the model to reply with a JSON object."
+                selected={jsonModeEnabled}
+                onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
+                testId="json-mode-toggle"
+              />
+            </SheetSection>
             {/* Advanced — progressive disclosure (00-principles §20). Provider,
-                reasoning effort, web search, data policy, and JSON output all
-                collapse here for iOS-native simplicity: the sheet opens showing
-                only the Model tier, and power users expand to reach everything
-                else. Parity with the desktop dropdown's Advanced section. */}
+                reasoning effort, and data policy collapse here for iOS-native
+                simplicity: the sheet opens showing only the Model tier and the
+                two switches, and power users expand to reach the rest. Parity
+                with the desktop dropdown's Advanced section. */}
             <Collapsible>
               <CollapsibleTrigger
                 data-testid="picker-advanced"
@@ -386,17 +416,6 @@ export function ModelModePicker({
                       ))}
                     </SheetSection>
                   ) : null}
-                  {showWebSearch ? (
-                    <SheetSection title="Web search">
-                      <SheetRow
-                        label={searchEnabled ? "On" : "Off"}
-                        description="Ground answers with a live web search."
-                        selected={searchEnabled}
-                        onSelect={() => onToggleSearch(!searchEnabled)}
-                        testId="web-search-toggle"
-                      />
-                    </SheetSection>
-                  ) : null}
                   {dataPolicy ? (
                     <SheetSection title="Data policy">
                       <li>
@@ -406,15 +425,6 @@ export function ModelModePicker({
                       </li>
                     </SheetSection>
                   ) : null}
-                  <SheetSection title="JSON output">
-                    <SheetRow
-                      label={jsonModeEnabled ? "On" : "Off"}
-                      description="Ask the model to reply with a JSON object."
-                      selected={jsonModeEnabled}
-                      onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
-                      testId="json-mode-toggle"
-                    />
-                  </SheetSection>
                 </div>
               </CollapsibleContent>
             </Collapsible>

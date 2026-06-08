@@ -276,6 +276,8 @@ function ConversationRow({
   onCopy,
   onDownload,
   onRequestDelete,
+  bulkEnabled,
+  onEnterSelection,
 }: {
   conversation: ConversationSummary;
   active: boolean;
@@ -286,6 +288,8 @@ function ConversationRow({
   // pin glyph and a row tap toggles selection instead of opening the chat.
   selectionMode: boolean;
   selected: boolean;
+  bulkEnabled?: boolean;
+  onEnterSelection?: () => void;
   onToggleSelect: (id: string) => void;
   onSelect: (id: string) => void;
   onRename: (id: string, newTitle: string) => void;
@@ -660,6 +664,20 @@ function ConversationRow({
           }
         />
         <DropdownMenuContent align="end" className="w-40">
+          {!selectionMode && bulkEnabled && onEnterSelection ? (
+            <DropdownMenuItem
+              label="Select"
+              onClick={() => {
+                onEnterSelection();
+                onToggleSelect(conversation.id);
+              }}
+              className="gap-2 md:hidden"
+              data-testid="sidebar-select-from-row"
+            >
+              <Check className="size-4" aria-hidden />
+              <span>Select</span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
             label="Rename"
             onClick={enterRename}
@@ -1460,6 +1478,8 @@ export function Sidebar({
           onCopy={onCopyConversation}
           onDownload={onDownloadConversation}
           onRequestDelete={setPendingDelete}
+          bulkEnabled={bulkEnabled}
+          onEnterSelection={() => setSelectionActive(true)}
         />
       </RowWrapper>
     );
@@ -2187,6 +2207,28 @@ export function Sidebar({
               >
                 <LogIn className="size-4" aria-hidden />
                 <span>Sign in</span>
+              </DropdownMenuItem>
+            ) : null}
+            {onOpenAdvancedSearch ? (
+              <DropdownMenuItem
+                label="Advanced search"
+                onClick={onOpenAdvancedSearch}
+                className="gap-2 md:hidden"
+                data-testid="sidebar-advanced-search-mobile"
+              >
+                <SlidersHorizontal className="size-4" aria-hidden />
+                <span>Advanced search</span>
+              </DropdownMenuItem>
+            ) : null}
+            {bulkEnabled && !selectionMode && !isSearching ? (
+              <DropdownMenuItem
+                label="Select conversations"
+                onClick={() => setSelectionActive(true)}
+                className="gap-2 md:hidden"
+                data-testid="sidebar-select-mobile"
+              >
+                <Check className="size-4" aria-hidden />
+                <span>Select conversations</span>
               </DropdownMenuItem>
             ) : null}
             <DropdownMenuItem

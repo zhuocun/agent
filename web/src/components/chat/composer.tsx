@@ -1094,7 +1094,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 );
                 const moreActionsRows = (
                   <>
-                    {supportsAttachments ? (
+                    {supportsAttachments && !keepAttachInline ? (
                       <div className="flex items-center gap-2">
                         {attachButton}
                         <span className="pr-2 text-sm text-foreground">

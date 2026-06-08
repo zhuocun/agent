@@ -386,12 +386,6 @@ function OverflowMenu({
               <DropdownMenuLabel className="text-2xs font-semibold tracking-wide uppercase">
                 Regenerate with
               </DropdownMenuLabel>
-              {/* The split-regenerate trigger keeps its testid so the model
-                  CHOICE list (a different model than the current tier) is still
-                  reachable — it now lives inside the overflow rather than as a
-                  sibling chevron. The one-click current-tier Regenerate stays
-                  inline as a primary action above. */}
-              <span className="sr-only" data-testid="regenerate-with-trigger" />
               {modelChoice.options.tiers.map((tier) => (
                 <DropdownMenuItem
                   key={tier.id}

@@ -258,7 +258,7 @@ def test_get_binding_explicit_fake_route_disabled_in_production() -> None:
 def test_provider_route_registry_lists_available_and_pending_routes() -> None:
     """The provider route registry is the backend/source-of-truth for route policy."""
     by_id = {route.provider_id: route for route in PROVIDER_ROUTES}
-    assert set(by_id) == {"deepseek", "anthropic", "openai", "gemini", "fake"}
+    assert set(by_id) == {"deepseek", "anthropic", "openai", "gemini", "xai", "fake"}
     assert available_provider_backend_ids() == (
         "deepseek",
         "anthropic",
@@ -274,6 +274,40 @@ def test_provider_route_registry_lists_available_and_pending_routes() -> None:
     assert by_id["gemini"].adapter is None
     assert by_id["gemini"].default_route_eligible is False
     assert by_id["gemini"].data_policy is None
+
+
+def test_provider_route_registry_includes_pending_xai_grok_route() -> None:
+    """T07: xAI Grok is a roadmap route — pending, no adapter, never default,
+    and its data policy is still in review (distinct from operational status)."""
+    by_id = {route.provider_id: route for route in PROVIDER_ROUTES}
+    assert "xai" in by_id
+    xai = by_id["xai"]
+    assert xai.label == "Grok (xAI)"
+    assert xai.status == "pending"
+    assert xai.adapter is None
+    assert xai.default_route_eligible is False
+    assert xai.data_policy is None
+    # The data-policy review state is a separate axis from operational status.
+    assert xai.data_policy_review_status == "in_review"
+    # `xai` has no runtime adapter, so it never becomes a usable backend.
+    assert "xai" not in available_provider_backend_ids()
+
+
+def test_provider_route_data_policy_review_status_defaults_and_approvals() -> None:
+    """T07: every route carries a `data_policy_review_status`; production routes
+    are approved, the local fake route needs no review."""
+    by_id = {route.provider_id: route for route in PROVIDER_ROUTES}
+    assert by_id["deepseek"].data_policy_review_status == "approved"
+    assert by_id["anthropic"].data_policy_review_status == "approved"
+    assert by_id["openai"].data_policy_review_status == "approved"
+    assert by_id["fake"].data_policy_review_status == "not_required"
+    assert by_id["gemini"].data_policy_review_status == "pending"
+
+
+def test_get_binding_xai_pending_route_is_none() -> None:
+    """A pending provider must not silently reuse the DeepSeek binding table."""
+    s = Settings(provider_backend="fake")
+    assert get_binding("fast", settings=s, provider_id="xai") is None
 
 
 def test_require_available_provider_route_rejects_pending_gemini() -> None:
@@ -320,7 +354,7 @@ def test_list_tiers_includes_provider_policy_metadata() -> None:
     assert fast.data_policy.training_default == "never"
     assert fast.data_policy.retention_days == 30
     options = {option.provider_id: option for option in fast.provider_options}
-    assert set(options) == {"deepseek", "anthropic", "openai", "gemini", "fake"}
+    assert set(options) == {"deepseek", "anthropic", "openai", "gemini", "xai", "fake"}
     assert options["anthropic"].model_label == "Claude Haiku 4.5"
     assert options["anthropic"].status == "available"
     assert options["anthropic"].supports_attachments is True
@@ -331,6 +365,10 @@ def test_list_tiers_includes_provider_policy_metadata() -> None:
     assert options["gemini"].model_label == ""
     assert options["gemini"].supports_web_search is False
     assert options["gemini"].default_route_eligible is False
+    # xAI Grok (T07): pending roadmap route — no binding, never default-eligible.
+    assert options["xai"].status == "pending"
+    assert options["xai"].model_label == ""
+    assert options["xai"].default_route_eligible is False
 
 
 def test_list_tiers_marks_byok_usable_provider_available() -> None:

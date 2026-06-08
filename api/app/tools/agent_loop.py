@@ -93,6 +93,38 @@ def tool_feedback_to_history(results: list[ToolResult]) -> list[ChatMessage]:
     return [ChatMessage(role="assistant", text=f"{TOOL_FEEDBACK_SENTINEL} {payload}")]
 
 
+def parse_tool_feedback_history(
+    history: list[ChatMessage],
+) -> tuple[list[ChatMessage], list[dict[str, object]]]:
+    """Split sentinel-prefixed tool-feedback turns out of `history`.
+
+    The inverse of ``tool_feedback_to_history``: a real provider adapter calls
+    this to recover the structured tool results the loop fed back so it can
+    rebuild them as NATIVE tool messages (OpenAI `role="tool"` / Anthropic
+    `tool_result` blocks) instead of leaving them as the opaque assistant text
+    turn the FAKE provider keys on. Returns ``(clean_history, results)`` where
+    ``clean_history`` is the history with every sentinel turn removed and
+    ``results`` is the flattened list of result dicts (keys: ``toolCallId``,
+    ``name``, ``status``, ``output``, ``error``) in feed-back order. A malformed
+    payload is skipped (its turn is still dropped) so a bad turn can't crash the
+    real-provider path.
+    """
+    clean: list[ChatMessage] = []
+    results: list[dict[str, object]] = []
+    for message in history:
+        if message.role == "assistant" and message.text.startswith(TOOL_FEEDBACK_SENTINEL):
+            payload = message.text[len(TOOL_FEEDBACK_SENTINEL) :].strip()
+            try:
+                parsed = json.loads(payload)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(parsed, list):
+                results.extend(item for item in parsed if isinstance(item, dict))
+            continue
+        clean.append(message)
+    return clean, results
+
+
 def _to_result_event(*, call: ToolCall, exec_result: object) -> ToolResult:
     """Build a wire ``ToolResult`` event from a ``ToolExecutionResult``."""
     from app.tools.protocol import ToolExecutionResult

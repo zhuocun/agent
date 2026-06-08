@@ -103,6 +103,13 @@ jobs:
         working-directory: web
         run: pnpm build
 
+      - name: Web bundle-size gate
+        working-directory: web
+        # Fails the job if a route's initial JS exceeds the budget (see
+        # scripts/check-bundle-size.mjs). Runs right after the build so it reads
+        # the fresh `.next/` output.
+        run: pnpm check:bundle
+
       - name: Resolve Playwright version
         id: pw-version
         working-directory: web

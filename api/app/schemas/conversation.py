@@ -70,6 +70,11 @@ class Conversation(CamelModel):
     # Assigned tag ids (Conversation Org v2). The FE renders tag chips and the
     # tag picker from these; an empty list = no tags.
     tag_ids: list[str] = Field(default_factory=list)
+    # Absolute expiry instant for an ephemeral conversation (D31 / T13), ISO
+    # string. `None` = no hard expiry. Surfaced so the FE can show "expires at".
+    expires_at: str | None = None
+    # User-designated sensitivity flag (D31 / T13). Defaults False.
+    is_sensitive: bool = False
 
 
 class ConversationSummary(CamelModel):
@@ -120,6 +125,12 @@ class CreateConversationRequest(CamelModel):
     # `selectedTierId` from it (a create-time default, not a send-path lock).
     # Ignored on the temporary branch (temp chats have no persisted row).
     project_id: str | None = None
+    # Ephemeral mode (D31 / T13). When True (and not `isTemporary`), the
+    # conversation IS persisted but stamped with an `expires_at` of now plus the
+    # configured TTL, so the retention purge auto-deletes it after that window.
+    is_ephemeral: bool = False
+    # User-designated sensitivity flag (D31 / T13), persisted on create.
+    is_sensitive: bool = False
 
 
 class BranchConversationRequest(CamelModel):

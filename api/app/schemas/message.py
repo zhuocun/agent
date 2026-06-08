@@ -238,6 +238,11 @@ class ModelAttribution(CamelModel):
     # used here" chip from this turn-level count. Kept at the END so existing
     # positional/test usage is unaffected.
     memory_applied: int | None = None
+    # The ids of the memory facts injected into this turn (D19). Present (and
+    # non-empty) only alongside `memory_applied`; lets the FE link the "Memory
+    # used here" chip back to the exact ledger rows. Omitted (None) for
+    # memory-off turns so the wire shape is unchanged.
+    memory_fact_ids: list[str] | None = None
 
 
 class ChatMessage(CamelModel):

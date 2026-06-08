@@ -104,6 +104,7 @@ from app.providers.protocol import (
     Sources,
     StatusUpdate,
     ToolCall,
+    ToolDefinition,
     ToolResult,
     UsageUpdate,
 )
@@ -172,10 +173,15 @@ class FakeProvider:
         web_search: bool = False,
         supports_vision: bool = True,
         response_format: ResponseFormat | None = None,
+        system_prefix: str | None = None,
+        tools: list[ToolDefinition] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
-        # `thinking` / `reasoning_effort` / `supports_vision` are accepted to
-        # satisfy the Provider Protocol but ignored — the fake's output is
-        # fixed/deterministic and it never emits native attachment blocks.
+        # `thinking` / `reasoning_effort` / `supports_vision` / `system_prefix` /
+        # `tools` are accepted to satisfy the Provider Protocol but ignored — the
+        # fake's output is fixed/deterministic, it never emits native attachment
+        # blocks, it has no system role to carry a cache-stable prefix, and it
+        # drives its tool-calling via the deterministic `TOOL_*` markers below
+        # (not native tool advertisement).
         # Forced provider-fallback retry: when `user_text` starts with
         # `FORCE_FALLBACK_RETRY:`, raise a retryable upstream error BEFORE
         # yielding ANYTHING — but ONLY on the primary route. The route hands the
@@ -470,6 +476,7 @@ class FakeProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        system_prefix: str | None = None,
     ) -> str:
         """Non-streaming variant. Deterministic ~5-word title from `user_text`.
 

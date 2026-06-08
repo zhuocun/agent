@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MemoryFact
@@ -55,6 +55,33 @@ async def list_for_injection(
         .limit(limit)
     )
     return [row for row in (await db.execute(stmt)).scalars().all()]
+
+
+async def list_for_injection_with_ids(
+    db: AsyncSession,
+    user_id: UUID,
+    *,
+    limit: int = INJECTION_LIMIT,
+) -> list[tuple[str, str]]:
+    """Like `list_for_injection`, but returns `(id, content)` pairs.
+
+    The id is stringified so callers can record the injected fact ids on the
+    turn attribution (the FE links the "Memory used here" chip back to the
+    exact ledger rows). Same oldest-first ordering and `limit` bound.
+    """
+    stmt = (
+        select(MemoryFact.id, MemoryFact.content)
+        .where(MemoryFact.user_id == user_id)
+        .order_by(MemoryFact.created_at.asc(), MemoryFact.id.asc())
+        .limit(limit)
+    )
+    return [(str(row[0]), row[1]) for row in (await db.execute(stmt)).all()]
+
+
+async def count_for_user(db: AsyncSession, user_id: UUID) -> int:
+    """Return the number of facts owned by `user_id` (for the per-user cap)."""
+    stmt = select(func.count()).select_from(MemoryFact).where(MemoryFact.user_id == user_id)
+    return int((await db.execute(stmt)).scalar_one())
 
 
 async def get_for_user(

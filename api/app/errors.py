@@ -112,3 +112,88 @@ def not_found(what: str) -> AppError:
         ),
         status.HTTP_404_NOT_FOUND,
     )
+
+
+def platform_budget_warning_envelope(*, percent: int) -> ErrorEnvelope:
+    """Pre-wall budget alert (PRD 08 §5.4, T21).
+
+    A transparency callout, NOT a block (`severity: "warning"`): surfaced in the
+    bootstrap usage object once spend crosses the configured threshold (e.g.
+    80%) of the effective quota. `percent` is the rounded fraction of quota
+    already spent. The hard block (`PLATFORM_BUDGET_EXCEEDED`) still governs
+    send — this only warns ahead of it.
+    """
+    return ErrorEnvelope(
+        code="PLATFORM_BUDGET_WARNING",
+        severity="warning",
+        title="Approaching your budget",
+        body=(
+            f"You've used about {percent}% of your usage budget for this period."
+        ),
+        actions=[ErrorAction(label="View usage", kind="open_settings")],
+        meta={"percent": percent},
+    )
+
+
+def platform_budget_soft_cap_envelope(*, percent: int) -> ErrorEnvelope:
+    """Soft-cap reached (PRD 08 §5.4, T21).
+
+    Surfaced in the bootstrap usage object once spend reaches 100% of the
+    effective quota. `severity: "warning"` and a transparency callout, NOT the
+    hard 429 block — that remains `PLATFORM_BUDGET_EXCEEDED` on the send path.
+    """
+    return ErrorEnvelope(
+        code="PLATFORM_BUDGET_SOFT_CAP",
+        severity="warning",
+        title="Budget reached",
+        body=(
+            "You've reached your usage budget for this period. New platform-paid "
+            "turns may be blocked until it resets or you add credits."
+        ),
+        actions=[ErrorAction(label="View usage", kind="open_settings")],
+        meta={"percent": percent},
+    )
+
+
+def platform_guest_limit_envelope(*, limit: int) -> AppError:
+    """Anonymous-guest hard sign-up wall (PRD 08 §5.4 / §7.4, T06).
+
+    A BLOCK (raised as `AppError`): once a guest has sent `limit` persisted
+    messages, the next send is refused until they sign up / sign in. Distinct
+    from `PLATFORM_GUEST_DOWNGRADE`, which is a non-blocking transparency
+    callout that fires earlier (premium-allotment exhausted). The copy names the
+    limit per the PRD 08 copy rule ("state the limit").
+    """
+    return AppError(
+        ErrorEnvelope(
+            code="PLATFORM_GUEST_LIMIT",
+            severity="warning",
+            title="Sign up to keep chatting",
+            body=(
+                f"You've reached the {limit}-message limit for guests. Sign up or "
+                "sign in to keep going — your current chat is preserved."
+            ),
+        ),
+        status.HTTP_403_FORBIDDEN,
+    )
+
+
+def platform_guest_downgrade_envelope(*, served_tier_label: str) -> ErrorEnvelope:
+    """Anonymous-guest model downgrade callout (PRD 08 §5.4 / §7.4, T06).
+
+    A transparency callout (`severity: "info"`), NOT a block: once a guest has
+    exhausted their premium-tier allotment, the next premium turn is served by
+    the cheaper `fast` tier instead. Generation CONTINUES — only
+    `PLATFORM_GUEST_LIMIT` blocks send. Per the PRD this reuses the §5.4
+    substitution-callout (a guest downgrade is never silent), so on the wire the
+    turn also carries an `auto_downgrade` substitution on its attribution.
+    """
+    return ErrorEnvelope(
+        code="PLATFORM_GUEST_DOWNGRADE",
+        severity="info",
+        title=f"Now answering with {served_tier_label}",
+        body=(
+            f"You've used your premium guest allotment, so this turn is answered "
+            f"by {served_tier_label}. Sign up to keep the better model."
+        ),
+    )

@@ -1,10 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
+import { cookies } from "next/headers";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toast";
 import { InstallCoachmark } from "@/components/chat/install-coachmark";
+import { DirController, I18nProvider } from "@/lib/i18n/context";
 
 export const metadata: Metadata = {
   title: "Olune — multi-model AI chat",
@@ -80,14 +82,20 @@ const SW_REGISTER_SNIPPET = `if ('serviceWorker' in navigator) {
   });
 }`;
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Document direction is sourced from the `rtl` cookie so the server renders
+  // the correct `dir` on first paint; the `?rtl=1`/`?rtl=0` query hook
+  // (DirController) writes that cookie and flips direction live for testing.
+  const rtlCookie = (await cookies()).get("rtl")?.value;
+  const dir: "ltr" | "rtl" = rtlCookie === "1" ? "rtl" : "ltr";
   return (
     <html
       lang="en"
+      dir={dir}
       suppressHydrationWarning
       className="h-full antialiased"
     >
@@ -124,12 +132,15 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <TooltipProvider delay={200}>
-            {children}
-            <InstallCoachmark />
-            <Toaster />
-          </TooltipProvider>
+          <I18nProvider dir={dir}>
+            <TooltipProvider delay={200}>
+              {children}
+              <InstallCoachmark />
+              <Toaster />
+            </TooltipProvider>
+          </I18nProvider>
         </ThemeProvider>
+        <DirController />
         {process.env.NODE_ENV === "production" ? (
           <Script id="sw-register" strategy="afterInteractive">
             {SW_REGISTER_SNIPPET}

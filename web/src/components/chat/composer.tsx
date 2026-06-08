@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   ArrowUp,
+  Camera,
   FileText,
   Image as ImageIcon,
   Library,
@@ -44,6 +45,15 @@ import { estimateTurnCost } from "@/lib/cost-estimate";
 import { fetchPromptTemplates } from "@/lib/apiClient";
 import { useSpeechRecognition } from "@/lib/use-speech-recognition";
 import { haptic } from "@/lib/use-haptic";
+import { useT } from "@/lib/i18n/context";
+import { yieldToMain } from "@/lib/scheduler-yield";
+import {
+  NEW_CHAT_DRAFT_KEY,
+  deleteDraft,
+  loadDraft,
+  requestPersistentStorage,
+  saveDraft,
+} from "@/lib/offline-store";
 import type {
   AttachmentPart,
   ModelTier,
@@ -83,6 +93,16 @@ interface ComposerProps {
   // computed from the live draft (Feature 2). Absent ⇒ no estimate line.
   // Compare mode is toggled from the command palette, not the composer.
   estimateTier?: ModelTier;
+  // Conversation id the current draft belongs to (null for a brand-new chat).
+  // Drives offline draft persistence: the draft is saved keyed by this id and
+  // restored when it changes, so an in-progress message survives reloads and
+  // conversation switches (T02). Absent ⇒ persistence is keyed to the new-chat
+  // slot.
+  draftKey?: string | null;
+  // When false, offline draft persistence is disabled entirely (no read, no
+  // write). Used for temporary "off the record" chats, which must not leave a
+  // draft behind in IndexedDB. Defaults to true.
+  persistDrafts?: boolean;
 }
 
 export interface ComposerHandle {
@@ -245,9 +265,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       supportsAttachments = false,
       supportsVision = true,
       estimateTier,
+      draftKey = null,
+      persistDrafts = true,
     },
     forwardedRef,
   ) {
+    const t = useT();
     const [value, setValue] = useState("");
     const [attachments, setAttachments] = useState<AttachmentPart[]>([]);
     const [pendingAttachmentReads, setPendingAttachmentReads] = useState(0);
@@ -267,6 +290,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     const [slashDismissed, setSlashDismissed] = useState(false);
     const ref = useRef<HTMLTextAreaElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    // Separate hidden input wired with `capture="environment"` so mobile
+    // browsers open the rear camera directly, distinct from the library/files
+    // picker above (T10).
+    const cameraInputRef = useRef<HTMLInputElement>(null);
+    // Latest draft value + previous draft key, read by the persistence effects
+    // without making them depend on `value` (which would reload every keystroke).
+    const valueRef = useRef(value);
+    const prevDraftKeyRef = useRef<string | undefined>(undefined);
     // Anchor for the popover's outside-click guard — clicks anywhere on the
     // composer surface (textarea, send button) must NOT dismiss the popover.
     const capsuleRef = useRef<HTMLDivElement>(null);
@@ -565,6 +596,81 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     }, []);
     const dictation = useSpeechRecognition(appendDictation);
 
+    // Keep the latest value in a ref for the key-change persistence effect.
+    useEffect(() => {
+      valueRef.current = value;
+    }, [value]);
+
+    // One-time: ask the browser to persist our origin's storage so offline
+    // drafts/queue survive eviction (best-effort, no-ops where unsupported).
+    useEffect(() => {
+      if (!persistDrafts) return;
+      void requestPersistentStorage();
+    }, [persistDrafts]);
+
+    // Restore / re-key the offline draft when the conversation changes (T02).
+    // Setting state happens inside async `.then` callbacks (never synchronously
+    // in the effect body) to stay clear of the repo's set-state-in-effect lint.
+    useEffect(() => {
+      if (!persistDrafts) return;
+      const currentKey = draftKey ?? NEW_CHAT_DRAFT_KEY;
+      const prevKey = prevDraftKeyRef.current;
+
+      const restore = (stored: string | null) => {
+        const next = stored ?? "";
+        prevValueRef.current = next;
+        setValue(next);
+        requestAnimationFrame(autoGrow);
+      };
+
+      // First mount: load whatever was last left for this key.
+      if (prevKey === undefined) {
+        prevDraftKeyRef.current = currentKey;
+        let cancelled = false;
+        void loadDraft(currentKey).then((stored) => {
+          if (!cancelled) restore(stored);
+        });
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      if (prevKey === currentKey) return;
+      prevDraftKeyRef.current = currentKey;
+
+      // A new chat (no id yet) that just gained a real conversation id is the
+      // SAME logical draft context — carry any in-progress text across instead
+      // of clobbering it, and clear the new-chat slot.
+      if (prevKey === NEW_CHAT_DRAFT_KEY && currentKey !== NEW_CHAT_DRAFT_KEY) {
+        const current = valueRef.current;
+        void deleteDraft(NEW_CHAT_DRAFT_KEY);
+        if (current.trim().length > 0) void saveDraft(currentKey, current);
+        return;
+      }
+
+      // Genuine conversation switch: persist the outgoing draft under the
+      // previous key, then restore the target conversation's draft.
+      void saveDraft(prevKey, valueRef.current);
+      let cancelled = false;
+      void loadDraft(currentKey).then((stored) => {
+        if (!cancelled) restore(stored);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [draftKey, persistDrafts]);
+
+    // Debounced save of the live draft under the active key. Empty drafts are
+    // deleted by `saveDraft`, so a cleared composer never leaves a stale row.
+    useEffect(() => {
+      if (!persistDrafts) return;
+      const key = draftKey ?? NEW_CHAT_DRAFT_KEY;
+      const handle = window.setTimeout(() => {
+        void saveDraft(key, value);
+      }, 500);
+      return () => window.clearTimeout(handle);
+    }, [value, draftKey, persistDrafts]);
+
     useImperativeHandle(forwardedRef, () => ({
       setDraft: (text: string) => {
         prevValueRef.current = text;
@@ -595,7 +701,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       if (pendingAttachmentReads > 0) return;
       if (attachments.length > 0 && !supportsAttachments) return;
       haptic("selection");
-      onSend(text, attachments);
+      const outgoingText = text;
+      const outgoingAttachments = attachments;
+      // Reset the composer immediately so the cleared input paints without
+      // waiting on the (potentially heavy) send handler.
       prevValueRef.current = "";
       setValue("");
       setAttachments([]);
@@ -604,8 +713,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       // in lockstep — otherwise the empty pill would briefly keep its large
       // multi-line corners.
       setGrown(false);
+      // The turn is being sent — drop the persisted draft for this key.
+      if (persistDrafts) void deleteDraft(draftKey ?? NEW_CHAT_DRAFT_KEY);
       requestAnimationFrame(() => {
         if (ref.current) ref.current.style.height = "auto";
+      });
+      // Yield to the main thread so this click/keydown task ends here (INP is
+      // attributed to the interaction): the expensive optimistic-send work —
+      // big message-list state churn plus the fetch kickoff in `onSend` — then
+      // runs in a fresh task instead of extending the input handler.
+      void yieldToMain().then(() => {
+        onSend(outgoingText, outgoingAttachments);
       });
     };
 
@@ -737,10 +855,27 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           setMoreActionsOpen(false);
         }}
         disabled={isStreaming}
-        aria-label="Attach file"
+        aria-label={t("composer.attach")}
         className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
       >
         <Paperclip className="size-4" />
+      </Button>
+    );
+
+    const cameraButton = (
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={() => {
+          cameraInputRef.current?.click();
+          setMoreActionsOpen(false);
+        }}
+        disabled={isStreaming}
+        aria-label={t("composer.takePhoto")}
+        data-testid="composer-camera"
+        className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+      >
+        <Camera className="size-4" />
       </Button>
     );
 
@@ -1045,6 +1180,25 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               onChange={(e) => onPickFiles(e.target.files)}
             />
           ) : null}
+          {/* Camera capture input (T10): `capture="environment"` asks mobile
+            browsers to open the rear camera directly rather than the file
+            browser. Mounted only when the tier can both accept files AND
+            interpret images (a camera capture is always an image); on desktop
+            the attribute is ignored and it behaves like an image file picker.
+            Kept here (a sibling of the library input) so it stays mounted and
+            Playwright can drive it via setInputFiles regardless of disclosure
+            state. */}
+          {supportsAttachments && supportsVision ? (
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              data-testid="composer-camera-input"
+              className="sr-only"
+              onChange={(e) => onPickFiles(e.target.files)}
+            />
+          ) : null}
           {/* Always-collapsed cluster: in BOTH the empty/at-rest and composing
             states the secondary controls live behind the single "More actions"
             ("+") disclosure, so the composer always reads as `[+] [textarea]
@@ -1079,7 +1233,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                     type="button"
                     variant="ghost"
                     disabled={isStreaming}
-                    aria-label="More actions"
+                    aria-label={t("composer.moreActions")}
                     aria-haspopup="dialog"
                     data-testid="composer-more-actions"
                     className={cn(
@@ -1098,7 +1252,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                       <div className="flex items-center gap-2">
                         {attachButton}
                         <span className="pr-2 text-sm text-foreground">
-                          Attach file
+                          {t("composer.attach")}
+                        </span>
+                      </div>
+                    ) : null}
+                    {/* Camera capture row (T10): a distinct entry point from the
+                        library/files picker above, surfacing the rear-camera
+                        input. Only when the tier accepts images. */}
+                    {supportsAttachments && supportsVision ? (
+                      <div className="flex items-center gap-2">
+                        {cameraButton}
+                        <span className="pr-2 text-sm text-foreground">
+                          {t("composer.takePhoto")}
                         </span>
                       </div>
                     ) : null}
@@ -1142,7 +1307,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                       <TooltipTrigger
                         render={<Popover.Trigger render={moreActionsTrigger} />}
                       />
-                      <TooltipContent>More actions</TooltipContent>
+                      <TooltipContent>{t("composer.moreActions")}</TooltipContent>
                     </Tooltip>
                     <Popover.Portal>
                       <Popover.Positioner
@@ -1174,7 +1339,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             ) : null}
           </div>
           <label htmlFor="composer-input" className="sr-only">
-            Message Olune
+            {t("composer.inputLabel")}
           </label>
           <textarea
             id="composer-input"
@@ -1189,7 +1354,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               autoGrow();
             }}
             onKeyDown={onKeyDown}
-            placeholder="Message Olune…"
+            placeholder={t("composer.placeholder")}
             role="combobox"
             aria-haspopup="listbox"
             aria-autocomplete="list"
@@ -1211,7 +1376,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                     <Button
                       type="button"
                       onClick={onStop}
-                      aria-label="Stop generating"
+                      aria-label={t("composer.stop")}
                       className={cn(
                         BUTTON_BASE,
                         "bg-foreground/10 text-foreground hover:bg-foreground/15",
@@ -1230,10 +1395,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 disabled={!canSubmit}
                 aria-label={
                   attachmentReadPending
-                    ? "Reading attachments"
+                    ? t("composer.readingAttachments")
                     : attachedSendBlocked
                       ? "Attachments are not supported by the current model"
-                      : "Send message"
+                      : t("composer.send")
                 }
                 // E2E target: stable hook for "send the message" — Playwright
                 // specs click this to dispatch a turn, since aria-label values

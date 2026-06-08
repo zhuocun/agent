@@ -190,6 +190,21 @@ class Conversation(Base):
         ForeignKey("project.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Absolute expiry instant for ephemeral conversations (D31 / T13). NULL =
+    # no hard expiry (the conversation lives until the retention window, if any,
+    # purges it). When set, the conversation is purged once `now >= expires_at`,
+    # independent of `retention_days` — this is how an `isEphemeral` chat
+    # auto-deletes after a fixed lifetime regardless of activity.
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Sensitivity flag (D31 / T13). NOT NULL, defaults False. Marks a thread the
+    # user designated as sensitive; future surfaces can use it to tighten
+    # disclosure/sharing. `false()` gives a DB-level default so the column
+    # backfills on the ALTER and a bare insert never writes NULL.
+    is_sensitive: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

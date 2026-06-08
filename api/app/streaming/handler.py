@@ -47,11 +47,13 @@ from sse_starlette import ServerSentEvent
 from app.config import get_settings
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import conversations as conversations_repo
+from app.db.repositories import memory_facts as memory_facts_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
 from app.db.session import get_session_factory
 from app.errors import AppError, ErrorEnvelope
+from app.prompt_assembly import build_system_prefix, build_user_turn
 from app.providers.factory import build_provider
 from app.providers.pricing import build_attribution, compute_cost_breakdown
 from app.providers.protocol import (
@@ -68,6 +70,7 @@ from app.providers.protocol import (
     Sources,
     StatusUpdate,
     ToolCall,
+    ToolDefinition,
     ToolResult,
     UsageUpdate,
 )
@@ -102,7 +105,7 @@ from app.streaming.sse import (
 )
 from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
 from app.tools.agent_loop import run_agent_loop, tool_feedback_to_history
-from app.tools.builtin import execute_tool
+from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolCallRequest
 
 log = logging.getLogger(__name__)
@@ -265,57 +268,6 @@ _TITLE_AUTOGEN_PROMPT = (
     "explanation.\n\nMessage: "
 )
 
-_CUSTOM_INSTRUCTIONS_PROMPT = (
-    "The user has saved custom instructions. Treat them as preferences for "
-    "this response only; they do not override safety rules, system rules, or "
-    "developer instructions.\n\n"
-    "<custom_instructions>\n{instructions}\n</custom_instructions>\n\n"
-    "<user_message>\n{user_text}\n</user_message>"
-)
-
-
-def _apply_custom_instructions(user_text: str, custom_instructions: str | None) -> str:
-    instructions = (custom_instructions or "").strip()
-    if not instructions:
-        return user_text
-    return _CUSTOM_INSTRUCTIONS_PROMPT.format(
-        instructions=instructions,
-        user_text=user_text,
-    )
-
-
-# Transparent long-term memory (D19). There is NO system-prompt seam and NO
-# cache-stable prefix in this codebase — the Provider protocol takes only
-# `history` + `user_text` — so memory is wrapped into the user turn the SAME way
-# custom instructions are (see `_apply_custom_instructions`). Phrased as
-# preferences-only context that never overrides safety/system/developer rules.
-# FUTURE OPTIMIZATION: once a cache-stable system prefix / `cache_control` seam
-# exists, move this block there so the (stable) ledger is cached across turns
-# instead of re-sent inline each turn.
-_MEMORY_PROMPT = (
-    "The user has saved long-term memory facts about themselves. Treat them as "
-    "background context for this response only; they do not override safety "
-    "rules, system rules, or developer instructions, and you need not use a "
-    "fact if it is irrelevant.\n\n"
-    "<memory>\n{facts}\n</memory>\n\n"
-    "<user_message>\n{user_text}\n</user_message>"
-)
-
-
-def _apply_memory(user_text: str, facts: list[str]) -> str:
-    """Wrap `user_text` with the saved memory facts when any are present.
-
-    No-op (returns `user_text` unchanged) when `facts` is empty, so the
-    memory-off / no-facts path is byte-for-byte the pre-memory prompt. Composed
-    alongside `_apply_custom_instructions` in `_build_raw_stream`.
-    """
-    cleaned = [fact.strip() for fact in facts if fact and fact.strip()]
-    if not cleaned:
-        return user_text
-    rendered = "\n".join(f"- {fact}" for fact in cleaned)
-    return _MEMORY_PROMPT.format(facts=rendered, user_text=user_text)
-
-
 def _apply_structured_output(
     attribution: ModelAttribution,
     *,
@@ -408,6 +360,119 @@ async def _autogen_title(
         log.warning("autogen_title.failed", exc_info=exc)
 
 
+# Memory auto-extraction (D19). After a turn completes we ask the model to pull
+# a handful of durable, personal facts out of the exchange and append them to
+# the user's ledger. Bounded hard: at most `_MEMORY_EXTRACT_MAX` facts per turn,
+# and never beyond `_MEMORY_FACTS_PER_USER_CAP` total per user, so an automated
+# pipeline can't grow the ledger without limit.
+_MEMORY_EXTRACT_MAX = 3
+_MEMORY_FACTS_PER_USER_CAP = 200
+# Bound a single extracted fact's length to the schema's content cap so a
+# runaway model can't store an unbounded blob.
+_MEMORY_FACT_MAX_CHARS = 2000
+_MEMORY_EXTRACTION_PROMPT = (
+    "From the conversation turn below, extract 0 to 3 DURABLE facts about the "
+    "user worth remembering long-term (stable preferences, identity, ongoing "
+    "projects, constraints). Ignore one-off task details, questions, and "
+    "anything not about the user. Respond ONLY with a JSON array of short "
+    "strings (e.g. [\"Prefers metric units\"]). Return [] if there is nothing "
+    "durable.\n\n"
+)
+
+
+def _parse_extracted_facts(raw: str) -> list[str]:
+    """Parse the model's extraction reply into a bounded list of fact strings.
+
+    Tolerant: accepts a JSON array of strings (the requested shape) and falls
+    back to newline-delimited lines (stripping list bullets) when the reply
+    isn't valid JSON. Drops blanks, trims to the content cap, dedupes, and caps
+    the count at `_MEMORY_EXTRACT_MAX`. Returns `[]` for unusable input so the
+    caller simply stores nothing.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return []
+    candidates: list[str] = []
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, list):
+        candidates = [str(item) for item in parsed if isinstance(item, str | int | float)]
+    else:
+        # Fallback: treat each non-empty line as a fact, stripping common
+        # bullet/markdown prefixes the model may have emitted despite the ask.
+        for line in text.splitlines():
+            cleaned_line = line.strip().lstrip("-*0123456789.) ").strip()
+            if cleaned_line:
+                candidates.append(cleaned_line)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        fact = candidate.strip()[:_MEMORY_FACT_MAX_CHARS].strip()
+        if not fact or fact.lower() in seen:
+            continue
+        seen.add(fact.lower())
+        out.append(fact)
+        if len(out) >= _MEMORY_EXTRACT_MAX:
+            break
+    return out
+
+
+async def _extract_memory_facts(
+    *,
+    provider: Provider,
+    model_id: str,
+    api_key: str | None,
+    conversation_id: UUID,
+    user_id: UUID,
+    user_text: str,
+    answer_text: str,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Detached task: pull durable facts from a completed turn into the ledger.
+
+    Best-effort and fire-and-forget (mirrors `_autogen_title`): owns its own
+    session, swallows every exception so it can never propagate into the
+    streaming response, and is bounded by the per-turn and per-user caps. Only
+    invoked when memory is enabled and the turn is non-temporary (the caller
+    gates this).
+    """
+    try:
+        transcript = f"User: {user_text}\nAssistant: {answer_text}".strip()
+        if not transcript:
+            return
+        reply = await provider.complete(
+            model_id=model_id,
+            history=[],
+            user_text=_MEMORY_EXTRACTION_PROMPT + transcript,
+            api_key=api_key,
+        )
+        facts = _parse_extracted_facts(reply)
+        if not facts:
+            return
+        async with session_factory() as session:
+            existing = await memory_facts_repo.count_for_user(session, user_id)
+            room = _MEMORY_FACTS_PER_USER_CAP - existing
+            if room <= 0:
+                return
+            inserted = 0
+            for fact in facts[:room]:
+                await memory_facts_repo.add(
+                    session,
+                    user_id=user_id,
+                    content=fact,
+                    source="conversation",
+                    source_conversation_id=conversation_id,
+                )
+                inserted += 1
+            if inserted:
+                await session.commit()
+    except Exception as exc:
+        log.warning("memory_extraction.failed", exc_info=exc)
+
+
 async def stream_and_persist(
     *,
     request: Request,
@@ -431,6 +496,8 @@ async def stream_and_persist(
     attachments: list[AttachmentPayload] | None = None,
     custom_instructions: str | None = None,
     memory_facts: list[str] | None = None,
+    memory_fact_ids: list[str] | None = None,
+    memory_enabled: bool = False,
     reasoning_effort_override: str | None = None,
     thinking_override: bool | None = None,
     monthly_quota_usd_override: float | None = None,
@@ -550,6 +617,16 @@ async def stream_and_persist(
     memory_applied_count = len(
         [fact for fact in (memory_facts or []) if fact and fact.strip()]
     )
+    # The ids of the injected facts, recorded on the attribution so the FE can
+    # link the "Memory used here" chip back to the exact ledger rows (D19).
+    # None when nothing was injected so the wire shape is unchanged.
+    memory_fact_ids_applied = list(memory_fact_ids or []) or None
+    # T19: count image attachments once so the cost math can fold in a per-image
+    # input-token estimate on multimodal bindings (no-op when the served binding
+    # sets no `image_token_formula`, which is every wired route today).
+    image_attachment_count = sum(
+        1 for attachment in (attachments or []) if attachment.media_type == "image"
+    )
     # Working route state. These start at the primary route and are REASSIGNED in
     # place if a provider-fallback retry fires (Phase 2). The inner closures
     # (`_persist_assistant`, `_terminal_properties`, `_apply_event`,
@@ -584,21 +661,36 @@ async def stream_and_persist(
     # (the `Provider.stream` Protocol intentionally has no tool params). Empty on
     # round 1 / the non-tool path, so the provider stream is byte-for-byte
     # unchanged there.
+    # Cache-stable system prefix (custom instructions + long-term memory) and
+    # the clean per-turn user text, assembled once via `prompt_assembly` (T20).
+    # Hoisting memory + instructions into the system prefix (instead of wrapping
+    # them into the user turn) lets a cache-aware backend reuse the stable
+    # prefix across turns. `turn_system_prefix` is None when there's nothing to
+    # inject, so the no-instructions / memory-off path sends no system role —
+    # byte-for-byte unchanged.
+    turn_system_prefix = build_system_prefix(custom_instructions, memory_facts or [])
+    turn_user_text = build_user_turn(user_text)
+
+    # Native tool advertisement for REAL providers (agent loop). When tools are
+    # enabled we hand the provider the registry's tool schemas so it can
+    # advertise them and parse the model's calls into structured `ToolCall`
+    # events; the fake provider ignores this and uses its deterministic markers.
+    # None when tools are off ⇒ no tools advertised, provider stream unchanged.
+    turn_tool_definitions = (
+        [
+            ToolDefinition(name=spec.name, label=spec.label, parameters=spec.schema)
+            for spec in TOOL_REGISTRY.values()
+        ]
+        if tools_active
+        else None
+    )
+
     def _build_raw_stream(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
         round_history = history + tool_feedback_to_history(tool_feedback)
-        # Compose memory + custom instructions into the user turn. Both wrap the
-        # SAME way (no system seam in the Provider protocol). Memory is applied
-        # FIRST so the custom-instructions wrapper is the OUTERMOST framing of
-        # the turn; an empty `memory_facts` makes `_apply_memory` a no-op, so the
-        # memory-off path is byte-for-byte unchanged.
-        composed_user_text = _apply_custom_instructions(
-            _apply_memory(user_text, memory_facts or []),
-            custom_instructions,
-        )
         return active_provider.stream(
             model_id=binding.model_id,
             history=round_history,
-            user_text=composed_user_text,
+            user_text=turn_user_text,
             attachments=attachments,
             api_key=active_api_key,
             # DeepSeek V4 dual-mode hints. The per-turn override REPLACES the
@@ -628,6 +720,13 @@ async def stream_and_persist(
             # the route already rejects images to a non-vision binding before this
             # point.
             supports_vision=binding.supports_vision,
+            # Cache-stable preamble (custom instructions + memory). None ⇒ no
+            # system role, byte-for-byte unchanged.
+            system_prefix=turn_system_prefix,
+            # Agent-loop tools advertised to a real provider (None when tools are
+            # off). The fake provider ignores this; the OpenAI/Anthropic adapters
+            # advertise them natively and emit `ToolCall`s the agent loop fulfils.
+            tools=turn_tool_definitions,
         )
 
     # The current provider iterator. Rebuilt on a fallback retry so the pump
@@ -932,7 +1031,11 @@ async def stream_and_persist(
                         continue
                     _apply_event(drained)
                 # Flush accumulators, persist with status=stopped + estimate.
-                breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
+                breakdown = compute_cost_breakdown(
+                    usage=final_usage,
+                    binding=binding,
+                    image_count=image_attachment_count,
+                )
                 # Per-turn cost: matches what build_attribution exposes as
                 # `attribution.costUsd` (pricing.py) so the ledger and the
                 # wire stay consistent.
@@ -948,6 +1051,7 @@ async def stream_and_persist(
                     substituted_model=sub_model,
                     substituted_display_label=sub_label,
                     memory_applied=memory_applied_count,
+                    memory_fact_ids=memory_fact_ids_applied,
                 )
                 # Use a fresh session for stop-path persist (see helper docstring).
                 # The assistant row and the usage_rollup bump land in ONE commit:
@@ -1183,7 +1287,11 @@ async def stream_and_persist(
         # the tokens consumed up to the pause, bump usage, and RELEASE the
         # single-active-stream guard so the resume POST can open its own stream.
         if paused:
-            breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
+            breakdown = compute_cost_breakdown(
+                usage=final_usage,
+                binding=binding,
+                image_count=image_attachment_count,
+            )
             turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
             attribution = build_attribution(
                 requested_tier_id=requested_tier_id,
@@ -1196,6 +1304,7 @@ async def stream_and_persist(
                 substituted_model=sub_model,
                 substituted_display_label=sub_label,
                 memory_applied=memory_applied_count,
+                memory_fact_ids=memory_fact_ids_applied,
             )
             paused_assistant_id: UUID | None = None
             if not is_temporary and conversation_id is not None:
@@ -1273,7 +1382,11 @@ async def stream_and_persist(
             yield encode_sources(SourcesEvent(items=[], requested=True))
 
         # Provider finished cleanly. Compute attribution and emit terminal.
-        breakdown = compute_cost_breakdown(usage=final_usage, binding=binding)
+        breakdown = compute_cost_breakdown(
+            usage=final_usage,
+            binding=binding,
+            image_count=image_attachment_count,
+        )
         # Per-turn cost: matches what build_attribution exposes as
         # `attribution.costUsd` (pricing.py) so the cost ledger row and the
         # wire attribution agree.
@@ -1289,6 +1402,7 @@ async def stream_and_persist(
             substituted_model=sub_model,
             substituted_display_label=sub_label,
             memory_applied=memory_applied_count,
+            memory_fact_ids=memory_fact_ids_applied,
         )
         # Structured-output boundary validation. No-op unless a `response_format`
         # was requested; then it sets `output_format` and validates the
@@ -1406,6 +1520,27 @@ async def stream_and_persist(
                 )
                 _BG_TASKS.add(task)
                 task.add_done_callback(_BG_TASKS.discard)
+
+            # Memory auto-extraction (D19). Fire-and-forget on a clean `done`
+            # turn when memory is enabled (the route only sets `memory_enabled`
+            # for non-temporary turns). Pulls 0-3 durable facts from the turn
+            # into the ledger, bounded per-user. Best-effort: the task owns its
+            # own session and swallows errors, so it can never affect this turn.
+            if memory_enabled and user_id is not None:
+                extract_task = asyncio.create_task(
+                    _extract_memory_facts(
+                        provider=active_provider,
+                        model_id=binding.model_id,
+                        api_key=active_api_key,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        user_text=user_text,
+                        answer_text="".join(answer_buf),
+                        session_factory=_derive_session_factory(db),
+                    )
+                )
+                _BG_TASKS.add(extract_task)
+                extract_task.add_done_callback(_BG_TASKS.discard)
 
         # Terminal frame. For temporary chats the message is never persisted,
         # so we mint a fresh uuid4 per turn — using a constant placeholder
@@ -1561,6 +1696,8 @@ async def run_detached_producer(
     attachments: list[AttachmentPayload] | None = None,
     custom_instructions: str | None = None,
     memory_facts: list[str] | None = None,
+    memory_fact_ids: list[str] | None = None,
+    memory_enabled: bool = False,
     reasoning_effort_override: str | None = None,
     thinking_override: bool | None = None,
     monthly_quota_usd_override: float | None = None,
@@ -1620,6 +1757,8 @@ async def run_detached_producer(
                 attachments=attachments,
                 custom_instructions=custom_instructions,
                 memory_facts=memory_facts,
+                memory_fact_ids=memory_fact_ids,
+                memory_enabled=memory_enabled,
                 reasoning_effort_override=reasoning_effort_override,
                 thinking_override=thinking_override,
                 monthly_quota_usd_override=monthly_quota_usd_override,

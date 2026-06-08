@@ -434,6 +434,8 @@ async def create_for_user(
     user_id: UUID,
     selected_tier_id: ModelTierId,
     project_id: UUID | None = None,
+    expires_at: datetime | None = None,
+    is_sensitive: bool = False,
 ) -> Conversation:
     """Persist a new conversation. Returns the row with id/timestamps set.
 
@@ -441,7 +443,8 @@ async def create_for_user(
     under a Project with a `default_tier_id`, the route pre-seeds it from the
     project's create-time default (a labeled default, not a send-path lock). The
     repo does not load the project itself; it just persists the membership +
-    pre-seeded tier.
+    pre-seeded tier. `expires_at` stamps an ephemeral lifetime (D31 / T13);
+    `is_sensitive` marks the thread sensitive.
     """
     convo = Conversation(
         user_id=user_id,
@@ -449,6 +452,8 @@ async def create_for_user(
         selected_tier_id=selected_tier_id,
         pinned=False,
         project_id=project_id,
+        expires_at=expires_at,
+        is_sensitive=is_sensitive,
     )
     db.add(convo)
     await db.flush()
@@ -589,6 +594,8 @@ async def get_for_user(
         project_id=str(row.project_id) if row.project_id is not None else None,
         archived=row.archived,
         tag_ids=tag_ids_by_conversation.get(row.id, []),
+        expires_at=_iso(row.expires_at) if row.expires_at is not None else None,
+        is_sensitive=row.is_sensitive,
     )
 
 
@@ -766,6 +773,11 @@ def _effective_retention_days(
     return global_retention_days
 
 
+def _aware_match(value: datetime, now: datetime) -> datetime:
+    """Return `now` with awareness matching `value` (SQLite rows may be naive)."""
+    return now if value.tzinfo is not None else now.replace(tzinfo=None)
+
+
 def _is_expired(
     *,
     updated_at: datetime,
@@ -773,25 +785,31 @@ def _is_expired(
     project_retention_days: int | None,
     global_retention_days: int | None,
     now: datetime,
+    expires_at: datetime | None = None,
 ) -> bool:
-    """True iff a conversation is past its effective retention window.
+    """True iff a conversation is past its effective retention window OR expiry.
 
-    Expiry is keyed on `updated_at` (mirroring the rest of retention): an old
-    conversation that was recently renamed, pinned, or continued is still active
-    data. The cutoff is computed in Python (a plain `timedelta` subtraction) so
-    no dialect-specific date arithmetic is needed — the same approach the
-    orphan-stream reaper uses.
+    Two independent expiry sources (either one triggers a purge, D31 / T13):
 
-    `updated_at` may be naive (SQLite test rows) or tz-aware (Postgres). Compare
-    against a `now` of the matching awareness so the subtraction never raises a
-    naive/aware mismatch.
+    - Absolute `expires_at` (ephemeral chats): purge once `now >= expires_at`,
+      regardless of activity or any retention window.
+    - Effective `retention_days` window keyed on `updated_at` (mirroring the
+      rest of retention): an old conversation recently renamed, pinned, or
+      continued is still active data.
+
+    The cutoffs are computed in Python (plain comparisons / `timedelta`
+    subtraction) so no dialect-specific date arithmetic is needed. `updated_at` /
+    `expires_at` may be naive (SQLite test rows) or tz-aware (Postgres); we match
+    `now`'s awareness per-column so the comparison never raises.
     """
+    if expires_at is not None and expires_at <= _aware_match(expires_at, now):
+        return True
     days = _effective_retention_days(
         conversation_retention_days, project_retention_days, global_retention_days
     )
     if days is None:
         return False
-    reference = now if updated_at.tzinfo is not None else now.replace(tzinfo=None)
+    reference = _aware_match(updated_at, now)
     return updated_at < reference - timedelta(days=days)
 
 
@@ -1005,6 +1023,7 @@ async def delete_older_than_for_user(
             Conversation.id,
             Conversation.updated_at,
             Conversation.retention_days,
+            Conversation.expires_at,
             Project.retention_days.label("project_retention_days"),
         )
         .outerjoin(Project, Project.id == Conversation.project_id)
@@ -1020,6 +1039,7 @@ async def delete_older_than_for_user(
             project_retention_days=row.project_retention_days,
             global_retention_days=global_retention_days,
             now=now,
+            expires_at=row.expires_at,
         )
     ]
     if not expired_ids:
@@ -1072,6 +1092,7 @@ async def delete_expired_all_users(db: AsyncSession) -> int:
             Conversation.user_id,
             Conversation.updated_at,
             Conversation.retention_days,
+            Conversation.expires_at,
             Project.retention_days.label("project_retention_days"),
             Preferences.retention_days.label("global_retention_days"),
         )
@@ -1080,6 +1101,7 @@ async def delete_expired_all_users(db: AsyncSession) -> int:
         .where(
             or_(
                 Conversation.retention_days.is_not(None),
+                Conversation.expires_at.is_not(None),
                 Project.retention_days.is_not(None),
                 Preferences.retention_days.is_not(None),
             )
@@ -1095,6 +1117,7 @@ async def delete_expired_all_users(db: AsyncSession) -> int:
             project_retention_days=row.project_retention_days,
             global_retention_days=row.global_retention_days,
             now=now,
+            expires_at=row.expires_at,
         ):
             expired_by_user.setdefault(row.user_id, []).append(row.id)
 

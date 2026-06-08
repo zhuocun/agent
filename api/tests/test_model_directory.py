@@ -22,7 +22,7 @@ async def test_directory_lists_all_registry_providers_with_policies_and_prices(
     entries = resp.json()
     by_id = {e["providerId"]: e for e in entries}
     # Every registry route is surfaced, including pending/unavailable ones.
-    assert set(by_id) == {"deepseek", "anthropic", "openai", "gemini", "fake"}
+    assert set(by_id) == {"deepseek", "anthropic", "openai", "gemini", "xai", "fake"}
 
     # CamelModel entry shape.
     assert set(by_id["deepseek"].keys()) == {
@@ -74,6 +74,15 @@ async def test_directory_pending_route_has_null_policy_and_no_tiers(
     assert gemini["dataPolicy"] is None
     assert gemini["defaultRouteEligible"] is False
     assert gemini["tiers"] == []
+
+    # xAI Grok (T07) is the same shape: a pending roadmap route with no policy
+    # and no fabricated tiers until an adapter + data-policy sign-off land.
+    xai = next(e for e in entries if e["providerId"] == "xai")
+    assert xai["label"] == "Grok (xAI)"
+    assert xai["status"] == "pending"
+    assert xai["dataPolicy"] is None
+    assert xai["defaultRouteEligible"] is False
+    assert xai["tiers"] == []
 
 
 async def test_directory_anthropic_policy_from_registry(

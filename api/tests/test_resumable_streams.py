@@ -300,6 +300,8 @@ async def test_stop_during_resumable_persists_stopped_and_marks_done(
             web_search: bool = False,
             supports_vision: bool = True,
             response_format: object | None = None,
+            system_prefix: str | None = None,
+            tools: list[object] | None = None,
         ) -> AsyncIterator[ProviderEvent]:
             async def _gen() -> AsyncIterator[ProviderEvent]:
                 yield AnswerDelta(text="partial")

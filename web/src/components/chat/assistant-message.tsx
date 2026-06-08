@@ -13,6 +13,7 @@ import { ToolPartView } from "@/components/chat/tool-part";
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
 import { AttributionRow } from "@/components/chat/attribution-row";
 import { MessageActions } from "@/components/chat/message-actions";
+import { FollowUpChips } from "@/components/chat/follow-up-chips";
 import { TypingIndicator } from "@/components/chat/typing-indicator";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,6 +64,13 @@ interface AssistantMessageProps {
     decision: "approve" | "deny";
   }) => void;
   onFeedback?: (next: Feedback) => void;
+  // Prefill the composer with a heuristic follow-up suggestion (T11). When
+  // provided AND the turn finished cleanly, up to three chips render below the
+  // answer; selecting one calls this (the text is never auto-sent).
+  onFollowUp?: (text: string) => void;
+  // Gate the follow-up chips to a single message (the trailing assistant turn)
+  // so a long thread doesn't sprout chips under every answer.
+  showFollowUps?: boolean;
   onAttributionOpen?: () => void;
   // Open the Memory manager (D19). Wired to the "Memory used here" chip that
   // appears when this turn injected saved facts.
@@ -129,6 +137,8 @@ export function AssistantMessage({
   onContinue,
   onToolDecision,
   onFeedback,
+  onFollowUp,
+  showFollowUps,
   onAttributionOpen,
   onMemoryOpen,
   defaultReasoningOpen = false,
@@ -320,6 +330,13 @@ export function AssistantMessage({
               onFeedback={onFeedback}
             />
           </div>
+          {/* Heuristic follow-up chips (T11): only on the trailing, cleanly
+              finished turn so a long thread doesn't sprout suggestions under
+              every answer. Stopped/errored turns are excluded — they aren't a
+              settled answer to follow up on. */}
+          {isDone && showFollowUps && onFollowUp && answerText.trim() ? (
+            <FollowUpChips text={answerText} onSelect={onFollowUp} />
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -98,7 +98,7 @@ export function AppShell({
         <DrawerContent
           side="left"
           showClose={false}
-          className="w-[85vw] max-w-sm pl-[env(safe-area-inset-left)]"
+          className="w-72 pl-[env(safe-area-inset-left)]"
         >
           {sidebar}
         </DrawerContent>

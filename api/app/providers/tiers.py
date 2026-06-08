@@ -12,7 +12,7 @@ private in `TierBinding` for `providers/pricing.py` and the streaming handler.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Literal
 
 from app.config import Settings, get_settings

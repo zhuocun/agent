@@ -2,6 +2,7 @@
 
 import { Key } from "lucide-react";
 
+import { useT } from "@/lib/i18n/context";
 import { cn } from "@/lib/utils";
 import type { UsageBudget } from "@/lib/types";
 
@@ -133,6 +134,7 @@ export function getUsagePresentation(usage: UsageBudget): UsagePresentation {
 }
 
 export function UsageMeter({ usage }: UsageMeterProps) {
+  const t = useT();
   if (usage.isByok) {
     return (
       <span
@@ -144,7 +146,7 @@ export function UsageMeter({ usage }: UsageMeterProps) {
         title="Your own provider key is active. Platform credits are not used for model token charges."
       >
         <Key aria-hidden="true" className="size-3 shrink-0" />
-        Billed to your key
+        {t("usage.billedToKey")}
       </span>
     );
   }

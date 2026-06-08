@@ -218,6 +218,36 @@ class Settings(BaseSettings):
     # own provider) and never consult this cap.
     usage_budget_usd: float = Field(default=0.0, alias="USAGE_BUDGET_USD")
 
+    # Fraction of the effective monthly quota at which a soft-cap WARNING surfaces
+    # in the bootstrap usage object (PRD 08 §5.4 / T21). At/above this fraction the
+    # usage object carries a `PLATFORM_BUDGET_WARNING` envelope; at/above 100% it
+    # carries `PLATFORM_BUDGET_SOFT_CAP`. Purely informational — the hard block
+    # (`PLATFORM_BUDGET_EXCEEDED`) still governs send. Clamped to (0, 1].
+    budget_warning_threshold_pct: float = Field(
+        default=0.8, alias="BUDGET_WARNING_THRESHOLD_PCT"
+    )
+
+    # Anonymous-guest send limits (PRD 08 §5.4 / T07). `guest_message_limit` is the
+    # hard sign-up wall: once an anonymous user has sent this many platform-key
+    # messages, the next send is refused with `PLATFORM_GUEST_LIMIT`.
+    # `guest_premium_message_limit` is the softer allotment of premium-tier
+    # (non-`fast`) turns before a guest is transparently DOWNGRADED to the `fast`
+    # tier (a visible substitution callout, never a silent swap). `<= 0` on either
+    # disables that gate.
+    guest_message_limit: int = Field(default=50, alias="GUEST_MESSAGE_LIMIT")
+    guest_premium_message_limit: int = Field(
+        default=10, alias="GUEST_PREMIUM_MESSAGE_LIMIT"
+    )
+
+    # Ephemeral-conversation lifetime (D31 / T13). A conversation created with the
+    # `isEphemeral` flag is persisted but stamped with `expires_at = now + this
+    # many hours`; the retention purge deletes it once that instant passes.
+    # Default 24h. `<= 0` falls back to 24h defensively (an ephemeral chat must
+    # always carry a finite expiry).
+    ephemeral_conversation_ttl_hours: int = Field(
+        default=24, alias="EPHEMERAL_CONVERSATION_TTL_HOURS"
+    )
+
     # Billing. `disabled` keeps local/dev behavior unchanged. `fake` is a
     # deterministic no-network backend for tests and preview wiring. `stripe`
     # speaks Stripe-compatible Checkout, Billing Portal, and webhook semantics

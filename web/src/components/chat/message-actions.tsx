@@ -3,11 +3,14 @@
 import { useState } from "react";
 import {
   ArrowRight,
+  AudioLines,
   Check,
   Copy,
   GitBranch,
   Loader2,
+  Minus,
   MoreHorizontal,
+  Plus,
   RotateCcw,
   Square,
   ThumbsDown,
@@ -29,7 +32,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useSpeechSynthesis } from "@/lib/use-speech-synthesis";
+import {
+  MAX_RATE,
+  MIN_RATE,
+  useSpeechSynthesis,
+} from "@/lib/use-speech-synthesis";
 import { cn } from "@/lib/utils";
 import type {
   Feedback,
@@ -242,6 +249,24 @@ function OverflowMenu({
     ) ?? [];
   const showProviders = availableProviders.length > 1;
 
+  // Read-aloud polish (T09): rate stepping + voice cycling. Both persist via the
+  // hook; the controls stay open (closeOnClick={false}) so a user can fine-tune
+  // without re-opening the menu each step.
+  const RATE_STEP = 0.25;
+  const roundRate = (value: number) => Math.round(value * 100) / 100;
+  const currentVoiceName = speech.voiceURI
+    ? speech.voices.find((voice) => voice.voiceURI === speech.voiceURI)?.name ??
+      "System default"
+    : "System default";
+  const cycleVoice = () => {
+    const options: (string | null)[] = [
+      null,
+      ...speech.voices.map((voice) => voice.voiceURI),
+    ];
+    const index = options.indexOf(speech.voiceURI ?? null);
+    speech.setVoiceURI(options[(index + 1) % options.length]);
+  };
+
   return (
     <DropdownMenu>
       <Tooltip>
@@ -345,6 +370,63 @@ function OverflowMenu({
               </p>
             </div>
           </DropdownMenuItem>
+
+          {speech.supported ? (
+            <>
+              <DropdownMenuItem
+                label="Slower"
+                aria-label="Decrease read-aloud speed"
+                disabled={speech.rate <= MIN_RATE}
+                closeOnClick={false}
+                onClick={() =>
+                  speech.setRate(roundRate(speech.rate - RATE_STEP))
+                }
+                data-testid="read-aloud-slower"
+                className="py-2"
+              >
+                <Minus className="size-4" />
+                <span className="truncate font-medium">Slower</span>
+                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                  {speech.rate.toFixed(2)}×
+                </span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                label="Faster"
+                aria-label="Increase read-aloud speed"
+                disabled={speech.rate >= MAX_RATE}
+                closeOnClick={false}
+                onClick={() =>
+                  speech.setRate(roundRate(speech.rate + RATE_STEP))
+                }
+                data-testid="read-aloud-faster"
+                className="py-2"
+              >
+                <Plus className="size-4" />
+                <span className="truncate font-medium">Faster</span>
+                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                  {speech.rate.toFixed(2)}×
+                </span>
+              </DropdownMenuItem>
+              {speech.voices.length > 0 ? (
+                <DropdownMenuItem
+                  label="Change read-aloud voice"
+                  aria-label="Change read-aloud voice"
+                  closeOnClick={false}
+                  onClick={cycleVoice}
+                  data-testid="read-aloud-voice"
+                  className="py-2"
+                >
+                  <AudioLines className="size-4" />
+                  <div className="min-w-0 flex-1">
+                    <span className="truncate font-medium">Voice</span>
+                    <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                      {currentVoiceName}
+                    </p>
+                  </div>
+                </DropdownMenuItem>
+              ) : null}
+            </>
+          ) : null}
 
           {canContinue ? (
             <DropdownMenuItem

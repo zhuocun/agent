@@ -216,6 +216,7 @@ async def test_custom_instructions_are_provider_only(
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
 
     seen_prompts: list[str] = []
+    seen_prefixes: list[str | None] = []
 
     class _CaptureProvider:
         async def stream(
@@ -231,8 +232,11 @@ async def test_custom_instructions_are_provider_only(
             web_search: bool = False,
             supports_vision: bool = True,
             response_format: object | None = None,
+            system_prefix: str | None = None,
+            tools: list[object] | None = None,
         ) -> AsyncIterator[ProviderEvent]:
             seen_prompts.append(user_text)
+            seen_prefixes.append(system_prefix)
             yield ReasoningDone()
             yield AnswerDelta(text="ok")
             usage = UsageUpdate(
@@ -250,6 +254,7 @@ async def test_custom_instructions_are_provider_only(
             history: list[ChatMessage],
             user_text: str,
             api_key: str | None = None,
+            system_prefix: str | None = None,
         ) -> str:
             return "Custom Instructions Test"
 
@@ -272,8 +277,11 @@ async def test_custom_instructions_are_provider_only(
     )
     assert frames[-1][0] == "terminal"
     assert seen_prompts
-    assert "Always answer in terse bullets." in seen_prompts[0]
-    assert "Summarize the launch plan." in seen_prompts[0]
+    # Custom instructions ride the cache-stable system prefix (T20), not the
+    # user turn; the user turn stays the verbatim message.
+    assert seen_prefixes[0] is not None
+    assert "Always answer in terse bullets." in seen_prefixes[0]
+    assert seen_prompts[0] == "Summarize the launch plan."
 
     async with session_factory() as session:
         user_msg = (
@@ -322,6 +330,7 @@ async def test_project_custom_instructions_reach_composed_user_turn(
     unfiled_id = await _seed_conversation(session_factory, user_id=user_id)
 
     seen_prompts: list[str] = []
+    seen_prefixes: list[str | None] = []
 
     class _CaptureProvider:
         async def stream(
@@ -337,8 +346,11 @@ async def test_project_custom_instructions_reach_composed_user_turn(
             web_search: bool = False,
             supports_vision: bool = True,
             response_format: object | None = None,
+            system_prefix: str | None = None,
+            tools: list[object] | None = None,
         ) -> AsyncIterator[ProviderEvent]:
             seen_prompts.append(user_text)
+            seen_prefixes.append(system_prefix)
             yield ReasoningDone()
             yield AnswerDelta(text="ok")
             yield Complete(
@@ -357,6 +369,7 @@ async def test_project_custom_instructions_reach_composed_user_turn(
             history: list[ChatMessage],
             user_text: str,
             api_key: str | None = None,
+            system_prefix: str | None = None,
         ) -> str:
             return "Project Instructions Test"
 
@@ -368,20 +381,22 @@ async def test_project_custom_instructions_reach_composed_user_turn(
         lambda *args, **kwargs: _CaptureProvider(),
     )
 
-    # Filed conversation: BOTH instructions reach the prompt, user-global first.
+    # Filed conversation: BOTH instructions reach the cache-stable system prefix
+    # (T20), user-global first; the user turn stays the verbatim message.
     filed_frames = await _collect_sse(
         client,
         f"/api/conversations/{filed_id}/messages",
         {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "Question one."},
     )
     assert filed_frames[-1][0] == "terminal"
-    assert seen_prompts
-    filed_prompt = seen_prompts[-1]
-    assert "GLOBAL: be terse." in filed_prompt
-    assert "PROJECT: cite statutes." in filed_prompt
-    assert "Question one." in filed_prompt
+    assert seen_prefixes
+    filed_prefix = seen_prefixes[-1]
+    assert filed_prefix is not None
+    assert "GLOBAL: be terse." in filed_prefix
+    assert "PROJECT: cite statutes." in filed_prefix
+    assert seen_prompts[-1] == "Question one."
     # Ordering: user-global instructions precede the project's.
-    assert filed_prompt.index("GLOBAL: be terse.") < filed_prompt.index(
+    assert filed_prefix.index("GLOBAL: be terse.") < filed_prefix.index(
         "PROJECT: cite statutes."
     )
 
@@ -392,9 +407,10 @@ async def test_project_custom_instructions_reach_composed_user_turn(
         {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "Question two."},
     )
     assert unfiled_frames[-1][0] == "terminal"
-    unfiled_prompt = seen_prompts[-1]
-    assert "GLOBAL: be terse." in unfiled_prompt
-    assert "PROJECT: cite statutes." not in unfiled_prompt
+    unfiled_prefix = seen_prefixes[-1]
+    assert unfiled_prefix is not None
+    assert "GLOBAL: be terse." in unfiled_prefix
+    assert "PROJECT: cite statutes." not in unfiled_prefix
 
 
 async def test_send_message_with_attachment_streams_persists_metadata_only(
@@ -2774,6 +2790,8 @@ class _NoSubstitutionThenBlockProvider:
         web_search: bool = False,
         supports_vision: bool = True,
         response_format: object | None = None,
+        system_prefix: str | None = None,
+        tools: list[object] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         try:
             yield ReasoningDelta(text="thinking")

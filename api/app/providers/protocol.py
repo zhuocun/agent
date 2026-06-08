@@ -81,6 +81,28 @@ def text_with_attachment_fallback(
 
 
 @dataclass(frozen=True)
+class ToolDefinition:
+    """A provider-neutral description of a backend tool to advertise to the model.
+
+    Threaded into `Provider.stream(..., tools=[...])` when `TOOLS_ENABLED` so a
+    REAL provider (OpenAI-compatible / Anthropic) advertises the built-in tool
+    registry natively and parses the model's tool calls into structured
+    `ToolCall` events for the agent loop (see `app/tools/agent_loop.py`). Each
+    adapter maps this neutral shape to its own native tool schema:
+    OpenAI `{"type":"function","function":{name,description,parameters}}`,
+    Anthropic `{name,description,input_schema}`.
+
+    `parameters` is a JSON-Schema object describing the tool's input (the same
+    `ToolSpec.schema` the registry holds). `label` is the human-facing name used
+    for the wire `ToolCall.label` and as the model-facing description.
+    """
+
+    name: str
+    label: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ResponseFormat:
     """Structured-output request threaded into `Provider.stream(...)`.
 
@@ -290,6 +312,29 @@ class Provider(Protocol):
     accumulated text at the boundary regardless, surfacing the result on
     `ModelAttribution.output_valid`. When None (the default), behavior is
     byte-for-byte unchanged.
+
+    `system_prefix` is a cache-stable system preamble (custom instructions +
+    long-term memory facts, assembled by `app/prompt_assembly.py`). When set,
+    the implementation prepends it as a system message (OpenAI-compatible) or
+    passes it as the top-level `system` prompt (Anthropic) so a cache-aware
+    backend can reuse the unchanged prefix across turns. When None (the
+    default) no system preamble is sent and behavior is byte-for-byte
+    unchanged. Implementations that can't carry a system role (e.g. the fake)
+    accept it for Protocol conformance and ignore it.
+
+    `tools` opts the turn into backend tool calling driven by the agent loop
+    (`app/tools/agent_loop.py`). When a non-empty list is passed (the handler
+    only does so when `TOOLS_ENABLED`), the implementation advertises those tools
+    to the model natively and, when the model requests one, emits a `ToolCall`
+    event and STOPS the round (no `Complete`) so the agent loop can execute the
+    tool, apply the human-in-the-loop approval gate, and re-invoke `stream(...)`
+    with the result fed back through `history` (a sentinel-prefixed turn the
+    adapter reconstructs into native tool-result messages). A real provider that
+    natively supports tools wires this; implementations that don't (the fake)
+    ignore `tools` and rely on their own deterministic markers. When None/empty
+    (the default), no tools are advertised and behavior is byte-for-byte
+    unchanged. `tools` composes with `web_search` (the hosted/internal
+    web-search tool stays separate).
     """
 
     def stream(
@@ -305,6 +350,8 @@ class Provider(Protocol):
         web_search: bool = False,
         supports_vision: bool = True,
         response_format: ResponseFormat | None = None,
+        system_prefix: str | None = None,
+        tools: list[ToolDefinition] | None = None,
     ) -> AsyncIterator[ProviderEvent]: ...
 
     async def complete(
@@ -314,4 +361,5 @@ class Provider(Protocol):
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        system_prefix: str | None = None,
     ) -> str: ...

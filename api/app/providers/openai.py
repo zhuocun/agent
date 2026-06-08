@@ -61,12 +61,14 @@ from app.providers.protocol import (
     Sources,
     StatusUpdate,
     ToolCall,
+    ToolDefinition,
     ToolResult,
     UsageUpdate,
     text_with_attachment_fallback,
 )
 from app.providers.steering import steer_user_text
 from app.search.protocol import SearchProvider, SourceItem
+from app.tools.agent_loop import parse_tool_feedback_history
 
 _log = structlog.get_logger(__name__)
 
@@ -368,6 +370,46 @@ def _parse_query(raw_arguments: str) -> str:
     return ""
 
 
+def _openai_tool_schema(tool: ToolDefinition) -> dict[str, Any]:
+    """Map a provider-neutral `ToolDefinition` to an OpenAI function-tool schema.
+
+    The neutral `label` doubles as the model-facing description; `parameters` is
+    the tool's JSON-Schema input contract (the registry `ToolSpec.schema`).
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.label,
+            "parameters": tool.parameters or {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _parse_tool_arguments(raw_arguments: str) -> dict[str, Any]:
+    """Parse a tool call's JSON arguments string into a dict (tolerant).
+
+    Malformed / non-object arguments yield an empty dict; the registry executor
+    validates the input against its allowlist downstream, so a bad shape becomes
+    a failed tool result rather than a crash.
+    """
+    try:
+        parsed = json.loads(raw_arguments or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _select_registry_calls(
+    acc: dict[int, _ToolCallAccumulator] | None,
+    registry_names: set[str],
+) -> list[_ToolCallAccumulator]:
+    """Return accumulated calls whose name is a registry (agent-loop) tool, in order."""
+    if not acc:
+        return []
+    return [acc[index] for index in sorted(acc) if acc[index].name in registry_names]
+
+
 def _retry_after_ms(exc: openai.RateLimitError) -> int | None:
     """Best-effort `retryAfterMs` from a rate-limit response's headers.
 
@@ -482,7 +524,23 @@ class OpenAIProvider:
         web_search: bool = False,
         supports_vision: bool = True,
         response_format: ResponseFormat | None = None,
+        system_prefix: str | None = None,
+        tools: list[ToolDefinition] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # Backend tool calling (agent loop). When the handler passes `tools`
+        # (only under TOOLS_ENABLED), we advertise them natively and parse the
+        # model's calls into structured `ToolCall` events for the loop. The loop
+        # re-invokes us with results threaded back through `history` as a
+        # sentinel turn; split those out here so they become NATIVE tool messages
+        # (reconstructed below) rather than opaque assistant text. No tools ⇒ this
+        # is a no-op (clean history == history) and the path is unchanged.
+        registry_tools = list(tools or [])
+        registry_active = bool(registry_tools)
+        registry_names = {t.name for t in registry_tools}
+        fed_tool_results: list[dict[str, object]] = []
+        if registry_active:
+            history, fed_tool_results = parse_tool_feedback_history(history)
+
         # Build messages: history + the current user turn. Only user/assistant
         # roles (no system role), which keeps o-series models happy.
         messages: list[dict[str, Any]] = [{"role": m.role, "content": m.text} for m in history]
@@ -551,6 +609,50 @@ class OpenAIProvider:
             else:
                 kwargs["response_format"] = {"type": "json_object"}
 
+        # Cache-stable system prefix (custom instructions + long-term memory).
+        # Prepended as the FIRST message so the bytes are stable turn-to-turn
+        # and a cache-aware endpoint can reuse the prefix. Inserted after the
+        # JSON-mode hint so it leads the message list. None ⇒ no system role,
+        # byte-for-byte unchanged.
+        if system_prefix:
+            messages.insert(0, {"role": "system", "content": system_prefix})
+
+        # Reconstruct the agent loop's fed-back tool results as NATIVE tool
+        # messages, appended AFTER the current user turn (OpenAI requires a
+        # `role="tool"` message to follow the assistant `tool_calls` message that
+        # requested it). We don't have the original argument JSON across rounds,
+        # so the reconstructed assistant tool_calls carry empty arguments — the
+        # model only needs the RESULT to ground its next answer. Empty ⇒ no-op.
+        if fed_tool_results:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": str(result.get("toolCallId")),
+                            "type": "function",
+                            "function": {"name": str(result.get("name")), "arguments": "{}"},
+                        }
+                        for result in fed_tool_results
+                    ],
+                }
+            )
+            for result in fed_tool_results:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(result.get("toolCallId")),
+                        "content": json.dumps(
+                            {
+                                "status": result.get("status"),
+                                "output": result.get("output"),
+                                "error": result.get("error"),
+                            }
+                        ),
+                    }
+                )
+
         client = self._client_for(api_key)
 
         # Web-search is opt-in AND requires a configured backend. When either is
@@ -558,6 +660,11 @@ class OpenAIProvider:
         # to a pre-web-search build (no tools advertised). This is the
         # regression-critical no-op invariant.
         search_active = web_search and self._search_provider is not None
+        # The agentic loop runs when EITHER the web-search tool is active OR the
+        # agent-loop registry tools were advertised. Both advertise tools and
+        # parse structured `delta.tool_calls`; the two tool kinds compose (web
+        # search runs inline, registry calls hand off to the external loop).
+        agentic = search_active or registry_active
 
         # Accumulated usage across ALL rounds of the agentic loop. We sum the raw
         # OpenAI buckets across every completion, then compute the four DISJOINT
@@ -565,10 +672,10 @@ class OpenAIProvider:
         # summed totals, never double-counted.
         usage_acc = _UsageAccumulator()
 
-        if not search_active:
-            # Fast path: web_search disabled or no backend. ONE completion, no
-            # tools, no sanitizer. Byte-for-byte identical to a pre-web-search
-            # build — the regression-critical no-op invariant.
+        if not agentic:
+            # Fast path: no tools (web_search disabled/no backend AND no registry
+            # tools). ONE completion, no tools, no sanitizer. Byte-for-byte
+            # identical to a pre-tools build — the regression-critical no-op.
             async for event in self._consume_completion(
                 client=client,
                 model_id=model_id,
@@ -590,14 +697,21 @@ class OpenAIProvider:
         # emits web_search call(s): run them, surface status + sources, append the
         # tool-call + tool-result turns, and continue. If it emits NO tool call,
         # that completion's content IS the final answer — stream it and stop.
-        assert self._search_provider is not None  # search_active implies this
+        # Advertise the web-search tool (when active) plus any agent-loop
+        # registry tools. The set stays advertised every round so the endpoint
+        # keeps parsing tool intent as STRUCTURED `delta.tool_calls`.
+        advertised_tools: list[dict[str, Any]] = []
+        if search_active:
+            advertised_tools.append(WEB_SEARCH_TOOL)
+        advertised_tools.extend(_openai_tool_schema(t) for t in registry_tools)
+
         accumulated_sources: list[SourceItem] = []
         for round_index in range(_MAX_SEARCH_ROUNDS):
             is_final_round = round_index == _MAX_SEARCH_ROUNDS - 1
-            # Advertise the tool every round so structured parsing holds. On the
+            # Advertise the tools every round so structured parsing holds. On the
             # final capped round force tool_choice="none" to compel an answer and
             # break any infinite tool loop (sanitizer scrubs residual leaks).
-            round_tool_kwargs: dict[str, Any] = {"tools": [WEB_SEARCH_TOOL]}
+            round_tool_kwargs: dict[str, Any] = {"tools": advertised_tools}
             round_tool_kwargs["tool_choice"] = "none" if is_final_round else "auto"
 
             tool_calls: dict[int, _ToolCallAccumulator] = {}
@@ -614,6 +728,26 @@ class OpenAIProvider:
             ):
                 round_events.append(event)
 
+            # Agent-loop registry tools take priority: emit a `ToolCall` request
+            # for each and STOP this stream (no usage / Complete). The external
+            # agent loop executes the tool (applying the HITL approval gate),
+            # then re-invokes `stream(...)` with the result threaded back. The
+            # pre-tool content this round is provider context, not the answer, so
+            # it is discarded (mirrors the web-search pre-tool suppression).
+            registry_calls = _select_registry_calls(tool_calls, registry_names)
+            if registry_calls:
+                tool_by_name = {t.name: t for t in registry_tools}
+                for i, call in enumerate(registry_calls):
+                    spec = tool_by_name[call.name or ""]
+                    yield ToolCall(
+                        id=call.id or f"{call.name}_{round_index}_{i}",
+                        name=call.name or "",
+                        label=spec.label,
+                        status="running",
+                        input=_parse_tool_arguments(call.arguments),
+                    )
+                return
+
             calls = _select_web_search_calls(tool_calls)
             if not calls:
                 # No tool call this round → the streamed content was the final
@@ -622,6 +756,9 @@ class OpenAIProvider:
                     yield event
                 break
 
+            # web_search calls only arrive when the tool was advertised, which
+            # requires a configured backend; assert for the type checker.
+            assert self._search_provider is not None
             # Run each requested search, append ONE assistant tool-call turn
             # (carrying every call) plus one tool-result turn per call.
             results_by_call: list[
@@ -814,6 +951,7 @@ class OpenAIProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        system_prefix: str | None = None,
     ) -> str:
         """Non-streaming variant. One `chat.completions.create` call, text out.
 
@@ -824,6 +962,8 @@ class OpenAIProvider:
         """
         messages: list[dict[str, Any]] = [{"role": m.role, "content": m.text} for m in history]
         messages.append({"role": "user", "content": user_text})
+        if system_prefix:
+            messages.insert(0, {"role": "system", "content": system_prefix})
 
         client = self._client_for(api_key)
         try:

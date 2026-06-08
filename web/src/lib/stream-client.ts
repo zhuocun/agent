@@ -456,6 +456,58 @@ export function useApiStream(
 ): UseApiStreamResult {
   const [state, setState] = useState<ApiStreamState>(INITIAL);
 
+  // rAF-batched state flush (INP / P0-3). SSE bursts can fire many frames in a
+  // single task; committing each one with its own `setState` schedules a React
+  // render per delta and lengthens the main-thread task that input/paint is
+  // measured against. Instead we accumulate field patches into a ref and flush
+  // ONE merged `setState` per animation frame. The authoritative accumulators
+  // (reasoningRef/answerRef/etc.) still hold the true latest values, so terminal
+  // handlers never read stale state regardless of flush timing. Terminal/error
+  // frames flush synchronously so the final state lands before `onTerminal`.
+  const pendingPatchRef = useRef<Partial<ApiStreamState> | null>(null);
+  const rafIdRef = useRef<number | null>(null);
+
+  const applyPending = useCallback(() => {
+    rafIdRef.current = null;
+    const patch = pendingPatchRef.current;
+    pendingPatchRef.current = null;
+    if (patch) setState((s) => ({ ...s, ...patch }));
+  }, []);
+
+  const queueState = useCallback(
+    (patch: Partial<ApiStreamState>): void => {
+      pendingPatchRef.current = { ...(pendingPatchRef.current ?? {}), ...patch };
+      if (rafIdRef.current !== null) return;
+      if (typeof requestAnimationFrame === "function") {
+        rafIdRef.current = requestAnimationFrame(applyPending);
+      } else {
+        // SSR / non-browser fallback: apply immediately.
+        applyPending();
+      }
+    },
+    [applyPending],
+  );
+
+  // Apply any buffered patch right now (used by terminal/error frames so the
+  // final answer is on screen before the bubble settles).
+  const flushPending = useCallback((): void => {
+    if (rafIdRef.current !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(rafIdRef.current);
+    }
+    rafIdRef.current = null;
+    applyPending();
+  }, [applyPending]);
+
+  // Drop any buffered patch without applying it. Used by full-state resets
+  // (start/reset/replay/idle) so a late delta rAF can't clobber the reset.
+  const cancelScheduledFlush = useCallback((): void => {
+    if (rafIdRef.current !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(rafIdRef.current);
+    }
+    rafIdRef.current = null;
+    pendingPatchRef.current = null;
+  }, []);
+
   const controllerRef = useRef<AbortController | null>(null);
   const reasoningRef = useRef("");
   const answerRef = useRef("");
@@ -556,8 +608,9 @@ export function useApiStream(
     toolPartsRef.current = [];
     serverUserIdRef.current = undefined;
     streamIdRef.current = streamId;
+    cancelScheduledFlush();
     setState({ ...INITIAL, status: "submitted" });
-  }, []);
+  }, [cancelScheduledFlush]);
 
   // Handle a single parsed SSE frame. Returns true if this frame ends the
   // stream (consumer should break the read loop afterwards).
@@ -581,7 +634,8 @@ export function useApiStream(
           },
           0,
         );
-        setState((s) => ({ ...s, status: "error" }));
+        queueState({ status: "error" });
+        flushPending();
         emitTerminal("error", { error: err });
         return true;
       }
@@ -594,7 +648,7 @@ export function useApiStream(
             const streamId = readStringField(payload, "streamId");
             if (streamId) streamIdRef.current = streamId;
           }
-          setState((s) => ({ ...s, status: "streaming" }));
+          queueState({ status: "streaming" });
           return false;
         }
         case "reasoning_delta": {
@@ -606,22 +660,20 @@ export function useApiStream(
           }
           reasoningRef.current += text;
           const next = reasoningRef.current;
-          setState((s) => ({
-            ...s,
+          queueState({
             reasoning: next,
             reasoningStreaming: true,
             reasoningDurationSec: computeReasoningDuration(),
-          }));
+          });
           return false;
         }
         case "reasoning_done": {
           freezeReasoningDuration();
           const dur = durationRef.current;
-          setState((s) => ({
-            ...s,
+          queueState({
             reasoningStreaming: false,
             reasoningDurationSec: dur,
-          }));
+          });
           return false;
         }
         case "answer_delta": {
@@ -636,11 +688,10 @@ export function useApiStream(
           }
           answerRef.current += text;
           const next = answerRef.current;
-          setState((s) => ({
-            ...s,
+          queueState({
             answer: next,
             reasoningStreaming: false,
-          }));
+          });
           return false;
         }
         case "terminal": {
@@ -656,20 +707,22 @@ export function useApiStream(
               },
               0,
             );
-            setState((s) => ({ ...s, status: "error" }));
+            queueState({ status: "error" });
+            flushPending();
             emitTerminal("error", { error: err });
             return true;
           }
           // Surface the frame's status (default "done"). On the HITL pause the
           // BE sends `status: "awaiting_approval"` and no attribution — the
           // bubble settles into the approval card and the cost lands on the
-          // resumed turn.
-          setState((s) => ({
-            ...s,
+          // resumed turn. Flush synchronously so the final answer is committed
+          // to state before the terminal callback fires.
+          queueState({
             status: parsed.status,
             reasoningStreaming: false,
             reasoningDurationSec: durationRef.current,
-          }));
+          });
+          flushPending();
           emitTerminal(parsed.status, {
             serverAssistantMessageId: parsed.messageId,
             ...(parsed.attribution ? { attribution: parsed.attribution } : {}),
@@ -687,12 +740,12 @@ export function useApiStream(
                 body: "The server signalled an error with an unexpected shape.",
               };
           const err = new ApiError(envelope, 0);
-          setState((s) => ({
-            ...s,
+          queueState({
             status: "error",
             reasoningStreaming: false,
             reasoningDurationSec: durationRef.current,
-          }));
+          });
+          flushPending();
           emitTerminal("error", { error: err });
           return true;
         }
@@ -702,7 +755,7 @@ export function useApiStream(
           const parsed = parseStatus(payload);
           if (!parsed) return false;
           searchStatusRef.current = parsed;
-          setState((s) => ({ ...s, searchStatus: parsed }));
+          queueState({ searchStatus: parsed });
           return false;
         }
         case "sources": {
@@ -715,25 +768,24 @@ export function useApiStream(
           sourcesRef.current = parsed.items;
           if (parsed.requested) sourcesRequestedRef.current = true;
           const requested = sourcesRequestedRef.current;
-          setState((s) => ({
-            ...s,
+          queueState({
             sources: parsed.items,
             sourcesRequested: requested,
-          }));
+          });
           return false;
         }
         case "tool_call": {
           const parsed = parseToolCall(payload);
           if (parsed === null) return false;
           toolPartsRef.current = [...toolPartsRef.current, parsed];
-          setState((s) => ({ ...s, toolParts: toolPartsRef.current }));
+          queueState({ toolParts: toolPartsRef.current });
           return false;
         }
         case "tool_result": {
           const parsed = parseToolResult(payload);
           if (parsed === null) return false;
           toolPartsRef.current = [...toolPartsRef.current, parsed];
-          setState((s) => ({ ...s, toolParts: toolPartsRef.current }));
+          queueState({ toolParts: toolPartsRef.current });
           return false;
         }
         default: {
@@ -742,7 +794,13 @@ export function useApiStream(
         }
       }
     },
-    [computeReasoningDuration, emitTerminal, freezeReasoningDuration],
+    [
+      computeReasoningDuration,
+      emitTerminal,
+      freezeReasoningDuration,
+      queueState,
+      flushPending,
+    ],
   );
 
   const consumeStream = useCallback(
@@ -758,6 +816,7 @@ export function useApiStream(
           },
           response.status,
         );
+        cancelScheduledFlush();
         setState((s) => ({ ...s, status: "error" }));
         emitTerminal("error", { error: err });
         return;
@@ -821,7 +880,7 @@ export function useApiStream(
         }
       }
     },
-    [emitTerminal, handleFrame],
+    [emitTerminal, handleFrame, cancelScheduledFlush],
   );
 
   const runStream = useCallback(
@@ -945,6 +1004,7 @@ export function useApiStream(
           envelope?.code === "STREAM_IN_PROGRESS"
         ) {
           terminalEmittedRef.current = true;
+          cancelScheduledFlush();
           setState((s) => ({ ...s, status: "idle" }));
           onStreamInProgressRef.current?.();
           return;
@@ -1045,12 +1105,13 @@ export function useApiStream(
                 0,
               );
         if (!terminalEmittedRef.current) {
+          cancelScheduledFlush();
           setState((s) => ({ ...s, status: "error" }));
           emitTerminal("error", { error: err });
         }
       }
     },
-    [consumeStream, emitTerminal, resetForReplay],
+    [consumeStream, emitTerminal, resetForReplay, cancelScheduledFlush],
   );
 
   const start = useCallback(
@@ -1063,6 +1124,7 @@ export function useApiStream(
       controllerRef.current = null;
 
       resetAccumulators();
+      cancelScheduledFlush();
       reconnectAttemptedRef.current = false;
       conversationIdRef.current = args.conversationId;
       setState({ ...INITIAL, status: "submitted" });
@@ -1072,7 +1134,7 @@ export function useApiStream(
 
       void runStream(args, controller);
     },
-    [resetAccumulators, runStream],
+    [resetAccumulators, runStream, cancelScheduledFlush],
   );
 
   const stop = useCallback((): void => {
@@ -1093,6 +1155,10 @@ export function useApiStream(
     // detector (no frame arrives on this socket).
     controller.abort();
     freezeReasoningDuration();
+    // Discard any buffered delta so a late rAF can't re-flip the bubble back to
+    // a streaming pose after we settle it to "stopped". The refs below hold the
+    // authoritative partial.
+    cancelScheduledFlush();
     const reasoning = reasoningRef.current;
     const answer = answerRef.current;
     const dur = durationRef.current;
@@ -1118,7 +1184,7 @@ export function useApiStream(
         });
       }, 250);
     }
-  }, [emitTerminal, freezeReasoningDuration]);
+  }, [emitTerminal, freezeReasoningDuration, cancelScheduledFlush]);
 
   const reset = useCallback((): void => {
     controllerRef.current?.abort();
@@ -1129,10 +1195,11 @@ export function useApiStream(
     // the `terminalEmittedRef` flip below.
     terminalEmittedRef.current = true;
     resetAccumulators();
+    cancelScheduledFlush();
     // Then re-clear so the next `start()` begins with a clean slate.
     terminalEmittedRef.current = false;
     setState(INITIAL);
-  }, [resetAccumulators]);
+  }, [resetAccumulators, cancelScheduledFlush]);
 
   // Belt-and-braces cleanup: if the component unmounts mid-stream, abort the
   // underlying fetch so the reader doesn't keep the socket open. We do NOT
@@ -1141,8 +1208,9 @@ export function useApiStream(
     return () => {
       controllerRef.current?.abort();
       controllerRef.current = null;
+      cancelScheduledFlush();
     };
-  }, []);
+  }, [cancelScheduledFlush]);
 
   return { state, start, stop, reset };
 }

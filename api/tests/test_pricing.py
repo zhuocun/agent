@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from app.providers.pricing import build_attribution, compute_cost_breakdown
 from app.providers.protocol import UsageUpdate
-from app.providers.tiers import get_binding
+from app.providers.tiers import TierBinding, get_binding
 from app.schemas.message import AppliedTier, LongContext, SessionMultiplier
 
 
@@ -244,6 +244,207 @@ def test_build_attribution_uses_substituted_label_when_provided() -> None:
     assert attr_default.provider_id == binding.provider_id
     # The model label is distinct from the tier label, so this is non-trivial.
     assert binding.model_label != binding.tier.label
+
+
+# Tiered long-context + promo + image pricing (T05 / T19) ---------------------
+
+
+def _flat_binding(**overrides: object) -> TierBinding:
+    """A minimal flat binding to layer tiered-pricing extras onto."""
+    from app.schemas.tier import ModelTier
+
+    tier = ModelTier(
+        id="smart",
+        label="Smart",
+        description="x",
+        speed_hint="balanced",
+        cost_hint="medium",
+        context_hint="x",
+    )
+    base: dict[str, object] = {
+        "tier": tier,
+        "provider_id": "deepseek",
+        "model_id": "m",
+        "list_price_in_per_m": 1.0,
+        "list_price_out_per_m": 2.0,
+        "long_context_flat": True,
+        "cache_read_per_m": 0.1,
+    }
+    base.update(overrides)
+    return TierBinding(**base)  # type: ignore[arg-type]
+
+
+def test_session_multiplier_reprices_whole_request_above_threshold() -> None:
+    """T05: a session multiplier reprices input AND output at list x multiplier
+    once the prompt context crosses the threshold; the delta is the surcharge."""
+    from app.providers.tiers import SessionMultiplierPricing
+
+    binding = _flat_binding(
+        long_context_flat=False,
+        session_multiplier=SessionMultiplierPricing(
+            threshold_tokens=1000, input=2.0, output=3.0
+        ),
+    )
+    usage = UsageUpdate(input_tokens=2000, output_tokens=500)
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+
+    baseline = (2000 * 1.0 + 500 * 2.0) / 1_000_000
+    repriced = (2000 * 1.0 * 2.0 + 500 * 2.0 * 3.0) / 1_000_000
+    assert bd.subtotal_usd == pytest.approx(repriced, rel=1e-9)
+    assert bd.session_surcharge_usd == pytest.approx(repriced - baseline, rel=1e-9)
+    assert bd.long_context.flat is False
+    assert bd.long_context.tier_scope == "session"
+    assert bd.long_context.session_multiplier is not None
+    assert bd.long_context.session_multiplier.input == 2.0
+
+
+def test_session_multiplier_inert_below_threshold() -> None:
+    """Below the threshold the session multiplier is a no-op (flat billing)."""
+    from app.providers.tiers import SessionMultiplierPricing
+
+    binding = _flat_binding(
+        long_context_flat=False,
+        session_multiplier=SessionMultiplierPricing(
+            threshold_tokens=10_000, input=2.0, output=3.0
+        ),
+    )
+    usage = UsageUpdate(input_tokens=1000, output_tokens=500)
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+    assert bd.session_surcharge_usd == 0.0
+    assert bd.subtotal_usd == pytest.approx((1000 * 1.0 + 500 * 2.0) / 1_000_000)
+
+
+def test_pricing_band_surcharges_only_overflow_input_tokens() -> None:
+    """T05: a Gemini-style band reprices only the input tokens ABOVE the band
+    floor at the band rate; tokens below stay at the list rate."""
+    from app.providers.tiers import PricingBand
+
+    binding = _flat_binding(
+        long_context_flat=False,
+        pricing_tiers=(
+            PricingBand(
+                threshold_tokens=1000,
+                price_in_per_m=5.0,
+                price_out_per_m=10.0,
+                label="long",
+            ),
+        ),
+    )
+    usage = UsageUpdate(input_tokens=3000, output_tokens=100)
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+
+    baseline = (3000 * 1.0 + 100 * 2.0) / 1_000_000
+    over_input = 3000 - 1000
+    surcharge = over_input * (5.0 - 1.0) / 1_000_000
+    assert bd.session_surcharge_usd == pytest.approx(surcharge, rel=1e-9)
+    assert bd.subtotal_usd == pytest.approx(baseline + surcharge, rel=1e-9)
+    assert bd.long_context.tier_scope == "overage"
+    assert bd.long_context.applied_tier is not None
+    assert bd.long_context.applied_tier.threshold_tokens == 1000
+
+
+def test_session_multiplier_wins_when_both_pricing_modes_set() -> None:
+    """When a binding mis-sets BOTH a session multiplier and bands, the
+    whole-session reprice wins and the bands are ignored (documented behavior)."""
+    from app.providers.tiers import PricingBand, SessionMultiplierPricing
+
+    binding = _flat_binding(
+        long_context_flat=False,
+        session_multiplier=SessionMultiplierPricing(
+            threshold_tokens=1000, input=2.0, output=2.0
+        ),
+        pricing_tiers=(
+            PricingBand(threshold_tokens=1000, price_in_per_m=99.0, price_out_per_m=99.0),
+        ),
+    )
+    usage = UsageUpdate(input_tokens=2000, output_tokens=500)
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+    assert bd.long_context.tier_scope == "session"
+
+
+def test_active_promo_reprices_at_promo_rates() -> None:
+    """T05: an active promo bills at the promo rates and flips `promo_applied`."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.providers.tiers import PromoPricing
+
+    now = datetime.now(UTC)
+    binding = _flat_binding(
+        promo=PromoPricing(
+            promo_id="launch",
+            price_in_per_m=0.5,
+            price_out_per_m=1.0,
+            effective_until=now + timedelta(days=1),
+        ),
+    )
+    usage = UsageUpdate(input_tokens=1000, output_tokens=1000)
+    bd = compute_cost_breakdown(usage=usage, binding=binding, now=now)
+    assert bd.promo_applied is True
+    assert bd.subtotal_usd == pytest.approx((1000 * 0.5 + 1000 * 1.0) / 1_000_000)
+    assert bd.list_price_in_per_m == 0.5
+
+
+def test_lapsed_promo_is_inert() -> None:
+    """An expired promo reverts to list rates with no other change."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.providers.tiers import PromoPricing
+
+    now = datetime.now(UTC)
+    binding = _flat_binding(
+        promo=PromoPricing(
+            promo_id="launch",
+            price_in_per_m=0.5,
+            price_out_per_m=1.0,
+            effective_until=now - timedelta(seconds=1),
+        ),
+    )
+    usage = UsageUpdate(input_tokens=1000, output_tokens=1000)
+    bd = compute_cost_breakdown(usage=usage, binding=binding, now=now)
+    assert bd.promo_applied is False
+    assert bd.subtotal_usd == pytest.approx((1000 * 1.0 + 1000 * 2.0) / 1_000_000)
+
+
+def test_image_token_formula_adds_input_tokens_only_when_present() -> None:
+    """T19: image attachments add estimated input tokens on a multimodal binding;
+    a binding with no formula is unchanged, and zero images add nothing."""
+    from app.providers.tiers import ImageTokenFormula
+
+    binding = _flat_binding(
+        image_token_formula=ImageTokenFormula(base_tokens=85, tokens_per_image=170),
+    )
+    usage = UsageUpdate(input_tokens=1000, output_tokens=0)
+
+    # No images -> no image tokens.
+    none_bd = compute_cost_breakdown(usage=usage, binding=binding, image_count=0)
+    assert none_bd.input_tokens == 1000
+
+    # Two images -> base + 2*per_image extra INPUT tokens, billed at input rate.
+    bd = compute_cost_breakdown(usage=usage, binding=binding, image_count=2)
+    extra = 85 + 170 * 2
+    assert bd.input_tokens == 1000 + extra
+    assert bd.subtotal_usd == pytest.approx((1000 + extra) * 1.0 / 1_000_000)
+
+    # A binding with no formula ignores image_count entirely.
+    plain = _flat_binding()
+    plain_bd = compute_cost_breakdown(usage=usage, binding=plain, image_count=5)
+    assert plain_bd.input_tokens == 1000
+
+
+def test_tiered_pricing_fields_default_to_flat_billing() -> None:
+    """Backward compat: a binding that sets NONE of the T05/T19 extras bills
+    exactly the historical flat amount (`long_context_flat` stays authoritative)."""
+    binding = _flat_binding()
+    assert binding.session_multiplier is None
+    assert binding.pricing_tiers == ()
+    assert binding.promo is None
+    assert binding.image_token_formula is None
+    usage = UsageUpdate(input_tokens=1000, output_tokens=500, cached_input_tokens=200)
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+    expected = (1000 * 1.0 + 500 * 2.0 + 200 * 0.1) / 1_000_000
+    assert bd.subtotal_usd == pytest.approx(expected, rel=1e-9)
+    assert bd.session_surcharge_usd == 0.0
+    assert bd.long_context.flat is True
 
 
 def test_build_attribution_unrouted_auto_falls_back_to_tier_label() -> None:

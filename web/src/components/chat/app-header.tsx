@@ -3,8 +3,10 @@
 import {
   ClipboardCopy,
   Download,
+  FileText,
   Menu,
   MoreHorizontal,
+  Printer,
   Share,
   SquarePen,
 } from "lucide-react";
@@ -36,6 +38,11 @@ interface AppHeaderProps {
   canCopyConversation?: boolean;
   onDownloadConversation?: () => void;
   canDownloadConversation?: boolean;
+  // Export the active conversation as a PDF (browser print dialog → Save as
+  // PDF) or as a Word (.docx) download. Gated by the same content check as the
+  // Markdown download.
+  onPrintConversation?: () => void;
+  onDownloadDocx?: () => void;
   onShareConversation?: () => void;
   // Sharing is only offered for a real, persisted (non-temporary) conversation
   // — the BE 404s on temporary chats and there's nothing to share before the
@@ -79,6 +86,8 @@ export function AppHeader({
   canCopyConversation,
   onDownloadConversation,
   canDownloadConversation,
+  onPrintConversation,
+  onDownloadDocx,
   onShareConversation,
   canShareConversation,
   isTemporary,
@@ -197,6 +206,26 @@ export function AppHeader({
                 >
                   <Download className="size-4" aria-hidden />
                   <span>Download Markdown</span>
+                </DropdownMenuItem>
+              ) : null}
+              {onDownloadDocx ? (
+                <DropdownMenuItem
+                  onClick={onDownloadDocx}
+                  disabled={!canDownloadConversation}
+                  className="gap-2"
+                >
+                  <FileText className="size-4" aria-hidden />
+                  <span>Download Word (.docx)</span>
+                </DropdownMenuItem>
+              ) : null}
+              {onPrintConversation ? (
+                <DropdownMenuItem
+                  onClick={onPrintConversation}
+                  disabled={!canDownloadConversation}
+                  className="gap-2"
+                >
+                  <Printer className="size-4" aria-hidden />
+                  <span>Save as PDF</span>
                 </DropdownMenuItem>
               ) : null}
               {onShareConversation ? (

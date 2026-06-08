@@ -25,7 +25,7 @@ import asyncio
 import weakref
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import desc, func, select
@@ -42,6 +42,9 @@ from app.schemas.account import (
     UsageBudget,
     UsageLedgerEntry,
 )
+
+if TYPE_CHECKING:
+    from app.errors import ErrorEnvelope
 
 # Default monthly cap for the integer `used` meter. The FE renders
 # `used / limit` raw with no unit, so the number is informational. Cost-based
@@ -86,6 +89,32 @@ def _effective_quota_usd(settings_cap: float, user_cap: float | None) -> float:
     """
     caps = [c for c in (settings_cap, user_cap or 0.0) if c > 0]
     return min(caps) if caps else 0.0
+
+
+def _budget_warning(effective_quota_usd: float, spend_usd: float) -> ErrorEnvelope | None:
+    """Build the soft-cap transparency callout for the usage object (T21).
+
+    `PLATFORM_BUDGET_SOFT_CAP` at/over 100% of the effective quota,
+    `PLATFORM_BUDGET_WARNING` at/over the configured threshold (default 80%),
+    else None. No callout when no positive quota is enforced. Purely
+    informational — never blocks send (the hard 429 gate is unchanged).
+    """
+    from app.config import get_settings
+    from app.errors import (
+        platform_budget_soft_cap_envelope,
+        platform_budget_warning_envelope,
+    )
+
+    if effective_quota_usd <= 0:
+        return None
+    ratio = spend_usd / effective_quota_usd
+    percent = round(ratio * 100)
+    if ratio >= 1.0:
+        return platform_budget_soft_cap_envelope(percent=percent)
+    threshold = get_settings().budget_warning_threshold_pct
+    if threshold > 0 and ratio >= threshold:
+        return platform_budget_warning_envelope(percent=percent)
+    return None
 
 
 def _usage_lock_for(user_id: UUID) -> asyncio.Lock:
@@ -516,6 +545,7 @@ async def get_current_budget(
         else None
     )
     recent_entries = await list_recent_credit_entries(db, user_id=user_id)
+    warning = _budget_warning(effective, monthly_spend_usd)
     return UsageBudget(
         used=used,
         limit=limit,
@@ -528,6 +558,7 @@ async def get_current_budget(
         user_budget_usd=user_budget_usd,
         effective_quota_usd=effective or None,
         recent_ledger_entries=recent_entries,
+        warning=warning,
     )
 
 

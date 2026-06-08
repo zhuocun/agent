@@ -12,47 +12,139 @@ fall back to 10% of the input rate (the Anthropic cache-read convention).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from app.providers.protocol import UsageUpdate
-from app.providers.tiers import TierBinding, get_provider_route, resolve_served_tier
+from app.providers.tiers import (
+    PricingBand,
+    TierBinding,
+    get_provider_route,
+    promo_active,
+    resolve_served_tier,
+)
 from app.schemas.common import CostConfidence, ModelTierId
 from app.schemas.message import (
+    AppliedTier,
     CostBreakdown,
     LongContext,
     ModelAttribution,
+    SessionMultiplier,
     Substitution,
 )
+
+
+def _base_rates(binding: TierBinding, now: datetime) -> tuple[float, float, float, bool]:
+    """Resolve the (input, output, cache) per-million rates and the promo flag.
+
+    A binding with an ACTIVE promo (T05) bills at the promo's rates; otherwise
+    its list rates. The cache rate falls back to 10% of the input rate when the
+    binding/promo leaves it unset (the Anthropic cache-read convention).
+    """
+    promo = binding.promo
+    if promo_active(promo, now) and promo is not None:
+        in_per_m = promo.price_in_per_m
+        out_per_m = promo.price_out_per_m
+        cache_source = (
+            promo.cache_read_per_m
+            if promo.cache_read_per_m is not None
+            else binding.cache_read_per_m
+        )
+        promo_applied = True
+    else:
+        in_per_m = binding.list_price_in_per_m
+        out_per_m = binding.list_price_out_per_m
+        cache_source = binding.cache_read_per_m
+        promo_applied = False
+    cache_per_m = cache_source if cache_source is not None else 0.1 * in_per_m
+    return in_per_m, out_per_m, cache_per_m, promo_applied
+
+
+def _flat_subtotal(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int,
+    cached_input_tokens: int,
+    in_per_m: float,
+    out_per_m: float,
+    cache_per_m: float,
+) -> float:
+    """Baseline (no long-context surcharge) subtotal in USD.
+
+    PRD 07 §7 rule 7: reasoning bills at the OUTPUT rate and is never
+    cache-eligible. Cache reads bill at their own per-million rate.
+    """
+    input_cost = input_tokens * in_per_m / 1_000_000
+    output_cost = output_tokens * out_per_m / 1_000_000
+    reasoning_cost = reasoning_tokens * out_per_m / 1_000_000
+    cached_cost = cached_input_tokens * cache_per_m / 1_000_000
+    return input_cost + output_cost + reasoning_cost + cached_cost
+
+
+def _select_band(bands: tuple[PricingBand, ...], context_tokens: int) -> PricingBand | None:
+    """Highest band whose threshold the request context crossed, else None."""
+    crossed = [b for b in bands if context_tokens >= b.threshold_tokens]
+    if not crossed:
+        return None
+    return max(crossed, key=lambda b: b.threshold_tokens)
 
 
 def compute_cost_breakdown(
     *,
     usage: UsageUpdate,
     binding: TierBinding,
+    now: datetime | None = None,
+    image_count: int = 0,
 ) -> CostBreakdown:
     """Compute a CostBreakdown from accumulated usage + tier pricing.
 
-    PRD 07 §7 rule 7: reasoning tokens x output_per_m / 1e6. Cached input
-    tokens bill at `cache_read_per_m` when the binding sets it (M4); otherwise
-    they fall back to 10% of `input_per_m` (the Anthropic cache-read rate).
+    Pricing layers, applied in order (each optional; with none set the result is
+    byte-for-byte the historical flat computation):
+
+    1. **Promo (T05).** An active `binding.promo` swaps the list rates for the
+       promo rates and flips `promo_applied`. A lapsed promo is inert.
+    2. **Image tokens (T19).** When image attachments are present and the binding
+       sets an `image_token_formula`, its estimated tokens are added to the input
+       bucket so multimodal turns bill for the image input.
+    3. **Long-context surcharge (T05).** Either a whole-session reprice
+       (`session_multiplier`, OpenAI style) or a stepped overage band
+       (`pricing_tiers`, Gemini style) — never both (session wins if mis-set).
+       The request-scoped delta over baseline is `session_surcharge_usd`.
+
+    `now` defaults to the current UTC instant (drives the promo window) and is
+    injectable so the promo-expiry boundary is unit-testable.
     """
-    in_per_m = binding.list_price_in_per_m
-    out_per_m = binding.list_price_out_per_m
-    cache_per_m = (
-        binding.cache_read_per_m
-        if binding.cache_read_per_m is not None
-        else 0.1 * in_per_m
+    now = now if now is not None else datetime.now(UTC)
+    in_per_m, out_per_m, cache_per_m, promo_applied = _base_rates(binding, now)
+
+    # T19: image attachments add estimated input tokens on multimodal bindings.
+    image_tokens = (
+        binding.image_token_formula.tokens_for(image_count)
+        if binding.image_token_formula is not None
+        else 0
+    )
+    input_tokens = usage.input_tokens + image_tokens
+    output_tokens = usage.output_tokens
+    reasoning_tokens = usage.reasoning_tokens
+    cached_input_tokens = usage.cached_input_tokens
+
+    baseline = _flat_subtotal(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+        cached_input_tokens=cached_input_tokens,
+        in_per_m=in_per_m,
+        out_per_m=out_per_m,
+        cache_per_m=cache_per_m,
     )
 
-    input_cost = usage.input_tokens * in_per_m / 1_000_000
-    output_cost = usage.output_tokens * out_per_m / 1_000_000
-    # PRD 07 §7 rule 7: reasoning bills at OUTPUT rate.
-    reasoning_cost = usage.reasoning_tokens * out_per_m / 1_000_000
-    # M4: cache reads at their own per-million rate when set on the binding.
-    cached_cost = usage.cached_input_tokens * cache_per_m / 1_000_000
+    # Token budget that decides whether a long-context threshold is crossed: the
+    # prompt-side context (fresh input + cache reads). Output/reasoning are the
+    # model's reply and don't count toward the prompt threshold.
+    context_tokens = input_tokens + cached_input_tokens
 
-    subtotal = input_cost + output_cost + reasoning_cost + cached_cost
-
-    # Anthropic = flat at M1 (PRD 07 §4.1). For tiered providers M2+ populates
-    # appliedTier; the long_context invariant is enforced in the schema.
+    subtotal = baseline
+    session_surcharge = 0.0
     long_context = LongContext(
         flat=binding.long_context_flat,
         tier_scope=None,
@@ -61,18 +153,63 @@ def compute_cost_breakdown(
         session_multiplier=None,
     )
 
+    sm = binding.session_multiplier
+    band = _select_band(binding.pricing_tiers, context_tokens) if binding.pricing_tiers else None
+
+    if sm is not None and context_tokens >= sm.threshold_tokens:
+        # (a) Whole-session reprice: input and output bill at list x multiplier.
+        # Reasoning bills at the repriced OUTPUT rate; cache reads are unchanged.
+        repriced = _flat_subtotal(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            cached_input_tokens=cached_input_tokens,
+            in_per_m=in_per_m * sm.input,
+            out_per_m=out_per_m * sm.output,
+            cache_per_m=cache_per_m,
+        )
+        session_surcharge = repriced - baseline
+        subtotal = repriced
+        long_context = LongContext(
+            flat=False,
+            tier_scope="session",
+            tokens_repriced="all",
+            applied_tier=None,
+            session_multiplier=SessionMultiplier(input=sm.input, output=sm.output),
+        )
+    elif band is not None:
+        # (b) Stepped overage band: only the input tokens ABOVE the band floor
+        # reprice at the band's rate; everything below stays at the list rate.
+        # The delta on those overflow tokens is the surcharge.
+        over_input = max(0, input_tokens - band.threshold_tokens)
+        surcharge = over_input * (band.price_in_per_m - in_per_m) / 1_000_000
+        session_surcharge = surcharge
+        subtotal = baseline + surcharge
+        long_context = LongContext(
+            flat=False,
+            tier_scope="overage",
+            tokens_repriced="above_threshold",
+            applied_tier=AppliedTier(
+                label=band.label,
+                threshold_tokens=band.threshold_tokens,
+                price_in_per_m=band.price_in_per_m,
+                price_out_per_m=band.price_out_per_m,
+            ),
+            session_multiplier=None,
+        )
+
     return CostBreakdown(
         currency="USD",
         list_price_in_per_m=in_per_m,
         list_price_out_per_m=out_per_m,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        reasoning_tokens=usage.reasoning_tokens,
-        cached_input_tokens=usage.cached_input_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
+        cached_input_tokens=cached_input_tokens,
         long_context=long_context,
-        promo_applied=False,
+        promo_applied=promo_applied,
         subtotal_usd=subtotal,
-        session_surcharge_usd=0.0,
+        session_surcharge_usd=session_surcharge,
     )
 
 
@@ -98,6 +235,7 @@ def build_attribution(
     substituted_model: str | None = None,
     substituted_display_label: str | None = None,
     memory_applied: int = 0,
+    memory_fact_ids: list[str] | None = None,
 ) -> ModelAttribution:
     """Assemble a ModelAttribution.
 
@@ -155,4 +293,7 @@ def build_attribution(
         # surface the positive count so the FE can render the "Memory used here"
         # chip (D19).
         memory_applied=memory_applied or None,
+        # The injected fact ids ride alongside the count; empty ⇒ None so the
+        # wire shape is unchanged for memory-off turns.
+        memory_fact_ids=(list(memory_fact_ids) if memory_fact_ids else None),
     )

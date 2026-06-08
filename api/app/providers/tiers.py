@@ -12,6 +12,7 @@ private in `TierBinding` for `providers/pricing.py` and the streaming handler.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Literal
 
 from app.config import Settings, get_settings
@@ -21,6 +22,14 @@ from app.schemas.tier import ModelTier, ProviderDataPolicy, ProviderRouteOption
 from app.search.factory import search_enabled
 
 ProviderRouteStatus = Literal["available", "pending", "unavailable"]
+
+# Where a provider route stands in our data-handling / privacy review (T07).
+# Distinct from `status` (does an adapter exist + is it operationally usable):
+# this records whether legal/privacy has SIGNED OFF on the route's data policy.
+# A roadmap route can be `status="pending"` AND `data_policy_review_status` in
+# any state. `not_required` is the default for routes that need no review (e.g.
+# the local `fake` test route); production routes carry `approved`.
+DataPolicyReviewStatus = Literal["approved", "in_review", "pending", "not_required"]
 
 
 @dataclass(frozen=True)
@@ -34,6 +43,10 @@ class ProviderRoute:
     default_route_eligible: bool
     data_policy: ProviderDataPolicy | None
     notes: str = ""
+    # Data-policy / privacy review state (T07). Defaults to `not_required` so
+    # existing routes keep their meaning without per-route churn; each route
+    # below sets it explicitly for honest disclosure.
+    data_policy_review_status: DataPolicyReviewStatus = "not_required"
 
 
 PROVIDER_ROUTES: tuple[ProviderRoute, ...] = (
@@ -52,6 +65,7 @@ PROVIDER_ROUTES: tuple[ProviderRoute, ...] = (
             policy_label="May train unless opted out; China data residency",
         ),
         notes="Canonical cost-leading production route via OpenAI-compatible API.",
+        data_policy_review_status="approved",
     ),
     ProviderRoute(
         provider_id="anthropic",
@@ -68,6 +82,7 @@ PROVIDER_ROUTES: tuple[ProviderRoute, ...] = (
             policy_label="No training; API retention up to 30 days",
         ),
         notes="Direct Anthropic Messages API adapter.",
+        data_policy_review_status="approved",
     ),
     ProviderRoute(
         provider_id="openai",
@@ -84,6 +99,7 @@ PROVIDER_ROUTES: tuple[ProviderRoute, ...] = (
             policy_label="No training; standard API retention",
         ),
         notes="Direct OpenAI or operator-supplied OpenAI-compatible endpoint.",
+        data_policy_review_status="approved",
     ),
     ProviderRoute(
         provider_id="gemini",
@@ -93,6 +109,21 @@ PROVIDER_ROUTES: tuple[ProviderRoute, ...] = (
         default_route_eligible=False,
         data_policy=None,
         notes="Registered for roadmap visibility only; no provider adapter is wired.",
+        data_policy_review_status="pending",
+    ),
+    ProviderRoute(
+        provider_id="xai",
+        label="Grok (xAI)",
+        status="pending",
+        adapter=None,
+        default_route_eligible=False,
+        data_policy=None,
+        notes=(
+            "xAI Grok roadmap route (OpenAI-compatible API). Registered for "
+            "visibility only; no adapter is wired and the data policy is still "
+            "under review, so it is never default-route eligible."
+        ),
+        data_policy_review_status="in_review",
     ),
     ProviderRoute(
         provider_id="fake",
@@ -109,6 +140,7 @@ PROVIDER_ROUTES: tuple[ProviderRoute, ...] = (
             policy_label="Local deterministic test route",
         ),
         notes="Deterministic in-process provider for dev/tests.",
+        data_policy_review_status="not_required",
     ),
 )
 
@@ -207,6 +239,88 @@ def require_available_provider_route(settings: Settings) -> ProviderRoute:
 
 
 @dataclass(frozen=True)
+class SessionMultiplierPricing:
+    """Whole-session reprice above a token threshold (OpenAI style; PRD 07 §4.1a).
+
+    Crossing `threshold_tokens` of request context reprices the WHOLE request:
+    input and output bill at their list rate times `input` / `output`
+    respectively (two multipliers, never one scalar). The request-scoped delta
+    over baseline is the `session_surcharge_usd` in the breakdown.
+    """
+
+    threshold_tokens: int
+    input: float
+    output: float
+
+
+@dataclass(frozen=True)
+class PricingBand:
+    """A stepped per-band base rate above a threshold (Gemini style; PRD 07 §4.1b).
+
+    Tokens of request context above `threshold_tokens` (the band floor) are
+    repriced at this band's absolute per-million rates; tokens below stay at the
+    binding's `list_price_*`. `cached_input_per_m` is the band's own cache-read
+    rate (Gemini caches are also tiered) and falls back to the binding's cache
+    rate when None.
+    """
+
+    threshold_tokens: int
+    price_in_per_m: float
+    price_out_per_m: float
+    cached_input_per_m: float | None = None
+    label: str = ""
+
+
+@dataclass(frozen=True)
+class PromoPricing:
+    """A time-boxed promotional price for a binding (PRD 07 §4.1 `promo`).
+
+    When active (the turn instant is at/before `effective_until`, or
+    `effective_until` is None for an open-ended promo), the binding bills at the
+    promo's per-million rates instead of its list rates and the breakdown's
+    `promo_applied` flips True. An expired promo is inert — pricing reverts to
+    the list rates with no other change, so the binding stays backward
+    compatible the moment the promo lapses.
+    """
+
+    promo_id: str
+    price_in_per_m: float
+    price_out_per_m: float
+    cache_read_per_m: float | None = None
+    effective_until: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ImageTokenFormula:
+    """Estimate the extra INPUT tokens an image attachment costs (T19).
+
+    Multimodal providers bill image inputs as a token count derived from the
+    image (a flat base plus a per-image/per-tile amount). This is a deliberately
+    simple, auditable linear estimate: `base_tokens + tokens_per_image * count`.
+    Used by `compute_cost_breakdown` only when image attachments are present and
+    the served binding sets a formula; otherwise image cost is zero (current
+    behavior) so non-multimodal routes are unchanged.
+    """
+
+    base_tokens: int = 0
+    tokens_per_image: int = 0
+
+    def tokens_for(self, image_count: int) -> int:
+        if image_count <= 0:
+            return 0
+        return self.base_tokens + self.tokens_per_image * image_count
+
+
+def promo_active(promo: PromoPricing | None, now: datetime) -> bool:
+    """Whether a promo applies at the `now` instant (None / lapsed => False)."""
+    if promo is None:
+        return False
+    if promo.effective_until is None:
+        return True
+    return now <= promo.effective_until
+
+
+@dataclass(frozen=True)
 class TierBinding:
     """BE-internal binding from tier id to concrete provider/model + pricing.
 
@@ -265,6 +379,28 @@ class TierBinding:
     # via the Web Speech API and never touches a provider, so no route claims an
     # audio output modality.
     modalities_out: tuple[str, ...] = ("text",)
+    # Context-window budgeting (FR-35). `context_window` is the binding's total
+    # token budget (prompt + completion) and `max_output_tokens` is the slice
+    # reserved for the model's reply. The context-compaction pass
+    # (`app/context/compaction.py`) reads both to decide when a turn's history
+    # must be compacted before it is sent to the provider. Defaults are
+    # conservative (128k / 8k) so a binding that doesn't override them never
+    # over-promises the available window.
+    context_window: int = 128000
+    max_output_tokens: int = 8192
+    # --- Tiered long-context pricing (T05). All optional; when none are set the
+    # binding bills flat at `list_price_*` exactly as before (`long_context_flat`
+    # stays the authoritative "no long-context penalty" fact). `session_multiplier`
+    # and `pricing_tiers` are mutually exclusive ways to express a long-context
+    # surcharge; if a binding sets both, the whole-session reprice wins and the
+    # bands are ignored (documented in `compute_cost_breakdown`).
+    session_multiplier: SessionMultiplierPricing | None = None
+    pricing_tiers: tuple[PricingBand, ...] = ()
+    # Time-boxed promotional price (T05). Inert once `effective_until` passes.
+    promo: PromoPricing | None = None
+    # Per-image input-token estimate for multimodal billing (T19). None on
+    # non-multimodal routes => image attachments add no token cost.
+    image_token_formula: ImageTokenFormula | None = None
 
 
 def _tier(

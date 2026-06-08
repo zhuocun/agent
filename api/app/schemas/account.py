@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from app.errors import ErrorEnvelope
 from app.schemas.common import CamelModel
 from app.schemas.conversation import Conversation
 from app.schemas.memory import MemoryFact
@@ -79,6 +80,11 @@ class UsageBudget(CamelModel):
     # user cap (whichever positive caps exist). None when neither caps spend.
     effective_quota_usd: float | None = None
     recent_ledger_entries: list[UsageLedgerEntry] = Field(default_factory=list)
+    # Soft-cap / budget transparency callout (PRD 08 §5.4, T21). A
+    # `PLATFORM_BUDGET_WARNING` envelope once spend crosses the configured
+    # threshold (e.g. 80%) of the effective quota, a `PLATFORM_BUDGET_SOFT_CAP`
+    # envelope at/over 100%, else None. Informational only — never a block.
+    warning: ErrorEnvelope | None = None
 
 
 class SpendDayBucket(CamelModel):

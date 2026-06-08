@@ -20,7 +20,7 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID, uuid4
 
@@ -32,6 +32,7 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
+from app.context import compaction as context_compaction
 from app.db.models import Message, Project, User
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import api_keys as api_keys_repo
@@ -47,7 +48,18 @@ from app.db.repositories import tags as tags_repo
 from app.db.repositories import usage as usage_repo
 from app.db.repositories.usage import _effective_quota_usd
 from app.db.session import get_db
-from app.errors import AppError, ErrorAction, ErrorEnvelope, not_found
+from app.errors import (
+    AppError,
+    ErrorAction,
+    ErrorEnvelope,
+    not_found,
+    platform_guest_limit_envelope,
+)
+from app.guest_limits import (
+    count_guest_messages,
+    count_guest_premium_messages,
+    is_premium_tier,
+)
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.protocol import (
@@ -237,6 +249,18 @@ def _resolve_binding(
 
 def _selected_provider_id(provider_id: str | None, settings: Settings) -> str:
     return provider_id or settings.provider_backend
+
+
+def _ephemeral_expires_at(settings: Settings) -> datetime:
+    """Absolute expiry instant for an ephemeral conversation (D31 / T13).
+
+    `now + EPHEMERAL_CONVERSATION_TTL_HOURS`. A non-positive TTL falls back to
+    24h defensively so an ephemeral chat always carries a finite expiry.
+    """
+    hours = settings.ephemeral_conversation_ttl_hours
+    if hours <= 0:
+        hours = 24
+    return datetime.now(UTC) + timedelta(hours=hours)
 
 
 def _combine_instructions(
@@ -1040,7 +1064,9 @@ async def create_conversation(
     if body.is_temporary:
         # Temporary chats have no persisted row, so they can NEVER carry a
         # Project membership (D20). Silently ignore any `projectId` here rather
-        # than erroring — the FE simply shows an unfiled temp chat.
+        # than erroring — the FE simply shows an unfiled temp chat. A temp chat
+        # is inherently ephemeral; surface an `expires_at` for transparency even
+        # though there is no row to purge.
         synthetic_id = uuid4()
         _TEMP_IDS[user.id].add(synthetic_id)
         return ConversationSchema(
@@ -1049,6 +1075,8 @@ async def create_conversation(
             messages=[],
             selected_tier_id=body.selected_tier_id,
             is_temporary=True,
+            expires_at=_ephemeral_expires_at(settings).isoformat(),
+            is_sensitive=body.is_sensitive,
         )
 
     # Resolve the Project membership (D20). A forged / not-owned project id is a
@@ -1073,11 +1101,16 @@ async def create_conversation(
         ):
             selected_tier_id = cast(ModelTierId, project.default_tier_id)
 
+    # Ephemeral mode (D31 / T13): a persisted conversation that auto-expires
+    # after the configured TTL. `expires_at` drives the retention purge.
+    expires_at = _ephemeral_expires_at(settings) if body.is_ephemeral else None
     convo = await conversations_repo.create_for_user(
         db,
         user_id=user.id,
         selected_tier_id=selected_tier_id,
         project_id=project_id,
+        expires_at=expires_at,
+        is_sensitive=body.is_sensitive,
     )
     return ConversationSchema(
         id=str(convo.id),
@@ -1086,6 +1119,8 @@ async def create_conversation(
         selected_tier_id=selected_tier_id,
         is_temporary=False,
         project_id=str(convo.project_id) if convo.project_id is not None else None,
+        expires_at=convo.expires_at.isoformat() if convo.expires_at is not None else None,
+        is_sensitive=convo.is_sensitive,
     )
 
 
@@ -1616,6 +1651,12 @@ async def send_message(
             db, user_id=user.id, provider=binding.provider_id
         )
 
+    # Guest send-limit state (PRD 08 §5.4 / §7.4, T06). Decided inside the
+    # persisted-turn block below; defaulted here so the router rebind can read it
+    # on every path (it stays False on the temp-chat path — temp chats persist
+    # nothing and are the deliberate escape hatch, so they are never gated).
+    guest_downgrade = False
+
     # Ownership / existence check.
     if not is_temp:
         await _enforce_retention(db, user.id)
@@ -1654,6 +1695,32 @@ async def send_message(
             )
             if replay is not None:
                 return replay
+
+        # Anonymous-guest send limits (PRD 08 §5.4 / §7.4, T06). Two gates, both
+        # for ANONYMOUS users on persisted platform-key turns (a guest never
+        # holds a BYOK key, so `resolved_api_key` is always None here). Placed
+        # AFTER the idempotent replay so an already-billed retry is never
+        # blocked, and BEFORE the provider/budget gates.
+        if user.is_anonymous:
+            if (
+                settings.guest_message_limit > 0
+                and await count_guest_messages(db, user.id)
+                >= settings.guest_message_limit
+            ):
+                # Hard sign-up wall: refuse the send (never silent). The current
+                # thread is preserved; signing up lifts the wall.
+                raise platform_guest_limit_envelope(limit=settings.guest_message_limit)
+            if (
+                settings.guest_premium_message_limit > 0
+                and is_premium_tier(body.tier_id)
+                and await count_guest_premium_messages(db, user.id)
+                >= settings.guest_premium_message_limit
+            ):
+                # Premium allotment exhausted: serve this turn on `fast` instead.
+                # Applied where the binding is finalized (the router block),
+                # surfaced as an `auto_downgrade` substitution callout
+                # (PLATFORM_GUEST_DOWNGRADE) so the downgrade is never silent.
+                guest_downgrade = True
 
         # Cost-based budget enforcement. Only platform-key turns count against
         # the cap (BYOK turns are exempt — the user pays their own provider).
@@ -1971,7 +2038,21 @@ async def send_message(
     # fallback wins precedence).
     router_substitution: SubstitutionReasonCode | None = None
     settings_for_routing = settings
-    if body.tier_id == "auto" and settings_for_routing.auto_routing_enabled:
+    if guest_downgrade:
+        # Guest premium-allotment downgrade (PRD 08 §5.4 / §7.4, T06). Rebind to
+        # the `fast` tier and seed an `auto_downgrade` substitution so the wire
+        # discloses the swap (PLATFORM_GUEST_DOWNGRADE — never silent). The
+        # `requested_tier_id` stays the premium tier the guest asked for (threaded
+        # separately as `body.tier_id`), so the FE still shows the original
+        # request. This preempts auto-routing: both resolve to a cheaper tier and
+        # the guest gate wins.
+        fast_binding = get_binding(
+            "fast", settings=settings, provider_id=body.provider_id
+        )
+        if fast_binding is not None:
+            binding = fast_binding
+            router_substitution = "auto_downgrade"
+    elif body.tier_id == "auto" and settings_for_routing.auto_routing_enabled:
         routed = route_auto(provider_user_text, history)
         routed_tier_id = routed.tier_id
         if routed_tier_id == "pro" and not await _has_platform_pro_access(
@@ -2019,6 +2100,20 @@ async def send_message(
     fallback_api_key: str | None = None
     if fallback_route is not None:
         fallback_binding, fallback_provider_id, fallback_api_key = fallback_route
+
+    # Context-window compaction (FR-35). Keep the replayed history within the
+    # finalized binding's token budget before the provider call. A no-op for the
+    # common short conversation (`should_compact` returns False); a long one
+    # gets its older prefix replaced by a provider-written summary, falling back
+    # to a pure sliding window if summarization is unavailable. Applied to the
+    # `history` threaded into BOTH the detached-producer and inline stream paths.
+    history = await context_compaction.compact_history(
+        history,
+        binding,
+        provider=provider,
+        model_id=binding.model_id,
+        api_key=resolved_api_key,
+    )
 
     # Durable stream lifecycle (PRD 04 §5.1). The active row was claimed before
     # message-history mutation and committed by the accepted branch above. The id
@@ -2140,11 +2235,17 @@ async def send_message(
     # Transparent long-term memory (D19): load the caller's saved facts to inject
     # ONLY when memory is opt-in enabled AND the turn is not temporary. Temporary
     # chats skip persistence (handler.py) and must skip injection too — they are
-    # the user's escape hatch from memory. The handler folds these into the user
-    # turn (`_apply_memory`) and surfaces the injected count on the attribution.
+    # the user's escape hatch from memory. The handler folds these into the
+    # cache-stable system prefix (`prompt_assembly`) and surfaces the injected
+    # count + fact ids on the attribution. `memory_enabled` (enabled AND
+    # non-temporary) also gates the post-turn auto-extraction.
+    memory_enabled = user_prefs.memory_enabled and not is_temp
     memory_facts: list[str] = []
-    if user_prefs.memory_enabled and not is_temp:
-        memory_facts = await memory_repo.list_for_injection(db, user.id)
+    memory_fact_ids: list[str] = []
+    if memory_enabled:
+        injected = await memory_repo.list_for_injection_with_ids(db, user.id)
+        memory_fact_ids = [fact_id for fact_id, _ in injected]
+        memory_facts = [content for _, content in injected]
 
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
@@ -2183,6 +2284,8 @@ async def send_message(
             attachments=provider_attachments,
             custom_instructions=effective_instructions,
             memory_facts=memory_facts,
+            memory_fact_ids=memory_fact_ids,
+            memory_enabled=memory_enabled,
             reasoning_effort_override=reasoning_effort_override,
             thinking_override=thinking_override,
             monthly_quota_usd_override=effective_quota_usd,
@@ -2233,6 +2336,8 @@ async def send_message(
             attachments=provider_attachments,
             custom_instructions=effective_instructions,
             memory_facts=memory_facts,
+            memory_fact_ids=memory_fact_ids,
+            memory_enabled=memory_enabled,
             reasoning_effort_override=reasoning_effort_override,
             thinking_override=thinking_override,
             monthly_quota_usd_override=effective_quota_usd,

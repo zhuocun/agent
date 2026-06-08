@@ -40,12 +40,14 @@ from app.providers.protocol import (
     Sources,
     StatusUpdate,
     ToolCall,
+    ToolDefinition,
     ToolResult,
     UsageUpdate,
     text_with_attachment_fallback,
 )
 from app.providers.steering import steer_user_text
 from app.search.protocol import SourceItem
+from app.tools.agent_loop import parse_tool_feedback_history
 
 # Anthropic's server-side web-search tool (hosted; the model runs the search and
 # streams `server_tool_use` / `web_search_tool_result` content blocks back). We
@@ -253,6 +255,28 @@ def _block_value(block: Any, key: str) -> Any:
     return getattr(block, key, None)
 
 
+def _anthropic_tool_schema(tool: ToolDefinition) -> dict[str, Any]:
+    """Map a provider-neutral `ToolDefinition` to an Anthropic client-tool schema.
+
+    The neutral `label` doubles as the model-facing description; `parameters` is
+    the tool's JSON-Schema input contract (the registry `ToolSpec.schema`).
+    """
+    return {
+        "name": tool.name,
+        "description": tool.label,
+        "input_schema": tool.parameters or {"type": "object", "properties": {}},
+    }
+
+
+def _parse_tool_arguments(raw_arguments: str) -> dict[str, Any]:
+    """Parse a tool_use block's accumulated input JSON into a dict (tolerant)."""
+    try:
+        parsed = json.loads(raw_arguments or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _retry_after_ms(exc: anthropic.APIStatusError) -> int | None:
     """Best-effort `retryAfterMs` from a rate-limit response's headers.
 
@@ -340,6 +364,94 @@ class AnthropicProvider:
         key = api_key if api_key is not None else self._default_api_key
         return _build_client(key, None)
 
+    async def _iter_provider_events(
+        self,
+        stream: Any,
+        tool_use_acc: dict[int, dict[str, Any]],
+    ) -> AsyncIterator[ProviderEvent]:
+        """Map one opened Anthropic message stream to `ProviderEvent`s.
+
+        Yields reasoning/answer/web-search events (the existing behavior) and
+        accumulates any client-side `tool_use` blocks (the agent-loop registry
+        tools) into `tool_use_acc`, keyed by content-block index, so the caller
+        can detect a tool request after the stream drains. Does NOT read final
+        usage — the caller does that via `get_final_message()`.
+        """
+        # Track whether we're currently inside a thinking block so we can
+        # emit exactly one ReasoningDone at block end.
+        in_thinking = False
+        # Whether we've already announced an active search status (so a multi-use
+        # search turn only emits a single active/done pair around the results).
+        search_active_emitted = False
+
+        async for event in stream:
+            etype = getattr(event, "type", None)
+
+            if etype == "content_block_start":
+                block = getattr(event, "content_block", None)
+                block_type = _block_value(block, "type")
+                if block_type == "thinking":
+                    in_thinking = True
+                elif block_type == "tool_use":
+                    # Client-side tool (agent-loop registry). Record it by block
+                    # index; its input arrives via `input_json_delta` deltas.
+                    index = getattr(event, "index", len(tool_use_acc))
+                    tool_use_acc[index] = {
+                        "id": _block_value(block, "id"),
+                        "name": _block_value(block, "name"),
+                        "args": "",
+                    }
+                elif block_type == "server_tool_use":
+                    # The model dispatched a server-side web search.
+                    # Surface the "Searching the web…" status once.
+                    tool_id = str(_block_value(block, "id") or "web_search")
+                    tool_name = str(_block_value(block, "name") or "web_search")
+                    tool_input = _block_value(block, "input")
+                    yield ToolCall(
+                        id=tool_id,
+                        name=tool_name,
+                        label="Search web",
+                        status="running",
+                        input=(tool_input if isinstance(tool_input, dict) else None),
+                    )
+                    if not search_active_emitted:
+                        yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="active")
+                        search_active_emitted = True
+                elif block_type == "web_search_tool_result":
+                    # Results returned: close the status and emit sources.
+                    tool_use_id = str(_block_value(block, "tool_use_id") or "web_search")
+                    items = _parse_web_search_result(block)
+                    yield ToolResult(
+                        tool_call_id=tool_use_id,
+                        name="web_search",
+                        label="Search web",
+                        status="succeeded",
+                        summary=(f"{len(items)} source{'s' if len(items) != 1 else ''}"),
+                        output={"results": [item.model_dump() for item in items]},
+                    )
+                    if search_active_emitted:
+                        yield StatusUpdate(label=_SEARCH_STATUS_LABEL, state="done")
+                    if items:
+                        yield Sources(items=items)
+
+            elif etype == "content_block_delta":
+                delta = getattr(event, "delta", None)
+                dtype = getattr(delta, "type", None)
+                if dtype == "thinking_delta":
+                    yield ReasoningDelta(text=getattr(delta, "thinking", ""))
+                elif dtype == "text_delta":
+                    yield AnswerDelta(text=getattr(delta, "text", ""))
+                elif dtype == "input_json_delta":
+                    # Accumulate a client-side tool_use block's streamed input.
+                    index = getattr(event, "index", None)
+                    if index in tool_use_acc:
+                        tool_use_acc[index]["args"] += getattr(delta, "partial_json", "") or ""
+
+            elif etype == "content_block_stop":
+                if in_thinking:
+                    yield ReasoningDone()
+                    in_thinking = False
+
     async def stream(
         self,
         *,
@@ -353,9 +465,25 @@ class AnthropicProvider:
         web_search: bool = False,
         supports_vision: bool = True,
         response_format: ResponseFormat | None = None,
+        system_prefix: str | None = None,
+        tools: list[ToolDefinition] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         # `thinking` / `reasoning_effort` accepted for Protocol conformance but
         # ignored: Anthropic extended-thinking is not yet wired here.
+        # Backend tool calling (agent loop): when `tools` are passed (TOOLS_ENABLED
+        # only), advertise them natively and parse the model's `tool_use` blocks
+        # into structured `ToolCall` events. The loop re-invokes us with results
+        # threaded back through `history` as a sentinel turn; split those out so
+        # they become NATIVE `tool_use` + `tool_result` blocks below. No tools ⇒
+        # no-op (clean history == history) and the path is byte-for-byte unchanged.
+        registry_tools = list(tools or [])
+        registry_active = bool(registry_tools)
+        registry_names = {t.name for t in registry_tools}
+        tool_by_name = {t.name: t for t in registry_tools}
+        fed_tool_results: list[dict[str, object]] = []
+        if registry_active:
+            history, fed_tool_results = parse_tool_feedback_history(history)
+
         # Build messages: history + the current user turn.
         messages: list[dict[str, Any]] = [
             {"role": m.role, "content": m.text} for m in history
@@ -380,26 +508,75 @@ class AnthropicProvider:
         # Sources. When web_search=False, no tools are sent and the path is
         # byte-for-byte unchanged.
         stream_kwargs: dict[str, Any] = {}
+        advertised_tools: list[dict[str, Any]] = []
         if web_search:
-            stream_kwargs["tools"] = [_ANTHROPIC_WEB_SEARCH_TOOL]
+            advertised_tools.append(_ANTHROPIC_WEB_SEARCH_TOOL)
+        advertised_tools.extend(_anthropic_tool_schema(t) for t in registry_tools)
+        if advertised_tools:
+            stream_kwargs["tools"] = advertised_tools
+
+        # Reconstruct the agent loop's fed-back tool results as NATIVE Anthropic
+        # blocks: an assistant `tool_use` turn followed by a user `tool_result`
+        # turn (Anthropic pairs them by `tool_use_id`). Appended AFTER the current
+        # user turn. We lack the original input JSON across rounds, so the
+        # reconstructed `tool_use` carries empty input — the model only needs the
+        # RESULT to ground its next answer. Empty ⇒ no-op.
+        if fed_tool_results:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": str(result.get("toolCallId")),
+                            "name": str(result.get("name")),
+                            "input": {},
+                        }
+                        for result in fed_tool_results
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": str(result.get("toolCallId")),
+                            "content": json.dumps(
+                                {
+                                    "status": result.get("status"),
+                                    "output": result.get("output"),
+                                    "error": result.get("error"),
+                                }
+                            ),
+                        }
+                        for result in fed_tool_results
+                    ],
+                }
+            )
 
         # Structured output (JSON mode), instruction-based (Anthropic has no
-        # native `response_format`). Pass the steer as the top-level `system`
-        # prompt; composes with web search (the tool list is independent). The
-        # handler validates the streamed text at the boundary. None ⇒ no system
-        # prompt, byte-for-byte unchanged.
+        # native `response_format`). Composed into the top-level `system` prompt
+        # alongside the cache-stable `system_prefix` (custom instructions +
+        # long-term memory). The prefix leads so its bytes are stable across
+        # turns (cache-friendly); the JSON-mode steer follows. Composes with web
+        # search (the tool list is independent). The handler validates the
+        # streamed text at the boundary. Both None ⇒ no system prompt,
+        # byte-for-byte unchanged.
+        system_parts: list[str] = []
+        if system_prefix:
+            system_parts.append(system_prefix)
         json_mode_system = _json_mode_system(response_format)
         if json_mode_system is not None:
-            stream_kwargs["system"] = json_mode_system
-
-        # Track whether we're currently inside a thinking block so we can
-        # emit exactly one ReasoningDone at block end.
-        in_thinking = False
-        # Whether we've already announced an active search status (so a multi-use
-        # search turn only emits a single active/done pair around the results).
-        search_active_emitted = False
+            system_parts.append(json_mode_system)
+        if system_parts:
+            stream_kwargs["system"] = "\n\n".join(system_parts)
 
         client = self._client_for(api_key)
+        # Accumulates client-side `tool_use` blocks (the agent-loop registry
+        # tools) by content-block index: {index: {"id","name","args"}}.
+        tool_use_acc: dict[int, dict[str, Any]] = {}
         try:
             async with client.messages.stream(
                 model=model_id,
@@ -407,76 +584,39 @@ class AnthropicProvider:
                 messages=cast(Any, messages),
                 **stream_kwargs,
             ) as stream:
-                async for event in stream:
-                    etype = getattr(event, "type", None)
-
-                    if etype == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        block_type = _block_value(block, "type")
-                        if block_type == "thinking":
-                            in_thinking = True
-                        elif block_type == "server_tool_use":
-                            # The model dispatched a server-side web search.
-                            # Surface the "Searching the web…" status once.
-                            tool_id = str(_block_value(block, "id") or "web_search")
-                            tool_name = str(_block_value(block, "name") or "web_search")
-                            tool_input = _block_value(block, "input")
+                if registry_active:
+                    # Buffer the round's events: a `tool_use` round's reasoning /
+                    # text is provider context, not the final answer, so it is
+                    # discarded if a registry tool was requested (mirrors the
+                    # OpenAI pre-tool suppression). Otherwise it is flushed.
+                    buffered = [
+                        ev async for ev in self._iter_provider_events(stream, tool_use_acc)
+                    ]
+                    registry_calls = [
+                        tool_use_acc[index]
+                        for index in sorted(tool_use_acc)
+                        if tool_use_acc[index].get("name") in registry_names
+                    ]
+                    if registry_calls:
+                        # Hand off to the external agent loop: emit a ToolCall per
+                        # request and STOP (no usage / Complete). The loop runs the
+                        # tool (HITL gate included) and re-invokes `stream(...)`.
+                        for i, call in enumerate(registry_calls):
+                            name = str(call.get("name") or "")
+                            spec = tool_by_name[name]
                             yield ToolCall(
-                                id=tool_id,
-                                name=tool_name,
-                                label="Search web",
+                                id=str(call.get("id") or f"{name}_{i}"),
+                                name=name,
+                                label=spec.label,
                                 status="running",
-                                input=(
-                                    tool_input
-                                    if isinstance(tool_input, dict)
-                                    else None
-                                ),
+                                input=_parse_tool_arguments(str(call.get("args") or "")),
                             )
-                            if not search_active_emitted:
-                                yield StatusUpdate(
-                                    label=_SEARCH_STATUS_LABEL, state="active"
-                                )
-                                search_active_emitted = True
-                        elif block_type == "web_search_tool_result":
-                            # Results returned: close the status and emit sources.
-                            tool_use_id = str(
-                                _block_value(block, "tool_use_id") or "web_search"
-                            )
-                            items = _parse_web_search_result(block)
-                            yield ToolResult(
-                                tool_call_id=tool_use_id,
-                                name="web_search",
-                                label="Search web",
-                                status="succeeded",
-                                summary=(
-                                    f"{len(items)} source"
-                                    f"{'s' if len(items) != 1 else ''}"
-                                ),
-                                output={
-                                    "results": [
-                                        item.model_dump() for item in items
-                                    ]
-                                },
-                            )
-                            if search_active_emitted:
-                                yield StatusUpdate(
-                                    label=_SEARCH_STATUS_LABEL, state="done"
-                                )
-                            if items:
-                                yield Sources(items=items)
-
-                    elif etype == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        dtype = getattr(delta, "type", None)
-                        if dtype == "thinking_delta":
-                            yield ReasoningDelta(text=getattr(delta, "thinking", ""))
-                        elif dtype == "text_delta":
-                            yield AnswerDelta(text=getattr(delta, "text", ""))
-
-                    elif etype == "content_block_stop":
-                        if in_thinking:
-                            yield ReasoningDone()
-                            in_thinking = False
+                        return
+                    for ev in buffered:
+                        yield ev
+                else:
+                    async for ev in self._iter_provider_events(stream, tool_use_acc):
+                        yield ev
 
                 # Read the merged usage once the stream is fully consumed.
                 # Anthropic reports input + cache counts on `message_start` and
@@ -516,6 +656,7 @@ class AnthropicProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        system_prefix: str | None = None,
     ) -> str:
         """Non-streaming variant. One `messages.create` call, collected text.
 
@@ -531,12 +672,17 @@ class AnthropicProvider:
         ]
         messages.append({"role": "user", "content": user_text})
 
+        create_kwargs: dict[str, Any] = {}
+        if system_prefix:
+            create_kwargs["system"] = system_prefix
+
         client = self._client_for(api_key)
         try:
             response = await client.messages.create(
                 model=model_id,
                 max_tokens=64,
                 messages=cast(Any, messages),
+                **create_kwargs,
             )
         except anthropic.APIError as exc:
             raise _map_sdk_error(exc) from exc

@@ -2788,6 +2788,168 @@ export function ChatThread() {
     downloadMarkdown(renderConversationMarkdown(messages), activeTitle);
   };
 
+  // --- PDF + Word export (T12) ----------------------------------------------
+
+  const exportFilename = (
+    title: string | null | undefined,
+    ext: string,
+  ): string => {
+    const safeTitle = (title || "conversation")
+      .trim()
+      .replace(/[^\w\s.-]/g, "")
+      .replace(/\s+/g, "-")
+      .slice(0, 80);
+    return `${safeTitle || "conversation"}.${ext}`;
+  };
+
+  const escapeHtml = (value: string): string =>
+    value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+
+  // Build a self-contained HTML rendering of the settled thread (same turn
+  // selection as the Markdown export). Each turn becomes a role heading plus
+  // paragraphs, with blank-line-delimited paragraphs and single newlines kept
+  // as line breaks. Shared by the PDF (print) and Word (.docx) exporters.
+  const renderConversationTurnsHtml = (
+    source: ReadonlyArray<ChatMessage>,
+  ): string => {
+    const blocks: string[] = [];
+    for (const m of source) {
+      if (
+        m.role === "assistant" &&
+        (m.status === "error" ||
+          m.status === "submitted" ||
+          m.status === "streaming")
+      ) {
+        continue;
+      }
+      const text = m.parts
+        .filter((p): p is Extract<MessagePart, { type: "text" }> => p.type === "text")
+        .map((p) => p.text)
+        .join("\n\n")
+        .trim();
+      if (!text) continue;
+      const role = m.role === "user" ? "You" : "Assistant";
+      const paragraphs = text
+        .split(/\n{2,}/)
+        .map(
+          (para) =>
+            `<p>${escapeHtml(para).replace(/\n/g, "<br/>")}</p>`,
+        )
+        .join("");
+      blocks.push(
+        `<section class="turn turn-${m.role}"><h2>${role}</h2>${paragraphs}</section>`,
+      );
+    }
+    return blocks.join("\n");
+  };
+
+  const conversationDocumentHtml = (
+    source: ReadonlyArray<ChatMessage>,
+    title: string | null | undefined,
+    forPrint: boolean,
+  ): string => {
+    const heading = escapeHtml((title || "Conversation").trim() || "Conversation");
+    const body = renderConversationTurnsHtml(source);
+    // Print CSS lives inside the generated document so it prints cleanly
+    // regardless of the app's (virtualized) message list. Word ignores most of
+    // it but reads the basic typography.
+    const printAuto = forPrint
+      ? "<script>window.onload=function(){window.focus();window.print();}</script>"
+      : "";
+    return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/>
+<title>${heading}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #111; line-height: 1.5; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; margin: 0 0 1.5rem; }
+  .turn { margin: 0 0 1.5rem; padding: 0 0 1.25rem; border-bottom: 1px solid #e5e7eb; }
+  .turn:last-child { border-bottom: none; }
+  .turn h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin: 0 0 0.5rem; }
+  .turn-user h2 { color: #2563eb; }
+  p { margin: 0 0 0.75rem; white-space: normal; }
+  @media print {
+    body { margin: 0; max-width: none; }
+    .turn { break-inside: avoid; }
+  }
+</style></head>
+<body><h1>${heading}</h1>${body}${printAuto}</body></html>`;
+  };
+
+  // PDF export: render the conversation into a hidden same-origin iframe with
+  // its own `@media print` stylesheet, then invoke the browser's print dialog
+  // (Save as PDF). Using a generated document rather than `window.print()` on
+  // the live page sidesteps the virtualized message list (off-screen turns
+  // aren't in the DOM) and the app chrome.
+  const activeConversationTitleNow = (): string | null =>
+    conversations.find((c) => c.id === activeConversationId)?.title ?? null;
+
+  const handlePrintConversation = () => {
+    const source = messages;
+    const html = renderConversationTurnsHtml(source);
+    if (!html) {
+      setLiveMessage("Nothing to export");
+      showToast({ severity: "info", title: "Nothing to export" });
+      return;
+    }
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    iframe.style.opacity = "0";
+    document.body.appendChild(iframe);
+    const cleanup = () => {
+      window.setTimeout(() => iframe.remove(), 1000);
+    };
+    const doc = iframe.contentWindow?.document;
+    if (!doc) {
+      iframe.remove();
+      showToast({ severity: "error", title: "Couldn't open print view" });
+      return;
+    }
+    // The iframe load fires after the document is written; the auto-print
+    // script inside the doc focuses + prints. We still clean the iframe up.
+    iframe.onload = cleanup;
+    doc.open();
+    doc.write(conversationDocumentHtml(source, activeConversationTitleNow(), true));
+    doc.close();
+    setLiveMessage("Opening print view");
+  };
+
+  // Word export: a minimal HTML-flavored .docx — Word opens HTML content saved
+  // with the OOXML mime, which is the documented lightweight fallback (no OOXML
+  // zip packaging needed for a text export).
+  const handleDownloadDocx = () => {
+    const html = renderConversationTurnsHtml(messages);
+    if (!html) {
+      setLiveMessage("Nothing to export");
+      showToast({ severity: "info", title: "Nothing to export" });
+      return;
+    }
+    const title = activeConversationTitleNow();
+    const doc = conversationDocumentHtml(messages, title, false);
+    const blob = new Blob([doc], {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = exportFilename(title, "docx");
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    setLiveMessage("Conversation downloaded");
+    showToast({ severity: "info", title: "Conversation downloaded (Word)" });
+  };
+
   const handleDownloadConversationById = (id: string) => {
     if (id === activeConversationId) {
       handleDownloadConversation();
@@ -3316,6 +3478,8 @@ export function ChatThread() {
                 canCopyConversation={messages.length > 0}
                 onDownloadConversation={handleDownloadConversation}
                 canDownloadConversation={messages.length > 0}
+                onPrintConversation={handlePrintConversation}
+                onDownloadDocx={handleDownloadDocx}
                 onShareConversation={handleOpenShare}
                 canShareConversation={canShareActiveConversation}
                 tiers={modelTiers}
@@ -3442,6 +3606,10 @@ export function ChatThread() {
                       onContinue={handleContinue}
                       onToolDecision={(d) => handleToolDecision(m.id, d)}
                       onFeedback={(f) => setFeedback(m.id, f)}
+                      onFollowUp={handlePromptSelect}
+                      showFollowUps={
+                        !isStreaming && m.id === lastAssistantId
+                      }
                       onAttributionOpen={handleAttributionOpen}
                       onMemoryOpen={() => openSettings("memory")}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
@@ -3491,6 +3659,12 @@ export function ChatThread() {
                 isStreaming={isBusy}
                 onSend={handleSend}
                 onStop={handleStop}
+                // Offline draft persistence is keyed to the active conversation
+                // (null ⇒ the new-chat slot) so an in-progress message survives
+                // reloads and conversation switches (T02). Temporary chats are
+                // intentionally not persisted — they're off-the-record.
+                draftKey={activeConversationId}
+                persistDrafts={!isTemporary && !compareMode}
                 sendOnEnter={preferences.sendOnEnter}
                 // Attachments aren't offered in compare mode — the compare
                 // toggle takes the contextual slot and a 2-up transient view

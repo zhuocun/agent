@@ -449,6 +449,42 @@
   }
 }
 
+/* ===== RTL / logical-direction baseline (T01 i18n) =====
+   The app's layout primitives are largely physical (Tailwind `pl-*`/`pr-*`,
+   `left`/`right`), so full mirroring is a longer migration. This baseline makes
+   an RTL document (set via the `?rtl=1` cookie/query hook or an RTL locale)
+   read correctly for the load-bearing cases: text aligns to the start edge,
+   inline flow follows the writing direction, and intrinsically-directional
+   glyphs (arrows/chevrons) are mirrored. Components opting into full RTL should
+   prefer logical utilities (`ps-*`/`pe-*`, `ms-*`/`me-*`, `start-*`/`end-*`). */
+[dir="rtl"] {
+  text-align: start;
+}
+
+/* Honour the writing direction for free-flowing prose and message text without
+   forcing it on every component (which could fight deliberate LTR content like
+   code). */
+[dir="rtl"] .chat-md,
+[dir="rtl"] [data-testid="user-message-text"] {
+  text-align: start;
+}
+
+/* Keep code and other inherently-LTR content left-to-right even inside an RTL
+   document — source code, file paths, and tokens are not bidi text. */
+[dir="rtl"] pre,
+[dir="rtl"] code {
+  direction: ltr;
+  text-align: left;
+}
+
+/* Mirror directional affordance glyphs (send arrow, chevrons, back arrows) so
+   "forward/next" still points toward the reading direction under RTL. Opt-out
+   with `[data-no-flip]` for glyphs whose meaning is absolute (e.g. a logo). */
+[dir="rtl"] .rtl-flip,
+[dir="rtl"] [data-rtl-flip]:not([data-no-flip]) {
+  transform: scaleX(-1);
+}
+
 @keyframes shimmer {
   0% {
     background-position: -200% 0;
@@ -769,6 +805,34 @@ input[type="search"]::-webkit-search-decoration {
    desktop / ~4.5rem mobile; composer overlay ~9rem). */
 .chat-scroll::-webkit-scrollbar-track {
   margin: calc(env(safe-area-inset-top) + 5.5rem) 0 calc(var(--bottom-inset) + 9rem) 0;
+}
+
+/* ===== Print (PDF export, T12) =====
+   The in-app "Save as PDF" renders the conversation into a dedicated print
+   document (so the virtualized message list and app chrome don't interfere),
+   but a user can also hit the browser's native print on the live page. This
+   block keeps that path legible: drop the floating chrome (header/composer
+   strips, install coachmark, toasts) and the fixed status-bar strip, and let
+   the message area flow at full height on a white background. */
+@media print {
+  .chrome-frost,
+  [data-slot="toaster"],
+  [data-testid="install-coachmark"] {
+    display: none !important;
+  }
+  html,
+  body {
+    background: #fff !important;
+    overflow: visible !important;
+  }
+  .chat-scroll {
+    overflow: visible !important;
+    height: auto !important;
+  }
+  .chat-message-row {
+    content-visibility: visible !important;
+    break-inside: avoid;
+  }
 }
 
 /* Reduced motion (PRD 06 §3.4, Decision 13) — designed parallel surface, not a

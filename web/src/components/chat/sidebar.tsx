@@ -62,6 +62,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n/context";
 import { useSwipeActions } from "@/lib/use-swipe-actions";
 import {
   isAnonymousAccount,
@@ -1197,6 +1198,7 @@ export function Sidebar({
   onCollapse,
   className,
 }: SidebarProps): React.JSX.Element {
+  const t = useT();
   const anonymous = isAnonymousAccount(account);
   const trimmedSearch = search.trim();
   const isSearching = trimmedSearch.length > 0;
@@ -1508,7 +1510,7 @@ export function Sidebar({
           <Button
             type="button"
             variant="ghost"
-            aria-label="Collapse sidebar"
+            aria-label={t("sidebar.collapse")}
             onClick={onCollapse}
             className="size-9 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
           >
@@ -1530,7 +1532,7 @@ export function Sidebar({
           className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] active:scale-[0.97]"
         >
           <Plus className="size-4" aria-hidden />
-          <span>New chat</span>
+          <span>{t("sidebar.newChat")}</span>
         </button>
       </div>
 

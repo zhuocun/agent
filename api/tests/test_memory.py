@@ -96,10 +96,16 @@ async def _audit_types(
 
 
 class _CaptureProvider:
-    """Records the `user_text` it streams so tests can assert prompt wrapping."""
+    """Records the `user_text` + `system_prefix` it streams so tests can assert
+    prompt assembly (memory rides the cache-stable system prefix, T20)."""
 
-    def __init__(self, sink: list[str]) -> None:
+    def __init__(
+        self,
+        sink: list[str],
+        prefix_sink: list[str | None] | None = None,
+    ) -> None:
         self._sink = sink
+        self._prefix_sink = prefix_sink
 
     async def stream(
         self,
@@ -114,8 +120,12 @@ class _CaptureProvider:
         web_search: bool = False,
         supports_vision: bool = True,
         response_format: object | None = None,
+        system_prefix: str | None = None,
+        tools: list[object] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         self._sink.append(user_text)
+        if self._prefix_sink is not None:
+            self._prefix_sink.append(system_prefix)
         yield ReasoningDone()
         yield AnswerDelta(text="ok")
         yield Complete(
@@ -134,6 +144,7 @@ class _CaptureProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
+        system_prefix: str | None = None,
     ) -> str:
         return "Memory Test"
 
@@ -295,12 +306,13 @@ async def test_memory_injected_when_enabled(
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
 
     seen: list[str] = []
+    seen_prefixes: list[str | None] = []
     from app.routes import conversations as conversation_routes
 
     monkeypatch.setattr(
         conversation_routes,
         "build_provider",
-        lambda *a, **k: _CaptureProvider(seen),
+        lambda *a, **k: _CaptureProvider(seen, seen_prefixes),
     )
 
     frames = await _collect_sse(
@@ -310,19 +322,23 @@ async def test_memory_injected_when_enabled(
     )
 
     assert seen
-    prompt = seen[0]
-    # Both facts are wrapped into the user turn alongside the user's text.
-    assert "I am a pilot." in prompt
-    assert "I live in Tokyo." in prompt
-    assert "Where am I?" in prompt
-    assert "<memory>" in prompt
+    # Memory rides the cache-stable system prefix (T20), NOT the user turn.
+    prefix = seen_prefixes[0]
+    assert prefix is not None
+    assert "I am a pilot." in prefix
+    assert "I live in Tokyo." in prefix
+    assert "<memory>" in prefix
+    # The user turn stays the verbatim message.
+    assert seen[0] == "Where am I?"
 
-    # The turn-level count rides on the attribution + persists on the message.
+    # The turn-level count + fact ids ride on the attribution + persist.
     terminal = frames[-1]
     assert terminal[0] == "terminal"
     attribution = terminal[1]["attribution"]
     assert isinstance(attribution, dict)
     assert attribution["memoryApplied"] == 2
+    assert isinstance(attribution["memoryFactIds"], list)
+    assert len(attribution["memoryFactIds"]) == 2
 
     async with session_factory() as session:
         asst = (
@@ -332,6 +348,7 @@ async def test_memory_injected_when_enabled(
         ).scalar_one()
         assert asst.attribution is not None
         assert asst.attribution["memoryApplied"] == 2
+        assert len(asst.attribution["memoryFactIds"]) == 2
 
 
 async def test_memory_not_injected_when_disabled(
@@ -348,12 +365,13 @@ async def test_memory_not_injected_when_disabled(
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
 
     seen: list[str] = []
+    seen_prefixes: list[str | None] = []
     from app.routes import conversations as conversation_routes
 
     monkeypatch.setattr(
         conversation_routes,
         "build_provider",
-        lambda *a, **k: _CaptureProvider(seen),
+        lambda *a, **k: _CaptureProvider(seen, seen_prefixes),
     )
 
     frames = await _collect_sse(
@@ -364,14 +382,15 @@ async def test_memory_not_injected_when_disabled(
 
     assert seen
     prompt = seen[0]
-    assert "I am a pilot." not in prompt
-    assert "<memory>" not in prompt
     assert prompt == "Where am I?"  # byte-for-byte the pre-memory prompt
+    # No memory ⇒ no system prefix.
+    assert seen_prefixes[0] is None
 
     # No `memoryApplied` on the wire (exclude_none strips the 0/None).
     attribution = frames[-1][1]["attribution"]
     assert isinstance(attribution, dict)
     assert "memoryApplied" not in attribution
+    assert "memoryFactIds" not in attribution
 
 
 async def test_memory_not_injected_for_temporary_turn(
@@ -385,12 +404,13 @@ async def test_memory_not_injected_for_temporary_turn(
     await client.post("/api/account/memory", json={"content": "I am a pilot."})
 
     seen: list[str] = []
+    seen_prefixes: list[str | None] = []
     from app.routes import conversations as conversation_routes
 
     monkeypatch.setattr(
         conversation_routes,
         "build_provider",
-        lambda *a, **k: _CaptureProvider(seen),
+        lambda *a, **k: _CaptureProvider(seen, seen_prefixes),
     )
 
     # Create a temporary conversation via the API so `is_temporary` is set.
@@ -407,10 +427,11 @@ async def test_memory_not_injected_for_temporary_turn(
     )
 
     assert seen
-    assert "I am a pilot." not in seen[0]
     assert seen[0] == "Where am I?"
+    assert seen_prefixes[0] is None
     attribution = frames[-1][1]["attribution"]
     assert "memoryApplied" not in attribution
+    assert "memoryFactIds" not in attribution
 
 
 # Export -----------------------------------------------------------------------

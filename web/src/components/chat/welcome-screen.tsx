@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import {
   AlignLeft,
   Bug,
@@ -13,7 +12,6 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 import type { PromptSuggestion } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 export interface WelcomeScreenProps {
   userName?: string;
@@ -70,9 +68,6 @@ const PROMPTS: readonly Prompt[] = [
   { icon: Sparkles, label: "Brainstorm ideas with me" },
 ];
 
-// Progressive disclosure on mobile: show this many prompts before "More".
-const INITIAL_PROMPT_COUNT_MOBILE = 2;
-
 export function WelcomeScreen({
   userName,
   exiting = false,
@@ -82,42 +77,30 @@ export function WelcomeScreen({
 }: WelcomeScreenProps) {
   const heading = buildGreeting(userName);
   const today = formatDate();
-  const [promptsExpanded, setPromptsExpanded] = useState(false);
-
-  const promptItems =
-    suggestions.length > 0
-      ? suggestions.map((s) => ({
-          key: s.id,
-          icon: SUGGESTION_ICONS[s.icon],
-          label: s.title,
-          text: s.prompt,
-        }))
-      : PROMPTS.map((p) => ({
-          key: p.label,
-          icon: p.icon,
-          label: p.label,
-          text: p.label,
-        }));
-
-  const hiddenMobileCount = Math.max(
-    0,
-    promptItems.length - INITIAL_PROMPT_COUNT_MOBILE,
-  );
-  const showMoreButton =
-    !promptsExpanded && hiddenMobileCount > 0 && !compact;
 
   return (
-    <div className="flex h-full flex-col items-start justify-center px-4 md:items-center">
+    <div className="flex h-full flex-col items-center justify-center px-4">
       <div
         className={
           exiting
-            ? "animate-welcome-exit flex w-full max-w-md flex-col items-start text-left transition-[opacity,transform] duration-200 ease-[var(--ease-welcome)] opacity-0 -translate-y-2 md:items-center md:text-center"
-            : "flex w-full max-w-md flex-col items-start text-left md:items-center md:text-center"
+            // `animate-welcome-exit` is a class hook (not a Tailwind animation
+            // utility) so the reduced-motion CSS in globals.css can zero this
+            // inline transition the same way it zeroes `.animate-welcome-enter`.
+            // Without the hook, prefers-reduced-motion would still see a 200ms
+            // opacity/transform tween here even though the JS timer is source
+            // of truth for the seam. On exit the whole block fades/translates as
+            // one unit; the children's already-finished enter animations don't
+            // replay. Max-width must match the resting variant exactly, or the
+            // group snaps width at the exit seam.
+            ? "animate-welcome-exit flex w-full max-w-md flex-col items-center text-center transition-[opacity,transform] duration-200 ease-[var(--ease-welcome)] opacity-0 -translate-y-2"
+            // Entrance choreography lives on each child below (staggered via
+            // inline animationDelay). The wrapper itself carries layout only.
+            : "flex w-full max-w-md flex-col items-center text-center"
         }
       >
         {compact ? null : (
           <p
-            className="animate-welcome-enter mb-3 hidden text-sm font-medium text-muted-foreground md:block"
+            className="animate-welcome-enter mb-3 text-sm font-medium text-muted-foreground"
             style={{ animationDelay: "0ms" }}
           >
             {today}
@@ -125,57 +108,66 @@ export function WelcomeScreen({
         )}
 
         <h1
-          className="animate-welcome-enter text-2xl font-medium tracking-tight md:text-4xl lg:text-5xl"
+          className="animate-welcome-enter text-4xl font-medium tracking-tight md:text-5xl lg:text-6xl"
           style={{ animationDelay: "70ms" }}
         >
           {heading}
         </h1>
 
+        {/* One iOS-Settings-style inset group: a single quiet surface with
+            hairline separators between rows (none above the first) and a
+            trailing disclosure chevron per row. `overflow-hidden` clips the
+            row press-highlights to the rounded corners. `glass-clear` is the
+            lowest-opacity material in the system — the brand halo still reads
+            through it (per the old 0.03 intent) while it adds the saturated
+            backdrop-filter and the inset hairline rim the flat tint lacked.
+            `rounded-3xl` gives the iOS-26-generous outer curvature; the rows'
+            press-highlights are clipped to it, and their inner edges stay
+            square against the separators so nothing fights the curve. */}
         {compact ? null : (
-          <ul
-            aria-label="Suggested prompts"
-            className="glass-clear mt-8 w-full overflow-hidden rounded-3xl text-left md:mt-12"
-          >
-            {promptItems.map(({ key, icon: Icon, label, text }, index) => {
-              const hiddenOnMobile =
-                !promptsExpanded && index >= INITIAL_PROMPT_COUNT_MOBILE;
-              return (
-                <li
-                  key={key}
-                  className={cn("list-none", hiddenOnMobile && "hidden md:list-item")}
-                >
+        <ul
+          aria-label="Suggested prompts"
+          className="glass-clear mt-10 w-full overflow-hidden rounded-3xl text-left md:mt-12"
+        >
+          {suggestions.length > 0
+            ? suggestions.map((s, index) => {
+                const Icon = SUGGESTION_ICONS[s.icon];
+                return (
+                  <li key={s.id} className="list-none">
+                    <button
+                      type="button"
+                      onClick={() => onPromptSelect?.(s.prompt)}
+                      className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
+                      style={{ animationDelay: `${150 + index * 60}ms` }}
+                    >
+                      <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                      {s.title}
+                      <ChevronRight
+                        className="ml-auto size-4 shrink-0 text-muted-foreground/60"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </li>
+                );
+              })
+            : PROMPTS.map(({ icon: Icon, label }, index) => (
+                <li key={label} className="list-none">
                   <button
                     type="button"
-                    onClick={() => onPromptSelect?.(text)}
+                    onClick={() => onPromptSelect?.(label)}
                     className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
                     style={{ animationDelay: `${150 + index * 60}ms` }}
                   >
-                    <Icon
-                      className="size-5 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
+                    <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
                     {label}
                     <ChevronRight
-                      className="ml-auto hidden size-4 shrink-0 text-muted-foreground/60 md:block"
+                      className="ml-auto size-4 shrink-0 text-muted-foreground/60"
                       aria-hidden="true"
                     />
                   </button>
                 </li>
-              );
-            })}
-            {showMoreButton ? (
-              <li className="list-none md:hidden">
-                <button
-                  type="button"
-                  onClick={() => setPromptsExpanded(true)}
-                  className="flex w-full items-center justify-center border-t border-border/60 px-5 py-3 text-sm font-medium text-muted-foreground transition-colors active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-                >
-                  {hiddenMobileCount} more suggestion
-                  {hiddenMobileCount === 1 ? "" : "s"}
-                </button>
-              </li>
-            ) : null}
-          </ul>
+              ))}
+        </ul>
         )}
       </div>
     </div>

@@ -133,7 +133,7 @@ async def test_bootstrap_first_hit_creates_anonymous_user_and_session(
     assert by_id["fast"]["defaultRouteEligible"] is False
     assert by_id["fast"]["dataPolicy"]["policyLabel"] == "Local deterministic test route"
     options = {option["providerId"]: option for option in by_id["fast"]["providerOptions"]}
-    assert set(options) == {"deepseek", "anthropic", "openai", "gemini", "fake"}
+    assert set(options) == {"deepseek", "anthropic", "openai", "gemini", "xai", "fake"}
     assert options["deepseek"]["label"] == "DeepSeek"
     assert options["deepseek"]["status"] == "unavailable"
     assert options["deepseek"]["modelLabel"] == "DeepSeek V4 Flash"

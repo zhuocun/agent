@@ -108,7 +108,7 @@ def _budget_warning(effective_quota_usd: float, spend_usd: float) -> ErrorEnvelo
     if effective_quota_usd <= 0:
         return None
     ratio = spend_usd / effective_quota_usd
-    percent = int(round(ratio * 100))
+    percent = round(ratio * 100)
     if ratio >= 1.0:
         return platform_budget_soft_cap_envelope(percent=percent)
     threshold = get_settings().budget_warning_threshold_pct

@@ -37,7 +37,8 @@ from app.guest_limits import (
     is_premium_tier,
 )
 
-pytestmark = pytest.mark.asyncio
+# `asyncio_mode = "auto"` (pyproject) runs the async tests below; the sync unit
+# test stays sync, so no module-level asyncio mark is needed.
 
 
 # Unit: tier classification + message counting --------------------------------
@@ -348,7 +349,8 @@ async def test_guest_premium_under_limit_is_not_downgraded(
     attribution = frames[-1][1]["attribution"]
     assert isinstance(attribution, dict)
     assert attribution["servedTierId"] == "smart"
-    assert attribution["substitution"] is None
+    # No substitution: the field is omitted from the wire when there is none.
+    assert attribution.get("substitution") is None
 
 
 async def test_temporary_chat_is_never_gated_for_guests(

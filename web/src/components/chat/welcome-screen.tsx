@@ -18,6 +18,11 @@ export interface WelcomeScreenProps {
   exiting?: boolean;
   onPromptSelect?: (text: string) => void;
   suggestions: PromptSuggestion[];
+  // When true, render the minimal greeting only (no date eyebrow, no
+  // suggestion list). Used when other surfaces in the viewport already convey
+  // recency / next-step affordances (e.g. the conversation list is non-empty),
+  // so the welcome state shouldn't double-up with date + prompt rails.
+  compact?: boolean;
 }
 
 // Stable icon-key → glyph map for bootstrap suggestions. Exhaustive over the
@@ -68,6 +73,7 @@ export function WelcomeScreen({
   exiting = false,
   onPromptSelect,
   suggestions,
+  compact = false,
 }: WelcomeScreenProps) {
   const heading = buildGreeting(userName);
   const today = formatDate();
@@ -92,12 +98,14 @@ export function WelcomeScreen({
             : "flex w-full max-w-md flex-col items-center text-center"
         }
       >
-        <p
-          className="animate-welcome-enter mb-3 text-sm font-medium text-muted-foreground"
-          style={{ animationDelay: "0ms" }}
-        >
-          {today}
-        </p>
+        {compact ? null : (
+          <p
+            className="animate-welcome-enter mb-3 text-sm font-medium text-muted-foreground"
+            style={{ animationDelay: "0ms" }}
+          >
+            {today}
+          </p>
+        )}
 
         <h1
           className="animate-welcome-enter text-4xl font-medium tracking-tight md:text-5xl lg:text-6xl"
@@ -116,6 +124,7 @@ export function WelcomeScreen({
             `rounded-3xl` gives the iOS-26-generous outer curvature; the rows'
             press-highlights are clipped to it, and their inner edges stay
             square against the separators so nothing fights the curve. */}
+        {compact ? null : (
         <ul
           aria-label="Suggested prompts"
           className="glass-clear mt-10 w-full overflow-hidden rounded-3xl text-left md:mt-12"
@@ -159,6 +168,7 @@ export function WelcomeScreen({
                 </li>
               ))}
         </ul>
+        )}
       </div>
     </div>
   );

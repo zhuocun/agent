@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,8 @@ from app.schemas.preferences import (
     ShortcutOverride,
     UserPreferences,
 )
+
+_log = structlog.get_logger(__name__)
 
 _VALID_TIERS: tuple[ModelTierId, ...] = ("fast", "smart", "pro", "auto")
 
@@ -50,6 +53,7 @@ def _coerce_shortcuts(raw: object) -> KeyboardShortcuts:
         try:
             out[action_id] = ShortcutOverride.model_validate(combo)
         except ValueError:
+            _log.warning("preferences.shortcut_invalid", action_id=action_id)
             continue
     return out
 

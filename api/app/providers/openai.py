@@ -223,6 +223,7 @@ def _safe_int(value: Any) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
+        _log.debug("usage.coerce_failed", value=repr(value))
         return 0
 
 
@@ -360,6 +361,10 @@ def _parse_query(raw_arguments: str) -> str:
     try:
         parsed = json.loads(raw_arguments or "{}")
     except (ValueError, TypeError):
+        _log.warning(
+            "web_search.malformed_arguments",
+            raw=raw_arguments[:200] if raw_arguments else None,
+        )
         return ""
     if isinstance(parsed, dict):
         query = parsed.get("query")
@@ -383,13 +388,13 @@ def _retry_after_ms(exc: openai.RateLimitError) -> int | None:
         try:
             return int(float(ms_header))
         except (TypeError, ValueError):
-            pass
+            _log.debug("retry_after.parse_failed", header="retry-after-ms", value=repr(ms_header))
     sec_header = headers.get("retry-after")
     if sec_header is not None:
         try:
             return int(float(sec_header) * 1000)
         except (TypeError, ValueError):
-            pass
+            _log.debug("retry_after.parse_failed", header="retry-after", value=repr(sec_header))
     return None
 
 

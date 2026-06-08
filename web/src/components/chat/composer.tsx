@@ -615,6 +615,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       if (!persistDrafts) return;
       const currentKey = draftKey ?? NEW_CHAT_DRAFT_KEY;
       const prevKey = prevDraftKeyRef.current;
+      prevDraftKeyRef.current = currentKey;
 
       const restore = (stored: string | null) => {
         const next = stored ?? "";
@@ -623,34 +624,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         requestAnimationFrame(autoGrow);
       };
 
-      // First mount: load whatever was last left for this key.
-      if (prevKey === undefined) {
-        prevDraftKeyRef.current = currentKey;
-        let cancelled = false;
-        void loadDraft(currentKey).then((stored) => {
-          if (!cancelled) restore(stored);
-        });
-        return () => {
-          cancelled = true;
-        };
-      }
-
-      if (prevKey === currentKey) return;
-      prevDraftKeyRef.current = currentKey;
-
       // A new chat (no id yet) that just gained a real conversation id is the
       // SAME logical draft context — carry any in-progress text across instead
-      // of clobbering it, and clear the new-chat slot.
-      if (prevKey === NEW_CHAT_DRAFT_KEY && currentKey !== NEW_CHAT_DRAFT_KEY) {
+      // of clobbering it, and clear the new-chat slot. Only on a genuine
+      // transition (prevKey is a real prior value, not first-mount/undefined).
+      if (
+        prevKey !== undefined &&
+        prevKey === NEW_CHAT_DRAFT_KEY &&
+        currentKey !== NEW_CHAT_DRAFT_KEY
+      ) {
         const current = valueRef.current;
         void deleteDraft(NEW_CHAT_DRAFT_KEY);
-        if (current.trim().length > 0) void saveDraft(currentKey, current);
-        return;
+        if (current.trim().length > 0) {
+          // Keep the in-progress text in the composer under the new key; no
+          // load (it would clobber what the user is mid-typing).
+          void saveDraft(currentKey, current);
+          return;
+        }
+      } else if (prevKey !== undefined && prevKey !== currentKey) {
+        // Genuine conversation switch: persist the outgoing draft under the
+        // previous key before loading the target's draft below.
+        void saveDraft(prevKey, valueRef.current);
       }
 
-      // Genuine conversation switch: persist the outgoing draft under the
-      // previous key, then restore the target conversation's draft.
-      void saveDraft(prevKey, valueRef.current);
+      // Load the draft for the current key. Scheduled on first mount, on a key
+      // switch, AND on a React StrictMode dev re-run (where `prevKey` already
+      // equals `currentKey` because the prior pass set the ref) — the load is
+      // what RESTORES an in-progress message after a reload, so it must never
+      // be skipped on a same-key re-run. Cancellable so a rapid key change
+      // can't restore a stale value over a newer one.
       let cancelled = false;
       void loadDraft(currentKey).then((stored) => {
         if (!cancelled) restore(stored);

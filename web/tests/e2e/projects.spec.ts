@@ -94,6 +94,9 @@ test.describe("projects / spaces", () => {
       .click();
     await page.getByRole("menuitem", { name: "Project settings" }).click();
 
+    // Project defaults collapsed by default — expand before editing.
+    await page.getByTestId("project-defaults-toggle").click();
+
     const panel = page.getByTestId("project-settings-panel");
     await expect(panel).toBeVisible();
 

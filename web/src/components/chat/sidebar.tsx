@@ -276,6 +276,8 @@ function ConversationRow({
   onCopy,
   onDownload,
   onRequestDelete,
+  bulkEnabled,
+  onEnterSelection,
 }: {
   conversation: ConversationSummary;
   active: boolean;
@@ -286,6 +288,8 @@ function ConversationRow({
   // pin glyph and a row tap toggles selection instead of opening the chat.
   selectionMode: boolean;
   selected: boolean;
+  bulkEnabled?: boolean;
+  onEnterSelection?: () => void;
   onToggleSelect: (id: string) => void;
   onSelect: (id: string) => void;
   onRename: (id: string, newTitle: string) => void;
@@ -660,6 +664,20 @@ function ConversationRow({
           }
         />
         <DropdownMenuContent align="end" className="w-40">
+          {!selectionMode && bulkEnabled && onEnterSelection ? (
+            <DropdownMenuItem
+              label="Select"
+              onClick={() => {
+                onEnterSelection();
+                onToggleSelect(conversation.id);
+              }}
+              className="gap-2 md:hidden"
+              data-testid="sidebar-select-from-row"
+            >
+              <Check className="size-4" aria-hidden />
+              <span>Select</span>
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
             label="Rename"
             onClick={enterRename}
@@ -1409,7 +1427,7 @@ export function Sidebar({
   const exitSelection = useCallback(() => {
     setRawSelectedIds(new Set());
     setSelectionActive(false);
-  }, []);
+  }, [setSelectionActive]);
   const selectedIdList = Array.from(selectedIds);
   const runBulk = (fn?: (ids: string[]) => void) => {
     if (!fn || selectedIdList.length === 0) return;
@@ -1460,6 +1478,8 @@ export function Sidebar({
           onCopy={onCopyConversation}
           onDownload={onDownloadConversation}
           onRequestDelete={setPendingDelete}
+          bulkEnabled={bulkEnabled}
+          onEnterSelection={() => setSelectionActive(true)}
         />
       </RowWrapper>
     );
@@ -1517,8 +1537,9 @@ export function Sidebar({
       {/* Search + list-management toolbar region. The quick-search input and
           New-chat row above are primary and always paint; the low-frequency
           management affordances inside this region (Advanced search, Select)
-          defer via the dual-disclosure idiom — persistent on touch, hover/focus
-          -revealed on desktop — so the rail quiets at rest. `group/toolbar`
+          are desktop-only and hover/focus-revealed so the rail quiets at rest.
+          On touch the mobile drawer stays minimal — Cmd+K covers advanced
+          search and the per-row overflow menu covers selection. `group/toolbar`
           scopes the reveal to this region (not the whole sidebar). */}
       <div className="group/toolbar">
       <div className="px-2 pb-2">
@@ -1557,10 +1578,10 @@ export function Sidebar({
             onClick={onOpenAdvancedSearch}
             data-testid="sidebar-advanced-search"
             className={cn(
-              "mt-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
-              // Persistent on touch; hover/focus-revealed on desktop. Element
-              // stays mounted (opacity only) so it's clickable + e2e-safe.
-              "opacity-100 md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+              "mt-1 hidden md:inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+              // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
+              // rest. Mobile users reach advanced search via Cmd+K instead.
+              "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
             )}
           >
             <SlidersHorizontal aria-hidden className="size-3" />
@@ -1580,10 +1601,10 @@ export function Sidebar({
             onClick={() => setSelectionActive(true)}
             data-testid="sidebar-select-toggle"
             className={cn(
-              "flex min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left text-xs font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)]",
-              // Persistent on touch; hover/focus-revealed on desktop. Element
-              // stays mounted (opacity only) so it's clickable + e2e-safe.
-              "opacity-100 md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+              "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left text-xs font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex",
+              // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
+              // rest. Mobile users use the conversation row's overflow menu.
+              "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
             )}
           >
             <Check className="size-3.5" aria-hidden />
@@ -2186,6 +2207,28 @@ export function Sidebar({
               >
                 <LogIn className="size-4" aria-hidden />
                 <span>Sign in</span>
+              </DropdownMenuItem>
+            ) : null}
+            {onOpenAdvancedSearch ? (
+              <DropdownMenuItem
+                label="Advanced search"
+                onClick={onOpenAdvancedSearch}
+                className="gap-2 md:hidden"
+                data-testid="sidebar-advanced-search-mobile"
+              >
+                <SlidersHorizontal className="size-4" aria-hidden />
+                <span>Advanced search</span>
+              </DropdownMenuItem>
+            ) : null}
+            {bulkEnabled && !selectionMode && !isSearching ? (
+              <DropdownMenuItem
+                label="Select conversations"
+                onClick={() => setSelectionActive(true)}
+                className="gap-2 md:hidden"
+                data-testid="sidebar-select-mobile"
+              >
+                <Check className="size-4" aria-hidden />
+                <span>Select conversations</span>
               </DropdownMenuItem>
             ) : null}
             <DropdownMenuItem

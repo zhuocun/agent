@@ -1280,9 +1280,7 @@ export function SettingsDialog({
         >
           {/* ── Account & plan ─────────────────────────────────────────── */}
           <div className="space-y-5">
-            <GroupHeading helper="Who you are, your plan, usage, and your provider key.">
-              Account &amp; plan
-            </GroupHeading>
+            <GroupHeading>Account &amp; plan</GroupHeading>
 
           {/* Account */}
           <section className="space-y-3">
@@ -1425,9 +1423,7 @@ export function SettingsDialog({
 
           {/* ── Workspace ──────────────────────────────────────────────── */}
           <div className="space-y-5">
-            <GroupHeading helper="How chats look and behave, plus per-project overrides.">
-              Workspace
-            </GroupHeading>
+            <GroupHeading>Workspace</GroupHeading>
 
           {/* Appearance */}
           <section className="space-y-3">
@@ -1521,16 +1517,31 @@ export function SettingsDialog({
 
           {/* Projects/Spaces (D20). Per-project scoping of the wedge controls.
               Only rendered when an updater is wired (the parent owns the PATCH);
-              the panel itself handles the empty-project case with a hint. */}
+              the panel itself handles the empty-project case with a hint.
+              Collapsed by default so the General tab reads as account +
+              workspace, not a per-project console. */}
           {onUpdateProject ? (
             <>
               <Separator />
               <section className="space-y-4" data-testid="settings-projects-section">
-                <SectionHeading>Projects</SectionHeading>
-                <ProjectSettingsPanel
-                  projects={projects}
-                  onUpdate={onUpdateProject}
-                />
+                <Collapsible className="space-y-3">
+                  <CollapsibleTrigger
+                    data-testid="project-defaults-toggle"
+                    className="flex w-full items-center gap-2 text-left text-xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+                  >
+                    <ChevronRight
+                      aria-hidden
+                      className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                    />
+                    Project defaults
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="space-y-4">
+                    <ProjectSettingsPanel
+                      projects={projects}
+                      onUpdate={onUpdateProject}
+                    />
+                  </CollapsibleContent>
+                </Collapsible>
               </section>
             </>
           ) : null}
@@ -1538,9 +1549,7 @@ export function SettingsDialog({
 
           {/* ── Privacy & data ─────────────────────────────────────────── */}
           <div className="space-y-5">
-            <GroupHeading helper="What's kept, what's shared, and exporting or deleting it all.">
-              Privacy &amp; data
-            </GroupHeading>
+            <GroupHeading>Privacy &amp; data</GroupHeading>
 
           {/* Privacy & data */}
           <section className="space-y-4">

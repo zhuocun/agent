@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -67,22 +67,6 @@ interface MessageActionsProps {
   onFeedback?: (next: Feedback) => void;
 }
 
-// SSR-safe `(hover: none)` detector. Used to collapse the inline toolbar to
-// Copy + "…" on touch devices (iOS-native progressive disclosure) while
-// preserving the full inline toolbar on hover-capable pointers (desktop).
-function useIsTouchDevice(): boolean {
-  const [touch, setTouch] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(hover: none)");
-    const sync = () => setTouch(mq.matches);
-    sync();
-    mq.addEventListener?.("change", sync);
-    return () => mq.removeEventListener?.("change", sync);
-  }, []);
-  return touch;
-}
-
 // Legacy clipboard fallback for insecure origins / denied permission, where
 // `navigator.clipboard` is unavailable. Selects an off-screen textarea and
 // runs `document.execCommand("copy")`. Returns whether the copy succeeded.
@@ -123,11 +107,6 @@ export function MessageActions({
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const speech = useSpeechSynthesis();
-  // Touch surfaces fold Regenerate + the two ratings into the overflow so the
-  // inline strip is just Copy + "…" (max 2 hit-targets per iOS-native chat
-  // convention). Hover surfaces keep the full inline toolbar so a mouse can
-  // single-click the primary actions without opening a menu.
-  const isTouch = useIsTouchDevice();
 
   const handleCopy = async () => {
     const markCopied = () => {
@@ -155,17 +134,12 @@ export function MessageActions({
     }
   };
 
-  // Internal hierarchy (W1): the toolbar shows a small set of PRIMARY actions
-  // inline at rest — Copy, the two ratings, and the one-click Regenerate (with
-  // the CURRENT tier). Everything secondary — Read aloud, Continue, Branch, and
-  // the "regenerate with a DIFFERENT model" tier/provider choices — folds behind
-  // a single "…" overflow menu so the densest pattern on the work surface stops
-  // presenting 5-7 equal-weight buttons. Secondary items stay MOUNTED inside the
-  // popup (DropdownMenu provides reduced-motion, focus trap+restore, keyboard).
-  //
-  // The overflow holds content only when there's something to fold: read-aloud
-  // is always there; Continue/Branch when offered; and the model-choice list
-  // when the split-regenerate variant is active.
+  // Minimal iOS-native pattern on all devices: only Copy + "…" overflow live
+  // inline. Regenerate and the two ratings fold into the overflow alongside
+  // Read aloud / Continue / Branch / model-choice so the inline strip stays at
+  // two hit-targets regardless of pointer type. Secondary items stay MOUNTED
+  // inside the popup (DropdownMenu provides reduced-motion, focus trap+restore,
+  // keyboard) so they remain one tap/click deep behind the always-shown "…".
   const hasModelChoice = Boolean(
     canRegenerate && onRegenerateWith && regenerateOptions,
   );
@@ -184,32 +158,6 @@ export function MessageActions({
         )}
       </IconAction>
 
-      {!isTouch && canRegenerate ? (
-        <IconAction label="Regenerate" onClick={onRegenerate}>
-          <RotateCcw className="size-4" />
-        </IconAction>
-      ) : null}
-
-      {!isTouch ? (
-        <>
-          <IconAction
-            label="Helpful"
-            pressed={feedback === "up"}
-            onClick={() => onFeedback?.(feedback === "up" ? null : "up")}
-          >
-            <ThumbsUp className="size-4" />
-          </IconAction>
-
-          <IconAction
-            label="Not helpful"
-            pressed={feedback === "down"}
-            onClick={() => onFeedback?.(feedback === "down" ? null : "down")}
-          >
-            <ThumbsDown className="size-4" />
-          </IconAction>
-        </>
-      ) : null}
-
       <OverflowMenu
         text={text}
         speech={speech}
@@ -218,19 +166,12 @@ export function MessageActions({
         canBranch={canBranch}
         isBranching={isBranching}
         onBranch={onBranch}
-        // On touch the inline strip drops Regenerate + ratings; the menu picks
-        // them up so they remain reachable behind one tap on the always-shown
-        // "…" trigger.
-        touchPrimary={
-          isTouch
-            ? {
-                canRegenerate: !!canRegenerate,
-                onRegenerate,
-                feedback,
-                onFeedback,
-              }
-            : undefined
-        }
+        primary={{
+          canRegenerate: !!canRegenerate,
+          onRegenerate,
+          feedback,
+          onFeedback,
+        }}
         modelChoice={
           hasModelChoice
             ? {
@@ -246,10 +187,9 @@ export function MessageActions({
 
 // Secondary actions, folded behind a single "…" overflow (W1). Reuses the
 // shared DropdownMenu primitive (reduced-motion + focus trap/restore + keyboard
-// for free). The trigger itself follows the sanctioned hover/focus disclosure
-// idiom on desktop and is always painted on touch, so it never hides the only
-// route to Read aloud / Continue / Branch / model-choice on a touch device.
-// All reparented items keep their original data-testid and accessible names.
+// for free). The trigger is always painted so it never hides the only route to
+// Regenerate / ratings / Read aloud / Continue / Branch / model-choice. All
+// reparented items keep their original data-testid and accessible names.
 function OverflowMenu({
   text,
   speech,
@@ -258,7 +198,7 @@ function OverflowMenu({
   canBranch,
   isBranching,
   onBranch,
-  touchPrimary,
+  primary,
   modelChoice,
 }: {
   text: string;
@@ -268,10 +208,9 @@ function OverflowMenu({
   canBranch?: boolean;
   isBranching?: boolean;
   onBranch?: () => void;
-  // Present only on touch: the inline strip dropped Regenerate + the ratings
-  // to fit two hit-targets, and they reappear here at the top of the menu so
-  // they stay one tap deep.
-  touchPrimary?: {
+  // The inline strip is just Copy + "…" on every device. Regenerate and the
+  // two ratings live at the top of the menu so they stay one tap/click deep.
+  primary?: {
     canRegenerate: boolean;
     onRegenerate?: () => void;
     feedback: Feedback;
@@ -330,13 +269,13 @@ function OverflowMenu({
         sideOffset={8}
         className="w-60 max-w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl"
       >
-        {touchPrimary ? (
+        {primary ? (
           <DropdownMenuGroup>
-            {touchPrimary.canRegenerate ? (
+            {primary.canRegenerate ? (
               <DropdownMenuItem
                 label="Regenerate"
                 aria-label="Regenerate"
-                onClick={touchPrimary.onRegenerate}
+                onClick={primary.onRegenerate}
                 className="py-2"
               >
                 <RotateCcw className="size-4" />
@@ -346,36 +285,36 @@ function OverflowMenu({
             <DropdownMenuItem
               label="Helpful"
               aria-label="Helpful"
-              aria-pressed={touchPrimary.feedback === "up"}
+              aria-pressed={primary.feedback === "up"}
               closeOnClick={false}
               onClick={() =>
-                touchPrimary.onFeedback?.(
-                  touchPrimary.feedback === "up" ? null : "up",
+                primary.onFeedback?.(
+                  primary.feedback === "up" ? null : "up",
                 )
               }
               className="py-2"
             >
               <ThumbsUp className="size-4" />
               <span className="truncate font-medium">Helpful</span>
-              {touchPrimary.feedback === "up" ? (
+              {primary.feedback === "up" ? (
                 <Check className="ml-auto size-4 text-success" aria-hidden />
               ) : null}
             </DropdownMenuItem>
             <DropdownMenuItem
               label="Not helpful"
               aria-label="Not helpful"
-              aria-pressed={touchPrimary.feedback === "down"}
+              aria-pressed={primary.feedback === "down"}
               closeOnClick={false}
               onClick={() =>
-                touchPrimary.onFeedback?.(
-                  touchPrimary.feedback === "down" ? null : "down",
+                primary.onFeedback?.(
+                  primary.feedback === "down" ? null : "down",
                 )
               }
               className="py-2"
             >
               <ThumbsDown className="size-4" />
               <span className="truncate font-medium">Not helpful</span>
-              {touchPrimary.feedback === "down" ? (
+              {primary.feedback === "down" ? (
                 <Check className="ml-auto size-4 text-success" aria-hidden />
               ) : null}
             </DropdownMenuItem>
@@ -447,12 +386,6 @@ function OverflowMenu({
               <DropdownMenuLabel className="text-2xs font-semibold tracking-wide uppercase">
                 Regenerate with
               </DropdownMenuLabel>
-              {/* The split-regenerate trigger keeps its testid so the model
-                  CHOICE list (a different model than the current tier) is still
-                  reachable — it now lives inside the overflow rather than as a
-                  sibling chevron. The one-click current-tier Regenerate stays
-                  inline as a primary action above. */}
-              <span className="sr-only" data-testid="regenerate-with-trigger" />
               {modelChoice.options.tiers.map((tier) => (
                 <DropdownMenuItem
                   key={tier.id}

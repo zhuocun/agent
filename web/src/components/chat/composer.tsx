@@ -25,13 +25,7 @@ import {
 import { Popover } from "@base-ui/react/popover";
 
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogTrigger,
-  useIsMobileSheet,
-} from "@/components/ui/dialog";
+import { useIsMobileSheet } from "@/components/ui/dialog";
 import {
   Tooltip,
   TooltipContent,
@@ -301,10 +295,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // state drives the disclosure in every state (there is no inline-at-rest
     // path any more).
     const [moreActionsOpen, setMoreActionsOpen] = useState(false);
-    // Below the `sm` breakpoint, the secondary cluster opens as a bottom sheet
-    // (matches every other modal surface in the app); desktop keeps the
-    // anchored popover behaviour.
-    const moreActionsAsSheet = useIsMobileSheet();
+    // Below the `sm` breakpoint we still anchor the same popover used on
+    // desktop — a full bottom sheet for three rows is over-weight, and the
+    // popover keeps the disclosure cheap enough that the most-used controls
+    // (attach, dictate) can stay INLINE in the toolbar instead of one tap
+    // behind a sheet. The flag drives those mobile-inline promotions, not the
+    // disclosure surface itself.
+    const isMobile = useIsMobileSheet();
     const prevStreamingRef = useRef(isStreaming);
     const supportsAttachmentsRef = useRef(supportsAttachments);
     const supportsVisionRef = useRef(supportsVision);
@@ -700,22 +697,29 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       !attachmentReadPending;
 
     // Quiet-down disclosure (00-principles.md:9, 02-patterns.md:158-164): the
-    // secondary cluster (Attach / Templates / Dictate) ALWAYS lives
-    // behind a single "More actions" ("+") disclosure so the composer reads as
-    // `[+] [textarea] [Send]` in BOTH the empty/at-rest and composing states.
-    // This is the architectural register of the redesign: the at-rest composer no
-    // longer surfaces those four inline icons — every secondary feature is exactly
-    // one tap behind "+", still mounted, with its data-testid + accessible name
-    // intact. (Previously the empty composer was exempt and showed the inline
-    // cluster; that exemption has been reversed.) The only inline survivor is an
-    // ACTIVE recording's mic — see `keepDictateInline` below.
-    // An ACTIVE recording must stay one tap from stop, so the mic never hides
-    // mid-listen even when the rest of the cluster has folded away (constraint 4).
-    const keepDictateInline = dictation.listening;
-    // Whether the disclosure has anything left to host. Attach is gated by tier;
-    // Dictate may stay pinned inline while listening. Templates is always
-    // present, so the disclosure is effectively always available.
-    const hasCollapsibleControls = supportsAttachments || !keepDictateInline;
+    // secondary cluster (Attach / Templates / Dictate) lives behind a single
+    // "More actions" ("+") disclosure so a focused desktop composer reads as
+    // `[+] [textarea] [Send]`. On mobile we promote the two most-used controls
+    // back inline: typing on a phone, the cost of one extra tap to reach
+    // Attach / Dictate is bigger than the benefit of a leaner toolbar, so the
+    // mobile composer reads as `[Attach] [Dictate] [+] [textarea] [Send]`
+    // (with controls only present when their preconditions are met). Templates
+    // and parity-Attach still live in the popover so testids remain reachable
+    // through `composer-more-actions` on every viewport.
+    //
+    // Inline rules:
+    //   - Attach inline when supportsAttachments AND mobile.
+    //   - Dictate inline when (a) dictation is supported AND mobile, OR (b) a
+    //     recording is ACTIVE on any viewport — an active recording must stay
+    //     one tap from stop, never folded behind a disclosure.
+    const keepAttachInline = isMobile && supportsAttachments;
+    const keepDictateInline =
+      dictation.listening || (isMobile && dictation.supported);
+    // Whether the disclosure has anything left to host. Templates is always
+    // present (caller-scoped, anon-allowed), so the popover is effectively
+    // always available; Attach is also kept in the popover for parity even
+    // when it's promoted inline on mobile.
+    const hasCollapsibleControls = true;
 
     // ---- Secondary-control renderers ---------------------------------------
     // Each control is rendered inside the "More actions" disclosure popover (its
@@ -1051,13 +1055,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             stream in progress is always stoppable in one tap. The disclosure
             expands with a zoom/fade; motion-reduce makes the open instant. */}
           <div className="flex items-end gap-2 transition-opacity duration-300 ease-ios-smooth motion-reduce:transition-none">
+            {/* Mobile inline promotions: Attach + Dictate sit BEFORE the "+"
+                disclosure so phone users don't pay an extra tap to reach the
+                two most-used secondary controls. They still also live inside
+                the popover for parity (testids reachable on any viewport). */}
+            {keepAttachInline ? attachButton : null}
             {keepDictateInline ? (
-              <Tooltip>
-                <TooltipTrigger render={dictateButton} />
-                <TooltipContent>
-                  Stop dictation · processed on your device by your browser
-                </TooltipContent>
-              </Tooltip>
+              dictation.listening ? (
+                <Tooltip>
+                  <TooltipTrigger render={dictateButton} />
+                  <TooltipContent>
+                    Stop dictation · processed on your device by your browser
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                dictateButton
+              )
             ) : null}
             {hasCollapsibleControls ? (
               (() => {
@@ -1081,7 +1094,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 );
                 const moreActionsRows = (
                   <>
-                    {supportsAttachments ? (
+                    {supportsAttachments && !keepAttachInline ? (
                       <div className="flex items-center gap-2">
                         {attachButton}
                         <span className="pr-2 text-sm text-foreground">
@@ -1120,30 +1133,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                     )}
                   </>
                 );
-                if (moreActionsAsSheet) {
-                  // Mobile: present as the same bottom-sheet pattern every other
-                  // modal surface uses, so the disclosure lives in the thumb
-                  // zone with a full-width slide-up + swipe-to-dismiss.
-                  return (
-                    <Dialog
-                      open={moreActionsOpen}
-                      onOpenChange={setMoreActionsOpen}
-                    >
-                      <DialogTrigger render={moreActionsTrigger} />
-                      <DialogContent
-                        showCloseButton={false}
-                        className="gap-2 p-4 pb-[max(env(safe-area-inset-bottom),1rem)]"
-                      >
-                        <DialogTitle className="sr-only">
-                          More actions
-                        </DialogTitle>
-                        <div className="flex flex-col gap-1">
-                          {moreActionsRows}
-                        </div>
-                      </DialogContent>
-                    </Dialog>
-                  );
-                }
                 return (
                   <Popover.Root
                     open={moreActionsOpen}
@@ -1163,10 +1152,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                         className="z-[60] outline-none"
                       >
                         <Popover.Popup
-                          // Small anchored actions popover (desktop only on the
-                          // sm+ breakpoint). Matches the attribution-row glass
-                          // + zoom/fade enter; motion-reduce path is provided
-                          // by the global reduced-motion CSS for animate-in.
+                          // Small anchored actions popover used on every
+                          // viewport — a full bottom sheet is over-weight for
+                          // the two or three rows the cluster ever holds.
+                          // Matches the attribution-row glass + zoom/fade
+                          // enter; motion-reduce path is provided by the
+                          // global reduced-motion CSS for animate-in.
                           className={cn(
                             "glass-strong flex origin-(--transform-origin) flex-col gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] outline-none",
                             "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",

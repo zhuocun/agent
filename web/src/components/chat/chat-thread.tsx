@@ -3373,6 +3373,7 @@ export function ChatThread() {
                 exiting={welcomeExiting}
                 onPromptSelect={handlePromptSelect}
                 suggestions={suggestions}
+                compact={conversations.length > 0}
               />
             </div>
           ) : (

@@ -19,6 +19,8 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Project
+from app.db.repositories._helpers import flush_and_refresh, get_owned
+from app.db.repositories._sentinel import UNSET, _Unset
 
 
 async def list_for_user(
@@ -41,11 +43,7 @@ async def get_for_user(
     user_id: UUID,
 ) -> Project | None:
     """Return one project by id IFF it belongs to `user_id`, else None."""
-    stmt = select(Project).where(
-        Project.id == project_id,
-        Project.user_id == user_id,
-    )
-    return (await db.execute(stmt)).scalar_one_or_none()
+    return await get_owned(db, Project, row_id=project_id, user_id=user_id)
 
 
 async def add(
@@ -67,22 +65,7 @@ async def add(
         per_conversation_budget_usd=per_conversation_budget_usd,
     )
     db.add(row)
-    await db.flush()
-    await db.refresh(row)
-    return row
-
-
-class _Unset:
-    """Sentinel distinguishing "don't touch" from an explicit `None`.
-
-    Every project setting is nullable and `None` is meaningful ("inherit the
-    user-global value"), so a default of `None` could not also mean "leave the
-    column unchanged." A PATCH that omits a field must leave it alone; a PATCH
-    that sends `null` must clear it back to inherit.
-    """
-
-
-_UNSET = _Unset()
+    return await flush_and_refresh(db, row)
 
 
 async def update(
@@ -91,15 +74,15 @@ async def update(
     project_id: UUID,
     user_id: UUID,
     name: str | None = None,
-    custom_instructions: str | None | _Unset = _UNSET,
-    default_tier_id: str | None | _Unset = _UNSET,
-    retention_days: int | None | _Unset = _UNSET,
-    per_conversation_budget_usd: float | None | _Unset = _UNSET,
+    custom_instructions: str | None | _Unset = UNSET,
+    default_tier_id: str | None | _Unset = UNSET,
+    retention_days: int | None | _Unset = UNSET,
+    per_conversation_budget_usd: float | None | _Unset = UNSET,
 ) -> Project | None:
     """Update an owned project. Returns the refreshed row, or None if not owned.
 
     `name` uses `None` as "don't touch" (it is non-nullable, so a clear is
-    meaningless). The four settings columns are three-valued via the `_UNSET`
+    meaningless). The four settings columns are three-valued via the `UNSET`
     sentinel: omitted leaves the column unchanged; an explicit `None` clears it
     back to inherit. `updated_at` is touched manually (no onupdate hook).
     """
@@ -117,9 +100,7 @@ async def update(
     if not isinstance(per_conversation_budget_usd, _Unset):
         row.per_conversation_budget_usd = per_conversation_budget_usd
     row.updated_at = datetime.now(UTC)
-    await db.flush()
-    await db.refresh(row)
-    return row
+    return await flush_and_refresh(db, row)
 
 
 async def delete(

@@ -23,14 +23,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Preferences
-from app.schemas.common import ModelTierId
+from app.schemas.common import ModelTierId, coerce_tier
 from app.schemas.preferences import (
     KeyboardShortcuts,
     ShortcutOverride,
     UserPreferences,
 )
-
-_VALID_TIERS: tuple[ModelTierId, ...] = ("fast", "smart", "pro", "auto")
 
 
 def _coerce_shortcuts(raw: object) -> KeyboardShortcuts:
@@ -80,11 +78,7 @@ _DEFAULTS = UserPreferences(
 
 
 def _row_to_schema(row: Preferences) -> UserPreferences:
-    # Coerce DB string -> ModelTierId. If somehow the row holds an unknown tier
-    # id (manual DB edit, schema drift), fall back to "auto" — same safety net
-    # the conversations repo uses.
-    tier_value = row.default_tier_id
-    tier: ModelTierId = tier_value if tier_value in _VALID_TIERS else "auto"
+    tier: ModelTierId = coerce_tier(row.default_tier_id)
     retention_days = row.retention_days if row.retention_days in (30, 90) else None
     return UserPreferences(
         default_tier_id=tier,

@@ -1251,7 +1251,7 @@ export function SettingsDialog({
                       className={cn(
                         "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium whitespace-nowrap transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
                         selected
-                          ? "bg-secondary text-foreground"
+                          ? "bg-secondary text-foreground shadow-sm ring-1 ring-ring/30"
                           : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
                       )}
                     >

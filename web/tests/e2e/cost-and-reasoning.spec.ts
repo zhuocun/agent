@@ -535,7 +535,7 @@ test.describe("provider fallback substitution", () => {
     });
 
     // The byline carries the substitution clause (served != requested).
-    await expect(assistant.getByText(/substituted from/i)).toBeVisible({
+    await expect(assistant.getByTestId("attribution-substitution")).toBeVisible({
       timeout: 15_000,
     });
   });

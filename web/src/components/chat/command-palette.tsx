@@ -591,7 +591,7 @@ export function CommandPalette({
           </div>
 
           <div
-            className="min-h-0 flex-1 overflow-y-auto py-2"
+            className="min-h-0 flex-1 space-y-0.5 overflow-y-auto py-2"
             aria-busy={(filterMode ? filterPending : searchPending) || undefined}
           >
             {filterMode ? (
@@ -848,7 +848,7 @@ export function CommandPalette({
                                 // quiet translucent tint to match the model/tier
                                 // pickers' selected-row treatment — the solid
                                 // `bg-accent` fill read too loud against glass.
-                                "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-foreground",
+                                "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm text-foreground",
                                 isSelected && "bg-foreground/[0.06]",
                               )}
                             >

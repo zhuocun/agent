@@ -86,8 +86,8 @@ export function AttributionRow({
   // chevron. Cost, BYOK and JSON metadata move into the popover header so the
   // byline reads as typography rather than a stack of chips. Substitution and
   // anomaly clauses stay inline — they're user-facing alerts, not metadata.
-  const substitutionPrefix = substitution
-    ? `substituted from ${requestedTierLabelFor(attribution.requestedTierId)}: `
+  const substitutionNote = substitution
+    ? `Rerouted from ${requestedTierLabelFor(attribution.requestedTierId)} tier`
     : null;
 
   // Cost-anomaly "why" clause (Feature 5). Only shown when there's NO
@@ -97,6 +97,7 @@ export function AttributionRow({
   const anomalyReason = substitution ? null : costAnomaly(attribution.breakdown);
 
   const triggerLabel = [
+    substitutionNote,
     `served by ${servedModelLabel}`,
     providerLabel ? `provider ${providerLabel}` : null,
     `${tierLabel} tier`,
@@ -122,10 +123,13 @@ export function AttributionRow({
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
         >
-          {substitutionPrefix ? (
-            <span className="inline-flex items-center gap-1 text-muted-foreground/80">
-              <Info aria-hidden className="size-3" />
-              <span>{substitutionPrefix}</span>
+          {substitutionNote ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-substitution-callout px-1.5 py-0.5 text-2xs font-medium text-substitution-callout-foreground ring-1 ring-substitution-callout-border"
+              data-testid="attribution-substitution"
+            >
+              <Info aria-hidden className="size-3 shrink-0" />
+              <span>Rerouted</span>
             </span>
           ) : anomalyReason ? (
             <span

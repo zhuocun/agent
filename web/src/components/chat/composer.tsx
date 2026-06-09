@@ -6,6 +6,7 @@ import {
   useEffect,
   useId,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -305,6 +306,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // "fresh slash" (prev didn't start with "/", new does) which re-arms the
     // popover even when the user has dismissed an earlier token with Escape.
     const prevValueRef = useRef("");
+    const pendingTemplateCaretRef = useRef<{
+      value: string;
+      caret: number;
+    } | null>(null);
     const slashListboxId = useId();
     const slashOptionPrefix = useId();
     // Prompt library (D23) — a SIBLING popover layer to the slash commands,
@@ -557,6 +562,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       };
     }, [templatePickerOpen, templatesLoaded]);
 
+    useLayoutEffect(() => {
+      const pending = pendingTemplateCaretRef.current;
+      if (!pending || pending.value !== value) return;
+      const ta = ref.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(pending.caret, pending.caret);
+      autoGrow();
+      pendingTemplateCaretRef.current = null;
+    }, [autoGrow, value]);
+
     // Insert a chosen template's body into the composer (pure prefill — no
     // model/cost/provider change). Mirrors `pickCommand`'s focus + rAF
     // selection, but parks the cursor on the FIRST `{{…}}` placeholder (or
@@ -568,21 +584,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       setValue(next);
       setTemplatePickerOpen(false);
       setTemplateSelectedIndex(0);
+      pendingTemplateCaretRef.current = {
+        value: next,
+        caret: firstPlaceholderOffset(next),
+      };
       // A template body is never a "/…" token in practice, but keep the slash
       // popover armed-state coherent with the new draft.
       setSlashDismissed(false);
       setSlashSelectedIndex(0);
-      const ta = ref.current;
-      if (ta) {
-        ta.focus();
-        requestAnimationFrame(() => {
-          const ta2 = ref.current;
-          if (!ta2) return;
-          const caret = firstPlaceholderOffset(next);
-          ta2.setSelectionRange(caret, caret);
-          autoGrow();
-        });
-      }
     };
 
     // Dictation (STT) writes each finalized transcript chunk into the composer

@@ -854,14 +854,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // always available; Attach is also kept in the popover for parity even
     // when it's promoted inline on mobile.
     const hasCollapsibleControls = true;
-    const attachmentLiveMessage = attachmentNotice
-      ? attachmentNotice
-      : attachmentReadPending
-        ? pendingAttachmentReads === 1
-          ? "Reading file"
-          : `Reading ${pendingAttachmentReads} files`
-        : null;
-
     // ---- Secondary-control renderers ---------------------------------------
     // Each control is rendered inside the "More actions" disclosure popover (its
     // single home in both the empty/at-rest and composing states), preserving its
@@ -1116,13 +1108,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         />
         {attachments.length > 0 || attachmentReadPending || attachmentNotice ? (
           <div className="mb-2 flex min-w-0 flex-wrap items-center justify-end gap-2">
-            {attachmentLiveMessage ? (
-              <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-                {attachmentLiveMessage}
-              </span>
-            ) : null}
             {attachmentNotice ? (
-              <span className="max-w-full rounded-full bg-background/75 px-3 py-1.5 text-xs text-muted-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]">
+              <span
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                className="max-w-full rounded-full bg-background/75 px-3 py-1.5 text-xs text-muted-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]"
+              >
                 {attachmentNotice}
               </span>
             ) : null}
@@ -1158,7 +1150,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               </span>
             ))}
             {attachmentReadPending ? (
-              <span className="glass-regular inline-flex h-11 max-w-full items-center gap-2 rounded-full px-3 text-xs text-muted-foreground shadow-[var(--glass-highlight)] md:h-9">
+              <span
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                className="glass-regular inline-flex h-11 max-w-full items-center gap-2 rounded-full px-3 text-xs text-muted-foreground shadow-[var(--glass-highlight)] md:h-9"
+              >
                 <LoaderCircle
                   aria-hidden
                   className="size-3.5 shrink-0 motion-safe:animate-spin"

@@ -658,7 +658,7 @@ function ConversationRow({
               className={cn(
                 "size-11 shrink-0 rounded-full p-0 text-muted-foreground transition-opacity hover:text-foreground md:size-7",
                 // Always visible on touch; reveal on hover/focus on desktop.
-                "opacity-100 md:pointer-events-none md:opacity-0 md:group-hover/conv:pointer-events-auto md:group-hover/conv:opacity-100 md:focus-within:pointer-events-auto md:focus-within:opacity-100 md:aria-expanded:pointer-events-auto md:aria-expanded:opacity-100",
+                "opacity-100 md:opacity-0 md:group-hover/conv:opacity-100 md:focus-within:opacity-100 md:aria-expanded:opacity-100",
               )}
             >
               <MoreHorizontal className="size-4" aria-hidden />
@@ -1595,7 +1595,7 @@ export function Sidebar({
               "mt-1 hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:inline-flex",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users reach advanced search via Cmd+K instead.
-              "md:pointer-events-none md:opacity-0 md:group-hover/toolbar:pointer-events-auto md:group-hover/toolbar:opacity-100 md:focus-within:pointer-events-auto md:focus-within:opacity-100 md:focus-visible:pointer-events-auto md:focus-visible:opacity-100",
+              "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
             )}
           >
             <SlidersHorizontal aria-hidden className="size-3" />
@@ -1618,7 +1618,7 @@ export function Sidebar({
               "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left text-xs font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users use the conversation row's overflow menu.
-              "md:pointer-events-none md:opacity-0 md:group-hover/toolbar:pointer-events-auto md:group-hover/toolbar:opacity-100 md:focus-within:pointer-events-auto md:focus-within:opacity-100 md:focus-visible:pointer-events-auto md:focus-visible:opacity-100",
+              "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
             )}
           >
             <Check className="size-3.5" aria-hidden />

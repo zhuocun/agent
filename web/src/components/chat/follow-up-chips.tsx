@@ -71,7 +71,7 @@ export function FollowUpChips({
           onClick={() => onSelect(suggestion)}
           data-testid="follow-up-chip"
           className={cn(
-            "inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-1.5",
+            "inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 md:min-h-0",
             "border border-border/70 bg-background/60 text-xs text-muted-foreground",
             "transition-colors hover:border-border hover:bg-foreground/[0.04] hover:text-foreground",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",

@@ -101,7 +101,7 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
             size="sm"
             onClick={() => onDecision({ toolCallId, decision: "approve" })}
             data-testid="tool-approve"
-            className="rounded-full"
+            className="min-h-11 rounded-full px-4 md:min-h-0"
           >
             <Check aria-hidden />
             <span>Approve</span>
@@ -112,7 +112,7 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
             size="sm"
             onClick={() => onDecision({ toolCallId, decision: "deny" })}
             data-testid="tool-deny"
-            className="rounded-full"
+            className="min-h-11 rounded-full px-4 md:min-h-0"
           >
             <X aria-hidden />
             <span>Deny</span>
@@ -153,10 +153,10 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
         <CollapsibleTrigger
           className={cn(
             "group/tool-trigger flex w-full min-w-0 items-center gap-1.5 text-left",
-            "bg-transparent outline-none",
+            "min-h-11 bg-transparent py-2 -my-2 outline-none md:min-h-0 md:py-0 md:my-0",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
-          aria-label={`${label}, ${statusLabel(status)} — show details`}
+          aria-label={`${label}, ${statusLabel(status)} — toggle details`}
         >
           {summaryRow}
           <ChevronDown

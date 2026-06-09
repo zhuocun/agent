@@ -451,6 +451,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             Math.max(templateSelectedIndex, 0),
             filteredTemplates.length - 1,
           );
+    const templateActiveOptionId =
+      templatePickerOpen && templateHighlightIndex >= 0
+        ? `${templateOptionPrefix}-${templateHighlightIndex}`
+        : undefined;
+    const comboboxOpen = slashOpen || templatePickerOpen;
+    const comboboxControls = templatePickerOpen
+      ? templateListboxId
+      : slashOpen
+        ? slashListboxId
+        : undefined;
+    const comboboxActiveOptionId = templatePickerOpen
+      ? templateActiveOptionId
+      : slashActiveOptionId;
 
     const autoGrow = () => {
       const ta = ref.current;
@@ -518,7 +531,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // shows its empty-state hint).
     const openTemplatePicker = useCallback(() => {
       setTemplateSelectedIndex(0);
-      setTemplatePickerOpen((alreadyOpen) => !alreadyOpen);
+      setTemplatePickerOpen(true);
+      requestAnimationFrame(() => ref.current?.focus());
     }, []);
 
     useEffect(() => {
@@ -840,6 +854,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // always available; Attach is also kept in the popover for parity even
     // when it's promoted inline on mobile.
     const hasCollapsibleControls = true;
+    const attachmentLiveMessage = attachmentNotice
+      ? attachmentNotice
+      : attachmentReadPending
+        ? pendingAttachmentReads === 1
+          ? "Reading file"
+          : `Reading ${pendingAttachmentReads} files`
+        : null;
 
     // ---- Secondary-control renderers ---------------------------------------
     // Each control is rendered inside the "More actions" disclosure popover (its
@@ -885,13 +906,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
-        onClick={openTemplatePicker}
-        // Disabled mid-stream (parity with attach/dictation). The brand
-        // tint gives sighted users the same "open" signal aria-pressed
-        // conveys to AT.
+        onClick={() => {
+          setMoreActionsOpen(false);
+          openTemplatePicker();
+        }}
+        // Disabled mid-stream (parity with attach/dictation). The brand tint
+        // gives sighted users the same "open" signal that expanded state gives AT.
         disabled={isStreaming}
-        aria-pressed={templatePickerOpen}
         aria-haspopup="listbox"
+        aria-expanded={templatePickerOpen}
+        aria-controls={templatePickerOpen ? templateListboxId : undefined}
         aria-label="Insert a prompt template"
         data-testid="composer-templates"
         className={cn(
@@ -1064,7 +1088,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     };
 
     return (
-      <div className="group/composer relative mx-auto w-full max-w-3xl px-4 pt-1">
+      <div className="group/composer relative mx-auto w-full max-w-3xl min-w-0 px-4 pt-1">
         <SlashCommandsPopover
           open={slashOpen}
           commands={MOCK_COMMANDS}
@@ -1091,7 +1115,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           anchorRef={capsuleRef}
         />
         {attachments.length > 0 || attachmentReadPending || attachmentNotice ? (
-          <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
+          <div className="mb-2 flex min-w-0 flex-wrap items-center justify-end gap-2">
+            {attachmentLiveMessage ? (
+              <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                {attachmentLiveMessage}
+              </span>
+            ) : null}
             {attachmentNotice ? (
               <span className="max-w-full rounded-full bg-background/75 px-3 py-1.5 text-xs text-muted-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]">
                 {attachmentNotice}
@@ -1101,7 +1130,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               <span
                 key={attachment.id}
                 className={cn(
-                  "glass-regular inline-flex h-9 max-w-full items-center gap-2 rounded-full px-3 text-xs text-foreground shadow-[var(--glass-highlight)]",
+                  "glass-regular inline-flex h-11 max-w-full items-center gap-2 rounded-full px-3 text-xs text-foreground shadow-[var(--glass-highlight)] md:h-9",
                   (attachedSendBlocked || attachmentReadPending) &&
                     "text-muted-foreground",
                 )}
@@ -1122,14 +1151,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   type="button"
                   aria-label={`Remove ${attachment.name}`}
                   onClick={() => removeAttachment(attachment.id)}
-                  className="-mr-1 ml-0.5 inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="-mr-1 ml-0.5 inline-flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:size-7"
                 >
                   <X className="size-3.5" />
                 </button>
               </span>
             ))}
             {attachmentReadPending ? (
-              <span className="glass-regular inline-flex h-9 max-w-full items-center gap-2 rounded-full px-3 text-xs text-muted-foreground shadow-[var(--glass-highlight)]">
+              <span className="glass-regular inline-flex h-11 max-w-full items-center gap-2 rounded-full px-3 text-xs text-muted-foreground shadow-[var(--glass-highlight)] md:h-9">
                 <LoaderCircle
                   aria-hidden
                   className="size-3.5 shrink-0 motion-safe:animate-spin"
@@ -1143,7 +1172,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   type="button"
                   aria-label="Cancel attachment read"
                   onClick={() => clearAttachments("manual")}
-                  className="-mr-1 ml-0.5 inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="-mr-1 ml-0.5 inline-flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:size-7"
                 >
                   <X className="size-3.5" />
                 </button>
@@ -1164,7 +1193,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           // (`--focus-glow-edge`) + highlight + ambient/key shadows remain; the
           // brand send button is the real focus signal.
           style={grown ? { borderRadius: "1.75rem" } : undefined}
-          className="glass-capsule group flex items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+          className="glass-capsule group flex min-w-0 items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
         >
           {/* Hidden file input: MUST stay mounted whenever the tier supports
             attachments, independent of collapse state — Playwright drives it
@@ -1179,6 +1208,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               accept={ACCEPTED_ATTACHMENT_TYPES}
               data-testid="composer-file-input"
               className="sr-only"
+              tabIndex={-1}
+              aria-hidden="true"
               onChange={(e) => onPickFiles(e.target.files)}
             />
           ) : null}
@@ -1198,6 +1229,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               capture="environment"
               data-testid="composer-camera-input"
               className="sr-only"
+              tabIndex={-1}
+              aria-hidden="true"
               onChange={(e) => onPickFiles(e.target.files)}
             />
           ) : null}
@@ -1210,7 +1243,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             recording keeps its mic pinned inline (alongside the disclosure) so a
             stream in progress is always stoppable in one tap. The disclosure
             expands with a zoom/fade; motion-reduce makes the open instant. */}
-          <div className="flex items-end gap-2 transition-opacity duration-300 ease-ios-smooth motion-reduce:transition-none">
+          <div className="flex min-w-0 shrink-0 items-end gap-2 transition-opacity duration-300 ease-ios-smooth motion-reduce:transition-none">
             {/* Mobile inline promotions: Attach + Dictate sit BEFORE the "+"
                 disclosure so phone users don't pay an extra tap to reach the
                 two most-used secondary controls. They still also live inside
@@ -1303,7 +1336,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 return (
                   <Popover.Root
                     open={moreActionsOpen}
-                    onOpenChange={setMoreActionsOpen}
+                    onOpenChange={(open) => {
+                      if (open) setTemplatePickerOpen(false);
+                      setMoreActionsOpen(open);
+                    }}
                   >
                     <Tooltip>
                       <TooltipTrigger
@@ -1316,7 +1352,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                         side="top"
                         align="start"
                         sideOffset={8}
-                        className="z-[60] outline-none"
+                        className="z-[60] max-w-[calc(100vw-1rem)] outline-none"
                       >
                         <Popover.Popup
                           // Small anchored actions popover used on every
@@ -1326,7 +1362,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                           // enter; motion-reduce path is provided by the
                           // global reduced-motion CSS for animate-in.
                           className={cn(
-                            "glass-strong flex origin-(--transform-origin) flex-col gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] outline-none",
+                            "glass-strong flex max-w-[calc(100vw-1rem)] origin-(--transform-origin) flex-col gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] outline-none",
                             "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
                             "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
                           )}
@@ -1360,10 +1396,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             role="combobox"
             aria-haspopup="listbox"
             aria-autocomplete="list"
-            aria-expanded={slashOpen}
-            aria-controls={slashOpen ? slashListboxId : undefined}
-            aria-activedescendant={slashActiveOptionId}
-            className="block max-h-[200px] min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
+            aria-expanded={comboboxOpen}
+            aria-controls={comboboxControls}
+            aria-activedescendant={comboboxActiveOptionId}
+            className="block max-h-[200px] min-h-[44px] min-w-0 flex-1 resize-none bg-transparent px-1 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
           />
           <div className="flex h-11 shrink-0 items-center">
             {/* Send↔stop swap: the stop side is Tooltip-wrapped and the send side

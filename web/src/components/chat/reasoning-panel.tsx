@@ -64,7 +64,7 @@ export function ReasoningPanel({
           // with py-1.5 and cancel it back out with -my-1.5 so the surrounding
           // layout (the assistant bubble's gap stack) is unchanged — only the
           // clickable region grows.
-          "bg-transparent py-1.5 -my-1.5 underline-offset-2",
+          "bg-transparent py-3.5 -my-3.5 underline-offset-2 md:py-1.5 md:-my-1.5",
           "outline-none focus-visible:underline",
         )}
       >

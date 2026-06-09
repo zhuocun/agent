@@ -16,6 +16,7 @@ import {
   useVirtualMessageWindow,
   type VirtualMessageItem,
 } from "@/lib/use-virtual-message-window";
+import { prefersReducedMotion } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 
 // Pull the stable message id off a rendered child. UserMessage/AssistantMessage
@@ -269,7 +270,10 @@ export function MessageList({
   const scrollToBottom = useCallback((smooth: boolean) => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: smooth && !prefersReducedMotion() ? "smooth" : "auto",
+    });
     refreshVirtualViewport();
   }, [refreshVirtualViewport]);
 

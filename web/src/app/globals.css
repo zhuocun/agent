@@ -660,7 +660,8 @@
   }
 
   .chat-md {
-    @apply text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem];
+    @apply min-w-0 text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem];
+    overflow-wrap: anywhere;
   }
   .chat-md :where(p, ul, ol, pre, blockquote, table, h1, h2, h3, h4):not(:first-child) {
     @apply mt-4;
@@ -671,12 +672,19 @@
   .chat-md :where(h1) { @apply text-xl; }
   .chat-md :where(h2) { @apply text-lg; }
   .chat-md :where(h3) { @apply text-base; }
-  .chat-md :where(pre) { @apply max-w-full overflow-x-auto; }
+  .chat-md :where(pre) {
+    @apply max-w-full overflow-x-auto;
+    overflow-wrap: normal;
+  }
+  .chat-md :where(table) {
+    @apply block max-w-full overflow-x-auto;
+  }
   .chat-md :where(ul) { @apply list-disc pl-6; }
   .chat-md :where(ol) { @apply list-decimal pl-6; }
   .chat-md :where(li):not(:first-child) { @apply mt-1; }
   .chat-md :where(a) {
-    @apply text-brand underline underline-offset-2;
+    @apply break-words text-brand underline underline-offset-2;
+    overflow-wrap: anywhere;
   }
   .chat-md :where(strong) { @apply font-semibold text-foreground; }
   .chat-md :where(code):not(:where(pre *)) {

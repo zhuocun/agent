@@ -63,6 +63,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/context";
+import { prefersReducedMotion } from "@/lib/motion";
 import { useSwipeActions } from "@/lib/use-swipe-actions";
 import {
   isAnonymousAccount,
@@ -655,9 +656,9 @@ function ConversationRow({
               aria-label="Conversation actions"
               onClick={stopBubble}
               className={cn(
-                "size-11 md:size-7 shrink-0 rounded-full p-0 text-muted-foreground transition-opacity hover:text-foreground",
+                "size-11 shrink-0 rounded-full p-0 text-muted-foreground transition-opacity hover:text-foreground md:size-7",
                 // Always visible on touch; reveal on hover/focus on desktop.
-                "opacity-100 md:opacity-0 md:group-hover/conv:opacity-100 md:focus-within:opacity-100 md:aria-expanded:opacity-100",
+                "opacity-100 md:pointer-events-none md:opacity-0 md:group-hover/conv:pointer-events-auto md:group-hover/conv:opacity-100 md:focus-within:pointer-events-auto md:focus-within:opacity-100 md:aria-expanded:pointer-events-auto md:aria-expanded:opacity-100",
               )}
             >
               <MoreHorizontal className="size-4" aria-hidden />
@@ -1410,6 +1411,7 @@ export function Sidebar({
   const bulkEnabled = Boolean(
     onBulkArchive || onBulkDelete || onBulkAddTag || onBulkRemoveTag,
   );
+  const bulkInteractable = bulkEnabled && !isSearching && !searchPending;
   // Derive the EFFECTIVE selection by intersecting with the live conversation
   // ids, so an id that vanished (e.g. after a bulk delete) can't keep selection
   // mode alive or skew the count — without a setState-in-effect (lint rule).
@@ -1417,7 +1419,8 @@ export function Sidebar({
   const selectedIds = new Set(
     Array.from(rawSelectedIds).filter((id) => liveConversationIds.has(id)),
   );
-  const selectionMode = bulkEnabled && (selectionActive || selectedIds.size > 0);
+  const selectionMode =
+    bulkInteractable && (selectionActive || selectedIds.size > 0);
   const toggleSelect = useCallback((id: string) => {
     setRawSelectedIds((prev) => {
       const next = new Set(prev);
@@ -1430,7 +1433,13 @@ export function Sidebar({
     setRawSelectedIds(new Set());
     setSelectionActive(false);
   }, [setSelectionActive]);
+
+  useEffect(() => {
+    if (isSearching || searchPending) exitSelection();
+  }, [exitSelection, isSearching, searchPending]);
+
   const selectedIdList = Array.from(selectedIds);
+  const hasSelection = selectedIdList.length > 0;
   const runBulk = (fn?: (ids: string[]) => void) => {
     if (!fn || selectedIdList.length === 0) return;
     fn(selectedIdList);
@@ -1444,7 +1453,10 @@ export function Sidebar({
     if (!activeId) return;
     const node = activeRowRef.current;
     if (!node) return;
-    node.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    node.scrollIntoView({
+      block: "nearest",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
   }, [activeId]);
 
   const confirmDelete = () => {
@@ -1480,7 +1492,7 @@ export function Sidebar({
           onCopy={onCopyConversation}
           onDownload={onDownloadConversation}
           onRequestDelete={setPendingDelete}
-          bulkEnabled={bulkEnabled}
+          bulkEnabled={bulkInteractable}
           onEnterSelection={() => setSelectionActive(true)}
         />
       </RowWrapper>
@@ -1512,7 +1524,7 @@ export function Sidebar({
             variant="ghost"
             aria-label={t("sidebar.collapse")}
             onClick={onCollapse}
-            className="size-9 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
+            className="size-11 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground md:size-9"
           >
             <PanelLeftClose className="size-4" aria-hidden />
           </Button>
@@ -1558,7 +1570,7 @@ export function Sidebar({
             aria-label="Search conversations"
             className={cn(
               "block h-11 w-full rounded-full bg-muted/50 pl-8 text-sm text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)]",
-              search.length > 0 ? "pr-11" : "pr-3",
+              search.length > 0 ? "pr-12" : "pr-3",
             )}
           />
           {search.length > 0 ? (
@@ -1566,7 +1578,7 @@ export function Sidebar({
               type="button"
               aria-label="Clear search"
               onClick={() => onSearchChange("")}
-              className="absolute right-1 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+              className="absolute right-0 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:right-1 md:size-9"
             >
               <X aria-hidden className="size-3.5" />
             </button>
@@ -1580,10 +1592,10 @@ export function Sidebar({
             onClick={onOpenAdvancedSearch}
             data-testid="sidebar-advanced-search"
             className={cn(
-              "mt-1 hidden md:inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+              "mt-1 hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:inline-flex",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users reach advanced search via Cmd+K instead.
-              "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+              "md:pointer-events-none md:opacity-0 md:group-hover/toolbar:pointer-events-auto md:group-hover/toolbar:opacity-100 md:focus-within:pointer-events-auto md:focus-within:opacity-100 md:focus-visible:pointer-events-auto md:focus-visible:opacity-100",
             )}
           >
             <SlidersHorizontal aria-hidden className="size-3" />
@@ -1596,7 +1608,7 @@ export function Sidebar({
           per-row checkboxes only render once selection mode is on. Hidden while
           searching and once selection mode is already active (the bulk bar's
           Cancel exits). */}
-      {bulkEnabled && !isSearching && !selectionMode ? (
+      {bulkInteractable && !selectionMode ? (
         <div className="px-2 pb-2">
           <button
             type="button"
@@ -1606,7 +1618,7 @@ export function Sidebar({
               "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left text-xs font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users use the conversation row's overflow menu.
-              "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+              "md:pointer-events-none md:opacity-0 md:group-hover/toolbar:pointer-events-auto md:group-hover/toolbar:opacity-100 md:focus-within:pointer-events-auto md:focus-within:opacity-100 md:focus-visible:pointer-events-auto md:focus-visible:opacity-100",
             )}
           >
             <Check className="size-3.5" aria-hidden />
@@ -1638,8 +1650,9 @@ export function Sidebar({
                   variant="ghost"
                   aria-label="Archive selected"
                   data-testid="sidebar-bulk-archive"
+                  disabled={!hasSelection}
                   onClick={() => runBulk((ids) => onBulkArchive(ids, true))}
-                  className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
                 >
                   <Archive className="size-4" aria-hidden />
                 </Button>
@@ -1648,8 +1661,9 @@ export function Sidebar({
                   variant="ghost"
                   aria-label="Unarchive selected"
                   data-testid="sidebar-bulk-unarchive"
+                  disabled={!hasSelection}
                   onClick={() => runBulk((ids) => onBulkArchive(ids, false))}
-                  className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
                 >
                   <ArchiveRestore className="size-4" aria-hidden />
                 </Button>
@@ -1664,7 +1678,8 @@ export function Sidebar({
                       variant="ghost"
                       aria-label="Tag selected"
                       data-testid="sidebar-bulk-tag"
-                      className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                      disabled={!hasSelection}
+                      className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
                     >
                       <Tags className="size-4" aria-hidden />
                     </Button>
@@ -1734,8 +1749,9 @@ export function Sidebar({
                 variant="ghost"
                 aria-label="Delete selected"
                 data-testid="sidebar-bulk-delete"
+                disabled={!hasSelection}
                 onClick={() => runBulk(onBulkDelete)}
-                className="size-8 rounded-full p-0 text-destructive hover:text-destructive"
+                className="size-11 rounded-full p-0 text-destructive hover:text-destructive md:size-8"
               >
                 <Trash2 className="size-4" aria-hidden />
               </Button>
@@ -1746,7 +1762,7 @@ export function Sidebar({
               aria-label="Cancel selection"
               data-testid="sidebar-bulk-cancel"
               onClick={exitSelection}
-              className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground"
+              className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
             >
               <X className="size-4" aria-hidden />
             </Button>
@@ -1762,7 +1778,7 @@ export function Sidebar({
           {isSearching ? (
             filteredConversations.length === 0 ? (
               <div className="px-2 py-6 text-center text-sm text-muted-foreground">
-                No matches
+                {searchPending ? "Searching…" : "No matches"}
               </div>
             ) : (
               <div role="list" aria-label="Search results">
@@ -1831,7 +1847,7 @@ export function Sidebar({
                         aria-label={`Clear ${activeFilterTag.name} filter`}
                         data-testid="sidebar-collections-clear-filter"
                         onClick={() => onSetTagFilter?.(null)}
-                        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground"
+                        className="size-11 shrink-0 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground md:size-7"
                       >
                         <X className="size-4" aria-hidden />
                       </Button>

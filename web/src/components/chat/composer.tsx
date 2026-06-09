@@ -470,7 +470,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       ? templateActiveOptionId
       : slashActiveOptionId;
 
-    const autoGrow = () => {
+    const autoGrow = useCallback(() => {
       const ta = ref.current;
       if (!ta) return;
       ta.style.height = "auto";
@@ -481,7 +481,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       // continuous radius. The threshold sits above one line so a single wrapped
       // glyph or descender jitter can't toggle the radius mid-type.
       setGrown(scrollHeight > ONE_LINE_THRESHOLD);
-    };
+    }, []);
 
     const updateValue = (next: string) => {
       const prev = prevValueRef.current;

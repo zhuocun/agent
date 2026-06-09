@@ -81,7 +81,7 @@ Forbidden tier: never use the smallest/distilled variants (`*-mini`, `*-haiku`-c
 
 ### Default
 
-All delegated roles use top-tier models — Opus on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers, and any specialized role spawned for the task. Workers may run the same model and reasoning budget as the orchestrator.
+All delegated roles use top-tier models — Opus or Fable on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers, and any specialized role spawned for the task. Workers may run the same model and reasoning budget as the orchestrator.
 
 Reasoning budget: high across the board, including sidecar exploration. Do not downgrade reasoning to save tokens — that defeats the point of default mode.
 

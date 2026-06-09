@@ -486,6 +486,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     const updateValue = (next: string) => {
       const prev = prevValueRef.current;
       prevValueRef.current = next;
+      valueRef.current = next;
       setValue(next);
       // A fresh keystroke that produces non-empty content cancels the post-stop
       // settling pose so the send slot can go brand-armed immediately (visual +
@@ -514,6 +515,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     const pickCommand = (command: SlashCommand) => {
       const next = command.prompt;
       prevValueRef.current = next;
+      valueRef.current = next;
       setValue(next);
       setSlashDismissed(false);
       setSlashSelectedIndex(0);
@@ -581,6 +583,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     const pickTemplate = (template: PromptTemplate) => {
       const next = template.body;
       prevValueRef.current = next;
+      valueRef.current = next;
       setValue(next);
       setTemplatePickerOpen(false);
       setTemplateSelectedIndex(0);
@@ -604,6 +607,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         const needsSpace = current.length > 0 && !/\s$/.test(current);
         const next = needsSpace ? `${current} ${chunk}` : `${current}${chunk}`;
         prevValueRef.current = next;
+        valueRef.current = next;
         return next;
       });
       requestAnimationFrame(() => {
@@ -643,6 +647,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       const restore = (stored: string | null) => {
         const next = stored ?? "";
         prevValueRef.current = next;
+        valueRef.current = next;
         setValue(next);
         requestAnimationFrame(autoGrow);
       };
@@ -677,8 +682,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       // be skipped on a same-key re-run. Cancellable so a rapid key change
       // can't restore a stale value over a newer one.
       let cancelled = false;
+      const valueAtLoadStart = valueRef.current;
       void loadDraft(currentKey).then((stored) => {
-        if (!cancelled) restore(stored);
+        if (!cancelled && valueRef.current === valueAtLoadStart) restore(stored);
       });
       return () => {
         cancelled = true;
@@ -699,6 +705,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     useImperativeHandle(forwardedRef, () => ({
       setDraft: (text: string) => {
         prevValueRef.current = text;
+        valueRef.current = text;
         setValue(text);
         // A parent setting a draft (e.g. inserting "/something") is an explicit
         // re-arm: the popover should open if the new draft is a slash token.
@@ -731,6 +738,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       // Reset the composer immediately so the cleared input paints without
       // waiting on the (potentially heavy) send handler.
       prevValueRef.current = "";
+      valueRef.current = "";
       setValue("");
       setAttachments([]);
       setAttachmentNotice(null);

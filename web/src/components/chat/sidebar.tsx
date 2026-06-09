@@ -1434,10 +1434,6 @@ export function Sidebar({
     setSelectionActive(false);
   }, [setSelectionActive]);
 
-  useEffect(() => {
-    if (isSearching || searchPending) exitSelection();
-  }, [exitSelection, isSearching, searchPending]);
-
   const selectedIdList = Array.from(selectedIds);
   const hasSelection = selectedIdList.length > 0;
   const runBulk = (fn?: (ids: string[]) => void) => {
@@ -1565,7 +1561,11 @@ export function Sidebar({
           <input
             type="search"
             value={search}
-            onChange={(e) => onSearchChange(e.target.value)}
+            onChange={(e) => {
+              const nextSearch = e.target.value;
+              if (nextSearch.trim().length > 0) exitSelection();
+              onSearchChange(nextSearch);
+            }}
             placeholder="Search conversations"
             aria-label="Search conversations"
             className={cn(

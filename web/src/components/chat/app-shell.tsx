@@ -84,11 +84,13 @@ export function AppShell({
       style={shellStyle}
     >
       <aside
+        aria-hidden={!sidebarOpen}
+        inert={!sidebarOpen ? true : undefined}
         className={cn(
           // Left safe-area inset so the desktop rail clears a landscape notch;
           // the main column owns its own insets via the header/composer.
           "hidden shrink-0 overflow-hidden pl-[env(safe-area-inset-left)] transition-[width] duration-200 md:flex md:flex-col",
-          sidebarOpen ? "md:w-72" : "md:w-0"
+          sidebarOpen ? "md:w-72" : "pointer-events-none md:w-0"
         )}
       >
         {sidebar}

@@ -68,7 +68,7 @@ export interface ModelModePickerProps {
 // mobile bottom-sheet variants per PRD 06 §5.6 / PRD 01 §5.3 (the trigger's
 // appearance is stable; only the disclosure surface changes by modality).
 const TRIGGER_CLASS =
-  "inline-flex h-11 min-w-0 items-center gap-1.5 rounded-full px-3 text-base outline-none transition-colors hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/5";
+  "inline-flex h-11 min-w-0 max-w-[min(13rem,calc(100vw-9rem))] items-center gap-1.5 rounded-full px-3 text-base outline-none transition-colors hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/5 md:max-w-80";
 
 export function ModelModePicker({
   tiers,
@@ -124,7 +124,9 @@ export function ModelModePicker({
   // `triggerLabel` (above) still announces every value to AT regardless.
   const triggerInner = (
     <>
-      <span className="truncate font-medium text-foreground">{tier?.label}</span>
+      <span className="min-w-0 truncate font-medium text-foreground">
+        {tier?.label}
+      </span>
       {providerLabel ? (
         <span className="hidden max-w-24 truncate text-muted-foreground md:inline">
           {providerLabel}
@@ -135,7 +137,7 @@ export function ModelModePicker({
           {effort.label}
         </span>
       ) : null}
-      <ChevronDown aria-hidden className="size-4 text-muted-foreground" />
+      <ChevronDown aria-hidden className="size-4 shrink-0 text-muted-foreground" />
     </>
   );
 
@@ -373,7 +375,7 @@ export function ModelModePicker({
             <Collapsible>
               <CollapsibleTrigger
                 data-testid="picker-advanced"
-                className="flex w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-foreground/[0.04]"
+                className="flex min-h-11 w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-foreground/[0.04]"
               >
                 <ChevronRight
                   aria-hidden

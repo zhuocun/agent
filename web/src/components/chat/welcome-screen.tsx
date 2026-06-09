@@ -107,12 +107,12 @@ export function WelcomeScreen({
           </p>
         )}
 
-        <h1
+        <h2
           className="animate-welcome-enter text-4xl font-medium tracking-tight md:text-5xl lg:text-6xl"
           style={{ animationDelay: "70ms" }}
         >
           {heading}
-        </h1>
+        </h2>
 
         {/* One iOS-Settings-style inset group: a single quiet surface with
             hairline separators between rows (none above the first) and a

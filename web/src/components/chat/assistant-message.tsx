@@ -526,7 +526,7 @@ function ErrorFooter({
             onClick={onRetry}
             disabled={retryDisabled}
             aria-disabled={retryDisabled}
-            className="rounded-full"
+            className="min-h-11 rounded-full px-4 md:min-h-0"
             data-testid="assistant-error-retry"
           >
             <RotateCcw aria-hidden />
@@ -541,7 +541,7 @@ function ErrorFooter({
             render={<Link href="/status" />}
             variant="ghost"
             size="sm"
-            className="rounded-full"
+            className="min-h-11 rounded-full px-4 md:min-h-0"
             data-testid="assistant-error-status"
           >
             <Activity aria-hidden />
@@ -575,7 +575,7 @@ function ErrorFooter({
                 size="sm"
                 onClick={() => void requestReview()}
                 disabled={appealStatus === "pending"}
-                className="rounded-full"
+                className="min-h-11 rounded-full px-4 md:min-h-0"
                 data-testid="safety-request-review"
               >
                 {appealStatus === "pending" ? "Sending…" : "Request review"}

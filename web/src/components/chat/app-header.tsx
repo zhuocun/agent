@@ -109,7 +109,7 @@ export function AppHeader({
 }: AppHeaderProps) {
   return (
     <header className="relative flex h-[46px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
-      <div className="flex flex-1 items-center justify-start gap-2">
+      <div className="flex min-w-0 flex-1 items-center justify-start gap-2">
         <Button
           type="button"
           variant="ghost"
@@ -148,7 +148,7 @@ export function AppHeader({
         />
       </div>
 
-      <div className="flex flex-1 items-center justify-end">
+      <div className="flex min-w-0 flex-1 items-center justify-end">
         <div className="glass-regular inline-flex h-[45px] items-center rounded-full">
           <button
             type="button"

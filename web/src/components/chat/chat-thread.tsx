@@ -3327,7 +3327,7 @@ export function ChatThread() {
               setBootstrapError(null);
               setBootstrapAttempt((n) => n + 1);
             }}
-            className="rounded-full"
+            className="h-11 rounded-full px-5"
           >
             Try again
           </Button>

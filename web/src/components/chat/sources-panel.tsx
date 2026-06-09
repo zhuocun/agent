@@ -15,6 +15,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { prefersReducedMotion } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { SourceItem } from "@/lib/types";
 
@@ -76,7 +77,10 @@ export const SourcesPanel = forwardRef<SourcesPanelHandle, SourcesPanelProps>(
           requestAnimationFrame(() => {
             cardRefs.current
               .get(id)
-              ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+              ?.scrollIntoView({
+                behavior: prefersReducedMotion() ? "auto" : "smooth",
+                block: "nearest",
+              });
           });
           if (highlightTimer.current !== null) {
             window.clearTimeout(highlightTimer.current);
@@ -120,7 +124,7 @@ export const SourcesPanel = forwardRef<SourcesPanelHandle, SourcesPanelProps>(
             // Tap target: grow the hit area vertically to clear the iOS 44pt floor
             // without disturbing the surrounding gap stack (same trick as
             // ReasoningPanel).
-            "bg-transparent py-1.5 -my-1.5 underline-offset-2",
+            "bg-transparent py-3.5 -my-3.5 underline-offset-2 md:py-1.5 md:-my-1.5",
             "outline-none focus-visible:underline",
           )}
           aria-label={open ? `Hide ${label}` : `Show ${label}`}

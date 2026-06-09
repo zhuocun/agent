@@ -124,6 +124,8 @@ function DialogContent({
         <DialogPrimitive.Close
           ref={closeRef}
           data-slot="dialog-close"
+          aria-hidden={!showCloseButton ? true : undefined}
+          tabIndex={!showCloseButton ? -1 : undefined}
           // Kept mounted even when hidden: swipe-to-dismiss clicks this ref.
           className={cn(
             showCloseButton

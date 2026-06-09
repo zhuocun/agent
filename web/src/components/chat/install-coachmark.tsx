@@ -68,7 +68,9 @@ export function InstallCoachmark(): React.JSX.Element | null {
         // Sit ABOVE the composer capsule, not on top of it. `--bottom-inset` is
         // the safe-area floor; the composer chrome occupies ~5rem above it (the
         // same offset the toast stack clears), so reuse it here.
-        "bottom-[calc(var(--bottom-inset)+5rem)]",
+        // Clear the composer capsule, AI disclosure, and follow-up chips —
+        // 5rem was too tight and the pill overlapped the send field on phones.
+        "bottom-[calc(var(--bottom-inset)+9rem)]",
         "mx-auto flex max-w-md items-center gap-3 rounded-2xl",
         // `glass-regular` supplies the translucent material: saturated/
         // contrasted backdrop-filter, the inset hairline rim, the top highlight,

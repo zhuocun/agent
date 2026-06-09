@@ -313,7 +313,7 @@
 
   --brand: oklch(0.72 0.18 247);
   --brand-foreground: oklch(0.16 0.01 247);
-  --brand-muted: oklch(0.32 0.10 247);
+  --brand-muted: oklch(0.38 0.11 247);
 
   /* Brand halo for the first-run welcome surface (dark parity). A touch
      stronger than light since it lifts a near-black surface. See the :root

@@ -17,6 +17,7 @@ import {
   type VirtualMessageItem,
 } from "@/lib/use-virtual-message-window";
 import { prefersReducedMotion } from "@/lib/motion";
+import { topChromePaddingClass } from "@/lib/chat-chrome-padding";
 import { cn } from "@/lib/utils";
 
 // Pull the stable message id off a rendered child. UserMessage/AssistantMessage
@@ -114,9 +115,11 @@ function MessageRow({
 export function MessageList({
   children,
   isTemporary = false,
+  statusBannerActive = false,
 }: {
   children: React.ReactNode;
   isTemporary?: boolean;
+  statusBannerActive?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLOListElement>(null);
@@ -315,15 +318,13 @@ export function MessageList({
           // padding bumps +1.5rem in a temporary chat, where the chrome strip is
           // taller (it carries the "Temporary chat" banner above the header) —
           // mirroring the welcome surface's delta so the first message clears it.
-          className={
-            isTemporary
-              // Temporary mode adds the ~3rem TemporaryChatBanner to the top
-              // chrome strip, so clear it by the banner's full height (+3rem
-              // over the non-temporary offset) — a +1.5rem bump still left the
-              // first message tucked under the banner.
-              ? "mx-auto w-full max-w-3xl list-none px-4 pt-[calc(env(safe-area-inset-top)+7rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+8.5rem)]"
-              : "mx-auto w-full max-w-3xl list-none px-4 pt-[calc(env(safe-area-inset-top)+4rem)] pb-[calc(var(--bottom-inset)+9rem)] md:pt-[calc(env(safe-area-inset-top)+5.5rem)]"
-          }
+          className={cn(
+            "mx-auto w-full max-w-3xl list-none px-4 pb-[calc(var(--bottom-inset)+9rem)]",
+            topChromePaddingClass("thread", {
+              isTemporary,
+              statusBannerActive,
+            }),
+          )}
         >
           {virtualWindow.paddingTop > 0 ? (
             <li

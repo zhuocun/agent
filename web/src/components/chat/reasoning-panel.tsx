@@ -44,7 +44,7 @@ export function ReasoningPanel({
   const streamingLabel = "Thinking…";
   const settledLabel =
     durationSec && durationSec > 0
-      ? `Reasoned for ${formatDuration(durationSec)}`
+      ? `Thought for ${formatDuration(durationSec)}`
       : "Reasoning";
 
   return (

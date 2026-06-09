@@ -56,7 +56,7 @@ export function PublicAttributionRow({
     ? `Your ${providerLabel} key`
     : "Your API key";
   const substitutionPrefix = substitution
-    ? `substituted from ${MODEL_TIERS_BY_ID[attribution.requestedTierId].label}: `
+    ? `Rerouted from ${MODEL_TIERS_BY_ID[attribution.requestedTierId].label} tier — `
     : null;
 
   return (

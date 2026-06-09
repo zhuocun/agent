@@ -23,6 +23,7 @@ import {
   Key,
   LogIn,
   LogOut,
+  MessageSquare,
   MoreHorizontal,
   PanelLeftClose,
   Pencil,
@@ -2121,8 +2122,17 @@ export function Sidebar({
                   render OUTSIDE the Collections disclosure (as its sibling), so
                   collapsing Collections never hides the conversation list. */}
               {displayConversations.length === 0 ? (
-                <div className="px-2 py-6 text-center text-sm text-muted-foreground">
-                  No chats yet — start one above
+                <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+                  <MessageSquare
+                    aria-hidden
+                    className="size-8 text-muted-foreground/50"
+                  />
+                  <p className="text-sm font-medium text-foreground/80">
+                    No chats yet
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Start a conversation from the composer
+                  </p>
                 </div>
               ) : recencyConversations.length === 0 &&
                 archivedConversations.length === 0 ? (
@@ -2193,9 +2203,9 @@ export function Sidebar({
               <button
                 type="button"
                 aria-label="Account menu"
-                className="flex w-full select-none items-center gap-2 rounded-2xl p-2 text-left outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] aria-expanded:bg-muted/60 active:not-aria-[haspopup]:scale-[0.97]"
+                className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl p-2 text-left outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] aria-expanded:bg-muted/60 active:not-aria-[haspopup]:scale-[0.97]"
               >
-                <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
                   {initials(account.name)}
                 </div>
                 <div className="min-w-0 flex-1">

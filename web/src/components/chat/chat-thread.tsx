@@ -60,6 +60,7 @@ import {
 } from "@/components/chat/compare-view";
 import { LiveRegion } from "@/components/chat/live-region";
 import { showToast } from "@/components/ui/toast";
+import { topChromePaddingClass } from "@/lib/chat-chrome-padding";
 import { cn } from "@/lib/utils";
 import {
   CommandPalette,
@@ -3510,7 +3511,15 @@ export function ChatThread() {
               scroll (its internal `<ol>` has matching pt/pb that clears the
               chrome). */}
           {compareMode && compareTierA && compareTierB ? (
-            <div className="relative min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+7rem)]">
+            <div
+              className={cn(
+                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)]",
+                topChromePaddingClass("compare", {
+                  isTemporary,
+                  statusBannerActive: degradedActive,
+                }),
+              )}
+            >
               <CompareView
                 tiers={[compareTierA, compareTierB]}
                 userMessage={compareUserMessage}
@@ -3526,11 +3535,13 @@ export function ChatThread() {
             // greeting sits at the true visual center of the uncovered area —
             // not biased toward either the header or the composer.
             <div
-              className={
-                isTemporary
-                  ? "relative min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+7rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+9rem)] md:pb-[calc(var(--bottom-inset)+9rem)]"
-                  : "relative min-h-0 flex-1 overflow-y-auto pt-[calc(env(safe-area-inset-top)+5.5rem)] pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pt-[calc(env(safe-area-inset-top)+7rem)] md:pb-[calc(var(--bottom-inset)+9rem)]"
-              }
+              className={cn(
+                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pb-[calc(var(--bottom-inset)+9rem)]",
+                topChromePaddingClass("welcome", {
+                  isTemporary,
+                  statusBannerActive: degradedActive,
+                }),
+              )}
             >
               <WelcomeScreen
                 userName={firstName}
@@ -3548,7 +3559,10 @@ export function ChatThread() {
                   : "flex min-h-0 flex-1 flex-col"
               }
             >
-              <MessageList isTemporary={isTemporary}>
+              <MessageList
+                isTemporary={isTemporary}
+                statusBannerActive={degradedActive}
+              >
                 {messages.map((m) => {
                   const canBranchMessage =
                     !!activeConversationId &&

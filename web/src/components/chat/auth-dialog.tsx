@@ -185,7 +185,7 @@ export function AuthDialog({
                 aria-invalid={error !== null}
                 aria-describedby={error ? errorId : undefined}
                 placeholder="••••••••"
-                className="block h-11 w-full rounded-2xl bg-muted/50 pl-3 pr-12 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50"
+                className="block h-11 w-full rounded-2xl bg-muted/50 pl-3 pr-14 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50"
               />
               <button
                 type="button"
@@ -195,7 +195,7 @@ export function AuthDialog({
                 aria-pressed={showPassword}
                 onClick={() => setShowPassword((v) => !v)}
                 disabled={pending}
-                className="absolute right-1 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+                className="absolute right-0.5 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
               >
                 {showPassword ? (
                   <EyeOff aria-hidden className="size-4" />

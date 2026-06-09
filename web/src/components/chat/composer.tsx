@@ -683,7 +683,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       return () => {
         cancelled = true;
       };
-    }, [draftKey, persistDrafts]);
+    }, [autoGrow, draftKey, persistDrafts]);
 
     // Debounced save of the live draft under the active key. Empty drafts are
     // deleted by `saveDraft`, so a cleared composer never leaves a stale row.

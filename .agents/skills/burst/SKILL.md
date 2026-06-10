@@ -77,11 +77,11 @@ Map the terminology to whatever the platform exposes — `model`, `subagent_type
 
 **Always set these parameters explicitly on every subagent call.** Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config.
 
-Forbidden tier: never use the smallest/distilled variants (`*-mini`, `*-haiku`-class) unless a higher-priority instruction requires them.
+Forbidden tiers — two edges, and neither should be chosen unless the user or a higher-priority instruction explicitly calls for it. **Too cheap**: the smallest/distilled variants (`*-mini`, `*-haiku`-class). **Too expensive**: oversized frontier models whose cost outruns their marginal value for delegated work (e.g. Fable 5). Default to a tier between these edges; reach for either edge only when instructed.
 
 ### Default
 
-All delegated roles use top-tier models — Opus or Fable on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers, and any specialized role spawned for the task. Workers may run the same model and reasoning budget as the orchestrator.
+All delegated roles use top-tier models — Opus on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers, and any specialized role spawned for the task. Workers may run the same model and reasoning budget as the orchestrator — or even a higher tier and larger reasoning budget.
 
 Reasoning budget: high across the board, including sidecar exploration. Do not downgrade reasoning to save tokens — that defeats the point of default mode.
 
@@ -89,7 +89,7 @@ Platform-cap exception: if the platform forbids concurrent agents from using the
 
 ### Light mode
 
-Worker model: mid-tier — cheaper or faster than the orchestrator, never the forbidden tier. The worker must differ from the orchestrator in either model or reasoning budget. Apply the rule that fits your platform:
+Worker model: mid-tier — cheaper or faster than the orchestrator, never a forbidden tier. The worker must differ from the orchestrator in either model or reasoning budget. Apply the rule that fits your platform:
 
 1. Anthropic / OpenAI: step down one tier in the same family (Opus → Sonnet; top-tier GPT → next-tier non-mini GPT).
 2. Cursor: choose the best Composer model.

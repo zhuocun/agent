@@ -324,7 +324,7 @@ export function MessageList({
           // taller (it carries the "Temporary chat" banner above the header) —
           // mirroring the welcome surface's delta so the first message clears it.
           className={cn(
-            "mx-auto w-full max-w-3xl list-none px-4 pb-[calc(var(--bottom-inset)+9rem)]",
+            "mx-auto w-full max-w-3xl list-none px-4 pb-[calc(var(--bottom-inset)+12rem)]",
             CHAT_CHROME_PAD_CLASS,
           )}
           style={topChromePaddingStyle("thread", {
@@ -369,7 +369,9 @@ export function MessageList({
           non-interactive: pointer-events-none + aria-hidden + tabIndex -1 keep
           it out of the tab order and from intercepting taps. 44pt (size-11)
           meets the iOS touch-target floor; icon-only by design. */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+6.5rem)] z-30 flex justify-center">
+      {/* Anchored to clear the two-row composer card (~9rem of bottom chrome)
+          with the same ~1.5rem float the old pill layout had. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+9.5rem)] z-30 flex justify-center">
         <Button
           type="button"
           variant="secondary"
@@ -378,7 +380,12 @@ export function MessageList({
           aria-hidden={atBottom}
           tabIndex={atBottom ? -1 : 0}
           className={cn(
-            "glass-regular size-11 rounded-full p-0 transition-[opacity,transform,scale] duration-300 ease-[var(--ease-ios-spring)] motion-reduce:transition-[opacity] motion-reduce:duration-150",
+            // Dark scrim parity with the header float buttons: re-point the
+            // glass fill one tier up (regular → strong) so the circle keeps
+            // its icon contrast over the hero gradient's bottom counter-bloom
+            // while it fades at the welcome→thread seam, and over colored
+            // message content generally. Token-to-token, no literal color.
+            "glass-regular dark:[--glass-regular-bg:var(--glass-strong-bg)] size-11 rounded-full p-0 transition-[opacity,translate,scale] duration-300 ease-[var(--ease-ios-spring)] motion-reduce:transition-[opacity] motion-reduce:duration-150",
             atBottom
               ? "pointer-events-none translate-y-1 scale-90 opacity-0 motion-reduce:translate-y-0 motion-reduce:scale-100"
               : "pointer-events-auto translate-y-0 scale-100 opacity-100",

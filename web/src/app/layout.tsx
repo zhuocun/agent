@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { Instrument_Serif } from "next/font/google";
 import Script from "next/script";
 import { cookies } from "next/headers";
 import "./globals.css";
@@ -7,6 +8,22 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toast";
 import { InstallCoachmark } from "@/components/chat/install-coachmark";
 import { DirController, I18nProvider } from "@/lib/i18n/context";
+
+// Display serif for hero/heading moments only (the welcome greeting) —
+// Decision 16, exercising Decision 04's revisit clause (a display face for a
+// first-run surface, confined to that surface). `display: "optional"` keeps it
+// entirely off the critical path: the face renders only if it arrives within
+// the brief block window (or from cache) and NEVER swaps in late, so there is
+// no FOIT and no mid-session layout shift (PRD 01 §5.4 renderer contract).
+// next/font self-hosts the file (no Google request at runtime) and generates a
+// metric-adjusted fallback. Exposed as `--font-heading-serif`; globals.css
+// composes it into `--font-heading`. Body text stays on the system stack.
+const instrumentSerif = Instrument_Serif({
+  weight: "400",
+  subsets: ["latin"],
+  display: "optional",
+  variable: "--font-heading-serif",
+});
 
 export const metadata: Metadata = {
   title: "Olune — multi-model AI chat",
@@ -97,7 +114,7 @@ export default async function RootLayout({
       lang="en"
       dir={dir}
       suppressHydrationWarning
-      className="h-full antialiased"
+      className={`h-full antialiased ${instrumentSerif.variable}`}
     >
       <body className="min-h-full flex flex-col">
         {/* Status-bar safety strip (iOS `black-translucent`). Content draws

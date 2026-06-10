@@ -307,7 +307,14 @@ class FakeProvider:
             )
             yield StatusUpdate(label="Searching the web…", state="active")
             search_items = await FakeSearchProvider().search(user_text, max_results=3)
-            await asyncio.sleep(self._delay)
+            # E2e asserts the active label mid-stream; with the default 20ms
+            # delay the turn can finish before the first paint.
+            active_hold = (
+                max(self._delay, 0.35)
+                if get_settings().env == "test"
+                else self._delay
+            )
+            await asyncio.sleep(active_hold)
             yield StatusUpdate(label="Searching the web…", state="done")
             yield Sources(items=search_items)
             yield ToolResult(

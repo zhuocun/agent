@@ -44,11 +44,13 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 - Chat roles: `message-user`, `message-assistant`, `reasoning-muted`, `code-block`, `status-line`, `substitution-callout`.
 - Trust roles: `trust-badge`, `byok-indicator`, `temporary-chat-banner`.
 - Light / dark / system themes; all body text pairs **>= 4.5:1** contrast.
+- **[shipped] Welcome-hero atmosphere tokens (welcome surface ONLY — Decision 16):** `--hero-gradient` (static brand-hue wash layered beneath `--welcome-ambient`) and `--hero-glow-edge` / `--hero-glow-halo` (resting composer halo composed from the `--focus-glow-*` recipe at reduced energy, exposed as `shadow-hero-edge` / `shadow-hero-halo`). Both themes define every token; `prefers-contrast: more` zeroes them alongside `--welcome-ambient`. Use on the working thread fails review per the anti-pattern catalog §G.
 
 **AC:** zero hard-coded colors in chat feature code outside token/CSS variables.
 
 ### 3.2 Typography **[P0]**
 - UI font: system stack or one variable sans; no blocking custom font on critical path.
+- **[shipped] Display serif for the welcome hero (Decision 16, exercising Decision 04's revisit clause):** Instrument Serif (single 400 weight) self-hosted via `next/font`, exposed as `--font-heading` — **display sizes only** (the welcome greeting); body and chrome stay on the system stack. Loaded with `display: optional` + metric-adjusted fallback, so it never blocks first paint and never swaps in late (no FOIT, no CLS — PRD 01 §5.4 holds).
 - Monospace: code blocks and token/cost numerals.
 - Chat body: 16px base, `rem`-based; message column capped around 70–80ch on wide screens.
 - Pseudo-localization must not break attribution rows or composer layout.
@@ -57,6 +59,7 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 - 4px base grid.
 - Composer/header respect all four `safe-area-inset-*`.
 - Message surfaces remain flat; elevation reserved for drawer/sheet/modal.
+- **[shipped]** `--radius-3xl` (`--radius` × 2.4 = 1.5rem at default) brings the welcome surface's generous rounding into the token system — same resolved value as the Tailwind built-in it replaces, but it now tracks the system radius knob (Decision 16).
 
 ### 3.4 Motion **[P0]**
 - Streaming and reasoning shimmer allowed by default.

@@ -38,6 +38,7 @@ import { Button } from "@/components/ui/button";
 import { AppShell } from "@/components/chat/app-shell";
 import { Sidebar } from "@/components/chat/sidebar";
 import { AppHeader } from "@/components/chat/app-header";
+import { ModelModePicker } from "@/components/chat/model-mode-picker";
 import { MessageList } from "@/components/chat/message-list";
 import { UserMessage } from "@/components/chat/user-message";
 import { AssistantMessage } from "@/components/chat/assistant-message";
@@ -3452,15 +3453,19 @@ export function ChatThread() {
               readers. Carries the active conversation title with a sensible
               default before one exists / while untitled. (A11Y-5) */}
           <h1 className="sr-only">{activeConversationTitle ?? "New chat"}</h1>
-          {/* First-run welcome ambient halo: a soft, single-hue brand bloom
-              behind the greeting. Welcome-only, decorative, vignetted by the
-              z-30 chrome strips. Fades in on mount, out at the welcome→thread
-              exit seam; static at rest. */}
+          {/* First-run hero atmosphere: the --hero-gradient backdrop (brand
+              wash falling from the top edge + counter-bloom rising behind the
+              composer) with the radial --welcome-ambient greeting halo layered
+              above it, per the token contract in globals.css. Welcome-only,
+              decorative, vignetted by the z-30 chrome strips. Same fade as the
+              old single-halo layer: in on mount, out at the welcome→thread
+              exit seam; static at rest. Both tokens zero under
+              prefers-contrast, and motion-reduce collapses the fade. */}
           {showWelcome ? (
             <div
               aria-hidden
               className={cn(
-                "pointer-events-none absolute inset-0 [background:var(--welcome-ambient)] transition-opacity duration-700 ease-out starting:opacity-0 motion-reduce:transition-none",
+                "pointer-events-none absolute inset-0 [background:var(--welcome-ambient),var(--hero-gradient)] transition-opacity duration-700 ease-out starting:opacity-0 motion-reduce:transition-none",
                 welcomeExiting ? "opacity-0" : "opacity-100",
               )}
             />
@@ -3511,20 +3516,24 @@ export function ChatThread() {
                 onDownloadDocx={handleDownloadDocx}
                 onShareConversation={handleOpenShare}
                 canShareConversation={canShareActiveConversation}
-                tiers={modelTiers}
-                selectedTierId={selectedTierId}
-                onSelectTier={handleSelectTier}
-                providerOptions={providerOptions}
-                selectedProviderId={effectiveProviderId}
-                onSelectProvider={handleSelectProvider}
-                efforts={REASONING_EFFORTS}
-                selectedEffortId={selectedReasoningEffortId}
-                onSelectEffort={setSelectedReasoningEffortId}
-                effortSupported={effortSupported}
-                searchEnabled={effectiveSearchEnabled}
-                onToggleSearch={setSearchEnabled}
-                jsonModeEnabled={jsonModeEnabled}
-                onToggleJsonMode={setJsonModeEnabled}
+                centerSlot={
+                  // Welcome-only centered wordmark — the brand moment lives on
+                  // the first-run surface (the sidebar wordmark stays demoted
+                  // per anti-pattern G). Serif to rhyme with the hero greeting;
+                  // fades with the same 200ms welcome-exit seam, and aria-hidden
+                  // because the sr-only <h1> already names the surface.
+                  showWelcome ? (
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "font-heading text-xl tracking-tight text-foreground/90 transition-opacity duration-200 ease-[var(--ease-welcome)] starting:opacity-0 motion-reduce:transition-none",
+                        welcomeExiting ? "opacity-0" : "opacity-100",
+                      )}
+                    >
+                      Olune
+                    </span>
+                  ) : undefined
+                }
               />
               {isTemporary && !degradedActive ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
@@ -3541,7 +3550,7 @@ export function ChatThread() {
           {compareMode && compareTierA && compareTierB ? (
             <div
               className={cn(
-                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)]",
+                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+12rem)] pl-[env(safe-area-inset-left)]",
                 CHAT_CHROME_PAD_CLASS,
               )}
               style={topChromePaddingStyle("compare", {
@@ -3565,7 +3574,7 @@ export function ChatThread() {
             // not biased toward either the header or the composer.
             <div
               className={cn(
-                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pb-[calc(var(--bottom-inset)+9rem)]",
+                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+10rem)] pl-[env(safe-area-inset-left)] md:pb-[calc(var(--bottom-inset)+12rem)]",
                 CHAT_CHROME_PAD_CLASS,
               )}
               style={topChromePaddingStyle("welcome", {
@@ -3720,6 +3729,31 @@ export function ChatThread() {
                 // Pre-send estimate uses the provider-effective selected tier;
                 // suppressed in compare mode (two tiers, no single estimate).
                 estimateTier={compareMode ? undefined : selectedModelTier}
+                // The model/mode picker now lives in the composer toolbar
+                // (Lovable-style) — the same component instance the header
+                // used to host, so every testid/aria contract is unchanged.
+                modelPicker={
+                  <ModelModePicker
+                    tiers={modelTiers}
+                    selectedTierId={selectedTierId}
+                    onSelectTier={handleSelectTier}
+                    providerOptions={providerOptions}
+                    selectedProviderId={effectiveProviderId}
+                    onSelectProvider={handleSelectProvider}
+                    efforts={REASONING_EFFORTS}
+                    selectedEffortId={selectedReasoningEffortId}
+                    onSelectEffort={setSelectedReasoningEffortId}
+                    effortSupported={effortSupported}
+                    searchEnabled={effectiveSearchEnabled}
+                    onToggleSearch={setSearchEnabled}
+                    jsonModeEnabled={jsonModeEnabled}
+                    onToggleJsonMode={setJsonModeEnabled}
+                  />
+                }
+                // Resting hero glow on the first-run welcome surface only;
+                // fades at the welcome→thread exit seam alongside the
+                // ambient halo.
+                heroGlow={showWelcome && !welcomeExiting}
               />
               <AiDisclosure />
             </div>

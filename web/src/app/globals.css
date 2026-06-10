@@ -251,6 +251,10 @@
   --glass-regular-bg: rgba(255, 255, 255, 0.72);
   --glass-strong-bg:  rgba(255, 255, 255, 0.90);
   --glass-clear-bg:   rgba(255, 255, 255, 0.32);
+  /* Quieter edge + shadow for low-opacity inset groups (welcome prompts, etc.)
+     so the surface reads on a near-white page without the heavy card lift. */
+  --glass-clear-border: rgba(0, 0, 0, 0.08);
+  --glass-clear-shadow-key: 0 4px 16px rgba(0, 0, 0, 0.06);
 
   /* Top-edge specular highlight (inset). Retained as a standalone token because
      the `shadow-glass-highlight` Tailwind utility references it. */
@@ -369,6 +373,8 @@
   --glass-regular-bg: rgba(24, 24, 28, 0.74);
   --glass-strong-bg:  rgba(24, 24, 28, 0.92);
   --glass-clear-bg:   rgba(24, 24, 28, 0.38);
+  --glass-clear-border: rgba(255, 255, 255, 0.10);
+  --glass-clear-shadow-key: 0 8px 24px rgba(0, 0, 0, 0.24);
 
   --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.10);
   /* Refraction rim — dark parity (see :root token for rationale). */
@@ -588,9 +594,9 @@
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness));
   box-shadow:
     var(--glass-rim),
-    inset 0 0 0 1px var(--glass-border),
+    inset 0 0 0 1px var(--glass-clear-border),
     var(--glass-shadow-ambient),
-    var(--glass-shadow-key);
+    var(--glass-clear-shadow-key);
 }
 
 @utility glass-capsule {

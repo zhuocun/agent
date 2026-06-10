@@ -107,8 +107,11 @@ export function AppHeader({
   jsonModeEnabled,
   onToggleJsonMode,
 }: AppHeaderProps) {
+  const hasExportActions =
+    canCopyConversation || canDownloadConversation || canShareConversation;
+
   return (
-    <header className="relative flex h-[46px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
+    <header className="relative flex h-[52px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
       <div className="flex min-w-0 flex-1 items-center justify-start gap-2">
         <Button
           type="button"
@@ -169,6 +172,7 @@ export function AppHeader({
               sidebarOpen && "md:hidden",
             )}
           />
+          {hasExportActions || isTemporary ? (
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -240,6 +244,7 @@ export function AppHeader({
               ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
+          ) : null}
         </div>
       </div>
     </header>

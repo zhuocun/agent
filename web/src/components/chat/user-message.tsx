@@ -9,6 +9,7 @@ import {
   Image as ImageIcon,
   Loader2,
   Pencil,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { formatAttachmentSize } from "@/lib/format-attachment-size";
 import type { ChatMessage, MessagePart } from "@/lib/types";
 
 interface UserMessageProps {
@@ -29,11 +31,6 @@ interface UserMessageProps {
 }
 
 const MAX_EDIT_HEIGHT = 320;
-
-function formatAttachmentSize(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function attachmentIconType(mediaType: Extract<MessagePart, { type: "attachment" }>["mediaType"]) {
   return mediaType === "image" ? "image" : "file";
@@ -83,6 +80,7 @@ export function UserMessage({
   const [draft, setDraft] = useState(text);
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  const [editSaveFailed, setEditSaveFailed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -165,6 +163,7 @@ export function UserMessage({
   const saveEdit = () => {
     if (submitting || !canSave || !onEdit) return;
     setSubmitting(true);
+    setEditSaveFailed(false);
     try {
       // The parent may guard the edit (e.g. reject while streaming). If it
       // throws, stay in edit mode and re-enable the control so the draft is
@@ -172,6 +171,7 @@ export function UserMessage({
       onEdit(trimmed);
     } catch {
       setSubmitting(false);
+      setEditSaveFailed(true);
       return;
     }
     // Happy path: leave edit mode. The component unmounts/re-derives from the
@@ -238,6 +238,11 @@ export function UserMessage({
               Save
             </Button>
           </div>
+          {editSaveFailed ? (
+            <p className="text-right text-xs text-destructive" role="alert">
+              Couldn&apos;t save — try again
+            </p>
+          ) : null}
         </div>
       </div>
     );
@@ -298,6 +303,9 @@ export function UserMessage({
           active (touch). Opacity-only — pointer-events stay auto so the
           actions remain hit-testable without a prior synthetic hover. */}
       <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
+        <span className="sr-only" role="status" aria-live="polite">
+          {copied ? "Copied" : copyFailed ? "Copy failed" : ""}
+        </span>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -310,6 +318,8 @@ export function UserMessage({
               >
                 {copied ? (
                   <Check className="size-4 text-success" />
+                ) : copyFailed ? (
+                  <X className="size-4 text-destructive" />
                 ) : (
                   <Copy className="size-4" />
                 )}

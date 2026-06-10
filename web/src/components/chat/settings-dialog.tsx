@@ -1227,22 +1227,26 @@ export function SettingsDialog({
                       data-testid={tab.testId}
                       onClick={() => selectTab(tab.id)}
                       onKeyDown={(event) => {
-                        if (
-                          event.key !== "ArrowRight" &&
-                          event.key !== "ArrowLeft"
-                        ) {
-                          return;
-                        }
-                        event.preventDefault();
                         const index = SETTINGS_TABS.findIndex(
                           (t) => t.id === tab.id,
                         );
-                        const delta = event.key === "ArrowRight" ? 1 : -1;
-                        const next =
-                          SETTINGS_TABS[
-                            (index + delta + SETTINGS_TABS.length) %
-                              SETTINGS_TABS.length
-                          ]!;
+                        let nextIndex: number | null = null;
+                        if (event.key === "ArrowRight") {
+                          nextIndex =
+                            (index + 1 + SETTINGS_TABS.length) %
+                            SETTINGS_TABS.length;
+                        } else if (event.key === "ArrowLeft") {
+                          nextIndex =
+                            (index - 1 + SETTINGS_TABS.length) %
+                            SETTINGS_TABS.length;
+                        } else if (event.key === "Home") {
+                          nextIndex = 0;
+                        } else if (event.key === "End") {
+                          nextIndex = SETTINGS_TABS.length - 1;
+                        }
+                        if (nextIndex === null) return;
+                        event.preventDefault();
+                        const next = SETTINGS_TABS[nextIndex]!;
                         selectTab(next.id);
                         document
                           .getElementById(`${tablistId}-${next.id}`)

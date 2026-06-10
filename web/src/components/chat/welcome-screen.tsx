@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import {
   AlignLeft,
   Bug,
@@ -75,8 +76,31 @@ export function WelcomeScreen({
   suggestions,
   compact = false,
 }: WelcomeScreenProps) {
-  const heading = buildGreeting(userName);
-  const today = formatDate();
+  // Greeting/date depend on the client's local clock — gate on mount so SSR and
+  // hydration never disagree on the hour or weekday string.
+  const [mounted, setMounted] = useState(false);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only clock
+  useEffect(() => setMounted(true), []);
+
+  const heading = mounted
+    ? buildGreeting(userName)
+    : userName
+      ? `Hello, ${userName}`
+      : "Hello";
+  const today = mounted ? formatDate() : "";
+
+  const bootstrapPrompts =
+    suggestions.length > 0
+      ? compact
+        ? suggestions.slice(0, 2)
+        : suggestions
+      : null;
+  const fallbackPrompts =
+    suggestions.length > 0
+      ? null
+      : compact
+        ? PROMPTS.slice(0, 2)
+        : PROMPTS;
 
   return (
     <div className="flex h-full flex-col items-center justify-center px-4">
@@ -98,7 +122,7 @@ export function WelcomeScreen({
             : "flex w-full max-w-md flex-col items-center text-center"
         }
       >
-        {compact ? null : (
+        {compact || !today ? null : (
           <p
             className="animate-welcome-enter mb-3 text-sm font-medium text-muted-foreground"
             style={{ animationDelay: "0ms" }}
@@ -108,8 +132,8 @@ export function WelcomeScreen({
         )}
 
         <h2
-          className="animate-welcome-enter text-4xl font-medium tracking-tight md:text-5xl lg:text-6xl"
-          style={{ animationDelay: "70ms" }}
+          className="animate-welcome-enter text-4xl font-semibold tracking-tight text-foreground md:text-5xl lg:text-6xl"
+          style={{ animationDelay: "0ms" }}
         >
           {heading}
         </h2>
@@ -124,21 +148,21 @@ export function WelcomeScreen({
             `rounded-3xl` gives the iOS-26-generous outer curvature; the rows'
             press-highlights are clipped to it, and their inner edges stay
             square against the separators so nothing fights the curve. */}
-        {compact ? null : (
+        {bootstrapPrompts || fallbackPrompts ? (
         <ul
           aria-label="Suggested prompts"
-          className="glass-clear mt-10 w-full overflow-hidden rounded-3xl text-left md:mt-12"
+          className="glass-clear mt-10 w-full rounded-3xl text-left md:mt-12"
         >
-          {suggestions.length > 0
-            ? suggestions.map((s, index) => {
+          {bootstrapPrompts
+            ? bootstrapPrompts.map((s, index) => {
                 const Icon = SUGGESTION_ICONS[s.icon];
                 return (
                   <li key={s.id} className="list-none">
                     <button
                       type="button"
                       onClick={() => onPromptSelect?.(s.prompt)}
-                      className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
-                      style={{ animationDelay: `${150 + index * 60}ms` }}
+                      className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:rounded-t-3xl first:border-t-0 last:rounded-b-3xl [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset md:text-[1.0625rem]"
+                      style={{ animationDelay: `${60 + index * 40}ms` }}
                     >
                       <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
                       {s.title}
@@ -150,13 +174,13 @@ export function WelcomeScreen({
                   </li>
                 );
               })
-            : PROMPTS.map(({ icon: Icon, label }, index) => (
+            : fallbackPrompts!.map(({ icon: Icon, label }, index) => (
                 <li key={label} className="list-none">
                   <button
                     type="button"
                     onClick={() => onPromptSelect?.(label)}
-                    className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border/60 px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:border-t-0 [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:text-base"
-                    style={{ animationDelay: `${150 + index * 60}ms` }}
+                    className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:rounded-t-3xl first:border-t-0 last:rounded-b-3xl [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset md:text-[1.0625rem]"
+                    style={{ animationDelay: `${60 + index * 40}ms` }}
                   >
                     <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
                     {label}
@@ -168,7 +192,7 @@ export function WelcomeScreen({
                 </li>
               ))}
         </ul>
-        )}
+        ) : null}
       </div>
     </div>
   );

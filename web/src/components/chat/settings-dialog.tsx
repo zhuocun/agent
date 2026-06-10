@@ -1130,7 +1130,7 @@ export function SettingsDialog({
           bottom padding, swipe-to-dismiss) and reverts to the centered modal at
           sm:. We keep the 80dvh cap here so the glass surface breathes a touch
           more than the default 90dvh on the settings panel. */}
-      <DialogContent className="max-h-[80dvh] sm:max-h-none">
+      <DialogContent className="max-h-[80dvh] sm:max-h-none sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
@@ -1193,7 +1193,7 @@ export function SettingsDialog({
           role="tablist"
           aria-label="Settings sections"
           id={tablistId}
-          className="-mx-1 flex flex-wrap items-end gap-3 px-1 pb-1"
+          className="-mx-1 flex items-end gap-3 overflow-x-auto px-1 pb-1 [scrollbar-gutter:stable]"
         >
           {SETTINGS_TAB_GROUPS.map((group, groupIndex) => (
             <div

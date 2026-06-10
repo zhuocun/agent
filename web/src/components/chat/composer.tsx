@@ -840,7 +840,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // "More actions" ("+") disclosure so the composer reads as
     // `[+] [textarea] [Send]` on every viewport. The lone inline exception is
     // an ACTIVE recording — stop must stay one tap away, never folded behind "+".
-    const keepAttachInline = false;
     const keepDictateInline = dictation.listening;
     // ---- Secondary-control renderers ---------------------------------------
     // Each control is rendered inside the "More actions" disclosure popover (its
@@ -1232,11 +1231,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             stream in progress is always stoppable in one tap. The disclosure
             expands with a zoom/fade; motion-reduce makes the open instant. */}
           <div className="flex min-w-0 shrink-0 items-end gap-2 transition-opacity duration-300 ease-ios-smooth motion-reduce:transition-none">
-            {/* Mobile inline promotions: Attach + Dictate sit BEFORE the "+"
-                disclosure so phone users don't pay an extra tap to reach the
-                two most-used secondary controls. They still also live inside
-                the popover for parity (testids reachable on any viewport). */}
-            {keepAttachInline ? attachButton : null}
+            {/* Active dictation stays inline so stop is always one tap away. */}
             {keepDictateInline ? (
               dictation.listening ? (
                 <Tooltip>
@@ -1270,7 +1265,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 );
                 const moreActionsRows = (
                   <>
-                    {supportsAttachments && !keepAttachInline ? (
+                    {supportsAttachments ? (
                       <div className="flex items-center gap-2">
                         {attachButton}
                         <span className="pr-2 text-sm text-foreground">

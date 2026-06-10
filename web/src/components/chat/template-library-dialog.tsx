@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { FileText, Pencil, Plus, Trash2, X } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -53,6 +53,13 @@ export function TemplateLibraryBody({
   const [editingBody, setEditingBody] = useState("");
   const [editingDescription, setEditingDescription] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const editRowRef = useRef<HTMLLIElement>(null);
+
+  useEffect(() => {
+    if (editingId) {
+      editRowRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [editingId]);
 
   useEffect(() => {
     if (!open) return;
@@ -238,6 +245,7 @@ export function TemplateLibraryBody({
                 {templates.map((template) => (
                   <li
                     key={template.id}
+                    ref={editingId === template.id ? editRowRef : undefined}
                     className="glass-clear space-y-2 rounded-2xl px-3.5 py-3"
                     data-testid="template-item"
                   >

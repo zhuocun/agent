@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import {
   AlignLeft,
   Bug,
-  ChevronRight,
   Code2,
   Lightbulb,
   PenLine,
@@ -115,43 +114,53 @@ export function WelcomeScreen({
             // of truth for the seam. On exit the whole block fades/translates as
             // one unit; the children's already-finished enter animations don't
             // replay. Max-width must match the resting variant exactly, or the
-            // group snaps width at the exit seam.
-            ? "animate-welcome-exit flex w-full max-w-md flex-col items-center text-center transition-[opacity,transform] duration-200 ease-[var(--ease-welcome)] opacity-0 -translate-y-2"
+            // group snaps width at the exit seam. (max-w-xl: the serif display
+            // greeting + wrapping pill rail need more room than the old
+            // inset-group's max-w-md.)
+            ? "animate-welcome-exit flex w-full max-w-xl flex-col items-center text-center transition-[opacity,transform] duration-200 ease-[var(--ease-welcome)] opacity-0 -translate-y-2"
             // Entrance choreography lives on each child below (staggered via
             // inline animationDelay). The wrapper itself carries layout only.
-            : "flex w-full max-w-md flex-col items-center text-center"
+            : "flex w-full max-w-xl flex-col items-center text-center"
         }
       >
+        {/* Slim pill banner above the greeting — the date eyebrow recast in the
+            BYOK-badge / install-coachmark capsule language. glass-clear keeps
+            it the quietest material in the system; under prefers-contrast the
+            utility densifies its fill on its own (globals.css). */}
         {compact || !today ? null : (
           <p
-            className="animate-welcome-enter mb-3 text-sm font-medium tracking-wide text-muted-foreground"
+            className="animate-welcome-enter glass-clear mb-7 inline-flex items-center rounded-full px-3.5 py-1.5 text-xs font-medium tracking-wide text-muted-foreground"
             style={{ animationDelay: "0ms" }}
           >
             {today}
           </p>
         )}
 
+        {/* Hero greeting — the one display-serif moment in the app (Decision 16
+            carve-out of Decision 04's working-surface rule). Instrument Serif
+            ships weight 400 only, so font-normal is structural, not stylistic.
+            text-balance keeps two-line personalized greetings ragged-even. */}
         <h2
-          className="animate-welcome-enter text-4xl font-semibold tracking-tight text-foreground md:text-5xl lg:text-6xl"
-          style={{ animationDelay: "0ms" }}
+          className="animate-welcome-enter font-heading text-5xl font-normal tracking-tight text-balance text-foreground md:text-6xl lg:text-7xl"
+          style={{ animationDelay: "40ms" }}
         >
           {heading}
         </h2>
 
-        {/* One iOS-Settings-style inset group: a single quiet surface with
-            hairline separators between rows (none above the first) and a
-            trailing disclosure chevron per row. `overflow-hidden` clips the
-            row press-highlights to the rounded corners. `glass-clear` is the
-            lowest-opacity material in the system — the brand halo still reads
-            through it (per the old 0.03 intent) while it adds the saturated
-            backdrop-filter and the inset hairline rim the flat tint lacked.
-            `rounded-3xl` gives the iOS-26-generous outer curvature; the rows'
-            press-highlights are clipped to it, and their inner edges stay
-            square against the separators so nothing fights the curve. */}
+        {/* Suggestion rail: rounded glass pills wrapping under the greeting
+            (the Lovable-style hero rail) in place of the old iOS inset group.
+            Each pill is its own `glass-clear` capsule — lowest-opacity material
+            in the system, so the hero atmosphere still reads through it — and
+            the hover tint swaps the fill for a foreground wash exactly like
+            the header's glass float buttons (`hover:bg-foreground/5`). The
+            `<ul aria-label="Suggested prompts">` role/name pair and the
+            click-to-insert wiring are load-bearing for the e2e suite — keep
+            both. prefers-reduced-motion neutralizes `animate-welcome-enter`
+            globally (globals.css), so the stagger delays are inert there. */}
         {bootstrapPrompts || fallbackPrompts ? (
         <ul
           aria-label="Suggested prompts"
-          className="glass-clear mt-10 w-full rounded-3xl text-left md:mt-12"
+          className="mt-10 flex w-full flex-wrap items-center justify-center gap-2.5 md:mt-12"
         >
           {bootstrapPrompts
             ? bootstrapPrompts.map((s, index) => {
@@ -161,15 +170,11 @@ export function WelcomeScreen({
                     <button
                       type="button"
                       onClick={() => onPromptSelect?.(s.prompt)}
-                      className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:rounded-t-3xl first:border-t-0 last:rounded-b-3xl [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset md:text-[1.0625rem]"
-                      style={{ animationDelay: `${60 + index * 40}ms` }}
+                      className="animate-welcome-enter glass-clear inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[0.9375rem] leading-5 text-foreground transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/5 active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      style={{ animationDelay: `${100 + index * 50}ms` }}
                     >
-                      <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                      <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                       {s.title}
-                      <ChevronRight
-                        className="ml-auto size-4 shrink-0 text-muted-foreground/60"
-                        aria-hidden="true"
-                      />
                     </button>
                   </li>
                 );
@@ -179,15 +184,11 @@ export function WelcomeScreen({
                   <button
                     type="button"
                     onClick={() => onPromptSelect?.(label)}
-                    className="animate-welcome-enter flex w-full items-center gap-3 border-t border-border px-5 py-3.5 text-[1.0625rem] leading-6 text-foreground transition-colors duration-200 ease-out first:rounded-t-3xl first:border-t-0 last:rounded-b-3xl [@media(hover:hover)]:hover:bg-foreground/[0.04] active:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset md:text-[1.0625rem]"
-                    style={{ animationDelay: `${60 + index * 40}ms` }}
+                    className="animate-welcome-enter glass-clear inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-[0.9375rem] leading-5 text-foreground transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/5 active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    style={{ animationDelay: `${100 + index * 50}ms` }}
                   >
-                    <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                     {label}
-                    <ChevronRight
-                      className="ml-auto size-4 shrink-0 text-muted-foreground/60"
-                      aria-hidden="true"
-                    />
                   </button>
                 </li>
               ))}

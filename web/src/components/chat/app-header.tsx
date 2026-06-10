@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import {
   ClipboardCopy,
   Download,
@@ -19,15 +20,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ModelModePicker } from "@/components/chat/model-mode-picker";
 import { cn } from "@/lib/utils";
-import type {
-  ModelTier,
-  ModelTierId,
-  ProviderTierOption,
-  ReasoningEffort,
-  ReasoningEffortId,
-} from "@/lib/types";
 
 interface AppHeaderProps {
   onNewChat?: () => void;
@@ -50,29 +43,31 @@ interface AppHeaderProps {
   canShareConversation?: boolean;
   isTemporary?: boolean;
   sidebarOpen?: boolean;
-  tiers: ModelTier[];
-  selectedTierId: ModelTierId;
-  onSelectTier: (id: ModelTierId) => void;
-  providerOptions: ProviderTierOption[];
-  selectedProviderId?: string;
-  onSelectProvider: (id: string) => void;
-  efforts: ReasoningEffort[];
-  selectedEffortId: ReasoningEffortId;
-  onSelectEffort: (id: ReasoningEffortId) => void;
-  // False when the served provider ignores reasoning effort (e.g. Anthropic):
-  // the picker disables the effort rows with a one-line note instead of erroring.
-  effortSupported?: boolean;
-  searchEnabled: boolean;
-  onToggleSearch: (next: boolean) => void;
-  jsonModeEnabled: boolean;
-  onToggleJsonMode: (next: boolean) => void;
+  // Decorative centered slot between the left/right control groups — used by
+  // the welcome state for the serif wordmark. Absolutely positioned so it
+  // never shifts the control groups, and pointer-events-none so taps fall
+  // through; pass non-interactive content only.
+  centerSlot?: ReactNode;
 }
 
-const FLOAT_BUTTON =
-  "glass-regular size-[45px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent";
+// Dark theme swaps the chrome's glass fill up one tier (regular → strong) by
+// re-pointing the token the `glass-regular` utility reads. Over the welcome
+// hero gradient (and any colored content scrolling under the chrome) the
+// 0.74-alpha regular fill lets the brand wash tint the circle and erode icon
+// contrast; the strong fill is the darker scrim that keeps the glyphs reading.
+// Token-to-token only — no literal color — and the reduced-transparency /
+// forced-colors fallbacks bypass the var, so they're unaffected.
+const FLOAT_SCRIM_DARK = "dark:[--glass-regular-bg:var(--glass-strong-bg)]";
 
-const FLOAT_BUTTON_TOUCH =
-  "glass-regular size-[45px] rounded-full p-0 text-foreground/80 shadow-sm ring-1 ring-foreground/10 transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden";
+const FLOAT_BUTTON = cn(
+  "glass-regular size-[45px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent",
+  FLOAT_SCRIM_DARK,
+);
+
+const FLOAT_BUTTON_TOUCH = cn(
+  "glass-regular size-[45px] rounded-full p-0 text-foreground/80 shadow-sm ring-1 ring-foreground/10 transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden",
+  FLOAT_SCRIM_DARK,
+);
 
 const PILL_HALF =
   "inline-flex h-[45px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none active:not-aria-[haspopup]:scale-[0.97]";
@@ -92,26 +87,15 @@ export function AppHeader({
   canShareConversation,
   isTemporary,
   sidebarOpen,
-  tiers,
-  selectedTierId,
-  onSelectTier,
-  providerOptions,
-  selectedProviderId,
-  onSelectProvider,
-  efforts,
-  selectedEffortId,
-  onSelectEffort,
-  effortSupported,
-  searchEnabled,
-  onToggleSearch,
-  jsonModeEnabled,
-  onToggleJsonMode,
+  centerSlot,
 }: AppHeaderProps) {
-  const hasExportActions =
-    canCopyConversation || canDownloadConversation || canShareConversation;
-
   return (
     <header className="relative flex h-[52px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
+      {centerSlot ? (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 select-none">
+          {centerSlot}
+        </div>
+      ) : null}
       <div className="flex min-w-0 flex-1 items-center justify-start gap-2">
         <Button
           type="button"
@@ -133,26 +117,19 @@ export function AppHeader({
             <Menu className="size-[18px]" strokeWidth={2.25} />
           </Button>
         ) : null}
-        <ModelModePicker
-          tiers={tiers}
-          selectedTierId={selectedTierId}
-          onSelectTier={onSelectTier}
-          providerOptions={providerOptions}
-          selectedProviderId={selectedProviderId}
-          onSelectProvider={onSelectProvider}
-          efforts={efforts}
-          selectedEffortId={selectedEffortId}
-          onSelectEffort={onSelectEffort}
-          effortSupported={effortSupported}
-          searchEnabled={searchEnabled}
-          onToggleSearch={onToggleSearch}
-          jsonModeEnabled={jsonModeEnabled}
-          onToggleJsonMode={onToggleJsonMode}
-        />
+        {/* The model/mode picker moved out of the header into the composer
+            toolbar (Lovable-style) — see composer.tsx's `modelPicker` slot. */}
       </div>
 
       <div className="flex min-w-0 flex-1 items-center justify-end">
-        <div className="glass-regular inline-flex h-[45px] items-center rounded-full">
+        {/* Same dark scrim as the float buttons — the trailing pill floats on
+            the identical gradient backdrop, so the materials must match. */}
+        <div
+          className={cn(
+            "glass-regular inline-flex h-[45px] items-center rounded-full",
+            FLOAT_SCRIM_DARK,
+          )}
+        >
           <button
             type="button"
             aria-label="New chat"
@@ -172,7 +149,6 @@ export function AppHeader({
               sidebarOpen && "md:hidden",
             )}
           />
-          {hasExportActions || isTemporary ? (
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -244,7 +220,6 @@ export function AppHeader({
               ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
-          ) : null}
         </div>
       </div>
     </header>

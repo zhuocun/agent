@@ -23,7 +23,14 @@
     system-ui, sans-serif;
   --font-mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
-  --font-heading: var(--font-sans);
+  /* Heading/display face — Instrument Serif, loaded non-blocking in
+     layout.tsx via next/font (`--font-heading-serif`, display:optional, so it
+     never delays first paint and never swaps in late). DISPLAY SIZES ONLY —
+     the welcome-hero greeting; body and chrome stay on --font-sans per
+     Decision 04's working-surface rule. The var() fallback covers documents
+     that don't carry the next/font class. Decision 16. */
+  --font-heading: var(--font-heading-serif, ui-serif), Georgia,
+    "Times New Roman", serif;
 
   /* Semantic roles (PRD 06 §3.1) */
   --color-primary: var(--primary);
@@ -93,6 +100,11 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
   --radius-2xl: calc(var(--radius) * 1.8);
+  /* Welcome-surface rounding (hero prompt group, hero composer). Resolves to
+     1.5rem at the default --radius — identical to the Tailwind built-in
+     `rounded-3xl` the welcome inset group already wears — but now tracks the
+     system radius knob instead of a framework constant. Decision 16. */
+  --radius-3xl: calc(var(--radius) * 2.4);
 
   /* iOS motion easing curves — exposed as `ease-ios-smooth` / `ease-ios-sheet`
      / `ease-ios-spring` utilities. smooth = decelerating, no overshoot (the
@@ -137,6 +149,12 @@
      together inside an arbitrary shadow stack on activated surfaces. */
   --shadow-focus-edge: var(--focus-glow-edge);
   --shadow-focus-halo: var(--focus-glow-halo);
+
+  /* Welcome-hero composer glow — the resting sibling of the focus glow,
+     exposed as `shadow-hero-edge` / `shadow-hero-halo`. Welcome surface only
+     (Decision 16); the theme tokens zero under prefers-contrast. */
+  --shadow-hero-edge: var(--hero-glow-edge);
+  --shadow-hero-halo: var(--hero-glow-halo);
 
   /* Tracking polish for SF Pro — needs less negative tracking than Geist did
      (SF is already optically tightened), so a subtler value avoids cramping. */
@@ -200,6 +218,17 @@
      as deliberate light, not a panel-uniformity artifact — too low an alpha
      looks like an uneven-white display glitch rather than a designed glow. */
   --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.59 0.20 247 / 0.13), transparent 72%);
+
+  /* Hero gradient — atmospheric backdrop for the first-run welcome surface:
+     a brand-hue (247) wash falling from the top edge plus a faint counter-bloom
+     rising behind the composer, layered beneath --welcome-ambient's greeting
+     halo. Welcome-only by doctrine — atmosphere on the working thread is the
+     named anti-pattern (03-anti-patterns.md §G), the welcome state is the
+     carve-out (Decision 11/16). Static by design: no drift (§C). Zeroed under
+     prefers-contrast (below) alongside --welcome-ambient. */
+  --hero-gradient:
+    linear-gradient(to bottom, oklch(0.59 0.20 247 / 0.06), transparent 38%),
+    radial-gradient(120% 70% at 50% 104%, oklch(0.59 0.20 247 / 0.05), transparent 62%);
 
   /* Chat surfaces */
   --message-user: oklch(0.955 0.005 250);
@@ -282,6 +311,15 @@
   /* Activated focus glow — lit brand edge + soft outward halo that fades. */
   --focus-glow-edge: 0 0 0 1.5px oklch(0.59 0.20 247 / 0.8);
   --focus-glow-halo: 0 0 24px 2px oklch(0.59 0.20 247 / 0.28);
+
+  /* Welcome-hero composer glow — the resting "begin here" halo behind the
+     composer on the welcome surface only. Composed from the focus-glow recipe
+     above (same brand hue 247, same edge + halo geometry) at a fraction of the
+     activated energy, so the activated focus glow remains the single moment of
+     full accent illumination on engagement (Decision 07). Welcome-only; zeroed
+     under prefers-contrast. Decision 16. */
+  --hero-glow-edge: 0 0 0 1px oklch(0.59 0.20 247 / 0.22);
+  --hero-glow-halo: 0 0 32px 6px oklch(0.59 0.20 247 / 0.14);
 }
 
 /* ===== Dark theme ===== */
@@ -323,6 +361,13 @@
      stronger than light since it lifts a near-black surface. See the :root
      token for rationale. */
   --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.72 0.18 247 / 0.16), transparent 74%);
+
+  /* Hero gradient — dark parity. A touch stronger than light (it lifts a
+     near-black surface), mirroring the welcome-ambient delta. See the :root
+     token for rationale. */
+  --hero-gradient:
+    linear-gradient(to bottom, oklch(0.72 0.18 247 / 0.08), transparent 40%),
+    radial-gradient(120% 70% at 50% 104%, oklch(0.72 0.18 247 / 0.07), transparent 64%);
 
   /* Lifted above 0.27 so the user surface reads as distinct from the dark
      `--code-block` (oklch 0.235); the code inversion needs the lightness gap
@@ -395,6 +440,11 @@
   /* Activated focus glow — lit brand edge + soft outward halo that fades. */
   --focus-glow-edge: 0 0 0 1.5px oklch(0.72 0.18 247 / 0.85);
   --focus-glow-halo: 0 0 28px 4px oklch(0.72 0.18 247 / 0.35);
+
+  /* Welcome-hero composer glow — dark parity (see :root for rationale).
+     Slightly stronger halo, like the focus glow's own dark delta. */
+  --hero-glow-edge: 0 0 0 1px oklch(0.72 0.18 247 / 0.28);
+  --hero-glow-halo: 0 0 36px 8px oklch(0.72 0.18 247 / 0.18);
 }
 
 @layer base {
@@ -769,8 +819,14 @@
     --glass-strong-bg:  rgba(255, 255, 255, 0.92);
     --glass-clear-bg:   rgba(255, 255, 255, 0.38);
     --glass-border:     rgba(0, 0, 0, 0.38);
-    /* Drop the welcome halo so it never erodes welcome text contrast. */
+    /* Drop the welcome halo so it never erodes welcome text contrast. The
+       hero atmosphere + composer glow follow the same rule (Decision 16);
+       the glow tokens zero to a no-op shadow (not `none`) so they remain
+       valid inside composed box-shadow lists. */
     --welcome-ambient: none;
+    --hero-gradient: none;
+    --hero-glow-edge: 0 0 0 0 transparent;
+    --hero-glow-halo: 0 0 0 0 transparent;
   }
   .dark {
     --glass-regular-bg: rgba(24, 24, 28, 0.78);
@@ -778,6 +834,9 @@
     --glass-clear-bg:   rgba(24, 24, 28, 0.42);
     --glass-border:     rgba(255, 255, 255, 0.28);
     --welcome-ambient: none;
+    --hero-gradient: none;
+    --hero-glow-edge: 0 0 0 0 transparent;
+    --hero-glow-halo: 0 0 0 0 transparent;
   }
 }
 

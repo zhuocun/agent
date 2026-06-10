@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   ArrowUp,
@@ -104,6 +105,16 @@ interface ComposerProps {
   // write). Used for temporary "off the record" chats, which must not leave a
   // draft behind in IndexedDB. Defaults to true.
   persistDrafts?: boolean;
+  // The model/mode picker, rendered inside the composer toolbar (Lovable-style
+  // "model" dropdown next to the "+" disclosure). Passed as a slot — the parent
+  // owns the picker's state wiring — so the composer stays decoupled from the
+  // tier/provider/effort prop surface. Absent ⇒ the slot simply doesn't render
+  // (e.g. share view embeds).
+  modelPicker?: ReactNode;
+  // True on the first-run welcome surface: the card wears the resting
+  // hero-glow halo (Decision 16). The glow fades out on focus so the activated
+  // focus glow stays the single moment of full accent illumination.
+  heroGlow?: boolean;
 }
 
 export interface ComposerHandle {
@@ -117,10 +128,6 @@ export interface ComposerHandle {
 }
 
 const MAX_HEIGHT = 200;
-// Above this measured scrollHeight (px) the textarea is multi-line and the
-// capsule drops its perfect pill for a large continuous radius. One line is
-// ~44px (leading-7 + py-2); 60 leaves headroom so a single line never trips it.
-const ONE_LINE_THRESHOLD = 60;
 const STOP_SETTLE_MS = 600;
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -263,6 +270,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       estimateTier,
       draftKey = null,
       persistDrafts = true,
+      modelPicker,
+      heroGlow = false,
     },
     forwardedRef,
   ) {
@@ -274,11 +283,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       null,
     );
     const [justStopped, setJustStopped] = useState(false);
-    // True once the textarea has grown past a single line. A perfect 9999px pill
-    // looks wrong at 4–6 lines, so the capsule swaps to a large continuous radius
-    // when grown (see the render). Derived from the measured scrollHeight in
-    // autoGrow, the same place we set the height, so the two never disagree.
-    const [grown, setGrown] = useState(false);
     const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
     // When the user explicitly dismisses with Escape, suppress the popover until
     // the slash token disappears (e.g. user backspaces out or types past it),
@@ -462,13 +466,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       const ta = ref.current;
       if (!ta) return;
       ta.style.height = "auto";
-      const scrollHeight = ta.scrollHeight;
-      ta.style.height = `${Math.min(scrollHeight, MAX_HEIGHT)}px`;
-      // One line (leading-7 = 28px + py-2 = 16px) measures ~44px; anything past a
-      // comfortable margin above that is multi-line, so flip to the large
-      // continuous radius. The threshold sits above one line so a single wrapped
-      // glyph or descender jitter can't toggle the radius mid-type.
-      setGrown(scrollHeight > ONE_LINE_THRESHOLD);
+      ta.style.height = `${Math.min(ta.scrollHeight, MAX_HEIGHT)}px`;
     }, []);
 
     const updateValue = (next: string) => {
@@ -602,9 +600,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         const ta = ref.current;
         if (!ta) return;
         ta.style.height = "auto";
-        const scrollHeight = ta.scrollHeight;
-        ta.style.height = `${Math.min(scrollHeight, MAX_HEIGHT)}px`;
-        setGrown(scrollHeight > ONE_LINE_THRESHOLD);
+        ta.style.height = `${Math.min(ta.scrollHeight, MAX_HEIGHT)}px`;
         const end = ta.value.length;
         ta.setSelectionRange(end, end);
       });
@@ -730,10 +726,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       setValue("");
       setAttachments([]);
       setAttachmentNotice(null);
-      // The textarea collapses back to one line on send, so drop the grown radius
-      // in lockstep — otherwise the empty pill would briefly keep its large
-      // multi-line corners.
-      setGrown(false);
       // The turn is being sent — drop the persisted draft for this key.
       if (persistDrafts) void deleteDraft(draftKey ?? NEW_CHAT_DRAFT_KEY);
       requestAnimationFrame(() => {
@@ -835,19 +827,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       !attachedSendBlocked &&
       !attachmentReadPending;
 
-    // Quiet-down disclosure (00-principles.md:9, 02-patterns.md:158-164): the
-    // secondary cluster (Attach / Templates / Dictate) lives behind a single
-    // "More actions" ("+") disclosure so the composer reads as
-    // `[+] [textarea] [Send]` on every viewport. The lone inline exception is
-    // an ACTIVE recording — stop must stay one tap away, never folded behind "+".
-    const keepDictateInline = dictation.listening;
     // ---- Secondary-control renderers ---------------------------------------
     // Each control is rendered inside the "More actions" disclosure popover (its
     // single home in both the empty/at-rest and composing states), preserving its
-    // exact data-testid + aria contract. The lone exception is the dictate
-    // control, which is also rendered inline while a recording is ACTIVE (see
-    // `keepDictateInline`) so it stays one tap from stop. The labelled rows in the
-    // popover relax the rounded-pill icon button into a full-width labelled row.
+    // exact data-testid + aria contract. The labelled rows in the popover relax
+    // the rounded-pill icon button into a full-width labelled row. The toolbar
+    // additionally carries a quick-access mic (see `toolbarDictateButton`); the
+    // popover row stays the canonical dictate control.
     const attachButton = (
       <Button
         type="button"
@@ -928,6 +914,42 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               : "Start dictation"
         }
         data-testid="composer-dictate"
+        className={cn(
+          "size-11 shrink-0 rounded-full p-0",
+          dictation.listening
+            ? "text-brand hover:text-brand"
+            : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <Mic
+          className={cn(
+            "size-4",
+            dictation.listening && "motion-safe:animate-pulse-soft",
+          )}
+        />
+      </Button>
+    );
+
+    // Quick-access mic pinned in the toolbar (Lovable-style). Drives the SAME
+    // dictation hook as the popover's labelled Dictate row — the row keeps
+    // data-testid="composer-dictate" plus the always-visible on-device
+    // transparency caption (its testid/aria contract is load-bearing for the
+    // voice E2E), while this top-level toggle keeps start/stop one tap away in
+    // every state. Deliberately NO testid so the hook stays unique.
+    const toolbarDictateButton = (
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={() => dictation.toggle()}
+        disabled={!dictation.supported || isStreaming}
+        aria-pressed={dictation.listening}
+        aria-label={
+          !dictation.supported
+            ? "Dictation not supported in this browser"
+            : dictation.listening
+              ? "Stop dictation"
+              : "Start dictation"
+        }
         className={cn(
           "size-11 shrink-0 rounded-full p-0",
           dictation.listening
@@ -1067,10 +1089,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     };
 
     return (
-      // The top hairline separates the composer chrome strip from the message
-      // thread scrolling beneath it — a quiet seam the frost gradient alone
-      // doesn't always provide over busy content.
-      <div className="group/composer relative mx-auto w-full max-w-3xl min-w-0 border-t border-border/50 px-4 pt-1">
+      // No top hairline any more — the card's own glass shadow + the bottom
+      // chrome frost carry the seam against the thread scrolling beneath.
+      <div className="group/composer relative mx-auto w-full max-w-3xl min-w-0 px-4 pt-1">
         <SlashCommandsPopover
           open={slashOpen}
           commands={MOCK_COMMANDS}
@@ -1169,19 +1190,37 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         ) : null}
         <div
           ref={capsuleRef}
-          // Radius: a perfect pill at one line, a large continuous radius once
-          // grown (a 9999px pill looks wrong at 4–6 lines). `glass-capsule` sets
-          // border-radius:9999px in CSS; rather than fight @utility ordering we
-          // override deterministically with an inline border-radius only in the
-          // grown state (inline style always wins), and leave the pill to the
-          // utility default otherwise.
+          // Two-row card (Lovable-style): textarea on top, toolbar beneath.
+          // The glass material stays `glass-capsule`; the card swaps the old
+          // perfect pill for the welcome-surface --radius-3xl rounding
+          // (Decision 16). glass-capsule sets border-radius:9999px in CSS;
+          // rather than fight @utility ordering we override deterministically
+          // with an inline border-radius (inline style always wins).
+          // --radius-3xl lives in `@theme inline` (not emitted as a runtime
+          // var), so its calc() recipe is restated here.
           // Focus halo: dropped `--focus-glow-halo` (a 24px outer glow) from the
           // focus-within stack — iOS text fields don't glow. The thin lit edge
           // (`--focus-glow-edge`) + highlight + ambient/key shadows remain; the
           // brand send button is the real focus signal.
-          style={grown ? { borderRadius: "1.75rem" } : undefined}
-          className="glass-capsule group flex min-w-0 items-end gap-2 rounded-full px-2 py-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+          style={{ borderRadius: "calc(var(--radius) * 2.4)" }}
+          className="glass-capsule group relative flex min-w-0 flex-col px-2 pt-1 pb-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
         >
+          {/* Welcome-hero resting glow — a soft brand halo behind the card on
+              the first-run surface only (hero-glow tokens, Decision 16).
+              Rendered as its own layer (not the card's box-shadow) so it never
+              fights the glass-capsule @utility shadow stack, and faded out on
+              focus-within so the activated focus glow remains the single
+              moment of full accent illumination (Decision 07). The tokens
+              zero under prefers-contrast. */}
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute inset-0 rounded-[inherit] shadow-[var(--hero-glow-edge),var(--hero-glow-halo)] transition-opacity duration-700 ease-out motion-reduce:transition-none",
+              heroGlow
+                ? "opacity-100 group-focus-within:opacity-0"
+                : "opacity-0",
+            )}
+          />
           {/* Hidden file input: MUST stay mounted whenever the tier supports
             attachments, independent of collapse state — Playwright drives it
             directly via setInputFiles, and the disclosure popover unmounts on
@@ -1221,29 +1260,39 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               onChange={(e) => onPickFiles(e.target.files)}
             />
           ) : null}
-          {/* Always-collapsed cluster: in BOTH the empty/at-rest and composing
-            states the secondary controls live behind the single "More actions"
-            ("+") disclosure, so the composer always reads as `[+] [textarea]
-            [Send]`. Send/Stop stays primary; every secondary feature is exactly
-            one tap away inside the popover, mounted in ONE place so there are
-            never duplicate controls or stray hidden tab stops. An ACTIVE
-            recording keeps its mic pinned inline (alongside the disclosure) so a
-            stream in progress is always stoppable in one tap. The disclosure
-            expands with a zoom/fade; motion-reduce makes the open instant. */}
-          <div className="flex min-w-0 shrink-0 items-end gap-2 transition-opacity duration-300 ease-ios-smooth motion-reduce:transition-none">
-            {/* Active dictation stays inline so stop is always one tap away. */}
-            {keepDictateInline ? (
-              dictation.listening ? (
-                <Tooltip>
-                  <TooltipTrigger render={dictateButton} />
-                  <TooltipContent>
-                    Stop dictation · processed on your device by your browser
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                dictateButton
-              )
-            ) : null}
+          <label htmlFor="composer-input" className="sr-only">
+            {t("composer.inputLabel")}
+          </label>
+          <textarea
+            id="composer-input"
+            // E2E target: aria-label is localized + role="combobox" collides with
+            // multiple test selectors; the testid is the stable handle.
+            data-testid="composer-textarea"
+            ref={ref}
+            rows={1}
+            value={value}
+            onChange={(e) => {
+              updateValue(e.target.value);
+              autoGrow();
+            }}
+            onKeyDown={onKeyDown}
+            placeholder={t("composer.placeholder")}
+            role="combobox"
+            aria-haspopup="listbox"
+            aria-autocomplete="list"
+            aria-expanded={comboboxOpen}
+            aria-controls={comboboxControls}
+            aria-activedescendant={comboboxActiveOptionId}
+            className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
+          />
+          {/* Toolbar row beneath the textarea: the "+" disclosure and the
+            model/mode picker sit left; the quick mic and the circular
+            Send/Stop sit right. The secondary cluster (Attach / Camera /
+            Templates / Dictate) still lives behind the single "More actions"
+            ("+") disclosure, mounted in ONE place so there are never duplicate
+            testid hooks or stray hidden tab stops. The disclosure expands with
+            a zoom/fade; motion-reduce makes the open instant. */}
+          <div className="flex min-w-0 items-center gap-1">
             {(() => {
                 const moreActionsTrigger = (
                   <Button
@@ -1260,7 +1309,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    <Plus className="size-4 transition-transform duration-300 ease-ios-spring data-[popup-open]:rotate-45 motion-reduce:transition-none" />
+                    <Plus
+                      className={cn(
+                        "size-4 transition-transform duration-300 ease-ios-spring motion-reduce:transition-none",
+                        moreActionsOpen && "rotate-45",
+                      )}
+                    />
                   </Button>
                 );
                 const moreActionsRows = (
@@ -1290,29 +1344,27 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                         Prompt template
                       </span>
                     </div>
-                    {keepDictateInline ? null : (
-                      <div className="flex items-center gap-2">
-                        {dictateButton}
-                        <span className="flex flex-col pr-2 text-left">
-                          <span className="text-sm text-foreground">
-                            {!dictation.supported
-                              ? "Dictation unavailable"
-                              : "Dictate"}
-                          </span>
-                          {/* On-device transparency (carried over from the
-                              former inline-mic tooltip): state that the
-                              browser/device does the work, never a
-                              provider/model. Always visible in the open row —
-                              strictly better than a hover-only tooltip for
-                              touch + AT. */}
-                          {dictation.supported ? (
-                            <span className="text-2xs text-muted-foreground">
-                              Voice is processed on your device by your browser
-                            </span>
-                          ) : null}
+                    <div className="flex items-center gap-2">
+                      {dictateButton}
+                      <span className="flex flex-col pr-2 text-left">
+                        <span className="text-sm text-foreground">
+                          {!dictation.supported
+                            ? "Dictation unavailable"
+                            : "Dictate"}
                         </span>
-                      </div>
-                    )}
+                        {/* On-device transparency (carried over from the
+                            former inline-mic tooltip): state that the
+                            browser/device does the work, never a
+                            provider/model. Always visible in the open row —
+                            strictly better than a hover-only tooltip for
+                            touch + AT. */}
+                        {dictation.supported ? (
+                          <span className="text-2xs text-muted-foreground">
+                            Voice is processed on your device by your browser
+                          </span>
+                        ) : null}
+                      </span>
+                    </div>
                   </>
                 );
                 return (
@@ -1356,88 +1408,80 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   </Popover.Root>
                 );
               })()}
-          </div>
-          <label htmlFor="composer-input" className="sr-only">
-            {t("composer.inputLabel")}
-          </label>
-          <textarea
-            id="composer-input"
-            // E2E target: aria-label is localized + role="combobox" collides with
-            // multiple test selectors; the testid is the stable handle.
-            data-testid="composer-textarea"
-            ref={ref}
-            rows={1}
-            value={value}
-            onChange={(e) => {
-              updateValue(e.target.value);
-              autoGrow();
-            }}
-            onKeyDown={onKeyDown}
-            placeholder={t("composer.placeholder")}
-            role="combobox"
-            aria-haspopup="listbox"
-            aria-autocomplete="list"
-            aria-expanded={comboboxOpen}
-            aria-controls={comboboxControls}
-            aria-activedescendant={comboboxActiveOptionId}
-            className="block max-h-[200px] min-h-[44px] min-w-0 flex-1 resize-none bg-transparent px-1 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
-          />
-          <div className="flex h-11 shrink-0 items-center">
-            {/* Send↔stop swap: the stop side is Tooltip-wrapped and the send side
-              isn't, so the button remounts on toggle. MorphSendStopIcon owns the
-              icon spring and bridges that remount with a one-frame mount reveal,
-              so the morph fires on every swap without disturbing handlers,
-              aria-label, disabled, testid, or the color/shadow transition. */}
-            {isStreaming ? (
+            {/* Model/mode picker — the same component the header used to host
+              (every testid/aria contract intact), now sitting in the toolbar
+              like a Lovable-style model dropdown. */}
+            {modelPicker ? (
+              <div className="flex min-w-0 items-center">{modelPicker}</div>
+            ) : null}
+            <div className="ml-auto flex shrink-0 items-center gap-1">
               <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      type="button"
-                      onClick={onStop}
-                      aria-label={t("composer.stop")}
-                      className={cn(
-                        BUTTON_BASE,
-                        "bg-foreground/10 text-foreground hover:bg-foreground/15",
-                      )}
-                    >
-                      <MorphSendStopIcon isStreaming />
-                    </Button>
-                  }
-                />
-                <TooltipContent>Stop</TooltipContent>
+                <TooltipTrigger render={toolbarDictateButton} />
+                <TooltipContent>
+                  {dictation.listening
+                    ? "Stop dictation · processed on your device by your browser"
+                    : "Dictate · processed on your device by your browser"}
+                </TooltipContent>
               </Tooltip>
-            ) : (
-              <Button
-                type="button"
-                onClick={submit}
-                disabled={!canSubmit}
-                aria-label={
-                  attachmentReadPending
-                    ? t("composer.readingAttachments")
-                    : attachedSendBlocked
-                      ? "Attachments are not supported by the current model"
-                      : t("composer.send")
-                }
-                // E2E target: stable hook for "send the message" — Playwright
-                // specs click this to dispatch a turn, since aria-label values
-                // could drift with copy changes.
-                data-testid="composer-send"
-                className={cn(
-                  BUTTON_BASE,
-                  // Order matters: a fresh keystroke during the settle pose
-                  // should read as "armed" (brand + clickable) before the
-                  // settle-pose styling can claim the slot.
-                  canSubmit
-                    ? "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
-                    : justStopped
-                      ? "bg-foreground/10 text-foreground"
-                      : "bg-transparent text-muted-foreground group-focus-within:text-foreground",
+              <div className="flex h-11 shrink-0 items-center">
+                {/* Send↔stop swap: the stop side is Tooltip-wrapped and the
+                  send side isn't, so the button remounts on toggle.
+                  MorphSendStopIcon owns the icon spring and bridges that
+                  remount with a one-frame mount reveal, so the morph fires on
+                  every swap without disturbing handlers, aria-label, disabled,
+                  testid, or the color/shadow transition. */}
+                {isStreaming ? (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          type="button"
+                          onClick={onStop}
+                          aria-label={t("composer.stop")}
+                          className={cn(
+                            BUTTON_BASE,
+                            "bg-foreground/10 text-foreground hover:bg-foreground/15",
+                          )}
+                        >
+                          <MorphSendStopIcon isStreaming />
+                        </Button>
+                      }
+                    />
+                    <TooltipContent>Stop</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <Button
+                    type="button"
+                    onClick={submit}
+                    disabled={!canSubmit}
+                    aria-label={
+                      attachmentReadPending
+                        ? t("composer.readingAttachments")
+                        : attachedSendBlocked
+                          ? "Attachments are not supported by the current model"
+                          : t("composer.send")
+                    }
+                    // E2E target: stable hook for "send the message" —
+                    // Playwright specs click this to dispatch a turn, since
+                    // aria-label values could drift with copy changes.
+                    data-testid="composer-send"
+                    className={cn(
+                      BUTTON_BASE,
+                      // Order matters: a fresh keystroke during the settle
+                      // pose should read as "armed" (brand + clickable) before
+                      // the settle-pose styling can claim the slot.
+                      canSubmit
+                        ? "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
+                        : justStopped
+                          ? "bg-foreground/10 text-foreground"
+                          : "bg-transparent text-muted-foreground group-focus-within:text-foreground",
+                    )}
+                  >
+                    <MorphSendStopIcon isStreaming={false} />
+                  </Button>
                 )}
-              >
-                <MorphSendStopIcon isStreaming={false} />
-              </Button>
-            )}
+              </div>
+            </div>
           </div>
         </div>
         {costEstimate ? (

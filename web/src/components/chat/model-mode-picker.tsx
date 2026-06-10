@@ -67,8 +67,13 @@ export interface ModelModePickerProps {
 // Shared trigger styling — identical between the desktop dropdown and the
 // mobile bottom-sheet variants per PRD 06 §5.6 / PRD 01 §5.3 (the trigger's
 // appearance is stable; only the disclosure surface changes by modality).
+// Restyled for the trigger's home in the composer TOOLBAR (Lovable-style
+// model dropdown): a compact text-sm ghost pill that sits flush with the
+// surrounding muted icon buttons while keeping the 44px touch floor
+// (PRD 06 §3.3). The mobile max-width budgets for the toolbar's siblings
+// (+ / mic / send circles) so the trigger can never push them off-card.
 const TRIGGER_CLASS =
-  "inline-flex h-11 min-w-0 max-w-[min(13rem,calc(100vw-9rem))] items-center gap-1.5 rounded-full px-3 text-base outline-none transition-colors hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/5 md:max-w-80";
+  "inline-flex h-11 min-w-0 max-w-[min(12rem,calc(100vw-16rem))] items-center gap-1 rounded-full px-2.5 text-sm outline-none transition-colors hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/5 md:max-w-80";
 
 export function ModelModePicker({
   tiers,
@@ -184,6 +189,9 @@ export function ModelModePicker({
         />
         <DropdownMenuContent
           align="start"
+          // The trigger now anchors at the BOTTOM of the viewport (composer
+          // toolbar), so the menu opens upward by default.
+          side="top"
           sideOffset={8}
           className="w-80 max-w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl p-1.5"
         >

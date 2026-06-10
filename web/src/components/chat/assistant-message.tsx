@@ -519,21 +519,30 @@ function ErrorFooter({
           <span className="text-xs text-muted-foreground">{body}</span>
         ) : null}
         {onRetry ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={onRetry}
-            disabled={retryDisabled}
-            aria-disabled={retryDisabled}
-            className="min-h-11 rounded-full px-4 md:min-h-0"
-            data-testid="assistant-error-retry"
-          >
-            <RotateCcw aria-hidden />
-            <span>
-              {retryDisabled ? `Try again in ${secondsLeft}s` : "Retry"}
-            </span>
-          </Button>
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                if (retryDisabled) return;
+                onRetry();
+              }}
+              aria-disabled={retryDisabled}
+              className="min-h-11 rounded-full px-4 md:min-h-0 aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              data-testid="assistant-error-retry"
+            >
+              <RotateCcw aria-hidden />
+              <span>
+                {retryDisabled ? `Try again in ${secondsLeft}s` : "Retry"}
+              </span>
+            </Button>
+            {retryDisabled ? (
+              <span className="sr-only" role="status" aria-live="polite">
+                Try again in {secondsLeft} seconds
+              </span>
+            ) : null}
+          </>
         ) : null}
         {isProviderError ? (
           <Button

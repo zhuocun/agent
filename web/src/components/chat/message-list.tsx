@@ -97,6 +97,7 @@ function MessageRow({
     // inline transform that would fight it or overflow-anchor.
     <li
       ref={rowRef}
+      role="listitem"
       data-message-role={item.role ?? undefined}
       data-testid="message-list-row"
       aria-posinset={index + 1}
@@ -312,6 +313,7 @@ export function MessageList({
       >
         <ol
           ref={contentRef}
+          role="list"
           // pt/pb clear the chat-thread chrome strips (header + safe-area-top
           // above; composer + safe-area-bottom below) so message content scrolls
           // *under* the gradient strips rather than colliding with them. The top

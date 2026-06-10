@@ -43,6 +43,7 @@ import {
 } from "@/components/chat/template-picker-popover";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
 import { estimateTurnCost } from "@/lib/cost-estimate";
+import { formatAttachmentSize } from "@/lib/format-attachment-size";
 import { fetchPromptTemplates } from "@/lib/apiClient";
 import { useSpeechRecognition } from "@/lib/use-speech-recognition";
 import { haptic } from "@/lib/use-haptic";
@@ -157,7 +158,7 @@ async function attachmentFromFile(file: File): Promise<AttachmentPart | null> {
   const name = file.name || "Attachment";
   const lowerName = name.toLowerCase();
   const pdf =
-    file.type === "application/pdf" || name.toLowerCase().endsWith(".pdf");
+    file.type === "application/pdf" || lowerName.endsWith(".pdf");
   const image = file.type.startsWith("image/");
   const text =
     file.type.startsWith("text/") ||
@@ -195,11 +196,6 @@ function attachmentIconType(
   mediaType: AttachmentPart["mediaType"],
 ): "image" | "file" {
   return mediaType === "image" ? "image" : "file";
-}
-
-function formatAttachmentSize(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // USD formatter for the pre-send estimate — mirrors cost-breakdown.tsx's
@@ -855,8 +851,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // Attach / Dictate is bigger than the benefit of a leaner toolbar, so the
     // mobile composer reads as `[Attach] [Dictate] [+] [textarea] [Send]`
     // (with controls only present when their preconditions are met). Templates
-    // and parity-Attach still live in the popover so testids remain reachable
-    // through `composer-more-actions` on every viewport.
+    // and camera capture stay in the popover; Attach is omitted from the popover
+    // when promoted inline on mobile (`!keepAttachInline` gate below).
     //
     // Inline rules:
     //   - Attach inline when supportsAttachments AND mobile.
@@ -866,11 +862,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     const keepAttachInline = isMobile && supportsAttachments;
     const keepDictateInline =
       dictation.listening || (isMobile && dictation.supported);
-    // Whether the disclosure has anything left to host. Templates is always
-    // present (caller-scoped, anon-allowed), so the popover is effectively
-    // always available; Attach is also kept in the popover for parity even
-    // when it's promoted inline on mobile.
-    const hasCollapsibleControls = true;
     // ---- Secondary-control renderers ---------------------------------------
     // Each control is rendered inside the "More actions" disclosure popover (its
     // single home in both the empty/at-rest and composing states), preserving its
@@ -1275,8 +1266,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 dictateButton
               )
             ) : null}
-            {hasCollapsibleControls ? (
-              (() => {
+            {(() => {
                 const moreActionsTrigger = (
                   <Button
                     type="button"
@@ -1387,8 +1377,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                     </Popover.Portal>
                   </Popover.Root>
                 );
-              })()
-            ) : null}
+              })()}
           </div>
           <label htmlFor="composer-input" className="sr-only">
             {t("composer.inputLabel")}
@@ -1479,8 +1468,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             // fades in while the composer is focused. Touch devices (no hover)
             // always show it since they have no persistent focus-within signal.
             className={cn(
-              "mt-1 px-2 text-right text-2xs leading-snug tabular-nums text-muted-foreground/80",
-              "opacity-0 transition-opacity duration-300 group-focus-within/composer:opacity-100 [@media(hover:none)]:opacity-100",
+              "mt-1 max-h-0 overflow-hidden px-2 text-right text-2xs leading-snug tabular-nums text-muted-foreground/80",
+              "opacity-0 transition-[max-height,opacity] duration-300",
+              "group-focus-within/composer:max-h-8 group-focus-within/composer:opacity-100",
+              "[@media(hover:none)]:max-h-8 [@media(hover:none)]:opacity-100",
             )}
             data-testid="cost-estimate"
           >

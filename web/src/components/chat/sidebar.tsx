@@ -1504,14 +1504,14 @@ export function Sidebar({
         className
       )}
     >
-      <div className="flex items-center justify-between p-3">
+      <div className="flex h-16 shrink-0 items-center justify-between px-3">
         <div className="flex items-center">
           {/* Wordmark demoted to a quiet label (anti-pattern G: personality
               must not stand on the working surface for the life of the session).
               Distinctiveness lives in the empty/welcome state, not here — so the
               brand recedes to a small, muted, normal-weight cap-tracked label
               that reads as orientation, not as a logo asking to be looked at. */}
-          <span className="text-xs font-normal uppercase tracking-wide text-muted-foreground/70">
+          <span className="text-xs font-normal uppercase tracking-wide text-muted-foreground">
             Olune
           </span>
         </div>
@@ -1796,6 +1796,20 @@ export function Sidebar({
                   never buried. Expanding discloses BOTH organization systems
                   with their full CRUD and the per-tag filter, one interaction
                   deep. */}
+              {displayConversations.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+                  <MessageSquare
+                    aria-hidden
+                    className="size-8 text-muted-foreground/50"
+                  />
+                  <p className="text-sm font-medium text-foreground/80">
+                    No chats yet
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Type a message below to start
+                  </p>
+                </div>
+              ) : null}
               {hasCollections ? (
                 <div className="mb-6" data-testid="sidebar-collections">
                   <div className="group/collections-head flex items-center gap-1 px-2 pb-1 pt-1">
@@ -2121,20 +2135,7 @@ export function Sidebar({
               {/* Recency-grouped conversations stay the figure at rest: they
                   render OUTSIDE the Collections disclosure (as its sibling), so
                   collapsing Collections never hides the conversation list. */}
-              {displayConversations.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
-                  <MessageSquare
-                    aria-hidden
-                    className="size-8 text-muted-foreground/50"
-                  />
-                  <p className="text-sm font-medium text-foreground/80">
-                    No chats yet
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Start a conversation from the composer
-                  </p>
-                </div>
-              ) : recencyConversations.length === 0 &&
+              {displayConversations.length === 0 ? null : recencyConversations.length === 0 &&
                 archivedConversations.length === 0 ? (
                 activeTagFilter ? (
                   <div className="px-2 py-6 text-center text-sm text-muted-foreground">

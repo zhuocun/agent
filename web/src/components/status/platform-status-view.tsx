@@ -118,7 +118,7 @@ function StatusBody({ status }: { status: PlatformStatus }) {
         ) : (
           <CheckCircle2
             aria-hidden
-            className="mt-0.5 size-8 shrink-0 text-emerald-500 dark:text-emerald-400"
+            className="mt-0.5 size-8 shrink-0 text-success"
           />
         )}
         <div className="min-w-0 space-y-1">

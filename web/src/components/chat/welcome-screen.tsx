@@ -124,7 +124,7 @@ export function WelcomeScreen({
       >
         {compact || !today ? null : (
           <p
-            className="animate-welcome-enter mb-3 text-sm font-medium text-muted-foreground"
+            className="animate-welcome-enter mb-3 text-sm font-medium tracking-wide text-muted-foreground"
             style={{ animationDelay: "0ms" }}
           >
             {today}

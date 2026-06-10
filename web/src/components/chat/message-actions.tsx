@@ -21,6 +21,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
@@ -307,54 +308,47 @@ function OverflowMenu({
                 <span className="truncate font-medium">Regenerate</span>
               </DropdownMenuItem>
             ) : null}
-            <DropdownMenuItem
+            {/* Toggleable ratings are real menuitemcheckbox rows: the checked
+                state is conveyed via aria-checked and the CheckboxItem's
+                built-in trailing indicator (no manual Check glyphs needed). */}
+            <DropdownMenuCheckboxItem
               label="Helpful"
               aria-label="Helpful"
-              aria-pressed={primary.feedback === "up"}
+              checked={primary.feedback === "up"}
               closeOnClick={false}
-              onClick={() =>
-                primary.onFeedback?.(
-                  primary.feedback === "up" ? null : "up",
-                )
+              onCheckedChange={(checked) =>
+                primary.onFeedback?.(checked ? "up" : null)
               }
               className="py-2"
             >
               <ThumbsUp className="size-4" />
               <span className="truncate font-medium">Helpful</span>
-              {primary.feedback === "up" ? (
-                <Check className="ml-auto size-4 text-success" aria-hidden />
-              ) : null}
-            </DropdownMenuItem>
-            <DropdownMenuItem
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
               label="Not helpful"
               aria-label="Not helpful"
-              aria-pressed={primary.feedback === "down"}
+              checked={primary.feedback === "down"}
               closeOnClick={false}
-              onClick={() =>
-                primary.onFeedback?.(
-                  primary.feedback === "down" ? null : "down",
-                )
+              onCheckedChange={(checked) =>
+                primary.onFeedback?.(checked ? "down" : null)
               }
               className="py-2"
             >
               <ThumbsDown className="size-4" />
               <span className="truncate font-medium">Not helpful</span>
-              {primary.feedback === "down" ? (
-                <Check className="ml-auto size-4 text-success" aria-hidden />
-              ) : null}
-            </DropdownMenuItem>
+            </DropdownMenuCheckboxItem>
           </DropdownMenuGroup>
         ) : null}
         <DropdownMenuGroup>
-          <DropdownMenuItem
+          <DropdownMenuCheckboxItem
             label={readAloudLabel}
             aria-label={readAloudLabel}
-            aria-pressed={speech.supported ? speech.speaking : undefined}
+            checked={speech.supported && speech.speaking}
             disabled={!speech.supported}
             // On-device TTS (D22): never implies a served model or cost. The
             // hint says the browser/OS speaks locally.
             closeOnClick={false}
-            onClick={() => speech.toggle(text)}
+            onCheckedChange={() => speech.toggle(text)}
             data-testid="read-aloud"
             className="py-2"
           >
@@ -365,11 +359,11 @@ function OverflowMenu({
             )}
             <div className="min-w-0 flex-1">
               <span className="truncate font-medium">{readAloudLabel}</span>
-              <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+              <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground">
                 {readAloudHint}
               </p>
             </div>
-          </DropdownMenuItem>
+          </DropdownMenuCheckboxItem>
 
           {speech.supported ? (
             <>

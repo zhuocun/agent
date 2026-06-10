@@ -11,7 +11,8 @@ import { cn } from "@/lib/utils";
 // pointer that lands inside this many px of the main column's left edge arms
 // the gesture; horizontal-dominant movement past the threshold commits and
 // pops the drawer open. We claim only horizontal-dominant drags so vertical
-// scrolling is never hijacked.
+// scrolling is never hijacked. The handlers live on <main> itself (not an
+// overlay) so taps in the edge zone still reach the message content beneath.
 const EDGE_ZONE_PX = 20;
 const EDGE_OPEN_THRESHOLD_PX = 32;
 const EDGE_AXIS_SLOP_PX = 8;
@@ -32,6 +33,14 @@ export function AppShell({
   children,
 }: AppShellProps): React.JSX.Element {
   const { height, offsetTop, keyboardInset } = useVisualViewport();
+
+  const edgeSwipe = useEdgeSwipe(
+    useCallback(() => {
+      haptic("selection");
+      onMobileNavOpenChange(true);
+    }, [onMobileNavOpenChange]),
+    mobileNavOpen,
+  );
 
   // iOS keyboard handling: on iOS the soft keyboard does NOT shrink `dvh`, so a
   // bottom-anchored composer slides under the keyboard. When the keyboard is up
@@ -106,29 +115,30 @@ export function AppShell({
         </DrawerContent>
       </Drawer>
 
-      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-        <EdgeSwipeZone
-          onOpen={() => {
-            haptic("selection");
-            onMobileNavOpenChange(true);
-          }}
-          disabled={mobileNavOpen}
-        />
+      <main
+        className="relative flex min-w-0 flex-1 flex-col overflow-hidden"
+        {...edgeSwipe}
+      >
         {children}
       </main>
     </div>
   );
 }
 
-interface EdgeSwipeZoneProps {
-  onOpen: () => void;
-  disabled: boolean;
+interface EdgeSwipeHandlers {
+  onPointerDown: (e: React.PointerEvent<HTMLElement>) => void;
+  onPointerMove: (e: React.PointerEvent<HTMLElement>) => void;
+  onPointerUp: () => void;
+  onPointerCancel: () => void;
 }
 
-function EdgeSwipeZone({
-  onOpen,
-  disabled,
-}: EdgeSwipeZoneProps): React.JSX.Element {
+/**
+ * Edge-swipe gesture for the main column. Returns pointer handlers to spread
+ * onto `<main>` — no overlay element, so taps near the left edge land on the
+ * content as normal; only an arming drag that starts inside the edge zone and
+ * turns horizontal-dominant opens the drawer.
+ */
+function useEdgeSwipe(onOpen: () => void, disabled: boolean): EdgeSwipeHandlers {
   const gesture = useRef<{
     pointerId: number;
     startX: number;
@@ -147,10 +157,17 @@ function EdgeSwipeZone({
   }, []);
 
   const onPointerDown = useCallback(
-    (e: React.PointerEvent) => {
+    (e: React.PointerEvent<HTMLElement>) => {
       if (disabled) return;
       // Touch / pen only — desktop mouse uses the sidebar rail directly.
       if (e.pointerType === "mouse") return;
+      // Mobile drawer only: at md+ widths the persistent rail owns navigation
+      // (the old overlay was `md:hidden`; this check preserves that gate).
+      if (window.matchMedia("(min-width: 768px)").matches) return;
+      // Arm only when the pointer lands inside the edge zone of the main
+      // column itself, so taps/drags elsewhere are never intercepted.
+      const mainLeft = e.currentTarget.getBoundingClientRect().left;
+      if (e.clientX - mainLeft > EDGE_ZONE_PX) return;
       gesture.current = {
         pointerId: e.pointerId,
         startX: e.clientX,
@@ -162,7 +179,7 @@ function EdgeSwipeZone({
     [disabled],
   );
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLElement>) => {
     const g = gesture.current;
     if (!g || g.pointerId !== e.pointerId || g.committed) return;
     const dx = e.clientX - g.startX;
@@ -188,16 +205,10 @@ function EdgeSwipeZone({
     }
   }, []);
 
-  return (
-    <div
-      aria-hidden
-      data-testid="edge-swipe-zone"
-      className="pointer-events-auto absolute inset-y-0 left-0 z-10 touch-pan-y md:hidden"
-      style={{ width: EDGE_ZONE_PX }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={reset}
-      onPointerCancel={reset}
-    />
-  );
+  return {
+    onPointerDown,
+    onPointerMove,
+    onPointerUp: reset,
+    onPointerCancel: reset,
+  };
 }

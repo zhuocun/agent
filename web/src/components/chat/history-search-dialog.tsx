@@ -51,6 +51,8 @@ const SERVED_MODEL_OPTIONS: { value: ModelTierId; label: string }[] = [
 // read as part of the same surface family.
 const INPUT_CLASS =
   "w-full min-w-0 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25";
+const DATE_INPUT_CLASS =
+  "w-full min-w-[7.5rem] rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25";
 const SELECT_CLASS =
   "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25";
 
@@ -292,7 +294,7 @@ export function HistorySearchDialog({
               </div>
             </div>
 
-            <div className="space-y-1 text-sm">
+            <div className="space-y-1 text-sm sm:col-span-2">
               <span className="text-xs font-medium text-muted-foreground">
                 Date
               </span>
@@ -302,7 +304,7 @@ export function HistorySearchDialog({
                   value={dateFrom}
                   onChange={(event) => setDateFrom(event.currentTarget.value)}
                   aria-label="From date"
-                  className={INPUT_CLASS}
+                  className={DATE_INPUT_CLASS}
                   data-testid="search-filter-date-from"
                 />
                 <span aria-hidden className="text-muted-foreground">
@@ -313,7 +315,7 @@ export function HistorySearchDialog({
                   value={dateTo}
                   onChange={(event) => setDateTo(event.currentTarget.value)}
                   aria-label="To date"
-                  className={INPUT_CLASS}
+                  className={DATE_INPUT_CLASS}
                   data-testid="search-filter-date-to"
                 />
               </div>

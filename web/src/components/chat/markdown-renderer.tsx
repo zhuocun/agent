@@ -120,7 +120,7 @@ function CitationChip({
       }}
       aria-label={`Jump to source ${id}`}
       className={cn(
-        "mx-px inline-flex items-baseline align-baseline rounded px-1 text-[0.85em] font-medium leading-none",
+        "inline-flex items-baseline align-baseline rounded px-0.5 text-[0.85em] font-medium leading-none",
         "text-primary bg-primary/[0.08] hover:bg-primary/15",
         "cursor-pointer transition-colors",
         "outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",

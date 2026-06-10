@@ -185,7 +185,7 @@ export function ModelModePicker({
         <DropdownMenuContent
           align="start"
           sideOffset={8}
-          className="w-72 max-w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl p-1.5"
+          className="w-80 max-w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl p-1.5"
         >
           {/* Model tier — the only first-level decision, so it leads. Each row
               is one tight line (label · model · price); the longer description
@@ -474,7 +474,7 @@ function TierRow({
         <div className="flex items-center gap-2">
           <span className="shrink-0 font-medium">{tier.label}</span>
           {meta ? (
-            <span className="min-w-0 truncate text-2xs text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
+            <span className="min-w-0 text-2xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
               {meta}
             </span>
           ) : null}
@@ -517,7 +517,7 @@ function CompactRow({
     >
       <span className="shrink-0 font-medium">{label}</span>
       {meta ? (
-        <span className="min-w-0 truncate text-2xs text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
+        <span className="min-w-0 text-2xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
           {meta}
         </span>
       ) : null}
@@ -565,7 +565,7 @@ function ToggleRow({
             {checked ? "On" : "Off"}
           </span>
         </div>
-        <p className="truncate text-2xs leading-snug text-muted-foreground">
+        <p className="text-2xs leading-snug text-muted-foreground">
           {description}
         </p>
       </div>

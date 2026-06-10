@@ -918,6 +918,10 @@ async def stream_and_persist(
         elif isinstance(ev, ToolCall):
             tool_parts.append(_tool_call_part(ev).model_dump(by_alias=True, exclude_none=True))
         elif isinstance(ev, ToolResult):
+            for part in tool_parts:
+                if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
+                    part["status"] = ev.status
+                    break
             tool_parts.append(_tool_result_part(ev).model_dump(by_alias=True, exclude_none=True))
         elif isinstance(ev, UsageUpdate):
             final_usage = ev
@@ -1241,6 +1245,10 @@ async def stream_and_persist(
                 )
             elif isinstance(ev, ToolResult):
                 result_part = _tool_result_part(ev)
+                for part in tool_parts:
+                    if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
+                        part["status"] = ev.status
+                        break
                 tool_parts.append(result_part.model_dump(by_alias=True, exclude_none=True))
                 yield encode_tool_result(
                     ToolResultEvent.model_validate(

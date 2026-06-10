@@ -86,6 +86,8 @@ const SERVED_MODEL_OPTIONS: { value: ModelTierId; label: string }[] = [
 // part of the same surface family.
 const FILTER_INPUT_CLASS =
   "w-full min-w-0 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25";
+const FILTER_DATE_INPUT_CLASS =
+  "w-full min-w-[7.5rem] rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25";
 const FILTER_SELECT_CLASS =
   "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25";
 
@@ -583,7 +585,7 @@ export function CommandPalette({
               placeholder={
                 filterMode
                   ? "Search conversations…"
-                  : "Search actions and conversations…"
+                  : "Search actions & chats…"
               }
               className="block w-full bg-transparent py-4 pl-3 pr-2 text-lg text-foreground outline-none placeholder:text-muted-foreground"
             />
@@ -689,7 +691,7 @@ export function CommandPalette({
                     </div>
                   </div>
 
-                  <div className="space-y-1 text-sm">
+                  <div className="space-y-1 text-sm sm:col-span-2">
                     <span className="text-xs font-medium text-muted-foreground">
                       Date
                     </span>
@@ -699,7 +701,7 @@ export function CommandPalette({
                         value={dateFrom}
                         onChange={(e) => setDateFrom(e.currentTarget.value)}
                         aria-label="From date"
-                        className={FILTER_INPUT_CLASS}
+                        className={FILTER_DATE_INPUT_CLASS}
                         data-testid="search-filter-date-from"
                       />
                       <span aria-hidden className="text-muted-foreground">
@@ -710,7 +712,7 @@ export function CommandPalette({
                         value={dateTo}
                         onChange={(e) => setDateTo(e.currentTarget.value)}
                         aria-label="To date"
-                        className={FILTER_INPUT_CLASS}
+                        className={FILTER_DATE_INPUT_CLASS}
                         data-testid="search-filter-date-to"
                       />
                     </div>

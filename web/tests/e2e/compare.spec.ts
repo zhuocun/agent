@@ -58,7 +58,7 @@ async function pickCompareTier(
 // it, and wait for the compare-tier-bar to confirm compare mode is live.
 async function enableCompare(page: Page): Promise<void> {
   await page.keyboard.press("ControlOrMeta+k");
-  const input = page.getByPlaceholder("Search actions and conversations…");
+  const input = page.getByPlaceholder("Search actions & chats…");
   await expect(input).toBeVisible();
   await input.fill("Compare");
   await page.getByRole("option", { name: "Compare models" }).click();

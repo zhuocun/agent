@@ -343,13 +343,23 @@ export function AssistantMessage({
   );
 }
 
+/** BE keeps the same label for active/done; the FE renders finished wording. */
+export function formatStatusLabel(
+  label: string,
+  state: "active" | "done",
+): string {
+  if (state !== "done") return label;
+  if (label === "Searching the web…") return "Searched the web";
+  return label;
+}
+
 function StatusLine({ label, state }: { label: string; state: "active" | "done" }) {
   return (
     <div className="flex items-center gap-2 text-sm text-status-line">
       {state === "active" ? (
         <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden />
       ) : null}
-      <span>{label}</span>
+      <span>{formatStatusLabel(label, state)}</span>
     </div>
   );
 }

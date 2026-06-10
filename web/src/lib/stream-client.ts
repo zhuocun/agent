@@ -783,7 +783,18 @@ export function useApiStream(
         }
         case "tool_result": {
           const parsed = parseToolResult(payload);
-          if (parsed === null) return false;
+          if (parsed === null || parsed.type !== "tool_result") return false;
+          // Settle the matching tool_call so "Running" doesn't linger beside
+          // the result row (the BE emits call+result as separate append-only parts).
+          const resultStatus = parsed.status;
+          const resultCallId = parsed.toolCallId;
+          if (resultStatus) {
+            toolPartsRef.current = toolPartsRef.current.map((part) =>
+              part.type === "tool_call" && part.id === resultCallId
+                ? { ...part, status: resultStatus }
+                : part,
+            );
+          }
           toolPartsRef.current = [...toolPartsRef.current, parsed];
           queueState({ toolParts: toolPartsRef.current });
           return false;

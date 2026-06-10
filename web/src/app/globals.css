@@ -963,3 +963,19 @@ input[type="search"]::-webkit-search-decoration {
     transition-duration: 0ms;
   }
 }
+
+/* Forced-colors (Windows High Contrast): glass utilities draw their border as an
+   inset box-shadow, which forced-colors strips. Restore a real border so
+   capsules, cards, and inputs keep a visible boundary. */
+@media (forced-colors: active) {
+  .glass-regular,
+  .glass-strong,
+  .glass-clear,
+  .glass-capsule {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+}

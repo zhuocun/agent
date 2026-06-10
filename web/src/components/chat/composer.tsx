@@ -27,7 +27,6 @@ import {
 import { Popover } from "@base-ui/react/popover";
 
 import { Button } from "@/components/ui/button";
-import { useIsMobileSheet } from "@/components/ui/dialog";
 import {
   Tooltip,
   TooltipContent,
@@ -327,13 +326,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // state drives the disclosure in every state (there is no inline-at-rest
     // path any more).
     const [moreActionsOpen, setMoreActionsOpen] = useState(false);
-    // Below the `sm` breakpoint we still anchor the same popover used on
-    // desktop — a full bottom sheet for three rows is over-weight, and the
-    // popover keeps the disclosure cheap enough that the most-used controls
-    // (attach, dictate) can stay INLINE in the toolbar instead of one tap
-    // behind a sheet. The flag drives those mobile-inline promotions, not the
-    // disclosure surface itself.
-    const isMobile = useIsMobileSheet();
     const prevStreamingRef = useRef(isStreaming);
     const supportsAttachmentsRef = useRef(supportsAttachments);
     const supportsVisionRef = useRef(supportsVision);
@@ -845,23 +837,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
 
     // Quiet-down disclosure (00-principles.md:9, 02-patterns.md:158-164): the
     // secondary cluster (Attach / Templates / Dictate) lives behind a single
-    // "More actions" ("+") disclosure so a focused desktop composer reads as
-    // `[+] [textarea] [Send]`. On mobile we promote the two most-used controls
-    // back inline: typing on a phone, the cost of one extra tap to reach
-    // Attach / Dictate is bigger than the benefit of a leaner toolbar, so the
-    // mobile composer reads as `[Attach] [Dictate] [+] [textarea] [Send]`
-    // (with controls only present when their preconditions are met). Templates
-    // and camera capture stay in the popover; Attach is omitted from the popover
-    // when promoted inline on mobile (`!keepAttachInline` gate below).
-    //
-    // Inline rules:
-    //   - Attach inline when supportsAttachments AND mobile.
-    //   - Dictate inline when (a) dictation is supported AND mobile, OR (b) a
-    //     recording is ACTIVE on any viewport — an active recording must stay
-    //     one tap from stop, never folded behind a disclosure.
-    const keepAttachInline = isMobile && supportsAttachments;
-    const keepDictateInline =
-      dictation.listening || (isMobile && dictation.supported);
+    // "More actions" ("+") disclosure so the composer reads as
+    // `[+] [textarea] [Send]` on every viewport. The lone inline exception is
+    // an ACTIVE recording — stop must stay one tap away, never folded behind "+".
+    const keepAttachInline = false;
+    const keepDictateInline = dictation.listening;
     // ---- Secondary-control renderers ---------------------------------------
     // Each control is rendered inside the "More actions" disclosure popover (its
     // single home in both the empty/at-rest and composing states), preserving its

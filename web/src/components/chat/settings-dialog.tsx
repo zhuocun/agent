@@ -1193,7 +1193,7 @@ export function SettingsDialog({
           role="tablist"
           aria-label="Settings sections"
           id={tablistId}
-          className="-mx-1 flex items-end gap-3 overflow-x-auto px-1 pb-1"
+          className="-mx-1 flex flex-wrap items-end gap-3 px-1 pb-1"
         >
           {SETTINGS_TAB_GROUPS.map((group, groupIndex) => (
             <div

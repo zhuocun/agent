@@ -583,7 +583,7 @@ export function CommandPalette({
               placeholder={
                 filterMode
                   ? "Search conversations…"
-                  : "Search actions and conversations…"
+                  : "Search actions & chats…"
               }
               className="block w-full bg-transparent py-4 pl-3 pr-2 text-lg text-foreground outline-none placeholder:text-muted-foreground"
             />

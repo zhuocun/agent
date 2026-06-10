@@ -937,8 +937,33 @@ export function ChatThread() {
       return [...next, finalized];
     });
 
-    if (result.status === "done") setLiveMessage("Response ready");
-    else if (result.status === "stopped") setLiveMessage("Generation stopped");
+    if (result.status === "done") {
+      setLiveMessage("Response ready");
+      // BE title autogen completes after terminal; refresh placeholder rows.
+      if (activeConversationId && !isTemporary) {
+        const convId = activeConversationId;
+        void (async () => {
+          for (const delayMs of [500, 3000]) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            try {
+              const conv = await fetchConversation(convId);
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === convId &&
+                  c.title === "New chat" &&
+                  conv.title !== "New chat"
+                    ? { ...c, title: conv.title }
+                    : c,
+                ),
+              );
+              if (conv.title !== "New chat") return;
+            } catch {
+              return;
+            }
+          }
+        })();
+      }
+    } else if (result.status === "stopped") setLiveMessage("Generation stopped");
     else if (result.status === "awaiting_approval")
       // HITL pause: the turn committed in place (with its tool parts) and the
       // bubble now shows the approve/deny card. Not "ready" — it's waiting on us.
@@ -948,7 +973,7 @@ export function ChatThread() {
     setPendingId(null);
     assistantIdRef.current = null;
     pendingUserIdRef.current = null;
-  }, []);
+  }, [activeConversationId, isTemporary]);
 
   // A second send was rejected with 409 STREAM_IN_PROGRESS — a response is
   // still generating. The hook suppressed the error terminal so the live answer

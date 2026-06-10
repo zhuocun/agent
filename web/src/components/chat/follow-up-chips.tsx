@@ -60,6 +60,7 @@ export function FollowUpChips({
 
   return (
     <div
+      role="group"
       className="flex flex-wrap items-center gap-2 pt-1"
       data-testid="follow-up-chips"
       aria-label="Suggested follow-ups"
@@ -72,8 +73,10 @@ export function FollowUpChips({
           data-testid="follow-up-chip"
           className={cn(
             "inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 md:min-h-0",
-            "border border-border/70 bg-background/60 text-xs text-muted-foreground",
-            "transition-colors hover:border-border hover:bg-foreground/[0.04] hover:text-foreground",
+            // A muted chip surface (not the near-transparent background tint)
+            // so the chips stay visible in dark mode against the page.
+            "border border-border/70 bg-muted/40 text-xs text-foreground/80 dark:bg-muted/60 dark:text-muted-foreground",
+            "transition-colors hover:border-border hover:bg-muted/70 hover:text-foreground",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
         >

@@ -20,15 +20,25 @@ const EMPTY_STATE: VisualViewportState = {
   keyboardInset: 0,
 };
 
+// Pinch-zoom also shrinks the visual viewport height, which would otherwise
+// read as a (false) keyboard inset. Treat any zoomed state as "no keyboard",
+// and ignore insets below the noise floor (browser chrome settling, rounding)
+// — real soft keyboards are 200px+.
+const ZOOM_SCALE_EPSILON = 0.01;
+const KEYBOARD_INSET_MIN_PX = 50;
+
 function readState(): VisualViewportState {
   if (typeof window === "undefined" || !window.visualViewport) {
     return EMPTY_STATE;
   }
   const vv = window.visualViewport;
-  const keyboardInset = Math.max(
+  const pinchZoomed = Math.abs(vv.scale - 1) > ZOOM_SCALE_EPSILON;
+  const bottomInset = Math.max(
     0,
     window.innerHeight - vv.height - vv.offsetTop,
   );
+  const keyboardInset =
+    pinchZoomed || bottomInset < KEYBOARD_INSET_MIN_PX ? 0 : bottomInset;
   return { height: vv.height, offsetTop: vv.offsetTop, keyboardInset };
 }
 
@@ -48,9 +58,15 @@ export function useVisualViewport(): VisualViewportState {
     if (!vv) return;
 
     // Event-driven sync (resize/scroll fire on keyboard show/hide and panning).
-    // This is a listener callback, not a render-time/bare-effect setState.
+    // Bursts during keyboard animation / pinch-zoom panning are coalesced into
+    // at most one state update per animation frame to avoid a re-render storm.
+    let frame: number | null = null;
     const update = (): void => {
-      setState(readState());
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        setState(readState());
+      });
     };
 
     vv.addEventListener("resize", update);
@@ -58,6 +74,7 @@ export function useVisualViewport(): VisualViewportState {
     return () => {
       vv.removeEventListener("resize", update);
       vv.removeEventListener("scroll", update);
+      if (frame !== null) cancelAnimationFrame(frame);
     };
   }, []);
 

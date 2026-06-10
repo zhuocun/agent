@@ -324,6 +324,22 @@ export function CommandPalette({
     onDismiss: () => handleOpenChangeRef.current(false),
   });
 
+  // Taps on interactive controls inside the sheet (the header's filter/back
+  // buttons, the filter form fields) must stay plain clicks. The swipe hook
+  // pointer-captures the sheet on pointerdown, which retargets the eventual
+  // `click` to the sheet and silently swallows the control's handler on
+  // touch. Skipping the gesture for controls trades "swipe starting on a
+  // button" for working taps — matching iOS, where a touch that lands on a
+  // control acts on the control.
+  const sheetContentProps: typeof contentProps = {
+    ...contentProps,
+    onPointerDown: (event) => {
+      const target = event.target as HTMLElement;
+      if (target.closest("button, input, select, textarea, a")) return;
+      contentProps.onPointerDown(event);
+    },
+  };
+
   // The mobile sheet is bottom-pinned, so the iOS software keyboard (which does
   // NOT shrink dvh) slides up *over* the lower results. Lift the whole sheet by
   // the measured keyboard inset and trim that much off its max-height, so the
@@ -500,7 +516,7 @@ export function CommandPalette({
             // Keyboard-safe lift on mobile (no-op on desktop / no keyboard).
             ...mobileKeyboardStyle,
           }}
-          {...contentProps}
+          {...sheetContentProps}
           className={cn(
             // Mobile (default): iOS bottom sheet — full-width, bottom-pinned,
             // rounded top, slides up with iOS sheet easing, swipe-to-dismiss.
@@ -532,7 +548,7 @@ export function CommandPalette({
                 type="button"
                 onClick={exitFilterMode}
                 aria-label="Back to commands"
-                className="-ml-1.5 mr-1 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+                className="-ml-1.5 mr-1 flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:size-7"
               >
                 <ChevronLeft aria-hidden className="size-4" />
               </button>
@@ -583,7 +599,7 @@ export function CommandPalette({
                 onClick={enterFilterMode}
                 aria-label="Advanced search filters"
                 data-testid="palette-filter-toggle"
-                className="ml-2 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+                className="ml-2 flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:size-7"
               >
                 <SlidersHorizontal aria-hidden className="size-4" />
               </button>

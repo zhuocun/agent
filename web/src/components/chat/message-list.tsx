@@ -17,7 +17,10 @@ import {
   type VirtualMessageItem,
 } from "@/lib/use-virtual-message-window";
 import { prefersReducedMotion } from "@/lib/motion";
-import { topChromePaddingClass } from "@/lib/chat-chrome-padding";
+import {
+  CHAT_CHROME_PAD_CLASS,
+  topChromePaddingStyle,
+} from "@/lib/chat-chrome-padding";
 import { cn } from "@/lib/utils";
 
 // Pull the stable message id off a rendered child. UserMessage/AssistantMessage
@@ -317,16 +320,17 @@ export function MessageList({
           // pt/pb clear the chat-thread chrome strips (header + safe-area-top
           // above; composer + safe-area-bottom below) so message content scrolls
           // *under* the gradient strips rather than colliding with them. The top
-          // padding bumps +1.5rem in a temporary chat, where the chrome strip is
+          // padding bumps +3rem in a temporary chat, where the chrome strip is
           // taller (it carries the "Temporary chat" banner above the header) —
           // mirroring the welcome surface's delta so the first message clears it.
           className={cn(
             "mx-auto w-full max-w-3xl list-none px-4 pb-[calc(var(--bottom-inset)+9rem)]",
-            topChromePaddingClass("thread", {
-              isTemporary,
-              statusBannerActive,
-            }),
+            CHAT_CHROME_PAD_CLASS,
           )}
+          style={topChromePaddingStyle("thread", {
+            isTemporary,
+            statusBannerActive,
+          })}
         >
           {virtualWindow.paddingTop > 0 ? (
             <li

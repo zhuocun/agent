@@ -572,7 +572,9 @@ function ConversationRow({
             // E2E target: lets the conversation spec fill the rename input
             // without racing with the search box, which also has type="search".
             data-testid="sidebar-conversation-rename-input"
-            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] rounded-sm"
+            // text-base on mobile keeps iOS Safari from auto-zooming the page
+            // when the input focuses (it zooms anything under 16px).
+            className="min-w-0 flex-1 bg-transparent text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] rounded-sm md:text-sm"
           />
         </div>
       ) : (
@@ -1570,7 +1572,8 @@ export function Sidebar({
             placeholder="Search conversations"
             aria-label="Search conversations"
             className={cn(
-              "block h-11 w-full rounded-full bg-muted/50 pl-8 text-sm text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)]",
+              // text-base on mobile keeps iOS Safari from auto-zooming on focus.
+              "block h-11 w-full rounded-full bg-muted/50 pl-8 text-base text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)] md:text-sm",
               search.length > 0 ? "pr-12" : "pr-3",
             )}
           />
@@ -1887,7 +1890,7 @@ export function Sidebar({
                         data-testid="sidebar-new-project"
                         onClick={openCreateProject}
                         className={cn(
-                          "size-7 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground",
+                          "size-11 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground md:size-7",
                           // Persistent on touch; hover/focus-revealed on desktop
                           // (reveals on hover of the section header row). Stays
                           // mounted (opacity only) so it's clickable + e2e-safe.
@@ -1934,7 +1937,7 @@ export function Sidebar({
                                     variant="ghost"
                                     aria-label="Project actions"
                                     onClick={(e) => e.stopPropagation()}
-                                    className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground md:opacity-0 md:group-hover/proj:opacity-100 md:aria-expanded:opacity-100"
+                                    className="size-11 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground md:size-7 md:opacity-0 md:group-hover/proj:opacity-100 md:aria-expanded:opacity-100"
                                   >
                                     <MoreHorizontal
                                       className="size-4"
@@ -2012,7 +2015,7 @@ export function Sidebar({
                         data-testid="sidebar-new-tag"
                         onClick={openCreateTag}
                         className={cn(
-                          "size-7 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground",
+                          "size-11 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground md:size-7",
                           // Persistent on touch; hover/focus-revealed on desktop
                           // (reveals on hover of the section header row). Stays
                           // mounted (opacity only) so it's clickable + e2e-safe.
@@ -2082,7 +2085,7 @@ export function Sidebar({
                                       variant="ghost"
                                       aria-label="Tag actions"
                                       onClick={(e) => e.stopPropagation()}
-                                      className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground md:opacity-0 md:group-hover/tag:opacity-100 md:aria-expanded:opacity-100"
+                                      className="size-11 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground md:size-7 md:opacity-0 md:group-hover/tag:opacity-100 md:aria-expanded:opacity-100"
                                     >
                                       <MoreHorizontal
                                         className="size-4"
@@ -2355,7 +2358,8 @@ export function Sidebar({
                 submitProjectDialog();
               }
             }}
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+            // text-base on mobile keeps iOS Safari from auto-zooming on focus.
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
           <DialogFooter>
             <Button
@@ -2450,7 +2454,8 @@ export function Sidebar({
                 submitTagDialog();
               }
             }}
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+            // text-base on mobile keeps iOS Safari from auto-zooming on focus.
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
           <DialogFooter>
             <Button

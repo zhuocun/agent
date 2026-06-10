@@ -60,7 +60,10 @@ import {
 } from "@/components/chat/compare-view";
 import { LiveRegion } from "@/components/chat/live-region";
 import { showToast } from "@/components/ui/toast";
-import { topChromePaddingClass } from "@/lib/chat-chrome-padding";
+import {
+  CHAT_CHROME_PAD_CLASS,
+  topChromePaddingStyle,
+} from "@/lib/chat-chrome-padding";
 import { cn } from "@/lib/utils";
 import {
   CommandPalette,
@@ -3514,11 +3517,12 @@ export function ChatThread() {
             <div
               className={cn(
                 "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+9rem)] pl-[env(safe-area-inset-left)]",
-                topChromePaddingClass("compare", {
-                  isTemporary,
-                  statusBannerActive: degradedActive,
-                }),
+                CHAT_CHROME_PAD_CLASS,
               )}
+              style={topChromePaddingStyle("compare", {
+                isTemporary,
+                statusBannerActive: degradedActive,
+              })}
             >
               <CompareView
                 tiers={[compareTierA, compareTierB]}
@@ -3537,11 +3541,12 @@ export function ChatThread() {
             <div
               className={cn(
                 "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+7rem)] pl-[env(safe-area-inset-left)] md:pb-[calc(var(--bottom-inset)+9rem)]",
-                topChromePaddingClass("welcome", {
-                  isTemporary,
-                  statusBannerActive: degradedActive,
-                }),
+                CHAT_CHROME_PAD_CLASS,
               )}
+              style={topChromePaddingStyle("welcome", {
+                isTemporary,
+                statusBannerActive: degradedActive,
+              })}
             >
               <WelcomeScreen
                 userName={firstName}

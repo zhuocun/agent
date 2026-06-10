@@ -1088,7 +1088,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     };
 
     return (
-      <div className="group/composer relative mx-auto w-full max-w-3xl min-w-0 px-4 pt-1">
+      // The top hairline separates the composer chrome strip from the message
+      // thread scrolling beneath it — a quiet seam the frost gradient alone
+      // doesn't always provide over busy content.
+      <div className="group/composer relative mx-auto w-full max-w-3xl min-w-0 border-t border-border/50 px-4 pt-1">
         <SlashCommandsPopover
           open={slashOpen}
           commands={MOCK_COMMANDS}

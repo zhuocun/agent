@@ -1573,7 +1573,7 @@ export function Sidebar({
             aria-label="Search conversations"
             className={cn(
               // text-base on mobile keeps iOS Safari from auto-zooming on focus.
-              "block h-11 w-full rounded-full bg-muted/50 pl-8 text-base text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)] md:text-sm",
+              "block h-11 w-full rounded-full border border-transparent bg-muted/50 pl-8 text-base text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)] md:text-sm",
               search.length > 0 ? "pr-12" : "pr-3",
             )}
           />

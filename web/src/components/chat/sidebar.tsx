@@ -1800,17 +1800,23 @@ export function Sidebar({
                   with their full CRUD and the per-tag filter, one interaction
                   deep. */}
               {displayConversations.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+                // Charged emptiness (Ma): generous headroom lets the empty state
+                // read as an intentional resting composition, not a block jammed
+                // under the search field. The two copy lines group tight
+                // (space-y-1) while the glyph keeps its own breathing room.
+                <div className="flex flex-col items-center gap-3 px-4 pb-8 pt-14 text-center">
                   <MessageSquare
                     aria-hidden
-                    className="size-8 text-muted-foreground/50"
+                    className="size-8 text-muted-foreground/40"
                   />
-                  <p className="text-sm font-medium text-foreground/80">
-                    No chats yet
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Type a message below to start
-                  </p>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">
+                      No chats yet
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Type a message below to start
+                    </p>
+                  </div>
                 </div>
               ) : null}
               {hasCollections ? (

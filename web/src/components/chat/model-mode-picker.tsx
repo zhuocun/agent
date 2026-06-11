@@ -72,8 +72,12 @@ export interface ModelModePickerProps {
 // surrounding muted icon buttons while keeping the 44px touch floor
 // (PRD 06 §3.3). The mobile max-width budgets for the toolbar's siblings
 // (+ / mic / send circles) so the trigger can never push them off-card.
+// Lovable's "Fable 5" model selector reads as a subtle pill, not a bare text
+// run: a faint resting fill + hairline rim sets it apart from the muted icon
+// circles flanking it, while staying quiet enough not to compete with the send
+// button. Hover/expanded deepen the fill; focus shows the ring.
 const TRIGGER_CLASS =
-  "inline-flex h-11 min-w-0 max-w-[min(12rem,calc(100vw-16rem))] items-center gap-1 rounded-full px-2.5 text-sm outline-none transition-colors hover:bg-foreground/5 focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/5 md:max-w-80";
+  "inline-flex h-11 min-w-0 max-w-[min(12rem,calc(100vw-16rem))] items-center gap-1 rounded-full px-3 text-sm outline-none transition-colors bg-foreground/[0.04] shadow-[inset_0_0_0_1px_var(--glass-border)] hover:bg-foreground/[0.08] focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/[0.08] md:max-w-80";
 
 export function ModelModePicker({
   tiers,

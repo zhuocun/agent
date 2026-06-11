@@ -81,7 +81,7 @@ export const metadata: Metadata = {
 // via its media query (a no-media meta always matches, so the later dark meta
 // overrides it only under prefers-color-scheme: dark). Both values match
 // `--background` exactly — light oklch(0.985 0.003 250) → #f9fafc, dark
-// oklch(0.165 0.008 250) → #0c0f12.
+// oklch(0.15 0.014 262) → #080b11 (the deeper navy canvas).
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
@@ -89,7 +89,7 @@ export const viewport: Viewport = {
   interactiveWidget: "resizes-content",
   themeColor: [
     { color: "#f9fafc" },
-    { media: "(prefers-color-scheme: dark)", color: "#0c0f12" },
+    { media: "(prefers-color-scheme: dark)", color: "#080b11" },
   ],
 };
 

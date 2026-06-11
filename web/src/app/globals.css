@@ -211,24 +211,38 @@
   --brand-foreground: oklch(0.99 0 0);
   --brand-muted: oklch(0.95 0.04 247);
 
-  /* Single-hue brand halo for the first-run welcome surface: a soft radial
-     bloom of the brand hue (247) behind the greeting, fading to neutral.
-     Vignetted at top/bottom by the z-30 chrome strips; zeroed under
-     prefers-contrast (below) to protect welcome text contrast. Pitched to read
-     as deliberate light, not a panel-uniformity artifact — too low an alpha
-     looks like an uneven-white display glitch rather than a designed glow. */
-  --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.59 0.20 247 / 0.13), transparent 72%);
+  /* Warm accent — the magenta/red-purple counter-hue to the cool brand blue.
+     Pairs with --brand to drive the welcome surface's dual-hue atmosphere
+     (electric-blue bloom up top, warm wash rising from the bottom — Lovable
+     reference). Defined as a full-strength color; the gradients/glows below
+     dial in their own alpha via color-mix. NOT applied to chrome — it exists
+     only to feed the welcome-only atmosphere tokens (PRD 06: welcome-only). */
+  --accent-warm: oklch(0.58 0.19 18);
 
-  /* Hero gradient — atmospheric backdrop for the first-run welcome surface:
-     a brand-hue (247) wash falling from the top edge plus a faint counter-bloom
-     rising behind the composer, layered beneath --welcome-ambient's greeting
-     halo. Welcome-only by doctrine — atmosphere on the working thread is the
-     named anti-pattern (03-anti-patterns.md §G), the welcome state is the
-     carve-out (Decision 11/16). Static by design: no drift (§C). Zeroed under
-     prefers-contrast (below) alongside --welcome-ambient. */
+  /* Electric-blue greeting bloom for the first-run welcome surface: a soft
+     radial bloom of an electrified brand hue (254, a hair cooler/punchier than
+     the chrome brand) behind the greeting, fading to neutral. Top half of the
+     welcome surface's dual-hue atmosphere; the warm counterpart lives in
+     --hero-gradient below. Vignetted at top/bottom by the z-30 chrome strips;
+     zeroed under prefers-contrast (below) to protect welcome text contrast.
+     Pitched to read as deliberate light, not a panel-uniformity artifact — too
+     low an alpha looks like an uneven-white display glitch rather than a
+     designed glow. */
+  --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.60 0.21 254 / 0.15), transparent 72%);
+
+  /* Hero gradient — dual-hue atmospheric backdrop for the first-run welcome
+     surface (Lovable reference): an electric-blue wash falling from the top
+     edge, plus a warm --accent-warm bloom rising from the bottom behind the
+     composer (the two hues overlap into a soft purple mid-surface). Layered
+     beneath --welcome-ambient's greeting halo. Welcome-only by doctrine —
+     atmosphere on the working thread is the named anti-pattern
+     (03-anti-patterns.md §G), the welcome state is the carve-out
+     (Decision 11/16). Static by design: no drift (§C). The warm layer pulls its
+     alpha via color-mix so the single --accent-warm token stays the hue source.
+     Zeroed under prefers-contrast (below) alongside --welcome-ambient. */
   --hero-gradient:
-    linear-gradient(to bottom, oklch(0.59 0.20 247 / 0.06), transparent 38%),
-    radial-gradient(120% 70% at 50% 104%, oklch(0.59 0.20 247 / 0.05), transparent 62%);
+    linear-gradient(to bottom, oklch(0.60 0.21 254 / 0.07), transparent 40%),
+    radial-gradient(130% 75% at 50% 116%, color-mix(in oklch, var(--accent-warm), transparent 88%), transparent 64%);
 
   /* Chat surfaces */
   --message-user: oklch(0.955 0.005 250);
@@ -312,19 +326,34 @@
   --focus-glow-edge: 0 0 0 1.5px oklch(0.59 0.20 247 / 0.8);
   --focus-glow-halo: 0 0 24px 2px oklch(0.59 0.20 247 / 0.28);
 
+  /* Warm underglow for the welcome-hero composer — a soft --accent-warm bloom
+     dropped below the card so the composer sits in the dual-hue field (electric
+     blue edge/halo above, warm wash below), echoing the hero-gradient. Composed
+     into --hero-glow-halo; broken out so the warm contribution reads on its own
+     and the alpha tracks the shared --accent-warm token via color-mix. */
+  --hero-glow-magenta: 0 12px 40px 2px color-mix(in oklch, var(--accent-warm), transparent 86%);
+
   /* Welcome-hero composer glow — the resting "begin here" halo behind the
-     composer on the welcome surface only. Composed from the focus-glow recipe
-     above (same brand hue 247, same edge + halo geometry) at a fraction of the
-     activated energy, so the activated focus glow remains the single moment of
-     full accent illumination on engagement (Decision 07). Welcome-only; zeroed
-     under prefers-contrast. Decision 16. */
-  --hero-glow-edge: 0 0 0 1px oklch(0.59 0.20 247 / 0.22);
-  --hero-glow-halo: 0 0 32px 6px oklch(0.59 0.20 247 / 0.14);
+     composer on the welcome surface only. Electric-blue edge + halo (hue 254)
+     at a fraction of the activated focus-glow energy, so the activated focus
+     glow remains the single moment of full accent illumination on engagement
+     (Decision 07), now with the warm --hero-glow-magenta underglow appended for
+     the dual-hue field. Welcome-only; zeroed under prefers-contrast. Decision 16. */
+  --hero-glow-edge: 0 0 0 1px oklch(0.60 0.21 254 / 0.26);
+  --hero-glow-halo:
+    0 0 36px 6px oklch(0.60 0.21 254 / 0.16),
+    var(--hero-glow-magenta);
 }
 
 /* ===== Dark theme ===== */
 .dark {
-  --background: oklch(0.165 0.008 250);
+  /* Deeper, premium near-black canvas with a subtle navy lean (hue 262, a
+     touch more chroma than the old neutral 250) — the Lovable-style dark
+     ground that lets the dual-hue welcome atmosphere bloom read as light in a
+     room rather than a flat grey panel. Was oklch(0.165 0.008 250) → #0c0f12;
+     now oklch(0.15 0.014 262) → #080b11. Keep layout.tsx's dark theme-color
+     meta in lockstep with this hex. */
+  --background: oklch(0.15 0.014 262);
   --foreground: oklch(0.96 0.003 250);
   --card: oklch(0.205 0.006 250);
   --card-foreground: oklch(0.96 0.003 250);
@@ -357,17 +386,23 @@
   --brand-foreground: oklch(0.16 0.01 247);
   --brand-muted: oklch(0.38 0.11 247);
 
-  /* Brand halo for the first-run welcome surface (dark parity). A touch
-     stronger than light since it lifts a near-black surface. See the :root
-     token for rationale. */
-  --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.72 0.18 247 / 0.16), transparent 74%);
+  /* Warm accent — dark parity (see :root). Brighter/cleaner than light so it
+     reads against the near-black canvas; still feeds the welcome atmosphere
+     only. */
+  --accent-warm: oklch(0.64 0.22 18);
 
-  /* Hero gradient — dark parity. A touch stronger than light (it lifts a
-     near-black surface), mirroring the welcome-ambient delta. See the :root
-     token for rationale. */
+  /* Electric-blue greeting bloom (dark parity). Stronger than light since it
+     lifts a near-black surface; top half of the dual-hue atmosphere. See the
+     :root token for rationale. */
+  --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.74 0.20 254 / 0.22), transparent 74%);
+
+  /* Hero gradient — dual-hue, dark parity. Electric-blue wash from the top edge
+     plus a warm --accent-warm bloom rising from the bottom; stronger alphas
+     than light (it lifts a near-black surface), mirroring the welcome-ambient
+     delta. See the :root token for rationale. */
   --hero-gradient:
-    linear-gradient(to bottom, oklch(0.72 0.18 247 / 0.08), transparent 40%),
-    radial-gradient(120% 70% at 50% 104%, oklch(0.72 0.18 247 / 0.07), transparent 64%);
+    linear-gradient(to bottom, oklch(0.74 0.20 254 / 0.12), transparent 42%),
+    radial-gradient(130% 80% at 50% 118%, color-mix(in oklch, var(--accent-warm), transparent 76%), transparent 66%);
 
   /* Lifted above 0.27 so the user surface reads as distinct from the dark
      `--code-block` (oklch 0.235); the code inversion needs the lightness gap
@@ -394,7 +429,7 @@
   --temporary-chat-banner-foreground: oklch(0.85 0.012 250);
   --temporary-chat-banner-border: oklch(0.4 0.012 250);
 
-  --sidebar: oklch(0.185 0.008 250);
+  --sidebar: oklch(0.165 0.015 262);
   --sidebar-foreground: oklch(0.96 0.003 250);
   --sidebar-primary: oklch(0.72 0.18 247);
   --sidebar-primary-foreground: oklch(0.985 0 0);
@@ -415,9 +450,12 @@
      read as refractive depth. Still sub-perceptual. */
   --glass-brightness: 1.06;
 
-  --glass-regular-bg: rgba(24, 24, 28, 0.74);
-  --glass-strong-bg:  rgba(24, 24, 28, 0.92);
-  --glass-clear-bg:   rgba(24, 24, 28, 0.38);
+  /* Navy-tinted base (matches the deeper canvas) and a touch more translucent
+     than before so the dual-hue welcome atmosphere bleeds through the composer
+     and overlays for a true glassmorphism read. Was rgba(24,24,28, .74/.92/.38). */
+  --glass-regular-bg: rgba(20, 22, 30, 0.66);
+  --glass-strong-bg:  rgba(20, 22, 30, 0.86);
+  --glass-clear-bg:   rgba(20, 22, 30, 0.30);
   --glass-clear-border: rgba(255, 255, 255, 0.10);
   --glass-clear-shadow-key: 0 8px 24px rgba(0, 0, 0, 0.24);
 
@@ -441,10 +479,17 @@
   --focus-glow-edge: 0 0 0 1.5px oklch(0.72 0.18 247 / 0.85);
   --focus-glow-halo: 0 0 28px 4px oklch(0.72 0.18 247 / 0.35);
 
-  /* Welcome-hero composer glow — dark parity (see :root for rationale).
-     Slightly stronger halo, like the focus glow's own dark delta. */
-  --hero-glow-edge: 0 0 0 1px oklch(0.72 0.18 247 / 0.28);
-  --hero-glow-halo: 0 0 36px 8px oklch(0.72 0.18 247 / 0.18);
+  /* Warm composer underglow — dark parity (see :root). Stronger than light so
+     the warm field reads under the card against the near-black canvas. */
+  --hero-glow-magenta: 0 14px 48px 2px color-mix(in oklch, var(--accent-warm), transparent 80%);
+
+  /* Welcome-hero composer glow — dual-hue, dark parity (see :root for
+     rationale). Brighter electric-blue edge/halo than light, with the warm
+     --hero-glow-magenta underglow appended. */
+  --hero-glow-edge: 0 0 0 1px oklch(0.74 0.20 254 / 0.34);
+  --hero-glow-halo:
+    0 0 44px 8px oklch(0.74 0.20 254 / 0.22),
+    var(--hero-glow-magenta);
 }
 
 @layer base {
@@ -829,10 +874,16 @@
     --hero-glow-halo: 0 0 0 0 transparent;
   }
   .dark {
-    --glass-regular-bg: rgba(24, 24, 28, 0.78);
-    --glass-strong-bg:  rgba(24, 24, 28, 0.94);
-    --glass-clear-bg:   rgba(24, 24, 28, 0.42);
+    /* Denser, navy-tinted fills (matches the new --glass-*-bg base) so the
+       glass stays legible when transparency is the accessibility concern. */
+    --glass-regular-bg: rgba(20, 22, 30, 0.80);
+    --glass-strong-bg:  rgba(20, 22, 30, 0.94);
+    --glass-clear-bg:   rgba(20, 22, 30, 0.46);
     --glass-border:     rgba(255, 255, 255, 0.28);
+    /* Zero the dual-hue atmosphere + composer glow. --hero-glow-halo is set to
+       a no-op shadow (not `none`) so it stays valid in the composed box-shadow
+       list; that override also bypasses --hero-glow-magenta, which is only ever
+       referenced from the halo. */
     --welcome-ambient: none;
     --hero-gradient: none;
     --hero-glow-edge: 0 0 0 0 transparent;

@@ -1,3 +1,6 @@
 {
-  "autoCompactWindow": 400000
+  "autoCompactWindow": 400000,
+  "env": {
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80"
+  }
 }

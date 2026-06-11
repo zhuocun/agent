@@ -194,6 +194,18 @@ In order from cheapest to most invasive.
    piece. Symptoms of breakage: `POST /api/conversations` returns 201, then
    `POST .../messages` 404 because each request mints a fresh anon user.
 
+## Claude Code auto-compact (`.claude/settings.json`)
+
+`.claude/settings.json` pins `autoCompactWindow: 400000` and
+`env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "80"`, so auto-compaction fires at 80% of a
+400K window (~320K tokens) instead of the model's full 1M default. The percentage
+override has no settings key — it only takes effect from the `env` block — and is
+clamped by `Math.min` to the default, so it can pull compaction *earlier* but
+never later. Verified on Claude Code 2.1.173; older builds ignored the override on
+1M-context Opus and compacted at a hardcoded ~195K. To re-verify, read an
+auto-compact event's `preTokens` in the session `.jsonl`: ~320K means it works,
+~195K means it regressed.
+
 ## Repo conventions
 
 - **Branch names** for AI-authored work: `claude/<short-topic>` —

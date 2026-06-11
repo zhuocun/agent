@@ -1203,7 +1203,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           // (`--focus-glow-edge`) + highlight + ambient/key shadows remain; the
           // brand send button is the real focus signal.
           style={{ borderRadius: "calc(var(--radius) * 2.4)" }}
-          className="glass-capsule group relative flex min-w-0 flex-col px-2 pt-1 pb-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]"
+          // Welcome surface (heroGlow) wears the more opaque `glass-strong`
+          // material for the darker, weightier Lovable hero card; the working
+          // thread keeps the lighter `glass-capsule`. Both honor the inline
+          // --radius-3xl rounding and the reduced-transparency fallbacks.
+          className={cn(
+            "group relative flex min-w-0 flex-col px-2 pt-1 pb-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]",
+            heroGlow ? "glass-strong" : "glass-capsule",
+          )}
         >
           {/* Welcome-hero resting glow — a soft brand halo behind the card on
               the first-run surface only (hero-glow tokens, Decision 16).
@@ -1468,10 +1475,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                     className={cn(
                       BUTTON_BASE,
                       // Order matters: a fresh keystroke during the settle
-                      // pose should read as "armed" (brand + clickable) before
-                      // the settle-pose styling can claim the slot.
+                      // pose should read as "armed" (clickable) before the
+                      // settle-pose styling can claim the slot. On the welcome
+                      // hero (heroGlow) the armed button INVERTS — a high-
+                      // contrast `bg-foreground` circle with a `text-background`
+                      // arrow (white-on-dark in dark theme), matching Lovable's
+                      // prominent white send. The working thread keeps the
+                      // brand-colored armed send.
                       canSubmit
-                        ? "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
+                        ? heroGlow
+                          ? "bg-foreground text-background shadow-pill hover:bg-foreground/90"
+                          : "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
                         : justStopped
                           ? "bg-foreground/10 text-foreground"
                           : "bg-transparent text-muted-foreground group-focus-within:text-foreground",

@@ -1144,7 +1144,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 ) : (
                   <FileText aria-hidden className="size-3.5 shrink-0" />
                 )}
-                <span className="min-w-0 max-w-[12rem] truncate">
+                <span className="min-w-0 max-w-[8rem] truncate sm:max-w-[12rem]">
                   {attachment.name}
                 </span>
                 <span className="shrink-0 text-muted-foreground">
@@ -1208,7 +1208,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           // thread keeps the lighter `glass-capsule`. Both honor the inline
           // --radius-3xl rounding and the reduced-transparency fallbacks.
           className={cn(
-            "group relative flex min-w-0 flex-col px-2 pt-1 pb-1.5 transition-shadow duration-300 ease-out focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]",
+            // Symmetric vertical padding (pt/pb match) gives the two-row capsule
+            // a balanced rhythm — the textarea's headroom mirrors the toolbar's
+            // clearance from the glass edge. The focus glow rides the chrome
+            // ease-out (Pattern: "focus as the brand moment") and collapses to
+            // an instant state change under reduced motion (Decision 13).
+            "group relative flex min-w-0 flex-col px-2 pt-1.5 pb-1.5 transition-shadow duration-300 ease-out motion-reduce:transition-none focus-within:shadow-[var(--focus-glow-edge),var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)]",
             heroGlow ? "glass-strong" : "glass-capsule",
           )}
         >
@@ -1290,7 +1295,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             aria-expanded={comboboxOpen}
             aria-controls={comboboxControls}
             aria-activedescendant={comboboxActiveOptionId}
-            className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
+            className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground/70 md:text-[0.9375rem]"
           />
           {/* Toolbar row beneath the textarea: the "+" disclosure and the
             model/mode picker sit left; the quick mic and the circular
@@ -1474,18 +1479,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                     data-testid="composer-send"
                     className={cn(
                       BUTTON_BASE,
-                      // Order matters: a fresh keystroke during the settle
-                      // pose should read as "armed" (clickable) before the
-                      // settle-pose styling can claim the slot. On the welcome
-                      // hero (heroGlow) the armed button INVERTS — a high-
-                      // contrast `bg-foreground` circle with a `text-background`
-                      // arrow (white-on-dark in dark theme), matching Lovable's
-                      // prominent white send. The working thread keeps the
-                      // brand-colored armed send.
+                      // Order matters: a fresh keystroke during the settle pose
+                      // should read as "armed" (clickable) before the settle-
+                      // pose styling can claim the slot. The accent-armed send
+                      // is a welcome-only brand moment (heroGlow): the first-run
+                      // seam owns the product's personality (Decision 11/16), so
+                      // the brand circle lives there. The working thread instead
+                      // arms with a NEUTRAL high-contrast `bg-foreground` circle
+                      // — no brand mid-thread (anti-patterns §G), which leaves
+                      // the focus glow as the single accent illumination on the
+                      // working surface (Decision 07).
                       canSubmit
                         ? heroGlow
-                          ? "bg-foreground text-background shadow-pill hover:bg-foreground/90"
-                          : "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
+                          ? "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
+                          : "bg-foreground text-background shadow-pill hover:bg-foreground/90"
                         : justStopped
                           ? "bg-foreground/10 text-foreground"
                           : "bg-transparent text-muted-foreground group-focus-within:text-foreground",
@@ -1505,7 +1512,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             // always show it since they have no persistent focus-within signal.
             className={cn(
               "mt-1 max-h-0 overflow-hidden px-2 text-right text-2xs leading-snug tabular-nums text-muted-foreground/80",
-              "opacity-0 transition-[max-height,opacity] duration-300",
+              "opacity-0 transition-[max-height,opacity] duration-300 ease-out motion-reduce:transition-none",
               "group-focus-within/composer:max-h-8 group-focus-within/composer:opacity-100",
               "[@media(hover:none)]:max-h-8 [@media(hover:none)]:opacity-100",
             )}

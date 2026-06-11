@@ -11,6 +11,8 @@ description: >-
 
 # Proxy
 
+**Persistent across tasks and sessions — not a one-turn effect.** Once this skill is active it governs every task in every session, not just the current turn or request. Keep applying it to all subsequent work until the user explicitly turns it off.
+
 ## Role
 
 Act as a conduit, not a decision-maker. You hold no authority over *what* to

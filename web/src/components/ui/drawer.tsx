@@ -86,7 +86,10 @@ function DrawerContent({
             data-slot="drawer-close"
             // 44pt hit target (size-11) with a centered size-4 glyph — matches
             // the toast/dialog close-button pattern so touch targets stay native.
-            className="absolute top-4 right-4 inline-flex size-11 items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+            // Offsets fold in the top/right safe-area insets so the control never
+            // tucks under the notch/status bar (portrait) or the landscape notch
+            // on a right-side drawer.
+            className="absolute top-[calc(env(safe-area-inset-top)+1rem)] right-[calc(env(safe-area-inset-right)+1rem)] inline-flex size-11 items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
           >
             <XIcon />
             <span className="sr-only">Close</span>

@@ -64,10 +64,14 @@ const FLOAT_BUTTON = cn(
   FLOAT_SCRIM_DARK,
 );
 
-const FLOAT_BUTTON_TOUCH = cn(
-  "glass-regular size-[45px] rounded-full p-0 text-foreground/80 shadow-sm ring-1 ring-foreground/10 transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent md:hidden",
-  FLOAT_SCRIM_DARK,
-);
+// The touch-only hamburger is the same material as every other float control —
+// `glass-regular` already carries the rim, hairline, and ambient/key shadow, so
+// the leading nav button and the trailing overflow pill read as one material
+// over the welcome gradient. Earlier this button doubled up a `shadow-sm
+// ring-1` and a stronger `text-foreground/80`, making it visibly heavier than
+// the muted `…` pill sitting beside it. Unified to the shared float chrome,
+// just gated `md:hidden` so the persistent rail owns nav at desktop widths.
+const FLOAT_BUTTON_TOUCH = cn(FLOAT_BUTTON, "md:hidden");
 
 const PILL_HALF =
   "inline-flex h-[45px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none active:not-aria-[haspopup]:scale-[0.97]";
@@ -134,9 +138,15 @@ export function AppHeader({
             type="button"
             aria-label="New chat"
             onClick={onNewChat}
+            // PILL_HALF carries `inline-flex`, so the responsive display
+            // utilities MUST come after it — otherwise twMerge collapses the
+            // display conflict to PILL_HALF's `inline-flex` and drops `hidden`,
+            // leaking this desktop-only New chat button into the mobile
+            // top-right corner (a redundant primary action in the worst
+            // thumb-zone). Ordered last, `hidden md:inline-flex` wins the merge.
             className={cn(
-              "hidden md:inline-flex",
               PILL_HALF,
+              "hidden md:inline-flex",
               sidebarOpen && "md:hidden",
             )}
           >

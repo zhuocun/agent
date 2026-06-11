@@ -3526,22 +3526,11 @@ export function ChatThread() {
                     <span
                       aria-hidden
                       className={cn(
-                        "inline-flex items-center gap-1.5 transition-opacity duration-200 ease-[var(--ease-welcome)] starting:opacity-0 motion-reduce:transition-none",
+                        "font-heading text-xl tracking-tight text-foreground/90 transition-opacity duration-200 ease-[var(--ease-welcome)] starting:opacity-0 motion-reduce:transition-none",
                         welcomeExiting ? "opacity-0" : "opacity-100",
                       )}
                     >
-                      {/* Small brand accent — a colored Sparkles glyph, not a
-                          clone of any external logo. text-brand is the same hue
-                          token the hero glow + focus ring read, so the wordmark
-                          rhymes with the welcome atmosphere. */}
-                      <Sparkles
-                        className="size-[18px] shrink-0 text-brand"
-                        strokeWidth={2.25}
-                        aria-hidden="true"
-                      />
-                      <span className="font-heading text-xl tracking-tight text-foreground/90">
-                        Olune
-                      </span>
+                      Olune
                     </span>
                   ) : undefined
                 }

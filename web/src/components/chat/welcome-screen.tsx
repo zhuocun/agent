@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import {
   AlignLeft,
+  ArrowRight,
   Bug,
   Code2,
   Lightbulb,
@@ -18,10 +18,14 @@ export interface WelcomeScreenProps {
   exiting?: boolean;
   onPromptSelect?: (text: string) => void;
   suggestions: PromptSuggestion[];
-  // When true, render the minimal greeting only (no date eyebrow, no
+  // Opens the BYOK / settings surface from the welcome connect banner. When
+  // omitted the banner is suppressed (e.g. surfaces that already expose the
+  // affordance), so the welcome state never dead-ends on a dead pill.
+  onConnect?: () => void;
+  // When true, render the minimal greeting only (no connect banner, no
   // suggestion list). Used when other surfaces in the viewport already convey
   // recency / next-step affordances (e.g. the conversation list is non-empty),
-  // so the welcome state shouldn't double-up with date + prompt rails.
+  // so the welcome state shouldn't double-up with banner + prompt rails.
   compact?: boolean;
 }
 
@@ -36,23 +40,12 @@ const SUGGESTION_ICONS: Record<PromptSuggestion["icon"], LucideIcon> = {
   debug: Bug,
 };
 
+// Single inviting hero line (Lovable energy) in place of the old time-of-day
+// rotation: no client-clock dependency, so it renders identically on the server
+// and first client paint — no mount gate needed for hydration parity. The name
+// is the only variable, and it arrives as a stable prop.
 function buildGreeting(userName?: string): string {
-  const hour = new Date().getHours();
-  const suffix = userName ? `, ${userName}` : "";
-
-  if (hour >= 5 && hour <= 11) return `Good morning${suffix}`;
-  if (hour >= 12 && hour <= 16) return `Good afternoon${suffix}`;
-  if (hour >= 17 && hour <= 21) return `Good evening${suffix}`;
-  return userName ? `Hello, ${userName}` : "Hello";
-}
-
-function formatDate(): string {
-  // Locale-aware; never hardcode field order. iOS-lockscreen-style eyebrow.
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  }).format(new Date());
+  return userName ? `Got an idea, ${userName}?` : "Got an idea?";
 }
 
 interface Prompt {
@@ -73,20 +66,10 @@ export function WelcomeScreen({
   exiting = false,
   onPromptSelect,
   suggestions,
+  onConnect,
   compact = false,
 }: WelcomeScreenProps) {
-  // Greeting/date depend on the client's local clock — gate on mount so SSR and
-  // hydration never disagree on the hour or weekday string.
-  const [mounted, setMounted] = useState(false);
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only clock
-  useEffect(() => setMounted(true), []);
-
-  const heading = mounted
-    ? buildGreeting(userName)
-    : userName
-      ? `Hello, ${userName}`
-      : "Hello";
-  const today = mounted ? formatDate() : "";
+  const heading = buildGreeting(userName);
 
   const bootstrapPrompts =
     suggestions.length > 0
@@ -123,17 +106,23 @@ export function WelcomeScreen({
             : "flex w-full max-w-xl flex-col items-center text-center"
         }
       >
-        {/* Slim pill banner above the greeting — the date eyebrow recast in the
-            BYOK-badge / install-coachmark capsule language. glass-clear keeps
-            it the quietest material in the system; under prefers-contrast the
-            utility densifies its fill on its own (globals.css). */}
-        {compact || !today ? null : (
-          <p
-            className="animate-welcome-enter glass-clear mb-7 inline-flex items-center rounded-full px-3.5 py-1.5 text-xs font-medium tracking-wide text-muted-foreground"
+        {/* Slim connect banner above the greeting — the Lovable "Connect all
+            your tools →" capsule recast as Olune's BYOK hook. A real button:
+            tapping it opens the settings/BYOK surface via `onConnect`. Suppressed
+            in compact mode (and when no handler is wired) so the minimal welcome
+            stays minimal. glass-clear keeps it the quietest material in the
+            system and already carries its own hairline border (globals.css);
+            under prefers-contrast the utility densifies its fill on its own. */}
+        {compact || !onConnect ? null : (
+          <button
+            type="button"
+            onClick={onConnect}
+            className="animate-welcome-enter glass-clear mb-7 inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-medium tracking-wide text-muted-foreground transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/5 [@media(hover:hover)]:hover:text-foreground active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={{ animationDelay: "0ms" }}
           >
-            {today}
-          </p>
+            Connect your API key
+            <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
+          </button>
         )}
 
         {/* Hero greeting — the one display-serif moment in the app (Decision 16

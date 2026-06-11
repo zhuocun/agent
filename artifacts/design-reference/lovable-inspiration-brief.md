@@ -1,7 +1,5 @@
 # Lovable-inspired redesign brief
 
-Reference screenshot: `artifacts/design-reference/lovable-reference.png`
-
 ## Design language to adopt (for Olune — adapt, don't clone)
 
 ### Atmosphere

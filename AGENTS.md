@@ -50,6 +50,21 @@ To list current Fly secrets without revealing values:
 flyctl secrets list -a olune-agent-server
 ```
 
+**Enabling agentic mode in prod**: `TOOLS_ENABLED` and `AGENTIC_ENABLED` are
+plain feature flags, not secrets, but on Fly they ship through the same
+mechanism. Agentic mode is layered on the tool seam — `AGENTIC_ENABLED=true`
+without `TOOLS_ENABLED=true` fails `assert_prod_safe()` at boot — so stage the
+pair before the deploy fires:
+
+```
+flyctl secrets set --stage TOOLS_ENABLED=true AGENTIC_ENABLED=true -a olune-agent-server
+```
+
+The tuning knobs (`AGENTIC_MAX_WORKERS`, `AGENTIC_MAX_CONCURRENCY`,
+`AGENTIC_MAX_DEPTH`, `AGENTIC_RUN_BUDGET_USD`, `AGENTIC_PLAN_APPROVAL`,
+`AGENTIC_VERIFIER`, `AGENTIC_VERIFIER_N`) have safe defaults; see
+`api/.env.example` for what each one bounds.
+
 ## CLI cheat-sheet
 
 Install once. Tokens come from the platform UIs.

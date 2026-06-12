@@ -208,6 +208,16 @@ class ToolSpec:
     human approves it (the loop pauses; a resume POST applies the decision).
     ``schema`` is a JSON-Schema dict describing the tool's input (advertised to
     the model in a real wiring; informational for the fake-only v1).
+
+    ``prod_safe`` gates NATIVE advertisement to a REAL provider. A True tool
+    performs a genuine, prod-ready action and is safe to offer to a live model;
+    a False tool is a STUB or fake-only fixture that exists to exercise the seam
+    (e.g. ``calendar_create_event`` synthesizes a payload with no real side
+    effect) and so must NOT be advertised to a real provider — advertising it
+    would invite a tool call that resolves to nothing. It stays in the registry
+    regardless so the FAKE provider can still drive it via its ``TOOL_*`` markers
+    and the resume gate can still execute an already-approved call. Defaults to
+    False so a newly added tool is opt-in to prod advertisement.
     """
 
     name: str
@@ -215,6 +225,7 @@ class ToolSpec:
     needs_approval: bool
     schema: dict[str, Any] = field(default_factory=dict)
     executor: ToolExecutorFn = field(default=_execute_get_current_time)
+    prod_safe: bool = False
 
 
 _TIME_SCHEMA: dict[str, Any] = {
@@ -254,6 +265,8 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         needs_approval=False,
         schema=_TIME_SCHEMA,
         executor=_execute_get_current_time,
+        # Side-effect-free and dependency-free — safe to offer a live model.
+        prod_safe=True,
     ),
     "calendar_create_event": ToolSpec(
         name="calendar_create_event",
@@ -261,8 +274,25 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         needs_approval=True,
         schema=_CALENDAR_SCHEMA,
         executor=_execute_calendar_create_event,
+        # A STUB with no real calendar integration. Kept in the registry so the
+        # FAKE provider can exercise the HITL approval seam via TOOL_APPROVE
+        # markers, but NOT advertised to a real provider (it would resolve to a
+        # synthesized payload, never a real event).
+        prod_safe=False,
     ),
 }
+
+
+def advertised_tool_specs() -> list[ToolSpec]:
+    """ToolSpecs safe to advertise NATIVELY to a real provider.
+
+    The full ``TOOL_REGISTRY`` still backs the agent loop, the FAKE provider's
+    marker-driven calls, and the resume gate's execution of an approved call;
+    this filtered view is ONLY what the handler hands a real provider as native
+    tool definitions. Stub / fake-only fixtures (``prod_safe=False``) are
+    withheld so a live model is never offered a tool that performs no real work.
+    """
+    return [spec for spec in TOOL_REGISTRY.values() if spec.prod_safe]
 
 
 async def execute_tool(call: ToolCallRequest) -> ToolExecutionResult:

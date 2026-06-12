@@ -12,8 +12,14 @@ cap.
 
 Two modes:
 - ``single`` (M1): one `run_agent_loop` wrapped as the ``primary`` subagent.
-- ``deep_research`` (M2): plan → bounded parallel ``worker`` fan-out (under a
+- ``deep_research``: plan → bounded parallel ``worker`` fan-out (under a
   semaphore) → ``aggregator`` synthesis from the workers' untrusted outputs.
+  Provider-backend split: the FAKE provider uses the deterministic scaffolding
+  (marker-based plan, ``DEEP_RESEARCH_WORKER:`` worker prompts, string-composed
+  synthesis) so the test contract is stable; a REAL provider gets a model-driven
+  plan (fan-out without the ``DEEP_RESEARCH:`` marker), clean marker-free worker
+  prompts, and a streamed model-written synthesis — no scaffolding ever reaches
+  the provider or the user-visible answer.
 
 M3 hooks (`_admit`, `_maybe_plan_approval`, `_maybe_verify`) are wired into the
 control flow as no-ops so the budget/approval/verifier milestone can land
@@ -258,6 +264,100 @@ async def _finalize_synthesis(
     yield RunCost(subtotal_usd=total_cost, cap_usd=cap_usd)
 
 
+async def _finalize_synthesis_streamed(
+    *,
+    make_stream_for: StreamFactory,
+    settings: Settings,
+    user_text: str,
+    outputs: list[WorkerOutput],
+    planned: int,
+    worker_usages: list[UsageUpdate],
+    worker_total_cost: float,
+    cost_for_usage: CostForUsage,
+    cap_usd: float,
+    budget_halted: bool,
+) -> AsyncIterator[ProviderEvent]:
+    """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
+
+    Drives a bounded `run_agent_loop` over the synthesis prompt built from the
+    workers' (untrusted) findings and relays its content TAGGED to the aggregator,
+    so the FE renders a streamed, model-authored answer instead of the
+    deterministic string composition. Closes with the run's summed totals exactly
+    like `_finalize_synthesis`. Falls back to the deterministic synthesis when the
+    model streams nothing, so the turn never ends with an empty aggregator answer.
+    The graceful-degrade (budget) + verifier notes the deterministic path appends
+    are re-applied here as trailing deltas so behavior is consistent across paths.
+    """
+    yield SubagentStarted(
+        subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
+    )
+    prompt = aggregate.build_synthesis_prompt(user_text, outputs)
+    aggregator_usage = UsageUpdate()
+    answer_parts: list[str] = []
+    async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
+        if isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+        aggregator_usage = _fold_usage(event, aggregator_usage)
+        yield _tag(event, _AGGREGATOR_ID)
+    streamed = "".join(answer_parts)
+    if not streamed.strip():
+        # Model produced no usable synthesis — fall back to the deterministic
+        # composition (already includes the budget/verifier notes) so the turn
+        # never ends with an empty aggregator answer.
+        fallback = aggregate.synthesize(
+            outputs, planned=planned, budget_halted=budget_halted
+        )
+        fallback = await _maybe_verify(settings, fallback)
+        yield AnswerDelta(text=fallback, subagent_id=_AGGREGATOR_ID)
+    else:
+        # Re-apply the labeled-partial (budget) note and the verifier note the
+        # deterministic path appends, as trailing deltas over the streamed answer.
+        suffix = ""
+        if budget_halted:
+            suffix += (
+                "\n\n[Partial answer: stopped early to stay within the run budget; "
+                f"answered {len(outputs)} of {planned} planned steps.]"
+            )
+        verified = await _maybe_verify(settings, streamed + suffix)
+        extra = verified[len(streamed) :]
+        if extra:
+            yield AnswerDelta(text=extra, subagent_id=_AGGREGATOR_ID)
+    aggregator_cost = cost_for_usage(aggregator_usage)
+    yield Complete(usage=aggregator_usage, subagent_id=_AGGREGATOR_ID)
+    yield SubagentDone(
+        subagent_id=_AGGREGATOR_ID,
+        label=_AGGREGATOR_LABEL,
+        role="aggregator",
+        usage=aggregator_usage,
+        cost_usd=aggregator_cost,
+    )
+    total_usage = _sum_usages([*worker_usages, aggregator_usage])
+    total_cost = worker_total_cost + aggregator_cost
+    yield Complete(usage=total_usage)
+    yield RunCost(subtotal_usd=total_cost, cap_usd=cap_usd)
+
+
+async def _collect_answer(
+    make_stream_for: StreamFactory,
+    settings: Settings,
+    prompt: str,
+) -> tuple[str, UsageUpdate]:
+    """Run a bounded agent loop QUIETLY and return its (answer_text, usage).
+
+    Used for the real-provider planner pass: the planner's reply is parsed into
+    sub-questions, so its events are NOT surfaced as a subagent — only the answer
+    text and accumulated usage matter. Tool output (if the planner calls a tool)
+    stays untrusted DATA carried back through the loop's feedback channel.
+    """
+    answer_parts: list[str] = []
+    usage = UsageUpdate()
+    async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
+        if isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+        usage = _fold_usage(event, usage)
+    return "".join(answer_parts), usage
+
+
 # --- single mode (M1) ---------------------------------------------------------
 
 
@@ -309,7 +409,36 @@ async def _run_deep_research(
     (fan out / decline). `estimate_cost` + `budget_headroom_usd` drive the
     pre-spawn reservation and the mid-flight kill.
     """
-    sub_questions = planner.decompose(user_text, max_workers=settings.agentic_max_workers)
+    # Provider-backend split: the FAKE provider keys on the deterministic
+    # `DEEP_RESEARCH_WORKER:`/`DEEP_RESEARCH:` scaffolding (the test contract), so
+    # it always uses the marker-based `decompose` + scaffolded worker prompts. A
+    # REAL provider must never see scaffolding: it gets a model-driven plan (so a
+    # plain prompt fans out WITHOUT the `DEEP_RESEARCH:` marker) and clean worker
+    # prompts, then a streamed model-written synthesis.
+    scaffolded = settings.provider_backend == "fake"
+    planner_usage = UsageUpdate()
+    if (
+        scaffolded
+        or user_text.startswith(planner.DEEP_RESEARCH_PREFIX)
+        or plan_approved is False
+    ):
+        # Deterministic decomposition: the fake provider, an explicit
+        # `DEEP_RESEARCH:` opt-in, or a decline (sub-questions go unused — no
+        # fan-out — so skip the model planner call entirely).
+        sub_questions = planner.decompose(user_text, max_workers=settings.agentic_max_workers)
+    else:
+        # Real-provider planner: a bounded model pass decomposes the prompt into
+        # sub-questions so a plain request fans out without the user typing the
+        # `DEEP_RESEARCH:` marker. Degrades to a single sub-question (the whole
+        # request) when the planner yields nothing.
+        plan_reply, planner_usage = await _collect_answer(
+            make_stream_for,
+            settings,
+            planner.build_planner_prompt(user_text, max_workers=settings.agentic_max_workers),
+        )
+        sub_questions = planner.parse_plan(
+            plan_reply, max_workers=settings.agentic_max_workers, fallback=user_text
+        )
     cap = settings.agentic_run_budget_usd
     estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
 
@@ -383,7 +512,9 @@ async def _run_deep_research(
                     await queue.put(
                         SubagentStarted(subagent_id=subagent_id, label=label, role="worker")
                     )
-                    make_stream = make_stream_for(planner.worker_prompt(index, sub_question))
+                    make_stream = make_stream_for(
+                        planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
+                    )
                     async for event in run_agent_loop(make_stream=make_stream, settings=settings):
                         if isinstance(event, AnswerDelta):
                             answer_parts.append(event.text)
@@ -454,23 +585,49 @@ async def _run_deep_research(
                 task.cancel()
 
     ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
+    # Fold the (real-provider) planner pass into the run totals so its tokens are
+    # billed honestly. `planner_usage` is the zero default on the scaffolded /
+    # explicit-marker path, so the fake-provider totals are unchanged.
     ordered_usages = [usages[sid] for _, sid, _, _ in worker_meta if sid in usages]
-    worker_total_cost = sum(costs.get(sid, 0.0) for _, sid, _, _ in worker_meta)
-    synthesis = aggregate.synthesize(
-        ordered_outputs, planned=len(sub_questions), budget_halted=budget_halted
-    )
-    synthesis = await _maybe_verify(settings, synthesis)
+    ordered_usages.append(planner_usage)
+    worker_total_cost = sum(
+        costs.get(sid, 0.0) for _, sid, _, _ in worker_meta
+    ) + cost_for_usage(planner_usage)
     with invoke_agent_span(
         subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
     ):
-        async for event in _finalize_synthesis(
-            synthesis=synthesis,
-            worker_usages=ordered_usages,
-            worker_total_cost=worker_total_cost,
-            cost_for_usage=cost_for_usage,
-            cap_usd=cap,
-        ):
-            yield event
+        if scaffolded or not ordered_outputs:
+            # Deterministic synthesis: the fake-provider / test contract, and the
+            # safety fallback when no worker produced output (a streamed synthesis
+            # over zero findings would be meaningless).
+            synthesis = aggregate.synthesize(
+                ordered_outputs, planned=len(sub_questions), budget_halted=budget_halted
+            )
+            synthesis = await _maybe_verify(settings, synthesis)
+            async for event in _finalize_synthesis(
+                synthesis=synthesis,
+                worker_usages=ordered_usages,
+                worker_total_cost=worker_total_cost,
+                cost_for_usage=cost_for_usage,
+                cap_usd=cap,
+            ):
+                yield event
+        else:
+            # Real provider: stream a model-written synthesis from the workers'
+            # (untrusted) findings.
+            async for event in _finalize_synthesis_streamed(
+                make_stream_for=make_stream_for,
+                settings=settings,
+                user_text=user_text,
+                outputs=ordered_outputs,
+                planned=len(sub_questions),
+                worker_usages=ordered_usages,
+                worker_total_cost=worker_total_cost,
+                cost_for_usage=cost_for_usage,
+                cap_usd=cap,
+                budget_halted=budget_halted,
+            ):
+                yield event
 
 
 # --- entry point --------------------------------------------------------------

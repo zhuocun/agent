@@ -11,10 +11,14 @@ Modes:
 - ``single`` (M1): one agent loop wrapped as a single ``primary`` subagent; every
   event is tagged with its ``subagent_id`` and bracketed by
   ``SubagentStarted`` / ``SubagentDone``.
-- ``deep_research`` (M2): a planner decomposes the prompt into sub-questions, a
+- ``deep_research``: a planner decomposes the prompt into sub-questions, a
   bounded set of ``worker`` subagents answer them in parallel under a semaphore,
   and an ``aggregator`` subagent synthesizes the final answer from the workers'
-  (untrusted) structured outputs.
+  (untrusted) structured outputs. The fake provider keeps the deterministic
+  scaffolding (marker-based plan + string-composed synthesis) for a stable test
+  contract; a real provider gets a model-driven plan (no ``DEEP_RESEARCH:``
+  marker required), scaffolding-free worker prompts, and a streamed model-written
+  synthesis.
 """
 
 from __future__ import annotations

@@ -123,7 +123,7 @@ from app.streaming.sse import (
 )
 from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
 from app.tools.agent_loop import run_agent_loop, tool_feedback_to_history
-from app.tools.builtin import TOOL_REGISTRY, execute_tool
+from app.tools.builtin import advertised_tool_specs, execute_tool
 from app.tools.protocol import ToolCallRequest
 
 log = logging.getLogger(__name__)
@@ -751,14 +751,18 @@ async def stream_and_persist(
     turn_user_text = build_user_turn(user_text)
 
     # Native tool advertisement for REAL providers (agent loop). When tools are
-    # enabled we hand the provider the registry's tool schemas so it can
-    # advertise them and parse the model's calls into structured `ToolCall`
-    # events; the fake provider ignores this and uses its deterministic markers.
-    # None when tools are off ⇒ no tools advertised, provider stream unchanged.
+    # enabled we hand the provider the PROD-SAFE tool schemas so it can advertise
+    # them and parse the model's calls into structured `ToolCall` events; the
+    # fake provider ignores this and uses its deterministic markers. Only
+    # `advertised_tool_specs()` (prod_safe=True) is offered, so a real model is
+    # never shown a stub like `calendar_create_event` that resolves to nothing —
+    # the fake provider/e2e still exercises that tool's approval gate via its
+    # `TOOL_APPROVE:` marker. None when tools are off ⇒ no tools advertised,
+    # provider stream unchanged.
     turn_tool_definitions = (
         [
             ToolDefinition(name=spec.name, label=spec.label, parameters=spec.schema)
-            for spec in TOOL_REGISTRY.values()
+            for spec in advertised_tool_specs()
         ]
         if tools_active
         else None

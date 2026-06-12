@@ -21,6 +21,10 @@ class SubmittedEvent(CamelModel):
 
 class ReasoningDeltaEvent(CamelModel):
     text: str
+    # Agentic mode only: the orchestrator subagent that produced this delta.
+    # None (omitted via `exclude_none`) on every non-agentic turn, so the wire is
+    # byte-for-byte unchanged for a normal single-stream turn.
+    subagent_id: str | None = None
 
 
 class ReasoningDoneEvent(CamelModel):
@@ -30,6 +34,7 @@ class ReasoningDoneEvent(CamelModel):
 class StatusEvent(CamelModel):
     label: str
     state: Literal["active", "done"]
+    subagent_id: str | None = None
 
 
 class SourcesEvent(CamelModel):
@@ -48,6 +53,7 @@ class SourcesEvent(CamelModel):
 
     items: list[SourceItem]
     requested: bool = False
+    subagent_id: str | None = None
 
 
 class ToolCallEvent(ToolCallPart):
@@ -60,6 +66,7 @@ class ToolResultEvent(ToolResultPart):
 
 class AnswerDeltaEvent(CamelModel):
     text: str
+    subagent_id: str | None = None
 
 
 class TerminalEvent(CamelModel):
@@ -71,3 +78,27 @@ class TerminalEvent(CamelModel):
     status: Literal["done", "awaiting_approval"] = "done"
     message_id: str
     attribution: ModelAttribution
+
+
+class SubagentStartedEvent(CamelModel):
+    """Wire form of `providers.protocol.SubagentStarted` (agentic mode)."""
+
+    subagent_id: str
+    label: str
+    role: str
+
+
+class SubagentDoneEvent(CamelModel):
+    """Wire form of `providers.protocol.SubagentDone` (agentic mode)."""
+
+    subagent_id: str
+    label: str | None = None
+    role: str | None = None
+    cost_usd: float | None = None
+
+
+class RunCostEvent(CamelModel):
+    """Wire form of `providers.protocol.RunCost` (agentic mode)."""
+
+    subtotal_usd: float
+    cap_usd: float

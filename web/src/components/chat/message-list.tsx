@@ -42,7 +42,15 @@ function messageRoleOf(child: React.ReactNode): "assistant" | "user" | null {
 }
 
 const VIRTUALIZE_AFTER = 80;
+// Turn-grouping rhythm: the gap that trails a *user* row (binding the question
+// to the answer it provoked) is tighter than the gap that trails an *assistant*
+// row (the breath between turns). The two realized gaps below average to this
+// constant, which the virtualizer (>VIRTUALIZE_AFTER msgs) consumes as a single
+// uniform gap estimate — keeping the row-offset math centered while the DOM
+// renders the asymmetric, turn-grouped spacing.
 const MESSAGE_ROW_GAP_PX = 24;
+const USER_ROW_GAP_CLASS = "mb-4";
+const ASSISTANT_ROW_GAP_CLASS = "mb-8";
 const VIRTUAL_OVERSCAN_PX = 1100;
 const USER_MESSAGE_ESTIMATE_PX = 96;
 const ASSISTANT_MESSAGE_ESTIMATE_PX = 220;
@@ -107,7 +115,11 @@ function MessageRow({
       aria-setsize={total}
       className={cn(
         "chat-message-row min-w-0 list-none",
-        index < total - 1 && "mb-6",
+        // Turn grouping: a user row sits closer to its answer; an assistant row
+        // opens a wider gap before the next turn. Last row carries no trailing
+        // gap (the list pad below owns the bottom breathing room).
+        index < total - 1 &&
+          (item.role === "user" ? USER_ROW_GAP_CLASS : ASSISTANT_ROW_GAP_CLASS),
         isNew && "animate-message-in",
       )}
     >

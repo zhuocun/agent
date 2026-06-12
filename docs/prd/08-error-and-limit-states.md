@@ -133,6 +133,8 @@ P0 Continue is a new continuation request; it is **not** P1 resumable replay.
 >
 > BYOK turns are exempt from all platform caps (consistent with current enforcement) but may still receive *informational* spend estimates. (Cite D27.)
 
+> **Agentic-run failure states (P2 — `AGENTIC_ENABLED`, gated by `TOOLS_ENABLED`).** When a fan-out subagent fails (provider 5xx/timeout, a per-tool error, or a per-run budget admission stop, §5.4), the worker degrades **not the whole run**: its subagent-scoped part is marked failed and the orchestrator **synthesizes from the surviving workers** as a clearly **labeled partial synthesis** — a `severity: "warning"` callout ("Answered from N of M sub-tasks; one couldn't finish"), never a silent drop and never a red `error`. **All-workers-fail** is the only hard terminal: when no subagent produces usable output (or the per-run USD cap is breached before any worker completes), the turn ends as a normal retryable error (`PROVIDER_ERROR` family — Retry / Switch tier) rather than persisting an empty answer. Untrusted-output discipline holds across the tree (D39); per-subagent attribution + the per-run cost roll-up follow PRD 07 §4.4. (Cite D37/D39; PRD 02 §4.6 FR-26g, plans/01-agentic-mode.md.)
+
 > **Guest model-downgrade transparency (distinct from the hard `PLATFORM_GUEST_LIMIT` block).** 2026 guest flows silently downgrade anonymous users to a weaker/mini model before the hard sign-up wall. For a transparency-first product, a **silent** downgrade is an own-goal. When a guest is moved to a weaker model, surface a **transparency callout reusing the substitution-callout** (PRD 06 §5.4 / PRD 07) — `severity: "info"`, not a block — naming the served model and the reason ("Now answering with Fast — sign up to keep the better model"). This is a transparency surface, **not** an error: `PLATFORM_GUEST_DOWNGRADE` continues generation; only `PLATFORM_GUEST_LIMIT` blocks send.
 
 ### 5.5 Auth / BYOK
@@ -241,6 +243,7 @@ Terminal events feed PRD 05 analytics.
 | Offline queue + optimistic send | Yes | Background sync replay where supported | — |
 | Resumable-stream Continue | Partial+Continue request | True replay — **P1: Shipped\* (`RESUMABLE_STREAMS_ENABLED`)** | — |
 | Tool/HITL errors | Reserved | Yes — **P1: Shipped\* (`TOOLS_ENABLED`)** | — |
+| Agentic-run errors (per-run budget halt → graceful partial synthesis; plan-approval pause) | — | — | **P2** (`AGENTIC_ENABLED`, gated by `TOOLS_ENABLED`): a per-run USD-cap breach degrades to a labeled partial synthesis (not an `error`); plan approval reuses the `awaiting_approval` terminal + `toolApproval` resume; a worker's provider failure degrades that subagent, not the run (PRD 02 §4.6 FR-26g, plans/01-agentic-mode.md) |
 | Moderation appeals | — | User-facing transparency + appeal capture (F4 §5.6.1) — **Shipped (#145)** | Operator appeal-review tooling |
 | Platform/provider status transparency | — | Public `/api/status` + `/status` page + degraded-provider banner (F6) — **Shipped (#145)** | — |
 

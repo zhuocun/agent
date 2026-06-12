@@ -269,3 +269,14 @@ class SendMessageRequest(CamelModel):
     # threads it to the provider and the handler validates the output at the
     # boundary, surfacing the result on the assistant attribution.
     response_format: ResponseFormatRequest | None = None
+    # Opt this turn into agentic (multi-agent) mode. Wire alias `agenticMode`.
+    # `single` wraps the normal agent loop as one orchestrator subagent;
+    # `deep_research` fans out to parallel worker subagents and synthesizes their
+    # findings. None (the default) runs the normal single-stream turn. IGNORED
+    # entirely unless the server has `AGENTIC_ENABLED` (and `TOOLS_ENABLED`) on —
+    # the handler only routes into the orchestrator when both the flag and a
+    # non-None mode are present, so a stray `agenticMode` against a flag-off
+    # server is a no-op.
+    agentic_mode: Literal["single", "deep_research"] | None = Field(
+        default=None, alias="agenticMode"
+    )

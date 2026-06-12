@@ -10,6 +10,10 @@ import {
   type SourcesPanelHandle,
 } from "@/components/chat/sources-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
+import {
+  SubagentPanel,
+  type SubagentSection,
+} from "@/components/chat/subagent-panel";
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
 import { AttributionRow } from "@/components/chat/attribution-row";
 import { MessageActions } from "@/components/chat/message-actions";
@@ -22,6 +26,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
+import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
 import { cn } from "@/lib/utils";
 import type {
   ChatMessage,
@@ -79,6 +84,15 @@ interface AssistantMessageProps {
   // Set only when `status === "error"` — the canonical ApiErrorEnvelope from
   // the terminal frame. Drives the inline chip + Details + Retry.
   error?: ApiError;
+  // Agentic mode: live per-subagent activity for the STREAMING bubble, straight
+  // from `ApiStreamState.subagents`. Carries accurate per-worker running/done
+  // status mid-stream; committed/reloaded messages omit it and the panel
+  // derives its sections from the persisted `subagent` marker + tagged parts.
+  liveSubagents?: SubagentActivity[];
+  // Agentic mode: live run-cost subtotal vs cap (the `run_cost` SSE event).
+  // Streaming bubble only — the BE doesn't persist the cap, so committed
+  // messages fall back to the summed per-subagent costs.
+  runCost?: RunCostState | null;
 }
 
 // Length above which the error body collapses into an expandable Details
@@ -143,14 +157,84 @@ export function AssistantMessage({
   onMemoryOpen,
   defaultReasoningOpen = false,
   error,
+  liveSubagents,
+  runCost,
 }: AssistantMessageProps) {
+  // Agentic mode: per-subagent sections for the SubagentPanel. Live activity
+  // (the streaming bubble) wins — it carries accurate running/done status;
+  // otherwise derive from the persisted layout (`subagent` marker opens a
+  // section, tagged reasoning/text fill it, status settles to "done").
+  const subagentSections = useMemo<SubagentSection[]>(() => {
+    if (liveSubagents && liveSubagents.length > 0) return liveSubagents;
+    const sections: SubagentSection[] = [];
+    const byId = new Map<string, SubagentSection>();
+    for (const part of message.parts) {
+      if (part.type === "subagent") {
+        const section: SubagentSection = {
+          subagentId: part.subagentId,
+          label: part.label,
+          role: part.role,
+          status: "done",
+          ...(part.costUsd !== undefined ? { costUsd: part.costUsd } : {}),
+          reasoning: "",
+          answer: "",
+        };
+        byId.set(part.subagentId, section);
+        sections.push(section);
+        continue;
+      }
+      if (
+        (part.type === "reasoning" || part.type === "text") &&
+        part.subagentId
+      ) {
+        const section = byId.get(part.subagentId);
+        if (!section) continue;
+        if (part.type === "reasoning") section.reasoning += part.text;
+        else section.answer += part.text;
+      }
+    }
+    return sections;
+  }, [liveSubagents, message.parts]);
+
+  // The subagents whose answer text is THE answer (rendered as the main
+  // markdown body rather than folded into the panel): `single` mode's primary
+  // and deep research's aggregator. Worker/orchestrator text stays panel-only —
+  // parallel worker answers as sibling markdown blocks would read as a wall of
+  // partial answers.
+  const mainSubagentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const part of message.parts) {
+      if (
+        part.type === "subagent" &&
+        (part.role === "primary" || part.role === "aggregator")
+      ) {
+        ids.add(part.subagentId);
+      }
+    }
+    return ids;
+  }, [message.parts]);
+
+  // The panel renders ONCE, in place of the first `subagent` marker, covering
+  // every section; later markers are skipped.
+  const firstSubagentIdx = useMemo(
+    () => message.parts.findIndex((p) => p.type === "subagent"),
+    [message.parts],
+  );
+
   const answerText = useMemo(
     () =>
       message.parts
-        .filter((p): p is Extract<MessagePart, { type: "text" }> => p.type === "text")
+        .filter(
+          (p): p is Extract<MessagePart, { type: "text" }> =>
+            p.type === "text" &&
+            // Agentic turns: only the main (primary/aggregator) answer counts —
+            // copying a message should yield the synthesis, not every worker's
+            // intermediate finding.
+            (p.subagentId === undefined || mainSubagentIds.has(p.subagentId)),
+        )
         .map((p) => p.text)
         .join("\n\n"),
-    [message.parts],
+    [message.parts, mainSubagentIds],
   );
 
   // Source list for this message (if any) drives the inline `[n]` citation
@@ -167,7 +251,12 @@ export function AssistantMessage({
   const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
 
   const hasContent = message.parts.some(
-    (p) => (p.type === "text" || p.type === "reasoning") && p.text.length > 0,
+    (p) =>
+      ((p.type === "text" || p.type === "reasoning") && p.text.length > 0) ||
+      // A subagent marker means orchestration activity is on screen (the
+      // panel), so the typing indicator should yield even before any tagged
+      // text lands.
+      p.type === "subagent",
   );
   const showTyping = status === "submitted" || (status === "streaming" && !hasContent);
   const isDone = status === "done";
@@ -219,7 +308,20 @@ export function AssistantMessage({
       {showTyping ? <TypingIndicator /> : null}
 
       {message.parts.map((part, idx) => {
+        if (part.type === "subagent") {
+          // The panel covers ALL sections; render it once at the first marker.
+          return idx === firstSubagentIdx ? (
+            <SubagentPanel
+              key={idx}
+              sections={subagentSections}
+              runCost={runCost}
+            />
+          ) : null;
+        }
         if (part.type === "reasoning") {
+          // Subagent-tagged reasoning lives inside the panel's per-worker rows;
+          // the global reasoning panel renders untagged reasoning only.
+          if (part.subagentId) return null;
           return (
             <ReasoningPanel
               key={idx}
@@ -231,6 +333,11 @@ export function AssistantMessage({
           );
         }
         if (part.type === "text") {
+          // Subagent-tagged text: only the main (primary/aggregator) answer
+          // renders as the markdown body; worker text stays panel-only.
+          if (part.subagentId && !mainSubagentIds.has(part.subagentId)) {
+            return null;
+          }
           return part.text ? (
             <div key={idx} data-testid="assistant-answer">
               <MarkdownRenderer

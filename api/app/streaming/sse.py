@@ -24,8 +24,11 @@ from app.schemas.stream_events import (
     AnswerDeltaEvent,
     ReasoningDeltaEvent,
     ReasoningDoneEvent,
+    RunCostEvent,
     SourcesEvent,
     StatusEvent,
+    SubagentDoneEvent,
+    SubagentStartedEvent,
     SubmittedEvent,
     TerminalEvent,
     ToolCallEvent,
@@ -92,6 +95,27 @@ def encode_answer_delta(payload: AnswerDeltaEvent) -> ServerSentEvent:
 def encode_terminal(payload: TerminalEvent) -> ServerSentEvent:
     return ServerSentEvent(
         event="terminal",
+        data=payload.model_dump_json(by_alias=True, exclude_none=True),
+    )
+
+
+def encode_subagent_started(payload: SubagentStartedEvent) -> ServerSentEvent:
+    return ServerSentEvent(
+        event="subagent_started",
+        data=payload.model_dump_json(by_alias=True, exclude_none=True),
+    )
+
+
+def encode_subagent_done(payload: SubagentDoneEvent) -> ServerSentEvent:
+    return ServerSentEvent(
+        event="subagent_done",
+        data=payload.model_dump_json(by_alias=True, exclude_none=True),
+    )
+
+
+def encode_run_cost(payload: RunCostEvent) -> ServerSentEvent:
+    return ServerSentEvent(
+        event="run_cost",
         data=payload.model_dump_json(by_alias=True, exclude_none=True),
     )
 

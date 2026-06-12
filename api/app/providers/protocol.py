@@ -118,10 +118,18 @@ class ResponseFormat:
     schema: dict[str, Any] | None = None
 
 
+# Agentic mode (multi-agent orchestration): every content/usage event MAY carry
+# a `subagent_id` tagging the orchestrator subagent (worker / aggregator /
+# primary) that produced it. None on every non-agentic path — the orchestrator
+# (`app/agentic/orchestrator.py`) is the ONLY producer that sets it, so the
+# field is invisible (omitted from the wire via `exclude_none`) for every
+# existing single-stream turn and the flag-off path stays byte-for-byte
+# identical.
 @dataclass(frozen=True)
 class ReasoningDelta:
     type: Literal["reasoning_delta"] = "reasoning_delta"
     text: str = ""
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +141,7 @@ class ReasoningDone:
 class AnswerDelta:
     type: Literal["answer_delta"] = "answer_delta"
     text: str = ""
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +156,7 @@ class StatusUpdate:
     label: str
     state: Literal["active", "done"]
     type: Literal["status_update"] = "status_update"
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +170,7 @@ class Sources:
 
     items: list[SourceItem] = field(default_factory=list)
     type: Literal["sources"] = "sources"
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +184,7 @@ class ToolCall:
     approval_state: ToolApprovalState = "not_required"
     input: dict[str, Any] | None = None
     type: Literal["tool_call"] = "tool_call"
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +200,7 @@ class ToolResult:
     output: dict[str, Any] | None = None
     error: str | None = None
     type: Literal["tool_result"] = "tool_result"
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +217,7 @@ class UsageUpdate:
     output_tokens: int = 0
     reasoning_tokens: int = 0
     cached_input_tokens: int = 0
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -222,6 +236,7 @@ class AwaitingApproval:
 
     tool_call_id: str
     type: Literal["awaiting_approval"] = "awaiting_approval"
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -242,6 +257,57 @@ class Complete:
     substituted_provider: str | None = None
     substituted_model: str | None = None
     substituted_display_label: str | None = None
+    subagent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SubagentStarted:
+    """Agentic mode: a subagent (primary / worker / aggregator) began streaming.
+
+    Emitted by the orchestrator BEFORE any of that subagent's tagged content
+    events so the handler (and FE) can open a transcript section keyed on
+    `subagent_id`. `role` distinguishes the orchestration role (`primary` for the
+    single-loop turn, `worker` / `aggregator` for deep-research fan-out); `label`
+    is the human-facing name.
+    """
+
+    subagent_id: str
+    label: str
+    role: str
+    type: Literal["subagent_started"] = "subagent_started"
+
+
+@dataclass(frozen=True)
+class SubagentDone:
+    """Agentic mode: a subagent finished streaming.
+
+    Carries that subagent's accumulated `usage` and computed `cost_usd` so the
+    handler can attribute per-subagent cost and the FE can render a per-subagent
+    spend chip. `label` / `role` echo the matching `SubagentStarted` so a late
+    subscriber that missed the start can still render the section.
+    """
+
+    subagent_id: str
+    label: str | None = None
+    role: str | None = None
+    usage: UsageUpdate = field(default_factory=UsageUpdate)
+    cost_usd: float | None = None
+    type: Literal["subagent_done"] = "subagent_done"
+
+
+@dataclass(frozen=True)
+class RunCost:
+    """Agentic mode: the running cost subtotal for the whole orchestration run.
+
+    `subtotal_usd` is the sum of every subagent's cost so far; `cap_usd` is the
+    configured per-run budget (`AGENTIC_RUN_BUDGET_USD`). Scaffold for the M3
+    budget/admission control — the handler relays it to the wire but does not yet
+    enforce the cap.
+    """
+
+    subtotal_usd: float
+    cap_usd: float
+    type: Literal["run_cost"] = "run_cost"
 
 
 ProviderEvent = (
@@ -255,6 +321,9 @@ ProviderEvent = (
     | UsageUpdate
     | AwaitingApproval
     | Complete
+    | SubagentStarted
+    | SubagentDone
+    | RunCost
 )
 
 

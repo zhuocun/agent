@@ -83,4 +83,5 @@ async def bootstrap(
             )
             for row in tag_rows
         ],
+        agentic_enabled=settings.agentic_enabled and settings.tools_enabled,
     )

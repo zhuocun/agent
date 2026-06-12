@@ -27,12 +27,17 @@ from app.uploads import TEXT_MIME_TYPES
 class TextPart(CamelModel):
     type: Literal["text"] = "text"
     text: str
+    # Agentic mode only: the orchestrator subagent that produced this part. None
+    # (omitted via `exclude_none`) for every non-agentic message, so the
+    # persisted/wire shape is byte-for-byte unchanged off the agentic path.
+    subagent_id: str | None = None
 
 
 class ReasoningPart(CamelModel):
     type: Literal["reasoning"] = "reasoning"
     text: str
     duration_sec: float | None = None
+    subagent_id: str | None = None
 
 
 class StatusPart(CamelModel):
@@ -127,6 +132,7 @@ class ToolCallPart(CamelModel):
     status: ToolRunStatus = "pending"
     approval_state: ToolApprovalState = "not_required"
     input: dict[str, Any] | None = None
+    subagent_id: str | None = None
 
 
 class ToolResultPart(CamelModel):
@@ -141,18 +147,7 @@ class ToolResultPart(CamelModel):
     summary: str | None = None
     output: dict[str, Any] | None = None
     error: str | None = None
-
-
-MessagePart = Annotated[
-    TextPart
-    | ReasoningPart
-    | StatusPart
-    | SourcesPart
-    | AttachmentPart
-    | ToolCallPart
-    | ToolResultPart,
-    Field(discriminator="type"),
-]
+    subagent_id: str | None = None
 
 
 class AppliedTier(CamelModel):
@@ -243,6 +238,39 @@ class ModelAttribution(CamelModel):
     # used here" chip back to the exact ledger rows. Omitted (None) for
     # memory-off turns so the wire shape is unchanged.
     memory_fact_ids: list[str] | None = None
+
+
+class SubagentPart(CamelModel):
+    """Agentic mode: a marker part opening one orchestrator subagent's section.
+
+    Persisted (and streamed) ahead of that subagent's tagged content parts so a
+    reload can group the transcript by subagent and render per-subagent
+    attribution / spend. `role` is the orchestration role (`primary` / `worker`
+    / `aggregator`); `attribution` and `cost_usd` are optional so a section can
+    render before its subagent finishes. Present ONLY on agentic turns — a
+    non-agentic message never carries this part, so the union addition is inert
+    for every existing message.
+    """
+
+    type: Literal["subagent"] = "subagent"
+    subagent_id: str
+    label: str
+    role: str
+    attribution: ModelAttribution | None = None
+    cost_usd: float | None = None
+
+
+MessagePart = Annotated[
+    TextPart
+    | ReasoningPart
+    | StatusPart
+    | SourcesPart
+    | AttachmentPart
+    | ToolCallPart
+    | ToolResultPart
+    | SubagentPart,
+    Field(discriminator="type"),
+]
 
 
 class ChatMessage(CamelModel):

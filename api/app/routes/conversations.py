@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
+from app.agentic import PLAN_APPROVAL_CALL_ID, PLAN_APPROVAL_TOOL_NAME
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -2247,6 +2248,36 @@ async def send_message(
         memory_fact_ids = [fact_id for fact_id, _ in injected]
         memory_facts = [content for _, content in injected]
 
+    # Agentic Pro/BYOK entitlement gate (M3, FR-26 / T7). `deep_research` is the
+    # expensive multi-agent mode, so it is reserved for entitled callers: a BYOK
+    # turn (the user pays their own provider) OR an active platform Pro
+    # entitlement. A non-entitled caller is COERCED down to `single` rather than
+    # refused, so the request still streams a useful answer (graceful degrade,
+    # never a hard error). `single` and the flag-off path are unaffected.
+    effective_agentic_mode = body.agentic_mode
+    if effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
+        db, user=user, api_key=resolved_api_key
+    ):
+        effective_agentic_mode = "single"
+
+    # Per-run budget headroom (M3, T5). The deep-research budget composes the
+    # per-run cap (`AGENTIC_RUN_BUDGET_USD`) with the caller's REMAINING
+    # platform allowance so a run can never overshoot the monthly quota. Only
+    # platform-key turns are constrained (BYOK pays their own provider, so the
+    # platform cap does not apply → None = "cap only"); `get_platform_remaining_usd`
+    # already returns None when no positive quota is enforced.
+    budget_headroom_usd: float | None = None
+    if (
+        effective_agentic_mode == "deep_research"
+        and resolved_api_key is None
+        and effective_quota_usd > 0
+    ):
+        budget_headroom_usd = await usage_repo.get_platform_remaining_usd(
+            db,
+            user_id=user.id,
+            monthly_quota_usd=effective_quota_usd,
+        )
+
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
     # appends every wire event to an in-process ReplayBuffer; this POST then
@@ -2295,6 +2326,8 @@ async def send_message(
             fallback_substitution="provider_fallback",
             tool_approval=body.tool_approval,
             resume_seed=resume_seed,
+            agentic_mode=effective_agentic_mode,
+            budget_headroom_usd=budget_headroom_usd,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -2347,6 +2380,8 @@ async def send_message(
             fallback_substitution="provider_fallback",
             tool_approval=body.tool_approval,
             resume_seed=resume_seed,
+            agentic_mode=effective_agentic_mode,
+            budget_headroom_usd=budget_headroom_usd,
         ):
             yield sse_event
 
@@ -2668,6 +2703,46 @@ async def _prepare_resume_tool(
         )
 
     tool_name = str(pending.get("name") or "")
+
+    # Plan-approval HITL resume (agentic, T6). The orchestrator pauses on a
+    # PSEUDO `agentic_plan_approval` tool that is NOT in `TOOL_REGISTRY`, so it
+    # must bypass the registry/`needs_approval` gate and the tool-input
+    # allowlist below. We re-run the orchestrator with `plan_approved` derived
+    # from the decision (the handler reads `is_plan` and skips seeding a
+    # `tool_result`), re-decomposing the ORIGINAL prompt — so `provider_user_text`
+    # is the original user turn, not the approve/deny continuation instruction.
+    if decision.tool_call_id == PLAN_APPROVAL_CALL_ID and tool_name == PLAN_APPROVAL_TOOL_NAME:
+        user_message_id = last_assistant.responds_to_message_id
+        if user_message_id is None:
+            last_user = await messages_repo.get_last_user_message(db, conversation_id)
+            if last_user is None:
+                raise _nothing_to_resume()
+            user_message_id = last_user.id
+        user_row = await messages_repo.get_by_id(db, user_message_id)
+        if user_row is None:
+            raise _nothing_to_resume()
+        attachments = _attachment_payloads_from_parts(user_row.parts)
+        if attachments and not supports_attachments:
+            raise _attachments_unsupported()
+        if not supports_vision and any(
+            attachment.media_type == "image" for attachment in attachments
+        ):
+            raise _vision_unsupported()
+        history = await messages_repo.load_history(db, conversation_id)
+        await conversations_repo.touch_updated_at(db, conversation_id)
+        await db.commit()
+        plan_label = pending.get("label")
+        seed = ResumeToolSeed(
+            tool_call_id=decision.tool_call_id,
+            name=tool_name,
+            label=str(plan_label) if isinstance(plan_label, str) else None,
+            decision=decision.decision,
+            input=None,
+            is_plan=True,
+        )
+        original_text = _text_from_parts(user_row.parts)
+        return user_message_id, history, original_text, attachments, seed
+
     spec = TOOL_REGISTRY.get(tool_name)
     # Re-assert the gate server-side: the tool must exist AND genuinely require
     # approval. A forged approve for an unknown / non-gated tool is refused.

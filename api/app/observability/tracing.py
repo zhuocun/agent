@@ -26,7 +26,9 @@ assert on captured spans without standing up a collector.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import contextlib
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from structlog.typing import EventDict, WrappedLogger
@@ -170,6 +172,66 @@ def add_otel_log_processor(
     event_dict["trace_id"] = f"{ctx.trace_id:032x}"
     event_dict["span_id"] = f"{ctx.span_id:016x}"
     return event_dict
+
+
+# Tracer name for the agentic span tree. A single named tracer so a run's
+# `invoke_agent` / `execute_tool` spans group under one instrumentation scope.
+_AGENTIC_TRACER = "app.agentic"
+
+
+@contextlib.contextmanager
+def invoke_agent_span(
+    *,
+    subagent_id: str,
+    role: str,
+    label: str | None = None,
+) -> Iterator[Any]:
+    """Manual OTel span for one orchestrator subagent (agentic mode, M3).
+
+    One `invoke_agent` span per subagent (primary / worker / aggregator),
+    nested under the turn's auto-instrumented request span. Carries ids +
+    role/label only — NEVER message content (matching the structured-log
+    discipline). A no-op when OpenTelemetry isn't importable, and a non-recording
+    span (negligible cost) when no tracer provider is configured, so the
+    flag-off / OTel-off paths are unaffected.
+    """
+    try:
+        from opentelemetry import trace
+    except ImportError:  # pragma: no cover - defensive
+        yield None
+        return
+    tracer = trace.get_tracer(_AGENTIC_TRACER)
+    with tracer.start_as_current_span("invoke_agent") as span:
+        span.set_attribute("agentic.subagent_id", subagent_id)
+        span.set_attribute("agentic.role", role)
+        if label is not None:
+            span.set_attribute("agentic.label", label)
+        yield span
+
+
+@contextlib.contextmanager
+def execute_tool_span(
+    *,
+    tool_name: str,
+    subagent_id: str | None = None,
+) -> Iterator[Any]:
+    """Manual OTel span for one tool execution (agentic mode, M3).
+
+    Nested under the owning subagent's `invoke_agent` span. Carries the tool
+    name + optional subagent id only — never tool input/output content. Same
+    no-op / non-recording semantics as `invoke_agent_span`.
+    """
+    try:
+        from opentelemetry import trace
+    except ImportError:  # pragma: no cover - defensive
+        yield None
+        return
+    tracer = trace.get_tracer(_AGENTIC_TRACER)
+    with tracer.start_as_current_span("execute_tool") as span:
+        span.set_attribute("tool.name", tool_name)
+        if subagent_id is not None:
+            span.set_attribute("agentic.subagent_id", subagent_id)
+        yield span
 
 
 def reset_tracing_for_tests() -> None:

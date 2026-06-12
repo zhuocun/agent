@@ -406,6 +406,40 @@ class Settings(BaseSettings):
     # cancelled and reported as a failed result rather than hanging the turn.
     tool_timeout_seconds: float = Field(default=10.0, alias="TOOL_TIMEOUT_SECONDS")
 
+    # Agentic mode (multi-agent orchestration). DEFAULT-OFF feature flag — a hard
+    # safety gate around the orchestrator, layered ON TOP of `tools_enabled`. When
+    # False (the default), the orchestrator never runs and the streaming path is
+    # byte-for-byte identical to a pre-agentic build: an `agenticMode` on the send
+    # request is ignored entirely (the handler only branches into the orchestrator
+    # when BOTH this flag is on AND a non-None mode is requested AND tools are on).
+    # When True, a send carrying `agenticMode` drives `app/agentic/orchestrator.py`
+    # instead of the bare agent loop. Requires `tools_enabled` (the orchestrator
+    # builds on the tool seam); `assert_prod_safe()` refuses the inconsistent
+    # combination at boot.
+    agentic_enabled: bool = Field(default=False, alias="AGENTIC_ENABLED")
+    # Hard upper bound on the number of fan-out workers a single deep-research run
+    # may spawn (the planner truncates its decomposition to this many
+    # sub-questions). Bounds parallel provider spend per turn.
+    agentic_max_workers: int = Field(default=4, alias="AGENTIC_MAX_WORKERS")
+    # Max number of workers allowed to run concurrently (the fan-out semaphore
+    # width). Keeps in-flight provider calls per turn bounded independently of the
+    # total worker count.
+    agentic_max_concurrency: int = Field(default=3, alias="AGENTIC_MAX_CONCURRENCY")
+    # Max orchestration depth (a worker spawning its own sub-workers). M1/M2 run a
+    # single level; reserved for deeper recursion in a later milestone.
+    agentic_max_depth: int = Field(default=1, alias="AGENTIC_MAX_DEPTH")
+    # Per-run cost budget (USD) surfaced on the `run_cost` wire event as the cap.
+    # Scaffold for the M3 budget/admission control; not yet enforced.
+    agentic_run_budget_usd: float = Field(default=1.0, alias="AGENTIC_RUN_BUDGET_USD")
+    # Plan-approval gate (M3). When True, a deep-research plan pauses for human
+    # approval before fan-out. Scaffold default-off; the hook is a no-op for now.
+    agentic_plan_approval: bool = Field(default=False, alias="AGENTIC_PLAN_APPROVAL")
+    # Answer verifier (M3). When True, the synthesized answer is cross-checked by
+    # `AGENTIC_VERIFIER_N` independent passes. Scaffold default-off; the hook is a
+    # no-op for now.
+    agentic_verifier: bool = Field(default=False, alias="AGENTIC_VERIFIER")
+    agentic_verifier_n: int = Field(default=3, alias="AGENTIC_VERIFIER_N")
+
     # Public platform-status derivation (PRD 08 §10). The `/api/status` route
     # derives platform health from recent `Stream` telemetry with one COUNT
     # query: it reports `degraded` only when the recent window holds a MEANINGFUL
@@ -495,6 +529,24 @@ class Settings(BaseSettings):
                 f"{self.byok_current_kek_version} but no matching entry in "
                 "BYOK_KEK_VERSIONS"
             )
+
+        # Agentic mode is layered on top of the tool seam — it cannot run without
+        # tools. Refuse the inconsistent combination at every env so a
+        # misconfiguration fails loudly at boot rather than producing a no-op
+        # orchestrator at request time.
+        if self.agentic_enabled and not self.tools_enabled:
+            raise RuntimeError("AGENTIC_ENABLED requires TOOLS_ENABLED")
+        # Positive-bound validation for the orchestrator knobs. A non-positive
+        # worker/concurrency/depth count or budget would make the fan-out math
+        # ill-defined (an empty semaphore, a zero-width plan), so reject them.
+        if self.agentic_max_workers < 1:
+            raise RuntimeError("AGENTIC_MAX_WORKERS must be >= 1")
+        if self.agentic_max_concurrency < 1:
+            raise RuntimeError("AGENTIC_MAX_CONCURRENCY must be >= 1")
+        if self.agentic_max_depth < 1:
+            raise RuntimeError("AGENTIC_MAX_DEPTH must be >= 1")
+        if self.agentic_run_budget_usd <= 0:
+            raise RuntimeError("AGENTIC_RUN_BUDGET_USD must be > 0")
 
         if self.env != "production":
             return

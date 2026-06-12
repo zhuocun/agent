@@ -24,3 +24,9 @@ class BootstrapResponse(CamelModel):
     # Tags (Conversation Org v2): the caller's labels, so the sidebar can render
     # the Tags section + tag chips on first paint (mirrors `projects`).
     tags: list[Tag]
+    # Agentic mode availability. True only when the server has BOTH
+    # `AGENTIC_ENABLED` and `TOOLS_ENABLED` on (the orchestrator builds on the
+    # tool seam). The FE gates its agentic-mode picker on this so it never offers
+    # a mode the server would ignore. Defaults False so a flag-off build's
+    # bootstrap shape is unchanged.
+    agentic_enabled: bool = False

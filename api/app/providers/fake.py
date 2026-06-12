@@ -217,6 +217,30 @@ class FakeProvider:
             await asyncio.sleep(self._delay)
             yield ReasoningDone()
 
+        # Agentic deep-research worker. The orchestrator hands each worker
+        # subagent a prompt prefixed `DEEP_RESEARCH_WORKER:n:<sub-question>` (see
+        # `app/agentic/planner.py`); emit a deterministic per-worker finding so the
+        # aggregator has stable text to synthesize. The bare `DEEP_RESEARCH:`
+        # prompt is consumed by the planner, never by the provider — if it ever
+        # reaches the fake directly (agentic flag off) it falls through to the
+        # normal templated answer, preserving the flag-off no-op invariant.
+        if user_text.startswith("DEEP_RESEARCH_WORKER:"):
+            body = user_text[len("DEEP_RESEARCH_WORKER:") :]
+            worker_index, _, sub_question = body.partition(":")
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(
+                text=f"Worker {worker_index} finding on {sub_question}: result ready."
+            )
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
         if tools_on and user_text.startswith("TOOL_TIME:"):
             if not has_tool_feedback:
                 # Round 1: request the auto tool, then end the round (no answer /

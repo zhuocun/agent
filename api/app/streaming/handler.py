@@ -44,6 +44,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
 
+from app.agentic import budget
 from app.agentic.orchestrator import run_orchestrator
 from app.config import get_settings
 from app.db.repositories import analytics as analytics_repo
@@ -195,6 +196,12 @@ class ResumeToolSeed:
     label: str | None
     decision: str
     input: dict[str, Any] | None
+    # Plan-approval resume (agentic, T6): True when this seed resumes an
+    # orchestration PLAN approval (the pseudo `agentic_plan_approval` tool)
+    # rather than a real registry tool. The handler then re-runs the
+    # orchestrator with `plan_approved=(decision == "approve")` instead of
+    # emitting a seeded `tool_result`.
+    is_plan: bool = False
 
 
 @dataclass
@@ -544,6 +551,7 @@ async def stream_and_persist(
     tool_approval: ToolApprovalDecision | None = None,
     resume_seed: ResumeToolSeed | None = None,
     agentic_mode: Literal["single", "deep_research"] | None = None,
+    budget_headroom_usd: float | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -652,6 +660,14 @@ async def stream_and_persist(
     # carries `agenticMode` — is byte-for-byte identical to a pre-agentic build.
     agentic_active = (
         tools_active and handler_settings.agentic_enabled and agentic_mode is not None
+    )
+    # Plan-approval resume (T6): a `toolApproval` resume that targets the plan
+    # pseudo-tool carries the human decision back into the orchestrator as
+    # `plan_approved` (re-run + fan out / decline) — it does NOT emit a seeded
+    # `tool_result` the way a real-tool resume does. None on every other path.
+    plan_resume = resume_seed is not None and resume_seed.is_plan
+    plan_approved: bool | None = (
+        (resume_seed.decision == "approve") if plan_resume and resume_seed is not None else None
     )
     # Per-subagent accumulation for an agentic turn (T3). Ordered by first-seen
     # `SubagentStarted` so the persisted transcript groups subagents in emission
@@ -820,6 +836,20 @@ async def stream_and_persist(
         )
         return breakdown.subtotal_usd + breakdown.session_surcharge_usd
 
+    def _estimate_run_cost(sub_question_count: int) -> float:
+        """Worst-case run-cost estimate for pre-spawn admission (agentic only).
+
+        Called module-qualified so the budget methodology stays in one place
+        (and stays test-overridable). Reads the working `binding` at call time so
+        a fallback rebuild re-estimates against the fallback route.
+        """
+        return budget.estimate_run_cost(
+            sub_question_count=sub_question_count,
+            binding=binding,
+            settings=handler_settings,
+            image_count=image_attachment_count,
+        )
+
     # The current provider iterator. Rebuilt on a fallback retry so the pump
     # drains the alternate route. When agentic mode is active the stream is the
     # multi-agent orchestrator (which itself drives the agent loop per subagent);
@@ -837,6 +867,9 @@ async def stream_and_persist(
                 mode=agentic_mode,
                 user_text=turn_user_text,
                 cost_for_usage=_cost_for_usage,
+                estimate_cost=_estimate_run_cost,
+                budget_headroom_usd=budget_headroom_usd,
+                plan_approved=plan_approved,
             )
         if tools_active:
             return run_agent_loop(
@@ -1114,7 +1147,7 @@ async def stream_and_persist(
     # are [tool_result, …answer]. Approve runs the (timeout-wrapped) tool; deny
     # synthesizes a cancelled/rejected result WITHOUT executing — the side effect
     # must never happen on a denial.
-    if resume_seed is not None:
+    if resume_seed is not None and not resume_seed.is_plan:
         if resume_seed.decision == "approve":
             exec_result = await execute_tool(
                 ToolCallRequest(
@@ -1927,6 +1960,7 @@ async def run_detached_producer(
     tool_approval: ToolApprovalDecision | None = None,
     resume_seed: ResumeToolSeed | None = None,
     agentic_mode: Literal["single", "deep_research"] | None = None,
+    budget_headroom_usd: float | None = None,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 

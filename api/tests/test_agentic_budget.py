@@ -1,14 +1,14 @@
-"""Agentic orchestrator end-to-end: single loop (M1) + deep-research fan-out (M2).
+"""Per-run budget admission + mid-flight kill (M3, T5).
 
-Drives the FAKE provider behind `TOOLS_ENABLED=true` AND `AGENTIC_ENABLED=true`.
+Drives the FAKE provider behind `TOOLS_ENABLED=true` + `AGENTIC_ENABLED=true`.
 Covers:
-- `single` mode: one `primary` subagent, bracketed by `subagent_started` /
-  `subagent_done`, a `run_cost` frame, and a subagent-grouped persisted
-  transcript.
-- `deep_research` mode: the planner splits a `DEEP_RESEARCH:` prompt into
-  sub-questions, parallel `worker` subagents answer them, and an `aggregator`
-  synthesizes the final answer — all surfaced on the wire and persisted grouped
-  by subagent.
+- Pre-spawn reservation: when the worst-case estimate exceeds the effective
+  cap, workers are NOT spawned and the turn ends in a labeled `done` synthesis
+  (never `error`).
+- Mid-flight kill: when actual accumulated worker cost breaches the cap, the
+  run cancels remaining workers and synthesizes a partial answer labeled as
+  budget-halted.
+- `run_cost` ticks surface the configured cap on the wire.
 """
 
 from __future__ import annotations
@@ -24,22 +24,24 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agentic import budget
 from app.config import get_settings
-from app.db.models import Conversation, Message, User
+from app.db.models import Conversation, User
 from app.db.repositories import billing as billing_repo
 from app.db.session import get_db
-
-pytestmark = pytest.mark.asyncio
-
+from app.providers.pricing import compute_cost_breakdown
+from app.providers.protocol import UsageUpdate
+from app.providers.tiers import get_binding
 
 # Fixtures ---------------------------------------------------------------------
 
 
 @pytest.fixture
 def agentic_env() -> Iterator[None]:
-    """Turn BOTH the tool-calling and agentic flags ON for the test."""
+    """Tool-calling + agentic flags ON; per-test budget knobs via monkeypatch."""
     prior_tools = os.environ.get("TOOLS_ENABLED")
     prior_agentic = os.environ.get("AGENTIC_ENABLED")
+    prior_budget = os.environ.get("AGENTIC_RUN_BUDGET_USD")
     os.environ["TOOLS_ENABLED"] = "true"
     os.environ["AGENTIC_ENABLED"] = "true"
     get_settings.cache_clear()
@@ -49,6 +51,7 @@ def agentic_env() -> Iterator[None]:
         for key, prior in (
             ("TOOLS_ENABLED", prior_tools),
             ("AGENTIC_ENABLED", prior_agentic),
+            ("AGENTIC_RUN_BUDGET_USD", prior_budget),
         ):
             if prior is None:
                 os.environ.pop(key, None)
@@ -170,13 +173,6 @@ async def _current_user_id(session_factory: async_sessionmaker[AsyncSession]) ->
 async def _grant_pro(
     session_factory: async_sessionmaker[AsyncSession], *, user_id: object
 ) -> None:
-    """Grant the test user an active Pro entitlement.
-
-    `deep_research` is Pro/BYOK-gated (M3, T7): without an entitlement (or a
-    BYOK key) the route coerces it down to `single`. The test user is an
-    anonymous guest with no key, so the fan-out tests must establish Pro
-    explicitly to exercise the deep-research path.
-    """
     async with session_factory() as session:
         await billing_repo.upsert_subscription_entitlement(
             session,
@@ -191,24 +187,6 @@ async def _grant_pro(
         await session.commit()
 
 
-async def _load_messages(
-    session_factory: async_sessionmaker[AsyncSession], conv_id: str
-) -> list[Message]:
-    async with session_factory() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(Message)
-                    .where(Message.conversation_id == conv_id)
-                    .order_by(Message.created_at.asc(), Message.id.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return list(rows)
-
-
 def _names(frames: list[tuple[str, dict[str, object]]]) -> list[str]:
     return [name for name, _ in frames]
 
@@ -217,76 +195,93 @@ def _answer(frames: list[tuple[str, dict[str, object]]]) -> str:
     return "".join(str(d.get("text", "")) for n, d in frames if n == "answer_delta")
 
 
-def _parts(message: Message) -> list[dict[str, object]]:
-    raw = message.parts
-    if not isinstance(raw, list):
-        return []
-    return [p for p in raw if isinstance(p, dict)]
+def _fake_worker_cost() -> float:
+    """USD cost of one fake deep-research worker completion (smart tier)."""
+    binding = get_binding("smart")
+    usage = UsageUpdate(input_tokens=50, output_tokens=100, reasoning_tokens=10)
+    breakdown = compute_cost_breakdown(usage=usage, binding=binding)
+    return breakdown.subtotal_usd + breakdown.session_surcharge_usd
 
 
-# 1. Single mode ---------------------------------------------------------------
+# Unit-level budget math -------------------------------------------------------
 
 
-async def test_single_mode_wraps_one_primary_subagent(
+def test_effective_cap_composes_headroom() -> None:
+    assert budget.effective_cap(cap_usd=1.0, headroom_usd=0.25) == 0.25
+    assert budget.effective_cap(cap_usd=0.25, headroom_usd=1.0) == 0.25
+    # BYOK / unlimited headroom: cap only.
+    assert budget.effective_cap(cap_usd=1.0, headroom_usd=None) == 1.0
+
+
+def test_admit_rejects_over_estimate() -> None:
+    decision = budget.admit(estimated_usd=2.0, cap_usd=1.0, headroom_usd=None)
+    assert decision.admitted is False
+    assert decision.effective_cap_usd == 1.0
+
+
+# Integration ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pre_spawn_estimate_exceeds_cap_no_workers_spawned(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert get_settings().agentic_enabled is True
+    """When the estimate cannot fit the cap, fan-out never starts."""
+    monkeypatch.setenv("AGENTIC_RUN_BUDGET_USD", "0.000001")
+    get_settings.cache_clear()
 
     await agentic_client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
 
     frames = await _collect_sse(
         agentic_client,
         f"/api/conversations/{conv_id}/messages",
-        {"clientMessageId": "30000000-0000-0000-0000-000000000001",
-         "tierId": "smart", "text": "explain agentic mode", "agenticMode": "single"},
+        {
+            "clientMessageId": "50000000-0000-0000-0000-000000000001",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: topic a | topic b",
+            "agenticMode": "deep_research",
+        },
     )
-    names = _names(frames)
-    assert "subagent_started" in names
-    assert "subagent_done" in names
-    assert "run_cost" in names
-    assert names[-1] == "terminal"
+    assert frames[-1][0] == "terminal"
     assert frames[-1][1]["status"] == "done"
 
     started = [d for n, d in frames if n == "subagent_started"]
-    assert len(started) == 1
-    assert started[0]["subagentId"] == "primary"
-    assert started[0]["role"] == "primary"
+    worker_started = [d for d in started if d.get("role") == "worker"]
+    assert worker_started == []
 
-    # Every content delta is tagged with the primary subagent id.
-    answer_deltas = [d for n, d in frames if n == "answer_delta"]
-    assert answer_deltas
-    assert all(d.get("subagentId") == "primary" for d in answer_deltas)
+    answer = _answer(frames)
+    assert "not started" in answer.lower() or "exceeds" in answer.lower()
 
-    run_cost = next(d for n, d in frames if n == "run_cost")
-    assert run_cost["capUsd"] == get_settings().agentic_run_budget_usd
-    assert float(run_cost["subtotalUsd"]) >= 0.0
-
-    # Persisted transcript opens with a `subagent` marker, then primary-tagged
-    # reasoning + text.
-    msgs = await _load_messages(session_factory, conv_id)
-    assistant = [m for m in msgs if m.role == "assistant"]
-    assert len(assistant) == 1
-    parts = _parts(assistant[0])
-    assert parts[0]["type"] == "subagent"
-    assert parts[0]["subagentId"] == "primary"
-    assert parts[0]["role"] == "primary"
-    types = [p["type"] for p in parts]
-    assert "text" in types
-    text_part = next(p for p in parts if p["type"] == "text")
-    assert text_part["subagentId"] == "primary"
-    assert assistant[0].status == "done"
+    run_cost = next((d for n, d in frames if n == "run_cost"), None)
+    assert run_cost is not None
+    assert run_cost["capUsd"] == pytest.approx(0.000001)
 
 
-# 2. Deep research fan-out -----------------------------------------------------
-
-
-async def test_deep_research_fans_out_workers_and_aggregates(
+@pytest.mark.asyncio
+async def test_mid_flight_cap_halts_partial_synthesis(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Actual cost breach cancels remaining workers and labels a partial answer."""
+    worker_cost = _fake_worker_cost()
+    # The FR-26g worst-case estimate dwarfs fake-provider actuals, so patch the
+    # estimator down for this test: admit the run, then let the mid-flight
+    # actual-cost check fire after the first worker's `SubagentDone`.
+    cap = worker_cost * 1.5
+    monkeypatch.setenv("AGENTIC_RUN_BUDGET_USD", str(cap))
+
+    def _low_estimate(**_kwargs: object) -> float:
+        return worker_cost * 0.5
+
+    monkeypatch.setattr(budget, "estimate_run_cost", _low_estimate)
+    get_settings.cache_clear()
+
     await agentic_client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
     await _grant_pro(session_factory, user_id=user_id)
@@ -295,68 +290,20 @@ async def test_deep_research_fans_out_workers_and_aggregates(
     frames = await _collect_sse(
         agentic_client,
         f"/api/conversations/{conv_id}/messages",
-        {"clientMessageId": "40000000-0000-0000-0000-000000000001",
-         "tierId": "smart",
-         "text": "DEEP_RESEARCH: causes of inflation | effects on housing",
-         "agenticMode": "deep_research"},
+        {
+            "clientMessageId": "50000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: topic a | topic b",
+            "agenticMode": "deep_research",
+        },
     )
-    names = _names(frames)
-    assert names[-1] == "terminal"
+    assert frames[-1][0] == "terminal"
     assert frames[-1][1]["status"] == "done"
-    assert "run_cost" in names
 
-    started_ids = {
-        str(d["subagentId"]) for n, d in frames if n == "subagent_started"
-    }
-    assert started_ids == {"worker-0", "worker-1", "aggregator"}
-    done_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_done"}
-    assert done_ids == {"worker-0", "worker-1", "aggregator"}
+    answer = _answer(frames)
+    assert "Partial answer" in answer or "partial" in answer.lower()
 
-    # The aggregator answer synthesizes the two worker findings.
-    full_answer = _answer(frames)
-    assert "Synthesis of 2 findings" in full_answer
-    assert "causes of inflation" in full_answer
-    assert "effects on housing" in full_answer
-    aggregator_answer = "".join(
-        str(d.get("text", ""))
-        for n, d in frames
-        if n == "answer_delta" and d.get("subagentId") == "aggregator"
-    )
-    assert "Synthesis of 2 findings" in aggregator_answer
-
-    # Persisted transcript carries a `subagent` marker per subagent, each with a
-    # subagent-tagged text part.
-    msgs = await _load_messages(session_factory, conv_id)
-    assistant = [m for m in msgs if m.role == "assistant"]
-    assert len(assistant) == 1
-    parts = _parts(assistant[0])
-    marker_ids = [p["subagentId"] for p in parts if p["type"] == "subagent"]
-    assert marker_ids == ["worker-0", "worker-1", "aggregator"]
-    text_subagents = {p["subagentId"] for p in parts if p["type"] == "text"}
-    assert text_subagents == {"worker-0", "worker-1", "aggregator"}
-    assert assistant[0].status == "done"
-
-
-async def test_deep_research_without_marker_runs_single_worker(
-    agentic_client: AsyncClient,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    # A deep-research turn whose prompt has no `DEEP_RESEARCH:` marker still
-    # produces a valid fan-out of exactly one worker + the aggregator.
-    await agentic_client.get("/api/bootstrap")
-    user_id = await _current_user_id(session_factory)
-    await _grant_pro(session_factory, user_id=user_id)
-    conv_id = await _seed_conversation(session_factory, user_id=user_id)
-
-    frames = await _collect_sse(
-        agentic_client,
-        f"/api/conversations/{conv_id}/messages",
-        {"clientMessageId": "50000000-0000-0000-0000-000000000001",
-         "tierId": "smart", "text": "a single research question",
-         "agenticMode": "deep_research"},
-    )
-    started_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_started"}
-    assert started_ids == {"worker-0", "aggregator"}
-    assert _names(frames)[-1] == "terminal"
-    assert frames[-1][1]["status"] == "done"
-    assert "Synthesis of 1 findings" in _answer(frames)
+    started = [d for n, d in frames if n == "subagent_started" and d.get("role") == "worker"]
+    # At least one worker started; budget kill should prevent both from completing
+    # when the cap only fits ~1 worker.
+    assert 1 <= len(started) <= 2

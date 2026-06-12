@@ -1,14 +1,14 @@
-"""Agentic orchestrator end-to-end: single loop (M1) + deep-research fan-out (M2).
+"""Plan-approval HITL for deep-research (M3, T6).
 
-Drives the FAKE provider behind `TOOLS_ENABLED=true` AND `AGENTIC_ENABLED=true`.
-Covers:
-- `single` mode: one `primary` subagent, bracketed by `subagent_started` /
-  `subagent_done`, a `run_cost` frame, and a subagent-grouped persisted
-  transcript.
-- `deep_research` mode: the planner splits a `DEEP_RESEARCH:` prompt into
-  sub-questions, parallel `worker` subagents answer them, and an `aggregator`
-  synthesizes the final answer — all surfaced on the wire and persisted grouped
-  by subagent.
+Drives the FAKE provider behind `TOOLS_ENABLED=true`, `AGENTIC_ENABLED=true`,
+and `AGENTIC_PLAN_APPROVAL=true`. Covers:
+- A fresh `deep_research` turn PAUSES before any fan-out, surfacing the plan +
+  estimate on a pseudo `agentic_plan_approval` tool call and ending the turn in
+  the `awaiting_approval` terminal (no workers spawned yet).
+- A `toolApproval` resume that APPROVES the plan re-runs the orchestrator and
+  fans out workers + aggregator to a `done` terminal.
+- A `toolApproval` resume that DENIES the plan skips the fan-out entirely and
+  finalizes a labeled (non-error) "declined" synthesis.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agentic import PLAN_APPROVAL_CALL_ID, PLAN_APPROVAL_TOOL_NAME
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.repositories import billing as billing_repo
@@ -37,23 +38,23 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 def agentic_env() -> Iterator[None]:
-    """Turn BOTH the tool-calling and agentic flags ON for the test."""
-    prior_tools = os.environ.get("TOOLS_ENABLED")
-    prior_agentic = os.environ.get("AGENTIC_ENABLED")
-    os.environ["TOOLS_ENABLED"] = "true"
-    os.environ["AGENTIC_ENABLED"] = "true"
+    """Tool-calling + agentic + plan-approval flags ON for the test."""
+    keys = {
+        "TOOLS_ENABLED": "true",
+        "AGENTIC_ENABLED": "true",
+        "AGENTIC_PLAN_APPROVAL": "true",
+    }
+    prior = {key: os.environ.get(key) for key in keys}
+    os.environ.update(keys)
     get_settings.cache_clear()
     try:
         yield
     finally:
-        for key, prior in (
-            ("TOOLS_ENABLED", prior_tools),
-            ("AGENTIC_ENABLED", prior_agentic),
-        ):
-            if prior is None:
+        for key, value in prior.items():
+            if value is None:
                 os.environ.pop(key, None)
             else:
-                os.environ[key] = prior
+                os.environ[key] = value
         get_settings.cache_clear()
 
 
@@ -170,13 +171,7 @@ async def _current_user_id(session_factory: async_sessionmaker[AsyncSession]) ->
 async def _grant_pro(
     session_factory: async_sessionmaker[AsyncSession], *, user_id: object
 ) -> None:
-    """Grant the test user an active Pro entitlement.
-
-    `deep_research` is Pro/BYOK-gated (M3, T7): without an entitlement (or a
-    BYOK key) the route coerces it down to `single`. The test user is an
-    anonymous guest with no key, so the fan-out tests must establish Pro
-    explicitly to exercise the deep-research path.
-    """
+    """Grant the test user an active Pro entitlement (deep_research is gated)."""
     async with session_factory() as session:
         await billing_repo.upsert_subscription_entitlement(
             session,
@@ -217,146 +212,165 @@ def _answer(frames: list[tuple[str, dict[str, object]]]) -> str:
     return "".join(str(d.get("text", "")) for n, d in frames if n == "answer_delta")
 
 
-def _parts(message: Message) -> list[dict[str, object]]:
-    raw = message.parts
-    if not isinstance(raw, list):
-        return []
-    return [p for p in raw if isinstance(p, dict)]
+_PROMPT = "DEEP_RESEARCH: causes of inflation | effects on housing"
 
 
-# 1. Single mode ---------------------------------------------------------------
-
-
-async def test_single_mode_wraps_one_primary_subagent(
-    agentic_client: AsyncClient,
+async def _pause_on_plan(
+    client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    assert get_settings().agentic_enabled is True
-
-    await agentic_client.get("/api/bootstrap")
-    user_id = await _current_user_id(session_factory)
-    conv_id = await _seed_conversation(session_factory, user_id=user_id)
-
-    frames = await _collect_sse(
-        agentic_client,
-        f"/api/conversations/{conv_id}/messages",
-        {"clientMessageId": "30000000-0000-0000-0000-000000000001",
-         "tierId": "smart", "text": "explain agentic mode", "agenticMode": "single"},
-    )
-    names = _names(frames)
-    assert "subagent_started" in names
-    assert "subagent_done" in names
-    assert "run_cost" in names
-    assert names[-1] == "terminal"
-    assert frames[-1][1]["status"] == "done"
-
-    started = [d for n, d in frames if n == "subagent_started"]
-    assert len(started) == 1
-    assert started[0]["subagentId"] == "primary"
-    assert started[0]["role"] == "primary"
-
-    # Every content delta is tagged with the primary subagent id.
-    answer_deltas = [d for n, d in frames if n == "answer_delta"]
-    assert answer_deltas
-    assert all(d.get("subagentId") == "primary" for d in answer_deltas)
-
-    run_cost = next(d for n, d in frames if n == "run_cost")
-    assert run_cost["capUsd"] == get_settings().agentic_run_budget_usd
-    assert float(run_cost["subtotalUsd"]) >= 0.0
-
-    # Persisted transcript opens with a `subagent` marker, then primary-tagged
-    # reasoning + text.
-    msgs = await _load_messages(session_factory, conv_id)
-    assistant = [m for m in msgs if m.role == "assistant"]
-    assert len(assistant) == 1
-    parts = _parts(assistant[0])
-    assert parts[0]["type"] == "subagent"
-    assert parts[0]["subagentId"] == "primary"
-    assert parts[0]["role"] == "primary"
-    types = [p["type"] for p in parts]
-    assert "text" in types
-    text_part = next(p for p in parts if p["type"] == "text")
-    assert text_part["subagentId"] == "primary"
-    assert assistant[0].status == "done"
-
-
-# 2. Deep research fan-out -----------------------------------------------------
-
-
-async def test_deep_research_fans_out_workers_and_aggregates(
-    agentic_client: AsyncClient,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    await agentic_client.get("/api/bootstrap")
+) -> tuple[str, list[tuple[str, dict[str, object]]]]:
+    """Drive a fresh deep-research turn to the plan-approval pause; return convo + frames."""
+    await client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
     await _grant_pro(session_factory, user_id=user_id)
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a0000000-0000-0000-0000-000000000001",
+            "tierId": "smart",
+            "text": _PROMPT,
+            "agenticMode": "deep_research",
+        },
+    )
+    return conv_id, frames
+
+
+# 1. Pause before fan-out ------------------------------------------------------
+
+
+async def test_plan_approval_pauses_before_fanout(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    assert get_settings().agentic_plan_approval is True
+    conv_id, frames = await _pause_on_plan(agentic_client, session_factory)
+
+    names = _names(frames)
+    assert names[-1] == "terminal"
+    assert frames[-1][1]["status"] == "awaiting_approval"
+
+    # The planner subagent paused the run; NO worker fan-out happened yet.
+    started_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_started"}
+    assert started_ids == {"planner"}
+    assert not any(sid.startswith("worker-") for sid in started_ids)
+    assert "aggregator" not in started_ids
+
+    # The plan + estimate are surfaced on the pseudo plan-approval tool call.
+    tool_calls = [d for n, d in frames if n == "tool_call"]
+    assert len(tool_calls) == 1
+    plan_call = tool_calls[0]
+    assert plan_call["id"] == PLAN_APPROVAL_CALL_ID
+    assert plan_call["name"] == PLAN_APPROVAL_TOOL_NAME
+    assert plan_call["status"] == "awaiting_approval"
+    assert plan_call["approvalState"] == "pending"
+    plan_input = plan_call["input"]
+    assert isinstance(plan_input, dict)
+    assert plan_input["plan"] == ["causes of inflation", "effects on housing"]
+    assert float(plan_input["estimatedCostUsd"]) > 0.0
+
+    # The live cost meter carries the estimate against the cap.
+    run_cost = next(d for n, d in frames if n == "run_cost")
+    assert float(run_cost["subtotalUsd"]) > 0.0
+    assert run_cost["capUsd"] == get_settings().agentic_run_budget_usd
+
+    # The terminal attribution is an ESTIMATE (no Complete fired before the pause).
+    terminal = frames[-1][1]
+    attribution = terminal["attribution"]
+    assert isinstance(attribution, dict)
+    assert attribution["costConfidence"] == "estimate"
+
+    # The paused assistant row persists the pending plan tool_call so the resume
+    # route can re-validate it.
+    msgs = await _load_messages(session_factory, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0].status == "awaiting_approval"
+    parts = [p for p in assistant[0].parts if isinstance(p, dict)]
+    plan_part = next(
+        p for p in parts if p.get("type") == "tool_call" and p.get("id") == PLAN_APPROVAL_CALL_ID
+    )
+    assert plan_part["status"] == "awaiting_approval"
+    assert plan_part["approvalState"] == "pending"
+
+
+# 2. Approve resumes the fan-out ----------------------------------------------
+
+
+async def test_plan_approval_approve_resumes_fanout(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    conv_id, _ = await _pause_on_plan(agentic_client, session_factory)
 
     frames = await _collect_sse(
         agentic_client,
         f"/api/conversations/{conv_id}/messages",
-        {"clientMessageId": "40000000-0000-0000-0000-000000000001",
-         "tierId": "smart",
-         "text": "DEEP_RESEARCH: causes of inflation | effects on housing",
-         "agenticMode": "deep_research"},
+        {
+            "clientMessageId": "a0000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": PLAN_APPROVAL_CALL_ID,
+                "decision": "approve",
+            },
+        },
     )
+
     names = _names(frames)
     assert names[-1] == "terminal"
     assert frames[-1][1]["status"] == "done"
-    assert "run_cost" in names
 
-    started_ids = {
-        str(d["subagentId"]) for n, d in frames if n == "subagent_started"
-    }
+    # Approval fans out to the workers + aggregator and synthesizes.
+    started_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_started"}
     assert started_ids == {"worker-0", "worker-1", "aggregator"}
-    done_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_done"}
-    assert done_ids == {"worker-0", "worker-1", "aggregator"}
-
-    # The aggregator answer synthesizes the two worker findings.
     full_answer = _answer(frames)
     assert "Synthesis of 2 findings" in full_answer
     assert "causes of inflation" in full_answer
     assert "effects on housing" in full_answer
-    aggregator_answer = "".join(
-        str(d.get("text", ""))
-        for n, d in frames
-        if n == "answer_delta" and d.get("subagentId") == "aggregator"
-    )
-    assert "Synthesis of 2 findings" in aggregator_answer
 
-    # Persisted transcript carries a `subagent` marker per subagent, each with a
-    # subagent-tagged text part.
+    # A second assistant row (done) now follows the paused one.
     msgs = await _load_messages(session_factory, conv_id)
     assistant = [m for m in msgs if m.role == "assistant"]
-    assert len(assistant) == 1
-    parts = _parts(assistant[0])
-    marker_ids = [p["subagentId"] for p in parts if p["type"] == "subagent"]
-    assert marker_ids == ["worker-0", "worker-1", "aggregator"]
-    text_subagents = {p["subagentId"] for p in parts if p["type"] == "text"}
-    assert text_subagents == {"worker-0", "worker-1", "aggregator"}
-    assert assistant[0].status == "done"
+    assert len(assistant) == 2
+    assert assistant[0].status == "awaiting_approval"
+    assert assistant[1].status == "done"
 
 
-async def test_deep_research_without_marker_runs_single_worker(
+# 3. Deny declines the run -----------------------------------------------------
+
+
+async def test_plan_approval_deny_declines_run(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    # A deep-research turn whose prompt has no `DEEP_RESEARCH:` marker still
-    # produces a valid fan-out of exactly one worker + the aggregator.
-    await agentic_client.get("/api/bootstrap")
-    user_id = await _current_user_id(session_factory)
-    await _grant_pro(session_factory, user_id=user_id)
-    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    conv_id, _ = await _pause_on_plan(agentic_client, session_factory)
 
     frames = await _collect_sse(
         agentic_client,
         f"/api/conversations/{conv_id}/messages",
-        {"clientMessageId": "50000000-0000-0000-0000-000000000001",
-         "tierId": "smart", "text": "a single research question",
-         "agenticMode": "deep_research"},
+        {
+            "clientMessageId": "a0000000-0000-0000-0000-000000000003",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": PLAN_APPROVAL_CALL_ID,
+                "decision": "deny",
+            },
+        },
     )
-    started_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_started"}
-    assert started_ids == {"worker-0", "aggregator"}
-    assert _names(frames)[-1] == "terminal"
+
+    names = _names(frames)
+    assert names[-1] == "terminal"
+    # A decline is a graceful, non-error terminal.
     assert frames[-1][1]["status"] == "done"
-    assert "Synthesis of 1 findings" in _answer(frames)
+
+    # No workers ran; only the aggregator finalized a labeled declined synthesis.
+    started_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_started"}
+    assert started_ids == {"aggregator"}
+    assert not any(sid.startswith("worker-") for sid in started_ids)
+    full_answer = _answer(frames)
+    assert "declined" in full_answer.lower()

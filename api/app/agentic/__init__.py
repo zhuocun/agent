@@ -19,6 +19,14 @@ Modes:
 
 from __future__ import annotations
 
-from app.agentic.orchestrator import run_orchestrator
+from app.agentic.orchestrator import (
+    PLAN_APPROVAL_CALL_ID,
+    PLAN_APPROVAL_TOOL_NAME,
+    run_orchestrator,
+)
 
-__all__ = ["run_orchestrator"]
+__all__ = [
+    "PLAN_APPROVAL_CALL_ID",
+    "PLAN_APPROVAL_TOOL_NAME",
+    "run_orchestrator",
+]

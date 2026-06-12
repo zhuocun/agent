@@ -158,9 +158,13 @@ Citations are the **source-side** of the transparency contract — the counterpa
 
 **AC:** a search-requested turn that resolves zero sources renders an explicit "answered without live sources" marker (asserted on an empty-result fixture, and its absence asserted on a grounded fixture); grounded state + provenance round-trip on reload, replay, and share. Cite D24.
 
-### 4.4 Agentic runs — per-subagent attribution & per-run cost **[P2 — spec'd; not built]**
+### 4.4 Agentic runs — per-subagent attribution & per-run cost **[P2 — PARTIALLY SHIPPED behind `AGENTIC_ENABLED`]**
 
 When **agentic mode** (PRD 02 §4.6 FR-26c–FR-26k; PRD 00 §11 D33–D40) fans a single turn out to bounded subagents, the contract holds **per subagent, not just per turn**: each subagent records its own served-model attribution + substitution reason (§5), and the assistant turn's `cost_usd` / `cost_breakdown` is a **roll-up = the sum of all subagent costs** (workers + planner + aggregator + reviewer), with the per-subagent costs persisted on the subagent-scoped parts so the run stays auditable. **No silent downgrade inside a fan-out** — a worker served a different model than requested still surfaces its own callout (§5). The live per-run cost meter and subagent-scoped parts are owned by PRD 02 FR-26h (contract) and PRD 01 (display); this section only fixes the rule that agentic attribution + cost obey the same honesty/estimate/no-silent-downgrade discipline as a single turn. The roll-up is **heterogeneous** — subagents may be served by different models/providers, so the turn total sums distinct per-route effective `cost_breakdown`s (not a scalar × N) and the per-subagent breakdown stays visible. The per-run USD cap is **admission-controlled**: the budget gate (PRD 04 §5.6) checks each subagent launch against the remaining run budget *before* it spends and surfaces a budget-stop callout rather than silently truncating the fan-out. (Cite D38.)
+
+**Shipped (as-built):** turn-level `cost_usd` roll-up; per-subagent `cost_usd` on `SubagentPart` markers; live `run_cost` meter during streaming (`SubagentPanel`). Pre-spawn admission + mid-flight budget kill (`budget.py`, `orchestrator.py`).
+
+**Not shipped:** per-subagent `ModelAttribution` + substitution on `SubagentPart` (schema field exists but `_build_agentic_parts` never populates it); per-subagent served-model/substitution callout in the FE (turn-level `AttributionRow` only); heterogeneous per-subagent `cost_breakdown` persisted on parts.
 
 ---
 

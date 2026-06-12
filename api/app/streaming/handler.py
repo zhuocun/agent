@@ -123,7 +123,7 @@ from app.streaming.sse import (
 )
 from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
 from app.tools.agent_loop import run_agent_loop, tool_feedback_to_history
-from app.tools.builtin import advertised_tool_specs, execute_tool
+from app.tools.builtin import advertised_tool_specs, execute_tool, worker_tool_specs
 from app.tools.protocol import ToolCallRequest
 
 log = logging.getLogger(__name__)
@@ -767,29 +767,56 @@ async def stream_and_persist(
         if tools_active
         else None
     )
+    # Least-privilege tool advertisement for an autonomous deep-research WORKER
+    # (SR-2). A worker can't pause for HITL approval mid-fan-out, so it is offered
+    # only the non-approval-gated prod-safe subset (`worker_tool_specs()`) — a
+    # strict subset of `turn_tool_definitions`. None when tools are off.
+    worker_tool_definitions = (
+        [
+            ToolDefinition(name=spec.name, label=spec.label, parameters=spec.schema)
+            for spec in worker_tool_specs()
+        ]
+        if tools_active
+        else None
+    )
 
     def _build_raw_stream(
         tool_feedback: list[ToolResult],
         user_text_override: str | None = None,
+        *,
+        tool_definitions: list[ToolDefinition] | None = None,
+        route: tuple[Provider, TierBinding, str | None] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        # Route override (agentic worker fallback): an explicit
+        # `(provider, binding, api_key)` triple drives the stream over an
+        # ALTERNATE route without touching the nonlocal working-route state the
+        # single-stream fallback retry rebinds. None ⇒ the active working route.
+        stream_provider, stream_binding, stream_api_key = (
+            route if route is not None else (active_provider, binding, active_api_key)
+        )
+        # Tool advertisement override (agentic worker subset): a worker is offered
+        # the least-privilege `worker_tool_specs()` set instead of the full
+        # `turn_tool_definitions`. None ⇒ the turn's full advertisement (unchanged
+        # for the single-stream / primary / aggregator path).
+        stream_tools = tool_definitions if tool_definitions is not None else turn_tool_definitions
         round_history = history + tool_feedback_to_history(tool_feedback)
-        return active_provider.stream(
-            model_id=binding.model_id,
+        return stream_provider.stream(
+            model_id=stream_binding.model_id,
             history=round_history,
             user_text=turn_user_text if user_text_override is None else user_text_override,
             attachments=attachments,
-            api_key=active_api_key,
+            api_key=stream_api_key,
             # DeepSeek V4 dual-mode hints. The per-turn override REPLACES the
             # binding default when set; otherwise the binding default is used.
             # None means "provider default" (alternate bindings leave both unset,
             # and adapters ignore what they don't support).
             thinking=(
-                thinking_override if thinking_override is not None else binding.thinking
+                thinking_override if thinking_override is not None else stream_binding.thinking
             ),
             reasoning_effort=(
                 reasoning_effort_override
                 if reasoning_effort_override is not None
-                else binding.reasoning_effort
+                else stream_binding.reasoning_effort
             ),
             # Opt this turn into the web_search tool. False (the default) leaves
             # the provider stream byte-for-byte unchanged — no StatusUpdate /
@@ -805,14 +832,14 @@ async def stream_and_persist(
             # suppress native image/PDF blocks (PDFs degrade to transcript text);
             # the route already rejects images to a non-vision binding before this
             # point.
-            supports_vision=binding.supports_vision,
+            supports_vision=stream_binding.supports_vision,
             # Cache-stable preamble (custom instructions + memory). None ⇒ no
             # system role, byte-for-byte unchanged.
             system_prefix=turn_system_prefix,
             # Agent-loop tools advertised to a real provider (None when tools are
             # off). The fake provider ignores this; the OpenAI/Anthropic adapters
             # advertise them natively and emit `ToolCall`s the agent loop fulfils.
-            tools=turn_tool_definitions,
+            tools=stream_tools,
         )
 
     def _agentic_make_stream(
@@ -828,6 +855,55 @@ async def stream_and_persist(
 
         def _make(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
             return _build_raw_stream(tool_feedback, worker_user_text)
+
+        return _make
+
+    def _agentic_make_worker_stream(
+        worker_user_text: str,
+    ) -> Callable[[list[ToolResult]], AsyncIterator[ProviderEvent]]:
+        """Per-WORKER `MakeStream` over the active route with the worker tool subset.
+
+        Same route/binding/history as `_agentic_make_stream`, but advertises only
+        `worker_tool_definitions` (least privilege, SR-2) instead of the full
+        turn advertisement.
+        """
+
+        def _make(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+            return _build_raw_stream(
+                tool_feedback, worker_user_text, tool_definitions=worker_tool_definitions
+            )
+
+        return _make
+
+    # Pre-build the FALLBACK route for per-worker 429/5xx retries (agentic only).
+    # Mirrors the single-stream fallback rebind, but constructed eagerly and held
+    # locally (NOT via the nonlocal working-route rebind) so a worker can retry on
+    # the alternate route while sibling workers keep streaming on the primary.
+    # None when no alternate route was selected ⇒ workers degrade without a retry.
+    agentic_fallback_route: tuple[Provider, TierBinding, str | None] | None = None
+    if agentic_active and fallback_binding is not None:
+        agentic_fallback_route = (
+            build_provider(
+                get_settings(),
+                provider_id=fallback_provider_id or fallback_binding.provider_id,
+                api_key=fallback_api_key,
+            ),
+            fallback_binding,
+            fallback_api_key,
+        )
+
+    def _agentic_make_fallback_worker_stream(
+        worker_user_text: str,
+    ) -> Callable[[list[ToolResult]], AsyncIterator[ProviderEvent]]:
+        """Per-WORKER `MakeStream` over the FALLBACK route with the worker subset."""
+
+        def _make(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+            return _build_raw_stream(
+                tool_feedback,
+                worker_user_text,
+                tool_definitions=worker_tool_definitions,
+                route=agentic_fallback_route,
+            )
 
         return _make
 
@@ -874,6 +950,15 @@ async def stream_and_persist(
                 estimate_cost=_estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,
                 plan_approved=plan_approved,
+                # Workers get the least-privilege tool subset; on a retryable
+                # provider error they retry once on the fallback route (None when
+                # no alternate route exists) before degrading.
+                make_worker_stream_for=_agentic_make_worker_stream,
+                fallback_make_worker_stream_for=(
+                    _agentic_make_fallback_worker_stream
+                    if agentic_fallback_route is not None
+                    else None
+                ),
             )
         if tools_active:
             return run_agent_loop(
@@ -1019,11 +1104,31 @@ async def stream_and_persist(
         parts: list[dict[str, Any]] = []
         for subagent_id in agentic_order:
             acc = agentic_subagents[subagent_id]
+            # Per-subagent ModelAttribution (Remaining gaps: per-subagent
+            # attribution). Priced from the subagent's own accumulated usage on
+            # the turn's served binding, so a reloaded agentic transcript can
+            # render each subagent's model/tier + spend rather than only the
+            # turn-level roll-up. cost_confidence is "exact" — the usage is the
+            # subagent's final `SubagentDone` usage. None only for a subagent that
+            # never reported usage (defensive; every real subagent does).
+            sub_breakdown = compute_cost_breakdown(
+                usage=acc.usage,
+                binding=binding,
+                image_count=image_attachment_count,
+            )
+            sub_attribution = build_attribution(
+                requested_tier_id=requested_tier_id,
+                binding=binding,
+                breakdown=sub_breakdown,
+                cost_confidence="exact",
+                is_byok=is_byok_turn,
+            )
             parts.append(
                 SubagentPart(
                     subagent_id=subagent_id,
                     label=acc.label,
                     role=acc.role,
+                    attribution=sub_attribution,
                     cost_usd=acc.cost_usd,
                 ).model_dump(by_alias=True, exclude_none=True)
             )

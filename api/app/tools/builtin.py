@@ -295,6 +295,22 @@ def advertised_tool_specs() -> list[ToolSpec]:
     return [spec for spec in TOOL_REGISTRY.values() if spec.prod_safe]
 
 
+def worker_tool_specs() -> list[ToolSpec]:
+    """ToolSpecs offered to an autonomous deep-research WORKER subagent.
+
+    A worker runs unattended inside a fan-out — it has no way to surface a
+    human-in-the-loop approval pause and wait for a decision mid-run (the plan
+    pause is the orchestration-level HITL surface; a worker pausing would strand
+    the whole fan-out). So a worker is offered only the least-privilege subset:
+    the prod-safe tools that are NOT approval-gated (``needs_approval=False``).
+    This is the SR-2 least-privilege default — an approval-gated tool is withheld
+    from workers even though it stays available to the single-loop / primary
+    path (which CAN pause). Built off ``advertised_tool_specs()`` so a
+    fake-only / stub tool is never offered to a worker either.
+    """
+    return [spec for spec in advertised_tool_specs() if not spec.needs_approval]
+
+
 async def execute_tool(call: ToolCallRequest) -> ToolExecutionResult:
     """Execute one tool call by name, bounded by the per-tool timeout.
 

@@ -102,9 +102,20 @@ class ReplayLogStore(Protocol):
     """Async store contract for stream replay logs."""
 
     async def create(
-        self, stream_id: UUID, *, ttl_seconds: float, now: float | None = None
+        self,
+        stream_id: UUID,
+        *,
+        ttl_seconds: float,
+        now: float | None = None,
+        max_events: int | None = None,
+        max_bytes: int | None = None,
     ) -> ReplayLogBuffer:
-        """Create or replace one replay log."""
+        """Create or replace one replay log.
+
+        `max_events` / `max_bytes` override the store's configured retention
+        bounds for this one log (agentic turns get larger bounds); None ⇒ the
+        store defaults. Ignored by the unbounded memory backend.
+        """
         ...
 
     async def get(
@@ -503,8 +514,17 @@ class InMemoryReplayLogStore:
         self._buffers = buffers
 
     async def create(
-        self, stream_id: UUID, *, ttl_seconds: float, now: float | None = None
+        self,
+        stream_id: UUID,
+        *,
+        ttl_seconds: float,
+        now: float | None = None,
+        max_events: int | None = None,
+        max_bytes: int | None = None,
     ) -> ReplayLogBuffer:
+        # The memory backend keeps unbounded-in-flight events (TTL-evicted after
+        # done), so the per-log count/byte overrides do not apply here.
+        del max_events, max_bytes
         _evict_expired(self._buffers, ttl_seconds, now=now)
         buffer = ReplayBuffer()
         self._buffers[stream_id] = buffer
@@ -538,14 +558,21 @@ class RedisReplayLogStore:
         self._live_ttl_seconds = live_ttl_seconds
         self._key_prefix = key_prefix
 
-    def _buffer(self, stream_id: UUID, *, ttl_seconds: float) -> RedisReplayLogBuffer:
+    def _buffer(
+        self,
+        stream_id: UUID,
+        *,
+        ttl_seconds: float,
+        max_events: int | None = None,
+        max_bytes: int | None = None,
+    ) -> RedisReplayLogBuffer:
         return RedisReplayLogBuffer(
             self._client,
             stream_id,
             ttl_seconds=ttl_seconds,
             live_ttl_seconds=self._live_ttl_seconds,
-            max_events=self._max_events,
-            max_bytes=self._max_bytes,
+            max_events=max_events if max_events is not None else self._max_events,
+            max_bytes=max_bytes if max_bytes is not None else self._max_bytes,
             key_prefix=self._key_prefix,
         )
 
@@ -559,7 +586,13 @@ class RedisReplayLogStore:
         return f"{self._key_prefix}:replay:{stream_id}:seq"
 
     async def create(
-        self, stream_id: UUID, *, ttl_seconds: float, now: float | None = None
+        self,
+        stream_id: UUID,
+        *,
+        ttl_seconds: float,
+        now: float | None = None,
+        max_events: int | None = None,
+        max_bytes: int | None = None,
     ) -> ReplayLogBuffer:
         del now  # Redis key expiry, not an injected monotonic clock, drives TTL.
         await self._client.delete(
@@ -571,7 +604,9 @@ class RedisReplayLogStore:
             self._meta_key(stream_id),
             mapping={"done": "0", "bytes": "0"},
         )
-        buffer = self._buffer(stream_id, ttl_seconds=ttl_seconds)
+        buffer = self._buffer(
+            stream_id, ttl_seconds=ttl_seconds, max_events=max_events, max_bytes=max_bytes
+        )
         await self._client.set(buffer._seq_key, "0", px=buffer._live_ttl_ms())
         await buffer._expire_live_keys()
         return buffer
@@ -614,10 +649,25 @@ def use_memory_store() -> None:
 
 
 async def create_async(
-    stream_id: UUID, *, ttl_seconds: float, now: float | None = None
+    stream_id: UUID,
+    *,
+    ttl_seconds: float,
+    now: float | None = None,
+    max_events: int | None = None,
+    max_bytes: int | None = None,
 ) -> ReplayLogBuffer:
-    """Create (or replace) the replay log for `stream_id`."""
-    return await _store.create(stream_id, ttl_seconds=ttl_seconds, now=now)
+    """Create (or replace) the replay log for `stream_id`.
+
+    `max_events` / `max_bytes` override the store's configured retention bounds
+    for this one log (agentic turns request larger bounds); None ⇒ store defaults.
+    """
+    return await _store.create(
+        stream_id,
+        ttl_seconds=ttl_seconds,
+        now=now,
+        max_events=max_events,
+        max_bytes=max_bytes,
+    )
 
 
 async def get_async(

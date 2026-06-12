@@ -61,6 +61,7 @@ def synthesize(
     *,
     planned: int | None = None,
     budget_halted: bool = False,
+    failed: int = 0,
 ) -> str:
     """Deterministically merge worker outputs into one synthesized answer.
 
@@ -71,8 +72,11 @@ def synthesize(
     `planned` is the number of sub-questions the planner produced; when the run
     was cut short by the per-run budget (`budget_halted`), the synthesis is
     LABELED as a partial answer ("answered N of M planned steps") rather than an
-    error — the graceful-degrade path (FR-26g). With `budget_halted=False` (the
-    default) the output is byte-for-byte the historical synthesis.
+    error — the graceful-degrade path (FR-26g). `failed` is the number of worker
+    sub-agents that errored out; a non-zero count appends a partial-answer label
+    so a provider failure inside one worker degrades the run gracefully (PRD 08)
+    instead of failing the whole turn. With `budget_halted=False` and `failed=0`
+    (the defaults) the output is byte-for-byte the historical synthesis.
     """
     completed = len(outputs)
     total = planned if planned is not None else completed
@@ -87,6 +91,11 @@ def synthesize(
     if budget_halted:
         base += (
             "\n\n[Partial answer: stopped early to stay within the run budget; "
+            f"answered {completed} of {total} planned steps.]"
+        )
+    if failed:
+        base += (
+            f"\n\n[Partial answer: {failed} of {total} sub-agents failed; "
             f"answered {completed} of {total} planned steps.]"
         )
     return base

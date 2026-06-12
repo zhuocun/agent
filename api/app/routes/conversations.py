@@ -2288,7 +2288,20 @@ async def send_message(
     # even with the flag on.
     if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
         ttl = settings.resumable_buffer_ttl_seconds
-        buffer = await replay_registry.create_async(stream_id, ttl_seconds=ttl)
+        # Agentic turns fan out across subagents and emit many more wire events,
+        # so their replay buffer gets the larger agentic retention bounds; a plain
+        # turn keeps the default bounds. (Effective only on the Redis backend.)
+        is_agentic_turn = settings.agentic_enabled and effective_agentic_mode is not None
+        buffer = await replay_registry.create_async(
+            stream_id,
+            ttl_seconds=ttl,
+            max_events=(
+                settings.agentic_resumable_buffer_max_events if is_agentic_turn else None
+            ),
+            max_bytes=(
+                settings.agentic_resumable_buffer_max_bytes if is_agentic_turn else None
+            ),
+        )
         # The detached producer owns a FRESH session derived from THIS request's
         # engine (the request session closes when the POST returns). Using
         # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite

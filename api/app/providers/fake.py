@@ -227,6 +227,14 @@ class FakeProvider:
         if user_text.startswith("DEEP_RESEARCH_WORKER:"):
             body = user_text[len("DEEP_RESEARCH_WORKER:") :]
             worker_index, _, sub_question = body.partition(":")
+            # Forced worker failure: a sub-question carrying the `FAIL_WORKER`
+            # marker raises mid-stream (after the worker has started) so the
+            # orchestrator's per-worker degrade path can be exercised — the
+            # failed worker drops out while the run still synthesizes the
+            # survivors and labels the answer partial.
+            if "FAIL_WORKER" in sub_question:
+                await asyncio.sleep(self._delay)
+                raise RuntimeError("forced worker failure")
             await asyncio.sleep(self._delay)
             yield AnswerDelta(
                 text=f"Worker {worker_index} finding on {sub_question}: result ready."

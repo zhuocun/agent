@@ -43,6 +43,7 @@ import json
 from collections.abc import AsyncIterator, Callable
 
 from app.config import Settings
+from app.observability.tracing import execute_tool_span
 from app.providers.protocol import (
     AwaitingApproval,
     ChatMessage,
@@ -148,6 +149,7 @@ async def run_agent_loop(
     *,
     make_stream: MakeStream,
     settings: Settings,
+    subagent_id: str | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive a bounded tool-calling loop over a provider event stream.
 
@@ -155,6 +157,10 @@ async def run_agent_loop(
     handler's accumulation / persistence is unchanged. Stops on: a round with no
     tool calls (relayed answer), an ``AwaitingApproval`` pause, or the
     ``tool_max_rounds`` bound.
+
+    ``subagent_id`` (agentic mode) tags the ``execute_tool`` OTel spans this loop
+    opens so a subagent's tool executions nest under its ``invoke_agent`` span.
+    None (the single-loop / non-agentic path) leaves the span untagged.
     """
     tool_feedback: list[ToolResult] = []
     max_rounds = max(1, settings.tool_max_rounds)
@@ -193,10 +199,13 @@ async def run_agent_loop(
             spec = TOOL_REGISTRY.get(call.name)
             if spec is None:
                 # Unknown tool: synthesize a failed result and feed it back so a
-                # later round can recover. Never execute.
-                exec_result = await execute_tool(
-                    ToolCallRequest(id=call.id, name=call.name, input=call.input or {})
-                )
+                # later round can recover. Never execute. The span records the
+                # attempted tool name only (no input/output content), nested under
+                # the owning subagent's `invoke_agent` span when agentic mode is on.
+                with execute_tool_span(tool_name=call.name, subagent_id=subagent_id):
+                    exec_result = await execute_tool(
+                        ToolCallRequest(id=call.id, name=call.name, input=call.input or {})
+                    )
                 result_event = _to_result_event(call=call, exec_result=exec_result)
                 yield result_event
                 round_results.append(result_event)
@@ -216,14 +225,18 @@ async def run_agent_loop(
             approval_state: ToolApprovalState = (
                 "approved" if already_approved else "not_required"
             )
-            exec_result = await execute_tool(
-                ToolCallRequest(
-                    id=call.id,
-                    name=call.name,
-                    input=call.input or {},
-                    approval_state=approval_state,
+            # One `execute_tool` span per executed tool, carrying the tool name
+            # only (never input/output content) and nesting under the active
+            # subagent's `invoke_agent` span in agentic mode.
+            with execute_tool_span(tool_name=call.name, subagent_id=subagent_id):
+                exec_result = await execute_tool(
+                    ToolCallRequest(
+                        id=call.id,
+                        name=call.name,
+                        input=call.input or {},
+                        approval_state=approval_state,
+                    )
                 )
-            )
             result_event = _to_result_event(call=call, exec_result=exec_result)
             yield result_event
             round_results.append(result_event)

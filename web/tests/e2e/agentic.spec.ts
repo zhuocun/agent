@@ -92,7 +92,13 @@ async function enableDeepResearch(page: Page): Promise<void> {
 // (captured from the streaming POST URL) once the BE has PERSISTED the
 // `awaiting_approval` row, so the approve/deny resume can't race persistence —
 // mirrors tool-approval.spec.ts's sendAndPause.
-async function sendAndPauseOnPlan(page: Page): Promise<string> {
+async function sendAndPauseOnPlan(
+  page: Page,
+  options?: { prompt?: string; planContains?: string[] },
+): Promise<string> {
+  const prompt = options?.prompt ?? "DEEP_RESEARCH: alpha topic | beta topic";
+  const planContains = options?.planContains ?? ["alpha topic", "beta topic"];
+
   let capturedConvId: string | null = null;
   page.on("request", (req) => {
     const m = req
@@ -102,7 +108,7 @@ async function sendAndPauseOnPlan(page: Page): Promise<string> {
   });
 
   const composer = page.getByTestId("composer-textarea");
-  await composer.fill("DEEP_RESEARCH: alpha topic | beta topic");
+  await composer.fill(prompt);
   await page.getByTestId("composer-send").click();
 
   // The planner pauses the turn: the assistant bubble carries the pseudo
@@ -115,8 +121,9 @@ async function sendAndPauseOnPlan(page: Page): Promise<string> {
   await expect(planCall).toContainText("Review research plan");
   const planDetail = planCall.getByTestId("plan-approval-detail");
   await expect(planDetail).toBeVisible();
-  await expect(planDetail).toContainText("alpha topic");
-  await expect(planDetail).toContainText("beta topic");
+  for (const fragment of planContains) {
+    await expect(planDetail).toContainText(fragment);
+  }
 
   // The pause reuses the shipped HITL terminal.
   await expect(paused).toHaveAttribute("data-status", "awaiting_approval", {
@@ -277,5 +284,59 @@ test.describe("agentic mode (deep research)", () => {
 
     // The resume reused the user turn (continue-style invariant).
     await expect(page.getByTestId("user-message-text")).toHaveCount(1);
+  });
+
+  test("the high-cost hint (FR-26f) appears under the toggle once Deep Research is on", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await modelModeTrigger(page).click();
+    const toggle = page.getByTestId("deep-research-toggle");
+    await expect(toggle).toBeVisible({ timeout: 5_000 });
+    // The cost hint is gated on the toggle being ON — absent while it is off.
+    await expect(page.getByTestId("deep-research-cost-hint")).toHaveCount(0);
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+    // Flipping the toggle on surfaces the calm inline fan-out cost warning.
+    await expect(page.getByTestId("deep-research-cost-hint")).toBeVisible();
+  });
+
+  test("a failed worker degrades to a labeled partial-synthesis warning", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await grantPro(page);
+    await enableDeepResearch(page);
+
+    // worker-1's `FAIL_WORKER` sub-question raises mid-stream (the fake
+    // provider's forced-failure marker); worker-0 survives. The orchestrator
+    // must degrade — aggregate the survivor and LABEL the answer partial —
+    // rather than erroring the whole run (PRD 08 / FR-26g).
+    await sendAndPauseOnPlan(page, {
+      prompt: "DEEP_RESEARCH: alpha topic | FAIL_WORKER beta topic",
+      planContains: ["alpha topic", "FAIL_WORKER beta topic"],
+    });
+
+    const paused = page.getByTestId("assistant-message").last();
+    await paused.getByTestId("tool-approve").click();
+
+    const resumed = page.getByTestId("assistant-message").last();
+    await expect(resumed).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+    // The aggregator's `[Partial answer: …]` marker is lifted into a calm
+    // warning chip above the answer, and the inline bracket is stripped from
+    // the rendered prose.
+    await expect(resumed.getByTestId("partial-synthesis-warning")).toBeVisible({
+      timeout: 15_000,
+    });
+    const answer = resumed.getByTestId("assistant-answer");
+    await expect(answer).toContainText("Synthesis of 1 findings");
+    await expect(answer).toContainText("alpha topic");
+    await expect(answer).not.toContainText("[Partial answer:");
   });
 });

@@ -15,7 +15,7 @@
 
 import { expect, test } from "@playwright/test";
 
-import { waitForBootstrap } from "./helpers";
+import { modelModeTrigger, waitForBootstrap } from "./helpers";
 
 // A tiny valid 1x1 PNG so the composer's image-type detection treats it as an
 // image attachment.
@@ -29,7 +29,7 @@ async function selectTier(
   page: import("@playwright/test").Page,
   label: string,
 ): Promise<void> {
-  await page.getByTestId("model-mode-trigger").click();
+  await modelModeTrigger(page).click();
   await page
     .locator('[data-slot="dropdown-menu-item"]:visible', { hasText: label })
     .first()

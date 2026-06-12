@@ -13,7 +13,7 @@
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { BE_URL, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 
 // The open model-mode dropdown content (desktop). Scoping row clicks here keeps
 // them unambiguous — the picker TRIGGER can show the same tier/effort label as
@@ -213,7 +213,7 @@ test.describe("reasoning effort", () => {
 
     // Open the desktop picker and assert the Extended row surfaces its
     // cost/latency hint (REASONING_EFFORTS: Extended ⇒ cost high, latency slow).
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     const menu = pickerMenu(page);
     // Reasoning effort now lives behind the "Advanced" collapsible (progressive
     // disclosure); expand it before the effort rows are reachable.
@@ -268,7 +268,7 @@ test.describe("pre-send estimate", () => {
 
     // Switch to Pro (pricier) — same draft, the dollar estimate rises. Scope to
     // the open menu so the row click never collides with the trigger label.
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     await pickerMenu(page).getByText("Pro", { exact: true }).click();
     await expect(estimate).toContainText("Est. $");
     const proText = (await estimate.textContent()) ?? "";
@@ -278,7 +278,7 @@ test.describe("pre-send estimate", () => {
     // Switch to Auto (no single price) — the estimate reads "unavailable".
     // "Auto" labels two rows (the Model tier and the Reasoning-effort option);
     // the Model group renders first, so the tier "Auto" is the first match.
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     await pickerMenu(page).getByText("Auto", { exact: true }).first().click();
     await expect(estimate).toContainText("Estimate unavailable for Auto");
   });
@@ -445,7 +445,7 @@ test.describe("regenerate with model", () => {
     );
 
     // The picker reflects the new served model going forward.
-    await expect(page.getByTestId("model-mode-trigger")).toContainText("Pro");
+    await expect(modelModeTrigger(page)).toContainText("Pro");
   });
 });
 

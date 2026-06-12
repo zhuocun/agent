@@ -120,16 +120,23 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
   // The summary line (icon + label + role + status word) is shared between the
   // always-expanded layout and the collapsible trigger so the resting row reads
   // identically in both modes.
+  // Plan-approval is a user-facing gate, not a generic tool — drop the "tool
+  // call" suffix. When paused on approval, StatusPill ("Needs approval") and
+  // ApprovalPill ("Approval pending") say the same thing; keep one.
+  const showApprovalPill =
+    approvalState !== "not_required" &&
+    !(status === "awaiting_approval" && approvalState === "pending");
+
   const summaryRow = (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       <span className="truncate font-medium text-foreground">{label}</span>
-      <span className="text-xs text-muted-foreground">
-        {isResult ? "result" : "tool call"}
-      </span>
+      {planApproval ? null : (
+        <span className="text-xs text-muted-foreground">
+          {isResult ? "result" : "tool call"}
+        </span>
+      )}
       <StatusPill status={status} />
-      {approvalState !== "not_required" ? (
-        <ApprovalPill state={approvalState} />
-      ) : null}
+      {showApprovalPill ? <ApprovalPill state={approvalState} /> : null}
     </div>
   );
 
@@ -148,7 +155,7 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
             size="sm"
             onClick={() => onDecision({ toolCallId, decision: "approve" })}
             data-testid="tool-approve"
-            className="min-h-11 rounded-full px-4 md:min-h-0"
+            className="min-h-11 rounded-full bg-brand px-4 text-brand-foreground hover:bg-brand/90 md:min-h-0"
           >
             <Check aria-hidden />
             <span>Approve</span>
@@ -285,7 +292,7 @@ function StatusIcon({
   if (status === "awaiting_approval") {
     return (
       <ShieldQuestion
-        className="mt-0.5 size-4 shrink-0 text-warning-foreground"
+        className="mt-0.5 size-4 shrink-0 text-warning"
         aria-hidden
       />
     );

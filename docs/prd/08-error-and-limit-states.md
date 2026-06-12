@@ -241,6 +241,7 @@ Terminal events feed PRD 05 analytics.
 | Offline queue + optimistic send | Yes | Background sync replay where supported | — |
 | Resumable-stream Continue | Partial+Continue request | True replay — **P1: Shipped\* (`RESUMABLE_STREAMS_ENABLED`)** | — |
 | Tool/HITL errors | Reserved | Yes — **P1: Shipped\* (`TOOLS_ENABLED`)** | — |
+| Agentic-run errors (per-run budget halt → graceful partial synthesis; plan-approval pause) | — | — | **P2** (`AGENTIC_ENABLED`, gated by `TOOLS_ENABLED`): a per-run USD-cap breach degrades to a labeled partial synthesis (not an `error`); plan approval reuses the `awaiting_approval` terminal + `toolApproval` resume; a worker's provider failure degrades that subagent, not the run (PRD 02 §4.6 FR-26g, plans/01-agentic-mode.md) |
 | Moderation appeals | — | User-facing transparency + appeal capture (F4 §5.6.1) — **Shipped (#145)** | Operator appeal-review tooling |
 | Platform/provider status transparency | — | Public `/api/status` + `/status` page + degraded-provider banner (F6) — **Shipped (#145)** | — |
 

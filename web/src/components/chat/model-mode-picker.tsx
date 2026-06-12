@@ -8,6 +8,7 @@ import {
   Globe,
   Braces,
   Telescope,
+  TriangleAlert,
 } from "lucide-react";
 
 import {
@@ -259,6 +260,9 @@ export function ModelModePicker({
                 testId="deep-research-toggle"
               />
             ) : null}
+            {showDeepResearch && deepResearchEnabled ? (
+              <DeepResearchCostHint />
+            ) : null}
             <ToggleRow
               icon={Braces}
               label="JSON output"
@@ -408,6 +412,11 @@ export function ModelModePicker({
                   onCheckedChange={onToggleDeepResearch}
                   testId="deep-research-toggle"
                 />
+                {deepResearchEnabled ? (
+                  <li>
+                    <DeepResearchCostHint className="mx-4 mb-1 mt-1" />
+                  </li>
+                ) : null}
               </SheetSection>
             ) : null}
             <SheetSection title="JSON output">
@@ -625,6 +634,34 @@ function ToggleRow({
         </p>
       </div>
     </DropdownMenuCheckboxItem>
+  );
+}
+
+// High-cost warning for Deep Research (FR-26f). A multi-agent fan-out can burn
+// several times the tokens of a single reply, so when the toggle is ON we
+// surface a calm inline warning right under it — same warning grammar as the
+// degraded-status banner (TriangleAlert + bg-warning/text-warning-foreground),
+// sized down to a dropdown footnote. Informational only; it never blocks send.
+function DeepResearchCostHint({
+  className,
+}: {
+  className?: string;
+}): JSX.Element {
+  return (
+    <div
+      role="note"
+      data-testid="deep-research-cost-hint"
+      className={cn(
+        "mt-1 flex items-start gap-1.5 rounded-lg bg-warning px-2 py-1.5 text-2xs leading-snug text-warning-foreground ring-1 ring-warning-foreground/20",
+        className,
+      )}
+    >
+      <TriangleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+      <span>
+        Deep Research uses multiple agents and may cost significantly more than
+        a single reply.
+      </span>
+    </div>
   );
 }
 

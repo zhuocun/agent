@@ -79,6 +79,11 @@ export interface SubagentActivity {
   role: string;
   status: "running" | "done";
   costUsd?: number;
+  // Per-subagent model attribution from the `subagent_done` frame (FR-26e: no
+  // silent downgrade inside a fan-out). Optional — present only when the BE
+  // attaches it; carried so the streaming bubble can show the served-model /
+  // substitution callout the same way a reloaded transcript does.
+  attribution?: ModelAttribution;
   reasoning: string;
   answer: string;
 }
@@ -500,12 +505,14 @@ function parseSubagentStarted(value: unknown): ParsedSubagentStarted | null {
   return { subagentId, label, role };
 }
 
-// `subagent_done` payload narrows to `{ subagentId, label?, role?, costUsd? }`.
+// `subagent_done` payload narrows to
+// `{ subagentId, label?, role?, costUsd?, attribution? }`.
 interface ParsedSubagentDone {
   subagentId: string;
   label?: string;
   role?: string;
   costUsd?: number;
+  attribution?: ModelAttribution;
 }
 
 function parseSubagentDone(value: unknown): ParsedSubagentDone | null {
@@ -515,11 +522,18 @@ function parseSubagentDone(value: unknown): ParsedSubagentDone | null {
   const label = readStringField(value, "label");
   const role = readStringField(value, "role");
   const costUsd = value.costUsd;
+  // Attribution isn't deep-validated (same boundary stance as the terminal
+  // frame): the BE owns its wire shape, and the FE renders it through the
+  // tolerant attribution helpers. An absent/non-object value just stays unset.
+  const attribution = value.attribution;
   return {
     subagentId,
     ...(label !== null ? { label } : {}),
     ...(role !== null ? { role } : {}),
     ...(typeof costUsd === "number" ? { costUsd } : {}),
+    ...(isRecord(attribution)
+      ? { attribution: attribution as unknown as ModelAttribution }
+      : {}),
   };
 }
 
@@ -994,6 +1008,9 @@ export function useApiStream(
             ...(parsed.label !== undefined ? { label: parsed.label } : {}),
             ...(parsed.role !== undefined ? { role: parsed.role } : {}),
             ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } : {}),
+            ...(parsed.attribution !== undefined
+              ? { attribution: parsed.attribution }
+              : {}),
             status: "done" as const,
           }));
           queueState({ subagents: next });

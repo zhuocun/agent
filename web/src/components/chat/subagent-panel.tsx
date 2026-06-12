@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import {
   CheckCircle2,
   ChevronDown,
+  Info,
   Loader2,
   Telescope,
 } from "lucide-react";
@@ -14,7 +15,9 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { MODEL_TIERS_BY_ID } from "@/lib/model-tiers";
 import type { RunCostState } from "@/lib/stream-client";
+import type { ModelAttribution } from "@/lib/types";
 
 // One orchestrator subagent's section, shape-compatible with the live
 // `SubagentActivity` from stream-client AND derivable from a persisted
@@ -27,6 +30,10 @@ export interface SubagentSection {
   role: string;
   status: "running" | "done";
   costUsd?: number;
+  // Per-subagent model attribution (FR-26e: no silent downgrade inside a
+  // fan-out). Present only when the BE persisted/streamed it for this subagent;
+  // its `substitution` clause drives the row's served-model/rerouted callout.
+  attribution?: ModelAttribution;
   reasoning: string;
   answer: string;
 }
@@ -170,8 +177,12 @@ function RunCostMeter({
 
 function SubagentRow({ section }: { section: SubagentSection }) {
   const isRunning = section.status === "running";
+  const substitution = section.attribution?.substitution;
+  const servedModelLabel = section.attribution?.servedModelLabel;
   const hasDetail =
-    section.reasoning.length > 0 || section.answer.length > 0;
+    section.reasoning.length > 0 ||
+    section.answer.length > 0 ||
+    substitution !== undefined;
 
   const costBadge =
     section.costUsd !== undefined ? (
@@ -179,6 +190,21 @@ function SubagentRow({ section }: { section: SubagentSection }) {
         {formatUsd(section.costUsd)}
       </span>
     ) : null;
+
+  // Rerouted callout (FR-26e): a per-subagent substitution is a user-facing
+  // alert, not metadata, so it stays in the summary line even when the row is
+  // collapsed — mirroring the byline's substitution chip (attribution-row.tsx).
+  // The full "answered by X because Y" reason rides the title + detail body.
+  const substitutionBadge = substitution ? (
+    <span
+      data-testid="subagent-substitution"
+      title={substitution.reasonText}
+      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-substitution-callout px-1.5 py-0.5 text-2xs font-medium text-substitution-callout-foreground ring-1 ring-substitution-callout-border"
+    >
+      <Info aria-hidden className="size-3 shrink-0" />
+      <span>Rerouted</span>
+    </span>
+  ) : null;
 
   const summaryRow = (trailing?: ReactNode) => (
     <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -189,14 +215,42 @@ function SubagentRow({ section }: { section: SubagentSection }) {
         {roleLabel(section.role)}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {substitutionBadge}
         {costBadge}
         {trailing}
       </span>
     </div>
   );
 
+  // Served-model / substitution callout for the detail body: names the model
+  // that actually answered this subagent and, on a reroute, why it differs from
+  // the requested tier (silent-downgrade prevention, FR-26e). Rendered only
+  // when there's something to say (a substitution clause or a served label).
+  const attributionNote =
+    substitution && section.attribution ? (
+      <p
+        className="break-words text-xs leading-snug text-muted-foreground"
+        data-testid="subagent-attribution"
+      >
+        <span className="font-medium text-foreground">
+          Rerouted from{" "}
+          {MODEL_TIERS_BY_ID[section.attribution.requestedTierId].label} tier
+        </span>
+        {" — "}
+        {substitution.reasonText}
+      </p>
+    ) : servedModelLabel ? (
+      <p
+        className="break-words text-xs leading-snug text-muted-foreground"
+        data-testid="subagent-attribution"
+      >
+        Served by {servedModelLabel}
+      </p>
+    ) : null;
+
   const detailBody = hasDetail ? (
     <div className="mt-1 space-y-1">
+      {attributionNote}
       {section.reasoning ? (
         <p className="line-clamp-3 break-words text-xs italic leading-snug text-muted-foreground">
           {section.reasoning}

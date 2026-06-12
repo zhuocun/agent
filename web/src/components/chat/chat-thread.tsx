@@ -442,6 +442,7 @@ function buildSubagentParts(
       subagentId: sub.subagentId,
       label: sub.label,
       role: sub.role,
+      ...(sub.attribution !== undefined ? { attribution: sub.attribution } : {}),
       ...(sub.costUsd !== undefined ? { costUsd: sub.costUsd } : {}),
     });
     if (sub.reasoning) {

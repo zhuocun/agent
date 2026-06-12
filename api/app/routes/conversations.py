@@ -2295,6 +2295,7 @@ async def send_message(
             fallback_substitution="provider_fallback",
             tool_approval=body.tool_approval,
             resume_seed=resume_seed,
+            agentic_mode=body.agentic_mode,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -2347,6 +2348,7 @@ async def send_message(
             fallback_substitution="provider_fallback",
             tool_approval=body.tool_approval,
             resume_seed=resume_seed,
+            agentic_mode=body.agentic_mode,
         ):
             yield sse_event
 

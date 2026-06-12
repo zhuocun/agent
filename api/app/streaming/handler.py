@@ -33,9 +33,9 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass, field
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import jsonschema
@@ -44,6 +44,7 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
 
+from app.agentic.orchestrator import run_orchestrator
 from app.config import get_settings
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import conversations as conversations_repo
@@ -67,8 +68,11 @@ from app.providers.protocol import (
     ReasoningDelta,
     ReasoningDone,
     ResponseFormat,
+    RunCost,
     Sources,
     StatusUpdate,
+    SubagentDone,
+    SubagentStarted,
     ToolCall,
     ToolDefinition,
     ToolResult,
@@ -77,13 +81,23 @@ from app.providers.protocol import (
 from app.providers.tiers import TierBinding, get_binding
 from app.schemas.common import ModelTierId, SubstitutionReasonCode
 from app.schemas.conversation import ToolApprovalDecision
-from app.schemas.message import ModelAttribution, ToolCallPart, ToolResultPart
+from app.schemas.message import (
+    ModelAttribution,
+    ReasoningPart,
+    SubagentPart,
+    TextPart,
+    ToolCallPart,
+    ToolResultPart,
+)
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
     ReasoningDeltaEvent,
     ReasoningDoneEvent,
+    RunCostEvent,
     SourcesEvent,
     StatusEvent,
+    SubagentDoneEvent,
+    SubagentStartedEvent,
     SubmittedEvent,
     TerminalEvent,
     ToolCallEvent,
@@ -96,8 +110,11 @@ from app.streaming.sse import (
     encode_error,
     encode_reasoning_delta,
     encode_reasoning_done,
+    encode_run_cost,
     encode_sources,
     encode_status,
+    encode_subagent_done,
+    encode_subagent_started,
     encode_submitted,
     encode_terminal,
     encode_tool_call,
@@ -178,6 +195,25 @@ class ResumeToolSeed:
     label: str | None
     decision: str
     input: dict[str, Any] | None
+
+
+@dataclass
+class _SubagentAccumulator:
+    """Per-subagent accumulation for an agentic turn (T3).
+
+    Mirrors the flat single-stream accumulators (reasoning / answer / tool
+    transcript) but scoped to one orchestrator subagent, so the persisted parts
+    can be grouped under a `subagent` marker. `cost_usd` / `usage` are filled from
+    the matching `SubagentDone`. Only constructed when `agentic_active`.
+    """
+
+    label: str
+    role: str
+    reasoning: list[str] = field(default_factory=list)
+    answer: list[str] = field(default_factory=list)
+    tool_parts: list[dict[str, Any]] = field(default_factory=list)
+    cost_usd: float | None = None
+    usage: UsageUpdate = field(default_factory=UsageUpdate)
 
 
 @dataclass(frozen=True)
@@ -507,6 +543,7 @@ async def stream_and_persist(
     fallback_substitution: SubstitutionReasonCode | None = None,
     tool_approval: ToolApprovalDecision | None = None,
     resume_seed: ResumeToolSeed | None = None,
+    agentic_mode: Literal["single", "deep_research"] | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -608,6 +645,32 @@ async def stream_and_persist(
     # stable value (and tests can override via a settings cache flush).
     handler_settings = get_settings()
     tools_active = handler_settings.tools_enabled
+    # Agentic mode (T1 seam): route into the orchestrator ONLY when the flag is
+    # on, tools are on (the orchestrator builds on the tool seam), AND a non-None
+    # mode was requested. Any one of these false ⇒ the existing single-stream
+    # path runs unchanged, so a flag-off turn — and an agentic-off turn that still
+    # carries `agenticMode` — is byte-for-byte identical to a pre-agentic build.
+    agentic_active = (
+        tools_active and handler_settings.agentic_enabled and agentic_mode is not None
+    )
+    # Per-subagent accumulation for an agentic turn (T3). Ordered by first-seen
+    # `SubagentStarted` so the persisted transcript groups subagents in emission
+    # order. Empty (and unused) on every non-agentic turn.
+    agentic_order: list[str] = []
+    agentic_subagents: dict[str, _SubagentAccumulator] = {}
+
+    def _sub(subagent_id: str) -> _SubagentAccumulator:
+        """Fetch (or defensively create) the accumulator for `subagent_id`.
+
+        `SubagentStarted` always precedes a subagent's tagged content events, so
+        the create-on-miss branch is defensive only.
+        """
+        acc = agentic_subagents.get(subagent_id)
+        if acc is None:
+            acc = _SubagentAccumulator(label=subagent_id, role="subagent")
+            agentic_subagents[subagent_id] = acc
+            agentic_order.append(subagent_id)
+        return acc
     # Transparent long-term memory (D19): how many facts were injected into this
     # turn. Surfaced on the attribution (and thus the persisted message + the
     # terminal frame) so the FE can render the "Memory used here" chip. Zero when
@@ -685,12 +748,15 @@ async def stream_and_persist(
         else None
     )
 
-    def _build_raw_stream(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+    def _build_raw_stream(
+        tool_feedback: list[ToolResult],
+        user_text_override: str | None = None,
+    ) -> AsyncIterator[ProviderEvent]:
         round_history = history + tool_feedback_to_history(tool_feedback)
         return active_provider.stream(
             model_id=binding.model_id,
             history=round_history,
-            user_text=turn_user_text,
+            user_text=turn_user_text if user_text_override is None else user_text_override,
             attachments=attachments,
             api_key=active_api_key,
             # DeepSeek V4 dual-mode hints. The per-turn override REPLACES the
@@ -729,13 +795,49 @@ async def stream_and_persist(
             tools=turn_tool_definitions,
         )
 
+    def _agentic_make_stream(
+        worker_user_text: str,
+    ) -> Callable[[list[ToolResult]], AsyncIterator[ProviderEvent]]:
+        """Build a per-subagent `MakeStream` over the active route (agentic only).
+
+        Captures the same route/binding/history/hints `_build_raw_stream` uses;
+        only the user text varies per subagent (the orchestrator hands each worker
+        its sub-question prompt). The returned callable is the `MakeStream` the
+        agent loop drives for that subagent.
+        """
+
+        def _make(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+            return _build_raw_stream(tool_feedback, worker_user_text)
+
+        return _make
+
+    def _cost_for_usage(usage: UsageUpdate) -> float:
+        """Price an accumulated usage for the active binding (agentic only)."""
+        breakdown = compute_cost_breakdown(
+            usage=usage,
+            binding=binding,
+            image_count=image_attachment_count,
+        )
+        return breakdown.subtotal_usd + breakdown.session_surcharge_usd
+
     # The current provider iterator. Rebuilt on a fallback retry so the pump
-    # drains the alternate route. When tools are enabled the raw stream is wrapped
-    # in the bounded agent loop (which intercepts `ToolCall`s, runs the registry,
-    # and emits the HITL `AwaitingApproval` pause); otherwise it is the raw
-    # provider stream — byte-for-byte the pre-tools path. The fallback rebuild
-    # path calls this again, so a fallback route is wrapped identically.
+    # drains the alternate route. When agentic mode is active the stream is the
+    # multi-agent orchestrator (which itself drives the agent loop per subagent);
+    # else when tools are enabled the raw stream is wrapped in the bounded agent
+    # loop (which intercepts `ToolCall`s, runs the registry, and emits the HITL
+    # `AwaitingApproval` pause); otherwise it is the raw provider stream —
+    # byte-for-byte the pre-tools path. The fallback rebuild path calls this
+    # again, so a fallback route is wrapped identically.
     def _build_provider_iter() -> AsyncIterator[ProviderEvent]:
+        if agentic_active:
+            assert agentic_mode is not None
+            return run_orchestrator(
+                make_stream_for=_agentic_make_stream,
+                settings=handler_settings,
+                mode=agentic_mode,
+                user_text=turn_user_text,
+                cost_for_usage=_cost_for_usage,
+            )
         if tools_active:
             return run_agent_loop(
                 make_stream=_build_raw_stream,
@@ -819,7 +921,13 @@ async def stream_and_persist(
         invariant.
         Shared by the terminal-success and stop-path persist sites so they can
         never drift.
+
+        Agentic turns delegate to `_build_agentic_parts` (subagent-grouped); the
+        untagged single-stream layout below is byte-for-byte unchanged when NOT
+        agentic, preserving the flag-off invariant.
         """
+        if agentic_active:
+            return _build_agentic_parts()
         parts: list[dict[str, Any]] = []
         if reasoning_buf:
             parts.append({"type": "reasoning", "text": "".join(reasoning_buf)})
@@ -846,6 +954,7 @@ async def stream_and_persist(
             status=ev.status,
             approval_state=ev.approval_state,
             input=ev.input,
+            subagent_id=ev.subagent_id,
         )
 
     def _tool_result_part(ev: ToolResult) -> ToolResultPart:
@@ -858,7 +967,42 @@ async def stream_and_persist(
             summary=ev.summary,
             output=ev.output,
             error=ev.error,
+            subagent_id=ev.subagent_id,
         )
+
+    def _build_agentic_parts() -> list[dict[str, Any]]:
+        """Assemble persisted parts for an agentic turn, grouped by subagent (T3).
+
+        For each subagent in first-seen order: a `subagent` marker part (carrying
+        its role + per-subagent cost), then its reasoning (if any), its tool
+        transcript, and its answer text — every part tagged with `subagentId`.
+        The FE renders one collapsible section per subagent from this shape; a
+        reload rehydrates the same grouping.
+        """
+        parts: list[dict[str, Any]] = []
+        for subagent_id in agentic_order:
+            acc = agentic_subagents[subagent_id]
+            parts.append(
+                SubagentPart(
+                    subagent_id=subagent_id,
+                    label=acc.label,
+                    role=acc.role,
+                    cost_usd=acc.cost_usd,
+                ).model_dump(by_alias=True, exclude_none=True)
+            )
+            if acc.reasoning:
+                parts.append(
+                    ReasoningPart(
+                        text="".join(acc.reasoning), subagent_id=subagent_id
+                    ).model_dump(by_alias=True, exclude_none=True)
+                )
+            parts.extend(acc.tool_parts)
+            parts.append(
+                TextPart(
+                    text="".join(acc.answer), subagent_id=subagent_id
+                ).model_dump(by_alias=True, exclude_none=True)
+            )
+        return parts
 
     async def _persist_assistant(
         *,
@@ -1212,10 +1356,21 @@ async def stream_and_persist(
                 raise ev.exc
 
             if isinstance(ev, ReasoningDelta):
-                reasoning_buf.append(ev.text)
-                yield encode_reasoning_delta(ReasoningDeltaEvent(text=ev.text))
+                if agentic_active and ev.subagent_id is not None:
+                    _sub(ev.subagent_id).reasoning.append(ev.text)
+                else:
+                    reasoning_buf.append(ev.text)
+                yield encode_reasoning_delta(
+                    ReasoningDeltaEvent(text=ev.text, subagent_id=ev.subagent_id)
+                )
             elif isinstance(ev, ReasoningDone):
-                if not emitted_reasoning_done:
+                # Agentic turns interleave multiple subagents, each with its own
+                # reasoning block, so the single-shot global gate doesn't apply —
+                # relay every `reasoning_done`. The non-agentic path keeps the
+                # exactly-one invariant.
+                if agentic_active:
+                    yield encode_reasoning_done(ReasoningDoneEvent())
+                elif not emitted_reasoning_done:
                     yield encode_reasoning_done(ReasoningDoneEvent())
                     emitted_reasoning_done = True
             elif isinstance(ev, StatusUpdate):
@@ -1223,7 +1378,9 @@ async def stream_and_persist(
                 # event). Emit live and remember the latest (label, state) so
                 # the persisted `status` part records the final, `done` line.
                 latest_status = (ev.label, ev.state)
-                yield encode_status(StatusEvent(label=ev.label, state=ev.state))
+                yield encode_status(
+                    StatusEvent(label=ev.label, state=ev.state, subagent_id=ev.subagent_id)
+                )
             elif isinstance(ev, Sources):
                 # Resolved citation list. Emit the `sources` SSE event and stash
                 # the items for the persisted `sources` part (appended after the
@@ -1233,11 +1390,20 @@ async def stream_and_persist(
                 search_items = list(ev.items)
                 saw_sources_event = True
                 yield encode_sources(
-                    SourcesEvent(items=list(ev.items), requested=web_search)
+                    SourcesEvent(
+                        items=list(ev.items),
+                        requested=web_search,
+                        subagent_id=ev.subagent_id,
+                    )
                 )
             elif isinstance(ev, ToolCall):
                 call_part = _tool_call_part(ev)
-                tool_parts.append(call_part.model_dump(by_alias=True, exclude_none=True))
+                target_tool_parts = (
+                    _sub(ev.subagent_id).tool_parts
+                    if agentic_active and ev.subagent_id is not None
+                    else tool_parts
+                )
+                target_tool_parts.append(call_part.model_dump(by_alias=True, exclude_none=True))
                 yield encode_tool_call(
                     ToolCallEvent.model_validate(
                         call_part.model_dump(by_alias=True, exclude_none=True)
@@ -1245,11 +1411,18 @@ async def stream_and_persist(
                 )
             elif isinstance(ev, ToolResult):
                 result_part = _tool_result_part(ev)
-                for part in tool_parts:
+                target_tool_parts = (
+                    _sub(ev.subagent_id).tool_parts
+                    if agentic_active and ev.subagent_id is not None
+                    else tool_parts
+                )
+                for part in target_tool_parts:
                     if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
                         part["status"] = ev.status
                         break
-                tool_parts.append(result_part.model_dump(by_alias=True, exclude_none=True))
+                target_tool_parts.append(
+                    result_part.model_dump(by_alias=True, exclude_none=True)
+                )
                 yield encode_tool_result(
                     ToolResultEvent.model_validate(
                         result_part.model_dump(by_alias=True, exclude_none=True)
@@ -1267,13 +1440,51 @@ async def stream_and_persist(
             elif isinstance(ev, AnswerDelta):
                 # Invariant: emit ReasoningDone before the first AnswerDelta,
                 # if any reasoning_delta has been seen but done hasn't fired.
-                if reasoning_buf and not emitted_reasoning_done:
+                # (Skipped for agentic turns — each subagent emits its own
+                # `reasoning_done`.)
+                if not agentic_active and reasoning_buf and not emitted_reasoning_done:
                     yield encode_reasoning_done(ReasoningDoneEvent())
                     emitted_reasoning_done = True
                 if first_answer_ms is None:
                     first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
-                answer_buf.append(ev.text)
-                yield encode_answer_delta(AnswerDeltaEvent(text=ev.text))
+                if agentic_active and ev.subagent_id is not None:
+                    _sub(ev.subagent_id).answer.append(ev.text)
+                else:
+                    answer_buf.append(ev.text)
+                yield encode_answer_delta(
+                    AnswerDeltaEvent(text=ev.text, subagent_id=ev.subagent_id)
+                )
+            elif isinstance(ev, SubagentStarted):
+                # Open a transcript section for this subagent. Recorded in
+                # first-seen order so the persisted parts group deterministically.
+                if ev.subagent_id not in agentic_subagents:
+                    agentic_subagents[ev.subagent_id] = _SubagentAccumulator(
+                        label=ev.label, role=ev.role
+                    )
+                    agentic_order.append(ev.subagent_id)
+                yield encode_subagent_started(
+                    SubagentStartedEvent(
+                        subagent_id=ev.subagent_id, label=ev.label, role=ev.role
+                    )
+                )
+            elif isinstance(ev, SubagentDone):
+                acc = agentic_subagents.get(ev.subagent_id)
+                if acc is not None:
+                    acc.cost_usd = ev.cost_usd
+                    acc.usage = ev.usage
+                yield encode_subagent_done(
+                    SubagentDoneEvent(
+                        subagent_id=ev.subagent_id,
+                        label=ev.label,
+                        role=ev.role,
+                        cost_usd=ev.cost_usd,
+                    )
+                )
+            elif isinstance(ev, RunCost):
+                # Running run-cost subtotal vs the configured cap (M3 scaffold).
+                yield encode_run_cost(
+                    RunCostEvent(subtotal_usd=ev.subtotal_usd, cap_usd=ev.cap_usd)
+                )
             elif isinstance(ev, UsageUpdate):
                 final_usage = ev
             elif isinstance(ev, Complete):
@@ -1715,6 +1926,7 @@ async def run_detached_producer(
     fallback_substitution: SubstitutionReasonCode | None = None,
     tool_approval: ToolApprovalDecision | None = None,
     resume_seed: ResumeToolSeed | None = None,
+    agentic_mode: Literal["single", "deep_research"] | None = None,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 
@@ -1776,6 +1988,7 @@ async def run_detached_producer(
                 fallback_substitution=fallback_substitution,
                 tool_approval=tool_approval,
                 resume_seed=resume_seed,
+                agentic_mode=agentic_mode,
             ):
                 # Mirror the last frame kind so the buffer's terminal_kind is
                 # observable. `terminal`/`error` are the only closing frames;

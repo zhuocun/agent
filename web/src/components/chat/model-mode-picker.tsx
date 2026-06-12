@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, type JSX, type ReactNode } from "react";
-import { Check, ChevronDown, ChevronRight, Globe, Braces } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Globe,
+  Braces,
+  Telescope,
+} from "lucide-react";
 
 import {
   Collapsible,
@@ -61,6 +68,13 @@ export interface ModelModePickerProps {
   // best-effort), so the "JSON output" section always renders.
   jsonModeEnabled: boolean;
   onToggleJsonMode: (next: boolean) => void;
+  // Deep Research (agentic multi-agent) toggle — a peer of web search. The
+  // section is shown ONLY when the server advertised agentic mode on bootstrap
+  // (`agenticEnabled`); against a flag-off server the toggle is hidden entirely
+  // (the BE would ignore the mode). Not tier-gated: every tier can orchestrate.
+  showDeepResearch?: boolean;
+  deepResearchEnabled?: boolean;
+  onToggleDeepResearch?: (next: boolean) => void;
   disabled?: boolean;
 }
 
@@ -94,6 +108,9 @@ export function ModelModePicker({
   onToggleSearch,
   jsonModeEnabled,
   onToggleJsonMode,
+  showDeepResearch = false,
+  deepResearchEnabled = false,
+  onToggleDeepResearch,
   disabled,
 }: ModelModePickerProps): JSX.Element {
   const tier = tiers.find((t) => t.id === selectedTierId) ?? tiers[0];
@@ -229,6 +246,16 @@ export function ModelModePicker({
                 checked={searchEnabled}
                 onToggle={onToggleSearch}
                 testId="web-search-toggle"
+              />
+            ) : null}
+            {showDeepResearch && onToggleDeepResearch ? (
+              <ToggleRow
+                icon={Telescope}
+                label="Deep Research"
+                description="Fan out parallel research agents and synthesize their findings."
+                checked={deepResearchEnabled}
+                onToggle={onToggleDeepResearch}
+                testId="deep-research-toggle"
               />
             ) : null}
             <ToggleRow
@@ -367,6 +394,17 @@ export function ModelModePicker({
                   selected={searchEnabled}
                   onSelect={() => onToggleSearch(!searchEnabled)}
                   testId="web-search-toggle"
+                />
+              </SheetSection>
+            ) : null}
+            {showDeepResearch && onToggleDeepResearch ? (
+              <SheetSection title="Deep Research">
+                <SheetRow
+                  label={deepResearchEnabled ? "On" : "Off"}
+                  description="Fan out parallel research agents and synthesize their findings."
+                  selected={deepResearchEnabled}
+                  onSelect={() => onToggleDeepResearch(!deepResearchEnabled)}
+                  testId="deep-research-toggle"
                 />
               </SheetSection>
             ) : null}

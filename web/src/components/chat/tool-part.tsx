@@ -21,12 +21,50 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import type {
+  JsonValue,
   MessagePart,
   ToolApprovalState,
   ToolRunStatus,
 } from "@/lib/types";
 
 type ToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
+
+// The agentic orchestrator's plan-approval pause rides a PSEUDO tool call with
+// this name (api/app/agentic/orchestrator.py PLAN_APPROVAL_TOOL_NAME). Its
+// input carries the research plan + cost estimate, which deserve a structured
+// rendering instead of the generic one-line JSON preview.
+const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
+
+// Narrowed view of the plan-approval tool input:
+// `{ plan: string[], estimatedCostUsd: number, capUsd: number }`. Null when the
+// shape doesn't match (the renderer then falls back to the generic preview).
+interface PlanApprovalInput {
+  plan: string[];
+  estimatedCostUsd: number | null;
+  capUsd: number | null;
+}
+
+function parsePlanApprovalInput(
+  input: Record<string, JsonValue> | undefined,
+): PlanApprovalInput | null {
+  if (!input || !Array.isArray(input.plan)) return null;
+  const plan = input.plan.filter((step): step is string => typeof step === "string");
+  if (plan.length === 0) return null;
+  return {
+    plan,
+    estimatedCostUsd:
+      typeof input.estimatedCostUsd === "number" ? input.estimatedCostUsd : null,
+    capUsd: typeof input.capUsd === "number" ? input.capUsd : null,
+  };
+}
+
+// Mirrors attribution-row's cost summary grammar.
+function formatUsd(n: number): string {
+  if (n === 0) return "$0.00";
+  if (n < 0.0001) return "<$0.0001";
+  const decimals = n < 0.01 ? 4 : n < 1 ? 3 : 2;
+  return `$${n.toFixed(decimals)}`;
+}
 
 interface ToolPartViewProps {
   part: ToolPart;
@@ -41,8 +79,16 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
   const status = part.status ?? (isResult ? "succeeded" : "pending");
   const approvalState = part.approvalState ?? "not_required";
   const label = part.label ?? humanizeName(part.name);
-  const detail =
-    part.type === "tool_call"
+  // Plan-approval pseudo tool (agentic): render the research plan + cost
+  // estimate structurally instead of the generic JSON preview. Falls back to
+  // the preview when the input doesn't match the expected shape.
+  const planApproval =
+    part.type === "tool_call" && part.name === PLAN_APPROVAL_TOOL_NAME
+      ? parsePlanApprovalInput(part.input)
+      : null;
+  const detail = planApproval
+    ? null
+    : part.type === "tool_call"
       ? previewJson(part.input)
       : part.error ?? part.summary ?? previewJson(part.output);
   const destructive = status === "failed" || approvalState === "rejected";
@@ -89,6 +135,7 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
 
   const detailBody = (
     <>
+      {planApproval ? <PlanApprovalDetail input={planApproval} /> : null}
       {detail ? (
         <p className="mt-1 line-clamp-2 break-words text-xs leading-snug text-muted-foreground">
           {detail}
@@ -178,6 +225,34 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
         </CollapsibleContent>
       </div>
     </Collapsible>
+  );
+}
+
+// Structured body for the plan-approval pause: the planner's sub-question
+// decomposition as a numbered list plus the pre-spawn cost estimate against
+// the per-run cap, so the user approves a legible plan — not a JSON blob.
+function PlanApprovalDetail({ input }: { input: PlanApprovalInput }) {
+  return (
+    <div className="mt-2 space-y-2" data-testid="plan-approval-detail">
+      <ol className="list-decimal space-y-1 pl-5 text-xs leading-snug text-muted-foreground">
+        {input.plan.map((step, idx) => (
+          <li key={idx} className="break-words">
+            {step}
+          </li>
+        ))}
+      </ol>
+      {input.estimatedCostUsd !== null ? (
+        <p className="text-xs text-muted-foreground">
+          Estimated cost{" "}
+          <span className="font-mono tabular-nums text-foreground">
+            {formatUsd(input.estimatedCostUsd)}
+          </span>
+          {input.capUsd !== null ? (
+            <> of {formatUsd(input.capUsd)} run cap</>
+          ) : null}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

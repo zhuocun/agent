@@ -5,6 +5,14 @@
 
 export type ModelTierId = "fast" | "smart" | "pro" | "auto";
 
+// Agentic (multi-agent) turn mode. `single` wraps the normal agent loop as one
+// orchestrator subagent; `deep_research` plans, fans out parallel worker
+// subagents, and synthesizes their findings. Mirrors the BE send-body
+// `agenticMode` literal (api/app/schemas/conversation.py). The FE only ever
+// SENDS `deep_research` (the composer toggle); `single` exists so the union
+// stays faithful to the wire contract.
+export type AgenticMode = "single" | "deep_research";
+
 export interface ProviderDataPolicy {
   trainsOnData: boolean;
   trainingDefault: "never" | "opt_in" | "opt_out" | "unknown";
@@ -210,9 +218,26 @@ export type ToolRunStatus =
   | "failed"
   | "cancelled";
 
+// Agentic mode: a marker part opening one orchestrator subagent's section.
+// Persisted (and streamed) ahead of that subagent's `subagentId`-tagged content
+// parts so a reload can group the transcript by subagent and render per-worker
+// activity + spend. `role` is the orchestration role (`primary` / `worker` /
+// `aggregator` / `orchestrator`); `costUsd` / `attribution` are optional so a
+// section can render before its subagent finishes. Mirrors `SubagentPart` in
+// api/app/schemas/message.py. Present ONLY on agentic turns — the union
+// addition is inert for every existing message.
+export interface SubagentPart {
+  type: "subagent";
+  subagentId: string;
+  label: string;
+  role: string;
+  attribution?: ModelAttribution;
+  costUsd?: number;
+}
+
 export type MessagePart =
-  | { type: "text"; text: string }
-  | { type: "reasoning"; text: string; durationSec?: number }
+  | { type: "text"; text: string; subagentId?: string }
+  | { type: "reasoning"; text: string; durationSec?: number; subagentId?: string }
   | { type: "status"; label: string; state: "active" | "done" }
   // Web-search sources, rendered AFTER the answer text. Added to the shared
   // `MessagePart` union so it auto-flows to the share surface (`PublicMessage`
@@ -235,6 +260,7 @@ export type MessagePart =
       status?: ToolRunStatus;
       approvalState?: ToolApprovalState;
       input?: Record<string, JsonValue>;
+      subagentId?: string;
     }
   | {
       type: "tool_result";
@@ -246,7 +272,10 @@ export type MessagePart =
       summary?: string;
       output?: Record<string, JsonValue>;
       error?: string;
-    };
+      subagentId?: string;
+    }
+  // Agentic mode subagent section marker (see `SubagentPart` above).
+  | SubagentPart;
 
 export interface AttachmentPart {
   type: "attachment";

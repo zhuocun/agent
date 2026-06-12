@@ -48,6 +48,11 @@ export interface BootstrapResponse {
   // Tags (Conversation Org v2). May be absent on a stale BE; the FE treats a
   // missing value as an empty list.
   tags?: Tag[];
+  // Agentic mode availability. True only when the server has BOTH
+  // `AGENTIC_ENABLED` and `TOOLS_ENABLED` on. Gates the composer's Deep
+  // Research toggle so the FE never offers a mode the server would ignore.
+  // May be absent on a stale BE; the FE treats a missing value as false.
+  agenticEnabled?: boolean;
 }
 
 export type BillingCheckoutKind = "pro_subscription" | "credit_purchase";

@@ -85,7 +85,11 @@ import {
   setOverride,
   type RebindableBinding,
 } from "@/lib/shortcut-defaults";
-import { useApiStream, type TerminalResult } from "@/lib/stream-client";
+import {
+  useApiStream,
+  type SubagentActivity,
+  type TerminalResult,
+} from "@/lib/stream-client";
 import {
   ApiError,
   ApiNetworkError,
@@ -116,6 +120,7 @@ import { reportTelemetry } from "@/lib/telemetry";
 import { isAnonymousAccount } from "@/lib/types";
 import type {
   AccountInfo,
+  AgenticMode,
   AttachmentPart,
   ChatMessage,
   ConversationSummary,
@@ -415,6 +420,47 @@ function providerOptionForTierId(
   );
 }
 
+type ToolTranscriptPart = Extract<
+  MessagePart,
+  { type: "tool_call" | "tool_result" }
+>;
+
+// Mirror the BE's persisted agentic layout (`_build_agentic_parts` in
+// api/app/streaming/handler.py): per subagent in first-seen order — a
+// `subagent` marker (role + per-subagent cost), its tagged reasoning, its
+// tagged tool transcript, then its tagged answer text. Shared by the live
+// pendingMessage and the terminal commit so the streaming bubble, the committed
+// bubble, and a reloaded transcript all render identically.
+function buildSubagentParts(
+  subagents: SubagentActivity[],
+  toolParts: ToolTranscriptPart[],
+): MessagePart[] {
+  const parts: MessagePart[] = [];
+  for (const sub of subagents) {
+    parts.push({
+      type: "subagent",
+      subagentId: sub.subagentId,
+      label: sub.label,
+      role: sub.role,
+      ...(sub.costUsd !== undefined ? { costUsd: sub.costUsd } : {}),
+    });
+    if (sub.reasoning) {
+      parts.push({
+        type: "reasoning",
+        text: sub.reasoning,
+        subagentId: sub.subagentId,
+      });
+    }
+    for (const toolPart of toolParts) {
+      if (toolPart.subagentId === sub.subagentId) parts.push(toolPart);
+    }
+    if (sub.answer) {
+      parts.push({ type: "text", text: sub.answer, subagentId: sub.subagentId });
+    }
+  }
+  return parts;
+}
+
 export function ChatThread() {
   // Bootstrap-derived state. `null` until `fetchBootstrap()` resolves.
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
@@ -449,6 +495,15 @@ export function ChatThread() {
   // Captured at send-time so a mid-stream toggle can't retroactively change
   // what this turn requested (mirrors `searchAtSendRef`).
   const jsonModeAtSendRef = useRef(false);
+  // Composer Deep Research (agentic) toggle. Only offered — and only ever
+  // sent — when the bootstrap advertised `agenticEnabled`; against a flag-off
+  // server the picker hides the toggle and the wire never carries the mode.
+  // Not tier-gated (any tier can orchestrate), so no clearing-on-tier-switch
+  // effect. Ephemeral session state, mirroring `jsonModeEnabled`.
+  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
+  // Captured at send-time so a mid-stream toggle can't retroactively change
+  // what this turn requested (mirrors `searchAtSendRef`).
+  const deepResearchAtSendRef = useRef(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
@@ -735,6 +790,12 @@ export function ChatThread() {
   const selectedTierSupportsVision = selectedModelTier?.supportsVision !== false;
   // Effective, gated view used by every consumer.
   const effectiveSearchEnabled = searchEnabled && selectedTierSupportsSearch;
+  // Whether the server's agentic seam is on (AGENTIC_ENABLED && TOOLS_ENABLED,
+  // surfaced on bootstrap). Gates the picker's Deep Research toggle AND every
+  // send path, so the mode is never sent to a server that would ignore it.
+  const agenticEnabled = bootstrap?.agenticEnabled === true;
+  // Effective, gated view used by every consumer (mirrors web search above).
+  const effectiveDeepResearch = deepResearchEnabled && agenticEnabled;
   // Whether the served provider honours a reasoning-effort knob. Anthropic
   // ignores the control, so we DISABLE the effort rows (a graceful, honest UX:
   // the picker shows a one-line note rather than ever surfacing an error). The
@@ -865,7 +926,8 @@ export function ChatThread() {
       result.status === "stopped" &&
       !result.reasoning &&
       !result.answer &&
-      result.sources.length === 0
+      result.sources.length === 0 &&
+      result.subagents.length === 0
     ) {
       const optimisticUserId = pendingUserIdRef.current;
       const serverUserId = result.serverUserMessageId;
@@ -884,34 +946,41 @@ export function ChatThread() {
     }
 
     const parts: MessagePart[] = [];
-    if (result.reasoning) {
-      parts.push({
-        type: "reasoning",
-        text: result.reasoning,
-        durationSec: result.reasoningDurationSec,
-      });
-    }
-    parts.push(...result.toolParts);
-    // The search has finished by terminal time, so force `state: "done"` —
-    // the spinner stops, the label stays (e.g. "Searched the web").
-    if (result.searchStatus) {
-      parts.push({
-        type: "status",
-        label: result.searchStatus.label,
-        state: "done",
-      });
-    }
-    if (result.answer) parts.push({ type: "text", text: result.answer });
-    // Sources part follows the answer text (contract ordering). Emit it whenever
-    // web search was effective — even with zero sources — so the ungrounded
-    // marker ("Answered without live sources") survives the commit; grounded ⇔
-    // non-empty items.
-    if (result.sources.length > 0 || result.sourcesRequested) {
-      parts.push({
-        type: "sources",
-        items: result.sources,
-        requested: result.sourcesRequested,
-      });
+    if (result.subagents.length > 0) {
+      // Agentic turn: commit the same subagent-grouped layout the BE persists
+      // (and the live pendingMessage already rendered), so the settled bubble
+      // and a later reload are pixel-identical.
+      parts.push(...buildSubagentParts(result.subagents, result.toolParts));
+    } else {
+      if (result.reasoning) {
+        parts.push({
+          type: "reasoning",
+          text: result.reasoning,
+          durationSec: result.reasoningDurationSec,
+        });
+      }
+      parts.push(...result.toolParts);
+      // The search has finished by terminal time, so force `state: "done"` —
+      // the spinner stops, the label stays (e.g. "Searched the web").
+      if (result.searchStatus) {
+        parts.push({
+          type: "status",
+          label: result.searchStatus.label,
+          state: "done",
+        });
+      }
+      if (result.answer) parts.push({ type: "text", text: result.answer });
+      // Sources part follows the answer text (contract ordering). Emit it
+      // whenever web search was effective — even with zero sources — so the
+      // ungrounded marker ("Answered without live sources") survives the
+      // commit; grounded ⇔ non-empty items.
+      if (result.sources.length > 0 || result.sourcesRequested) {
+        parts.push({
+          type: "sources",
+          items: result.sources,
+          requested: result.sourcesRequested,
+        });
+      }
     }
 
     const serverAssistantId = result.serverAssistantMessageId ?? assistantId;
@@ -1135,6 +1204,7 @@ export function ChatThread() {
       reasoningEffort?: ReasoningEffortId;
       responseFormat?: { type: "json_object" };
       attachments?: AttachmentPart[];
+      agenticMode?: AgenticMode;
     }): Promise<void> => {
       abortBeforeStartRef.current = false;
       let conversationId = activeConversationId;
@@ -1235,6 +1305,9 @@ export function ChatThread() {
         // when undefined, so the off path is byte-identical to today.
         responseFormat: args.responseFormat,
         attachments: args.attachments,
+        // Sent only on a Deep Research turn; stream-client drops anything but
+        // "deep_research" from the wire, so the off path is byte-identical.
+        agenticMode: args.agenticMode,
       });
     },
     [activeConversationId, isTemporary, start],
@@ -1272,6 +1345,9 @@ export function ChatThread() {
     effortAtSendRef.current = effectiveReasoningEffort;
     // JSON mode isn't tier-gated, so capture the raw toggle at send-time.
     jsonModeAtSendRef.current = jsonModeEnabled;
+    // Deep Research rides only when the bootstrap advertised the agentic seam
+    // (mirrors the web-search gate above).
+    deepResearchAtSendRef.current = effectiveDeepResearch;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
 
@@ -1297,6 +1373,7 @@ export function ChatThread() {
           ? { type: "json_object" }
           : undefined,
         attachments,
+        agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
       });
     };
 
@@ -1441,32 +1518,40 @@ export function ChatThread() {
   const pendingMessage: ChatMessage | null = useMemo(() => {
     if (!pendingId) return null;
     const parts: MessagePart[] = [];
-    if (state.reasoning) {
-      parts.push({
-        type: "reasoning",
-        text: state.reasoning,
-        durationSec: state.reasoningDurationSec,
-      });
-    }
-    parts.push(...state.toolParts);
-    if (state.searchStatus) {
-      parts.push({
-        type: "status",
-        label: state.searchStatus.label,
-        state: state.searchStatus.state,
-      });
-    }
-    if (state.answer) parts.push({ type: "text", text: state.answer });
-    // Sources render AFTER the answer text (contract: sources part follows the
-    // answer). They stream in once the search resolves. When web search was
-    // effective but resolved nothing, the empty + requested part drives the
-    // live ungrounded marker.
-    if (state.sources.length > 0 || state.sourcesRequested) {
-      parts.push({
-        type: "sources",
-        items: state.sources,
-        requested: state.sourcesRequested,
-      });
+    if (state.subagents.length > 0) {
+      // Agentic turn: every content delta arrived tagged, so the flat
+      // accumulators below are empty — build the subagent-grouped layout the
+      // BE persists instead (marker + tagged reasoning/tools/text per
+      // subagent). AssistantMessage renders the panel + main answer from it.
+      parts.push(...buildSubagentParts(state.subagents, state.toolParts));
+    } else {
+      if (state.reasoning) {
+        parts.push({
+          type: "reasoning",
+          text: state.reasoning,
+          durationSec: state.reasoningDurationSec,
+        });
+      }
+      parts.push(...state.toolParts);
+      if (state.searchStatus) {
+        parts.push({
+          type: "status",
+          label: state.searchStatus.label,
+          state: state.searchStatus.state,
+        });
+      }
+      if (state.answer) parts.push({ type: "text", text: state.answer });
+      // Sources render AFTER the answer text (contract: sources part follows
+      // the answer). They stream in once the search resolves. When web search
+      // was effective but resolved nothing, the empty + requested part drives
+      // the live ungrounded marker.
+      if (state.sources.length > 0 || state.sourcesRequested) {
+        parts.push({
+          type: "sources",
+          items: state.sources,
+          requested: state.sourcesRequested,
+        });
+      }
     }
     return {
       id: pendingId,
@@ -1546,6 +1631,7 @@ export function ChatThread() {
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
     jsonModeAtSendRef.current = jsonModeEnabled;
+    deepResearchAtSendRef.current = effectiveDeepResearch;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
     // Regenerate keeps the trailing user message verbatim — send its text
@@ -1561,6 +1647,7 @@ export function ChatThread() {
       responseFormat: jsonModeAtSendRef.current
         ? { type: "json_object" }
         : undefined,
+      agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
     });
   };
 
@@ -1609,6 +1696,7 @@ export function ChatThread() {
       resolvedProviderId !== "anthropic" ? selectedReasoningEffortId : "auto";
     // JSON mode isn't tier-gated, so capture the raw toggle at send-time.
     jsonModeAtSendRef.current = jsonModeEnabled;
+    deepResearchAtSendRef.current = effectiveDeepResearch;
     setPendingId(regenId);
     setLiveMessage("Regenerating response");
     void beginTurn({
@@ -1621,6 +1709,7 @@ export function ChatThread() {
       responseFormat: jsonModeAtSendRef.current
         ? { type: "json_object" }
         : undefined,
+      agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
     });
   };
 
@@ -1649,6 +1738,7 @@ export function ChatThread() {
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
     jsonModeAtSendRef.current = jsonModeEnabled;
+    deepResearchAtSendRef.current = effectiveDeepResearch;
     setPendingId(continueId);
     setLiveMessage("Continuing response");
     void beginTurn({
@@ -1661,6 +1751,7 @@ export function ChatThread() {
       responseFormat: jsonModeAtSendRef.current
         ? { type: "json_object" }
         : undefined,
+      agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
     });
   };
 
@@ -1686,6 +1777,22 @@ export function ChatThread() {
       }
       return "";
     })();
+    // An agentic plan-approval resume MUST re-carry `deep_research`: the BE
+    // re-runs the orchestrator only when the resume body has the mode (the
+    // handler's agentic gate reads it per-request, not from the paused turn).
+    // Detect it from the paused tool call itself — the pseudo
+    // `agentic_plan_approval` tool — so the resume works even if the user has
+    // since flipped the composer toggle off.
+    const isPlanApproval = messages.some(
+      (m) =>
+        m.role === "assistant" &&
+        m.parts.some(
+          (p) =>
+            p.type === "tool_call" &&
+            p.id === decision.toolCallId &&
+            p.name === "agentic_plan_approval",
+        ),
+    );
     const resumeId = localId();
     assistantIdRef.current = resumeId;
     pendingUserIdRef.current = null;
@@ -1694,6 +1801,7 @@ export function ChatThread() {
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
     jsonModeAtSendRef.current = jsonModeEnabled;
+    deepResearchAtSendRef.current = isPlanApproval || effectiveDeepResearch;
     setPendingId(resumeId);
     setLiveMessage(
       decision.decision === "approve"
@@ -1713,6 +1821,7 @@ export function ChatThread() {
       responseFormat: jsonModeAtSendRef.current
         ? { type: "json_object" }
         : undefined,
+      agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
     });
   };
 
@@ -1738,6 +1847,7 @@ export function ChatThread() {
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
     jsonModeAtSendRef.current = jsonModeEnabled;
+    deepResearchAtSendRef.current = effectiveDeepResearch;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
     setMessages((prev) => [
@@ -1761,6 +1871,7 @@ export function ChatThread() {
       responseFormat: jsonModeAtSendRef.current
         ? { type: "json_object" }
         : undefined,
+      agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
     });
   };
 
@@ -3677,6 +3788,11 @@ export function ChatThread() {
                     message={pendingMessage}
                     status={state.status}
                     reasoningStreaming={state.reasoningStreaming}
+                    // Agentic mode: live per-worker activity + run-cost meter
+                    // for the streaming bubble. Both are empty/null on every
+                    // non-agentic turn.
+                    liveSubagents={state.subagents}
+                    runCost={state.runCost}
                   />
                 ) : null}
               </MessageList>
@@ -3749,6 +3865,9 @@ export function ChatThread() {
                     onToggleSearch={setSearchEnabled}
                     jsonModeEnabled={jsonModeEnabled}
                     onToggleJsonMode={setJsonModeEnabled}
+                    showDeepResearch={agenticEnabled}
+                    deepResearchEnabled={effectiveDeepResearch}
+                    onToggleDeepResearch={setDeepResearchEnabled}
                   />
                 }
                 // Resting hero glow on the first-run welcome surface only;

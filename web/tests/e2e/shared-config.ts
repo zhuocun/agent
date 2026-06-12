@@ -41,6 +41,19 @@ export const BE_ENV = {
   // provider only emits tool calls on those markers, so this is a no-op for
   // every other test — no stray tool parts without a marker.
   TOOLS_ENABLED: "true",
+  // Agentic mode (agentic.spec.ts): surfaces `agenticEnabled` on bootstrap so
+  // the Deep Research toggle renders, and routes `agenticMode` sends into the
+  // orchestrator. Inert for every other test — the BE runs the agentic path
+  // ONLY when a send carries `agenticMode`.
+  AGENTIC_ENABLED: "true",
+  // Plan-approval HITL gate: a deep-research turn pauses on the plan before
+  // any fan-out. Scoped to `agenticMode: "deep_research"` sends, so this too
+  // is a no-op for every other test.
+  AGENTIC_PLAN_APPROVAL: "true",
+  // Fake billing so agentic.spec.ts can grant Pro over HTTP (deep_research is
+  // Pro/BYOK-gated; without it the BE coerces the turn down to `single`). The
+  // fake provider's /api/billing/webhook accepts unsigned Stripe-shaped events.
+  BILLING_BACKEND: "fake",
   DATABASE_URL,
   CORS_ALLOWED_ORIGINS: FE_URL,
   // Long-and-fixed; assert_prod_safe() requires >=32 chars in prod, dev/test

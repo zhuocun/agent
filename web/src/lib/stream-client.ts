@@ -17,8 +17,15 @@
 //   event: tool_call          data: tool-call part
 //   event: tool_result        data: tool-result part
 //   event: answer_delta       data: { text }
+//   event: subagent_started   data: { subagentId, label, role }      (agentic)
+//   event: subagent_done      data: { subagentId, label?, role?, costUsd? }
+//   event: run_cost           data: { subtotalUsd, capUsd }          (agentic)
 //   event: terminal           data: { status: "done", messageId, attribution }
 //   event: error              data: ErrorEnvelope     (final on failure)
+//
+// Agentic (multi-agent) turns additionally tag deltas / tool events with a
+// `subagentId`; tagged content accumulates PER SUBAGENT (see SubagentActivity)
+// so parallel workers can't interleave into one garbled flat string.
 //
 // `submitted` always lands first. Exactly one of `terminal` | `error` is the
 // last server frame on a non-disconnect run. On client `stop()`, neither
@@ -40,6 +47,7 @@ import {
   type ApiErrorEnvelope,
 } from "@/lib/apiClient";
 import type {
+  AgenticMode,
   AttachmentPart,
   JsonValue,
   ModelAttribution,
@@ -58,6 +66,29 @@ import type {
 export interface SearchStatus {
   label: string;
   state: "active" | "done";
+}
+
+// One orchestrator subagent's live activity on an agentic turn, accumulated
+// from `subagent_started` / tagged deltas / `subagent_done`. The per-subagent
+// `reasoning` / `answer` accumulators exist because parallel workers interleave
+// their deltas — a flat concat would garble the text — and they let the
+// terminal commit mirror the BE's persisted subagent-grouped parts exactly.
+export interface SubagentActivity {
+  subagentId: string;
+  label: string;
+  role: string;
+  status: "running" | "done";
+  costUsd?: number;
+  reasoning: string;
+  answer: string;
+}
+
+// Running run-cost subtotal vs the configured per-run cap, from the agentic
+// `run_cost` SSE event. On the plan-approval pause the subtotal carries the
+// pre-spawn ESTIMATE; after fan-out it carries the actual summed cost.
+export interface RunCostState {
+  subtotalUsd: number;
+  capUsd: number;
 }
 
 export interface ApiStreamState {
@@ -79,6 +110,12 @@ export interface ApiStreamState {
   sourcesRequested: boolean;
   // Tool/function transcript parts emitted by the backend tool loop.
   toolParts: ToolTranscriptPart[];
+  // Agentic mode: per-subagent live activity in first-seen order. Empty on
+  // every non-agentic turn.
+  subagents: SubagentActivity[];
+  // Agentic mode: latest run-cost subtotal vs cap; null until the BE emits one
+  // (non-agentic turns never do).
+  runCost: RunCostState | null;
 }
 
 export interface TerminalResult {
@@ -102,6 +139,12 @@ export interface TerminalResult {
   sourcesRequested: boolean;
   // Final tool/function transcript parts.
   toolParts: ToolTranscriptPart[];
+  // Agentic mode: final per-subagent activity (with accumulated reasoning /
+  // answer text + per-subagent cost) so the commit can persist the same
+  // subagent-grouped parts the BE writes. Empty on non-agentic turns.
+  subagents: SubagentActivity[];
+  // Agentic mode: final run-cost subtotal vs cap. Null on non-agentic turns.
+  runCost: RunCostState | null;
   // From `submitted` — always present once the server sent the first frame.
   serverUserMessageId?: string;
   // From `terminal` — present on `done` only (never on stopped/error).
@@ -159,6 +202,12 @@ export interface StartArgs {
   // Attachment metadata plus transient payload bytes for the current request.
   // The BE strips payload bytes before message persistence.
   attachments?: AttachmentPart[];
+  // Agentic mode for the turn. Sent on the wire ONLY when `deep_research`
+  // (mirrors `webSearch`: the BE treats absence as a normal single-stream turn,
+  // so the off path is byte-identical to today). The FE never sends `single` —
+  // it is the implicit default the BE applies when agentic is active without a
+  // mode. Gated upstream on the bootstrap's `agenticEnabled`.
+  agenticMode?: AgenticMode;
 }
 
 const INITIAL: ApiStreamState = {
@@ -171,6 +220,8 @@ const INITIAL: ApiStreamState = {
   sources: [],
   sourcesRequested: false,
   toolParts: [],
+  subagents: [],
+  runCost: null,
 };
 
 type ToolTranscriptPart = Extract<
@@ -392,6 +443,7 @@ function parseToolCall(value: unknown): ToolTranscriptPart | null {
   const name = readStringField(value, "name");
   if (id === null || name === null) return null;
   const label = readStringField(value, "label");
+  const subagentId = readStringField(value, "subagentId");
   return {
     type: "tool_call",
     id,
@@ -402,6 +454,7 @@ function parseToolCall(value: unknown): ToolTranscriptPart | null {
       ? { approvalState: readApprovalState(value.approvalState) }
       : {}),
     ...(asJsonRecord(value.input) ? { input: asJsonRecord(value.input) } : {}),
+    ...(subagentId !== null ? { subagentId } : {}),
   };
 }
 
@@ -413,6 +466,7 @@ function parseToolResult(value: unknown): ToolTranscriptPart | null {
   const label = readStringField(value, "label");
   const summary = readStringField(value, "summary");
   const error = readStringField(value, "error");
+  const subagentId = readStringField(value, "subagentId");
   return {
     type: "tool_result",
     toolCallId,
@@ -425,7 +479,58 @@ function parseToolResult(value: unknown): ToolTranscriptPart | null {
     ...(summary !== null ? { summary } : {}),
     ...(asJsonRecord(value.output) ? { output: asJsonRecord(value.output) } : {}),
     ...(error !== null ? { error } : {}),
+    ...(subagentId !== null ? { subagentId } : {}),
   };
+}
+
+// `subagent_started` payload narrows to `{ subagentId, label, role }` — all
+// required strings on the wire (SubagentStartedEvent).
+interface ParsedSubagentStarted {
+  subagentId: string;
+  label: string;
+  role: string;
+}
+
+function parseSubagentStarted(value: unknown): ParsedSubagentStarted | null {
+  if (!isRecord(value)) return null;
+  const subagentId = readStringField(value, "subagentId");
+  const label = readStringField(value, "label");
+  const role = readStringField(value, "role");
+  if (subagentId === null || label === null || role === null) return null;
+  return { subagentId, label, role };
+}
+
+// `subagent_done` payload narrows to `{ subagentId, label?, role?, costUsd? }`.
+interface ParsedSubagentDone {
+  subagentId: string;
+  label?: string;
+  role?: string;
+  costUsd?: number;
+}
+
+function parseSubagentDone(value: unknown): ParsedSubagentDone | null {
+  if (!isRecord(value)) return null;
+  const subagentId = readStringField(value, "subagentId");
+  if (subagentId === null) return null;
+  const label = readStringField(value, "label");
+  const role = readStringField(value, "role");
+  const costUsd = value.costUsd;
+  return {
+    subagentId,
+    ...(label !== null ? { label } : {}),
+    ...(role !== null ? { role } : {}),
+    ...(typeof costUsd === "number" ? { costUsd } : {}),
+  };
+}
+
+// `run_cost` payload narrows to `{ subtotalUsd, capUsd }` — both required
+// numbers on the wire (RunCostEvent).
+function parseRunCost(value: unknown): RunCostState | null {
+  if (!isRecord(value)) return null;
+  const subtotalUsd = value.subtotalUsd;
+  const capUsd = value.capUsd;
+  if (typeof subtotalUsd !== "number" || typeof capUsd !== "number") return null;
+  return { subtotalUsd, capUsd };
 }
 
 // --- Hook ------------------------------------------------------------------
@@ -518,6 +623,11 @@ export function useApiStream(
   const sourcesRef = useRef<SourceItem[]>([]);
   const sourcesRequestedRef = useRef(false);
   const toolPartsRef = useRef<ToolTranscriptPart[]>([]);
+  // Agentic accumulators — per-subagent activity (first-seen order) + the
+  // latest run-cost frame. Entries are replaced immutably so the same array
+  // can flow into React state via `queueState` without aliasing.
+  const subagentsRef = useRef<SubagentActivity[]>([]);
+  const runCostRef = useRef<RunCostState | null>(null);
   const reasoningStartedAtRef = useRef<number | null>(null);
   // `submitted` lands the user message id; we keep it for the terminal so the
   // FE can replace its local `local-…` user id with the server uuid.
@@ -555,6 +665,37 @@ export function useApiStream(
     }
   }, [computeReasoningDuration]);
 
+  // Replace one subagent's entry immutably (create-on-miss is defensive only —
+  // the BE always emits `subagent_started` before a subagent's tagged events,
+  // mirroring the handler's `_sub` accumulator).
+  const updateSubagent = useCallback(
+    (
+      subagentId: string,
+      update: (current: SubagentActivity) => SubagentActivity,
+    ): SubagentActivity[] => {
+      const existing = subagentsRef.current.find(
+        (s) => s.subagentId === subagentId,
+      );
+      if (existing === undefined) {
+        const created = update({
+          subagentId,
+          label: subagentId,
+          role: "subagent",
+          status: "running",
+          reasoning: "",
+          answer: "",
+        });
+        subagentsRef.current = [...subagentsRef.current, created];
+      } else {
+        subagentsRef.current = subagentsRef.current.map((s) =>
+          s.subagentId === subagentId ? update(s) : s,
+        );
+      }
+      return subagentsRef.current;
+    },
+    [],
+  );
+
   const emitTerminal = useCallback(
     (
       status: "done" | "stopped" | "error" | "awaiting_approval",
@@ -575,6 +716,8 @@ export function useApiStream(
         sources: sourcesRef.current,
         sourcesRequested: sourcesRequestedRef.current,
         toolParts: toolPartsRef.current,
+        subagents: subagentsRef.current,
+        runCost: runCostRef.current,
         serverUserMessageId: serverUserIdRef.current,
         ...extras,
       });
@@ -591,6 +734,8 @@ export function useApiStream(
     sourcesRef.current = [];
     sourcesRequestedRef.current = false;
     toolPartsRef.current = [];
+    subagentsRef.current = [];
+    runCostRef.current = null;
     serverUserIdRef.current = undefined;
     streamIdRef.current = undefined;
     terminalEmittedRef.current = false;
@@ -606,6 +751,8 @@ export function useApiStream(
     sourcesRef.current = [];
     sourcesRequestedRef.current = false;
     toolPartsRef.current = [];
+    subagentsRef.current = [];
+    runCostRef.current = null;
     serverUserIdRef.current = undefined;
     streamIdRef.current = streamId;
     cancelScheduledFlush();
@@ -655,6 +802,20 @@ export function useApiStream(
           if (!isRecord(payload)) return false;
           const text = readStringField(payload, "text");
           if (text === null) return false;
+          // Agentic turns tag every delta with its producing subagent. Tagged
+          // reasoning accumulates per-subagent (parallel workers interleave, so
+          // a flat concat would garble the text) and never drives the global
+          // reasoning panel/clock — the untagged path below is byte-identical
+          // to today for non-agentic turns.
+          const subagentId = readStringField(payload, "subagentId");
+          if (subagentId !== null) {
+            const next = updateSubagent(subagentId, (s) => ({
+              ...s,
+              reasoning: s.reasoning + text,
+            }));
+            queueState({ subagents: next });
+            return false;
+          }
           if (reasoningStartedAtRef.current === null) {
             reasoningStartedAtRef.current = Date.now();
           }
@@ -680,6 +841,17 @@ export function useApiStream(
           if (!isRecord(payload)) return false;
           const text = readStringField(payload, "text");
           if (text === null) return false;
+          // Tagged (agentic) answer text accumulates per-subagent — mirrors
+          // the tagged reasoning branch above.
+          const subagentId = readStringField(payload, "subagentId");
+          if (subagentId !== null) {
+            const next = updateSubagent(subagentId, (s) => ({
+              ...s,
+              answer: s.answer + text,
+            }));
+            queueState({ subagents: next });
+            return false;
+          }
           // Defensive: server guarantees `reasoning_done` precedes the first
           // `answer_delta` if any reasoning fired, but freeze the clock here
           // anyway in case the server elided the sentinel for any reason.
@@ -799,6 +971,42 @@ export function useApiStream(
           queueState({ toolParts: toolPartsRef.current });
           return false;
         }
+        case "subagent_started": {
+          // Agentic mode: open this subagent's activity entry (first-seen
+          // order, mirroring the BE handler's accumulator).
+          const parsed = parseSubagentStarted(payload);
+          if (parsed === null) return false;
+          const next = updateSubagent(parsed.subagentId, (s) => ({
+            ...s,
+            label: parsed.label,
+            role: parsed.role,
+            status: "running" as const,
+          }));
+          queueState({ subagents: next });
+          return false;
+        }
+        case "subagent_done": {
+          // Agentic mode: settle the subagent's row with its per-subagent cost.
+          const parsed = parseSubagentDone(payload);
+          if (parsed === null) return false;
+          const next = updateSubagent(parsed.subagentId, (s) => ({
+            ...s,
+            ...(parsed.label !== undefined ? { label: parsed.label } : {}),
+            ...(parsed.role !== undefined ? { role: parsed.role } : {}),
+            ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } : {}),
+            status: "done" as const,
+          }));
+          queueState({ subagents: next });
+          return false;
+        }
+        case "run_cost": {
+          // Agentic mode: latest run-cost subtotal vs cap. Last write wins.
+          const parsed = parseRunCost(payload);
+          if (parsed === null) return false;
+          runCostRef.current = parsed;
+          queueState({ runCost: parsed });
+          return false;
+        }
         default: {
           console.warn(`[stream-client] Unknown SSE event: ${frame.event}`);
           return false;
@@ -811,6 +1019,7 @@ export function useApiStream(
       freezeReasoningDuration,
       queueState,
       flushPending,
+      updateSubagent,
     ],
   );
 
@@ -951,6 +1160,12 @@ export function useApiStream(
       // Send `responseFormat` only when JSON mode is on — the BE treats absence
       // as off, so the non-JSON path is byte-identical to today's wire shape.
       if (args.responseFormat) body.responseFormat = args.responseFormat;
+      // Send `agenticMode` only for a Deep Research turn — the BE treats
+      // absence as a normal single-stream turn (mirrors `webSearch`), so the
+      // off path is byte-identical to today's wire shape.
+      if (args.agenticMode === "deep_research") {
+        body.agenticMode = args.agenticMode;
+      }
       if (args.attachments && args.attachments.length > 0) {
         body.attachments = args.attachments;
       }

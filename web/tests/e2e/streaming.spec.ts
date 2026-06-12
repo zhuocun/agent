@@ -15,7 +15,7 @@
 
 import { expect, test } from "@playwright/test";
 
-import { BE_URL, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 
 test.describe("streaming", () => {
   test("send a message: SSE opens, reasoning + answer stream, terminal lands, message persists", async ({
@@ -169,7 +169,7 @@ test.describe("streaming", () => {
     // Toggle web search ON via the model-mode picker. The default tier ("auto")
     // supports search, so the "Web search" section is present. Desktop project
     // (Desktop Chrome) → the dropdown variant; open it, then click the toggle.
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     // Web search now lives behind the "Advanced" collapsible (progressive
     // disclosure); expand it before the toggle is reachable.
     await page.getByTestId("picker-advanced").click();
@@ -329,7 +329,7 @@ test.describe("streaming", () => {
     // Toggle JSON mode ON via the model-mode picker. Unlike web search, the
     // "JSON output" section is NOT tier-gated, so it's always present. Desktop
     // project (Desktop Chrome) → the dropdown variant; open it, click the toggle.
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     // JSON output now lives behind the "Advanced" collapsible (progressive
     // disclosure); expand it before the toggle is reachable.
     await page.getByTestId("picker-advanced").click();

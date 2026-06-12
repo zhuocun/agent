@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import {
   CheckCircle2,
   ChevronDown,
@@ -92,7 +93,10 @@ export function SubagentPanel({ sections, runCost }: SubagentPanelProps) {
   const summedCost = sections.reduce((acc, s) => acc + (s.costUsd ?? 0), 0);
   const subtotalUsd = runCost ? runCost.subtotalUsd : summedCost;
   const capUsd = runCost && runCost.capUsd > 0 ? runCost.capUsd : null;
-  const showMeter = runCost != null || summedCost > 0;
+  // Header meter earns its place when a live cap exists, or when the summed
+  // cost is above the sub-cent noise floor — otherwise it duplicates row costs.
+  const showMeter =
+    (runCost != null && runCost.capUsd > 0) || summedCost >= 0.0001;
 
   return (
     <div
@@ -169,19 +173,25 @@ function SubagentRow({ section }: { section: SubagentSection }) {
   const hasDetail =
     section.reasoning.length > 0 || section.answer.length > 0;
 
-  const summaryRow = (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-      <span className="truncate font-medium text-foreground">
+  const costBadge =
+    section.costUsd !== undefined ? (
+      <span className="shrink-0 font-mono text-2xs tabular-nums text-muted-foreground">
+        {formatUsd(section.costUsd)}
+      </span>
+    ) : null;
+
+  const summaryRow = (trailing?: ReactNode) => (
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
+      <span className="min-w-0 truncate font-medium text-foreground">
         {section.label}
       </span>
-      <span className="inline-flex h-5 items-center rounded-full bg-foreground/[0.06] px-2 text-2xs text-muted-foreground">
+      <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground/[0.06] px-2 text-2xs text-muted-foreground">
         {roleLabel(section.role)}
       </span>
-      {section.costUsd !== undefined ? (
-        <span className="font-mono text-2xs tabular-nums text-muted-foreground">
-          {formatUsd(section.costUsd)}
-        </span>
-      ) : null}
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {costBadge}
+        {trailing}
+      </span>
     </div>
   );
 
@@ -220,7 +230,7 @@ function SubagentRow({ section }: { section: SubagentSection }) {
       >
         {statusIcon}
         <div className="min-w-0 flex-1">
-          {summaryRow}
+          {summaryRow()}
           {detailBody}
         </div>
       </div>
@@ -240,17 +250,18 @@ function SubagentRow({ section }: { section: SubagentSection }) {
       <div className="min-w-0 flex-1">
         <CollapsibleTrigger
           className={cn(
-            "group/subagent-trigger flex w-full min-w-0 items-center gap-1.5 text-left",
+            "group/subagent-trigger flex w-full min-w-0 items-center text-left",
             "min-h-11 bg-transparent py-2 -my-2 outline-none md:min-h-0 md:py-0 md:my-0",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
           aria-label={`${section.label}, ${roleLabel(section.role)} — toggle details`}
         >
-          {summaryRow}
-          <ChevronDown
-            aria-hidden
-            className="ml-auto size-3.5 shrink-0 transition-transform duration-300 ease-[var(--ease-ios-spring)] motion-reduce:transition-none group-data-[panel-open]/subagent-trigger:rotate-180"
-          />
+          {summaryRow(
+            <ChevronDown
+              aria-hidden
+              className="size-3.5 shrink-0 transition-transform duration-300 ease-[var(--ease-ios-spring)] motion-reduce:transition-none group-data-[panel-open]/subagent-trigger:rotate-180"
+            />,
+          )}
         </CollapsibleTrigger>
         <CollapsibleContent
           keepMounted

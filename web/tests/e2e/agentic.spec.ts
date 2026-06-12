@@ -21,7 +21,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { BE_URL, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 
 // Grant the CURRENT browser session an active Pro entitlement through the fake
 // billing backend, entirely over HTTP (mirrors api/tests/test_billing.py):
@@ -79,7 +79,7 @@ async function grantPro(page: Page): Promise<void> {
 // dropdown variant — the chromium project). It sits in the picker's main
 // toggle group, peer to Web search, so no Advanced expansion is needed.
 async function enableDeepResearch(page: Page): Promise<void> {
-  await page.getByTestId("model-mode-trigger").click();
+  await modelModeTrigger(page).click();
   const toggle = page.getByTestId("deep-research-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();
@@ -164,7 +164,7 @@ test.describe("agentic mode (deep research)", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     // Control: the picker is open (the peer Web search toggle renders) but the
     // Deep Research toggle is absent.
     await expect(page.getByTestId("web-search-toggle")).toBeVisible();

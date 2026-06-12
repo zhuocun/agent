@@ -33,6 +33,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import type {
   ModelTier,
@@ -346,6 +347,7 @@ export function ModelModePicker({
             <button
               type="button"
               aria-label={triggerLabel}
+              data-testid="model-mode-trigger"
               className={cn(TRIGGER_CLASS, "md:hidden")}
             >
               {triggerInner}
@@ -388,32 +390,32 @@ export function ModelModePicker({
                 in the mobile sheet too. Mirrors the desktop dropdown order. */}
             {showWebSearch ? (
               <SheetSection title="Web search">
-                <SheetRow
-                  label={searchEnabled ? "On" : "Off"}
+                <SheetToggleRow
+                  label="Web search"
                   description="Ground answers with a live web search."
-                  selected={searchEnabled}
-                  onSelect={() => onToggleSearch(!searchEnabled)}
+                  checked={searchEnabled}
+                  onCheckedChange={onToggleSearch}
                   testId="web-search-toggle"
                 />
               </SheetSection>
             ) : null}
             {showDeepResearch && onToggleDeepResearch ? (
               <SheetSection title="Deep Research">
-                <SheetRow
-                  label={deepResearchEnabled ? "On" : "Off"}
+                <SheetToggleRow
+                  label="Deep Research"
                   description="Fan out parallel research agents and synthesize their findings."
-                  selected={deepResearchEnabled}
-                  onSelect={() => onToggleDeepResearch(!deepResearchEnabled)}
+                  checked={deepResearchEnabled}
+                  onCheckedChange={onToggleDeepResearch}
                   testId="deep-research-toggle"
                 />
               </SheetSection>
             ) : null}
             <SheetSection title="JSON output">
-              <SheetRow
-                label={jsonModeEnabled ? "On" : "Off"}
+              <SheetToggleRow
+                label="JSON output"
                 description="Ask the model to reply with a JSON object."
-                selected={jsonModeEnabled}
-                onSelect={() => onToggleJsonMode(!jsonModeEnabled)}
+                checked={jsonModeEnabled}
+                onCheckedChange={onToggleJsonMode}
                 testId="json-mode-toggle"
               />
             </SheetSection>
@@ -521,10 +523,10 @@ function TierRow({
       className="py-1.5"
     >
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+        <div className="flex items-baseline gap-2">
           <span className="shrink-0 font-medium">{tier.label}</span>
           {meta ? (
-            <span className="min-w-0 text-2xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
+            <span className="min-w-0 truncate text-2xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
               {meta}
             </span>
           ) : null}
@@ -603,11 +605,14 @@ function ToggleRow({
       checked={checked}
       closeOnClick={false}
       onCheckedChange={(next) => onToggle(next)}
-      className="py-1.5"
+      className="items-start py-1.5"
       data-testid={testId}
       aria-label={`${label}: ${checked ? "on" : "off"}`}
     >
-      <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+      <Icon
+        aria-hidden
+        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+      />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="font-medium">{label}</span>
@@ -649,6 +654,58 @@ function SheetSection({
       </p>
       <ul className="flex flex-col">{children}</ul>
     </div>
+  );
+}
+
+// Mobile sheet toggles use an explicit Switch (not the SheetRow tap-to-select
+// pattern) so on/off state updates reliably on touch — the row-style toggle
+// regressed on iOS-width viewports for Deep Research.
+function SheetToggleRow({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+  testId,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+  testId: string;
+}): JSX.Element {
+  return (
+    <li>
+      {/* The row is the tap target — Base UI Switch pointer hits were flaky on
+          iOS-width sheets (keyboard toggled fine). The Switch is visual-only. */}
+      <button
+        type="button"
+        data-testid={testId}
+        aria-pressed={checked}
+        aria-label={`${label}: ${checked ? "on" : "off"}`}
+        onClick={() => onCheckedChange(!checked)}
+        className={cn(
+          "flex min-h-11 w-full items-center gap-3 rounded-xl px-4 py-2.5 text-left transition-colors",
+          "hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+          checked && "bg-foreground/[0.06]",
+        )}
+      >
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-foreground">{label}</p>
+          {description ? (
+            <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+              {description}
+            </p>
+          ) : null}
+        </div>
+        <Switch
+          checked={checked}
+          readOnly
+          tabIndex={-1}
+          aria-hidden
+          className="pointer-events-none"
+        />
+      </button>
+    </li>
   );
 }
 

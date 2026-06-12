@@ -3861,12 +3861,12 @@ export function ChatThread() {
                     selectedEffortId={selectedReasoningEffortId}
                     onSelectEffort={setSelectedReasoningEffortId}
                     effortSupported={effortSupported}
-                    searchEnabled={effectiveSearchEnabled}
+                    searchEnabled={searchEnabled}
                     onToggleSearch={setSearchEnabled}
                     jsonModeEnabled={jsonModeEnabled}
                     onToggleJsonMode={setJsonModeEnabled}
                     showDeepResearch={agenticEnabled}
-                    deepResearchEnabled={effectiveDeepResearch}
+                    deepResearchEnabled={deepResearchEnabled}
                     onToggleDeepResearch={setDeepResearchEnabled}
                   />
                 }

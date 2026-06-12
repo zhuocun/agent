@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-import { BE_URL, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 
 const DATA_POLICY_DEEPSEEK = {
   trainsOnData: true,
@@ -207,7 +207,7 @@ test.describe("provider selection", () => {
     await expect(page.getByRole("button", { name: "Attach file" })).toBeVisible();
     await page.keyboard.press("Escape");
 
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     // Provider + web search now live behind the "Advanced" collapsible
     // (progressive disclosure); expand it before reaching either.
     await page.getByTestId("picker-advanced").click();
@@ -225,7 +225,7 @@ test.describe("provider selection", () => {
     await expect(page.getByRole("button", { name: "Attach file" })).toHaveCount(0);
     await page.keyboard.press("Escape");
 
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     await expect(page.getByTestId("web-search-toggle")).toHaveCount(0);
     await page.keyboard.press("Escape");
 
@@ -319,7 +319,7 @@ test.describe("provider selection", () => {
       buffer: Buffer.from("Draft"),
     });
     await expect(page.getByText("draft.txt")).toBeVisible();
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     // Provider rows live behind "Advanced" (progressive disclosure).
     await page.getByTestId("picker-advanced").click();
     await page.getByText("OpenAI", { exact: true }).click();
@@ -374,10 +374,10 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await expect(page.getByTestId("model-mode-trigger")).not.toContainText(
+    await expect(modelModeTrigger(page)).not.toContainText(
       "DeepSeek",
     );
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     await expect(page.getByText("OpenAI", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Gemini", { exact: true })).toHaveCount(0);
   });
@@ -399,7 +399,7 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+    await expect(modelModeTrigger(page)).toContainText("OpenAI");
   });
 
   test("new chat does not overwrite the stored provider preference", async ({
@@ -416,17 +416,17 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     // Provider rows live behind "Advanced" (progressive disclosure).
     await page.getByTestId("picker-advanced").click();
     await page.getByText("OpenAI", { exact: true }).click();
-    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+    await expect(modelModeTrigger(page)).toContainText("OpenAI");
 
     await page.getByTestId("sidebar-new-chat").click();
     await page.reload();
     await waitForBootstrap(page);
 
-    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+    await expect(modelModeTrigger(page)).toContainText("OpenAI");
   });
 
   test("preserves selected provider when loading another conversation", async ({
@@ -480,17 +480,17 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     // Provider rows live behind "Advanced" (progressive disclosure).
     await page.getByTestId("picker-advanced").click();
     await page.getByText("OpenAI", { exact: true }).click();
-    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+    await expect(modelModeTrigger(page)).toContainText("OpenAI");
 
     await page
       .getByTestId("sidebar-conversation-link")
       .filter({ hasText: "Saved provider chat" })
       .click();
-    await expect(page.getByTestId("model-mode-trigger")).toContainText("OpenAI");
+    await expect(modelModeTrigger(page)).toContainText("OpenAI");
 
     await page.getByTestId("composer-textarea").fill("Still OpenAI");
     await page.getByTestId("composer-send").click();
@@ -634,7 +634,7 @@ test.describe("provider selection", () => {
       .toBe(1);
 
     await page.keyboard.press("Escape");
-    await page.getByTestId("model-mode-trigger").click();
+    await modelModeTrigger(page).click();
     // Provider rows live behind "Advanced" (progressive disclosure).
     await page.getByTestId("picker-advanced").click();
     await expect(page.getByText("OpenAI", { exact: true })).toBeVisible();

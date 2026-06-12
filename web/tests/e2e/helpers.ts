@@ -10,11 +10,16 @@
 //     `sid` cookie is set by :8000 (NOT :3000) — see brief §traps
 //     "Cookie origin".
 
-import { expect, type BrowserContext, type Page } from "@playwright/test";
+import { expect, type BrowserContext, type Locator, type Page } from "@playwright/test";
 
 import { BE_URL } from "./shared-config";
 
 export { BE_URL };
+
+/** Desktop + mobile each render a model-mode trigger; only one is visible. */
+export function modelModeTrigger(page: Page | { locator: Page["locator"] }): Locator {
+  return page.locator('[data-testid="model-mode-trigger"]:visible');
+}
 
 /**
  * Wait for the FE shell to finish bootstrapping. The chat thread fetches

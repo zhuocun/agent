@@ -429,14 +429,13 @@ class Settings(BaseSettings):
     # single level; reserved for deeper recursion in a later milestone.
     agentic_max_depth: int = Field(default=1, alias="AGENTIC_MAX_DEPTH")
     # Per-run cost budget (USD) surfaced on the `run_cost` wire event as the cap.
-    # Scaffold for the M3 budget/admission control; not yet enforced.
+    # Enforced via pre-spawn admission + mid-flight kill (`agentic/budget.py`).
     agentic_run_budget_usd: float = Field(default=1.0, alias="AGENTIC_RUN_BUDGET_USD")
     # Plan-approval gate (M3). When True, a deep-research plan pauses for human
-    # approval before fan-out. Scaffold default-off; the hook is a no-op for now.
+    # approval before fan-out (`agentic_plan_approval` pseudo-tool). Default-off.
     agentic_plan_approval: bool = Field(default=False, alias="AGENTIC_PLAN_APPROVAL")
     # Answer verifier (M3). When True, the synthesized answer is cross-checked by
-    # `AGENTIC_VERIFIER_N` independent passes. Scaffold default-off; the hook is a
-    # no-op for now.
+    # `AGENTIC_VERIFIER_N` passes (deterministic stub in v1). Default-off.
     agentic_verifier: bool = Field(default=False, alias="AGENTIC_VERIFIER")
     agentic_verifier_n: int = Field(default=3, alias="AGENTIC_VERIFIER_N")
 

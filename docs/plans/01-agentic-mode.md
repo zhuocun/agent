@@ -1,6 +1,6 @@
 # Agentic Mode Plan (orchestrated bounded subagents)
 
-> **Implementation status**: **NOT built — spec'd this pass.** This plan is the build sequence for PRD 02 §4.6 FR-26c–FR-26k (PRD 00 §11 D33–D40). It is the multi-agent extension of the **shipped** single-agent tool loop (`api/app/tools/agent_loop.py`, behind `TOOLS_ENABLED`, fake-provider v1). Nothing here ships until each milestone's flag-off byte-identity check passes; **real-provider orchestration (M4) is gated on the fake-provider v1 (M1–M3) being proven end-to-end.**
+> **Implementation status**: **SHIPPED behind `AGENTIC_ENABLED` (default off, gated by `TOOLS_ENABLED`).** M0–M3 are built and tested on the fake provider (`api/app/agentic/*`, `api/tests/test_agentic_*.py`, `web/tests/e2e/agentic.spec.ts`). With the flag off, the stream path stays byte-identical to the pre-agentic build (`test_agentic_flag_off.py`). **M4 is PARTIALLY SHIPPED** — real-provider planner/synthesis code paths exist in `orchestrator.py`, but per-worker fallback, resumable-buffer sizing, and real-provider E2E proof remain open (see **Remaining gaps**). Do not enable `AGENTIC_ENABLED` in a real-key environment until M4 is proven.
 
 The smallest extension that lets the existing chat turn spawn **bounded model subagents in-turn** — an orchestrator over N reuses of the shipped `run_agent_loop`, multiplexed back onto the one SSE stream — with **zero behavior change when `AGENTIC_ENABLED` is off**. Anchored to the shipped streaming/persistence path (`api/app/streaming/handler.py`), the shipped agent loop (`api/app/tools/agent_loop.py`), and the typed message-part union (`api/app/schemas/message.py`). PRDs guide direction; anything not gated behind a hard flag is out of scope.
 
@@ -28,12 +28,13 @@ Explicitly out of scope:
 - Cross-turn / persistent orchestrator memory (memory stays the FR-40 account-global store; an agentic run holds only in-turn state).
 - Real-provider tool/subagent wiring before the fake-provider v1 is proven (M4 gate).
 
-Known FE follow-ups (callouts, not BE work):
+Shipped FE (behind `AGENTIC_ENABLED`; PRD 01):
 
-- **Deep Research toggle** in the composer mode-row (PRD 01 §4.3), peer of the web-search / reasoning-effort toggles; hidden when `AGENTIC_ENABLED` is off (bootstrap advertises the capability).
-- **Subagent activity panel**: renders the subagent-scoped parts (per-worker label, status, intermediate output) and the live per-run cost meter (PRD 01).
-- **Plan-approval surface**: reuses the shipped tool-approval UI (`tool-part.tsx` approve/deny) at the orchestration boundary — the plan + cost estimate render in the pause card.
-- The substitution callout already renders per-message; for an agentic turn it renders **per subagent** (no new FE primitive, just per-part attribution).
+- **Deep Research toggle** in the composer mode-row (`model-mode-picker.tsx`), peer of web-search / reasoning-effort; hidden when bootstrap does not advertise `agenticEnabled`.
+- **Subagent activity panel** (`subagent-panel.tsx`): per-worker label, status, intermediate output, and live per-run cost meter.
+- **Plan-approval surface**: reuses the shipped tool-approval UI (`tool-part.tsx` approve/deny) at the orchestration boundary — plan + cost estimate in the pause card.
+
+Remaining FE gaps (see **Remaining gaps**): per-subagent served-model/substitution callout, high-cost composer hint, PRD 08 partial-synthesis warning chip, share-view subagent rendering.
 
 ## Architecture overview
 
@@ -169,54 +170,64 @@ Agentic runs emit OpenTelemetry spans on the shipped env-gated path (`api/app/ob
 
 All validated at boot in `app/config.py`; all bounds are config, never hardcoded (mirrors the no-hardcoding discipline of PRD 02 §5).
 
+## Remaining gaps (as-built vs PRD)
+
+| Gap | Status | Notes |
+| --- | --- | --- |
+| Per-subagent `ModelAttribution` + substitution persistence/display | **PARTIAL** | `SubagentPart.attribution` exists in schema; `_build_agentic_parts` never populates it; FE shows turn-level attribution only |
+| `execute_tool` OTel spans in `agent_loop.py` | **NOT BUILT** | `execute_tool_span` defined in `tracing.py`; only `invoke_agent_span` is wired in the orchestrator |
+| Provider-backed verifier / self-consistency (FR-26j) | **PARTIAL** | Deterministic stub appends a note; no provider sampling, no reviewer subagent, no verifier cost in meter |
+| Per-worker provider failure degrade (PRD 08) | **NOT BUILT (M4)** | Worker exception re-raises and fails the whole run; budget-halt partial synthesis is shipped |
+| Per-worker provider fallback on 429/5xx | **NOT BUILT (M4)** | Turn-level fallback only (`handler.py`) |
+| Resumable-buffer sizing for high fan-out event volume | **NOT BUILT (M4)** | Shipped caps unchanged (~1000 events / ~1MB) |
+| Real-provider agentic E2E proof | **NOT BUILT (M4 gate)** | All agentic tests use fake provider |
+| Scoped per-worker tool subsets | **NOT BUILT** | Workers inherit full `advertised_tool_specs()` |
+| `AGENTIC_MAX_DEPTH` runtime enforcement | **PARTIAL** | Config validated at boot; depth 1 by construction (workers never nest), not checked at runtime |
+| High-cost composer hint (FR-26f) | **NOT BUILT** | Toggle description only; no explicit cost warning |
+| Share-view subagent rendering | **NOT BUILT** | `public-conversation-view.tsx` omits `SubagentPanel` |
+| PRD 08 partial-synthesis warning chip | **NOT BUILT** | Budget halt labels inline answer text only |
+
 ## Open questions / decisions for the user
 
 - **Decomposition quality.** Planner-driven decomposition is the hardest quality lever; the fake-provider v1 uses a deterministic decomposition so the engine can be tested before planner quality is tuned on a real provider.
-- **Partial-synthesis labeling.** How prominently to label a budget-halted partial answer (a calm "answered with N of M planned steps" chip vs an error-class banner — leaning chip, per the no-silent-downgrade/honesty ethos).
-- **Concurrency vs provider rate limits.** `AGENTIC_MAX_CONCURRENCY` interacts with provider 429s. Note the shipped single-shot fallback is **per-turn, not per-subagent** — it degrades the whole turn, which is wrong for a fan-out where one worker 429s. Making fallback **per-worker** (degrade that worker, keep the run) is **net-new** work in this plan, not an inherited behavior; the open question is whether to scope it into M3/M4 or accept whole-run degrade on a worker rate-limit for v1.
+- **Partial-synthesis labeling.** Budget-halt today appends inline prose ("answered N of M planned steps"); the open question is whether to add a dedicated `severity: "warning"` chip (PRD 08) vs keeping prose-only (leaning chip).
 - **Per-subagent tool subsets.** Whether workers get the full tool registry or a scoped subset by default (leaning scoped, least-privilege per FR-26 / SR-2).
 
 ## Milestones
 
-### M0 — Seam + flag + inert orchestrator
+### M0 — Seam + flag + inert orchestrator — **SHIPPED**
 
 Scope: `app/agentic/` scaffolded; `AGENTIC_ENABLED` + bound/budget flags in `app/config.py` (boot-validated, gated by `TOOLS_ENABLED`); the third branch in `streaming/handler.py::_build_provider_iter()` constructed **only** when both flags are on; bootstrap advertises the capability so the FE can show the (hidden-by-default) Deep-Research toggle. No fan-out yet.
 
-Demo: with the flag off, every existing test passes byte-for-byte; with the flag on and `agenticMode:"single"`, behavior is identical to the shipped single loop. A CI assertion proves flag-off byte-identity.
+Demo: with the flag off, every existing test passes byte-for-byte; with the flag on and `agenticMode:"single"`, behavior is identical to the shipped single loop. A CI assertion proves flag-off byte-identity (`test_agentic_flag_off.py`).
 
-Effort: ~1–2 days (config + seam + the byte-identity test harness).
-
-### M1 — Fake-provider single-loop-equivalent orchestrator
+### M1 — Fake-provider single-loop-equivalent orchestrator — **SHIPPED**
 
 Scope: `run_orchestrator` returns a one-worker run for `agenticMode:"single"`. This is **behavioral equivalence, not wire-identity**: same rounds/timeout/HITL/output as the shipped `run_agent_loop`, but the relayed events now carry a `subagentId` tag and the message gains one additive `subagent` marker part (N=1). Persistence groups the single subagent's parts; reload replays them. The strict **byte-identity guarantee holds only flag-off** (and for the raw/single-loop branches the orchestrator never touches) — M0's CI assertion covers that; M1 does **not** claim wire-identity for the flag-on `single` path.
 
-Demo: with the flag off, the byte-identity test still passes; a flag-on `single` agentic turn over the fake provider streams + persists exactly one subagent group (subagent-tagged), and the run total cost equals the single subagent's cost.
+Demo: `test_agentic_fanout.py::test_single_mode_wraps_one_primary_subagent`.
 
-Effort: ~2–3 days (event tagging + part grouping + persistence round-trip).
-
-### M2 — Fake-provider Deep-Research fan-out + aggregate
+### M2 — Fake-provider Deep-Research fan-out + aggregate — **SHIPPED**
 
 Scope: deterministic planner decomposition; `asyncio` fan-out to N bounded workers under the concurrency semaphore; event multiplexing into the handler queue; the synthesis/aggregation step (untrusted-output discipline); `subagent_started` / `subagent_done` / `run_cost` events; subagent-grouped parts for N>1.
 
-Demo: a `deep_research` turn over the fake provider spawns ≥2 concurrent workers, streams their tagged activity, and aggregates one answer; reload replays per-worker groups. Cancellation cancels all workers and flushes completed-worker partials.
+Demo: `test_agentic_fanout.py::test_deep_research_fans_out_workers_and_aggregates`; `web/tests/e2e/agentic.spec.ts`.
 
-Effort: ~4–5 days (fan-out + multiplexing + aggregate + cancellation are the high-risk area).
+### M3 — Budget, plan-approval HITL, verifier, transparency + OTel — **SHIPPED (partials noted)**
 
-### M3 — Budget, plan-approval HITL, verifier, transparency + OTel
+Scope: per-run USD cap with **admission control** — a **pre-spawn reservation** against the cap + composed user/platform headroom (estimate via the Cost & budget methodology) and a **mid-flight kill** that cancels in-flight workers (worker `TaskGroup` teardown) on actual-cost breach, both ending in a graceful partial-synthesis halt; plan-approval pause that **emits a `terminal` with `status:"awaiting_approval"`** carrying the plan decomposition + estimated cost (`costConfidence:"estimate"`), resumed via `toolApproval`; the Pro/BYOK entitlement gate coercing non-entitled `deep_research` to `single`; verifier / self-consistency step (config N); the live per-run cost meter; `invoke_agent` OTel spans.
 
-Scope: per-run USD cap with **admission control** — a **pre-spawn reservation** against the cap + composed user/platform headroom (estimate via the Cost & budget methodology) and a **mid-flight kill** that cancels in-flight workers (worker `TaskGroup` teardown) on actual-cost breach, both ending in a graceful partial-synthesis halt; fan-out/depth bounds enforced; plan-approval pause that **emits a `terminal` with `status:"awaiting_approval"`** carrying the plan decomposition + estimated cost (`costConfidence:"estimate"`), resumed via `toolApproval`; the Pro/BYOK entitlement gate coercing non-entitled `deep_research` to `single`; verifier / self-consistency step (config N); per-subagent `ModelAttribution` + substitution codes (no silent downgrade in fan-out); the live per-run cost meter; the `invoke_agent` + `execute_tool` OTel span tree (both net-new manual spans).
+**Partials vs this milestone's original scope:** per-subagent `ModelAttribution` + substitution codes are **not** persisted or rendered; `execute_tool` spans are **not** wired into `agent_loop.py`; the verifier is a **deterministic stub** (no provider-backed reviewer); `AGENTIC_MAX_DEPTH` is config-only (depth 1 by construction).
 
-Demo: a run whose pre-spawn estimate exceeds headroom never spawns and returns an explained empty/partial synthesis; a run that breaches mid-flight cancels remaining workers and returns a labeled partial synthesis; a plan-approval-required run emits an `awaiting_approval` terminal with plan + estimate and resumes on approval; a non-entitled `deep_research` request runs as `single`; a forced per-worker substitution renders a per-subagent callout; with OTel configured the run produces the expected `invoke_agent`/`execute_tool` span tree.
+Demo: `test_agentic_budget.py`, `test_agentic_approval.py`, `test_agentic_safety.py`.
 
-Effort: ~4–5 days (budget + HITL reuse + verifier + attribution).
-
-### M4 — Real-provider subagent wiring + hardening (gating prereq)
+### M4 — Real-provider subagent wiring + hardening (gating prereq) — **PARTIALLY SHIPPED**
 
 Scope: wire real providers (DeepSeek/OpenAI-compatible + Anthropic) as subagent backends through the same `run_agent_loop` real-provider tool path; **only after M1–M3 are proven on the fake provider** (FR-26d / D40). PRD-08 error envelope on every agentic path; structlog run/subagent keys; **net-new per-worker fallback** (degrade the 429'd/errored worker, keep the run — the shipped fallback is per-turn) and the rest of the concurrency-vs-rate-limit handling; the resumable-buffer build-time decision for high event-volume fan-out (bump the bound or cap/coalesce events); document remaining gaps.
 
-Demo: a real-provider `deep_research` run fans out, aggregates, and bills correctly with full transparency; a forced provider error/429 on one worker degrades **that worker only** (net-new per-worker fallback), not the run.
+**As-built:** real-provider planner and model-written synthesis paths exist in `orchestrator.py` / `planner.py` / `aggregate.py`. **Still open:** per-worker fallback, per-worker failure degrade, resumable-buffer decision, real-provider E2E tests, full per-subagent attribution — see **Remaining gaps**.
 
-Effort: ~3–4 days (real-provider parity is the slow part; gated on the fake-provider v1).
+Demo (target): a real-provider `deep_research` run fans out, aggregates, and bills correctly with full transparency; a forced provider error/429 on one worker degrades **that worker only**, not the run.
 
 ## What we are explicitly NOT building (and where it lives in the PRD)
 

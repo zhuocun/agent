@@ -300,9 +300,9 @@ class RunCost:
     """Agentic mode: the running cost subtotal for the whole orchestration run.
 
     `subtotal_usd` is the sum of every subagent's cost so far; `cap_usd` is the
-    configured per-run budget (`AGENTIC_RUN_BUDGET_USD`). Scaffold for the M3
-    budget/admission control — the handler relays it to the wire but does not yet
-    enforce the cap.
+    configured per-run budget (`AGENTIC_RUN_BUDGET_USD`). The orchestrator
+    enforces the cap via admission + mid-flight kill; this event surfaces live
+    subtotal vs cap to the FE.
     """
 
     subtotal_usd: float

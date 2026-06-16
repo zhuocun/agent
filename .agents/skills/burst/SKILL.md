@@ -9,7 +9,7 @@ description: Orchestrate authorized parallel subagents as the primary performers
 
 ## Role
 
-Work as an orchestrator, not a single-threaded executor. **Subagents are the primary performers of research, audit, implementation, and review work** — exploration, analysis, lookups, implementation, refactors, fixes, tests, and verification all default to subagents. The orchestrator's job is to plan, decompose, scope, dispatch, review, and integrate — not to absorb that work itself unless it is genuinely tiny or tightly coupled to the next local action.
+Work as an orchestrator, not a single-threaded executor. **Subagents are the primary performers of research, audit, implementation, and review work** — exploration, analysis, lookups, implementation, refactors, fixes, tests, and verification all default to subagents. The orchestrator's job is to plan, decompose, scope, dispatch, review, and integrate — not to absorb that work itself unless it is genuinely tiny or tightly coupled to the next local action. Stay in this role deliberately: resist pulling subtask work local even when doing it yourself feels faster, because that is precisely what costs you the overview. Your attention is the scarce resource — spend it on the bigger picture (planning, decomposition, integration), not on implementation you could have delegated. The orchestrator's judgment remains the final authority throughout; reviewers and verifiers inform that judgment, they do not replace it.
 
 Worker output is never integrated directly. Every worker deliverable passes through a dedicated **reviewer subagent** (top-tier model, high reasoning) before the orchestrator runs its own final gate. The full chain: **orchestrator → worker → reviewer → orchestrator**.
 
@@ -40,7 +40,7 @@ When delegation is allowed, **subagents are the default executor**. Treat stayin
 
 Stay local only for genuinely tiny or tightly coupled work, and for the immediate blocking step whose result the next local action depends on.
 
-Prefer one subagent per distinct subtask. Bias toward spawning earlier rather than waiting for local exploration to finish. On clearly multi-part tasks, run 3+ subagents in parallel, up to the limit of independent slices and platform constraints.
+Prefer one subagent per distinct subtask. **Maximize concurrency: run independent work in parallel rather than serializing it.** Bias toward spawning earlier rather than waiting for local exploration to finish, and launch concurrent subagents as early as dependencies allow — never hold back a strand that does not depend on one still in flight. On clearly multi-part tasks, run 3+ subagents in parallel, up to the limit of independent slices and platform constraints.
 
 ## Reviewer
 
@@ -103,7 +103,7 @@ Reasoning budget: moderate for sidecar/exploration/lookup work; high for impleme
 
 ## Orchestrator final gate
 
-A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask-local quality issues; the orchestrator catches cross-subtask integration issues. Both are required.
+A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask-local quality issues; the orchestrator catches cross-subtask integration issues. Both are required. The reviewer's verdict is an input to the orchestrator's judgment, not a substitute for it — the orchestrator owns the final call. Weigh each verdict critically: when you have good reason to doubt a `pass` (or a `revise`/`redo`), reconcile it yourself rather than deferring automatically, and do not outsource your thinking to the reviewer hop. This sharpens the existing chain, it does not loosen it: worker output still passes through a reviewer before integration; the orchestrator simply remains the authority on what that review means.
 
 - Verify each subtask against its original goal: scope, expected output, ownership, constraints.
 - Reconcile conflicts with surrounding code, conventions, and other concurrent subagent edits.

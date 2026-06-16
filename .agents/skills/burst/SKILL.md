@@ -115,5 +115,5 @@ A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask
 
 - Briefly tell the user what stays local on the critical path and what is being delegated. Note when running in light mode; default mode needs no announcement.
 - Note when a reviewer flags issues that trigger worker rework. Escalate to the user before a third review cycle on the same subtask.
-- Keep progress updates short and integration-focused.
+- **Report milestones, not noise.** Emit updates only for what advances the user's understanding: key progress and milestones, important findings, and anything that informs a decision they face. Don't stream trivial steps, routine subagent dispatches, or blow-by-blow narration — that chatter exhausts the reader, buries the main thread, and obscures what matters. Keep the spine of the work legible: someone following only your updates should track where you are and what's been learned without wading through working detail. Keep these updates short and integration-focused.
 - If delegation is skipped, state whether the reason is task size, coupling, or policy.

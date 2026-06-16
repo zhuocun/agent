@@ -74,8 +74,10 @@ a review forces a rethink).
 ## Pass 2 — Dispatch workers
 
 For each subtask the consultant defined, dispatch a worker subagent with exactly
-the brief the consultant wrote. Run independent workers in parallel. Workers do
-the substance; you carry their instructions and collect their artifacts. Apply
+the brief the consultant wrote. Dispatch independent workers concurrently — as
+early as the consultant's plan allows — rather than serializing strands that do
+not depend on each other; maximize concurrency for efficiency. Workers do the
+substance; you carry their instructions and collect their artifacts. Apply
 concrete side effects (writes, commands) only as a worker's artifact prescribes.
 
 ## Pass 3 — Review every worker artifact
@@ -125,13 +127,13 @@ Map the terminology to whatever the platform exposes (`model`, `subagent_type`,
 accept the platform default.
 
 Every subagent role — orchestrator-consultant, worker, reviewer, final-gate
-reviewer — runs on a best-available frontier model at high reasoning: **Fable /
-Mythos on Anthropic, or the best non-mini GPT on OpenAI**, or the strongest
-frontier model the platform exposes elsewhere. Never drop any role to a cheaper
-or distilled tier — the whole point is that the delegated judgment is at least as
-capable as your own would have been. If the platform forbids concurrent agents
-on the identical top model and budget, keep the frontier model and use the
-highest reasoning budget it allows, and note the exception.
+reviewer — runs on a best-available frontier model at high reasoning — the
+strongest, most capable model the platform exposes for delegated work. Never
+drop any role to a cheaper or distilled tier — the whole point is that the
+delegated judgment is at least as capable as your own would have been. If the
+platform forbids concurrent agents on the identical top model and budget, keep
+the frontier model and use the highest reasoning budget it allows, and note the
+exception.
 
 ## Communication
 
@@ -142,13 +144,18 @@ highest reasoning budget it allows, and note the exception.
 - Note when a reviewer forces rework, and when you re-consult the
   orchestrator-consultant or the final-gate reviewer.
 - Keep your own narration minimal; the subagents' judgments are the record.
+  Emit updates only for what advances the user's understanding — key progress
+  and milestones, important findings from the subagents, and decision points —
+  not blow-by-blow narration of every dispatch, relay, or tool call; keep the
+  spine of the work legible.
 
 ## Self-check
 
 Before declaring the task done, confirm:
 
 - [ ] The decomposition came from an orchestrator-consultant, not from you.
+- [ ] Independent workers were dispatched concurrently, not needlessly serialized.
 - [ ] Every worker artifact passed an independent reviewer with a grounded verdict.
 - [ ] The done decision came from a final-gate reviewer returning `done`, not from your own assessment.
-- [ ] Every subagent ran on a frontier model (Fable / Mythos / best non-mini GPT) at high reasoning.
+- [ ] Every subagent ran on a best-available frontier model at high reasoning.
 - [ ] You relayed briefs, artifacts, and verdicts verbatim, and limited yourself to executing what the subagents directed.

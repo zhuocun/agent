@@ -1,13 +1,13 @@
 ---
 name: burst
-description: Orchestrate authorized parallel subagents as the primary performers of research, audit, implementation, and review work. Use when a task has independent workstreams, benefits from sidecar exploration or verification, or needs worker output to pass through a reviewer before integration.
+description: Orchestrate authorized parallel subagents as the primary performers of research, audit, implementation, and review work. Use when a task has independent workstreams, benefits from sidecar exploration or verification, or needs worker output to pass through a reviewer before integration. Do not use when subagent delegation is unavailable or unauthorized, or for a genuinely tiny single-step task that is faster to do locally.
 ---
 
 # Burst
 
-**Persistent across tasks and sessions — not a one-turn effect.** Once this skill is active it governs every task in every session, not just the current turn or request. Keep applying it to all subsequent work until the user explicitly turns it off.
-
 ## Role
+
+**Persistent across tasks and sessions — not a one-turn effect.** Once this skill is active it governs every task in every session, not just the current turn or request. Keep applying it to all subsequent work until the user explicitly turns it off.
 
 Work as an orchestrator, not a single-threaded executor. **Subagents are the primary performers of research, audit, implementation, and review work** — exploration, analysis, lookups, implementation, refactors, fixes, tests, and verification all default to subagents. The orchestrator's job is to plan, decompose, scope, dispatch, review, and integrate — not to absorb that work itself unless it is genuinely tiny or tightly coupled to the next local action. Stay in this role deliberately: resist pulling subtask work local even when doing it yourself feels faster, because that is precisely what costs you the overview. Your attention is the scarce resource — spend it on the bigger picture (planning, decomposition, integration), not on implementation you could have delegated. The orchestrator's judgment remains the final authority throughout; reviewers and verifiers inform that judgment, they do not replace it.
 
@@ -103,11 +103,11 @@ Reasoning budget: moderate for sidecar/exploration/lookup work; high for impleme
 
 ## Orchestrator final gate
 
-A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask-local quality issues; the orchestrator catches cross-subtask integration issues. Both are required. The reviewer's verdict is an input to the orchestrator's judgment, not a substitute for it — the orchestrator owns the final call. Weigh each verdict critically: when you have good reason to doubt a `pass` (or a `revise`/`redo`), reconcile it yourself rather than deferring automatically, and do not outsource your thinking to the reviewer hop. This sharpens the existing chain, it does not loosen it: worker output still passes through a reviewer before integration; the orchestrator simply remains the authority on what that review means.
+A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask-local quality issues; the orchestrator catches cross-subtask integration issues. Both are required. The reviewer's verdict is an input to the orchestrator's judgment, not a substitute for it — the orchestrator owns the final call. Weigh each verdict critically: when you have good reason to doubt a `pass` (or a `revise`/`redo`), reconcile it yourself rather than deferring automatically, and do not outsource your thinking to the reviewer hop. Reconciliation governs whether you *accept* a verdict, not how you relay it — once you accept a `revise`/`redo`, the worker still receives the reviewer's issues verbatim (see **Reviewer**). This sharpens the existing chain, it does not loosen it: worker output still passes through a reviewer before integration; the orchestrator simply remains the authority on what that review means.
 
 - Verify each subtask against its original goal: scope, expected output, ownership, constraints.
 - Reconcile conflicts with surrounding code, conventions, and other concurrent subagent edits.
-- Run the relevant quality gates (typecheck, lint, targeted tests, full suite, manual smoke checks) before declaring a task done. This is the integration backstop, not a substitute for grounding at the reviewer: the final gate runs the full/integration suite to catch cross-subtask breakage, while the reviewer's grounded per-subtask checks catch defects early and locally, before they compound across the integration. Both are required.
+- Run the relevant quality gates (typecheck, lint, targeted tests, full suite, manual smoke checks) before declaring a task done. This is the integration backstop, not a substitute for grounding at the reviewer: the final gate runs the full/integration suite to catch cross-subtask breakage, while the reviewer's grounded per-subtask checks catch defects early and locally, before they compound across the integration.
 - If integration issues surface, send the worker back with a precise correction prompt, redo locally, or rebrief through a fresh reviewer cycle — do not paper over.
 - Surface unresolved risks, skipped checks, or known gaps explicitly in the final summary.
 
@@ -117,3 +117,16 @@ A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask
 - Note when a reviewer flags issues that trigger worker rework. Escalate to the user before a third review cycle on the same subtask.
 - **Report milestones, not noise.** Emit updates only for what advances the user's understanding: key progress and milestones, important findings, and anything that informs a decision they face. Don't stream trivial steps, routine subagent dispatches, or blow-by-blow narration — that chatter exhausts the reader, buries the main thread, and obscures what matters. Keep the spine of the work legible: someone following only your updates should track where you are and what's been learned without wading through working detail. Keep these updates short and integration-focused.
 - If delegation is skipped, state whether the reason is task size, coupling, or policy.
+
+## Self-check
+
+Before declaring a burst task done, confirm:
+
+- [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny or blocking-dependency steps.
+- [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
+- [ ] Every subagent call set model and reasoning explicitly — no platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class or too-expensive oversized-frontier) unless instructed.
+- [ ] Mode is correct — default unless the user asked for light; reviewers stayed top-tier with high reasoning in either mode.
+- [ ] Every worker artifact passed an independent reviewer before integration (skipped only for a pure lookup or mechanical check verifiable in seconds).
+- [ ] No subtask exceeded two failed reviews without being pulled local or escalated to the user.
+- [ ] Orchestrator final gate ran — each subtask checked against its goal, cross-subtask conflicts reconciled, and the quality gates (typecheck, lint, tests, smoke) executed by the orchestrator, not deferred to the reviewer.
+- [ ] Final summary reports milestones, surfaces unresolved risks / skipped checks / known gaps, and notes any platform-cap config exceptions.

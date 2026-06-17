@@ -292,6 +292,10 @@ class SubagentDone:
     role: str | None = None
     usage: UsageUpdate = field(default_factory=UsageUpdate)
     cost_usd: float | None = None
+    substitution: SubstitutionReasonCode | None = None
+    substituted_provider: str | None = None
+    substituted_model: str | None = None
+    substituted_display_label: str | None = None
     type: Literal["subagent_done"] = "subagent_done"
 
 

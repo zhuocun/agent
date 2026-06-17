@@ -227,6 +227,18 @@ class FakeProvider:
         if user_text.startswith("DEEP_RESEARCH_WORKER:"):
             body = user_text[len("DEEP_RESEARCH_WORKER:") :]
             worker_index, _, sub_question = body.partition(":")
+            if "FAIL_WORKER" in sub_question:
+                raise RuntimeError("simulated worker failure")
+            if sub_question.startswith("RETRYABLE_WORKER:") and model_id != "fake-fallback":
+                raise AppError(
+                    ErrorEnvelope(
+                        code="RATE_LIMITED",
+                        severity="error",
+                        title="Rate limited",
+                        body="Simulated rate limit for worker fallback test.",
+                    ),
+                    status_code=429,
+                )
             await asyncio.sleep(self._delay)
             yield AnswerDelta(
                 text=f"Worker {worker_index} finding on {sub_question}: result ready."

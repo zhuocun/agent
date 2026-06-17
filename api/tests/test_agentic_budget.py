@@ -307,3 +307,32 @@ async def test_mid_flight_cap_halts_partial_synthesis(
     # At least one worker started; budget kill should prevent both from completing
     # when the cap only fits ~1 worker.
     assert 1 <= len(started) <= 2
+
+
+def test_estimate_cost_defaults_unchanged() -> None:
+    settings = get_settings()
+    binding = get_binding("smart")
+    estimate = budget.estimate_run_cost(
+        sub_question_count=2,
+        binding=binding,
+        settings=settings,
+    )
+    per_subagent = budget._expected_subagent_usage(settings)
+    breakdown = compute_cost_breakdown(usage=per_subagent, binding=binding)
+    base = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+    subagents = 2 + 1  # workers + aggregator
+    expected = (
+        base
+        * subagents
+        * settings.agentic_reasoning_token_multiplier
+        * settings.agentic_fanout_token_multiplier
+    )
+    assert estimate == pytest.approx(expected)
+
+
+def test_assert_prod_safe_rejects_nonpositive_multiplier(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENTIC_REASONING_TOKEN_MULTIPLIER", "0")
+    get_settings.cache_clear()
+    with pytest.raises(RuntimeError, match="AGENTIC_REASONING_TOKEN_MULTIPLIER"):
+        get_settings().assert_prod_safe()
+    get_settings.cache_clear()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from app.schemas.common import CamelModel
+from app.schemas.common import CamelModel, SubstitutionReasonCode
 from app.schemas.message import ModelAttribution, ToolCallPart, ToolResultPart
 from app.search.protocol import SourceItem
 
@@ -95,6 +95,10 @@ class SubagentDoneEvent(CamelModel):
     label: str | None = None
     role: str | None = None
     cost_usd: float | None = None
+    substitution: SubstitutionReasonCode | None = None
+    substituted_provider: str | None = None
+    substituted_model: str | None = None
+    substituted_display_label: str | None = None
 
 
 class RunCostEvent(CamelModel):

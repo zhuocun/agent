@@ -30,20 +30,6 @@ from app.providers.pricing import compute_cost_breakdown
 from app.providers.protocol import UsageUpdate
 from app.providers.tiers import TierBinding
 
-# FR-26g multipliers (PRD 02). Reasoning tokens are full-price and never
-# cache-eligible (~4x a non-reasoning turn), and a multi-agent fan-out burns
-# materially more tokens than one chat turn (~15x per Anthropic's multi-agent
-# research). The cap is sized against their PRODUCT.
-REASONING_TOKEN_MULTIPLIER = 4.0
-FANOUT_TOKEN_MULTIPLIER = 15.0
-
-# Expected per-round token shape for a single subagent. The deterministic
-# planner (fake-provider v1) does not run a real LLM, so the estimate uses a
-# fixed per-round expectation x the shipped round bound (`TOOL_MAX_ROUNDS`); a
-# real planner can refine this without changing the contract.
-_EXPECTED_INPUT_TOKENS_PER_ROUND = 1000
-_EXPECTED_OUTPUT_TOKENS_PER_ROUND = 500
-
 # A `CostForUsage`-style callable that prices an accumulated usage. Supplied by
 # the handler so estimation stays provider-agnostic when a pre-built pricer is
 # more convenient than a (binding, image_count) pair.
@@ -73,8 +59,8 @@ def _expected_subagent_usage(settings: Settings) -> UsageUpdate:
     """Worst-case per-subagent token expectation over the round bound."""
     rounds = max(1, settings.tool_max_rounds)
     return UsageUpdate(
-        input_tokens=_EXPECTED_INPUT_TOKENS_PER_ROUND * rounds,
-        output_tokens=_EXPECTED_OUTPUT_TOKENS_PER_ROUND * rounds,
+        input_tokens=settings.agentic_expected_input_tokens_per_round * rounds,
+        output_tokens=settings.agentic_expected_output_tokens_per_round * rounds,
     )
 
 
@@ -100,7 +86,12 @@ def estimate_run_cost(
     )
     base = breakdown.subtotal_usd + breakdown.session_surcharge_usd
     subagents = _subagent_count(sub_question_count, settings)
-    return base * subagents * REASONING_TOKEN_MULTIPLIER * FANOUT_TOKEN_MULTIPLIER
+    return (
+        base
+        * subagents
+        * settings.agentic_reasoning_token_multiplier
+        * settings.agentic_fanout_token_multiplier
+    )
 
 
 def effective_cap(*, cap_usd: float, headroom_usd: float | None) -> float:

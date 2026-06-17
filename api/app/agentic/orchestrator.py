@@ -21,21 +21,23 @@ Two modes:
   prompts, and a streamed model-written synthesis — no scaffolding ever reaches
   the provider or the user-visible answer.
 
-M3 hooks (`_admit`, `_maybe_plan_approval`, `_maybe_verify`) are wired into the
-control flow as no-ops so the budget/approval/verifier milestone can land
-without re-threading the orchestrator.
+M3 hooks (`_admit`, `_maybe_plan_approval`, `_maybe_verify`) are live control-flow
+gates (admission / plan-approval pause / verifier), each gated by its setting.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Literal
 
 from app.agentic import aggregate, budget, planner, verifier
 from app.agentic.aggregate import WorkerOutput
+from app.agentic.retry import is_retryable_provider_error
 from app.config import Settings
+from app.errors import AppError
 from app.observability.tracing import invoke_agent_span
 from app.providers.protocol import (
     AnswerDelta,
@@ -52,7 +54,10 @@ from app.providers.protocol import (
     ToolResult,
     UsageUpdate,
 )
+from app.schemas.common import SubstitutionReasonCode
 from app.tools.agent_loop import MakeStream, run_agent_loop
+
+_log = logging.getLogger(__name__)
 
 # Event types that carry an optional `subagent_id` and so can be stamped by
 # `_tag`. `ReasoningDone` (no payload) and the orchestrator-only
@@ -78,10 +83,11 @@ AgenticMode = Literal["single", "deep_research"]
 # the user text per worker.
 StreamFactory = Callable[[str], MakeStream]
 
-# Computes the USD cost of an accumulated usage for the active binding. Supplied
-# by the handler (which closes over the binding + image count) so the
-# orchestrator never reaches into pricing.
+# Computes the USD cost of an accumulated usage for the active binding.
 CostForUsage = Callable[[UsageUpdate], float]
+
+# Optional per-worker fallback stream factory and retry predicate (M4).
+IsRetryable = Callable[[BaseException], bool]
 
 _PRIMARY_LABEL = "Agent"
 _AGGREGATOR_ID = "aggregator"
@@ -276,6 +282,7 @@ async def _finalize_synthesis_streamed(
     cost_for_usage: CostForUsage,
     cap_usd: float,
     budget_halted: bool,
+    failed: int = 0,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
@@ -305,7 +312,7 @@ async def _finalize_synthesis_streamed(
         # composition (already includes the budget/verifier notes) so the turn
         # never ends with an empty aggregator answer.
         fallback = aggregate.synthesize(
-            outputs, planned=planned, budget_halted=budget_halted
+            outputs, planned=planned, budget_halted=budget_halted, failed=failed
         )
         fallback = await _maybe_verify(settings, fallback)
         yield AnswerDelta(text=fallback, subagent_id=_AGGREGATOR_ID)
@@ -317,6 +324,10 @@ async def _finalize_synthesis_streamed(
             suffix += (
                 "\n\n[Partial answer: stopped early to stay within the run budget; "
                 f"answered {len(outputs)} of {planned} planned steps.]"
+            )
+        if failed > 0:
+            suffix += (
+                f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"
             )
         verified = await _maybe_verify(settings, streamed + suffix)
         extra = verified[len(streamed) :]
@@ -401,6 +412,8 @@ async def _run_deep_research(
     estimate_cost: CostEstimator | None = None,
     budget_headroom_usd: float | None = None,
     plan_approved: bool | None = None,
+    fallback_make_stream_for: StreamFactory | None = None,
+    is_retryable: IsRetryable = is_retryable_provider_error,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan → (approve) → admit → parallel fan-out → (verify) → synthesis.
 
@@ -500,47 +513,104 @@ async def _run_deep_research(
     results: dict[str, WorkerOutput] = {}
     usages: dict[str, UsageUpdate] = {}
     costs: dict[str, float] = {}
+    failed_workers = 0
 
     async def _run_worker(index: int, subagent_id: str, label: str, sub_question: str) -> None:
+        nonlocal failed_workers
         answer_parts: list[str] = []
         usage = UsageUpdate()
+        worker_failed = False
+        sub_code: SubstitutionReasonCode | None = None
+        sub_provider: str | None = None
+        sub_model: str | None = None
+        sub_label: str | None = None
+
+        async def _consume(make_stream: MakeStream) -> None:
+            nonlocal usage, sub_code, sub_provider, sub_model, sub_label
+            async for event in run_agent_loop(make_stream=make_stream, settings=settings):
+                if isinstance(event, AnswerDelta):
+                    answer_parts.append(event.text)
+                if isinstance(event, Complete) and event.substitution is not None:
+                    sub_code = event.substitution
+                    sub_provider = event.substituted_provider
+                    sub_model = event.substituted_model
+                    sub_label = event.substituted_display_label
+                usage = _fold_usage(event, usage)
+                await queue.put(_tag(event, subagent_id))
+
         try:
             async with semaphore:
-                # One `invoke_agent` span per worker (no-op when OTel is off),
-                # nested under the turn's request span.
                 with invoke_agent_span(subagent_id=subagent_id, role="worker", label=label):
                     await queue.put(
                         SubagentStarted(subagent_id=subagent_id, label=label, role="worker")
                     )
-                    make_stream = make_stream_for(
-                        planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
-                    )
-                    async for event in run_agent_loop(make_stream=make_stream, settings=settings):
-                        if isinstance(event, AnswerDelta):
-                            answer_parts.append(event.text)
-                        usage = _fold_usage(event, usage)
-                        await queue.put(_tag(event, subagent_id))
-                    cost = cost_for_usage(usage)
-                    await queue.put(
-                        SubagentDone(
-                            subagent_id=subagent_id,
-                            label=label,
-                            role="worker",
-                            usage=usage,
-                            cost_usd=cost,
+                    prompt = planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
+                    try:
+                        await _consume(make_stream_for(prompt))
+                    except asyncio.CancelledError:
+                        raise
+                    except BaseException as exc:
+                        if (
+                            fallback_make_stream_for is not None
+                            and is_retryable(exc)
+                        ):
+                            if isinstance(exc, AppError) and exc.envelope.code == "RATE_LIMITED":
+                                sub_code = "rate_limited"
+                            else:
+                                sub_code = "provider_fallback"
+                            try:
+                                await _consume(fallback_make_stream_for(prompt))
+                            except asyncio.CancelledError:
+                                raise
+                            except BaseException as retry_exc:
+                                _log.warning(
+                                    "agentic.worker_fallback_failed",
+                                    extra={
+                                        "subagent_id": subagent_id,
+                                        "error": str(retry_exc),
+                                    },
+                                )
+                                worker_failed = True
+                        else:
+                            _log.warning(
+                                "agentic.worker_failed",
+                                extra={"subagent_id": subagent_id, "error": str(exc)},
+                            )
+                            worker_failed = True
+                    if worker_failed:
+                        failed_workers += 1
+                        await queue.put(
+                            SubagentDone(
+                                subagent_id=subagent_id,
+                                label=label,
+                                role="worker",
+                                usage=UsageUpdate(),
+                                cost_usd=0.0,
+                            )
                         )
-                    )
-                    results[subagent_id] = WorkerOutput(
-                        subagent_id=subagent_id,
-                        sub_question=sub_question,
-                        answer="".join(answer_parts),
-                    )
-                    usages[subagent_id] = usage
-                    costs[subagent_id] = cost
+                    else:
+                        cost = cost_for_usage(usage)
+                        await queue.put(
+                            SubagentDone(
+                                subagent_id=subagent_id,
+                                label=label,
+                                role="worker",
+                                usage=usage,
+                                cost_usd=cost,
+                                substitution=sub_code,
+                                substituted_provider=sub_provider,
+                                substituted_model=sub_model,
+                                substituted_display_label=sub_label,
+                            )
+                        )
+                        results[subagent_id] = WorkerOutput(
+                            subagent_id=subagent_id,
+                            sub_question=sub_question,
+                            answer="".join(answer_parts),
+                        )
+                        usages[subagent_id] = usage
+                        costs[subagent_id] = cost
         finally:
-            # Always signal completion so the merge loop can never deadlock on a
-            # worker that errored OR was cancelled (mid-flight budget kill) before
-            # reaching its `SubagentDone`.
             await queue.put(_WorkerSentinel(subagent_id))
 
     tasks = [
@@ -570,15 +640,17 @@ async def _run_deep_research(
                     for task in tasks:
                         if not task.done():
                             task.cancel()
-        # Tolerate the cancellations we issued for the budget kill; surface any
-        # GENUINE worker exception (the sentinel `finally` guarantees we reached
-        # here without deadlocking even if a worker raised).
+        # Tolerate task cancellations from the budget kill. Worker failures are
+        # degraded inside `_run_worker` and must not fail the whole run.
         gathered = await asyncio.gather(*tasks, return_exceptions=True)
         for outcome in gathered:
             if isinstance(outcome, BaseException) and not isinstance(
                 outcome, asyncio.CancelledError
             ):
-                raise outcome
+                _log.error(
+                    "agentic.unexpected_worker_task_error",
+                    exc_info=outcome,
+                )
     finally:
         for task in tasks:
             if not task.done():
@@ -601,7 +673,10 @@ async def _run_deep_research(
             # safety fallback when no worker produced output (a streamed synthesis
             # over zero findings would be meaningless).
             synthesis = aggregate.synthesize(
-                ordered_outputs, planned=len(sub_questions), budget_halted=budget_halted
+                ordered_outputs,
+                planned=len(sub_questions),
+                budget_halted=budget_halted,
+                failed=failed_workers,
             )
             synthesis = await _maybe_verify(settings, synthesis)
             async for event in _finalize_synthesis(
@@ -626,6 +701,7 @@ async def _run_deep_research(
                 cost_for_usage=cost_for_usage,
                 cap_usd=cap,
                 budget_halted=budget_halted,
+                failed=failed_workers,
             ):
                 yield event
 
@@ -643,6 +719,8 @@ async def run_orchestrator(
     estimate_cost: CostEstimator | None = None,
     budget_headroom_usd: float | None = None,
     plan_approved: bool | None = None,
+    fallback_make_stream_for: StreamFactory | None = None,
+    is_retryable: IsRetryable = is_retryable_provider_error,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive an agentic turn, yielding the handler's `ProviderEvent` union.
 
@@ -667,6 +745,8 @@ async def run_orchestrator(
             estimate_cost=estimate_cost,
             budget_headroom_usd=budget_headroom_usd,
             plan_approved=plan_approved,
+            fallback_make_stream_for=fallback_make_stream_for,
+            is_retryable=is_retryable,
         ):
             yield event
     else:

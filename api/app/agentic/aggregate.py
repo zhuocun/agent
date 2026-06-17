@@ -61,6 +61,7 @@ def synthesize(
     *,
     planned: int | None = None,
     budget_halted: bool = False,
+    failed: int = 0,
 ) -> str:
     """Deterministically merge worker outputs into one synthesized answer.
 
@@ -84,6 +85,10 @@ def synthesize(
             answer = output.answer.strip() or "(no answer)"
             lines.append(f"{index}. {output.sub_question}: {answer}")
         base = "\n".join(lines)
+    if failed > 0:
+        base += (
+            f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"
+        )
     if budget_halted:
         base += (
             "\n\n[Partial answer: stopped early to stay within the run budget; "

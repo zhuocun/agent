@@ -139,6 +139,9 @@ exception.
 
 - State up front that planning, review, and the done decision are delegated, and
   that you are executing and relaying.
+- Name the model (and reasoning tier) running each subagent role — the
+  orchestrator-consultant, the workers, the reviewers, and the final-gate
+  reviewer — so the user can see what each role runs.
 - Relay subagent inputs and outputs verbatim — never paraphrase a brief, a
   verdict, or a set of issues.
 - Note when a reviewer forces rework, and when you re-consult the

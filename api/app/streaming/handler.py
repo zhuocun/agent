@@ -851,6 +851,7 @@ async def stream_and_persist(
             )
         fb_binding = fallback_binding
         fb_provider = _cached_fb_provider[0]
+        assert fb_provider is not None
         fb_api_key = fallback_api_key
 
         def _make(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:

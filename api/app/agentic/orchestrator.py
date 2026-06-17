@@ -31,14 +31,13 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
-from typing import Literal, cast
+from typing import Literal
 
 from app.agentic import aggregate, budget, planner, verifier
 from app.agentic.aggregate import WorkerOutput
 from app.agentic.retry import is_retryable_provider_error
 from app.config import Settings
 from app.errors import AppError
-from app.schemas.common import SubstitutionReasonCode
 from app.observability.tracing import invoke_agent_span
 from app.providers.protocol import (
     AnswerDelta,
@@ -55,6 +54,7 @@ from app.providers.protocol import (
     ToolResult,
     UsageUpdate,
 )
+from app.schemas.common import SubstitutionReasonCode
 from app.tools.agent_loop import MakeStream, run_agent_loop
 
 _log = logging.getLogger(__name__)
@@ -597,7 +597,7 @@ async def _run_deep_research(
                                 role="worker",
                                 usage=usage,
                                 cost_usd=cost,
-                                substitution=cast(SubstitutionReasonCode | None, sub_code),
+                                substitution=sub_code,
                                 substituted_provider=sub_provider,
                                 substituted_model=sub_model,
                                 substituted_display_label=sub_label,

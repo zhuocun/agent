@@ -27,6 +27,12 @@ import {
 } from "@/components/ui/collapsible";
 import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
 import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
+import {
+  deriveSubagentSections,
+  getMainSubagentIds,
+  hasPartialAnswerMarker,
+  stripPartialAnswerMarker,
+} from "@/lib/agentic-message";
 import { cn } from "@/lib/utils";
 import type {
   ChatMessage,
@@ -166,34 +172,7 @@ export function AssistantMessage({
   // section, tagged reasoning/text fill it, status settles to "done").
   const subagentSections = useMemo<SubagentSection[]>(() => {
     if (liveSubagents && liveSubagents.length > 0) return liveSubagents;
-    const sections: SubagentSection[] = [];
-    const byId = new Map<string, SubagentSection>();
-    for (const part of message.parts) {
-      if (part.type === "subagent") {
-        const section: SubagentSection = {
-          subagentId: part.subagentId,
-          label: part.label,
-          role: part.role,
-          status: "done",
-          ...(part.costUsd !== undefined ? { costUsd: part.costUsd } : {}),
-          reasoning: "",
-          answer: "",
-        };
-        byId.set(part.subagentId, section);
-        sections.push(section);
-        continue;
-      }
-      if (
-        (part.type === "reasoning" || part.type === "text") &&
-        part.subagentId
-      ) {
-        const section = byId.get(part.subagentId);
-        if (!section) continue;
-        if (part.type === "reasoning") section.reasoning += part.text;
-        else section.answer += part.text;
-      }
-    }
-    return sections;
+    return deriveSubagentSections(message.parts);
   }, [liveSubagents, message.parts]);
 
   // The subagents whose answer text is THE answer (rendered as the main
@@ -201,18 +180,10 @@ export function AssistantMessage({
   // and deep research's aggregator. Worker/orchestrator text stays panel-only —
   // parallel worker answers as sibling markdown blocks would read as a wall of
   // partial answers.
-  const mainSubagentIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const part of message.parts) {
-      if (
-        part.type === "subagent" &&
-        (part.role === "primary" || part.role === "aggregator")
-      ) {
-        ids.add(part.subagentId);
-      }
-    }
-    return ids;
-  }, [message.parts]);
+  const mainSubagentIds = useMemo(
+    () => getMainSubagentIds(message.parts),
+    [message.parts],
+  );
 
   // The panel renders ONCE, in place of the first `subagent` marker, covering
   // every section; later markers are skipped.
@@ -234,6 +205,27 @@ export function AssistantMessage({
         )
         .map((p) => p.text)
         .join("\n\n"),
+    [message.parts, mainSubagentIds],
+  );
+
+  // PRD 08 partial-synthesis (FR-26g): a budget halt or per-worker failure ends
+  // an agentic run in a graceful DEGRADE — the aggregator labels its answer
+  // with an inline `[Partial answer: …]` marker rather than erroring. We lift
+  // that into a `severity:"warning"` chip above the answer AND strip the inline
+  // bracket from the rendered markdown so the note reads as chrome, not prose.
+  const isPartialSynthesis = useMemo(
+    () => hasPartialAnswerMarker(answerText),
+    [answerText],
+  );
+  // The chip renders ONCE, above the first main-answer text part.
+  const firstAnswerIdx = useMemo(
+    () =>
+      message.parts.findIndex(
+        (p) =>
+          p.type === "text" &&
+          p.text.length > 0 &&
+          (p.subagentId === undefined || mainSubagentIds.has(p.subagentId)),
+      ),
     [message.parts, mainSubagentIds],
   );
 
@@ -338,18 +330,30 @@ export function AssistantMessage({
           if (part.subagentId && !mainSubagentIds.has(part.subagentId)) {
             return null;
           }
-          return part.text ? (
-            <div key={idx} data-testid="assistant-answer">
-              <MarkdownRenderer
-                sources={sourceItems}
-                onCitationClick={(id) =>
-                  sourcesPanelRef.current?.revealSource(id)
-                }
-              >
-                {part.text}
-              </MarkdownRenderer>
+          // Strip the inline `[Partial answer: …]` marker — it's surfaced as the
+          // chip below instead — but keep the rest of the synthesis verbatim.
+          const body = stripPartialAnswerMarker(part.text);
+          const showPartialChip = isPartialSynthesis && idx === firstAnswerIdx;
+          if (!body) {
+            return showPartialChip ? (
+              <PartialSynthesisWarning key={idx} />
+            ) : null;
+          }
+          return (
+            <div key={idx} className="space-y-2">
+              {showPartialChip ? <PartialSynthesisWarning /> : null}
+              <div data-testid="assistant-answer">
+                <MarkdownRenderer
+                  sources={sourceItems}
+                  onCitationClick={(id) =>
+                    sourcesPanelRef.current?.revealSource(id)
+                  }
+                >
+                  {body}
+                </MarkdownRenderer>
+              </div>
             </div>
-          ) : null;
+          );
         }
         if (part.type === "status") {
           return <StatusLine key={idx} label={part.label} state={part.state} />;
@@ -483,6 +487,24 @@ function UngroundedMarker() {
       <SearchX aria-hidden className="size-3.5" />
       <span>Answered without live sources</span>
     </div>
+  );
+}
+
+// PRD 08 partial-synthesis chip (FR-26g): a calm `severity:"warning"` banner
+// shown above a degraded agentic answer (budget halt / worker failure). Same
+// warning grammar as the error chip below — AlertTriangle + the warning role
+// token, NOT destructive red — because a partial answer "stopped early", it
+// isn't broken.
+function PartialSynthesisWarning() {
+  return (
+    <span
+      role="status"
+      data-testid="partial-synthesis-warning"
+      className="inline-flex items-center gap-1.5 rounded-full border border-warning-foreground/20 bg-warning px-2.5 py-0.5 text-xs text-warning-foreground"
+    >
+      <AlertTriangle aria-hidden className="size-3.5" />
+      <span>Partial answer — stopped early to stay within budget</span>
+    </span>
   );
 }
 

@@ -36,6 +36,7 @@ from typing import Literal
 from app.agentic import aggregate, budget, planner, verifier
 from app.agentic.aggregate import WorkerOutput
 from app.config import Settings
+from app.errors import AppError
 from app.observability.tracing import invoke_agent_span
 from app.providers.protocol import (
     AnswerDelta,
@@ -71,6 +72,18 @@ _TAGGABLE = (
 )
 
 AgenticMode = Literal["single", "deep_research"]
+
+# Provider error codes a worker may retry ONCE on a fallback route before
+# degrading: a rate limit or a transient upstream failure. Mirrors the handler's
+# `_RETRYABLE_CODES` (the typed `AppError`s the real provider adapters raise);
+# duplicated here rather than imported to avoid a handler↔orchestrator import
+# cycle.
+_RETRYABLE_CODES = {"RATE_LIMITED", "PROVIDER_UPSTREAM"}
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Whether a provider exception qualifies for a one-shot fallback retry."""
+    return isinstance(exc, AppError) and exc.envelope.code in _RETRYABLE_CODES
 
 # Given a per-subagent user prompt, build the `MakeStream` the agent loop drives
 # for that subagent. The handler supplies this so the orchestrator stays
@@ -212,16 +225,29 @@ async def _maybe_plan_approval(
     yield AwaitingApproval(tool_call_id=PLAN_APPROVAL_CALL_ID, subagent_id=_PLANNER_ID)
 
 
-async def _maybe_verify(settings: Settings, answer: str) -> str:
+async def _maybe_verify(
+    settings: Settings,
+    answer: str,
+    *,
+    make_stream_for: StreamFactory,
+) -> tuple[str, UsageUpdate]:
     """Answer verifier (M3): bounded N-pass self-consistency review.
 
-    No-op (returns the answer unchanged) unless `AGENTIC_VERIFIER` is on; then it
-    runs `AGENTIC_VERIFIER_N` passes and appends a content-free verification note
-    (see `app/agentic/verifier.py`).
+    No-op (returns the answer unchanged + zero usage) unless `AGENTIC_VERIFIER`
+    is on; then it runs `AGENTIC_VERIFIER_N` passes and appends a content-free
+    verification note (see `app/agentic/verifier.py`). On a REAL provider the
+    review is a bounded `run_agent_loop` pass whose token usage is returned so
+    the caller can fold the verifier's spend into the run totals; on the FAKE
+    provider it stays the deterministic, zero-cost stub.
     """
     if not settings.agentic_verifier:
-        return answer
-    return verifier.verify(answer, n=settings.agentic_verifier_n)
+        return answer, UsageUpdate()
+    return await verifier.verify_streamed(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        synthesis=answer,
+        n=settings.agentic_verifier_n,
+    )
 
 
 # --- shared finalize ----------------------------------------------------------
@@ -276,6 +302,7 @@ async def _finalize_synthesis_streamed(
     cost_for_usage: CostForUsage,
     cap_usd: float,
     budget_halted: bool,
+    failed: int = 0,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
@@ -294,31 +321,46 @@ async def _finalize_synthesis_streamed(
     prompt = aggregate.build_synthesis_prompt(user_text, outputs)
     aggregator_usage = UsageUpdate()
     answer_parts: list[str] = []
-    async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
+    async for event in run_agent_loop(
+        make_stream=make_stream_for(prompt), settings=settings, subagent_id=_AGGREGATOR_ID
+    ):
         if isinstance(event, AnswerDelta):
             answer_parts.append(event.text)
         aggregator_usage = _fold_usage(event, aggregator_usage)
         yield _tag(event, _AGGREGATOR_ID)
     streamed = "".join(answer_parts)
+    # The verifier's reviewer-pass usage (zero on the fake/off path); folded into
+    # the run totals below so a provider-backed verifier's spend is billed.
+    verifier_usage = UsageUpdate()
     if not streamed.strip():
         # Model produced no usable synthesis — fall back to the deterministic
         # composition (already includes the budget/verifier notes) so the turn
         # never ends with an empty aggregator answer.
         fallback = aggregate.synthesize(
-            outputs, planned=planned, budget_halted=budget_halted
+            outputs, planned=planned, budget_halted=budget_halted, failed=failed
         )
-        fallback = await _maybe_verify(settings, fallback)
+        fallback, verifier_usage = await _maybe_verify(
+            settings, fallback, make_stream_for=make_stream_for
+        )
         yield AnswerDelta(text=fallback, subagent_id=_AGGREGATOR_ID)
     else:
-        # Re-apply the labeled-partial (budget) note and the verifier note the
-        # deterministic path appends, as trailing deltas over the streamed answer.
+        # Re-apply the labeled-partial (budget / failed-worker) notes and the
+        # verifier note the deterministic path appends, as trailing deltas over
+        # the streamed answer.
         suffix = ""
         if budget_halted:
             suffix += (
                 "\n\n[Partial answer: stopped early to stay within the run budget; "
                 f"answered {len(outputs)} of {planned} planned steps.]"
             )
-        verified = await _maybe_verify(settings, streamed + suffix)
+        if failed:
+            suffix += (
+                f"\n\n[Partial answer: {failed} of {planned} sub-agents failed; "
+                f"answered {len(outputs)} of {planned} planned steps.]"
+            )
+        verified, verifier_usage = await _maybe_verify(
+            settings, streamed + suffix, make_stream_for=make_stream_for
+        )
         extra = verified[len(streamed) :]
         if extra:
             yield AnswerDelta(text=extra, subagent_id=_AGGREGATOR_ID)
@@ -331,8 +373,8 @@ async def _finalize_synthesis_streamed(
         usage=aggregator_usage,
         cost_usd=aggregator_cost,
     )
-    total_usage = _sum_usages([*worker_usages, aggregator_usage])
-    total_cost = worker_total_cost + aggregator_cost
+    total_usage = _sum_usages([*worker_usages, aggregator_usage, verifier_usage])
+    total_cost = worker_total_cost + aggregator_cost + cost_for_usage(verifier_usage)
     yield Complete(usage=total_usage)
     yield RunCost(subtotal_usd=total_cost, cap_usd=cap_usd)
 
@@ -351,7 +393,9 @@ async def _collect_answer(
     """
     answer_parts: list[str] = []
     usage = UsageUpdate()
-    async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
+    async for event in run_agent_loop(
+        make_stream=make_stream_for(prompt), settings=settings, subagent_id=_PLANNER_ID
+    ):
         if isinstance(event, AnswerDelta):
             answer_parts.append(event.text)
         usage = _fold_usage(event, usage)
@@ -374,7 +418,7 @@ async def _run_single(
     usage = UsageUpdate()
     with invoke_agent_span(subagent_id=subagent_id, role="primary", label=_PRIMARY_LABEL):
         async for event in run_agent_loop(
-            make_stream=make_stream_for(user_text), settings=settings
+            make_stream=make_stream_for(user_text), settings=settings, subagent_id=subagent_id
         ):
             usage = _fold_usage(event, usage)
             yield _tag(event, subagent_id)
@@ -401,6 +445,8 @@ async def _run_deep_research(
     estimate_cost: CostEstimator | None = None,
     budget_headroom_usd: float | None = None,
     plan_approved: bool | None = None,
+    make_worker_stream_for: StreamFactory | None = None,
+    fallback_make_worker_stream_for: StreamFactory | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan → (approve) → admit → parallel fan-out → (verify) → synthesis.
 
@@ -408,7 +454,16 @@ async def _run_deep_research(
     None on a fresh run (pause if the flag is on), True/False on the resume
     (fan out / decline). `estimate_cost` + `budget_headroom_usd` drive the
     pre-spawn reservation and the mid-flight kill.
+
+    `make_worker_stream_for` builds the per-WORKER stream (a least-privilege tool
+    subset, SR-2); it defaults to `make_stream_for` (the full-tool factory the
+    planner/aggregator use) when the handler doesn't scope worker tools.
+    `fallback_make_worker_stream_for` builds the same worker stream over the
+    ALTERNATE route; when set, a worker that hits a retryable provider error
+    (429/5xx) BEFORE emitting any content retries once on the fallback route
+    before degrading (PRD 08 graceful-degrade). None disables the retry.
     """
+    worker_stream_for = make_worker_stream_for or make_stream_for
     # Provider-backend split: the FAKE provider keys on the deterministic
     # `DEEP_RESEARCH_WORKER:`/`DEEP_RESEARCH:` scaffolding (the test contract), so
     # it always uses the marker-based `decompose` + scaffolded worker prompts. A
@@ -500,6 +555,10 @@ async def _run_deep_research(
     results: dict[str, WorkerOutput] = {}
     usages: dict[str, UsageUpdate] = {}
     costs: dict[str, float] = {}
+    # Workers that raised mid-stream (provider error / exhausted retries). They
+    # are dropped from the synthesis and counted so the answer can be labeled a
+    # partial — a worker failure degrades the run, never fails it (PRD 08).
+    failed_workers: set[str] = set()
 
     async def _run_worker(index: int, subagent_id: str, label: str, sub_question: str) -> None:
         answer_parts: list[str] = []
@@ -512,14 +571,45 @@ async def _run_deep_research(
                     await queue.put(
                         SubagentStarted(subagent_id=subagent_id, label=label, role="worker")
                     )
-                    make_stream = make_stream_for(
-                        planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
-                    )
-                    async for event in run_agent_loop(make_stream=make_stream, settings=settings):
-                        if isinstance(event, AnswerDelta):
-                            answer_parts.append(event.text)
-                        usage = _fold_usage(event, usage)
-                        await queue.put(_tag(event, subagent_id))
+                    prompt = planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
+                    # One-shot fallback: try the primary worker route, then (only
+                    # if it errored retryably BEFORE emitting anything) the
+                    # fallback route. `emitted` gates the retry so a mid-stream
+                    # failure NEVER double-emits a worker's content — it degrades.
+                    emitted = False
+                    for attempt, factory in enumerate(
+                        (worker_stream_for, fallback_make_worker_stream_for)
+                    ):
+                        if factory is None:
+                            continue
+                        try:
+                            make_stream = factory(prompt)
+                            async for event in run_agent_loop(
+                                make_stream=make_stream,
+                                settings=settings,
+                                subagent_id=subagent_id,
+                            ):
+                                if isinstance(event, AnswerDelta):
+                                    answer_parts.append(event.text)
+                                usage = _fold_usage(event, usage)
+                                await queue.put(_tag(event, subagent_id))
+                                emitted = True
+                            break
+                        except Exception as exc:
+                            # Retry on the fallback route only when the error is
+                            # retryable, nothing was emitted yet, and a fallback
+                            # factory remains; otherwise propagate to the degrade
+                            # path below.
+                            if (
+                                _is_retryable(exc)
+                                and not emitted
+                                and attempt == 0
+                                and fallback_make_worker_stream_for is not None
+                            ):
+                                answer_parts = []
+                                usage = UsageUpdate()
+                                continue
+                            raise
                     cost = cost_for_usage(usage)
                     await queue.put(
                         SubagentDone(
@@ -537,6 +627,26 @@ async def _run_deep_research(
                     )
                     usages[subagent_id] = usage
                     costs[subagent_id] = cost
+        except asyncio.CancelledError:
+            # Mid-flight budget kill cancels in-flight workers; propagate so the
+            # `gather` below sees a CancelledError (tolerated) rather than a
+            # degraded worker — a budget halt is labeled separately.
+            raise
+        except Exception:
+            # Per-worker provider-failure degrade (M4 / PRD 08 / FR-26g): a single
+            # worker's error must NOT fail the whole run. Mark it failed and emit a
+            # zero-cost `SubagentDone` so its transcript section still closes; the
+            # run aggregates the surviving workers and labels the answer partial.
+            failed_workers.add(subagent_id)
+            await queue.put(
+                SubagentDone(
+                    subagent_id=subagent_id,
+                    label=label,
+                    role="worker",
+                    usage=UsageUpdate(),
+                    cost_usd=0.0,
+                )
+            )
         finally:
             # Always signal completion so the merge loop can never deadlock on a
             # worker that errored OR was cancelled (mid-flight budget kill) before
@@ -601,9 +711,18 @@ async def _run_deep_research(
             # safety fallback when no worker produced output (a streamed synthesis
             # over zero findings would be meaningless).
             synthesis = aggregate.synthesize(
-                ordered_outputs, planned=len(sub_questions), budget_halted=budget_halted
+                ordered_outputs,
+                planned=len(sub_questions),
+                budget_halted=budget_halted,
+                failed=len(failed_workers),
             )
-            synthesis = await _maybe_verify(settings, synthesis)
+            synthesis, verifier_usage = await _maybe_verify(
+                settings, synthesis, make_stream_for=make_stream_for
+            )
+            # Fold the verifier's reviewer-pass spend (zero on the fake/off path)
+            # into the run totals alongside the planner pass.
+            ordered_usages.append(verifier_usage)
+            worker_total_cost += cost_for_usage(verifier_usage)
             async for event in _finalize_synthesis(
                 synthesis=synthesis,
                 worker_usages=ordered_usages,
@@ -626,6 +745,7 @@ async def _run_deep_research(
                 cost_for_usage=cost_for_usage,
                 cap_usd=cap,
                 budget_halted=budget_halted,
+                failed=len(failed_workers),
             ):
                 yield event
 
@@ -643,6 +763,8 @@ async def run_orchestrator(
     estimate_cost: CostEstimator | None = None,
     budget_headroom_usd: float | None = None,
     plan_approved: bool | None = None,
+    make_worker_stream_for: StreamFactory | None = None,
+    fallback_make_worker_stream_for: StreamFactory | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive an agentic turn, yielding the handler's `ProviderEvent` union.
 
@@ -657,7 +779,22 @@ async def run_orchestrator(
       composed with the per-run cap.
     - `plan_approved` — the plan-approval HITL decision carried across a resume
       (None = fresh run, True = approved, False = declined).
+    - `make_worker_stream_for` — the least-privilege per-worker factory (worker
+      tool subset, SR-2); defaults to `make_stream_for` when unset.
+    - `fallback_make_worker_stream_for` — the worker factory over the alternate
+      route, enabling a one-shot per-worker 429/5xx fallback before degrading.
     """
+    # Runtime depth enforcement (T7). A single orchestrated turn is depth 1:
+    # workers drive `run_agent_loop` directly and NEVER re-enter
+    # `run_orchestrator`, so a `deep_research` fan-out can't recurse into another
+    # fan-out. `agentic_max_depth` must be >= 1 for any orchestration to run;
+    # `assert_prod_safe()` refuses < 1 at boot, and this is the matching runtime
+    # guard (a non-stripped `if`, unlike `assert`) for a misconfigured runtime.
+    if settings.agentic_max_depth < 1:
+        raise ValueError(
+            "agentic_max_depth must be >= 1 to run the orchestrator, got "
+            f"{settings.agentic_max_depth}"
+        )
     if mode == "deep_research":
         async for event in _run_deep_research(
             make_stream_for=make_stream_for,
@@ -667,6 +804,8 @@ async def run_orchestrator(
             estimate_cost=estimate_cost,
             budget_headroom_usd=budget_headroom_usd,
             plan_approved=plan_approved,
+            make_worker_stream_for=make_worker_stream_for,
+            fallback_make_worker_stream_for=fallback_make_worker_stream_for,
         ):
             yield event
     else:

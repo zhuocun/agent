@@ -386,6 +386,19 @@ class Settings(BaseSettings):
     # unbounded-in-flight behavior and only TTL-evicts after done.
     resumable_buffer_max_events: int = Field(default=1000, alias="RESUMABLE_BUFFER_MAX_EVENTS")
     resumable_buffer_max_bytes: int = Field(default=1_048_576, alias="RESUMABLE_BUFFER_MAX_BYTES")
+    # Agentic turns fan out across multiple subagents (planner / workers /
+    # aggregator), so a single agentic turn emits far more wire events than a
+    # plain chat turn. The replay buffer for an agentic turn therefore gets its
+    # OWN larger count/byte bounds so a reconnect can still replay the full
+    # multi-subagent transcript; a plain turn keeps the tighter
+    # `resumable_buffer_max_*` defaults. Only consulted on the Redis backend (the
+    # memory backend is unbounded-in-flight); inert when resumable streams are off.
+    agentic_resumable_buffer_max_events: int = Field(
+        default=5000, alias="AGENTIC_RESUMABLE_BUFFER_MAX_EVENTS"
+    )
+    agentic_resumable_buffer_max_bytes: int = Field(
+        default=5_242_880, alias="AGENTIC_RESUMABLE_BUFFER_MAX_BYTES"
+    )
 
     # Backend-side tool calling + human-in-the-loop (HITL) approval. DEFAULT-OFF
     # feature flag — a hard safety gate around the agent loop. When False (the

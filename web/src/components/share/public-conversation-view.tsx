@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { RotateCw, SearchX } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, RotateCw, SearchX } from "lucide-react";
 import Link from "next/link";
 import { Loader2, MessageSquareText } from "lucide-react";
 
@@ -11,11 +11,18 @@ import {
   SourcesPanel,
   type SourcesPanelHandle,
 } from "@/components/chat/sources-panel";
+import { SubagentPanel } from "@/components/chat/subagent-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { PublicAttributionRow } from "@/components/share/public-attribution-row";
 import { Button } from "@/components/ui/button";
 import { ApiError, fetchPublicConversation } from "@/lib/apiClient";
+import {
+  deriveSubagentSections,
+  getMainSubagentIds,
+  hasPartialAnswerMarker,
+  stripPartialAnswerMarker,
+} from "@/lib/agentic-message";
 import type { PublicConversation, PublicMessage } from "@/lib/types";
 
 // Read-only public-by-link snapshot. NO composer, NO sidebar, NO message
@@ -181,10 +188,57 @@ function ConversationBody({
 
 function PublicMessageItem({ message }: { message: PublicMessage }) {
   // Hooks must run unconditionally, so they sit above the user-message early
-  // return (harmless for user turns, which have no sources).
+  // return (harmless for user turns, which have no sources/subagents).
   const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
   const sourceItems =
     message.parts.find((p) => p.type === "sources")?.items ?? [];
+
+  // Agentic turns: reconstruct the same subagent-grouped layout the private
+  // thread renders, but COST-STRIPPED (`includeCost: false`) so per-subagent
+  // spend never leaks on the public surface (PRD 07 §6.4). Substitution /
+  // served-model identity is kept — the public contract preserves it.
+  const subagentSections = useMemo(
+    () => deriveSubagentSections(message.parts, { includeCost: false }),
+    [message.parts],
+  );
+  const mainSubagentIds = useMemo(
+    () => getMainSubagentIds(message.parts),
+    [message.parts],
+  );
+  // The panel renders ONCE, in place of the first `subagent` marker.
+  const firstSubagentIdx = useMemo(
+    () => message.parts.findIndex((p) => p.type === "subagent"),
+    [message.parts],
+  );
+  // PRD 08 partial-synthesis chip: lift the inline `[Partial answer: …]` marker
+  // (budget halt / worker failure degrade) into a warning chip above the answer
+  // and strip the bracket from the rendered markdown.
+  const answerText = useMemo(
+    () =>
+      message.parts
+        .filter(
+          (p) =>
+            p.type === "text" &&
+            (p.subagentId === undefined || mainSubagentIds.has(p.subagentId)),
+        )
+        .map((p) => (p.type === "text" ? p.text : ""))
+        .join("\n\n"),
+    [message.parts, mainSubagentIds],
+  );
+  const isPartialSynthesis = useMemo(
+    () => hasPartialAnswerMarker(answerText),
+    [answerText],
+  );
+  const firstAnswerIdx = useMemo(
+    () =>
+      message.parts.findIndex(
+        (p) =>
+          p.type === "text" &&
+          p.text.length > 0 &&
+          (p.subagentId === undefined || mainSubagentIds.has(p.subagentId)),
+      ),
+    [message.parts, mainSubagentIds],
+  );
 
   if (message.role === "user") {
     const text = message.parts
@@ -217,7 +271,17 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
       data-testid="public-assistant-message"
     >
       {message.parts.map((part, idx) => {
+        if (part.type === "subagent") {
+          // The panel covers ALL sections; render it once at the first marker.
+          // No `runCost` on the share surface — the cost meter is owner-only.
+          return idx === firstSubagentIdx ? (
+            <SubagentPanel key={idx} sections={subagentSections} />
+          ) : null;
+        }
         if (part.type === "reasoning") {
+          // Subagent-tagged reasoning lives inside the panel's per-worker rows;
+          // only untagged reasoning renders as the global panel.
+          if (part.subagentId) return null;
           return (
             <ReasoningPanel
               key={idx}
@@ -228,18 +292,33 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
           );
         }
         if (part.type === "text") {
-          return part.text ? (
-            <div key={idx} data-testid="public-assistant-answer">
-              <MarkdownRenderer
-                sources={sourceItems}
-                onCitationClick={(id) =>
-                  sourcesPanelRef.current?.revealSource(id)
-                }
-              >
-                {part.text}
-              </MarkdownRenderer>
+          // Subagent-tagged text: only the main (primary/aggregator) answer
+          // renders as the markdown body; worker text stays panel-only.
+          if (part.subagentId && !mainSubagentIds.has(part.subagentId)) {
+            return null;
+          }
+          const body = stripPartialAnswerMarker(part.text);
+          const showPartialChip = isPartialSynthesis && idx === firstAnswerIdx;
+          if (!body) {
+            return showPartialChip ? (
+              <PublicPartialSynthesisWarning key={idx} />
+            ) : null;
+          }
+          return (
+            <div key={idx} className="space-y-2">
+              {showPartialChip ? <PublicPartialSynthesisWarning /> : null}
+              <div data-testid="public-assistant-answer">
+                <MarkdownRenderer
+                  sources={sourceItems}
+                  onCitationClick={(id) =>
+                    sourcesPanelRef.current?.revealSource(id)
+                  }
+                >
+                  {body}
+                </MarkdownRenderer>
+              </div>
             </div>
-          ) : null;
+          );
         }
         if (part.type === "sources") {
           // Citations are not cost-bearing, so they survive the share strip and
@@ -267,6 +346,22 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+// Mirror of the private thread's partial-synthesis chip (PRD 08 / FR-26g) so a
+// shared, budget-halted or degraded agentic answer reads as a calm warning
+// rather than carrying a stray `[Partial answer: …]` bracket in its prose.
+function PublicPartialSynthesisWarning() {
+  return (
+    <span
+      role="status"
+      data-testid="partial-synthesis-warning"
+      className="inline-flex items-center gap-1.5 rounded-full border border-warning-foreground/20 bg-warning px-2.5 py-0.5 text-xs text-warning-foreground"
+    >
+      <AlertTriangle aria-hidden className="size-3.5" />
+      <span>Partial answer — stopped early to stay within budget</span>
+    </span>
   );
 }
 

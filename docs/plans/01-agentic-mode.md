@@ -1,6 +1,6 @@
 # Agentic Mode Plan (orchestrated bounded subagents)
 
-> **Implementation status**: **SHIPPED behind `AGENTIC_ENABLED` (default off, gated by `TOOLS_ENABLED`).** M0–M3 are built and tested on the fake provider (`api/app/agentic/*`, `api/tests/test_agentic_*.py`, `web/tests/e2e/agentic.spec.ts`). With the flag off, the stream path stays byte-identical to the pre-agentic build (`test_agentic_flag_off.py`). **M4 is PARTIALLY SHIPPED** — real-provider planner/synthesis code paths exist in `orchestrator.py`, but per-worker fallback, resumable-buffer sizing, and real-provider E2E proof remain open (see **Remaining gaps**). Do not enable `AGENTIC_ENABLED` in a real-key environment until M4 is proven.
+> **Implementation status**: **SHIPPED behind `AGENTIC_ENABLED` (default off, gated by `TOOLS_ENABLED`).** M0–M3 are built and tested on the fake provider (`api/app/agentic/*`, `api/tests/test_agentic_*.py`, `web/tests/e2e/agentic.spec.ts`). With the flag off, the stream path stays byte-identical to the pre-agentic build (`test_agentic_flag_off.py`). **M4 is PARTIALLY SHIPPED** — real-provider planner/synthesis code paths exist in `orchestrator.py`, and per-worker fallback, scoped worker tool subsets, provider-backed verifier, and agentic resumable-buffer sizing are now built; real-provider E2E proof remains open (see **Remaining gaps**). Do not enable `AGENTIC_ENABLED` in a real-key environment until M4 is proven.
 
 The smallest extension that lets the existing chat turn spawn **bounded model subagents in-turn** — an orchestrator over N reuses of the shipped `run_agent_loop`, multiplexed back onto the one SSE stream — with **zero behavior change when `AGENTIC_ENABLED` is off**. Anchored to the shipped streaming/persistence path (`api/app/streaming/handler.py`), the shipped agent loop (`api/app/tools/agent_loop.py`), and the typed message-part union (`api/app/schemas/message.py`). PRDs guide direction; anything not gated behind a hard flag is out of scope.
 
@@ -174,15 +174,15 @@ All validated at boot in `app/config.py`; all bounds are config, never hardcoded
 
 | Gap | Status | Notes |
 | --- | --- | --- |
-| Per-subagent `ModelAttribution` + substitution persistence/display | **PARTIAL** | `SubagentPart.attribution` exists in schema; `_build_agentic_parts` never populates it; FE shows turn-level attribution only |
-| `execute_tool` OTel spans in `agent_loop.py` | **NOT BUILT** | `execute_tool_span` defined in `tracing.py`; only `invoke_agent_span` is wired in the orchestrator |
-| Provider-backed verifier / self-consistency (FR-26j) | **PARTIAL** | Deterministic stub appends a note; no provider sampling, no reviewer subagent, no verifier cost in meter |
-| Per-worker provider failure degrade (PRD 08) | **NOT BUILT (M4)** | Worker exception re-raises and fails the whole run; budget-halt partial synthesis is shipped |
-| Per-worker provider fallback on 429/5xx | **NOT BUILT (M4)** | Turn-level fallback only (`handler.py`) |
-| Resumable-buffer sizing for high fan-out event volume | **NOT BUILT (M4)** | Shipped caps unchanged (~1000 events / ~1MB) |
+| Per-subagent `ModelAttribution` persistence | **SHIPPED** | `_build_agentic_parts` now prices each subagent's own usage and persists `SubagentPart.attribution` (`cost_confidence="exact"`); covered by `test_agentic_m4.py::test_agentic_subagent_attribution`. Per-subagent substitution codes + FE per-subagent display still pending |
+| `execute_tool` OTel spans in `agent_loop.py` | **SHIPPED** | `run_agent_loop` wraps each `execute_tool` call in `execute_tool_span` (tool name only, nested under the subagent's `invoke_agent` span); covered by `test_agentic_m4.py::test_agentic_execute_tool_spans` |
+| Provider-backed verifier / self-consistency (FR-26j) | **SHIPPED** | `verifier.verify_streamed` keeps the deterministic stub on the fake backend but runs a bounded `run_agent_loop` reviewer pass on a real backend; its token usage folds into the run totals (`_maybe_verify` → `_finalize_synthesis*`); covered by `test_agentic_m4_gaps.py` (verifier cases) |
+| Per-worker provider failure degrade (PRD 08) | **SHIPPED** | A worker raising mid-stream is caught in `_run_worker`: it drops out, emits a zero-cost `SubagentDone`, and the run aggregates survivors with a labeled partial synthesis (never an `error`); covered by `test_agentic_m4.py::test_agentic_worker_degrade` |
+| Per-worker provider fallback on 429/5xx | **SHIPPED** | `_run_worker` retries once on a fallback route for a retryable (`RATE_LIMITED` / `PROVIDER_UPSTREAM`) error raised before any content, then degrades; the handler threads the fallback worker factory into `run_orchestrator`; covered by `test_agentic_m4_gaps.py` (fallback cases) |
+| Resumable-buffer sizing for high fan-out event volume | **SHIPPED** | `AGENTIC_RESUMABLE_BUFFER_MAX_EVENTS` (5000) / `AGENTIC_RESUMABLE_BUFFER_MAX_BYTES` (5MB) are threaded through `replay_registry.create_async` and applied for agentic turns in `conversations.py` (Redis backend); covered by `test_agentic_m4_gaps.py::test_redis_store_create_honors_buffer_overrides` |
 | Real-provider agentic E2E proof | **NOT BUILT (M4 gate)** | All agentic tests use fake provider |
-| Scoped per-worker tool subsets | **NOT BUILT** | Workers inherit full `advertised_tool_specs()` |
-| `AGENTIC_MAX_DEPTH` runtime enforcement | **PARTIAL** | Config validated at boot; depth 1 by construction (workers never nest), not checked at runtime |
+| Scoped per-worker tool subsets | **SHIPPED** | `worker_tool_specs()` (least-privilege: prod-safe minus approval-gated) is advertised to workers via a dedicated worker stream factory; planner/aggregator/primary keep the full `advertised_tool_specs()`; covered by `test_agentic_m4.py::test_agentic_worker_tools_subset` |
+| `AGENTIC_MAX_DEPTH` runtime enforcement | **SHIPPED** | `run_orchestrator` raises when `agentic_max_depth < 1` (matching the boot guard); workers drive `run_agent_loop` directly and never re-enter the orchestrator (depth 1 by construction); covered by `test_agentic_m4_gaps.py::test_run_orchestrator_rejects_depth_below_one` |
 | High-cost composer hint (FR-26f) | **NOT BUILT** | Toggle description only; no explicit cost warning |
 | Share-view subagent rendering | **NOT BUILT** | `public-conversation-view.tsx` omits `SubagentPanel` |
 | PRD 08 partial-synthesis warning chip | **NOT BUILT** | Budget halt labels inline answer text only |
@@ -217,7 +217,7 @@ Demo: `test_agentic_fanout.py::test_deep_research_fans_out_workers_and_aggregate
 
 Scope: per-run USD cap with **admission control** — a **pre-spawn reservation** against the cap + composed user/platform headroom (estimate via the Cost & budget methodology) and a **mid-flight kill** that cancels in-flight workers (worker `TaskGroup` teardown) on actual-cost breach, both ending in a graceful partial-synthesis halt; plan-approval pause that **emits a `terminal` with `status:"awaiting_approval"`** carrying the plan decomposition + estimated cost (`costConfidence:"estimate"`), resumed via `toolApproval`; the Pro/BYOK entitlement gate coercing non-entitled `deep_research` to `single`; verifier / self-consistency step (config N); the live per-run cost meter; `invoke_agent` OTel spans.
 
-**Partials vs this milestone's original scope:** per-subagent `ModelAttribution` + substitution codes are **not** persisted or rendered; `execute_tool` spans are **not** wired into `agent_loop.py`; the verifier is a **deterministic stub** (no provider-backed reviewer); `AGENTIC_MAX_DEPTH` is config-only (depth 1 by construction).
+**Partials vs this milestone's original scope:** per-subagent `ModelAttribution` is now **persisted** on `SubagentPart.attribution` (substitution codes + FE per-subagent rendering still pending); `execute_tool` spans are now **wired** into `agent_loop.py`; the verifier is now **provider-backed** (deterministic stub on the fake backend, a bounded `run_agent_loop` reviewer pass on a real backend, with verifier cost folded into the run totals); `AGENTIC_MAX_DEPTH` is now **enforced at runtime** in `run_orchestrator` (depth 1 by construction).
 
 Demo: `test_agentic_budget.py`, `test_agentic_approval.py`, `test_agentic_safety.py`.
 
@@ -225,7 +225,7 @@ Demo: `test_agentic_budget.py`, `test_agentic_approval.py`, `test_agentic_safety
 
 Scope: wire real providers (DeepSeek/OpenAI-compatible + Anthropic) as subagent backends through the same `run_agent_loop` real-provider tool path; **only after M1–M3 are proven on the fake provider** (FR-26d / D40). PRD-08 error envelope on every agentic path; structlog run/subagent keys; **net-new per-worker fallback** (degrade the 429'd/errored worker, keep the run — the shipped fallback is per-turn) and the rest of the concurrency-vs-rate-limit handling; the resumable-buffer build-time decision for high event-volume fan-out (bump the bound or cap/coalesce events); document remaining gaps.
 
-**As-built:** real-provider planner and model-written synthesis paths exist in `orchestrator.py` / `planner.py` / `aggregate.py`. **Still open:** per-worker fallback, per-worker failure degrade, resumable-buffer decision, real-provider E2E tests, full per-subagent attribution — see **Remaining gaps**.
+**As-built:** real-provider planner and model-written synthesis paths exist in `orchestrator.py` / `planner.py` / `aggregate.py`; **per-worker failure degrade**, **per-subagent attribution persistence**, **per-worker 429/5xx fallback**, **scoped per-worker tool subsets**, and the **resumable-buffer sizing decision** (larger agentic bounds) are now shipped (see **Remaining gaps**). **Still open:** real-provider E2E tests and per-subagent substitution display — see **Remaining gaps**.
 
 Demo (target): a real-provider `deep_research` run fans out, aggregates, and bills correctly with full transparency; a forced provider error/429 on one worker degrades **that worker only**, not the run.
 

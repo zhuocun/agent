@@ -46,6 +46,7 @@ from sse_starlette import ServerSentEvent
 
 from app.agentic import budget
 from app.agentic.orchestrator import run_orchestrator
+from app.agentic.retry import is_retryable_provider_error
 from app.config import get_settings
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import conversations as conversations_repo
@@ -221,6 +222,10 @@ class _SubagentAccumulator:
     tool_parts: list[dict[str, Any]] = field(default_factory=list)
     cost_usd: float | None = None
     usage: UsageUpdate = field(default_factory=UsageUpdate)
+    substitution: SubstitutionReasonCode | None = None
+    substituted_provider: str | None = None
+    substituted_model: str | None = None
+    substituted_display_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -245,7 +250,7 @@ _RETRYABLE_CODES = {"RATE_LIMITED", "PROVIDER_UPSTREAM"}
 
 def _is_retryable(exc: BaseException) -> bool:
     """Whether a provider exception qualifies for a fallback-route retry."""
-    return isinstance(exc, AppError) and exc.envelope.code in _RETRYABLE_CODES
+    return is_retryable_provider_error(exc)
 
 
 def _fold_complete_substitution(
@@ -831,6 +836,48 @@ async def stream_and_persist(
 
         return _make
 
+    _cached_fb_provider: list[Provider | None] = [None]
+
+    def _agentic_fallback_make_stream(
+        worker_user_text: str,
+    ) -> Callable[[list[ToolResult]], AsyncIterator[ProviderEvent]]:
+        """Per-subagent stream factory over the fallback route (agentic only)."""
+        assert fallback_binding is not None
+        if _cached_fb_provider[0] is None:
+            _cached_fb_provider[0] = build_provider(
+                get_settings(),
+                provider_id=fallback_provider_id or fallback_binding.provider_id,
+                api_key=fallback_api_key,
+            )
+        fb_binding = fallback_binding
+        fb_provider = _cached_fb_provider[0]
+        fb_api_key = fallback_api_key
+
+        def _make(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+            round_history = history + tool_feedback_to_history(tool_feedback)
+            return fb_provider.stream(
+                model_id=fb_binding.model_id,
+                history=round_history,
+                user_text=worker_user_text,
+                attachments=attachments,
+                api_key=fb_api_key,
+                thinking=(
+                    thinking_override if thinking_override is not None else fb_binding.thinking
+                ),
+                reasoning_effort=(
+                    reasoning_effort_override
+                    if reasoning_effort_override is not None
+                    else fb_binding.reasoning_effort
+                ),
+                web_search=web_search,
+                response_format=response_format,
+                supports_vision=fb_binding.supports_vision,
+                system_prefix=turn_system_prefix,
+                tools=turn_tool_definitions,
+            )
+
+        return _make
+
     def _cost_for_usage(usage: UsageUpdate) -> float:
         """Price an accumulated usage for the active binding (agentic only)."""
         breakdown = compute_cost_breakdown(
@@ -874,6 +921,10 @@ async def stream_and_persist(
                 estimate_cost=_estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,
                 plan_approved=plan_approved,
+                fallback_make_stream_for=(
+                    _agentic_fallback_make_stream if fallback_binding is not None else None
+                ),
+                is_retryable=_is_retryable,
             )
         if tools_active:
             return run_agent_loop(
@@ -1019,12 +1070,31 @@ async def stream_and_persist(
         parts: list[dict[str, Any]] = []
         for subagent_id in agentic_order:
             acc = agentic_subagents[subagent_id]
+            part_attribution: ModelAttribution | None = None
+            if acc.usage.input_tokens or acc.usage.output_tokens or acc.cost_usd:
+                breakdown = compute_cost_breakdown(
+                    usage=acc.usage,
+                    binding=binding,
+                    image_count=image_attachment_count,
+                )
+                part_attribution = build_attribution(
+                    requested_tier_id=requested_tier_id,
+                    binding=binding,
+                    breakdown=breakdown,
+                    cost_confidence="exact",
+                    is_byok=is_byok_turn,
+                    substitution=acc.substitution,
+                    substituted_provider=acc.substituted_provider,
+                    substituted_model=acc.substituted_model,
+                    substituted_display_label=acc.substituted_display_label,
+                )
             parts.append(
                 SubagentPart(
                     subagent_id=subagent_id,
                     label=acc.label,
                     role=acc.role,
                     cost_usd=acc.cost_usd,
+                    attribution=part_attribution,
                 ).model_dump(by_alias=True, exclude_none=True)
             )
             if acc.reasoning:
@@ -1509,12 +1579,20 @@ async def stream_and_persist(
                 if acc is not None:
                     acc.cost_usd = ev.cost_usd
                     acc.usage = ev.usage
+                    acc.substitution = ev.substitution
+                    acc.substituted_provider = ev.substituted_provider
+                    acc.substituted_model = ev.substituted_model
+                    acc.substituted_display_label = ev.substituted_display_label
                 yield encode_subagent_done(
                     SubagentDoneEvent(
                         subagent_id=ev.subagent_id,
                         label=ev.label,
                         role=ev.role,
                         cost_usd=ev.cost_usd,
+                        substitution=ev.substitution,
+                        substituted_provider=ev.substituted_provider,
+                        substituted_model=ev.substituted_model,
+                        substituted_display_label=ev.substituted_display_label,
                     )
                 )
             elif isinstance(ev, RunCost):
@@ -2027,6 +2105,7 @@ async def run_detached_producer(
                 tool_approval=tool_approval,
                 resume_seed=resume_seed,
                 agentic_mode=agentic_mode,
+                budget_headroom_usd=budget_headroom_usd,
             ):
                 # Mirror the last frame kind so the buffer's terminal_kind is
                 # observable. `terminal`/`error` are the only closing frames;

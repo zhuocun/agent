@@ -2288,7 +2288,18 @@ async def send_message(
     # even with the flag on.
     if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
         ttl = settings.resumable_buffer_ttl_seconds
-        buffer = await replay_registry.create_async(stream_id, ttl_seconds=ttl)
+        buffer_max_events: int | None = None
+        buffer_max_bytes: int | None = None
+        if effective_agentic_mode is not None:
+            multiplier = settings.agentic_resumable_buffer_multiplier
+            buffer_max_events = settings.resumable_buffer_max_events * multiplier
+            buffer_max_bytes = settings.resumable_buffer_max_bytes * multiplier
+        buffer = await replay_registry.create_async(
+            stream_id,
+            ttl_seconds=ttl,
+            max_events=buffer_max_events,
+            max_bytes=buffer_max_bytes,
+        )
         # The detached producer owns a FRESH session derived from THIS request's
         # engine (the request session closes when the POST returns). Using
         # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite

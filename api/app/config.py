@@ -431,6 +431,27 @@ class Settings(BaseSettings):
     # Per-run cost budget (USD) surfaced on the `run_cost` wire event as the cap.
     # Enforced via pre-spawn admission + mid-flight kill (`agentic/budget.py`).
     agentic_run_budget_usd: float = Field(default=1.0, alias="AGENTIC_RUN_BUDGET_USD")
+    # FR-26g cost-estimate multipliers (reasoning burn x fan-out burn). Defaults
+    # match the historical hardcoded heuristics; tune per environment.
+    agentic_reasoning_token_multiplier: float = Field(
+        default=4.0, alias="AGENTIC_REASONING_TOKEN_MULTIPLIER"
+    )
+    agentic_fanout_token_multiplier: float = Field(
+        default=15.0, alias="AGENTIC_FANOUT_TOKEN_MULTIPLIER"
+    )
+    # Expected per-round token shape for a single subagent in the worst-case
+    # estimate (multiplied by `TOOL_MAX_ROUNDS`).
+    agentic_expected_input_tokens_per_round: int = Field(
+        default=1000, alias="AGENTIC_EXPECTED_INPUT_TOKENS_PER_ROUND"
+    )
+    agentic_expected_output_tokens_per_round: int = Field(
+        default=500, alias="AGENTIC_EXPECTED_OUTPUT_TOKENS_PER_ROUND"
+    )
+    # Agentic turns emit more SSE events; multiply the global resumable-buffer
+    # caps when an agentic run uses the detached/resumable path.
+    agentic_resumable_buffer_multiplier: int = Field(
+        default=4, alias="AGENTIC_RESUMABLE_BUFFER_MULTIPLIER"
+    )
     # Plan-approval gate (M3). When True, a deep-research plan pauses for human
     # approval before fan-out (`agentic_plan_approval` pseudo-tool). Default-off.
     agentic_plan_approval: bool = Field(default=False, alias="AGENTIC_PLAN_APPROVAL")
@@ -546,6 +567,18 @@ class Settings(BaseSettings):
             raise RuntimeError("AGENTIC_MAX_DEPTH must be >= 1")
         if self.agentic_run_budget_usd <= 0:
             raise RuntimeError("AGENTIC_RUN_BUDGET_USD must be > 0")
+        if self.agentic_reasoning_token_multiplier <= 0:
+            raise RuntimeError("AGENTIC_REASONING_TOKEN_MULTIPLIER must be > 0")
+        if self.agentic_fanout_token_multiplier <= 0:
+            raise RuntimeError("AGENTIC_FANOUT_TOKEN_MULTIPLIER must be > 0")
+        if self.agentic_expected_input_tokens_per_round < 1:
+            raise RuntimeError("AGENTIC_EXPECTED_INPUT_TOKENS_PER_ROUND must be >= 1")
+        if self.agentic_expected_output_tokens_per_round < 1:
+            raise RuntimeError("AGENTIC_EXPECTED_OUTPUT_TOKENS_PER_ROUND must be >= 1")
+        if self.agentic_resumable_buffer_multiplier < 1:
+            raise RuntimeError("AGENTIC_RESUMABLE_BUFFER_MULTIPLIER must be >= 1")
+        if self.agentic_verifier_n < 1:
+            raise RuntimeError("AGENTIC_VERIFIER_N must be >= 1")
 
         if self.env != "production":
             return

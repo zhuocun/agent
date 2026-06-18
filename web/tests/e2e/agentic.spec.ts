@@ -88,6 +88,16 @@ async function enableDeepResearch(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
 }
 
+async function enableWebSearch(page: Page): Promise<void> {
+  await modelModeTrigger(page).click();
+  await page.getByTestId("picker-advanced").click();
+  const toggle = page.getByTestId("web-search-toggle");
+  await expect(toggle).toBeVisible({ timeout: 5_000 });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
+}
+
 // Drive a Pro session to the plan-approval pause. Returns the conversation id
 // (captured from the streaming POST URL) once the BE has PERSISTED the
 // `awaiting_approval` row, so the approve/deny resume can't race persistence —
@@ -277,5 +287,50 @@ test.describe("agentic mode (deep research)", () => {
 
     // The resume reused the user turn (continue-style invariant).
     await expect(page.getByTestId("user-message-text")).toHaveCount(1);
+  });
+
+  test("web search during fan-out renders inside the agent activity panel", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await grantPro(page);
+    await enableDeepResearch(page);
+    await enableWebSearch(page);
+
+    const convId = await sendAndPauseOnPlan(page);
+
+    const paused = page.getByTestId("assistant-message").last();
+    await paused.getByTestId("tool-approve").click();
+
+    const resumed = page.getByTestId("assistant-message").last();
+    const panel = resumed.getByTestId("subagent-panel");
+    await expect(panel).toBeVisible({ timeout: 15_000 });
+    await expect(resumed).toHaveAttribute("data-status", "done", {
+      timeout: 30_000,
+    });
+
+    const nestedSearch = panel.getByTestId("web-search-panel");
+    await expect(nestedSearch.first()).toBeVisible({ timeout: 15_000 });
+    const totalSearchPanels = await resumed.getByTestId("web-search-panel").count();
+    const nestedCount = await nestedSearch.count();
+    expect(totalSearchPanels).toBe(nestedCount);
+    expect(nestedCount).toBeGreaterThan(0);
+
+    // Reload should keep web search nested under agent activity.
+    await page.reload();
+    await waitForBootstrap(page);
+    const row = page.locator(`[data-conversation-id="${convId}"]`);
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByTestId("sidebar-conversation-link").click();
+
+    const reloaded = page.getByTestId("assistant-message").last();
+    const reloadedPanel = reloaded.getByTestId("subagent-panel");
+    await expect(reloadedPanel.getByTestId("web-search-panel").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    const reloadedTotal = await reloaded.getByTestId("web-search-panel").count();
+    const reloadedNested = await reloadedPanel.getByTestId("web-search-panel").count();
+    expect(reloadedTotal).toBe(reloadedNested);
   });
 });

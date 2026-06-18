@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/collapsible";
 import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
 import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
-import { groupToolParts } from "@/lib/tool-groups";
+import { groupToolParts, partitionWebSearchGroups } from "@/lib/tool-groups";
 import { cn } from "@/lib/utils";
 import type {
   ChatMessage,
@@ -236,6 +236,33 @@ export function AssistantMessage({
     [renderedParts],
   );
 
+  const nestWebSearchInPanel = firstSubagentIdx >= 0;
+
+  const subagentIds = useMemo(
+    () => new Set(subagentSections.map((section) => section.subagentId)),
+    [subagentSections],
+  );
+
+  const webSearchLayout = useMemo(
+    () =>
+      partitionWebSearchGroups(
+        renderedParts,
+        subagentIds,
+        nestWebSearchInPanel,
+      ),
+    [renderedParts, subagentIds, nestWebSearchInPanel],
+  );
+
+  const isNestedWebSearchGroup = useCallback(
+    (group: (typeof renderedParts)[number]) => {
+      if (group.type !== "web_search_group" || !nestWebSearchInPanel) return false;
+      const ownerId = group.subagentId;
+      if (ownerId !== undefined && subagentIds.has(ownerId)) return true;
+      return true;
+    },
+    [nestWebSearchInPanel, subagentIds],
+  );
+
   const answerText = useMemo(
     () =>
       message.parts
@@ -340,6 +367,7 @@ export function AssistantMessage({
 
       {renderedParts.map((part, idx) => {
         if (part.type === "web_search_group") {
+          if (isNestedWebSearchGroup(part)) return null;
           return (
             <WebSearchPanel
               key={idx}
@@ -367,6 +395,9 @@ export function AssistantMessage({
               key={idx}
               sections={subagentSections}
               runCost={runCost}
+              panelWebSearchGroups={webSearchLayout.panelLevel}
+              webSearchBySubagentId={webSearchLayout.bySubagentId}
+              onToolDecision={isAwaitingApproval ? onToolDecision : undefined}
             />
           ) : null;
         }

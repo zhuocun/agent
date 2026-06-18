@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import type { RunCostState } from "@/lib/stream-client";
+import type { WebSearchGroup } from "@/lib/tool-groups";
+import { WebSearchPanel } from "@/components/chat/web-search-panel";
 
 // One orchestrator subagent's section, shape-compatible with the live
 // `SubagentActivity` from stream-client AND derivable from a persisted
@@ -37,6 +39,11 @@ interface SubagentPanelProps {
   // Null/absent on a reloaded transcript — the BE doesn't persist the cap —
   // so the meter then falls back to the summed per-subagent costs.
   runCost?: RunCostState | null;
+  // Web-search activity owned by a subagent (or untagged but co-occurring with
+  // this panel) renders inside the agent-activity card instead of as a sibling.
+  panelWebSearchGroups?: WebSearchGroup[];
+  webSearchBySubagentId?: ReadonlyMap<string, WebSearchGroup[]>;
+  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }
 
 // Mirrors attribution-row's cost summary so per-worker and run totals read in
@@ -70,7 +77,13 @@ function roleLabel(role: string): string {
 // Modeled on the tool-part grammar: a quiet bordered card whose rows collapse
 // their detail behind a one-line summary (progressive disclosure). Running
 // rows stay expanded — they carry live streaming text.
-export function SubagentPanel({ sections, runCost }: SubagentPanelProps) {
+export function SubagentPanel({
+  sections,
+  runCost,
+  panelWebSearchGroups = [],
+  webSearchBySubagentId,
+  onToolDecision,
+}: SubagentPanelProps) {
   if (sections.length === 0) return null;
 
   const runningCount = sections.filter((s) => s.status === "running").length;
@@ -111,10 +124,26 @@ export function SubagentPanel({ sections, runCost }: SubagentPanelProps) {
           <RunCostMeter subtotalUsd={subtotalUsd} capUsd={capUsd} />
         ) : null}
       </div>
+      {panelWebSearchGroups.length > 0 ? (
+        <div className="mt-2 space-y-2" data-testid="subagent-panel-web-search">
+          {panelWebSearchGroups.map((group, idx) => (
+            <WebSearchPanel
+              key={`panel-web-search-${idx}`}
+              group={group}
+              onDecision={onToolDecision}
+              embedded
+            />
+          ))}
+        </div>
+      ) : null}
       <ul className="mt-2 flex flex-col gap-1.5">
         {sections.map((section) => (
           <li key={section.subagentId} className="list-none">
-            <SubagentRow section={section} />
+            <SubagentRow
+              section={section}
+              webSearchGroups={webSearchBySubagentId?.get(section.subagentId)}
+              onToolDecision={onToolDecision}
+            />
           </li>
         ))}
       </ul>
@@ -168,10 +197,19 @@ function RunCostMeter({
   );
 }
 
-function SubagentRow({ section }: { section: SubagentSection }) {
+function SubagentRow({
+  section,
+  webSearchGroups,
+  onToolDecision,
+}: {
+  section: SubagentSection;
+  webSearchGroups?: WebSearchGroup[];
+  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+}) {
   const isRunning = section.status === "running";
-  const hasDetail =
+  const hasTextDetail =
     section.reasoning.length > 0 || section.answer.length > 0;
+  const hasWebSearch = (webSearchGroups?.length ?? 0) > 0;
 
   const costBadge =
     section.costUsd !== undefined ? (
@@ -195,7 +233,21 @@ function SubagentRow({ section }: { section: SubagentSection }) {
     </div>
   );
 
-  const detailBody = hasDetail ? (
+  const webSearchBlock =
+    webSearchGroups && webSearchGroups.length > 0 ? (
+      <div className="mt-2 space-y-2" data-testid="subagent-row-web-search">
+        {webSearchGroups.map((group, idx) => (
+          <WebSearchPanel
+            key={`${section.subagentId}-web-search-${idx}`}
+            group={group}
+            onDecision={onToolDecision}
+            embedded
+          />
+        ))}
+      </div>
+    ) : null;
+
+  const textDetailBody = hasTextDetail ? (
     <div className="mt-1 space-y-1">
       {section.reasoning ? (
         <p className="line-clamp-3 break-words text-xs italic leading-snug text-muted-foreground">
@@ -210,6 +262,13 @@ function SubagentRow({ section }: { section: SubagentSection }) {
     </div>
   ) : null;
 
+  const detailBody = (
+    <>
+      {textDetailBody}
+      {webSearchBlock}
+    </>
+  );
+
   const statusIcon = isRunning ? (
     <Loader2
       aria-hidden
@@ -221,7 +280,7 @@ function SubagentRow({ section }: { section: SubagentSection }) {
 
   // Running rows render fully expanded — their text is streaming in live and
   // collapsing it would hide the very activity the panel exists to show.
-  if (isRunning || !hasDetail) {
+  if (isRunning || !hasTextDetail) {
     return (
       <div
         data-testid="subagent-row"
@@ -273,8 +332,9 @@ function SubagentRow({ section }: { section: SubagentSection }) {
             "data-[ending-style]:h-0 data-[ending-style]:opacity-0",
           )}
         >
-          {detailBody}
+          {textDetailBody}
         </CollapsibleContent>
+        {webSearchBlock}
       </div>
     </Collapsible>
   );

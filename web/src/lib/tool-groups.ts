@@ -274,3 +274,36 @@ export function groupToolParts(parts: MessagePart[]): GroupedToolPart[] {
   flushAll();
   return out;
 }
+
+/** Split web-search groups for agent-activity nesting vs standalone render. */
+export function partitionWebSearchGroups(
+  parts: GroupedToolPart[],
+  subagentIds: ReadonlySet<string>,
+  nestInPanel: boolean,
+): {
+  standalone: WebSearchGroup[];
+  panelLevel: WebSearchGroup[];
+  bySubagentId: Map<string, WebSearchGroup[]>;
+} {
+  const standalone: WebSearchGroup[] = [];
+  const panelLevel: WebSearchGroup[] = [];
+  const bySubagentId = new Map<string, WebSearchGroup[]>();
+
+  for (const part of parts) {
+    if (part.type !== "web_search_group") continue;
+    if (!nestInPanel) {
+      standalone.push(part);
+      continue;
+    }
+    const ownerId = part.subagentId;
+    if (ownerId !== undefined && subagentIds.has(ownerId)) {
+      const owned = bySubagentId.get(ownerId) ?? [];
+      owned.push(part);
+      bySubagentId.set(ownerId, owned);
+      continue;
+    }
+    panelLevel.push(part);
+  }
+
+  return { standalone, panelLevel, bySubagentId };
+}

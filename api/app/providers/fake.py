@@ -255,7 +255,7 @@ class FakeProvider:
                     ),
                     status_code=429,
                 )
-            search_items: list[SourceItem] = []
+            worker_search_items: list[SourceItem] = []
             if web_search:
                 # Agentic workers can opt into web search on the same turn; emit
                 # the same status/sources/tool transcript the non-agentic path
@@ -270,7 +270,7 @@ class FakeProvider:
                     input={"query": sub_question},
                 )
                 yield StatusUpdate(label="Searching the web…", state="active")
-                search_items = await FakeSearchProvider().search(
+                worker_search_items = await FakeSearchProvider().search(
                     sub_question, max_results=2
                 )
                 active_hold = (
@@ -280,16 +280,16 @@ class FakeProvider:
                 )
                 await asyncio.sleep(active_hold)
                 yield StatusUpdate(label="Searching the web…", state="done")
-                yield Sources(items=search_items)
+                yield Sources(items=worker_search_items)
                 yield ToolResult(
                     tool_call_id=call_id,
                     name="web_search",
                     label="Search web",
                     status="succeeded",
-                    summary=f"{len(search_items)} source{'s' if len(search_items) != 1 else ''}",
+                    summary=f"{len(worker_search_items)} source{'s' if len(worker_search_items) != 1 else ''}",
                     output={
                         "query": sub_question,
-                        "results": [item.model_dump() for item in search_items],
+                        "results": [item.model_dump() for item in worker_search_items],
                     },
                 )
             await asyncio.sleep(self._delay)

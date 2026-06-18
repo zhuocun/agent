@@ -47,6 +47,12 @@ test.describe("web search panel consolidation", () => {
     await expect(panel.getByTestId("web-search-trigger")).toContainText("1 query");
     await expect(assistant.getByTestId("tool-call-part")).toHaveCount(0);
     await expect(assistant.getByText("Searching the web…")).toHaveCount(0);
+
+    // Regression guard for the blank-after-tools bug: a settled search turn
+    // must surface its grounded answer body, not just the search panel.
+    await expect(assistant.getByTestId("assistant-answer")).toBeVisible({
+      timeout: 15_000,
+    });
   });
 
   test("multiple web-search queries fold into one panel", async ({ page }) => {
@@ -66,6 +72,12 @@ test.describe("web search panel consolidation", () => {
     const panel = assistant.getByTestId("web-search-panel");
     await expect(panel).toHaveCount(1);
     await expect(panel.getByTestId("web-search-trigger")).toContainText("2 queries");
+
+    // Regression guard for the blank-after-tools bug: the grounded answer body
+    // renders alongside the consolidated multi-query panel.
+    await expect(assistant.getByTestId("assistant-answer")).toBeVisible({
+      timeout: 15_000,
+    });
 
     await panel.getByTestId("web-search-trigger").click();
     await expect(panel.getByTestId("tool-result-part")).toHaveCount(2);

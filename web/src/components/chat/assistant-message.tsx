@@ -273,6 +273,20 @@ export function AssistantMessage({
       // text lands.
       p.type === "subagent",
   );
+
+  // Defensive fallback trigger: an agentic/tool turn can settle with tool runs
+  // and/or subagent activity on screen but no written answer text (the model
+  // stopped after the last tool round without emitting a synthesis). Rather
+  // than leave the bubble looking blank below the panels, surface a calm note
+  // so the turn still reads as finished. Only counts main-body text — a turn
+  // whose only text lives inside subagent worker rows still has no top-level
+  // answer.
+  const hasToolOrSubagentActivity = message.parts.some(
+    (p) =>
+      p.type === "tool_call" ||
+      p.type === "tool_result" ||
+      p.type === "subagent",
+  );
   const showTyping = status === "submitted" || (status === "streaming" && !hasContent);
   const isDone = status === "done";
   const isStopped = status === "stopped";
@@ -417,6 +431,15 @@ export function AssistantMessage({
         }
         return null;
       })}
+
+      {isDone && hasToolOrSubagentActivity && !answerText.trim() ? (
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="assistant-empty-fallback"
+        >
+          Finished without a written reply.
+        </p>
+      ) : null}
 
       {isErrored ? (
         <ErrorFooter error={error} onRetry={onRegenerate} />

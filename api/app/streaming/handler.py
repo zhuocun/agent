@@ -745,13 +745,12 @@ async def stream_and_persist(
     # (the `Provider.stream` Protocol intentionally has no tool params). Empty on
     # round 1 / the non-tool path, so the provider stream is byte-for-byte
     # unchanged there.
-    # Cache-stable system prefix (custom instructions + long-term memory) and
-    # the clean per-turn user text, assembled once via `prompt_assembly` (T20).
-    # Hoisting memory + instructions into the system prefix (instead of wrapping
-    # them into the user turn) lets a cache-aware backend reuse the stable
-    # prefix across turns. `turn_system_prefix` is None when there's nothing to
-    # inject, so the no-instructions / memory-off path sends no system role —
-    # byte-for-byte unchanged.
+    # System prefix (current UTC datetime + custom instructions + long-term
+    # memory) and the clean per-turn user text, assembled once via
+    # `prompt_assembly` (T20). Hoisting memory + instructions into the system
+    # prefix (instead of wrapping them into the user turn) keeps the user turn
+    # clean. The datetime block always leads, so `turn_system_prefix` is always
+    # a non-None string and every real-provider turn carries a system role.
     turn_system_prefix = build_system_prefix(custom_instructions, memory_facts or [])
     turn_user_text = build_user_turn(user_text)
 
@@ -811,8 +810,8 @@ async def stream_and_persist(
             # the route already rejects images to a non-vision binding before this
             # point.
             supports_vision=binding.supports_vision,
-            # Cache-stable preamble (custom instructions + memory). None ⇒ no
-            # system role, byte-for-byte unchanged.
+            # System preamble (UTC datetime + custom instructions + memory).
+            # Always non-None — the datetime block is always present.
             system_prefix=turn_system_prefix,
             # Agent-loop tools advertised to a real provider (None when tools are
             # off). The fake provider ignores this; the OpenAI/Anthropic adapters

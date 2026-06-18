@@ -245,7 +245,9 @@ export function AssistantMessage({
             // Agentic turns: only the main (primary/aggregator) answer counts —
             // copying a message should yield the synthesis, not every worker's
             // intermediate finding.
-            (p.subagentId === undefined || mainSubagentIds.has(p.subagentId)),
+            // Reloaded messages serialize untagged text with subagentId: null;
+            // treat nullish the same as missing so answerText matches render.
+            (p.subagentId == null || mainSubagentIds.has(p.subagentId)),
         )
         .map((p) => p.text)
         .join("\n\n"),
@@ -385,7 +387,7 @@ export function AssistantMessage({
         if (part.type === "text") {
           // Subagent-tagged text: only the main (primary/aggregator) answer
           // renders as the markdown body; worker text stays panel-only.
-          if (part.subagentId && !mainSubagentIds.has(part.subagentId)) {
+          if (part.subagentId != null && !mainSubagentIds.has(part.subagentId)) {
             return null;
           }
           return part.text ? (

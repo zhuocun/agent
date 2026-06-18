@@ -8,10 +8,11 @@ provider-internal and UNTOUCHED; this loop is additive and, in v1, drives only
 the FAKE provider.
 
 Round model (mirrors ``_MAX_SEARCH_ROUNDS``): one round = one provider stream.
-``make_stream(tool_feedback)`` returns a fresh provider event iterator given the
-tool results accumulated so far (the handler threads them back via ``history``,
-since the ``Provider.stream`` Protocol intentionally carries no tool params). For
-each round:
+``make_stream(tool_feedback, suppress_tools)`` returns a fresh provider event
+iterator given the tool results accumulated so far (the handler threads them back
+via ``history``, since the ``Provider.stream`` Protocol intentionally carries no
+tool params) and whether tools should be advertised to the provider this round.
+For each round:
 
 - Relay every non-``ToolCall`` event (reasoning / answer / status / sources /
   usage / complete) straight through.
@@ -44,8 +45,10 @@ from collections.abc import AsyncIterator, Callable
 
 from app.config import Settings
 from app.providers.protocol import (
+    AnswerDelta,
     AwaitingApproval,
     ChatMessage,
+    Complete,
     ProviderEvent,
     ToolCall,
     ToolResult,
@@ -53,10 +56,16 @@ from app.providers.protocol import (
 from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolApprovalState, ToolCallRequest
 
-# Factory: given the tool results gathered so far, build a fresh provider event
-# stream for the next round. The handler supplies this so the loop stays
-# provider-agnostic and the `Provider.stream` Protocol gains no tool params.
-MakeStream = Callable[[list[ToolResult]], AsyncIterator[ProviderEvent]]
+# Factory: given the tool results gathered so far and whether tools should be
+# suppressed on the provider, build a fresh provider event stream for the next
+# round. The handler supplies this so the loop stays provider-agnostic and the
+# `Provider.stream` Protocol gains no tool params.
+#
+# `suppress_tools` is True ONLY for the compelled final pass (see
+# `run_agent_loop`): the factory must then advertise NO tools to the provider
+# (`tools=None`) so a greedy provider that would otherwise keep requesting tools
+# is forced to emit its final answer instead of returning a blank turn.
+MakeStream = Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]
 
 # Sentinel prefixing the synthetic history turn that carries tool results back to
 # the provider for the next round. The handler builds these turns via
@@ -161,15 +170,18 @@ async def run_agent_loop(
 
     for _round in range(max_rounds):
         is_final_round = _round == max_rounds - 1
-        stream = make_stream(list(tool_feedback))
+        stream = make_stream(list(tool_feedback), False)
 
         # Every provider event is RELAYED as-is (the provider's own ToolCall IS
         # the request — the loop fulfills it, it never re-emits it). We buffer the
         # calls that still need fulfilling and the ids the provider self-resolved
         # this round (a provider may emit its own ToolResult, e.g. an internal
-        # tool); those are skipped so we never double-execute.
+        # tool); those are skipped so we never double-execute. We also track
+        # whether this round relayed any terminal content (answer / Complete) so
+        # the compelled final pass never ends the turn blank.
         pending_calls: list[ToolCall] = []
         provider_resolved: set[str] = set()
+        relayed_terminal = False
         async for event in stream:
             if isinstance(event, ToolCall):
                 pending_calls.append(event)
@@ -180,6 +192,8 @@ async def run_agent_loop(
                 # ToolCall before this). Relay and stop — do NOT execute.
                 yield event
                 return
+            elif isinstance(event, (AnswerDelta, Complete)):
+                relayed_terminal = True
             yield event
 
         # Calls the loop must still fulfill this round.
@@ -232,11 +246,27 @@ async def run_agent_loop(
 
         if is_final_round:
             # Loop bound reached with tools still being requested. Do one final
-            # provider pass with the results fed back but STOP honoring any
-            # further tool calls, so the turn always terminates.
-            final_stream = make_stream(list(tool_feedback))
+            # provider pass with the results fed back AND tools SUPPRESSED at the
+            # provider (`suppress_tools=True` → the factory advertises no tools),
+            # so a greedy provider that would otherwise keep emitting ToolCalls
+            # (and no answer) is forced to produce its final answer. Events relay
+            # straight through — no ToolCall filtering — because suppression
+            # prevents them at the source.
+            final_stream = make_stream(list(tool_feedback), True)
             async for event in final_stream:
-                if isinstance(event, (ToolCall, AwaitingApproval)):
-                    continue
+                if isinstance(event, (AnswerDelta, Complete)):
+                    relayed_terminal = True
                 yield event
+            if not relayed_terminal:
+                # Defensive backstop: even with tools suppressed the provider
+                # produced no answer / Complete (a pathologically greedy or empty
+                # provider). NEVER end the turn blank — emit a minimal answer and
+                # a Complete so the handler commits a non-empty, terminated turn.
+                yield AnswerDelta(
+                    text=(
+                        "I wasn't able to finish using the tools, but here's the "
+                        "best answer I can give based on what I gathered."
+                    )
+                )
+                yield Complete()
             return

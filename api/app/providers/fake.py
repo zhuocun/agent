@@ -70,6 +70,13 @@ the flag-off path is byte-for-byte unchanged):
   `ToolResult`s, and re-invokes us; round 2 emits a grounded answer + `Complete`.
   The committed turn therefore carries a contiguous span of two settled tool
   runs, which the FE folds into a single collapsed `tool-group-panel`.
+- `TOOL_GREEDY:` exercises the blank-after-tools fix. While tools are advertised
+  it requests an auto `get_current_time` tool EVERY round and emits no answer /
+  no `Complete` — the shape that used to leave the turn blank once the agent loop
+  hit `tool_max_rounds`. The loop's final pass advertises NO tools (it calls the
+  stream factory with `suppress_tools=True`, so the fake sees `tools is None`),
+  whereupon the fake emits a grounded answer + `Complete`. Verifies the loop both
+  suppresses tools on the final pass AND never ends a turn blank.
 - `TOOL_APPROVE:` exercises the HITL approval pause. It emits the reasoning block
   then `ToolCall(id="fake_cal_1", name="calendar_create_event",
   status="awaiting_approval", approval_state="pending", input={"title": ...})`
@@ -183,12 +190,14 @@ class FakeProvider:
         system_prefix: str | None = None,
         tools: list[ToolDefinition] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
-        # `thinking` / `reasoning_effort` / `supports_vision` / `system_prefix` /
-        # `tools` are accepted to satisfy the Provider Protocol but ignored — the
-        # fake's output is fixed/deterministic, it never emits native attachment
-        # blocks, it has no system role to carry a cache-stable prefix, and it
-        # drives its tool-calling via the deterministic `TOOL_*` markers below
-        # (not native tool advertisement).
+        # `thinking` / `reasoning_effort` / `supports_vision` / `system_prefix`
+        # are accepted to satisfy the Provider Protocol but ignored — the fake's
+        # output is fixed/deterministic, it never emits native attachment blocks,
+        # and it has no system role to carry a cache-stable prefix. It drives its
+        # tool-calling via the deterministic `TOOL_*` markers below (not native
+        # tool advertisement), so `tools` is likewise ignored EXCEPT by
+        # `TOOL_GREEDY:`, which keys on `tools is None` (the agent loop's
+        # suppress-tools final pass) to know when to stop requesting and answer.
         # Forced provider-fallback retry: when `user_text` starts with
         # `FORCE_FALLBACK_RETRY:`, raise a retryable upstream error BEFORE
         # yielding ANYTHING — but ONLY on the primary route. The route hands the
@@ -312,6 +321,42 @@ class FakeProvider:
             # Round 2: both tool results fed back via history. Answer.
             await asyncio.sleep(self._delay)
             yield AnswerDelta(text="Both current times were retrieved by the tools.")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        if tools_on and user_text.startswith("TOOL_GREEDY:"):
+            # Greedy-provider simulation for the blank-after-tools fix. As long as
+            # tools are advertised (`tools is not None`), request the auto tool
+            # EVERY round and emit no answer / no Complete — exactly the shape
+            # that, before the fix, left the turn blank once the loop hit its
+            # round bound. The agent loop's compelled final pass advertises NO
+            # tools (`suppress_tools=True` → `tools is None`); seeing that, we
+            # finally emit the grounded answer + Complete. Unique ids per round
+            # keep the settled runs distinguishable.
+            if tools is not None:
+                feedback_rounds = sum(
+                    1 for message in history if TOOL_FEEDBACK_SENTINEL in message.text
+                )
+                await asyncio.sleep(self._delay)
+                yield ToolCall(
+                    id=f"fake_greedy_{feedback_rounds}",
+                    name="get_current_time",
+                    label="Get current time",
+                    status="running",
+                    input={},
+                )
+                return
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(
+                text="After several tool calls, here is the grounded final answer."
+            )
             usage = UsageUpdate(
                 input_tokens=50,
                 output_tokens=100,

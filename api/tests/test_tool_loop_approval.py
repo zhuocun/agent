@@ -217,6 +217,45 @@ async def test_auto_tool_streams_call_result_and_terminal_done(
     assert assistant[0].status == "done"
 
 
+async def test_greedy_provider_after_tools_streams_answer_not_blank(
+    tools_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A greedy provider that keeps requesting tools still ends with an answer.
+
+    Regression for the blank-after-tools bug: once the agent loop hits its round
+    bound it must suppress tools on the final provider pass so the greedy fake
+    answers, rather than silently dropping the final tool call and committing an
+    empty turn. The committed assistant row must carry text and end `done`.
+    """
+    await tools_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        tools_client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": "77777777-7777-7777-7777-777777777777",
+         "tierId": "smart", "text": "TOOL_GREEDY: keep calling tools forever"},
+    )
+    names = [n for n, _ in frames]
+    assert "tool_call" in names
+    assert "answer_delta" in names
+    assert names[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+    answer = "".join(d.get("text", "") for n, d in frames if n == "answer_delta")  # type: ignore[arg-type]
+    assert answer.strip() != ""
+    assert "grounded final answer" in answer
+
+    # The committed assistant row is non-blank and terminated.
+    msgs = await _load_messages(session_factory, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0].status == "done"
+    types = _part_types(assistant[0].parts)
+    assert "text" in types
+
+
 # 2. Approval pause ------------------------------------------------------------
 
 
@@ -458,30 +497,97 @@ async def test_resume_without_pending_pause_is_nothing_to_resume(
 
 
 async def test_agent_loop_is_bounded_by_max_rounds() -> None:
-    """A provider that requests a tool every round must still terminate."""
+    """A greedy provider must terminate AND never end the turn blank.
+
+    The provider requests a tool every round; on the compelled final pass the
+    loop signals `suppress_tools=True`, at which point this provider answers (the
+    realistic greedy-provider recovery). The loop must terminate, stay bounded,
+    and relay a non-empty answer + a terminal `Complete`.
+    """
     from collections.abc import AsyncIterator as _AsyncIterator
 
     from app.config import Settings
-    from app.providers.protocol import ProviderEvent, ToolCall, ToolResult
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        ProviderEvent,
+        ToolCall,
+        ToolResult,
+    )
     from app.tools.agent_loop import run_agent_loop
 
     rounds_seen = 0
+    suppressed_seen = 0
 
-    def _make_stream(_feedback: list[ToolResult]) -> _AsyncIterator[ProviderEvent]:
-        nonlocal rounds_seen
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> _AsyncIterator[ProviderEvent]:
+        nonlocal rounds_seen, suppressed_seen
         rounds_seen += 1
+        if suppress_tools:
+            suppressed_seen += 1
 
         async def _gen() -> _AsyncIterator[ProviderEvent]:
-            # Always re-request the auto tool → would loop forever unbounded.
+            if suppress_tools:
+                # Tools removed by the loop → answer instead of requesting more.
+                yield AnswerDelta(text="final answer after tools")
+                yield Complete()
+                return
+            # Otherwise stay greedy: re-request the auto tool every round.
             yield ToolCall(id=f"c{rounds_seen}", name="get_current_time", status="running")
 
         return _gen()
 
     settings = Settings(TOOL_MAX_ROUNDS=2)  # type: ignore[call-arg]
-    # The key invariant: the loop terminates (the comprehension completes) and is
-    # bounded by max_rounds + the single compelled final pass.
-    _ = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    # Bounded by max_rounds + the single compelled (suppressed) final pass.
     assert rounds_seen <= settings.tool_max_rounds + 1
+    # The final pass suppressed tools exactly once.
+    assert suppressed_seen == 1
+    # The turn terminated with a non-empty answer and a Complete (never blank).
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer == "final answer after tools"
+    assert any(isinstance(e, Complete) for e in events)
+
+
+async def test_agent_loop_defensive_complete_when_final_pass_silent() -> None:
+    """Even a provider that never answers (ignores suppression) must terminate.
+
+    Backstop for the blank-after-tools fix: a pathologically greedy provider
+    keeps requesting tools EVEN on the suppressed final pass. The loop must still
+    end the turn with a defensive answer + `Complete` rather than blank.
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        ProviderEvent,
+        ToolCall,
+        ToolResult,
+    )
+    from app.tools.agent_loop import run_agent_loop
+
+    rounds_seen = 0
+
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> _AsyncIterator[ProviderEvent]:
+        nonlocal rounds_seen
+        rounds_seen += 1
+
+        async def _gen() -> _AsyncIterator[ProviderEvent]:
+            # Never answer — request the auto tool even when tools are suppressed.
+            yield ToolCall(id=f"c{rounds_seen}", name="get_current_time", status="running")
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=2)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer != ""  # defensive minimal answer relayed
+    assert any(isinstance(e, Complete) for e in events)
 
 
 async def test_execute_tool_times_out_to_failed_result(

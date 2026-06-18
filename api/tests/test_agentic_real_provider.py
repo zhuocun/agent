@@ -34,7 +34,9 @@ def _make_stream_factory() -> tuple[object, list[str]]:
     def _factory(prompt: str) -> MakeStream:
         prompts.append(prompt)
 
-        async def _stream(_tool_feedback: list[object]) -> AsyncIterator[object]:
+        async def _stream(
+            _tool_feedback: list[object], _suppress_tools: bool = False
+        ) -> AsyncIterator[object]:
             if "planner for a deep-research run" in prompt:
                 yield AnswerDelta(text="alpha question\nbeta question")
             elif "synthesizer for a deep-research run" in prompt:

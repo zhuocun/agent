@@ -11,11 +11,13 @@ import {
   SourcesPanel,
   type SourcesPanelHandle,
 } from "@/components/chat/sources-panel";
+import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { PublicAttributionRow } from "@/components/share/public-attribution-row";
 import { Button } from "@/components/ui/button";
 import { ApiError, fetchPublicConversation } from "@/lib/apiClient";
+import { groupToolParts } from "@/lib/tool-groups";
 import type { PublicConversation, PublicMessage } from "@/lib/types";
 
 // Read-only public-by-link snapshot. NO composer, NO sidebar, NO message
@@ -216,7 +218,14 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
       aria-label="Assistant message"
       data-testid="public-assistant-message"
     >
-      {message.parts.map((part, idx) => {
+      {/* Fold contiguous spans of >=2 settled tool runs into one aggregated
+          ToolGroupPanel (mirrors the private thread); single/live tools pass
+          through flat. No `onDecision` — the share surface is read-only, so the
+          approve/deny seam is intentionally absent. */}
+      {groupToolParts(message.parts).map((part, idx) => {
+        if (part.type === "tool_group") {
+          return <ToolGroupPanel key={idx} group={part} />;
+        }
         if (part.type === "reasoning") {
           return (
             <ReasoningPanel

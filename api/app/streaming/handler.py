@@ -774,6 +774,7 @@ async def stream_and_persist(
 
     def _build_raw_stream(
         tool_feedback: list[ToolResult],
+        suppress_tools: bool = False,
         user_text_override: str | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         round_history = history + tool_feedback_to_history(tool_feedback)
@@ -816,22 +817,28 @@ async def stream_and_persist(
             # Agent-loop tools advertised to a real provider (None when tools are
             # off). The fake provider ignores this; the OpenAI/Anthropic adapters
             # advertise them natively and emit `ToolCall`s the agent loop fulfils.
-            tools=turn_tool_definitions,
+            # On the loop's compelled final pass (`suppress_tools=True`) we
+            # advertise NO tools so a greedy provider is forced to answer instead
+            # of requesting yet another tool and returning a blank turn.
+            tools=None if suppress_tools else turn_tool_definitions,
         )
 
     def _agentic_make_stream(
         worker_user_text: str,
-    ) -> Callable[[list[ToolResult]], AsyncIterator[ProviderEvent]]:
+    ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
         """Build a per-subagent `MakeStream` over the active route (agentic only).
 
         Captures the same route/binding/history/hints `_build_raw_stream` uses;
         only the user text varies per subagent (the orchestrator hands each worker
         its sub-question prompt). The returned callable is the `MakeStream` the
-        agent loop drives for that subagent.
+        agent loop drives for that subagent — including the loop's `suppress_tools`
+        final-pass signal, threaded straight to `_build_raw_stream`.
         """
 
-        def _make(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
-            return _build_raw_stream(tool_feedback, worker_user_text)
+        def _make(
+            tool_feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            return _build_raw_stream(tool_feedback, suppress_tools, worker_user_text)
 
         return _make
 
@@ -839,7 +846,7 @@ async def stream_and_persist(
 
     def _agentic_fallback_make_stream(
         worker_user_text: str,
-    ) -> Callable[[list[ToolResult]], AsyncIterator[ProviderEvent]]:
+    ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
         """Per-subagent stream factory over the fallback route (agentic only)."""
         assert fallback_binding is not None
         if _cached_fb_provider[0] is None:
@@ -853,7 +860,9 @@ async def stream_and_persist(
         assert fb_provider is not None
         fb_api_key = fallback_api_key
 
-        def _make(tool_feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+        def _make(
+            tool_feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
             round_history = history + tool_feedback_to_history(tool_feedback)
             return fb_provider.stream(
                 model_id=fb_binding.model_id,
@@ -873,7 +882,7 @@ async def stream_and_persist(
                 response_format=response_format,
                 supports_vision=fb_binding.supports_vision,
                 system_prefix=turn_system_prefix,
-                tools=turn_tool_definitions,
+                tools=None if suppress_tools else turn_tool_definitions,
             )
 
         return _make

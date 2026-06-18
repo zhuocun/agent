@@ -46,6 +46,15 @@ async function sendMultiTool(page: Page): Promise<string> {
   await expect(assistant).toHaveAttribute("data-status", "done", {
     timeout: 15_000,
   });
+
+  // Regression guard for the blank-after-tools bug: the settled turn must
+  // carry a written answer body — never a bubble that's nothing but the tool
+  // panel. (When the model genuinely returns no synthesis the FE shows the
+  // calm `assistant-empty-fallback` instead; here the fake provider always
+  // re-invokes for a grounded answer.)
+  await expect(assistant.getByTestId("assistant-answer")).toBeVisible({
+    timeout: 15_000,
+  });
   return convId;
 }
 
@@ -55,6 +64,12 @@ async function expectCollapsedThenExpand(page: Page): Promise<void> {
   const assistant = page.getByTestId("assistant-message").last();
   const panel = assistant.getByTestId("tool-group-panel");
   await expect(panel).toBeVisible({ timeout: 15_000 });
+
+  // The grounded answer body survives the cold-render path (it persists
+  // alongside the call+result parts), so the reloaded bubble is never blank.
+  await expect(assistant.getByTestId("assistant-answer")).toBeVisible({
+    timeout: 15_000,
+  });
 
   // The folded summary counts both runs.
   await expect(panel.getByTestId("tool-group-trigger")).toContainText("2 calls");

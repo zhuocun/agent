@@ -237,10 +237,15 @@ async def test_openai_agent_loop_auto_tool_round_trip() -> None:
     )
     provider = _openai_provider()
 
-    def _make_stream(feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+    def _make_stream(
+        feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
         history = tool_feedback_to_history(feedback)
         return provider.stream(
-            model_id="gpt-4o", history=list(history), user_text="what time?", tools=[_time_tool()]
+            model_id="gpt-4o",
+            history=list(history),
+            user_text="what time?",
+            tools=None if suppress_tools else [_time_tool()],
         )
 
     events = [
@@ -306,13 +311,15 @@ async def test_openai_approval_gated_tool_pauses_via_agent_loop() -> None:
     )
     provider = _openai_provider()
 
-    def _make_stream(feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+    def _make_stream(
+        feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
         history = tool_feedback_to_history(feedback)
         return provider.stream(
             model_id="gpt-4o",
             history=list(history),
             user_text="schedule a sync",
-            tools=_registry_tool_defs(),
+            tools=None if suppress_tools else _registry_tool_defs(),
         )
 
     events = [
@@ -481,13 +488,15 @@ async def test_anthropic_agent_loop_auto_tool_round_trip() -> None:
     )
     provider = AnthropicProvider(api_key="sk-test")
 
-    def _make_stream(feedback: list[ToolResult]) -> AsyncIterator[ProviderEvent]:
+    def _make_stream(
+        feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
         history = tool_feedback_to_history(feedback)
         return provider.stream(
             model_id="test-model",
             history=list(history),
             user_text="what time?",
-            tools=[_time_tool()],
+            tools=None if suppress_tools else [_time_tool()],
         )
 
     events = [

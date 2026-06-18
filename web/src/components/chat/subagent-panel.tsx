@@ -15,8 +15,9 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import type { RunCostState } from "@/lib/stream-client";
-import type { WebSearchGroup } from "@/lib/tool-groups";
+import type { ToolGroup, WebSearchGroup } from "@/lib/tool-groups";
 import { WebSearchPanel } from "@/components/chat/web-search-panel";
+import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 
 // One orchestrator subagent's section, shape-compatible with the live
 // `SubagentActivity` from stream-client AND derivable from a persisted
@@ -43,6 +44,11 @@ interface SubagentPanelProps {
   // this panel) renders inside the agent-activity card instead of as a sibling.
   panelWebSearchGroups?: WebSearchGroup[];
   webSearchBySubagentId?: ReadonlyMap<string, WebSearchGroup[]>;
+  // Generic tool-group activity owned by a subagent (or untagged but
+  // co-occurring with this panel) nests inside the card, mirroring the
+  // web-search nesting above.
+  panelToolGroups?: ToolGroup[];
+  toolGroupsBySubagentId?: ReadonlyMap<string, ToolGroup[]>;
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }
 
@@ -82,6 +88,8 @@ export function SubagentPanel({
   runCost,
   panelWebSearchGroups = [],
   webSearchBySubagentId,
+  panelToolGroups = [],
+  toolGroupsBySubagentId,
   onToolDecision,
 }: SubagentPanelProps) {
   if (sections.length === 0) return null;
@@ -136,12 +144,25 @@ export function SubagentPanel({
           ))}
         </div>
       ) : null}
+      {panelToolGroups.length > 0 ? (
+        <div className="mt-2 space-y-2" data-testid="subagent-panel-tools">
+          {panelToolGroups.map((group, idx) => (
+            <ToolGroupPanel
+              key={`panel-tools-${idx}`}
+              group={group}
+              onDecision={onToolDecision}
+              embedded
+            />
+          ))}
+        </div>
+      ) : null}
       <ul className="mt-2 flex flex-col gap-1.5">
         {sections.map((section) => (
           <li key={section.subagentId} className="list-none">
             <SubagentRow
               section={section}
               webSearchGroups={webSearchBySubagentId?.get(section.subagentId)}
+              toolGroups={toolGroupsBySubagentId?.get(section.subagentId)}
               onToolDecision={onToolDecision}
             />
           </li>
@@ -200,10 +221,12 @@ function RunCostMeter({
 function SubagentRow({
   section,
   webSearchGroups,
+  toolGroups,
   onToolDecision,
 }: {
   section: SubagentSection;
   webSearchGroups?: WebSearchGroup[];
+  toolGroups?: ToolGroup[];
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }) {
   const isRunning = section.status === "running";
@@ -246,6 +269,20 @@ function SubagentRow({
       </div>
     ) : null;
 
+  const toolGroupsBlock =
+    toolGroups && toolGroups.length > 0 ? (
+      <div className="mt-2 space-y-2" data-testid="subagent-row-tools">
+        {toolGroups.map((group, idx) => (
+          <ToolGroupPanel
+            key={`${section.subagentId}-tools-${idx}`}
+            group={group}
+            onDecision={onToolDecision}
+            embedded
+          />
+        ))}
+      </div>
+    ) : null;
+
   const textDetailBody = hasTextDetail ? (
     <div className="mt-1 space-y-1">
       {section.reasoning ? (
@@ -265,6 +302,7 @@ function SubagentRow({
     <>
       {textDetailBody}
       {webSearchBlock}
+      {toolGroupsBlock}
     </>
   );
 
@@ -334,6 +372,7 @@ function SubagentRow({
           {textDetailBody}
         </CollapsibleContent>
         {webSearchBlock}
+        {toolGroupsBlock}
       </div>
     </Collapsible>
   );

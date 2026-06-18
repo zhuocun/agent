@@ -665,6 +665,9 @@ export function ChatThread() {
         setBootstrap(result);
         setBootstrapError(null);
         setSelectedTierId(result.preferences.defaultTierId);
+        setSelectedReasoningEffortId(
+          result.preferences.defaultReasoningEffort ?? "auto",
+        );
         setSelectedProviderId(
           providerOptionForTierId(
             result.modelTiers,
@@ -1107,6 +1110,22 @@ export function ChatThread() {
     if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
     if (nextTier?.supportsAttachments !== true) {
       composerRef.current?.clearAttachments("unsupported");
+    }
+    // Composer tier changes stick: persist the new default through the same
+    // optimistic PUT path as the settings picker (telemetry already fired
+    // above with surface "chat", so we skip `handlePreferencesChange`).
+    if (bootstrap && id !== bootstrap.preferences.defaultTierId) {
+      persistPreferences({ ...bootstrap.preferences, defaultTierId: id });
+    }
+  };
+
+  // Composer reasoning-effort changes stick: update the live session value AND
+  // persist the new default through the optimistic PUT path, mirroring
+  // `handleSelectTier`. No effort-specific telemetry event exists today.
+  const handleSelectEffort = (id: ReasoningEffortId): void => {
+    setSelectedReasoningEffortId(id);
+    if (bootstrap && id !== bootstrap.preferences.defaultReasoningEffort) {
+      persistPreferences({ ...bootstrap.preferences, defaultReasoningEffort: id });
     }
   };
 
@@ -1976,7 +1995,7 @@ export function ChatThread() {
       );
       setIsTemporary(preferences.temporaryByDefault);
     }
-    setSelectedReasoningEffortId("auto");
+    setSelectedReasoningEffortId(preferences?.defaultReasoningEffort ?? "auto");
     setSearchEnabled(false);
     setMobileNavOpen(false);
   };
@@ -2018,7 +2037,7 @@ export function ChatThread() {
         )?.providerId,
       );
     }
-    setSelectedReasoningEffortId("auto");
+    setSelectedReasoningEffortId(preferences?.defaultReasoningEffort ?? "auto");
     setSearchEnabled(false);
     setIsTemporary(true);
     setMobileNavOpen(false);
@@ -2551,16 +2570,14 @@ export function ChatThread() {
     });
   };
 
-  const handlePreferencesChange = (next: UserPreferences) => {
+  // Optimistic preferences write: swap bootstrap to `next` immediately, PUT in
+  // the background, roll back + surface the error on failure. Telemetry-free so
+  // callers that already report their own event (the composer tier picker) can
+  // reuse it without double-counting. `handlePreferencesChange` layers the
+  // settings-surface telemetry on top.
+  const persistPreferences = (next: UserPreferences) => {
     if (!bootstrap) return;
     const previous = bootstrap.preferences;
-    if (next.defaultTierId !== previous.defaultTierId) {
-      reportTelemetry(previous, "tier.changed", {
-        fromTierId: previous.defaultTierId,
-        toTierId: next.defaultTierId,
-        surface: "settings",
-      });
-    }
     setBootstrap({ ...bootstrap, preferences: next });
     void putPreferences(next).catch((cause) => {
       setBootstrap((prev) =>
@@ -2581,6 +2598,19 @@ export function ChatThread() {
               : undefined,
       });
     });
+  };
+
+  const handlePreferencesChange = (next: UserPreferences) => {
+    if (!bootstrap) return;
+    const previous = bootstrap.preferences;
+    if (next.defaultTierId !== previous.defaultTierId) {
+      reportTelemetry(previous, "tier.changed", {
+        fromTierId: previous.defaultTierId,
+        toTierId: next.defaultTierId,
+        surface: "settings",
+      });
+    }
+    persistPreferences(next);
   };
 
   // Persist a new monthly spend cap (Feature 3). Routes through the SAME
@@ -3859,7 +3889,7 @@ export function ChatThread() {
                     onSelectProvider={handleSelectProvider}
                     efforts={REASONING_EFFORTS}
                     selectedEffortId={selectedReasoningEffortId}
-                    onSelectEffort={setSelectedReasoningEffortId}
+                    onSelectEffort={handleSelectEffort}
                     effortSupported={effortSupported}
                     searchEnabled={searchEnabled}
                     onToggleSearch={setSearchEnabled}

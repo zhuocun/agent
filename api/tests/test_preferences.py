@@ -27,6 +27,7 @@ pytestmark = pytest.mark.asyncio
 
 _VALID_BODY = {
     "defaultTierId": "smart",
+    "defaultReasoningEffort": "extended",
     "temporaryByDefault": True,
     "trainingOptIn": True,
     "sendOnEnter": False,
@@ -61,6 +62,7 @@ async def test_bootstrap_returns_defaults_when_no_row(
     # Mirrors web/src/lib/mock-data.ts:MOCK_PREFERENCES.
     assert prefs == {
         "defaultTierId": "auto",
+        "defaultReasoningEffort": "auto",
         "temporaryByDefault": False,
         "trainingOptIn": False,
         "sendOnEnter": True,
@@ -199,6 +201,18 @@ async def test_put_rejects_unknown_tier(
     await client.get("/api/bootstrap")
     bad = dict(_VALID_BODY)
     bad["defaultTierId"] = "giant"
+
+    response = await client.put("/api/preferences", json=bad)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_put_rejects_unknown_reasoning_effort(
+    client: AsyncClient,
+) -> None:
+    await client.get("/api/bootstrap")
+    bad = dict(_VALID_BODY)
+    bad["defaultReasoningEffort"] = "ultra"
 
     response = await client.put("/api/preferences", json=bad)
     assert response.status_code == 400

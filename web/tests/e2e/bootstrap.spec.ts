@@ -79,6 +79,9 @@ test.describe("bootstrap", () => {
     expect(body.account).toHaveProperty("planLabel");
     expect(body.account).toHaveProperty("byokEnabled");
     expect(body.preferences).toHaveProperty("defaultTierId");
+    expect(body.preferences).toHaveProperty("defaultReasoningEffort");
+    // Default reasoning effort is "auto" (let the router pick per turn).
+    expect(body.preferences.defaultReasoningEffort).toBe("auto");
     expect(body.preferences).toHaveProperty("sendOnEnter");
     expect(body.usage).toHaveProperty("periodLabel");
     expect(body.usage).toHaveProperty("isByok");

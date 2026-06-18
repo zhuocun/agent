@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Preferences
-from app.schemas.common import ModelTierId
+from app.schemas.common import ModelTierId, ReasoningEffortId
 from app.schemas.preferences import (
     KeyboardShortcuts,
     ShortcutOverride,
@@ -31,6 +31,12 @@ from app.schemas.preferences import (
 )
 
 _VALID_TIERS: tuple[ModelTierId, ...] = ("fast", "smart", "pro", "auto")
+_VALID_REASONING_EFFORTS: tuple[ReasoningEffortId, ...] = (
+    "auto",
+    "minimal",
+    "standard",
+    "extended",
+)
 
 
 def _coerce_shortcuts(raw: object) -> KeyboardShortcuts:
@@ -65,6 +71,7 @@ def _shortcuts_to_db(shortcuts: KeyboardShortcuts) -> dict[str, object]:
 # Mirror web/src/lib/mock-data.ts:MOCK_PREFERENCES.
 _DEFAULTS = UserPreferences(
     default_tier_id="auto",
+    default_reasoning_effort="auto",
     temporary_by_default=False,
     training_opt_in=False,
     send_on_enter=True,
@@ -85,9 +92,16 @@ def _row_to_schema(row: Preferences) -> UserPreferences:
     # the conversations repo uses.
     tier_value = row.default_tier_id
     tier: ModelTierId = tier_value if tier_value in _VALID_TIERS else "auto"
+    # Same safety net as the tier coercion above: an unknown stored value (manual
+    # DB edit, schema drift) falls back to "auto" rather than 500-ing the read.
+    effort_value = row.default_reasoning_effort
+    effort: ReasoningEffortId = (
+        effort_value if effort_value in _VALID_REASONING_EFFORTS else "auto"
+    )
     retention_days = row.retention_days if row.retention_days in (30, 90) else None
     return UserPreferences(
         default_tier_id=tier,
+        default_reasoning_effort=effort,
         temporary_by_default=row.temporary_by_default,
         training_opt_in=row.training_opt_in,
         send_on_enter=row.send_on_enter,
@@ -124,6 +138,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
             Preferences(
                 user_id=user_id,
                 default_tier_id=prefs.default_tier_id,
+                default_reasoning_effort=prefs.default_reasoning_effort,
                 temporary_by_default=prefs.temporary_by_default,
                 training_opt_in=prefs.training_opt_in,
                 send_on_enter=prefs.send_on_enter,
@@ -139,6 +154,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
         )
     else:
         row.default_tier_id = prefs.default_tier_id
+        row.default_reasoning_effort = prefs.default_reasoning_effort
         row.temporary_by_default = prefs.temporary_by_default
         row.training_opt_in = prefs.training_opt_in
         row.send_on_enter = prefs.send_on_enter

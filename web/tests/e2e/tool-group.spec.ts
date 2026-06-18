@@ -70,6 +70,9 @@ async function expectCollapsedThenExpand(page: Page): Promise<void> {
   await expect(assistant.getByTestId("assistant-answer")).toBeVisible({
     timeout: 15_000,
   });
+  // Regression: answerText must include reloaded text (subagentId: null), so
+  // the empty-fallback note must not appear when an answer is on screen.
+  await expect(assistant.getByTestId("assistant-empty-fallback")).toHaveCount(0);
 
   // The folded summary counts both runs.
   await expect(panel.getByTestId("tool-group-trigger")).toContainText("2 calls");

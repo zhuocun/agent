@@ -98,6 +98,35 @@ async function enableWebSearch(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
 }
 
+// Send `TOOL_MULTI: …` as the first turn of a brand-new chat and wait for the
+// assistant turn to settle done. Returns the conversation id captured from the
+// create POST so a reload can re-open the same thread. The `TOOL_MULTI:` marker
+// drives the fake provider to request two auto `get_current_time` calls in
+// round 1 (see api/app/providers/fake.py); inside `single` mode the
+// orchestrator tags every event with the `primary` subagent id, so the two
+// settled runs fold into one generic `tool_group` owned by `primary`.
+async function sendMultiToolNewChat(page: Page): Promise<string> {
+  const composer = page.getByTestId("composer-textarea");
+  await composer.fill("TOOL_MULTI: what time is it");
+
+  const createPromise = page.waitForResponse(
+    (r) =>
+      r.url() === `${BE_URL}/api/conversations` &&
+      r.request().method() === "POST",
+  );
+  await page.getByTestId("composer-send").click();
+
+  const createResp = await createPromise;
+  const { id: convId } = (await createResp.json()) as { id: string };
+  expect(convId).toBeTruthy();
+
+  const assistant = page.getByTestId("assistant-message").last();
+  await expect(assistant).toHaveAttribute("data-status", "done", {
+    timeout: 15_000,
+  });
+  return convId;
+}
+
 // Drive a Pro session to the plan-approval pause. Returns the conversation id
 // (captured from the streaming POST URL) once the BE has PERSISTED the
 // `awaiting_approval` row, so the approve/deny resume can't race persistence —
@@ -331,6 +360,76 @@ test.describe("agentic mode (deep research)", () => {
     });
     const reloadedTotal = await reloaded.getByTestId("web-search-panel").count();
     const reloadedNested = await reloadedPanel.getByTestId("web-search-panel").count();
+    expect(reloadedTotal).toBe(reloadedNested);
+  });
+
+  test("generic tools in degraded (no-Pro) single mode render inside the agent activity panel", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    // Deep Research toggle ON but DELIBERATELY no Pro grant: `deep_research` is
+    // Pro/BYOK-gated, so the BE coerces a non-entitled caller down to `single`
+    // mode (one `primary` subagent) rather than refusing. This is the generic
+    // tool-group analogue of the web-search nesting test above — the same
+    // `firstSubagentIdx >= 0` gate routes settled generic tool runs INTO the
+    // agent-activity panel instead of rendering them as flat siblings.
+    await enableDeepResearch(page);
+
+    // The send must carry `agenticMode: "deep_research"` (the FE asked for it);
+    // the coercion to `single` happens server-side, so the wire mode stays
+    // deep_research even though the rendered panel is single-agent.
+    const sentModes: unknown[] = [];
+    page.on("request", (req) => {
+      if (
+        req.method() === "POST" &&
+        /\/api\/conversations\/[^/]+\/messages$/.test(req.url())
+      ) {
+        try {
+          const body = req.postDataJSON() as { agenticMode?: unknown };
+          sentModes.push(body.agenticMode);
+        } catch {
+          // Non-JSON body — the assertion below will flag it.
+        }
+      }
+    });
+
+    const convId = await sendMultiToolNewChat(page);
+    expect(sentModes).toEqual(["deep_research"]);
+
+    const resumed = page.getByTestId("assistant-message").last();
+    const panel = resumed.getByTestId("subagent-panel");
+    await expect(panel).toBeVisible({ timeout: 15_000 });
+    // One primary subagent → the panel titles itself "Agent activity", never
+    // "Deep research" (which only worker/aggregator roles claim).
+    await expect(panel).toContainText("Agent activity");
+
+    // (a) The folded generic tool group renders INSIDE the agent-activity panel.
+    const nestedTools = panel.getByTestId("tool-group-panel");
+    await expect(nestedTools.first()).toBeVisible({ timeout: 15_000 });
+    const nestedCount = await nestedTools.count();
+    expect(nestedCount).toBeGreaterThan(0);
+    // (b) No standalone sibling tool-group-panel leaked outside the panel: every
+    // tool-group-panel in the bubble is the nested one.
+    const totalToolPanels = await resumed.getByTestId("tool-group-panel").count();
+    expect(totalToolPanels).toBe(nestedCount);
+
+    // (c) Reload parity: the nesting derives from the persisted call+result parts
+    // (tagged `subagentId: "primary"`), so a cold render re-nests identically.
+    await page.reload();
+    await waitForBootstrap(page);
+    const row = page.locator(`[data-conversation-id="${convId}"]`);
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByTestId("sidebar-conversation-link").click();
+
+    const reloaded = page.getByTestId("assistant-message").last();
+    const reloadedPanel = reloaded.getByTestId("subagent-panel");
+    await expect(reloadedPanel.getByTestId("tool-group-panel").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    const reloadedTotal = await reloaded.getByTestId("tool-group-panel").count();
+    const reloadedNested = await reloadedPanel.getByTestId("tool-group-panel").count();
+    expect(reloadedNested).toBeGreaterThan(0);
     expect(reloadedTotal).toBe(reloadedNested);
   });
 });

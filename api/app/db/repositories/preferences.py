@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Preferences
-from app.schemas.common import ModelTierId
+from app.schemas.common import ModelTierId, ReasoningEffortId
 from app.schemas.preferences import (
     KeyboardShortcuts,
     ShortcutOverride,
@@ -31,6 +31,12 @@ from app.schemas.preferences import (
 )
 
 _VALID_TIERS: tuple[ModelTierId, ...] = ("fast", "smart", "pro", "auto")
+_VALID_REASONING_EFFORTS: tuple[ReasoningEffortId, ...] = (
+    "auto",
+    "minimal",
+    "standard",
+    "extended",
+)
 
 
 def _coerce_shortcuts(raw: object) -> KeyboardShortcuts:
@@ -76,6 +82,11 @@ _DEFAULTS = UserPreferences(
     per_conversation_budget_usd=None,
     memory_enabled=False,
     keyboard_shortcuts={},
+    default_reasoning_effort_id="auto",
+    default_provider_id=None,
+    web_search_default=False,
+    json_mode_default=False,
+    deep_research_default=False,
 )
 
 
@@ -86,6 +97,12 @@ def _row_to_schema(row: Preferences) -> UserPreferences:
     tier_value = row.default_tier_id
     tier: ModelTierId = tier_value if tier_value in _VALID_TIERS else "auto"
     retention_days = row.retention_days if row.retention_days in (30, 90) else None
+    # Same safety net as the tier: an unknown effort id (manual DB edit, schema
+    # drift) falls back to "auto" rather than 500ing the read.
+    effort_value = row.default_reasoning_effort_id
+    effort: ReasoningEffortId = (
+        effort_value if effort_value in _VALID_REASONING_EFFORTS else "auto"
+    )
     return UserPreferences(
         default_tier_id=tier,
         temporary_by_default=row.temporary_by_default,
@@ -99,6 +116,11 @@ def _row_to_schema(row: Preferences) -> UserPreferences:
         per_conversation_budget_usd=row.per_conversation_budget_usd,
         memory_enabled=row.memory_enabled,
         keyboard_shortcuts=_coerce_shortcuts(row.keyboard_shortcuts),
+        default_reasoning_effort_id=effort,
+        default_provider_id=row.default_provider_id,
+        web_search_default=row.web_search_default,
+        json_mode_default=row.json_mode_default,
+        deep_research_default=row.deep_research_default,
     )
 
 
@@ -135,6 +157,11 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
                 per_conversation_budget_usd=prefs.per_conversation_budget_usd,
                 memory_enabled=prefs.memory_enabled,
                 keyboard_shortcuts=_shortcuts_to_db(prefs.keyboard_shortcuts),
+                default_reasoning_effort_id=prefs.default_reasoning_effort_id,
+                default_provider_id=prefs.default_provider_id,
+                web_search_default=prefs.web_search_default,
+                json_mode_default=prefs.json_mode_default,
+                deep_research_default=prefs.deep_research_default,
             )
         )
     else:
@@ -150,6 +177,11 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
         row.per_conversation_budget_usd = prefs.per_conversation_budget_usd
         row.memory_enabled = prefs.memory_enabled
         row.keyboard_shortcuts = _shortcuts_to_db(prefs.keyboard_shortcuts)
+        row.default_reasoning_effort_id = prefs.default_reasoning_effort_id
+        row.default_provider_id = prefs.default_provider_id
+        row.web_search_default = prefs.web_search_default
+        row.json_mode_default = prefs.json_mode_default
+        row.deep_research_default = prefs.deep_research_default
         # `updated_at` has no onupdate hook; touch it explicitly so the column
         # reflects the actual mutation time.
         row.updated_at = datetime.now(UTC)

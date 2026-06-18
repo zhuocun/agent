@@ -665,13 +665,28 @@ export function ChatThread() {
         setBootstrap(result);
         setBootstrapError(null);
         setSelectedTierId(result.preferences.defaultTierId);
+        // Provider: an in-session pick wins, then the durable DB preference,
+        // then the localStorage fast-path. The DB preference is the
+        // cross-device source of truth; the localStorage mirror only fronts it
+        // for the brief pre-bootstrap frame and as an offline fallback.
         setSelectedProviderId(
           providerOptionForTierId(
             result.modelTiers,
             result.preferences.defaultTierId,
-            selectedProviderIdRef.current ?? readStoredPreferredProviderId(),
+            selectedProviderIdRef.current ??
+              result.preferences.defaultProviderId ??
+              readStoredPreferredProviderId(),
           )?.providerId,
         );
+        // Seed the remaining four popup controls from the saved preferences so
+        // the composer reopens in the user's last-chosen state. Falls back to
+        // the behavior-neutral default for any field a stale BE omits.
+        setSelectedReasoningEffortId(
+          result.preferences.defaultReasoningEffortId ?? "auto",
+        );
+        setSearchEnabled(result.preferences.webSearchDefault ?? false);
+        setJsonModeEnabled(result.preferences.jsonModeDefault ?? false);
+        setDeepResearchEnabled(result.preferences.deepResearchDefault ?? false);
         setIsTemporary(result.preferences.temporaryByDefault);
       } catch (cause) {
         // Aborted: either our timeout fired (surface the retry UI) or the effect
@@ -1103,6 +1118,9 @@ export function ChatThread() {
         toTierId: id,
         surface: "chat",
       });
+      // Persist the picker's tier as the saved default (telemetry-free path so
+      // we don't double-fire the chat-surface event reported just above).
+      persistPopupDefault({ defaultTierId: id });
     }
     if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
     if (nextTier?.supportsAttachments !== true) {
@@ -1120,6 +1138,9 @@ export function ChatThread() {
       ? effectiveTierForProvider(baseSelectedTier, id)
       : undefined;
     setSelectedProviderId(id);
+    // localStorage fast-path stays the synchronous source for pre-bootstrap
+    // resolution; mirror the same value to the durable DB preference so it
+    // syncs across devices.
     storePreferredProviderId(id);
     if (id !== previousProviderId) {
       reportTelemetry(preferences, "provider.changed", {
@@ -1127,6 +1148,7 @@ export function ChatThread() {
         toProviderId: id,
         tierId: selectedTierId,
       });
+      persistPopupDefault({ defaultProviderId: id });
     }
     if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
     if (nextTier?.supportsAttachments !== true) {
@@ -1971,13 +1993,19 @@ export function ChatThread() {
         providerOptionForTierId(
           baseModelTiers,
           preferences.defaultTierId,
-          selectedProviderIdRef.current ?? readStoredPreferredProviderId(),
+          selectedProviderIdRef.current ??
+            preferences.defaultProviderId ??
+            readStoredPreferredProviderId(),
         )?.providerId,
       );
       setIsTemporary(preferences.temporaryByDefault);
+      // Reset the composer popup controls to the SAVED defaults (not hardcoded
+      // "auto"/off), so a fresh chat reopens in the user's persisted state.
+      setSelectedReasoningEffortId(preferences.defaultReasoningEffortId ?? "auto");
+      setSearchEnabled(preferences.webSearchDefault ?? false);
+      setJsonModeEnabled(preferences.jsonModeDefault ?? false);
+      setDeepResearchEnabled(preferences.deepResearchDefault ?? false);
     }
-    setSelectedReasoningEffortId("auto");
-    setSearchEnabled(false);
     setMobileNavOpen(false);
   };
 
@@ -2014,12 +2042,18 @@ export function ChatThread() {
         providerOptionForTierId(
           baseModelTiers,
           preferences.defaultTierId,
-          selectedProviderIdRef.current ?? readStoredPreferredProviderId(),
+          selectedProviderIdRef.current ??
+            preferences.defaultProviderId ??
+            readStoredPreferredProviderId(),
         )?.providerId,
       );
+      // Same saved-default reset as handleNewChat — starting a temporary chat
+      // reopens the popup in the user's persisted state, not hardcoded off.
+      setSelectedReasoningEffortId(preferences.defaultReasoningEffortId ?? "auto");
+      setSearchEnabled(preferences.webSearchDefault ?? false);
+      setJsonModeEnabled(preferences.jsonModeDefault ?? false);
+      setDeepResearchEnabled(preferences.deepResearchDefault ?? false);
     }
-    setSelectedReasoningEffortId("auto");
-    setSearchEnabled(false);
     setIsTemporary(true);
     setMobileNavOpen(false);
   };
@@ -2551,16 +2585,14 @@ export function ChatThread() {
     });
   };
 
-  const handlePreferencesChange = (next: UserPreferences) => {
+  // Optimistic preferences write + rollback-on-error, WITHOUT any telemetry.
+  // Shared by the settings-panel `handlePreferencesChange` (which layers the
+  // tier.changed event on top) and the composer popup persistence below (whose
+  // tier/provider changes already report their own chat-surface telemetry, so
+  // routing them through here avoids a duplicate settings-surface event).
+  const commitPreferences = (next: UserPreferences) => {
     if (!bootstrap) return;
     const previous = bootstrap.preferences;
-    if (next.defaultTierId !== previous.defaultTierId) {
-      reportTelemetry(previous, "tier.changed", {
-        fromTierId: previous.defaultTierId,
-        toTierId: next.defaultTierId,
-        surface: "settings",
-      });
-    }
     setBootstrap({ ...bootstrap, preferences: next });
     void putPreferences(next).catch((cause) => {
       setBootstrap((prev) =>
@@ -2581,6 +2613,48 @@ export function ChatThread() {
               : undefined,
       });
     });
+  };
+
+  const handlePreferencesChange = (next: UserPreferences) => {
+    if (!bootstrap) return;
+    const previous = bootstrap.preferences;
+    if (next.defaultTierId !== previous.defaultTierId) {
+      reportTelemetry(previous, "tier.changed", {
+        fromTierId: previous.defaultTierId,
+        toTierId: next.defaultTierId,
+        surface: "settings",
+      });
+    }
+    commitPreferences(next);
+  };
+
+  // Durably mirror a Model & Reasoning popup control to the saved preferences.
+  // The popup handlers below drive the ephemeral per-turn session state AND call
+  // this so the choice becomes the persisted default (survives reloads, syncs
+  // across devices) through the same optimistic flow as the settings panel.
+  const persistPopupDefault = (patch: Partial<UserPreferences>): void => {
+    if (!bootstrap) return;
+    commitPreferences({ ...bootstrap.preferences, ...patch });
+  };
+
+  const handleSelectEffort = (id: ReasoningEffortId): void => {
+    setSelectedReasoningEffortId(id);
+    persistPopupDefault({ defaultReasoningEffortId: id });
+  };
+
+  const handleToggleSearch = (next: boolean): void => {
+    setSearchEnabled(next);
+    persistPopupDefault({ webSearchDefault: next });
+  };
+
+  const handleToggleJsonMode = (next: boolean): void => {
+    setJsonModeEnabled(next);
+    persistPopupDefault({ jsonModeDefault: next });
+  };
+
+  const handleToggleDeepResearch = (next: boolean): void => {
+    setDeepResearchEnabled(next);
+    persistPopupDefault({ deepResearchDefault: next });
   };
 
   // Persist a new monthly spend cap (Feature 3). Routes through the SAME
@@ -3859,15 +3933,15 @@ export function ChatThread() {
                     onSelectProvider={handleSelectProvider}
                     efforts={REASONING_EFFORTS}
                     selectedEffortId={selectedReasoningEffortId}
-                    onSelectEffort={setSelectedReasoningEffortId}
+                    onSelectEffort={handleSelectEffort}
                     effortSupported={effortSupported}
                     searchEnabled={searchEnabled}
-                    onToggleSearch={setSearchEnabled}
+                    onToggleSearch={handleToggleSearch}
                     jsonModeEnabled={jsonModeEnabled}
-                    onToggleJsonMode={setJsonModeEnabled}
+                    onToggleJsonMode={handleToggleJsonMode}
                     showDeepResearch={agenticEnabled}
                     deepResearchEnabled={deepResearchEnabled}
-                    onToggleDeepResearch={setDeepResearchEnabled}
+                    onToggleDeepResearch={handleToggleDeepResearch}
                   />
                 }
                 // Resting hero glow on the first-run welcome surface only;

@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints
 
-from app.schemas.common import CamelModel, ModelTierId
+from app.schemas.common import CamelModel, ModelTierId, ReasoningEffortId
 
 CustomInstructions = Annotated[str, StringConstraints(max_length=4000)]
 
@@ -65,6 +65,23 @@ class UserPreferences(CamelModel):
     # effective binding (default merged with override) drives both the live
     # matcher and the shortcuts dialog on the FE.
     keyboard_shortcuts: KeyboardShortcuts = Field(default_factory=dict)
+    # Persisted Model/Reasoning popup selections. These mirror the per-turn
+    # composer controls so a returning session reopens with the user's last
+    # choices instead of the hard defaults.
+    #
+    # Default per-turn reasoning effort. "auto" defers to the tier binding's
+    # default (the privacy/latency-neutral baseline).
+    default_reasoning_effort_id: ReasoningEffortId = "auto"
+    # Preferred provider id from the model popup. None = no explicit preference
+    # (the platform routes to its default). Kept as an opaque string — the BE
+    # does not enumerate provider ids in the wire enum so a newer client can
+    # round-trip a provider the server doesn't yet know about.
+    default_provider_id: str | None = None
+    # Composer toggles persisted from the popup. All OFF by default to keep the
+    # baseline turn cheap and private.
+    web_search_default: bool = False
+    json_mode_default: bool = False
+    deep_research_default: bool = False
 
 
 class UserPreferencesRequest(CamelModel):
@@ -90,3 +107,13 @@ class UserPreferencesRequest(CamelModel):
     # present the map fully replaces the saved one (an empty map clears all
     # overrides back to defaults).
     keyboard_shortcuts: KeyboardShortcuts | None = None
+    # Persisted Model/Reasoning popup selections. Optional for stale clients;
+    # omission preserves the existing saved value (mirrors `telemetry_enabled`).
+    default_reasoning_effort_id: ReasoningEffortId | None = None
+    # Preferred provider id from the model popup. Optional; omission preserves
+    # the existing saved value. The popup always sends an explicit value (a
+    # concrete id, or `null` to clear back to "no preference").
+    default_provider_id: str | None = None
+    web_search_default: bool | None = None
+    json_mode_default: bool | None = None
+    deep_research_default: bool | None = None

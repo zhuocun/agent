@@ -17,6 +17,11 @@ export const MOCK_PREFERENCES: UserPreferences = {
   perConversationBudgetUsd: null,
   memoryEnabled: false,
   keyboardShortcuts: {},
+  defaultReasoningEffortId: "auto",
+  defaultProviderId: null,
+  webSearchDefault: false,
+  jsonModeDefault: false,
+  deepResearchDefault: false,
 };
 
 // Native slash commands (PRD 01 §4.3 / §5.3). Templates end with a trailing

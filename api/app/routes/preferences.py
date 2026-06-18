@@ -90,6 +90,34 @@ async def put_preferences(
             if body.keyboard_shortcuts is not None
             else existing.keyboard_shortcuts
         ),
+        default_reasoning_effort_id=(
+            body.default_reasoning_effort_id
+            if body.default_reasoning_effort_id is not None
+            else existing.default_reasoning_effort_id
+        ),
+        # `default_provider_id` is nullable, so None can't double as the
+        # "omitted" sentinel — an explicit `null` clears the preference while an
+        # omitted key must preserve it. `model_fields_set` distinguishes the two.
+        default_provider_id=(
+            body.default_provider_id
+            if "default_provider_id" in body.model_fields_set
+            else existing.default_provider_id
+        ),
+        web_search_default=(
+            body.web_search_default
+            if body.web_search_default is not None
+            else existing.web_search_default
+        ),
+        json_mode_default=(
+            body.json_mode_default
+            if body.json_mode_default is not None
+            else existing.json_mode_default
+        ),
+        deep_research_default=(
+            body.deep_research_default
+            if body.deep_research_default is not None
+            else existing.deep_research_default
+        ),
     )
     safety_decision = check_user_turn(
         settings,

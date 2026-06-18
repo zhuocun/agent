@@ -435,6 +435,11 @@ export function deleteShareLink(
   );
 }
 
+// Replace the caller's saved preferences. Sends the WHOLE `UserPreferences`
+// object, so the composer's Model & Reasoning popup defaults
+// (`defaultReasoningEffortId`, `defaultProviderId`, `webSearchDefault`,
+// `jsonModeDefault`, `deepResearchDefault`) ride this same wire path as every
+// other preference.
 export function putPreferences(
   prefs: UserPreferences,
   signal?: AbortSignal,

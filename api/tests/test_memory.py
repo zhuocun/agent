@@ -383,8 +383,12 @@ async def test_memory_not_injected_when_disabled(
     assert seen
     prompt = seen[0]
     assert prompt == "Where am I?"  # byte-for-byte the pre-memory prompt
-    # No memory ⇒ no system prefix.
-    assert seen_prefixes[0] is None
+    # Memory off ⇒ no memory block, but the datetime block always leads the
+    # prefix, so it is non-None and carries a UTC marker without a <memory> tag.
+    prefix = seen_prefixes[0]
+    assert prefix is not None
+    assert "UTC" in prefix
+    assert "<memory>" not in prefix
 
     # No `memoryApplied` on the wire (exclude_none strips the 0/None).
     attribution = frames[-1][1]["attribution"]
@@ -428,7 +432,12 @@ async def test_memory_not_injected_for_temporary_turn(
 
     assert seen
     assert seen[0] == "Where am I?"
-    assert seen_prefixes[0] is None
+    # Temporary turn skips memory injection, but the datetime block always leads
+    # the prefix, so it is non-None with a UTC marker and no <memory> tag.
+    prefix = seen_prefixes[0]
+    assert prefix is not None
+    assert "UTC" in prefix
+    assert "<memory>" not in prefix
     attribution = frames[-1][1]["attribution"]
     assert "memoryApplied" not in attribution
     assert "memoryFactIds" not in attribution

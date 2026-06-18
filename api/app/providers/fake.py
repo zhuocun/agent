@@ -255,6 +255,45 @@ class FakeProvider:
                     ),
                     status_code=429,
                 )
+            worker_search_items: list[SourceItem] = []
+            if web_search:
+                # Agentic workers can opt into web search on the same turn; emit
+                # the same status/sources/tool transcript the non-agentic path
+                # uses so the FE nests search activity under the subagent panel.
+                await asyncio.sleep(self._delay)
+                call_id = f"fake_worker_search_{worker_index}"
+                yield ToolCall(
+                    id=call_id,
+                    name="web_search",
+                    label="Search web",
+                    status="running",
+                    input={"query": sub_question},
+                )
+                yield StatusUpdate(label="Searching the web…", state="active")
+                worker_search_items = await FakeSearchProvider().search(
+                    sub_question, max_results=2
+                )
+                active_hold = (
+                    max(self._delay, 0.35)
+                    if get_settings().env == "test"
+                    else self._delay
+                )
+                await asyncio.sleep(active_hold)
+                yield StatusUpdate(label="Searching the web…", state="done")
+                yield Sources(items=worker_search_items)
+                source_count = len(worker_search_items)
+                source_label = "source" if source_count == 1 else "sources"
+                yield ToolResult(
+                    tool_call_id=call_id,
+                    name="web_search",
+                    label="Search web",
+                    status="succeeded",
+                    summary=f"{source_count} {source_label}",
+                    output={
+                        "query": sub_question,
+                        "results": [item.model_dump() for item in worker_search_items],
+                    },
+                )
             await asyncio.sleep(self._delay)
             yield AnswerDelta(
                 text=f"Worker {worker_index} finding on {sub_question}: result ready."

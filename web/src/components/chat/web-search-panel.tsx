@@ -15,6 +15,8 @@ import type { WebSearchGroup } from "@/lib/tool-groups";
 interface WebSearchPanelProps {
   group: WebSearchGroup;
   onDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  /** When nested inside agent activity, drop the outer card chrome. */
+  embedded?: boolean;
 }
 
 function formatSearchStatusLabel(
@@ -68,7 +70,7 @@ function buildSummary(group: WebSearchGroup): string {
   return parts.join(" · ");
 }
 
-export function WebSearchPanel({ group, onDecision }: WebSearchPanelProps) {
+export function WebSearchPanel({ group, onDecision, embedded = false }: WebSearchPanelProps) {
   const isLive =
     group.status === "running" ||
     group.status === "pending" ||
@@ -90,7 +92,12 @@ export function WebSearchPanel({ group, onDecision }: WebSearchPanelProps) {
   return (
     <div
       data-testid="web-search-panel"
-      className="max-w-full rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5 text-sm text-muted-foreground"
+      className={cn(
+        "max-w-full text-sm text-muted-foreground",
+        embedded
+          ? "rounded-lg bg-foreground/[0.02] px-2.5 py-2"
+          : "rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5",
+      )}
     >
       <Collapsible open={open} onOpenChange={setUserOpen}>
         <CollapsibleTrigger

@@ -43,6 +43,12 @@ _VALID_BODY = {
         "new-chat": {"key": "j", "mod": True, "shift": True},
         "toggle-sidebar": {"key": "b", "mod": True, "shift": False},
     },
+    # Persisted Model/Reasoning popup selections.
+    "defaultReasoningEffortId": "extended",
+    "defaultProviderId": "deepseek",
+    "webSearchDefault": True,
+    "jsonModeDefault": True,
+    "deepResearchDefault": True,
 }
 
 
@@ -72,6 +78,11 @@ async def test_bootstrap_returns_defaults_when_no_row(
         "perConversationBudgetUsd": None,
         "memoryEnabled": False,
         "keyboardShortcuts": {},
+        "defaultReasoningEffortId": "auto",
+        "defaultProviderId": None,
+        "webSearchDefault": False,
+        "jsonModeDefault": False,
+        "deepResearchDefault": False,
     }
     # Bootstrap should NOT silently insert a row.
     assert await _row_count(session_factory) == 0
@@ -439,3 +450,84 @@ async def test_put_rejects_malformed_keyboard_shortcuts(client: AsyncClient) -> 
     response = await client.put("/api/preferences", json=bad)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_popup_selections_round_trip(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """All Model/Reasoning popup selections persist through PUT + bootstrap."""
+    await client.get("/api/bootstrap")
+    assert (await client.put("/api/preferences", json=_VALID_BODY)).status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    prefs = boot.json()["preferences"]
+    assert prefs["defaultReasoningEffortId"] == "extended"
+    assert prefs["defaultProviderId"] == "deepseek"
+    assert prefs["webSearchDefault"] is True
+    assert prefs["jsonModeDefault"] is True
+    assert prefs["deepResearchDefault"] is True
+
+    # The selections persist on the row's own columns.
+    async with session_factory() as s:
+        row = (await s.execute(select(Preferences))).scalar_one()
+        assert row.default_reasoning_effort_id == "extended"
+        assert row.default_provider_id == "deepseek"
+        assert row.web_search_default is True
+        assert row.json_mode_default is True
+        assert row.deep_research_default is True
+
+
+async def test_put_rejects_unknown_reasoning_effort(client: AsyncClient) -> None:
+    """An unknown `defaultReasoningEffortId` is rejected as INVALID_INPUT."""
+    await client.get("/api/bootstrap")
+    bad = dict(_VALID_BODY)
+    bad["defaultReasoningEffortId"] = "ludicrous"
+
+    response = await client.put("/api/preferences", json=bad)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_put_explicit_null_provider_clears_it(client: AsyncClient) -> None:
+    """An explicit null `defaultProviderId` clears a saved preference."""
+    await client.get("/api/bootstrap")
+    assert (await client.put("/api/preferences", json=_VALID_BODY)).status_code == 204
+
+    cleared = dict(_VALID_BODY)
+    cleared["defaultProviderId"] = None
+    assert (await client.put("/api/preferences", json=cleared)).status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.json()["preferences"]["defaultProviderId"] is None
+
+
+async def test_put_omitted_popup_selections_preserve_existing(
+    client: AsyncClient,
+) -> None:
+    """A stale client omitting the popup fields preserves the saved values."""
+    await client.get("/api/bootstrap")
+    assert (await client.put("/api/preferences", json=_VALID_BODY)).status_code == 204
+
+    stale_client_body = dict(_VALID_BODY)
+    for key in (
+        "defaultReasoningEffortId",
+        "defaultProviderId",
+        "webSearchDefault",
+        "jsonModeDefault",
+        "deepResearchDefault",
+    ):
+        stale_client_body.pop(key)
+    stale_client_body["defaultTierId"] = "fast"
+    assert (
+        await client.put("/api/preferences", json=stale_client_body)
+    ).status_code == 204
+
+    boot = await client.get("/api/bootstrap")
+    prefs = boot.json()["preferences"]
+    assert prefs["defaultTierId"] == "fast"
+    assert prefs["defaultReasoningEffortId"] == "extended"
+    assert prefs["defaultProviderId"] == "deepseek"
+    assert prefs["webSearchDefault"] is True
+    assert prefs["jsonModeDefault"] is True
+    assert prefs["deepResearchDefault"] is True

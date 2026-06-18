@@ -134,6 +134,27 @@ class Preferences(Base):
     keyboard_shortcuts: Mapped[dict[str, Any]] = mapped_column(
         JsonVariant, nullable=False, default=dict, server_default=text("'{}'")
     )
+    # Persisted Model/Reasoning popup selections. Default per-turn reasoning
+    # effort; "auto" defers to the tier binding's default. `server_default`
+    # backfills existing rows to the neutral baseline.
+    default_reasoning_effort_id: Mapped[str] = mapped_column(
+        String, nullable=False, default="auto", server_default=text("'auto'")
+    )
+    # Preferred provider id from the model popup. NULL = no explicit preference
+    # (platform default routing). Kept as an opaque string.
+    default_provider_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Composer toggles persisted from the popup. All OFF by default; `false()`
+    # gives a DB-level default so the columns backfill on the ALTER and a bare
+    # insert never writes NULL.
+    web_search_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    json_mode_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    deep_research_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

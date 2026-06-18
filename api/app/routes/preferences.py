@@ -63,6 +63,7 @@ async def put_preferences(
     existing = await preferences_repo.get_or_default(db, user.id)
     merged = UserPreferences(
         default_tier_id=body.default_tier_id,
+        default_reasoning_effort=body.default_reasoning_effort,
         temporary_by_default=body.temporary_by_default,
         training_opt_in=body.training_opt_in,
         send_on_enter=body.send_on_enter,

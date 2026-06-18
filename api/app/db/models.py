@@ -93,6 +93,13 @@ class Preferences(Base):
         primary_key=True,
     )
     default_tier_id: Mapped[str] = mapped_column(String, nullable=False, default="auto")
+    # Per-user default reasoning effort (`ReasoningEffortId`). Mirrors
+    # `default_tier_id`: persisted as TEXT, defaults to "auto" which defers to the
+    # selected tier's binding default so the column backfills behavior-neutrally.
+    # `server_default="auto"` backfills existing rows so the column is never NULL.
+    default_reasoning_effort: Mapped[str] = mapped_column(
+        Text, nullable=False, default="auto", server_default=text("'auto'")
+    )
     temporary_by_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     training_opt_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     send_on_enter: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

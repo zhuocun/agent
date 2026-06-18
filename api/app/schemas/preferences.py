@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints
 
-from app.schemas.common import CamelModel, ModelTierId
+from app.schemas.common import CamelModel, ModelTierId, ReasoningEffortId
 
 CustomInstructions = Annotated[str, StringConstraints(max_length=4000)]
 
@@ -39,6 +39,9 @@ KeyboardShortcuts = dict[str, ShortcutOverride]
 
 class UserPreferences(CamelModel):
     default_tier_id: ModelTierId
+    # Default reasoning effort applied to new turns. "auto" defers to the selected
+    # tier's binding default; mirrors `default_tier_id` as a persisted preference.
+    default_reasoning_effort: ReasoningEffortId = "auto"
     temporary_by_default: bool
     training_opt_in: bool
     send_on_enter: bool
@@ -69,6 +72,9 @@ class UserPreferences(CamelModel):
 
 class UserPreferencesRequest(CamelModel):
     default_tier_id: ModelTierId
+    # Default reasoning effort. Defaults to "auto" so stale clients that omit it
+    # round-trip to the behavior-neutral value; Pydantic rejects unknown values.
+    default_reasoning_effort: ReasoningEffortId = "auto"
     temporary_by_default: bool
     training_opt_in: bool
     send_on_enter: bool

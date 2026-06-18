@@ -307,3 +307,90 @@ export function partitionWebSearchGroups(
 
   return { standalone, panelLevel, bySubagentId };
 }
+
+export interface ToolGroupLayout {
+  // Real `tool_group` items when NOT nesting — render flat as before.
+  standalone: ToolGroup[];
+  // Nested groups not owned by a known subagent (untagged origin or an unknown
+  // tag) — render inside the agent-activity card's panel-level slot.
+  panelLevel: ToolGroup[];
+  // Nested groups keyed by their owning subagent id — render inside that
+  // worker's row, mirroring `webSearchBySubagentId`.
+  bySubagentId: Map<string, ToolGroup[]>;
+  // The raw passthrough `tool_call` / `tool_result` parts that were folded into
+  // nested single-run groups. The render loop checks membership to SKIP these
+  // (they'd otherwise double-render flat). Untagged lone runs are absent here so
+  // they keep rendering in place.
+  nestedParts: Set<MessagePart>;
+}
+
+/**
+ * Split generic tool activity for agent-activity nesting vs standalone render —
+ * the `tool_group` analogue of `partitionWebSearchGroups`.
+ *
+ * Two inputs feed the nest:
+ *  - Real `tool_group` items (>=2 settled runs already folded by
+ *    `groupToolParts`) route by `subagentId` exactly like web-search groups.
+ *  - Lone settled tool runs that `groupToolParts` left as passthrough
+ *    `tool_call` / `tool_result` parts. When such a run is subagent-TAGGED it's
+ *    wrapped into a single-run `ToolGroup` so it nests too; its source parts are
+ *    recorded in `nestedParts` for the render loop to skip. UNTAGGED lone runs
+ *    are left untouched (they stay standalone, rendering flat in place).
+ *
+ * Live / awaiting-approval runs and `agentic_plan_approval` are never nested:
+ * `isGroupablePart` already excludes them, so they remain passthrough parts.
+ * When `nestInPanel` is false nothing nests — every real group is `standalone`.
+ */
+export function partitionToolGroups(
+  parts: GroupedToolPart[],
+  subagentIds: ReadonlySet<string>,
+  nestInPanel: boolean,
+): ToolGroupLayout {
+  const standalone: ToolGroup[] = [];
+  const panelLevel: ToolGroup[] = [];
+  const bySubagentId = new Map<string, ToolGroup[]>();
+  const nestedParts = new Set<MessagePart>();
+
+  const route = (group: ToolGroup, ownerId: string | undefined): void => {
+    if (ownerId !== undefined && subagentIds.has(ownerId)) {
+      const owned = bySubagentId.get(ownerId) ?? [];
+      owned.push(group);
+      bySubagentId.set(ownerId, owned);
+      return;
+    }
+    panelLevel.push(group);
+  };
+
+  // Lone settled tool parts left as passthrough by `groupToolParts`. Paired here
+  // (call + result of one run) so a single tagged run folds into ONE group.
+  const loneToolParts: (ToolCallPart | ToolResultPart)[] = [];
+
+  for (const part of parts) {
+    if (part.type === "tool_group") {
+      if (!nestInPanel) {
+        standalone.push(part);
+        continue;
+      }
+      route(part, part.subagentId);
+      continue;
+    }
+    if (
+      nestInPanel &&
+      (part.type === "tool_call" || part.type === "tool_result") &&
+      isGroupablePart(part)
+    ) {
+      loneToolParts.push(part);
+    }
+  }
+
+  for (const run of pairRuns(loneToolParts)) {
+    const ownerId = run.call?.subagentId ?? run.result?.subagentId;
+    // Untagged lone runs stay standalone — leave their parts to render flat.
+    if (ownerId === undefined) continue;
+    route(buildGroup([run], ownerId), ownerId);
+    if (run.call) nestedParts.add(run.call);
+    if (run.result) nestedParts.add(run.result);
+  }
+
+  return { standalone, panelLevel, bySubagentId, nestedParts };
+}

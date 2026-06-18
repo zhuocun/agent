@@ -10,6 +10,7 @@ import {
   type SourcesPanelHandle,
 } from "@/components/chat/sources-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
+import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import {
   SubagentPanel,
   type SubagentSection,
@@ -27,6 +28,7 @@ import {
 } from "@/components/ui/collapsible";
 import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
 import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
+import { groupToolParts } from "@/lib/tool-groups";
 import { cn } from "@/lib/utils";
 import type {
   ChatMessage,
@@ -214,11 +216,23 @@ export function AssistantMessage({
     return ids;
   }, [message.parts]);
 
-  // The panel renders ONCE, in place of the first `subagent` marker, covering
-  // every section; later markers are skipped.
-  const firstSubagentIdx = useMemo(
-    () => message.parts.findIndex((p) => p.type === "subagent"),
+  // Fold contiguous spans of >=2 settled tool runs into `tool_group` items so a
+  // long agentic transcript doesn't render as a wall of identical tool cards.
+  // Grouping only touches tool parts — text/reasoning/sources/subagent markers
+  // pass through in place, so narrative ordering (and the subagent/agentic
+  // interplay below) is preserved. Live/awaiting/plan-approval tools and lone
+  // settled runs stay flat and render through `ToolPartView` exactly as before.
+  const renderedParts = useMemo(
+    () => groupToolParts(message.parts),
     [message.parts],
+  );
+
+  // The panel renders ONCE, in place of the first `subagent` marker, covering
+  // every section; later markers are skipped. Indexed into the grouped list so
+  // it lines up with the map below (grouping never folds subagent markers).
+  const firstSubagentIdx = useMemo(
+    () => renderedParts.findIndex((p) => p.type === "subagent"),
+    [renderedParts],
   );
 
   const answerText = useMemo(
@@ -307,7 +321,19 @@ export function AssistantMessage({
     >
       {showTyping ? <TypingIndicator /> : null}
 
-      {message.parts.map((part, idx) => {
+      {renderedParts.map((part, idx) => {
+        if (part.type === "tool_group") {
+          return (
+            <ToolGroupPanel
+              key={idx}
+              group={part}
+              // Uniform with the flat path: a group only ever holds settled
+              // runs, so the gated handler never actually surfaces approve/deny
+              // controls — but forward it so the renderer stays symmetric.
+              onDecision={isAwaitingApproval ? onToolDecision : undefined}
+            />
+          );
+        }
         if (part.type === "subagent") {
           // The panel covers ALL sections; render it once at the first marker.
           return idx === firstSubagentIdx ? (

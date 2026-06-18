@@ -63,6 +63,13 @@ the flag-off path is byte-for-byte unchanged):
   the `ToolResult`, and re-invokes this stream with the result appended to
   `history` (prefixed by `agent_loop.TOOL_FEEDBACK_SENTINEL`); seeing that
   sentinel, round 2 emits a grounded answer + `Complete`.
+- `TOOL_MULTI:` exercises the tool-call AGGREGATION path (>=2 settled runs in a
+  single turn). Round 1 emits the reasoning block then TWO auto
+  `ToolCall(name="get_current_time", status="running")` events (distinct ids +
+  timezones) and ENDS. The agent loop executes both, emits two succeeded
+  `ToolResult`s, and re-invokes us; round 2 emits a grounded answer + `Complete`.
+  The committed turn therefore carries a contiguous span of two settled tool
+  runs, which the FE folds into a single collapsed `tool-group-panel`.
 - `TOOL_APPROVE:` exercises the HITL approval pause. It emits the reasoning block
   then `ToolCall(id="fake_cal_1", name="calendar_create_event",
   status="awaiting_approval", approval_state="pending", input={"title": ...})`
@@ -269,6 +276,42 @@ class FakeProvider:
             # Round 2: the loop fed the tool result back via history. Answer.
             await asyncio.sleep(self._delay)
             yield AnswerDelta(text="The current time was retrieved by the tool.")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        if tools_on and user_text.startswith("TOOL_MULTI:"):
+            if not has_tool_feedback:
+                # Round 1: request TWO auto tools so the agent loop settles both
+                # in one turn, producing a contiguous span of >=2 settled tool
+                # runs the FE folds into a single collapsed tool-group panel.
+                # Distinct ids + timezones keep the runs (and their results)
+                # distinguishable.
+                await asyncio.sleep(self._delay)
+                yield ToolCall(
+                    id="fake_time_multi_1",
+                    name="get_current_time",
+                    label="Get current time",
+                    status="running",
+                    input={"timezone": "UTC"},
+                )
+                yield ToolCall(
+                    id="fake_time_multi_2",
+                    name="get_current_time",
+                    label="Get current time",
+                    status="running",
+                    input={"timezone": "America/New_York"},
+                )
+                return
+            # Round 2: both tool results fed back via history. Answer.
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="Both current times were retrieved by the tools.")
             usage = UsageUpdate(
                 input_tokens=50,
                 output_tokens=100,

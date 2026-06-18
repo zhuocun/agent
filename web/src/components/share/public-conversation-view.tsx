@@ -12,6 +12,7 @@ import {
   type SourcesPanelHandle,
 } from "@/components/chat/sources-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
+import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { PublicAttributionRow } from "@/components/share/public-attribution-row";
@@ -223,6 +224,9 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
           through flat. No `onDecision` — the share surface is read-only, so the
           approve/deny seam is intentionally absent. */}
       {groupToolParts(message.parts).map((part, idx) => {
+        if (part.type === "web_search_group") {
+          return <WebSearchPanel key={idx} group={part} />;
+        }
         if (part.type === "tool_group") {
           return <ToolGroupPanel key={idx} group={part} />;
         }

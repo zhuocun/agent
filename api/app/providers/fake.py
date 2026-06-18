@@ -375,7 +375,49 @@ class FakeProvider:
         # shape. When `web_search=False` this whole block is skipped and the
         # fake's output is byte-for-byte unchanged.
         search_items: list[SourceItem] = []
-        if web_search:
+        if web_search and user_text.startswith("WEB_SEARCH_MULTI:"):
+            base_query = user_text.removeprefix("WEB_SEARCH_MULTI:").strip() or "multi search"
+            queries = [base_query, f"{base_query} follow-up"]
+            await asyncio.sleep(self._delay)
+            for i, query in enumerate(queries, start=1):
+                yield ToolCall(
+                    id=f"fake_web_search_multi_{i}",
+                    name="web_search",
+                    label="Search web",
+                    status="running",
+                    input={"query": query},
+                )
+            yield StatusUpdate(label="Searching the web…", state="active")
+            for query in queries:
+                search_items.extend(
+                    await FakeSearchProvider().search(query, max_results=2)
+                )
+            # Renumber so merged batches don't collide on citation ids.
+            search_items = [
+                item.model_copy(update={"id": idx})
+                for idx, item in enumerate(search_items, start=1)
+            ]
+            active_hold = (
+                max(self._delay, 0.35)
+                if get_settings().env == "test"
+                else self._delay
+            )
+            await asyncio.sleep(active_hold)
+            yield StatusUpdate(label="Searching the web…", state="done")
+            yield Sources(items=search_items[:3])
+            for i, query in enumerate(queries, start=1):
+                yield ToolResult(
+                    tool_call_id=f"fake_web_search_multi_{i}",
+                    name="web_search",
+                    label="Search web",
+                    status="succeeded",
+                    summary="2 sources",
+                    output={
+                        "query": query,
+                        "results": [item.model_dump() for item in search_items[:2]],
+                    },
+                )
+        elif web_search:
             await asyncio.sleep(self._delay)
             yield ToolCall(
                 id="fake_web_search_1",

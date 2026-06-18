@@ -11,6 +11,7 @@ import {
 } from "@/components/chat/sources-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
+import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import {
   SubagentPanel,
   type SubagentSection,
@@ -322,6 +323,15 @@ export function AssistantMessage({
       {showTyping ? <TypingIndicator /> : null}
 
       {renderedParts.map((part, idx) => {
+        if (part.type === "web_search_group") {
+          return (
+            <WebSearchPanel
+              key={idx}
+              group={part}
+              onDecision={isAwaitingApproval ? onToolDecision : undefined}
+            />
+          );
+        }
         if (part.type === "tool_group") {
           return (
             <ToolGroupPanel

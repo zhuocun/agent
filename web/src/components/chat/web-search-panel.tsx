@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronDown, Globe, Loader2 } from "lucide-react";
 
 import { ToolPartView } from "@/components/chat/tool-part";
@@ -83,18 +83,16 @@ export function WebSearchPanel({ group, onDecision }: WebSearchPanelProps) {
   const summary = buildSummary(group);
   const primaryQuery = queryLabel(group);
   const triggerDetail = statusLabel ?? summary;
-  const [open, setOpen] = useState(isLive);
-
-  useEffect(() => {
-    setOpen(isLive);
-  }, [isLive]);
+  // Live turns default open; settled turns default closed unless the user toggled.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? isLive;
 
   return (
     <div
       data-testid="web-search-panel"
       className="max-w-full rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5 text-sm text-muted-foreground"
     >
-      <Collapsible open={open} onOpenChange={setOpen}>
+      <Collapsible open={open} onOpenChange={setUserOpen}>
         <CollapsibleTrigger
           data-testid="web-search-trigger"
           className={cn(

@@ -519,6 +519,22 @@ export interface UserPreferences {
   // payloads (and partial test stubs) still parse; the resolver treats a missing
   // map as empty. See `web/src/lib/shortcut-defaults.ts`.
   keyboardShortcuts?: KeyboardShortcuts;
+  // Persisted Model & Reasoning popup selections. These mirror the per-turn
+  // composer controls (model-mode-picker) so a returning session reopens with
+  // the user's last choices instead of the hard defaults. Mirrors the BE
+  // `UserPreferences` schema (api/app/schemas/preferences.py).
+  //   - `defaultReasoningEffortId`: default per-turn reasoning effort; "auto"
+  //     defers to the tier binding's default.
+  //   - `defaultProviderId`: preferred provider id from the popup, also
+  //     mirrored to the `olune.preferredProviderId` localStorage fast-path.
+  //     `null` = no explicit preference (route to the tier's default).
+  //   - the three `*Default` flags persist the composer toggles; OFF by
+  //     default to keep the baseline turn cheap and private.
+  defaultReasoningEffortId: ReasoningEffortId;
+  defaultProviderId: string | null;
+  webSearchDefault: boolean;
+  jsonModeDefault: boolean;
+  deepResearchDefault: boolean;
 }
 
 // Stable, persistence-safe identifiers for each rebindable action (D23). These

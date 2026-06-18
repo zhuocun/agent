@@ -30,6 +30,10 @@ class ChatMessage:
 
     role: Literal["user", "assistant"]
     text: str
+    # DeepSeek V4 thinking mode requires prior assistant reasoning to be echoed
+    # back on follow-up requests. Populated from persisted reasoning parts when
+    # rebuilding multi-turn history; omitted when unknown.
+    reasoning_content: str | None = None
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,10 @@ class ToolResult:
     error: str | None = None
     type: Literal["tool_result"] = "tool_result"
     subagent_id: str | None = None
+    # Internal: reasoning from the assistant turn that requested this tool.
+    # Threaded through tool-feedback history for DeepSeek echo-back; never
+    # mapped to wire parts.
+    round_reasoning: str | None = None
 
 
 @dataclass(frozen=True)

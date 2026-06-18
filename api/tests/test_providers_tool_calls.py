@@ -75,7 +75,7 @@ def test_parse_tool_feedback_history_round_trips() -> None:
         ),
     ]
     history = [ChatMessage(role="user", text="hi"), *tool_feedback_to_history(results)]
-    clean, parsed = parse_tool_feedback_history(history)
+    clean, parsed, assistant_reasoning = parse_tool_feedback_history(history)
     # The sentinel turn is stripped; the plain user turn survives.
     assert [m.role for m in clean] == ["user"]
     assert not any(TOOL_FEEDBACK_SENTINEL in m.text for m in clean)
@@ -83,14 +83,34 @@ def test_parse_tool_feedback_history_round_trips() -> None:
     assert parsed[0]["toolCallId"] == "call_1"
     assert parsed[0]["name"] == "get_current_time"
     assert parsed[0]["status"] == "succeeded"
+    assert assistant_reasoning is None
+
+
+def test_parse_tool_feedback_history_round_trips_reasoning() -> None:
+    """Assistant reasoning from the tool-calling turn survives encode/decode."""
+    results = [
+        ToolResult(
+            tool_call_id="call_1",
+            name="get_current_time",
+            status="succeeded",
+            output={"iso8601": "2026-01-01T00:00:00+00:00", "timezone": "UTC"},
+            round_reasoning="Need the current time.",
+        ),
+    ]
+    history = [ChatMessage(role="user", text="hi"), *tool_feedback_to_history(results)]
+    clean, parsed, assistant_reasoning = parse_tool_feedback_history(history)
+    assert [m.role for m in clean] == ["user"]
+    assert len(parsed) == 1
+    assert assistant_reasoning == "Need the current time."
 
 
 def test_parse_tool_feedback_history_no_sentinel_is_passthrough() -> None:
     """History without a sentinel turn is returned unchanged, no results."""
     history = [ChatMessage(role="user", text="hi"), ChatMessage(role="assistant", text="hello")]
-    clean, parsed = parse_tool_feedback_history(history)
+    clean, parsed, assistant_reasoning = parse_tool_feedback_history(history)
     assert clean == history
     assert parsed == []
+    assert assistant_reasoning is None
 
 
 # --- OpenAI-compatible adapter ------------------------------------------------
@@ -297,6 +317,36 @@ async def test_openai_feedback_round_reconstructs_native_tool_messages() -> None
     tool_msg = body["messages"][2]
     assert tool_msg["tool_call_id"] == "call_abc"
     assert json.loads(tool_msg["content"])["status"] == "succeeded"
+
+
+@respx.mock
+async def test_openai_feedback_round_reconstructs_reasoning_for_thinking() -> None:
+    """DeepSeek thinking mode requires reasoning_content on tool-call replay."""
+    route = respx.post(_OPENAI_URL).mock(return_value=_sse_response(_openai_answer_body("Done.")))
+    provider = _openai_provider()
+
+    fed = [
+        ToolResult(
+            tool_call_id="call_abc",
+            name="get_current_time",
+            status="succeeded",
+            output={"iso8601": "2026-01-01T00:00:00+00:00", "timezone": "UTC"},
+            round_reasoning="Checking the clock.",
+        )
+    ]
+    history = tool_feedback_to_history(fed)
+    async for _ in provider.stream(
+        model_id="deepseek-v4-flash",
+        history=list(history),
+        user_text="what time?",
+        tools=[_time_tool()],
+        thinking=True,
+    ):
+        pass
+
+    body = json.loads(route.calls.last.request.content)
+    assistant = body["messages"][1]
+    assert assistant["reasoning_content"] == "Checking the clock."
 
 
 @respx.mock

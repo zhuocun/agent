@@ -207,17 +207,26 @@ async def load_history(
     for row in rows:
         if row.role not in ("user", "assistant"):
             continue
-        # Flatten parts into text. M1 only emits text + reasoning; reasoning
-        # is internal-only and shouldn't be replayed to the provider.
+        # Flatten parts into text. Reasoning is replayed to DeepSeek thinking
+        # mode on follow-up turns; other providers ignore the extra field.
         text_chunks: list[str] = []
+        reasoning_chunks: list[str] = []
         parts = row.parts or []
         for part in parts:
             if part.get("type") == "text":
                 text_chunks.append(str(part.get("text", "")))
-        if not text_chunks:
+            elif part.get("type") == "reasoning":
+                reasoning_chunks.append(str(part.get("text", "")))
+        if not text_chunks and not reasoning_chunks:
             continue
         role = cast(Any, row.role)  # narrowed by the role check above
-        history.append(ProviderChatMessage(role=role, text="".join(text_chunks)))
+        history.append(
+            ProviderChatMessage(
+                role=role,
+                text="".join(text_chunks),
+                reasoning_content="".join(reasoning_chunks) if reasoning_chunks else None,
+            )
+        )
     # History-window cap: keep only the most-recent N messages. Slicing the tail
     # preserves the oldest-to-newest order (we do NOT reverse) while dropping the
     # oldest overflow so the provider prompt stays bounded on long threads. When

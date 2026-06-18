@@ -72,6 +72,27 @@ from app.tools.agent_loop import parse_tool_feedback_history
 
 _log = structlog.get_logger(__name__)
 
+
+def _history_message(message: ChatMessage) -> dict[str, Any]:
+    """Map a provider-history turn to an OpenAI chat message."""
+    payload: dict[str, Any] = {"role": message.role, "content": message.text}
+    if message.role == "assistant" and message.reasoning_content is not None:
+        payload["reasoning_content"] = message.reasoning_content
+    return payload
+
+
+def _tool_turn_reasoning(
+    assistant_reasoning: str | None,
+    *,
+    thinking_enabled: bool,
+) -> dict[str, str]:
+    """DeepSeek thinking mode requires reasoning_content on tool-call turns."""
+    if thinking_enabled:
+        return {"reasoning_content": assistant_reasoning or ""}
+    if assistant_reasoning:
+        return {"reasoning_content": assistant_reasoning}
+    return {}
+
 # OpenAI function-tool schema advertised when `web_search=True` AND a search
 # backend is wired. The model decides (tool_choice="auto") whether to call it.
 # CRITICAL: the schema stays advertised on EVERY round of the agentic loop so the
@@ -539,11 +560,15 @@ class OpenAIProvider:
         registry_names = {t.name for t in registry_tools}
         fed_tool_results: list[dict[str, object]] = []
         if registry_active:
-            history, fed_tool_results = parse_tool_feedback_history(history)
+            history, fed_tool_results, fed_assistant_reasoning = parse_tool_feedback_history(
+                history
+            )
+
+        thinking_enabled = thinking is True
 
         # Build messages: history + the current user turn. Only user/assistant
         # roles (no system role), which keeps o-series models happy.
-        messages: list[dict[str, Any]] = [{"role": m.role, "content": m.text} for m in history]
+        messages: list[dict[str, Any]] = [_history_message(m) for m in history]
         # Steer ONLY the current user turn (real-provider, outgoing request,
         # never persisted). History stays verbatim. See app/providers/steering.py.
         # On a non-vision binding native image/PDF blocks are suppressed
@@ -624,20 +649,25 @@ class OpenAIProvider:
         # so the reconstructed assistant tool_calls carry empty arguments — the
         # model only needs the RESULT to ground its next answer. Empty ⇒ no-op.
         if fed_tool_results:
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": str(result.get("toolCallId")),
-                            "type": "function",
-                            "function": {"name": str(result.get("name")), "arguments": "{}"},
-                        }
-                        for result in fed_tool_results
-                    ],
-                }
+            assistant_tool_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": str(result.get("toolCallId")),
+                        "type": "function",
+                        "function": {"name": str(result.get("name")), "arguments": "{}"},
+                    }
+                    for result in fed_tool_results
+                ],
+            }
+            assistant_tool_message.update(
+                _tool_turn_reasoning(
+                    fed_assistant_reasoning,
+                    thinking_enabled=thinking_enabled,
+                )
             )
+            messages.append(assistant_tool_message)
             for result in fed_tool_results:
                 messages.append(
                     {
@@ -736,6 +766,12 @@ class OpenAIProvider:
             # it is discarded (mirrors the web-search pre-tool suppression).
             registry_calls = _select_registry_calls(tool_calls, registry_names)
             if registry_calls:
+                # Relay reasoning before the tool requests so the handler can
+                # persist/stream it and the agent loop can thread it back on the
+                # next round (DeepSeek requires reasoning_content echo-back).
+                for event in round_events:
+                    if isinstance(event, (ReasoningDelta, ReasoningDone)):
+                        yield event
                 tool_by_name = {t.name: t for t in registry_tools}
                 for i, call in enumerate(registry_calls):
                     spec = tool_by_name[call.name or ""]
@@ -841,8 +877,12 @@ class OpenAIProvider:
                     for call, call_id, _query, _items, _error in results_by_call
                 ],
             }
-            if assistant_reasoning:
-                assistant_message["reasoning_content"] = assistant_reasoning
+            assistant_message.update(
+                _tool_turn_reasoning(
+                    assistant_reasoning or None,
+                    thinking_enabled=thinking_enabled,
+                )
+            )
             messages.append(assistant_message)
             for _call, call_id, _query, items, _error in results_by_call:
                 messages.append(

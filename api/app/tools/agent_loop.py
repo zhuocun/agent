@@ -42,6 +42,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Callable
+from dataclasses import replace
+from typing import Any
 
 from app.config import Settings
 from app.providers.protocol import (
@@ -50,6 +52,7 @@ from app.providers.protocol import (
     ChatMessage,
     Complete,
     ProviderEvent,
+    ReasoningDelta,
     ToolCall,
     ToolResult,
 )
@@ -86,25 +89,35 @@ def tool_feedback_to_history(results: list[ToolResult]) -> list[ChatMessage]:
     """
     if not results:
         return []
-    payload = json.dumps(
-        [
-            {
-                "toolCallId": r.tool_call_id,
-                "name": r.name,
-                "status": r.status,
-                "output": r.output,
-                "error": r.error,
-            }
-            for r in results
-        ],
-        separators=(",", ":"),
+    result_dicts = [
+        {
+            "toolCallId": r.tool_call_id,
+            "name": r.name,
+            "status": r.status,
+            "output": r.output,
+            "error": r.error,
+        }
+        for r in results
+    ]
+    assistant_reasoning = next(
+        (r.round_reasoning for r in results if r.round_reasoning is not None),
+        None,
     )
+    payload_obj: dict[str, Any] | list[dict[str, Any]]
+    if assistant_reasoning is not None:
+        payload_obj = {
+            "results": result_dicts,
+            "assistantReasoning": assistant_reasoning,
+        }
+    else:
+        payload_obj = result_dicts
+    payload = json.dumps(payload_obj, separators=(",", ":"))
     return [ChatMessage(role="assistant", text=f"{TOOL_FEEDBACK_SENTINEL} {payload}")]
 
 
 def parse_tool_feedback_history(
     history: list[ChatMessage],
-) -> tuple[list[ChatMessage], list[dict[str, object]]]:
+) -> tuple[list[ChatMessage], list[dict[str, object]], str | None]:
     """Split sentinel-prefixed tool-feedback turns out of `history`.
 
     The inverse of ``tool_feedback_to_history``: a real provider adapter calls
@@ -120,6 +133,7 @@ def parse_tool_feedback_history(
     """
     clean: list[ChatMessage] = []
     results: list[dict[str, object]] = []
+    assistant_reasoning: str | None = None
     for message in history:
         if message.role == "assistant" and message.text.startswith(TOOL_FEEDBACK_SENTINEL):
             payload = message.text[len(TOOL_FEEDBACK_SENTINEL) :].strip()
@@ -127,11 +141,18 @@ def parse_tool_feedback_history(
                 parsed = json.loads(payload)
             except (ValueError, TypeError):
                 continue
-            if isinstance(parsed, list):
+            if isinstance(parsed, dict) and isinstance(parsed.get("results"), list):
+                results.extend(
+                    item for item in parsed["results"] if isinstance(item, dict)
+                )
+                raw_reasoning = parsed.get("assistantReasoning")
+                if raw_reasoning is not None:
+                    assistant_reasoning = str(raw_reasoning)
+            elif isinstance(parsed, list):
                 results.extend(item for item in parsed if isinstance(item, dict))
             continue
         clean.append(message)
-    return clean, results
+    return clean, results, assistant_reasoning
 
 
 def _to_result_event(*, call: ToolCall, exec_result: object) -> ToolResult:
@@ -182,9 +203,12 @@ async def run_agent_loop(
         pending_calls: list[ToolCall] = []
         provider_resolved: set[str] = set()
         relayed_terminal = False
+        round_reasoning_parts: list[str] = []
         async for event in stream:
             if isinstance(event, ToolCall):
                 pending_calls.append(event)
+            elif isinstance(event, ReasoningDelta):
+                round_reasoning_parts.append(event.text)
             elif isinstance(event, ToolResult):
                 provider_resolved.add(event.tool_call_id)
             elif isinstance(event, AwaitingApproval):
@@ -203,7 +227,8 @@ async def run_agent_loop(
             return
 
         round_results: list[ToolResult] = []
-        for call in unresolved:
+        round_reasoning = "".join(round_reasoning_parts) or None
+        for i, call in enumerate(unresolved):
             spec = TOOL_REGISTRY.get(call.name)
             if spec is None:
                 # Unknown tool: synthesize a failed result and feed it back so a
@@ -212,6 +237,8 @@ async def run_agent_loop(
                     ToolCallRequest(id=call.id, name=call.name, input=call.input or {})
                 )
                 result_event = _to_result_event(call=call, exec_result=exec_result)
+                if i == 0 and round_reasoning is not None:
+                    result_event = replace(result_event, round_reasoning=round_reasoning)
                 yield result_event
                 round_results.append(result_event)
                 continue
@@ -239,6 +266,8 @@ async def run_agent_loop(
                 )
             )
             result_event = _to_result_event(call=call, exec_result=exec_result)
+            if i == 0 and round_reasoning is not None:
+                result_event = replace(result_event, round_reasoning=round_reasoning)
             yield result_event
             round_results.append(result_event)
 

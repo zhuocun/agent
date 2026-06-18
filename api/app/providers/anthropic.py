@@ -482,7 +482,9 @@ class AnthropicProvider:
         tool_by_name = {t.name: t for t in registry_tools}
         fed_tool_results: list[dict[str, object]] = []
         if registry_active:
-            history, fed_tool_results = parse_tool_feedback_history(history)
+            history, fed_tool_results, _fed_assistant_reasoning = parse_tool_feedback_history(
+                history
+            )
 
         # Build messages: history + the current user turn.
         messages: list[dict[str, Any]] = [

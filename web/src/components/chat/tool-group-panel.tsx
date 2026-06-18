@@ -17,6 +17,8 @@ interface ToolGroupPanelProps {
   // holds settled runs, so the approve/deny controls never actually render —
   // but the prop is forwarded to keep the renderer uniform with the flat path.
   onDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  /** When nested inside agent activity, drop the outer card chrome. */
+  embedded?: boolean;
 }
 
 // Aggregated, collapsed-by-default panel for a contiguous run of >=2 settled
@@ -26,7 +28,7 @@ interface ToolGroupPanelProps {
 // one `ToolPartView` per run inside. Reuses the collapsible primitive, the iOS
 // easing tokens, the motion-reduce degrade, and the min-h-11 touch target from
 // tool-part.tsx so the toggle reads identically.
-export function ToolGroupPanel({ group, onDecision }: ToolGroupPanelProps) {
+export function ToolGroupPanel({ group, onDecision, embedded = false }: ToolGroupPanelProps) {
   const total = group.runs.length;
   const noun = total === 1 ? "call" : "calls";
   const summary =
@@ -37,7 +39,12 @@ export function ToolGroupPanel({ group, onDecision }: ToolGroupPanelProps) {
   return (
     <div
       data-testid="tool-group-panel"
-      className="max-w-full rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5 text-sm text-muted-foreground"
+      className={cn(
+        "max-w-full text-sm text-muted-foreground",
+        embedded
+          ? "rounded-lg bg-foreground/[0.02] px-2.5 py-2"
+          : "rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5",
+      )}
     >
       <Collapsible>
         <CollapsibleTrigger

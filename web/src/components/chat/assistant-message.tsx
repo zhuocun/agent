@@ -29,7 +29,11 @@ import {
 } from "@/components/ui/collapsible";
 import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
 import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
-import { groupToolParts, partitionWebSearchGroups } from "@/lib/tool-groups";
+import {
+  groupToolParts,
+  partitionToolGroups,
+  partitionWebSearchGroups,
+} from "@/lib/tool-groups";
 import { cn } from "@/lib/utils";
 import type {
   ChatMessage,
@@ -259,6 +263,23 @@ export function AssistantMessage({
     [nestWebSearchInPanel],
   );
 
+  // Generic tool-group analogue of the web-search layout: when the panel
+  // exists, ALL settled generic tool activity nests inside it (panel-level for
+  // untagged/unknown origin, per-row for subagent-tagged runs) instead of
+  // rendering as siblings. `nestInPanel` reuses the same `firstSubagentIdx >= 0`
+  // gate as web search.
+  const toolLayout = useMemo(
+    () =>
+      partitionToolGroups(renderedParts, subagentIds, nestWebSearchInPanel),
+    [renderedParts, subagentIds, nestWebSearchInPanel],
+  );
+
+  const isNestedToolGroup = useCallback(
+    (group: (typeof renderedParts)[number]) =>
+      group.type === "tool_group" && nestWebSearchInPanel,
+    [nestWebSearchInPanel],
+  );
+
   const answerText = useMemo(
     () =>
       message.parts
@@ -373,6 +394,10 @@ export function AssistantMessage({
           );
         }
         if (part.type === "tool_group") {
+          // When the agentic panel exists, settled generic tool groups nest
+          // inside it (see `toolLayout`); skip the standalone render here,
+          // mirroring `isNestedWebSearchGroup`.
+          if (isNestedToolGroup(part)) return null;
           return (
             <ToolGroupPanel
               key={idx}
@@ -393,6 +418,8 @@ export function AssistantMessage({
               runCost={runCost}
               panelWebSearchGroups={webSearchLayout.panelLevel}
               webSearchBySubagentId={webSearchLayout.bySubagentId}
+              panelToolGroups={toolLayout.panelLevel}
+              toolGroupsBySubagentId={toolLayout.bySubagentId}
               onToolDecision={isAwaitingApproval ? onToolDecision : undefined}
             />
           ) : null;
@@ -448,6 +475,11 @@ export function AssistantMessage({
           );
         }
         if (part.type === "tool_call" || part.type === "tool_result") {
+          // A subagent-tagged lone settled run was folded into a single-run
+          // group nested in the panel (`toolLayout.nestedParts`); skip its flat
+          // render so it doesn't double up. Untagged lone runs aren't in the set
+          // and still render in place.
+          if (toolLayout.nestedParts.has(part)) return null;
           return (
             <ToolPartView
               key={idx}

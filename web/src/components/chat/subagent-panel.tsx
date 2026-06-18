@@ -209,7 +209,6 @@ function SubagentRow({
   const isRunning = section.status === "running";
   const hasTextDetail =
     section.reasoning.length > 0 || section.answer.length > 0;
-  const hasWebSearch = (webSearchGroups?.length ?? 0) > 0;
 
   const costBadge =
     section.costUsd !== undefined ? (

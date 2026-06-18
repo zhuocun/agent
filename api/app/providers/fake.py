@@ -281,12 +281,14 @@ class FakeProvider:
                 await asyncio.sleep(active_hold)
                 yield StatusUpdate(label="Searching the web…", state="done")
                 yield Sources(items=worker_search_items)
+                source_count = len(worker_search_items)
+                source_label = "source" if source_count == 1 else "sources"
                 yield ToolResult(
                     tool_call_id=call_id,
                     name="web_search",
                     label="Search web",
                     status="succeeded",
-                    summary=f"{len(worker_search_items)} source{'s' if len(worker_search_items) != 1 else ''}",
+                    summary=f"{source_count} {source_label}",
                     output={
                         "query": sub_question,
                         "results": [item.model_dump() for item in worker_search_items],

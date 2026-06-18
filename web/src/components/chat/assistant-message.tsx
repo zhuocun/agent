@@ -254,13 +254,9 @@ export function AssistantMessage({
   );
 
   const isNestedWebSearchGroup = useCallback(
-    (group: (typeof renderedParts)[number]) => {
-      if (group.type !== "web_search_group" || !nestWebSearchInPanel) return false;
-      const ownerId = group.subagentId;
-      if (ownerId !== undefined && subagentIds.has(ownerId)) return true;
-      return true;
-    },
-    [nestWebSearchInPanel, subagentIds],
+    (group: (typeof renderedParts)[number]) =>
+      group.type === "web_search_group" && nestWebSearchInPanel,
+    [nestWebSearchInPanel],
   );
 
   const answerText = useMemo(

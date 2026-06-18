@@ -78,6 +78,12 @@ function tier(
 }
 
 function bootstrapPayload(overrides: Record<string, unknown> = {}) {
+  // `preferences` merges (shallow) instead of replacing wholesale so a test can
+  // override a single field (e.g. defaultReasoningEffort) without re-spelling
+  // the whole block; every other top-level key replaces.
+  const { preferences: preferencesOverride, ...rest } = overrides as {
+    preferences?: Record<string, unknown>;
+  } & Record<string, unknown>;
   return {
     account: {
       name: "Guest",
@@ -88,6 +94,7 @@ function bootstrapPayload(overrides: Record<string, unknown> = {}) {
     },
     preferences: {
       defaultTierId: "fast",
+      defaultReasoningEffort: "auto",
       temporaryByDefault: false,
       trainingOptIn: false,
       sendOnEnter: true,
@@ -96,6 +103,7 @@ function bootstrapPayload(overrides: Record<string, unknown> = {}) {
       customInstructions: "",
       retentionDays: 30,
       monthlyBudgetUsd: null,
+      ...(preferencesOverride ?? {}),
     },
     usage: {
       used: 0,
@@ -112,7 +120,7 @@ function bootstrapPayload(overrides: Record<string, unknown> = {}) {
     ],
     suggestions: [],
     conversations: [],
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -237,6 +245,93 @@ test.describe("reasoning effort", () => {
     await expect(assistant).toHaveAttribute("data-status", "done", {
       timeout: 15_000,
     });
+  });
+
+  test("changing effort in the composer persists defaultReasoningEffort via PUT preferences", async ({
+    page,
+  }) => {
+    await mockBootstrap(page); // defaultReasoningEffort: "auto"
+
+    const preferenceBodies: Array<Record<string, unknown>> = [];
+    await page.route(`${BE_URL}/api/preferences`, async (route) => {
+      if (route.request().method() === "PUT") {
+        preferenceBodies.push(
+          route.request().postDataJSON() as Record<string, unknown>,
+        );
+      }
+      await route.fulfill({ status: 204, body: "" });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    // Pick Extended from the composer effort picker (behind Advanced).
+    await modelModeTrigger(page).click();
+    const menu = pickerMenu(page);
+    await menu.getByTestId("picker-advanced").click();
+    await menu.getByText("Extended", { exact: true }).click();
+
+    // The change rode the SAME preferences PUT path as the settings picker,
+    // carrying the new default — so it survives a reload.
+    await expect
+      .poll(() =>
+        preferenceBodies.some((b) => b.defaultReasoningEffort === "extended"),
+      )
+      .toBe(true);
+  });
+
+  test("saved defaultReasoningEffort hydrates the composer on first paint", async ({
+    page,
+  }) => {
+    // A persisted non-auto default rides the wire WITHOUT the user touching the
+    // picker — proof the composer hydrated from bootstrap.preferences.
+    await mockBootstrap(page, { preferences: { defaultReasoningEffort: "extended" } });
+    await mockCreateConversation(page);
+
+    let sentEffort: unknown;
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      const body = route.request().postDataJSON() as { reasoningEffort?: unknown };
+      sentEffort = body.reasoningEffort;
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+        body: terminalFrame(defaultAttribution()),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByTestId("composer-textarea").fill("Hydrated effort");
+    await page.getByTestId("composer-send").click();
+
+    await expect.poll(() => sentEffort, { timeout: 5_000 }).toBe("extended");
+  });
+
+  test("changing tier in the composer persists defaultTierId via PUT preferences", async ({
+    page,
+  }) => {
+    await mockBootstrap(page); // defaultTierId: "fast"
+
+    const preferenceBodies: Array<Record<string, unknown>> = [];
+    await page.route(`${BE_URL}/api/preferences`, async (route) => {
+      if (route.request().method() === "PUT") {
+        preferenceBodies.push(
+          route.request().postDataJSON() as Record<string, unknown>,
+        );
+      }
+      await route.fulfill({ status: 204, body: "" });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await modelModeTrigger(page).click();
+    await pickerMenu(page).getByText("Pro", { exact: true }).click();
+
+    await expect
+      .poll(() => preferenceBodies.some((b) => b.defaultTierId === "pro"))
+      .toBe(true);
   });
 });
 

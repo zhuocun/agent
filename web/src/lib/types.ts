@@ -495,6 +495,12 @@ export interface Tag {
 // Privacy-first defaults: temporary off, training opt-in OFF.
 export interface UserPreferences {
   defaultTierId: ModelTierId;
+  // Default reasoning-effort the composer starts on (and resets to on a new
+  // chat). Hydrated from bootstrap and persisted via PUT /api/preferences when
+  // the composer effort picker changes, mirroring `defaultTierId`. Default
+  // "auto" — let the router pick the effort per turn. Mirrors the BE
+  // `defaultReasoningEffort` preference field.
+  defaultReasoningEffort: ReasoningEffortId;
   temporaryByDefault: boolean;
   trainingOptIn: boolean; // default false — conversations are not used for training
   sendOnEnter: boolean;

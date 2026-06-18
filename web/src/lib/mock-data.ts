@@ -6,6 +6,7 @@ import type { SlashCommand, UserPreferences } from "@/lib/types";
 // the FE's optimistic baseline before bootstrap resolves the saved row.
 export const MOCK_PREFERENCES: UserPreferences = {
   defaultTierId: "auto",
+  defaultReasoningEffort: "auto",
   temporaryByDefault: false,
   trainingOptIn: false,
   sendOnEnter: true,

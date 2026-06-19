@@ -13,6 +13,10 @@ Work as an orchestrator, not a single-threaded executor. **Subagents are the pri
 
 Worker output is never integrated directly. Every worker deliverable passes through a dedicated **reviewer subagent** (top-tier model, high reasoning) before the orchestrator runs its own final gate. The full chain: **orchestrator → worker → reviewer → orchestrator**.
 
+## Run it to done
+
+Before dispatching anything, define the to-dos and a high-standard definition of done (DoD) — the explicit bar the integrated work must clear. Then orchestrate with perseverance until that DoD is met: keep the chain running, proactively resolve blockers as they surface, and make the decisions the run needs — any choice that advances the DoD is yours to make. Do not pause mid-flight and call a round finished while to-dos remain open. Do not escalate trivial or obvious-answer decisions to the user — decide and keep moving.
+
 ## Mode
 
 Burst has two modes:

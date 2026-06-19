@@ -2695,10 +2695,12 @@ export function ChatThread() {
     setSettingsOpen(false);
   };
 
-  const handleAttributionOpen = () => {
-    reportTelemetry(preferences, "attribution.opened", {
+  const handleViewSpend = () => {
+    reportTelemetry(preferences, "spend.opened", {
       conversationId: activeConversationId,
+      source: "assistant_message",
     });
+    openSettings("general");
   };
 
   const handleAccountChange = async (next: AccountInfo) => {
@@ -3849,7 +3851,7 @@ export function ChatThread() {
                       showFollowUps={
                         !isStreaming && m.id === lastAssistantId
                       }
-                      onAttributionOpen={handleAttributionOpen}
+                      onViewSpend={handleViewSpend}
                       onMemoryOpen={() => openSettings("memory")}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}

@@ -2,7 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Activity, AlertTriangle, Brain, CircleStop, Loader2, RotateCcw, SearchX } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  BarChart3,
+  Brain,
+  CircleStop,
+  Loader2,
+  RotateCcw,
+  SearchX,
+} from "lucide-react";
 
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import {
@@ -85,7 +94,7 @@ interface AssistantMessageProps {
   // Gate the follow-up chips to a single message (the trailing assistant turn)
   // so a long thread doesn't sprout chips under every answer.
   showFollowUps?: boolean;
-  onAttributionOpen?: () => void;
+  onViewSpend?: () => void;
   // Open the Memory manager (D19). Wired to the "Memory used here" chip that
   // appears when this turn injected saved facts.
   onMemoryOpen?: () => void;
@@ -162,7 +171,7 @@ export function AssistantMessage({
   onFeedback,
   onFollowUp,
   showFollowUps,
-  onAttributionOpen,
+  onViewSpend,
   onMemoryOpen,
   defaultReasoningOpen = false,
   error,
@@ -438,20 +447,14 @@ export function AssistantMessage({
       {isFinal && !isErrored ? (
         <div className="space-y-2 pt-1">
           {message.attribution || isStopped ? (
-            // Unified footer byline (W4): the always-visible attribution summary
-            // (model + cost) and the MemoryUsed / Stopped indicators all share
-            // ONE row and ONE grammar — glyph + muted text, no filled chrome.
-            // Previously the chips were filled pills sitting next to a bare
-            // typographic byline (two visual grammars); now they read as further
-            // clauses of the same line. The attribution model+cost summary itself
-            // is untouched and stays always-visible — only the chips around it
-            // changed styling/placement.
+            // Unified footer byline: served-model attribution, optional Spend
+            // hub link, MemoryUsed / Stopped indicators share one grammar.
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               {message.attribution ? (
-                <AttributionRow
-                  attribution={message.attribution}
-                  onOpen={onAttributionOpen}
-                />
+                <AttributionRow attribution={message.attribution} />
+              ) : null}
+              {message.attribution ? (
+                <ViewSpendChip onOpen={onViewSpend} />
               ) : null}
               {message.attribution?.memoryApplied ? (
                 <MemoryUsedChip
@@ -550,6 +553,25 @@ function StoppedChip() {
       <CircleStop aria-hidden className="size-3" />
       <span>Stopped</span>
     </span>
+  );
+}
+
+function ViewSpendChip({ onOpen }: { onOpen?: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label="View spend. Opens spend analytics in settings."
+      data-testid="assistant-spend-link"
+      className={cn(
+        "inline-flex items-center gap-1 text-xs text-muted-foreground/80",
+        "outline-none transition-colors hover:text-foreground",
+        "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+      )}
+    >
+      <BarChart3 aria-hidden className="size-3" />
+      <span>View spend</span>
+    </button>
   );
 }
 

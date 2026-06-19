@@ -31,8 +31,51 @@ identity.
 
 from __future__ import annotations
 
+from typing import Annotated, Literal
+
+from pydantic import Field
+
 from app.schemas.common import CamelModel, MessageRole, ModelTierId
-from app.schemas.message import MessagePart, Substitution
+from app.schemas.message import (
+    AttachmentPart,
+    ReasoningPart,
+    SourcesPart,
+    StatusPart,
+    Substitution,
+    TextPart,
+    ToolCallPart,
+    ToolResultPart,
+)
+
+
+class PublicSubagentPart(CamelModel):
+    """Cost-stripped agentic subagent marker for the public share view.
+
+    Unlike `SubagentPart`, this shape deliberately has nowhere to put
+    `cost_usd` or a nested `attribution` block — the strip is structural, not a
+    runtime filter, so a future refactor can't silently leak per-section spend.
+    """
+
+    type: Literal["subagent"] = "subagent"
+    subagent_id: str
+    label: str
+    role: str
+
+
+# Same content parts as `MessagePart`, but with the cost-stripped
+# `PublicSubagentPart` swapped in for `SubagentPart` so the public parts tree
+# structurally cannot carry per-section cost / attribution.
+PublicMessagePart = Annotated[
+    TextPart
+    | ReasoningPart
+    | StatusPart
+    | SourcesPart
+    | AttachmentPart
+    | ToolCallPart
+    | ToolResultPart
+    | PublicSubagentPart,
+    Field(discriminator="type"),
+]
 
 
 class PublicAttribution(CamelModel):
@@ -52,7 +95,7 @@ class PublicMessage(CamelModel):
 
     id: str
     role: MessageRole
-    parts: list[MessagePart]
+    parts: list[PublicMessagePart]
     created_at: str
     attribution: PublicAttribution | None = None
 

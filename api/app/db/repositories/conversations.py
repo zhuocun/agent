@@ -1175,6 +1175,28 @@ async def revoke_share_token(
     return True
 
 
+def _sanitize_public_message_parts(parts: list[MessagePart]) -> list[dict[str, object]]:
+    """Strip cost-bearing fields from subagent markers before public serialization.
+
+    `SubagentPart` may carry `cost_usd` and nested `attribution` in the DB row;
+    the public contract must not leak them anywhere in the parts tree.
+    """
+    sanitized: list[dict[str, object]] = []
+    for part in parts:
+        if isinstance(part, dict):
+            raw = cast(dict[str, object], deepcopy(part))
+        else:
+            raw = part.model_dump(by_alias=True)
+        if raw.get("type") == "subagent":
+            raw = {
+                k: v
+                for k, v in raw.items()
+                if k not in {"costUsd", "cost_usd", "attribution"}
+            }
+        sanitized.append(raw)
+    return sanitized
+
+
 async def get_public_by_share_token(
     db: AsyncSession, share_token: str
 ) -> PublicConversation | None:
@@ -1201,6 +1223,7 @@ async def get_public_by_share_token(
     messages: list[PublicMessage] = []
     for m in message_rows:
         parts_list = cast(list[MessagePart], m.parts) if m.parts is not None else []
+        public_parts = _sanitize_public_message_parts(parts_list)
         # Re-project attribution through PublicAttribution so ONLY model
         # identity survives — cost_usd / costConfidence / breakdown are dropped
         # because the public schema has no field to receive them.
@@ -1213,7 +1236,7 @@ async def get_public_by_share_token(
                 {
                     "id": str(m.id),
                     "role": m.role,
-                    "parts": parts_list,
+                    "parts": public_parts,
                     "created_at": _iso(m.created_at),
                     "attribution": public_attribution,
                 }

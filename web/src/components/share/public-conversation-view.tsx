@@ -1,24 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { RotateCw, SearchX } from "lucide-react";
 import Link from "next/link";
 import { Loader2, MessageSquareText } from "lucide-react";
 
-import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
-import { ReasoningPanel } from "@/components/chat/reasoning-panel";
 import {
-  SourcesPanel,
-  type SourcesPanelHandle,
-} from "@/components/chat/sources-panel";
-import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
-import { WebSearchPanel } from "@/components/chat/web-search-panel";
-import { ToolPartView } from "@/components/chat/tool-part";
+  AgenticAssistantParts,
+  useSourcesFromParts,
+} from "@/components/chat/agentic-assistant-parts";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { PublicAttributionRow } from "@/components/share/public-attribution-row";
 import { Button } from "@/components/ui/button";
 import { ApiError, fetchPublicConversation } from "@/lib/apiClient";
-import { groupToolParts } from "@/lib/tool-groups";
 import type { PublicConversation, PublicMessage } from "@/lib/types";
 
 // Read-only public-by-link snapshot. NO composer, NO sidebar, NO message
@@ -183,11 +177,10 @@ function ConversationBody({
 }
 
 function PublicMessageItem({ message }: { message: PublicMessage }) {
-  // Hooks must run unconditionally, so they sit above the user-message early
-  // return (harmless for user turns, which have no sources).
-  const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
-  const sourceItems =
-    message.parts.find((p) => p.type === "sources")?.items ?? [];
+  const { sourcesPanelRef, sourceItems } = useSourcesFromParts(message.parts);
+  const ungroundedPart = message.parts.find(
+    (p) => p.type === "sources" && p.requested && p.items.length === 0,
+  );
 
   if (message.role === "user") {
     const text = message.parts
@@ -219,60 +212,13 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
       aria-label="Assistant message"
       data-testid="public-assistant-message"
     >
-      {/* Fold contiguous spans of >=2 settled tool runs into one aggregated
-          ToolGroupPanel (mirrors the private thread); single/live tools pass
-          through flat. No `onDecision` — the share surface is read-only, so the
-          approve/deny seam is intentionally absent. */}
-      {groupToolParts(message.parts).map((part, idx) => {
-        if (part.type === "web_search_group") {
-          return <WebSearchPanel key={idx} group={part} />;
-        }
-        if (part.type === "tool_group") {
-          return <ToolGroupPanel key={idx} group={part} />;
-        }
-        if (part.type === "reasoning") {
-          return (
-            <ReasoningPanel
-              key={idx}
-              text={part.text}
-              durationSec={part.durationSec}
-              isStreaming={false}
-            />
-          );
-        }
-        if (part.type === "text") {
-          return part.text ? (
-            <div key={idx} data-testid="public-assistant-answer">
-              <MarkdownRenderer
-                sources={sourceItems}
-                onCitationClick={(id) =>
-                  sourcesPanelRef.current?.revealSource(id)
-                }
-              >
-                {part.text}
-              </MarkdownRenderer>
-            </div>
-          ) : null;
-        }
-        if (part.type === "sources") {
-          // Citations are not cost-bearing, so they survive the share strip and
-          // render with the same primitive as the private thread — a shared
-          // grounded answer keeps its sources, and an ungrounded turn keeps its
-          // honesty marker.
-          if (part.items.length === 0) {
-            return part.requested ? <PublicUngroundedMarker key={idx} /> : null;
-          }
-          return (
-            <SourcesPanel key={idx} ref={sourcesPanelRef} items={part.items} />
-          );
-        }
-        if (part.type === "tool_call" || part.type === "tool_result") {
-          return <ToolPartView key={idx} part={part} />;
-        }
-        // `status` parts are an in-flight streaming affordance; a static
-        // snapshot has no live status, so they're intentionally omitted.
-        return null;
-      })}
+      <AgenticAssistantParts
+        parts={message.parts}
+        sourcesPanelRef={sourcesPanelRef}
+        sourceItems={sourceItems}
+        answerTestId="public-assistant-answer"
+      />
+      {ungroundedPart ? <PublicUngroundedMarker /> : null}
 
       {message.attribution ? (
         <div className="pt-1">

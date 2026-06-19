@@ -197,6 +197,71 @@ async def test_public_get_has_no_cost_fields(
     assert "requestedTierId" in keys
 
 
+async def test_public_get_strips_subagent_marker_cost(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Agentic subagent markers must not leak per-section cost in public parts."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    async with session_factory() as session:
+        conversation = Conversation(
+            user_id=user_id,
+            title="Agentic shared",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(conversation)
+        await session.flush()
+        session.add(
+            Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                parts=[
+                    {
+                        "type": "subagent",
+                        "subagentId": "primary",
+                        "label": "Agent",
+                        "role": "primary",
+                        "costUsd": 0.0024,
+                        "attribution": {
+                            "requestedTierId": "smart",
+                            "servedTierId": "smart",
+                            "servedModelLabel": "Fake",
+                            "isByok": False,
+                            "costUsd": 0.0024,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": "Worker finding ready.",
+                        "subagentId": "primary",
+                    },
+                ],
+                status="done",
+                attribution=None,
+                created_at=datetime(2026, 1, 1, 12, 0, 5, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+        conv_id = str(conversation.id)
+
+    token = (
+        await client.post(f"/api/conversations/{conv_id}/share")
+    ).json()["shareToken"]
+    public = await client.get(f"/api/share/{token}")
+    assert public.status_code == 200
+    body = public.json()
+    keys = _all_keys(body)
+    leaked = keys & _FORBIDDEN_COST_KEYS
+    assert not leaked, f"public share leaked cost keys: {leaked}"
+    subagent_part = body["messages"][0]["parts"][0]
+    assert subagent_part["type"] == "subagent"
+    assert subagent_part["label"] == "Agent"
+    assert "costUsd" not in subagent_part
+    assert "attribution" not in subagent_part
+
+
 async def test_public_get_unknown_token_404(client: AsyncClient) -> None:
     await client.get("/api/bootstrap")
     response = await client.get("/api/share/does-not-exist")

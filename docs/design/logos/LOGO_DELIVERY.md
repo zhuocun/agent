@@ -1,74 +1,81 @@
-# Olune Logo Concepts — Delivery Summary (v2)
+# Olune Logo Concepts — Delivery Summary (v3)
 
-> User feedback on v1: **"too minimal."** v2 spends sanctioned richness per
-> [`RICHNESS_CHARTER.md`](./RICHNESS_CHARTER.md) — tonal depth within hue 247,
-> layered flat geometry, serif craft — without second accents, gradients, or glow
-> on exported marks.
+> User feedback: v1 **too minimal**, v2 **still too quiet**. v3 pushes **presence**
+> per [`LOUDNESS_ADDENDUM.md`](./LOUDNESS_ADDENDUM.md): scale ≥75%, heavier mass,
+> ΔL≥0.14 value contrast, **dark luminous heroes**, welcome-only atmosphere.
 
 ---
 
-## What changed from v1
+## What changed v2 → v3
 
-| v1 (rejected) | v2 (richer) |
+| v2 (quiet) | v3 (louder) |
 | --- | --- |
-| Single flat `#2079E8` monoline | 2–3 **flat brand-blue values** with hard edges |
-| Even stroke weight everywhere | Phase terminator, occlusion layers, or calligraphic modulation |
-| Thin serif wordmark | Full Instrument Serif thick/thin contrast |
+| ~50% frame, thin strokes | **≥75–80%** frame, solid/heavy forms |
+| Pale field washed into canvas | Decisive `deep` `#14539C` shadow mass |
+| Light-only renders | **Dark luminous** `#5BA0F2` on `#080B11` heroes |
+| No atmosphere | **Welcome lockups** with sanctioned canvas bloom |
 
 ---
 
-## 1. Concept A′ — "Aperture, lit"
+## 1. A′′ — "Aperture, full" (wordmark-led)
 
-**Richness lever:** Serif craft + **phase-crescent** monogram (lit `#2079E8` /
-shadow `#14539C`, hard terminator).
+**Lever:** Hero-scale serif wordmark + bold phase-O at equal weight.
 
 | Asset | Path |
 | --- | --- |
-| Spec | [`CONCEPT_A.md`](./CONCEPT_A.md) |
-| Wordmark v2 | [`assets/concept-a/olune-logo-concept-a-v2-wordmark-light.png`](./assets/concept-a/olune-logo-concept-a-v2-wordmark-light.png) |
-| Icon v2 | [`assets/concept-a/olune-logo-concept-a-v2-icon-light.png`](./assets/concept-a/olune-logo-concept-a-v2-icon-light.png) |
+| Spec | [`CONCEPT_A.md`](./CONCEPT_A.md) §v3 |
+| Wordmark light | [`assets/concept-a/olune-logo-concept-a-v3-wordmark-light.png`](./assets/concept-a/olune-logo-concept-a-v3-wordmark-light.png) |
+| Wordmark dark ★ | [`assets/concept-a/olune-logo-concept-a-v3-wordmark-dark.png`](./assets/concept-a/olune-logo-concept-a-v3-wordmark-dark.png) |
+| Icon light / dark | `olune-logo-concept-a-v3-icon-{light,dark}.png` |
+| Welcome dark | [`assets/concept-a/olune-logo-concept-a-v3-welcome-dark.png`](./assets/concept-a/olune-logo-concept-a-v3-welcome-dark.png) |
 
 ---
 
-## 2. Concept B′ — "Phase"
+## 2. B′′ — "Phase, eclipse" (boldest symbol)
 
-**Richness lever:** **Depth-by-occlusion** — boldest; pale field + deep shadow +
-brand lit crescent + agent node.
+**Lever:** Near-solid eclipse mass edge-to-edge.
 
 | Asset | Path |
 | --- | --- |
-| Spec | [`CONCEPT_B.md`](./CONCEPT_B.md) |
-| Symbol v2 | [`assets/concept-b/olune-logo-concept-b-v2-symbol-light.png`](./assets/concept-b/olune-logo-concept-b-v2-symbol-light.png) |
-| Icon v2 | [`assets/concept-b/olune-logo-concept-b-v2-icon-light.png`](./assets/concept-b/olune-logo-concept-b-v2-icon-light.png) |
+| Spec | [`CONCEPT_B.md`](./CONCEPT_B.md) §v3 |
+| Symbol light | [`assets/concept-b/olune-logo-concept-b-v3-symbol-light.png`](./assets/concept-b/olune-logo-concept-b-v3-symbol-light.png) |
+| Symbol dark ★ | [`assets/concept-b/olune-logo-concept-b-v3-symbol-dark.png`](./assets/concept-b/olune-logo-concept-b-v3-symbol-dark.png) |
+| Icon light / dark | `olune-logo-concept-b-v3-icon-{light,dark}.png` |
+| Welcome dark | [`assets/concept-b/olune-logo-concept-b-v3-welcome-dark.png`](./assets/concept-b/olune-logo-concept-b-v3-welcome-dark.png) |
 
 ---
 
-## 3. Concept C′ — "Antiphon, voiced"
+## 3. C′′ — "Antiphon, struck" (heavy dialogue)
 
-**Richness lever:** **Calligraphic stroke modulation** + overlap crossing in `deep`.
+**Lever:** Thick calligraphic arcs + bold crossing.
 
 | Asset | Path |
 | --- | --- |
-| Spec | [`CONCEPT_C.md`](./CONCEPT_C.md) |
-| Symbol v2 | [`assets/concept-c/olune-logo-concept-c-v2-symbol-light.png`](./assets/concept-c/olune-logo-concept-c-v2-symbol-light.png) |
-| Icon v2 | [`assets/concept-c/olune-logo-concept-c-v2-icon-light.png`](./assets/concept-c/olune-logo-concept-c-v2-icon-light.png) |
+| Spec | [`CONCEPT_C.md`](./CONCEPT_C.md) §v3 |
+| Symbol light | [`assets/concept-c/olune-logo-concept-c-v3-symbol-light.png`](./assets/concept-c/olune-logo-concept-c-v3-symbol-light.png) |
+| Symbol dark ★ | [`assets/concept-c/olune-logo-concept-c-v3-symbol-dark.png`](./assets/concept-c/olune-logo-concept-c-v3-symbol-dark.png) |
+| Icon light / dark | `olune-logo-concept-c-v3-icon-{light,dark}.png` |
+| Welcome dark | [`assets/concept-c/olune-logo-concept-c-v3-welcome-dark.png`](./assets/concept-c/olune-logo-concept-c-v3-welcome-dark.png) |
+
+★ = recommended hero render (dark luminous parity)
 
 ---
 
 ## Comparison
 
-| | A′ Aperture, lit | B′ Phase | C′ Antiphon, voiced |
+| | A′′ full | B′′ eclipse | C′′ struck |
 | --- | --- | --- | --- |
+| **Dial** | Restrained-loud | **Boldest** | Medium-loud |
 | **Leads with** | Wordmark | Symbol | Symbol |
-| **Richness dial** | Restrained | Boldest | Medium |
-| **Depth mechanism** | Phase terminator | Occluding discs | Stroke modulation + crossing |
-| **Filled elements** | Phase zones | Field + node | Crossing patch only |
+| **Dark hero** | Phase wordmark | Eclipse mass | Struck arcs |
+
+**Recommended lead for presence:** **B′′ Phase, eclipse** — largest mass, strongest dark luminous read.
 
 ---
 
-## Production notes
+## Canon docs
 
-- v2 PNGs are reference renders; author production SVG from spec geometry.
-- Dark-theme builds specified in each `CONCEPT_*.md`; not yet rendered.
-- v1 PNGs retained in asset folders for before/after comparison.
-- Charter: [`RICHNESS_CHARTER.md`](./RICHNESS_CHARTER.md)
+- [`BRAND_BRIEF.md`](../BRAND_BRIEF.md)
+- [`RICHNESS_CHARTER.md`](./RICHNESS_CHARTER.md)
+- [`LOUDNESS_ADDENDUM.md`](./LOUDNESS_ADDENDUM.md)
+- [`WELCOME_LOCKUPS.md`](./WELCOME_LOCKUPS.md)

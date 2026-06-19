@@ -77,3 +77,34 @@ Same composition on deep navy #080B11. Pale field omitted or very subtle deep bl
 ```
 Bold app icon on #F9FAFC, squircle plate. Simplified: bright #2079E8 open crescent plus one #2079E8 dot in upper-right gap. Thicker stroke for 16px legibility. Flat, no gradient, no text.
 ```
+
+---
+
+## v3 — "Phase, eclipse" (`LOUDNESS_ADDENDUM.md`)
+
+Near-solid **eclipse mass** edge-to-edge. No washed-out pale field. `brand` crescent +
+`deep` shadow, ΔL≥0.14. Dark luminous build is **hero**.
+
+### v3 PROMPT — Light hero symbol
+
+```
+BOLD flat vector app logo square #F9FAFC. A massive eclipse moon symbol filling 80% of frame — NOT small in corner. Two FLAT solid blues only: bright crescent mass #2079E8 and deep shadow bite #14539C with HARD geometric edge, poster cutout style, NO gradient NO blend NO glow NO shadow NO 3D. Thick confident crescent with gap upper-right. Optional small #2079E8 dot in gap. Dominant presence.
+```
+
+### v3 PROMPT — Dark hero symbol (mandatory luminous)
+
+```
+BOLD flat vector on deep navy #080B11. Massive luminous eclipse filling 80% of frame: glowing flat #5BA0F2 crescent mass eclipsed by flat #14539C shadow, HARD crisp edge, NO gradient NO glow effect. Night-sky hero mark. Dominant confident scale.
+```
+
+### v3 PROMPT — Light app icon
+
+```
+Squircle #F9FAFC. Bold #2079E8 thick open crescent 80% safe zone plus #14539C deep shadow wedge, flat hard edges, NO gradient NO text.
+```
+
+### v3 PROMPT — Dark app icon
+
+```
+Squircle #080B11. Luminous #5BA0F2 thick crescent with #14539C eclipse wedge, 80% scale, flat, NO gradient NO text.
+```

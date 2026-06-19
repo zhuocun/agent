@@ -69,3 +69,33 @@ Same two voiced arcs on #080B11. Arcs #5BA0F2 with calligraphic thick-to-thin mo
 ```
 App icon #F9FAFC plate. Two facing blue #2079E8 arcs with bolder calligraphic stroke (thick flanks, thinner tips), small deep #14539C crossing at lower-left, gaps top and bottom. No text. Flat, legible at small size.
 ```
+
+---
+
+## v3 — "Antiphon, struck" (`LOUDNESS_ADDENDUM.md`)
+
+Heavy modulated arcs (belly ≥88/512). Tighter gaps. Bold `deep` crossing. ≥75% frame.
+
+### v3 PROMPT — Light hero symbol
+
+```
+BOLD flat vector on #F9FAFC square. Letter O from TWO heavy facing arcs "(" ")" filling 80% of frame — thick calligraphic strokes, very bold on flanks, thinner tips, brand blue #2079E8. Large flat #14539C crossing patch lower-left where arcs overlap, HARD edge NO gradient. Tight gaps top/bottom. Struck confident form. NO dot NO text NO glow NO shadow.
+```
+
+### v3 PROMPT — Dark hero symbol
+
+```
+Same heavy struck O on #080B11 filling 80% frame. Arcs luminous #5BA0F2, crossing #14539C, flat HARD edges, NO gradient NO glow. Dominant night-sky presence.
+```
+
+### v3 PROMPT — Light app icon
+
+```
+Squircle #F9FAFC. Bold heavy #2079E8 facing arcs 80% scale, #14539C crossing, flat, NO text NO gradient.
+```
+
+### v3 PROMPT — Dark app icon
+
+```
+Squircle #080B11. Luminous #5BA0F2 heavy arcs, #14539C crossing, 80% scale, flat, NO text.
+```

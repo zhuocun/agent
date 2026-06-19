@@ -90,3 +90,36 @@ Same as light wordmark but background deep navy #080B11. Text #F2F3F4. Phase O: 
 ```
 Same phase-crescent monogram on #080B11 plate. Lit limb #5BA0F2, shadow #14539C. HARD flat edge, NO gradient. No text.
 ```
+
+---
+
+## v3 — "Aperture, full" (`LOUDNESS_ADDENDUM.md`)
+
+Hero-scale wordmark. Phase-O holds **equal weight** to `lune`. Figure ≥75% frame.
+Lit `#2079E8` / shadow `#14539C` (ΔL≥0.14). Dark build: `#5BA0F2` on `#080B11`.
+
+### v3 PROMPT — Light hero wordmark
+
+```
+BOLD flat vector logo, horizontal wordmark "Olune" LARGE filling 75% of frame width on #F9FAFC. Monumental Instrument Serif, capital O then lowercase lune, dramatic thick/thin contrast. l,u,n,e in heavy dark #23262B.
+
+Capital O is a BIG phase crescent: left half solid flat #2079E8, right half solid flat #14539C, HARD crisp vertical terminator, NO gradient NO blend NO glow NO shadow NO 3D NO second hue. O is as visually heavy as the rest of the word. Open gap lower-right. Spell exactly Olune. Dominant confident presence.
+```
+
+### v3 PROMPT — Dark hero wordmark (mandatory luminous)
+
+```
+Same monumental Olune wordmark on deep navy #080B11 filling 75% of frame. Text #F2F3F4. Phase O: luminous flat #5BA0F2 lit limb vs flat #14539C shadow, HARD edge, NO gradient NO glow. Dominant glowing presence on night sky. Spell Olune exactly.
+```
+
+### v3 PROMPT — Light app icon
+
+```
+512 squircle #F9FAFC. HUGE phase crescent filling 80% of safe area: flat #2079E8 left, flat #14539C right, HARD edge, thick massive form, gap lower-right. NO text NO gradient NO glow.
+```
+
+### v3 PROMPT — Dark app icon
+
+```
+512 squircle #080B11. Massive luminous phase crescent 80% safe area: #5BA0F2 vs #14539C flat HARD edge. NO text NO gradient NO glow.
+```

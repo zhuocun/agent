@@ -11,17 +11,11 @@ import {
   CostBreakdownDetails,
   costAnomaly,
 } from "@/components/chat/cost-breakdown";
+import { formatUsdSummary } from "@/lib/money";
 
 export interface AttributionRowProps {
   attribution: ModelAttribution;
   onOpen?: () => void;
-}
-
-function formatCostSummary(n: number): string {
-  if (n === 0) return "$0.00";
-  if (n < 0.0001) return "<$0.0001";
-  const decimals = n < 0.01 ? 4 : n < 1 ? 3 : 2;
-  return `$${n.toFixed(decimals)}`;
 }
 
 // `"auto"` is a request-time alias — the server must resolve it to a concrete
@@ -75,7 +69,7 @@ export function AttributionRow({
 
   // The "<$0.0001" floor already reads as an upper bound, so don't stack a
   // "~" estimate marker on top of it ("~<$0.0001" parses as two operators).
-  const costSummary = formatCostSummary(attribution.costUsd);
+  const costSummary = formatUsdSummary(attribution.costUsd);
   const costText = `${isEstimate && !costSummary.startsWith("<") ? "~" : ""}${costSummary}`;
   const tierLabel = servedTierLabelFor(servedTierId);
   const byokLabel = providerLabel

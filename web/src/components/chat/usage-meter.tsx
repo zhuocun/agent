@@ -3,6 +3,7 @@
 import { Key } from "lucide-react";
 
 import { useT } from "@/lib/i18n/context";
+import { formatUsdMeter } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { UsageBudget } from "@/lib/types";
 
@@ -29,10 +30,6 @@ const TONE_SEVERITY: Record<UsageTone, number> = {
 
 function maxTone(a: UsageTone, b: UsageTone): UsageTone {
   return TONE_SEVERITY[a] >= TONE_SEVERITY[b] ? a : b;
-}
-
-function formatUsd(amount: number): string {
-  return `$${amount.toFixed(amount < 1 ? 4 : 2)}`;
 }
 
 interface UsagePresentation {
@@ -95,14 +92,14 @@ export function getUsagePresentation(usage: UsageBudget): UsagePresentation {
   const remainingText = hasSpendCap
     ? spendRemainingUsd <= 0
       ? "Budget reached"
-      : `${formatUsd(spendRemainingUsd)} left`
+      : `${formatUsdMeter(spendRemainingUsd)} left`
     : limit > 0
       ? remaining === 0
         ? "No usage left"
         : `${remaining.toLocaleString()} left`
       : "Usage metering active";
   const detailText = hasSpendCap
-    ? `${formatUsd(spend)} of ${formatUsd(quota)} spent ${usage.periodLabel}, ${formatUsd(spendRemainingUsd)} remaining`
+    ? `${formatUsdMeter(spend)} of ${formatUsdMeter(quota)} spent ${usage.periodLabel}, ${formatUsdMeter(spendRemainingUsd)} remaining`
     : limit > 0
       ? `${valueText} used, ${remaining.toLocaleString()} remaining ${usage.periodLabel}`
       : `Usage tracked ${usage.periodLabel}`;
@@ -113,7 +110,7 @@ export function getUsagePresentation(usage: UsageBudget): UsagePresentation {
         ? " — approaching limit"
         : "";
   const accessibleLabel = hasSpendCap
-    ? `Spend ${formatUsd(spend)} of ${formatUsd(quota)} ${usage.periodLabel}, ${formatUsd(spendRemainingUsd)} remaining${approachingSuffix}`
+    ? `Spend ${formatUsdMeter(spend)} of ${formatUsdMeter(quota)} ${usage.periodLabel}, ${formatUsdMeter(spendRemainingUsd)} remaining${approachingSuffix}`
     : limit > 0
       ? `Usage ${valueText} used ${usage.periodLabel}, ${remaining.toLocaleString()} remaining${approachingSuffix}`
       : `Usage tracked ${usage.periodLabel}`;

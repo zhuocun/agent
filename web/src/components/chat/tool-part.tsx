@@ -20,6 +20,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { formatUsdSummary } from "@/lib/money";
 import type {
   JsonValue,
   MessagePart,
@@ -56,14 +57,6 @@ function parsePlanApprovalInput(
       typeof input.estimatedCostUsd === "number" ? input.estimatedCostUsd : null,
     capUsd: typeof input.capUsd === "number" ? input.capUsd : null,
   };
-}
-
-// Mirrors attribution-row's cost summary grammar.
-function formatUsd(n: number): string {
-  if (n === 0) return "$0.00";
-  if (n < 0.0001) return "<$0.0001";
-  const decimals = n < 0.01 ? 4 : n < 1 ? 3 : 2;
-  return `$${n.toFixed(decimals)}`;
 }
 
 interface ToolPartViewProps {
@@ -269,10 +262,10 @@ function PlanApprovalDetail({ input }: { input: PlanApprovalInput }) {
         <p className="text-xs text-muted-foreground">
           Estimated cost{" "}
           <span className="font-mono tabular-nums text-foreground">
-            {formatUsd(input.estimatedCostUsd)}
+            {formatUsdSummary(input.estimatedCostUsd)}
           </span>
           {input.capUsd !== null ? (
-            <> of {formatUsd(input.capUsd)} run cap</>
+            <> of {formatUsdSummary(input.capUsd)} run cap</>
           ) : null}
         </p>
       ) : null}

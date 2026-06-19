@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { searchHistory } from "@/lib/apiClient";
+import { formatUsdSearchBadge } from "@/lib/money";
 import type {
   ConversationSummary,
   ModelTierId,
@@ -403,7 +404,7 @@ export function HistorySearchDialog({
                               ) : null}
                               {result.costUsd != null ? (
                                 <Badge variant="outline">
-                                  ${result.costUsd.toFixed(4)}
+                                  {formatUsdSearchBadge(result.costUsd)}
                                 </Badge>
                               ) : null}
                               {result.matchedAt ? (

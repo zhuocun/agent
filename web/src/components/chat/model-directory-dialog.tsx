@@ -6,6 +6,7 @@ import { Check, Database, Minus, ShieldCheck, ShieldOff } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { fetchModelDirectory } from "@/lib/apiClient";
+import { formatDirectoryPricePerM } from "@/lib/money";
 import type {
   ModelDirectoryEntry,
   ModelDirectoryTier,
@@ -22,14 +23,6 @@ export interface ModelDirectoryBodyProps {
   // Drives the load lifecycle. When hosted in the Settings hub this is the "is
   // the Models tab active" flag; standalone it mirrors dialog open.
   active: boolean;
-}
-
-// Per-million-token list price, shown so a user can compare routes. The BE
-// emits 0 for tiers whose model varies per request (the `auto` router); we
-// render those as "varies" rather than a misleading $0.
-function formatPrice(perM: number): string {
-  if (!Number.isFinite(perM) || perM <= 0) return "varies";
-  return `$${perM.toFixed(2)}/M`;
 }
 
 const STATUS_COPY: Record<
@@ -151,8 +144,8 @@ function TierRow({ tier }: { tier: ModelDirectoryTier }): JSX.Element {
         <Capability on={tier.supportsAttachments} label="Files" />
         <Capability on={tier.supportsVision} label="Vision" />
         <span className="font-mono text-xs tabular-nums text-muted-foreground">
-          in {formatPrice(tier.listPriceInPerM)} · out{" "}
-          {formatPrice(tier.listPriceOutPerM)}
+          in {formatDirectoryPricePerM(tier.listPriceInPerM)} · out{" "}
+          {formatDirectoryPricePerM(tier.listPriceOutPerM)}
         </span>
       </div>
     </li>

@@ -34,6 +34,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
+import { formatTierListPriceLine } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type {
   ModelTier,
@@ -791,12 +792,8 @@ function tierMeta(tier: ModelTier): string {
   return parts.filter(Boolean).join(" · ");
 }
 
-// Per-million-token list price hint, e.g. "$0.14/M in · $0.28/M out". Empty for
-// unpriced tiers ("auto", or any tier whose binding is missing a price) so the
-// row simply omits it rather than showing "$0/M".
 function tierPriceMeta(tier: ModelTier): string {
-  if (tier.listPriceInPerM <= 0 && tier.listPriceOutPerM <= 0) return "";
-  return `$${tier.listPriceInPerM}/M in · $${tier.listPriceOutPerM}/M out`;
+  return formatTierListPriceLine(tier.listPriceInPerM, tier.listPriceOutPerM);
 }
 
 // The cheapest tier with an AVAILABLE route and a real price, by combined

@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { fetchSpendAnalytics } from "@/lib/apiClient";
 import type { SpendAnalytics } from "@/lib/types";
+import { formatUsdCurrency } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
 // Spend-analytics dashboard (PRD 05 §4.5 D27). Opened from Settings → Account.
@@ -27,15 +28,6 @@ const RANGE_OPTIONS: ReadonlyArray<{ days: number; label: string }> = [
   { days: 30, label: "30d" },
   { days: 90, label: "90d" },
 ];
-
-function formatUsd(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 6,
-  }).format(value);
-}
 
 // Compact "Jun 5" label for a "YYYY-MM-DD" UTC day key. Parsed as UTC so the
 // rendered day matches the bucket the BE assigned (no local-tz drift).
@@ -202,7 +194,7 @@ export function SpendDialog(): JSX.Element {
                 className="mt-0.5 font-mono text-base tabular-nums"
                 data-testid="spend-total-cumulative"
               >
-                {data ? formatUsd(data.cumulativeMeterUsd) : "—"}
+                {data ? formatUsdCurrency(data.cumulativeMeterUsd) : "—"}
               </p>
             </div>
             <div className="glass-clear rounded-2xl px-3.5 py-3">
@@ -213,7 +205,7 @@ export function SpendDialog(): JSX.Element {
                 className="mt-0.5 font-mono text-base tabular-nums"
                 data-testid="spend-total-surviving"
               >
-                {data ? formatUsd(data.survivingMessagesUsd) : "—"}
+                {data ? formatUsdCurrency(data.survivingMessagesUsd) : "—"}
               </p>
             </div>
           </div>
@@ -244,7 +236,7 @@ export function SpendDialog(): JSX.Element {
                     <div
                       key={day.date}
                       className="group flex h-full min-w-0 flex-1 items-end"
-                      title={`${formatDayLabel(day.date)}: ${formatUsd(day.costUsd)} (${day.messageCount} msg)`}
+                      title={`${formatDayLabel(day.date)}: ${formatUsdCurrency(day.costUsd)} (${day.messageCount} msg)`}
                     >
                       <div
                         className="w-full rounded-t bg-brand/70 transition-colors group-hover:bg-brand"
@@ -288,7 +280,7 @@ export function SpendDialog(): JSX.Element {
                       </span>
                     </span>
                     <span className="shrink-0 font-mono tabular-nums">
-                      {formatUsd(model.costUsd)}
+                      {formatUsdCurrency(model.costUsd)}
                     </span>
                   </li>
                 ))}
@@ -315,7 +307,7 @@ export function SpendDialog(): JSX.Element {
                       </span>
                     </span>
                     <span className="shrink-0 font-mono tabular-nums">
-                      {formatUsd(convo.costUsd)}
+                      {formatUsdCurrency(convo.costUsd)}
                     </span>
                   </li>
                 ))}

@@ -20,6 +20,7 @@ import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import type { MessagePart } from "@/lib/types";
+import { formatUsdSummary } from "@/lib/money";
 
 // One orchestrator subagent's section, shape-compatible with the live
 // `SubagentActivity` from stream-client AND derivable from a persisted
@@ -58,16 +59,7 @@ interface SubagentPanelProps {
 
 type LiveToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
 
-// Mirrors attribution-row's cost summary so per-worker and run totals read in
-// the same grammar as the message byline.
-function formatUsd(n: number): string {
-  if (n === 0) return "$0.00";
-  if (n < 0.0001) return "<$0.0001";
-  const decimals = n < 0.01 ? 4 : n < 1 ? 3 : 2;
-  return `$${n.toFixed(decimals)}`;
-}
-
-// Orchestration-role wording for the row pill. Roles come from the BE
+// Per-worker activity + run-cost meter for an agentic (multi-agent) turn.
 // orchestrator (`primary` / `worker` / `aggregator` / `orchestrator`); unknown
 // future roles fall through verbatim rather than erroring.
 function roleLabel(role: string): string {
@@ -217,8 +209,8 @@ function RunCostMeter({
     capUsd !== null ? Math.min(Math.round((subtotalUsd / capUsd) * 100), 100) : 0;
   const label =
     capUsd !== null
-      ? `Run cost ${formatUsd(subtotalUsd)} of ${formatUsd(capUsd)} cap`
-      : `Run cost ${formatUsd(subtotalUsd)}`;
+      ? `Run cost ${formatUsdSummary(subtotalUsd)} of ${formatUsdSummary(capUsd)} cap`
+      : `Run cost ${formatUsdSummary(subtotalUsd)}`;
   return (
     <span
       className="ml-auto inline-flex shrink-0 items-center gap-2 text-2xs"
@@ -242,8 +234,8 @@ function RunCostMeter({
         </span>
       ) : null}
       <span className="font-mono tabular-nums">
-        {formatUsd(subtotalUsd)}
-        {capUsd !== null ? ` / ${formatUsd(capUsd)}` : ""}
+        {formatUsdSummary(subtotalUsd)}
+        {capUsd !== null ? ` / ${formatUsdSummary(capUsd)}` : ""}
       </span>
     </span>
   );
@@ -390,7 +382,7 @@ function SubagentRow({
     (headerSubtotalUsd === undefined ||
       Math.abs(section.costUsd - headerSubtotalUsd) >= 0.0000001) ? (
       <span className="shrink-0 font-mono text-2xs tabular-nums text-muted-foreground">
-        {formatUsd(section.costUsd)}
+        {formatUsdSummary(section.costUsd)}
       </span>
     ) : null;
 

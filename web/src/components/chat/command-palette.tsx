@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { formatUsdSearchBadge } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
 import { searchConversations, searchHistory } from "@/lib/apiClient";
 import { useSwipeDismiss } from "@/lib/use-swipe-dismiss";
@@ -799,7 +800,7 @@ export function CommandPalette({
                                     ) : null}
                                     {result.costUsd != null ? (
                                       <Badge variant="outline">
-                                        ${result.costUsd.toFixed(4)}
+                                        {formatUsdSearchBadge(result.costUsd)}
                                       </Badge>
                                     ) : null}
                                     {result.matchedAt ? (

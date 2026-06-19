@@ -309,9 +309,10 @@ test.describe("provider selection", () => {
     await expect(page.getByText("Request only")).toBeVisible();
     // The trigger at rest carries the served model label; cost metadata is
     // deferred to the Spend hub (D41).
-    await expect(page.getByTestId("message-attribution")).toHaveText(
+    await expect(page.getByTestId("message-attribution")).toContainText(
       "DeepSeek V4 Flash",
     );
+    await expect(page.getByTestId("message-attribution")).not.toContainText("$");
 
     await page.getByTestId("composer-file-input").setInputFiles({
       name: "draft.txt",

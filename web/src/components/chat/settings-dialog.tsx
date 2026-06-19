@@ -39,7 +39,7 @@ import {
   getUsagePresentation,
   UsageMeter,
 } from "@/components/chat/usage-meter";
-import { SpendDialog } from "@/components/chat/spend-dialog";
+import { SpendAnalyticsPanel } from "@/components/chat/spend-analytics-panel";
 import { MemoryBody } from "@/components/chat/memory-dialog";
 import { TemplateLibraryBody } from "@/components/chat/template-library-dialog";
 import { ActivityBody } from "@/components/chat/activity-dialog";
@@ -354,12 +354,6 @@ function RetentionPicker({
       })}
     </div>
   );
-}
-
-function ledgerEntryLabel(entryType: string): string {
-  if (entryType === "platform_debit") return "Usage debit";
-  if (entryType === "grant") return "Grant";
-  return "Adjustment";
 }
 
 // Monthly spend-cap editor (Feature 3). A small number input bound to the
@@ -806,17 +800,9 @@ function UsageDetails({
   perConversationBudgetUsd: number | null;
   onSavePerConversationBudget: (value: number | null) => void;
 }): JSX.Element {
-  // `SpendDialog` is the same self-contained trigger+dialog regardless of
-  // branch, so it lives in a single `spendDialog` element mounted once into
-  // whichever branch renders — no duplicated source mount. Each branch keeps its
-  // own framing (BYOK nests it in the content column at `pt-1`; the
-  // platform-credit branch sits it full-width above a top border), so the
-  // shared element is dropped into the placement each branch already used.
-  const spendDialog = <SpendDialog />;
-
   if (usage.isByok) {
     return (
-      <div className="glass-clear space-y-2 rounded-2xl px-3.5 py-3">
+      <div className="glass-clear space-y-4 rounded-2xl px-3.5 py-3">
         <div className="flex items-start gap-3">
           <Key
             aria-hidden
@@ -831,14 +817,18 @@ function UsageDetails({
               Model token charges bill to your provider key. Platform credits
               remain available if you remove the key.
             </p>
-            <p className="text-xs text-muted-foreground">
-              Credit balance:{" "}
-              <span className="font-mono tabular-nums text-foreground">
-                {formatUsdCurrencyOrNa(usage.creditBalanceUsd)}
-              </span>
-            </p>
-            <div className="pt-1">{spendDialog}</div>
+            {usage.creditBalanceUsd != null ? (
+              <p className="text-xs text-muted-foreground">
+                Credit balance:{" "}
+                <span className="font-mono tabular-nums text-foreground">
+                  {formatUsdCurrencyOrNa(usage.creditBalanceUsd)}
+                </span>
+              </p>
+            ) : null}
           </div>
+        </div>
+        <div className="border-t border-border/50 pt-3">
+          <SpendAnalyticsPanel />
         </div>
       </div>
     );
@@ -860,7 +850,7 @@ function UsageDetails({
   return (
     <div
       className={cn(
-        "glass-clear space-y-3 rounded-2xl px-3.5 py-3",
+        "glass-clear space-y-4 rounded-2xl px-3.5 py-3",
         isExhausted && "border-destructive/30",
         isNearLimit && !isExhausted && "border-warning-foreground/25",
       )}
@@ -887,95 +877,16 @@ function UsageDetails({
           </p>
         </div>
       </div>
-      <Collapsible className="space-y-3">
-        <CollapsibleTrigger
-          data-testid="spending-details-toggle"
-          className="flex w-full items-center gap-2 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
-        >
-          <ChevronRight
-            aria-hidden
-            className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
-          />
-          Spending details
-        </CollapsibleTrigger>
-        <CollapsibleContent className="space-y-3">
-          <dl className="grid grid-cols-2 gap-2 text-xs">
-            <div>
-              <dt className="text-muted-foreground">Used</dt>
-              <dd className="mt-0.5 font-mono tabular-nums">
-                {budget.used.toLocaleString()}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Remaining</dt>
-              <dd
-                className={cn(
-                  "mt-0.5 font-mono tabular-nums",
-                  isExhausted
-                    ? "text-destructive"
-                    : isNearLimit
-                      ? "text-warning"
-                      : "text-foreground",
-                )}
-              >
-                {budget.remaining.toLocaleString()}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Limit</dt>
-              <dd className="mt-0.5 font-mono tabular-nums">
-                {budget.limit.toLocaleString()}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Period</dt>
-              <dd className="mt-0.5">{usage.periodLabel}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Spend</dt>
-              <dd className="mt-0.5 font-mono tabular-nums">
-                {formatUsdCurrencyOrNa(usage.monthlySpendUsd)}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground">Credits</dt>
-              <dd className="mt-0.5 font-mono tabular-nums">
-                {formatUsdCurrencyOrNa(usage.creditBalanceUsd)}
-              </dd>
-            </div>
-          </dl>
-          {usage.recentLedgerEntries && usage.recentLedgerEntries.length > 0 ? (
-            <div className="space-y-1 border-t border-border/50 pt-2 text-xs">
-              {usage.recentLedgerEntries.slice(0, 3).map((entry) => (
-                <div
-                  key={entry.id}
-                  className="flex items-center justify-between gap-3"
-                >
-                  <span className="min-w-0 truncate text-muted-foreground">
-                    {entry.description ?? ledgerEntryLabel(entry.entryType)}
-                  </span>
-                  <span
-                    className={cn(
-                      "shrink-0 font-mono tabular-nums",
-                      entry.amountUsd < 0
-                        ? "text-muted-foreground"
-                        : "text-foreground",
-                    )}
-                  >
-                    {formatUsdCurrencyOrNa(entry.amountUsd)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <BudgetEditor usage={usage} onSaveBudget={onSaveBudget} />
-          <PerConversationBudgetEditor
-            value={perConversationBudgetUsd}
-            onSave={onSavePerConversationBudget}
-          />
-        </CollapsibleContent>
-      </Collapsible>
-      <div className="border-t border-border/50 pt-3">{spendDialog}</div>
+      <div className="space-y-3 border-t border-border/50 pt-3">
+        <BudgetEditor usage={usage} onSaveBudget={onSaveBudget} />
+        <PerConversationBudgetEditor
+          value={perConversationBudgetUsd}
+          onSave={onSavePerConversationBudget}
+        />
+      </div>
+      <div className="border-t border-border/50 pt-3">
+        <SpendAnalyticsPanel />
+      </div>
     </div>
   );
 }

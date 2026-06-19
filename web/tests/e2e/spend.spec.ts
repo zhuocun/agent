@@ -3,7 +3,7 @@
 // Mocks the BE so the FE half is exercised deterministically: a mocked
 // /api/bootstrap mints a guest, and /api/account/spend returns a fixed
 // analytics payload that echoes the requested `days` back as `rangeDays`. The
-// spec opens Settings → "View spend details" and asserts the two labelled
+// spec opens Settings → Account and asserts the inline Usage & spend panel:
 // totals, the daily bars, the by-model + top-conversation lists, the export
 // affordances, and that switching the range re-fetches.
 
@@ -119,12 +119,11 @@ async function mockSpend(
   });
 }
 
-async function openSpendDialog(page: Page): Promise<void> {
+async function openSpendPanel(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Account menu" }).click();
   await page.getByRole("menuitem", { name: "Settings" }).click();
   await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
-  await page.getByTestId("spend-dialog-trigger").click();
-  await expect(page.getByTestId("spend-dialog")).toBeVisible();
+  await expect(page.getByTestId("spend-analytics-panel")).toBeVisible();
 }
 
 test.describe("spend analytics dashboard", () => {
@@ -136,7 +135,7 @@ test.describe("spend analytics dashboard", () => {
 
     await page.goto("/");
     await waitForBootstrap(page);
-    await openSpendDialog(page);
+    await openSpendPanel(page);
 
     // Two clearly-labelled, honest totals. Scope the label lookup to each
     // total's card (its testid value's parent) so the same words inside the
@@ -182,7 +181,7 @@ test.describe("spend analytics dashboard", () => {
 
     await page.goto("/");
     await waitForBootstrap(page);
-    await openSpendDialog(page);
+    await openSpendPanel(page);
 
     // Default request is the 30-day window.
     await expect.poll(() => requestedDays.includes(30)).toBe(true);

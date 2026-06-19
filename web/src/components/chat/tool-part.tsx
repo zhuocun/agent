@@ -72,9 +72,11 @@ interface ToolPartViewProps {
   // decision. Only wired (and the buttons only shown) for the LAST assistant
   // message whose turn is paused on this call — the parent gates it.
   onDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  /** When nested inside a search/tool list, drop per-result card chrome. */
+  embedded?: boolean;
 }
 
-export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
+export function ToolPartView({ part, onDecision, embedded = false }: ToolPartViewProps) {
   const isResult = part.type === "tool_result";
   const status = part.status ?? (isResult ? "succeeded" : "pending");
   const approvalState = part.approvalState ?? "not_required";
@@ -109,12 +111,25 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
   // must stay reachable, so collapsing them would regress the HITL flow.
   const isTerminal =
     status === "succeeded" || status === "failed" || status === "cancelled";
+  // Nested inside a search/tool list: borderless rows for settled successes —
+  // the green checkmark carries status; keep full chrome for failures/HITL.
+  const compactEmbedded =
+    embedded &&
+    isTerminal &&
+    status === "succeeded" &&
+    planApproval == null &&
+    !showApprovalControls;
 
   const outerClassName = cn(
-    "flex max-w-full items-start gap-2 rounded-xl border px-3 py-2.5 text-sm",
-    destructive
-      ? "border-destructive/20 bg-destructive/5 text-destructive"
-      : "border-foreground/[0.06] bg-foreground/[0.02] text-muted-foreground",
+    "flex max-w-full items-start gap-2 text-sm",
+    compactEmbedded
+      ? "py-1 text-muted-foreground"
+      : cn(
+          "rounded-xl border px-3 py-2.5",
+          destructive
+            ? "border-destructive/20 bg-destructive/5 text-destructive"
+            : "border-foreground/[0.06] bg-foreground/[0.02] text-muted-foreground",
+        ),
   );
 
   // The summary line (icon + label + role + status word) is shared between the
@@ -127,15 +142,17 @@ export function ToolPartView({ part, onDecision }: ToolPartViewProps) {
     approvalState !== "not_required" &&
     !(status === "awaiting_approval" && approvalState === "pending");
 
+  const showStatusPill = !(compactEmbedded && status === "succeeded");
+
   const summaryRow = (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       <span className="truncate font-medium text-foreground">{label}</span>
-      {planApproval ? null : (
+      {planApproval || compactEmbedded ? null : (
         <span className="text-xs text-muted-foreground">
           {isResult ? "result" : "tool call"}
         </span>
       )}
-      <StatusPill status={status} />
+      {showStatusPill ? <StatusPill status={status} /> : null}
       {showApprovalPill ? <ApprovalPill state={approvalState} /> : null}
     </div>
   );

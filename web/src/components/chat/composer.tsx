@@ -43,7 +43,6 @@ import {
 } from "@/components/chat/template-picker-popover";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
 import { estimateTurnCost } from "@/lib/cost-estimate";
-import { formatUsdPrecise } from "@/lib/money";
 import { formatAttachmentSize } from "@/lib/format-attachment-size";
 import { fetchPromptTemplates } from "@/lib/apiClient";
 import { useSpeechRecognition } from "@/lib/use-speech-recognition";
@@ -1510,14 +1509,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             )}
             data-testid="cost-estimate"
           >
-            {costEstimate.usd === null ? (
-              <>Estimate unavailable for Auto</>
-            ) : (
-              <>
-                Est. {formatUsdPrecise(costEstimate.usd)} ·{" "}
-                {estimateTokenFmt.format(costEstimate.tokens)} tokens in
-              </>
-            )}
+            {estimateTokenFmt.format(costEstimate.tokens)} tokens in
           </p>
         ) : null}
       </div>

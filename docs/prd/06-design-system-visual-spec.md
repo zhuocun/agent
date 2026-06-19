@@ -108,12 +108,12 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 
 ### 5.4 Model attribution row **[P0]**
 - Every assistant message shows served model/tier without hover.
-- Expandable details: tokens, cost, estimate badge, routing notes.
+- Static byline: served model, tier, provider, substitution callout, BYOK chip, JSON validity chip — **no inline per-turn cost** (D41). A **View spend** link beside the byline opens the Spend hub.
 - Served-vs-requested substitution uses `substitution-callout`, not generic error red.
 - BYOK turns show "Your API key" badge.
-- **[shipped] Cost-anomaly callout:** when no substitution clause is present, the byline can lead with a muted "why this cost" reason — "High reasoning cost" / "Long context" / "No cache hit" — derived from the cost breakdown (`attribution-row.tsx`, `cost-breakdown.tsx` `costAnomaly`).
+- ~~**[shipped] Cost-anomaly callout:**~~ **Removed (D41):** in-thread "why this cost" clauses deferred to the Spend hub; anomaly signals remain in persisted `cost_breakdown` for export/analytics.
 - **[shipped] JSON-output chip:** when structured output was requested, the row shows a "JSON" chip, switching to "JSON (invalid)" (warning glyph) when the output failed to parse — the validity state reads in **text, not color alone** (`attribution-row.tsx`).
-- **[P1] Audio-cost chip (read-aloud Track B / dictation).** When a turn's read-aloud or dictation rode a *billed* neural-audio route (not the free OS engine), the row carries an audio-units cost component in the same expandable cost detail (per-minute STT / per-character TTS), with `cost_confidence` semantics intact; a route with no published audio rate labels as estimate/unavailable, never `$0.00`-exact. The free OS-voice path shows no audio cost. Cite D22.
+- **[P1] Audio-cost chip (read-aloud Track B / dictation).** When a turn's read-aloud or dictation rode a *billed* neural-audio route (not the free OS engine), the Spend hub (or a future audio-specific breakdown row) carries the audio-units cost component (per-minute STT / per-character TTS), with `cost_confidence` semantics intact; a route with no published audio rate labels as estimate/unavailable, never `$0.00`-exact. The free OS-voice path shows no audio cost. Cite D22.
 - **[P2] Generated-image part attribution + provenance badge.** A generated-media (`image`) part renders its own attribution: **which model produced it** and a **per-image cost** (priced per-image/megapixel → the cost breakdown; estimate/unavailable label when the rate is unknown — never an un-attributed image), using the same served-vs-requested substitution and `cost_confidence` treatment as text. Every generated image also carries a visible **"AI-generated" provenance badge** (a `trust-badge`-family affordance, announced to screen readers) backed by a structured provenance field (model · provider · timestamp · marking-standard/version); with content-marking unconfigured the visible "AI-generated" affordance still renders. The provenance badge is a **content claim, not cost data** — it is retained on public share while cost/tokens are stripped (PRD 07 §6.4). Cite D32 (and D22 for the cost/attribution spine).
 
 ### 5.5 Usage / budget meter **[P0]**
@@ -194,6 +194,6 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 ## 8. Open questions
 
 1. Brand font vs system stack — only if LCP budget allows.
-2. Cost default visibility — always-visible vs collapsed + expand; recommendation: collapsed with visible summary.
+2. **Resolved (D41):** cost visibility is hub-first — no in-thread per-message `$`; View spend link on each assistant message opens the Spend hub.
 3. EU content-marking badge — pending legal resolution in PRD 04/05.
 4. RTL QA depth for MVP — logical CSS is P0; full locale QA can phase.

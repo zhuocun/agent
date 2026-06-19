@@ -31,7 +31,7 @@ Explicitly out of scope:
 Shipped FE (behind `AGENTIC_ENABLED`; PRD 01):
 
 - **Deep Research toggle** in the composer mode-row (`model-mode-picker.tsx`), peer of web-search / reasoning-effort; hidden when bootstrap does not advertise `agenticEnabled`.
-- **Subagent activity panel** (`subagent-panel.tsx`): per-worker label, status, intermediate output, and live per-run cost meter.
+- **Subagent activity panel** (`subagent-panel.tsx`): per-worker label, status, intermediate output, and live per-run cost meter (per-subagent per-row cost badges removed per D41).
 - **Plan-approval surface**: reuses the shipped tool-approval UI (`tool-part.tsx` approve/deny) at the orchestration boundary — plan + cost estimate in the pause card.
 
 Remaining FE gaps (see **Remaining gaps**): per-subagent served-model/substitution callout, high-cost composer hint, PRD 08 partial-synthesis warning chip, share-view subagent rendering.

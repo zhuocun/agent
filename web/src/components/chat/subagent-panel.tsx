@@ -184,8 +184,6 @@ export function SubagentPanel({
                 toolGroups={toolGroupsBySubagentId?.get(section.subagentId)}
                 liveToolParts={liveToolPartsBySubagentId?.get(section.subagentId)}
                 onToolDecision={onToolDecision}
-                showCostBadge={sections.length > 1}
-                headerSubtotalUsd={subtotalUsd}
               />
             </li>
           ))}
@@ -361,30 +359,16 @@ function SubagentRow({
   toolGroups,
   liveToolParts,
   onToolDecision,
-  showCostBadge = true,
-  headerSubtotalUsd,
 }: {
   section: SubagentSection;
   webSearchGroups?: WebSearchGroup[];
   toolGroups?: ToolGroup[];
   liveToolParts?: LiveToolPart[];
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
-  showCostBadge?: boolean;
-  headerSubtotalUsd?: number;
 }) {
   const isRunning = section.status === "running";
   const hasTextDetail =
     section.reasoning.length > 0 || section.answer.length > 0;
-
-  const costBadge =
-    showCostBadge &&
-    section.costUsd !== undefined &&
-    (headerSubtotalUsd === undefined ||
-      Math.abs(section.costUsd - headerSubtotalUsd) >= 0.0000001) ? (
-      <span className="shrink-0 font-mono text-2xs tabular-nums text-muted-foreground">
-        {formatUsdSummary(section.costUsd)}
-      </span>
-    ) : null;
 
   const summaryRow = (trailing?: ReactNode) => (
     <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -395,7 +379,6 @@ function SubagentRow({
         {roleLabel(section.role)}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {costBadge}
         {trailing}
       </span>
     </div>

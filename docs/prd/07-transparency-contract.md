@@ -192,8 +192,8 @@ When **agentic mode** (PRD 02 §4.6 FR-26c–FR-26k; PRD 00 §11 D33–D40) fans
 
 ### 6.1 In-app thread **[P0]**
 - Every assistant message shows served model/tier without hover.
-- Cost can be compact, but it must be accessible from the message.
-- Estimate labels must be explicit.
+- Per-turn cost is **not shown in the thread**; each assistant message links to the central **Spend** hub (Settings → Usage & spend), which is the canonical surface for per-message and longitudinal cost. Served model/tier and substitution callouts remain in-thread.
+- Estimate labels must be explicit wherever cost *is* shown (Spend hub, usage meter, model picker list prices, agentic run-cost meter).
 - Served-vs-requested callouts include requested model/tier, served model/tier, and reason.
 
 ### 6.2 Composer/header **[P0]**
@@ -213,7 +213,7 @@ One matrix, surfaces as rows, data classes as columns. The load-bearing rule is 
 
 | Surface | Model | Cost | Tokens | Sources | Memory facts | Gen-media provenance |
 |---|---:|---:|---:|---:|---:|---:|
-| In-app message row | Yes | Yes | Optional/expanded | Yes | Yes | Yes |
+| In-app message row | Yes | Hub† | Optional/expanded | Yes | Yes | Yes |
 | Copy-as-markdown | Yes | Optional default-on | Optional default-on | Yes | Yes | Yes |
 | GDPR/data export | Yes | Yes | Yes | Yes | Yes | Yes |
 | Multi-format export — PDF/.docx (private) | Yes | Optional default-on | Optional default-on | Yes | Yes | Yes |
@@ -222,6 +222,7 @@ One matrix, surfaces as rows, data classes as columns. The load-bearing rule is 
 
 Column rules (each consistent with the public-strip / private-retain asymmetry):
 
+- **Hub† (in-app cost).** Cost is not rendered inline in the thread; it is accessible from the per-message **View spend** link into the Spend hub (Settings → Usage & spend). Persistence, copy/export, and GDPR rows below retain cost unchanged — Option B is display-only in the thread.
 - **Sources (D24, §4.3).** Sources are model-identity-class data, not cost — so a **web** source's `title`/`url`/`domain`/`snippet` is **retained** on a public share (and share-safe export); a **private-knowledge** (`knowledge`/`connector`) citation's `title`/`snippet` is owner-only and is **redacted** on any public/share-safe surface (only a "from your knowledge base" marker survives). Private surfaces (in-app, copy, GDPR export, private PDF/.docx) retain full source detail for both origins.
 - **Memory facts (D19).** The per-message "memory used here" indicator and the list of injected facts are private user data (PII). They are retained in the in-app thread and in private export/copy, but are **OMITTED** from public share and share-safe export — the memory analogue of the cost exception (model-attribution Yes / cost No / memory Omitted). Pinned here per PRD 01 §4.8 / A2.
 - **Generated-media provenance (D32).** A generated image's visible "AI-generated" badge + its structured provenance field (model · provider · timestamp · marking-standard/version) is a **content claim, not cost data** — it is **RETAINED** on every surface, including public share and share-safe export (it must *not* be stripped). Only the image's per-image *cost* follows the cost column and is stripped on public share. This is the EU AI Act Art. 50(2)-aligned marking surface (built only with image-gen and after legal sign-off); the shipped Art. 50(1) interaction disclosure is separate.
@@ -269,6 +270,7 @@ The product must never:
 6. Public share leak test (and the share-safe PDF/.docx variant) finds zero cost/token fields, and: contains **web** source `title`/`url`/`domain`/`snippet` but **no** private-knowledge (`knowledge`/`connector`) source title/snippet (only a redacted marker), contains **no** memory facts / `injectedMemoryFactIds`, and **retains** generated-media provenance metadata (provenance present, cost absent) — per §6.4 and §4.3.
 7. BYOK turns set `is_byok = true` and do not decrement platform token-charge budget.
 8. Registry no-hardcoding grep catches model IDs/prices outside approved config.
+9. No assistant message renders an inline per-turn cost figure or cost-breakdown popover in the thread; every finished assistant message exposes a **View spend** affordance that opens the Spend hub (asserted present on a finished-turn fixture; inline cost absent).
 
 ---
 
@@ -279,7 +281,7 @@ The product must never:
 | Silent downgrade incidents | served != requested and no reason; target 0 |
 | Substitution rate | % turns with non-null reason |
 | Cost estimate rate | % turns where `cost_confidence != exact` |
-| Attribution expand rate | % messages where user expands cost details |
+| Spend-hub open rate | % finished turns whose View-spend link is used |
 | BYOK share | % turns billed to user keys |
 | Substitution thumbs-down delta | quality/trust proxy after substitution |
 
@@ -288,6 +290,6 @@ The product must never:
 ## 10. Open questions
 
 1. Exact tolerance for estimate vs provider invoice per provider.
-2. Default cost visibility: compact always-on vs expanded on demand.
+2. **Resolved (Option B / D41):** in-thread per-message cost removed; cost deferred to the central Spend hub via a per-message View-spend link. Default visibility is hub-first, not always-on in the thread.
 3. One-click "retry with requested model" on substitution (P1?).
 4. Final free-tier default model route (PRD 02 §9.9).

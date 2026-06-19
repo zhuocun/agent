@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { formatUsdSearchBadge } from "@/lib/money";
 import { Badge } from "@/components/ui/badge";
 import { searchConversations, searchHistory } from "@/lib/apiClient";
 import { useSwipeDismiss } from "@/lib/use-swipe-dismiss";
@@ -789,18 +788,11 @@ export function CommandPalette({
                                     {snippet}
                                   </span>
                                 ) : null}
-                                {result.servedModelLabel ||
-                                result.costUsd != null ||
-                                result.matchedAt ? (
+                                {result.servedModelLabel || result.matchedAt ? (
                                   <span className="flex flex-wrap items-center gap-1.5 pt-0.5">
                                     {result.servedModelLabel ? (
                                       <Badge variant="secondary">
                                         {result.servedModelLabel}
-                                      </Badge>
-                                    ) : null}
-                                    {result.costUsd != null ? (
-                                      <Badge variant="outline">
-                                        {formatUsdSearchBadge(result.costUsd)}
                                       </Badge>
                                     ) : null}
                                     {result.matchedAt ? (

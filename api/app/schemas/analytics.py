@@ -13,6 +13,7 @@ AnalyticsEventType = Literal[
     "settings.opened",
     "usage.viewed",
     "attribution.opened",
+    "spend.opened",
     "tier.changed",
     "provider.changed",
     "byok.form_opened",

@@ -307,8 +307,8 @@ test.describe("provider selection", () => {
       "data:text/plain;base64,",
     );
     await expect(page.getByText("Request only")).toBeVisible();
-    // The trigger at rest carries only the served model label; cost, BYOK
-    // and JSON metadata moved into the popover header.
+    // The trigger at rest carries the served model label; cost metadata is
+    // deferred to the Spend hub (D41).
     await expect(page.getByTestId("message-attribution")).toHaveText(
       "DeepSeek V4 Flash",
     );

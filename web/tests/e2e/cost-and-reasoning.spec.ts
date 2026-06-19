@@ -1,9 +1,9 @@
 // FE-side coverage for the cost/reasoning transparency features:
 //   1. reasoning-effort wiring + cost/latency hint chips
-//   2. pre-send cost & token estimate in the composer
+//   2. pre-send token estimate in the composer (no dollar figure — D41)
 //   3. monthly budget cap settings UI (+ refusal surface)
 //   4. regenerate-with-a-different-model
-//   5. cost-anomaly callouts
+//   5. View spend link opens the Spend hub
 //   + Phase 2: provider-fallback substitution clause (real BE)
 //
 // Most specs MOCK the BE via `page.route` so the FE half is exercised
@@ -243,7 +243,7 @@ test.describe("reasoning effort", () => {
 // --- Feature 2: pre-send cost & token estimate ------------------------------
 
 test.describe("pre-send estimate", () => {
-  test("estimate appears for a priced tier, rises on Pro, and is unavailable for Auto", async ({
+  test("estimate shows token count for a priced tier and Auto", async ({
     page,
   }) => {
     await mockBootstrap(page); // defaultTierId: "fast"
@@ -255,39 +255,35 @@ test.describe("pre-send estimate", () => {
     // No estimate before there's any draft text.
     await expect(estimate).toHaveCount(0);
 
-    // A long message on the Fast tier produces a concrete dollar estimate.
+    // A long message on the Fast tier produces a token estimate (no dollar figure).
     const longText = "word ".repeat(400); // ~2000 chars ⇒ ~500 input tokens
     await page.getByTestId("composer-textarea").fill(longText);
     await expect(estimate).toBeVisible();
-    await expect(estimate).toContainText("Est. $");
+    await expect(estimate).not.toContainText("$");
     await expect(estimate).toContainText("tokens in");
 
     const fastText = (await estimate.textContent()) ?? "";
-    const fastUsd = parseEstimateUsd(fastText);
-    expect(fastUsd).toBeGreaterThan(0);
+    const fastTokens = parseEstimateTokens(fastText);
+    expect(fastTokens).toBeGreaterThan(0);
 
-    // Switch to Pro (pricier) — same draft, the dollar estimate rises. Scope to
-    // the open menu so the row click never collides with the trigger label.
+    // Switch to Pro (pricier) — same draft, token count unchanged.
     await modelModeTrigger(page).click();
     await pickerMenu(page).getByText("Pro", { exact: true }).click();
-    await expect(estimate).toContainText("Est. $");
+    await expect(estimate).not.toContainText("$");
     const proText = (await estimate.textContent()) ?? "";
-    const proUsd = parseEstimateUsd(proText);
-    expect(proUsd).toBeGreaterThan(fastUsd);
+    expect(parseEstimateTokens(proText)).toBe(fastTokens);
 
-    // Switch to Auto (no single price) — the estimate reads "unavailable".
-    // "Auto" labels two rows (the Model tier and the Reasoning-effort option);
-    // the Model group renders first, so the tier "Auto" is the first match.
+    // Switch to Auto — token estimate still renders when draft text exists.
     await modelModeTrigger(page).click();
     await pickerMenu(page).getByText("Auto", { exact: true }).first().click();
-    await expect(estimate).toContainText("Estimate unavailable for Auto");
+    await expect(estimate).toContainText("tokens in");
+    await expect(estimate).not.toContainText("$");
   });
 });
 
-// Pull the dollar number out of an estimate line like "Est. $0.0123 · 500 tokens in".
-function parseEstimateUsd(text: string): number {
-  const match = text.match(/\$([0-9]+(?:\.[0-9]+)?)/);
-  return match ? Number(match[1]) : NaN;
+function parseEstimateTokens(text: string): number {
+  const match = text.match(/([0-9,]+)\s+tokens in/);
+  return match ? Number(match[1].replace(/,/g, "")) : NaN;
 }
 
 // --- Feature 3: monthly budget cap ------------------------------------------
@@ -445,61 +441,61 @@ test.describe("regenerate with model", () => {
   });
 });
 
-// --- Feature 5: cost-anomaly callouts ---------------------------------------
+// --- View spend hub link ----------------------------------------------------
 
-test.describe("cost anomaly", () => {
-  test("a high-reasoning turn surfaces a 'why' clause on the attribution row", async ({
+test.describe("view spend link", () => {
+  test("finished assistant turns link to the Spend hub and show no inline cost", async ({
     page,
   }) => {
     await mockBootstrap(page);
     await mockCreateConversation(page);
 
-    // Terminal with reasoningTokens > outputTokens ⇒ "High reasoning cost".
     await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
       await route.fulfill({
         status: 200,
         headers: { "Content-Type": "text/event-stream" },
-        body: terminalFrame(
-          defaultAttribution({
-            costUsd: 0.02,
-            breakdown: {
-              currency: "USD",
-              listPriceInPerM: 0.14,
-              listPriceOutPerM: 0.28,
-              inputTokens: 100,
-              outputTokens: 50,
-              reasoningTokens: 5000,
-              cachedInputTokens: 0,
-              longContext: { flat: true },
-              promoApplied: false,
-              subtotalUsd: 0.02,
-              sessionSurchargeUsd: 0,
-            },
-          }),
-        ),
+        body: terminalFrame(defaultAttribution({ costUsd: 0.02 })),
+      });
+    });
+
+    await page.route(`${BE_URL}/api/account/spend*`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          rangeDays: 30,
+          currency: "USD",
+          survivingMessagesUsd: 0.02,
+          cumulativeMeterUsd: 0.02,
+          daily: [],
+          byModel: [],
+          byConversation: [],
+        }),
       });
     });
 
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await page.getByTestId("composer-textarea").fill("Reason deeply");
+    await page.getByTestId("composer-textarea").fill("Hello");
     await page.getByTestId("composer-send").click();
     const assistant = page.getByTestId("assistant-message").last();
     await expect(assistant).toHaveAttribute("data-status", "done", {
       timeout: 15_000,
     });
 
-    // The muted "why" clause appears inline on the byline.
-    const anomaly = assistant.getByTestId("attribution-anomaly");
-    await expect(anomaly).toBeVisible();
-    await expect(anomaly).toContainText("High reasoning cost");
-
-    // It also appears as a one-line callout inside the cost breakdown popover.
-    await page.getByTestId("message-attribution").click();
-    await expect(page.getByTestId("cost-anomaly")).toContainText(
-      "High reasoning cost",
+    await expect(assistant.getByTestId("message-attribution")).toBeVisible();
+    await expect(assistant.getByTestId("message-attribution")).not.toContainText(
+      "$",
     );
+
+    const spendLink = assistant.getByTestId("assistant-spend-link");
+    await expect(spendLink).toBeVisible();
+    await spendLink.click();
+
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByTestId("spend-analytics-panel")).toBeVisible();
   });
 });
 

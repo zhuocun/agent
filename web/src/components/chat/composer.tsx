@@ -43,6 +43,7 @@ import {
 } from "@/components/chat/template-picker-popover";
 import { MOCK_COMMANDS } from "@/lib/mock-data";
 import { estimateTurnCost } from "@/lib/cost-estimate";
+import { formatUsdPrecise } from "@/lib/money";
 import { formatAttachmentSize } from "@/lib/format-attachment-size";
 import { fetchPromptTemplates } from "@/lib/apiClient";
 import { useSpeechRecognition } from "@/lib/use-speech-recognition";
@@ -202,15 +203,6 @@ function attachmentIconType(
   mediaType: AttachmentPart["mediaType"],
 ): "image" | "file" {
   return mediaType === "image" ? "image" : "file";
-}
-
-// USD formatter for the pre-send estimate — mirrors cost-breakdown.tsx's
-// `formatUsd` (sub-cent figures get more decimals so a fractional-cent estimate
-// doesn't collapse to "$0.00").
-function formatEstimateUsd(n: number): string {
-  if (n === 0) return "$0.00";
-  const decimals = n < 0.01 ? 6 : n < 1 ? 4 : 2;
-  return `$${n.toFixed(decimals)}`;
 }
 
 const estimateTokenFmt = new Intl.NumberFormat("en-US");
@@ -1522,7 +1514,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               <>Estimate unavailable for Auto</>
             ) : (
               <>
-                Est. {formatEstimateUsd(costEstimate.usd)} ·{" "}
+                Est. {formatUsdPrecise(costEstimate.usd)} ·{" "}
                 {estimateTokenFmt.format(costEstimate.tokens)} tokens in
               </>
             )}

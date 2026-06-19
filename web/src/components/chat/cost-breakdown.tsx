@@ -5,6 +5,10 @@ import { Check, Info, Layers, TrendingUp } from "lucide-react";
 
 import type { CostBreakdown, ModelAttribution } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import {
+  formatPricePerM,
+  formatUsdPrecise,
+} from "@/lib/money";
 import { Separator } from "@/components/ui/separator";
 
 export interface CostBreakdownDetailsProps {
@@ -15,19 +19,6 @@ const intFmt = new Intl.NumberFormat("en-US");
 
 function formatTokens(n: number): string {
   return intFmt.format(n);
-}
-
-function formatPricePerM(n: number): string {
-  return `$${n.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  })}/M`;
-}
-
-function formatUsd(n: number): string {
-  if (n === 0) return "$0.00";
-  const decimals = n < 0.01 ? 6 : n < 1 ? 4 : 2;
-  return `$${n.toFixed(decimals)}`;
 }
 
 // Conservative thresholds for the long-context "no cache hit" / "high reasoning"
@@ -217,17 +208,17 @@ export function CostBreakdownDetails({
       <Separator />
 
       <dl>
-        <Row label="Subtotal" value={formatUsd(b.subtotalUsd)} />
+        <Row label="Subtotal" value={formatUsdPrecise(b.subtotalUsd)} />
         {hasSurcharge ? (
           <Row
             label="Session surcharge"
             hint="this turn"
-            value={formatUsd(b.sessionSurchargeUsd)}
+            value={formatUsdPrecise(b.sessionSurchargeUsd)}
           />
         ) : null}
         <Row
           label={isEstimate ? "Estimated total" : "Total"}
-          value={formatUsd(attribution.costUsd)}
+          value={formatUsdPrecise(attribution.costUsd)}
           emphasis
         />
       </dl>

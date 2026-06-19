@@ -49,6 +49,7 @@ import {
   type ShortcutsBodyProps,
 } from "@/components/chat/shortcuts-dialog";
 import { MODEL_TIERS } from "@/lib/model-tiers";
+import { formatUsdCurrencyOrNa } from "@/lib/money";
 import {
   createBillingCheckout,
   createBillingPortal,
@@ -355,16 +356,6 @@ function RetentionPicker({
   );
 }
 
-function formatUsd(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "n/a";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 6,
-  }).format(value);
-}
-
 function ledgerEntryLabel(entryType: string): string {
   if (entryType === "platform_debit") return "Usage debit";
   if (entryType === "grant") return "Grant";
@@ -447,7 +438,7 @@ function BudgetEditor({
           <>
             Enforced cap:{" "}
             <span className="font-mono tabular-nums text-foreground">
-              {formatUsd(effectiveCap)}
+              {formatUsdCurrencyOrNa(effectiveCap)}
             </span>{" "}
             — the platform cap is tighter than your setting.
           </>
@@ -843,7 +834,7 @@ function UsageDetails({
             <p className="text-xs text-muted-foreground">
               Credit balance:{" "}
               <span className="font-mono tabular-nums text-foreground">
-                {formatUsd(usage.creditBalanceUsd)}
+                {formatUsdCurrencyOrNa(usage.creditBalanceUsd)}
               </span>
             </p>
             <div className="pt-1">{spendDialog}</div>
@@ -943,13 +934,13 @@ function UsageDetails({
             <div>
               <dt className="text-muted-foreground">Spend</dt>
               <dd className="mt-0.5 font-mono tabular-nums">
-                {formatUsd(usage.monthlySpendUsd)}
+                {formatUsdCurrencyOrNa(usage.monthlySpendUsd)}
               </dd>
             </div>
             <div>
               <dt className="text-muted-foreground">Credits</dt>
               <dd className="mt-0.5 font-mono tabular-nums">
-                {formatUsd(usage.creditBalanceUsd)}
+                {formatUsdCurrencyOrNa(usage.creditBalanceUsd)}
               </dd>
             </div>
           </dl>
@@ -971,7 +962,7 @@ function UsageDetails({
                         : "text-foreground",
                     )}
                   >
-                    {formatUsd(entry.amountUsd)}
+                    {formatUsdCurrencyOrNa(entry.amountUsd)}
                   </span>
                 </div>
               ))}

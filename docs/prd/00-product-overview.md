@@ -43,7 +43,7 @@ Power users and developers increasingly use multiple AI models but are forced to
 5. Stay **expandable**: keep a simple default mode so we can move down-market (casual) and up-market (teams) later without a rebuild.
 
 ### Non-goals (this phase)
-- Competing on raw feature breadth at the commoditized ~$20 single-model tier.
+- Competing on raw feature breadth at the commoditized single-model all-rounder tier (price anchor in PRD 05 §5.3).
 - Casual mass-market acquisition, enterprise seats / SSO / SOC 2, and ads — all deferred (see PRD 05 §2.2, §4).
 - Native mobile apps at launch (responsive web + PWA first; Capacitor later — PRD 03 §6).
 
@@ -120,13 +120,13 @@ Full reconciled phase table with dependencies: **PRD 05 §4.**
 
 ## 9. Success metrics (summary)
 
-Instrument from day one: activation / time-to-first-value · a first-week **"Day-1 success" activation funnel** (% completing a first-week success checklist — the strongest countermeasure to AI-tourist churn) · **time-to-first-token + per-model latency** · **AI-native retention (≈40% GRR / 48% NRR — model on AI-native, not SaaS-optimistic, benchmarks)** + D1/D7/D30 **plus task-recurrence** (AI usage is bursty) · DAU/MAU stickiness · messages/session · free→paid conversion / MRR / churn · **ARPU target bands (sub-led ~$30–100+; hybrid ~$3–15)** · **cost-per-message / gross margin / model-routing mix** · stream terminal events (`completed` / `stopped` / `error` / `interrupted`) · thumbs/regeneration/NPS. Definitions, benchmarks, and phase-2 metrics: **PRD 05 §6.**
+Instrument from day one: activation / time-to-first-value · a first-week **"Day-1 success" activation funnel** (% completing a first-week success checklist — the strongest countermeasure to AI-tourist churn) · **time-to-first-token + per-model latency** · **AI-native retention (≈40% GRR / 48% NRR — model on AI-native, not SaaS-optimistic, benchmarks)** + D1/D7/D30 **plus task-recurrence** (AI usage is bursty) · DAU/MAU stickiness · messages/session · free→paid conversion / MRR / churn · **ARPU target bands** (sub-led vs hybrid; figures in PRD 05 §6) · **cost-per-message / gross margin / model-routing mix** · stream terminal events (`completed` / `stopped` / `error` / `interrupted`) · thumbs/regeneration/NPS. Definitions, benchmarks, and phase-2 metrics: **PRD 05 §6.**
 
 ---
 
 ## 10. Top risks (summary)
 
-Commoditization vs incumbents · **aggregator price-compression** (T3 Chat @ $8/mo multi-model undercuts the same surface — the sharper near-term risk than generic commoditization) · **pricing-model risk** (shipping a flat sub while the 2026 market reprices to metered credits) · COGS/margin erosion ("inference whales", 30–100× token variance) · trust/privacy execution · smaller power-user TAM · upstream provider dependency · **EU AI Act compliance timeline** — AI-interaction disclosure is **firm at ~Aug 2 2026**, but **content-marking (Art. 50(2)) remains legally unsettled** (readings range Aug 2–Dec 2 2026; the May-2026 Digital Omnibus is provisional pending Official Journal) and **needs legal sign-off before EU-launch scope is locked** · **US state-law surface (beyond EU):** CA SB 243 + AB 2013 (live 1/1/26); **CO SB 205 is no longer a live gate** (enforcement stayed Apr 2026; repealed/replaced by SB 26-189 → effective Jan 1 2027, narrowed to ADMT) — the US disclosure gate now rests on CA SB 243 + good practice. Mitigations: **PRD 05 §8.**
+Commoditization vs incumbents · **aggregator price-compression** (cheap multi-model aggregators undercut the same surface — the sharper near-term risk than generic commoditization; price anchors in PRD 05 §5.3/§8) · **pricing-model risk** (shipping a flat sub while the 2026 market reprices to metered credits) · COGS/margin erosion ("inference whales", 30–100× token variance) · trust/privacy execution · smaller power-user TAM · upstream provider dependency · **EU AI Act compliance timeline** — AI-interaction disclosure is **firm at ~Aug 2 2026**, but **content-marking (Art. 50(2)) remains legally unsettled** (readings range Aug 2–Dec 2 2026; the May-2026 Digital Omnibus is provisional pending Official Journal) and **needs legal sign-off before EU-launch scope is locked** · **US state-law surface (beyond EU):** CA SB 243 + AB 2013 (live 1/1/26); **CO SB 205 is no longer a live gate** (enforcement stayed Apr 2026; repealed/replaced by SB 26-189 → effective Jan 1 2027, narrowed to ADMT) — the US disclosure gate now rests on CA SB 243 + good practice. Mitigations: **PRD 05 §8.**
 
 ---
 
@@ -196,7 +196,7 @@ Commoditization vs incumbents · **aggregator price-compression** (T3 Chat @ $8/
 Each PRD carries its own open-questions section; the cross-cutting product/business ones (Pro price point, BYOK monetization, free-tier caps, EU launch timing vs AI-Act dates, secondary-persona timing, RAG-pull-forward, native trigger, ads-at-scale, minors/companion personas) are in **PRD 05 §9**. Remaining technical spikes (virtualization × streaming, iOS keyboard, custom-session auth expansion, Postgres operations, resumable-stream hardening) are in **PRD 03 §9 / PRD 04 §9**.
 
 **Contested — FLAGGED, not decided here** (per product-owner policy; needs the named owner / legal before lock):
-- **Exact Pro price (~$15–20 vs T3 Chat's $8 anchor).** Our band is 2–2.5× the $8 multi-model floor — justify the premium (privacy + a11y + mobile-web + true cost transparency) or reprice (PRD 05 §9.1).
+- **Exact Pro price vs the aggregator anchor.** Our proposed band sits at a premium over the cheap multi-model floor — justify the premium (privacy + a11y + mobile-web + true cost transparency) or reprice; the exact figures and the multiplier live in PRD 05 §9.1/§5.3.
 - **EU AI Act content-marking date (Aug 2 vs Dec 2 2026),** clouded by a May-2026 Council/Parliament provisional amendment reshuffling deadlines — **needs legal sign-off** before EU-launch scope is locked (PRD 04 §9 / PRD 05 §7.5/§9.6).
 - **Whether we serve minors / offer companion-style personas** — triggers CA SB 243 + surviving child-safety carve-outs (crisis protocols, break reminders, minor protections); needs explicit product + legal decision (PRD 05 §7.5/§9.11).
 

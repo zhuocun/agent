@@ -118,6 +118,7 @@ export function SubagentPanel({
   // cost is above the sub-cent noise floor — otherwise it duplicates row costs.
   const showMeter =
     (runCost != null && runCost.capUsd > 0) || summedCost >= 0.0001;
+  const singleAgentFlat = sections.length === 1 && !isDeepResearch;
 
   return (
     <div
@@ -127,13 +128,15 @@ export function SubagentPanel({
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Telescope aria-hidden className="size-4 shrink-0" />
         <span className="font-medium text-foreground">{title}</span>
-        <span className="text-xs text-muted-foreground">{summary}</span>
+        {!singleAgentFlat ? (
+          <span className="text-xs text-muted-foreground">{summary}</span>
+        ) : null}
         {showMeter ? (
           <RunCostMeter subtotalUsd={subtotalUsd} capUsd={capUsd} />
         ) : null}
       </div>
       {panelWebSearchGroups.length > 0 ? (
-        <div className="mt-2 space-y-2" data-testid="subagent-panel-web-search">
+        <div className="mt-2 space-y-1" data-testid="subagent-panel-web-search">
           {panelWebSearchGroups.map((group, idx) => (
             <WebSearchPanel
               key={`panel-web-search-${idx}`}
@@ -145,7 +148,7 @@ export function SubagentPanel({
         </div>
       ) : null}
       {panelToolGroups.length > 0 ? (
-        <div className="mt-2 space-y-2" data-testid="subagent-panel-tools">
+        <div className="mt-2 space-y-1" data-testid="subagent-panel-tools">
           {panelToolGroups.map((group, idx) => (
             <ToolGroupPanel
               key={`panel-tools-${idx}`}
@@ -156,18 +159,29 @@ export function SubagentPanel({
           ))}
         </div>
       ) : null}
-      <ul className="mt-2 flex flex-col gap-1.5">
-        {sections.map((section) => (
-          <li key={section.subagentId} className="list-none">
-            <SubagentRow
-              section={section}
-              webSearchGroups={webSearchBySubagentId?.get(section.subagentId)}
-              toolGroups={toolGroupsBySubagentId?.get(section.subagentId)}
-              onToolDecision={onToolDecision}
-            />
-          </li>
-        ))}
-      </ul>
+      {singleAgentFlat ? (
+        <SingleAgentContent
+          section={sections[0]!}
+          webSearchGroups={webSearchBySubagentId?.get(sections[0]!.subagentId)}
+          toolGroups={toolGroupsBySubagentId?.get(sections[0]!.subagentId)}
+          onToolDecision={onToolDecision}
+        />
+      ) : (
+        <ul className="mt-2 flex flex-col gap-1.5">
+          {sections.map((section) => (
+            <li key={section.subagentId} className="list-none">
+              <SubagentRow
+                section={section}
+                webSearchGroups={webSearchBySubagentId?.get(section.subagentId)}
+                toolGroups={toolGroupsBySubagentId?.get(section.subagentId)}
+                onToolDecision={onToolDecision}
+                showCostBadge={sections.length > 1}
+                headerSubtotalUsd={subtotalUsd}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -218,7 +232,7 @@ function RunCostMeter({
   );
 }
 
-function SubagentRow({
+function SingleAgentContent({
   section,
   webSearchGroups,
   toolGroups,
@@ -230,11 +244,95 @@ function SubagentRow({
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }) {
   const isRunning = section.status === "running";
+  const hasText = section.reasoning.length > 0 || section.answer.length > 0;
+
+  const webSearchBlock =
+    webSearchGroups && webSearchGroups.length > 0 ? (
+      <div className="mt-2 space-y-1" data-testid="subagent-row-web-search">
+        {webSearchGroups.map((group, idx) => (
+          <WebSearchPanel
+            key={`${section.subagentId}-web-search-${idx}`}
+            group={group}
+            onDecision={onToolDecision}
+            embedded
+          />
+        ))}
+      </div>
+    ) : null;
+
+  const toolGroupsBlock =
+    toolGroups && toolGroups.length > 0 ? (
+      <div className="mt-2 space-y-1" data-testid="subagent-row-tools">
+        {toolGroups.map((group, idx) => (
+          <ToolGroupPanel
+            key={`${section.subagentId}-tools-${idx}`}
+            group={group}
+            onDecision={onToolDecision}
+            embedded
+          />
+        ))}
+      </div>
+    ) : null;
+
+  return (
+    <div
+      data-testid="subagent-row"
+      data-subagent-id={section.subagentId}
+      className="mt-2"
+    >
+      {isRunning ? (
+        <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2
+            aria-hidden
+            className="size-3.5 shrink-0 motion-safe:animate-spin"
+          />
+          <span>Working…</span>
+        </div>
+      ) : null}
+      {hasText ? (
+        <div className="space-y-1">
+          {section.reasoning ? (
+            <p className="line-clamp-3 break-words text-xs italic leading-snug text-muted-foreground">
+              {section.reasoning}
+            </p>
+          ) : null}
+          {section.answer ? (
+            <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
+              {section.answer}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      {webSearchBlock}
+      {toolGroupsBlock}
+    </div>
+  );
+}
+
+function SubagentRow({
+  section,
+  webSearchGroups,
+  toolGroups,
+  onToolDecision,
+  showCostBadge = true,
+  headerSubtotalUsd,
+}: {
+  section: SubagentSection;
+  webSearchGroups?: WebSearchGroup[];
+  toolGroups?: ToolGroup[];
+  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  showCostBadge?: boolean;
+  headerSubtotalUsd?: number;
+}) {
+  const isRunning = section.status === "running";
   const hasTextDetail =
     section.reasoning.length > 0 || section.answer.length > 0;
 
   const costBadge =
-    section.costUsd !== undefined ? (
+    showCostBadge &&
+    section.costUsd !== undefined &&
+    (headerSubtotalUsd === undefined ||
+      Math.abs(section.costUsd - headerSubtotalUsd) >= 0.0000001) ? (
       <span className="shrink-0 font-mono text-2xs tabular-nums text-muted-foreground">
         {formatUsd(section.costUsd)}
       </span>

@@ -42,7 +42,7 @@ export function ToolGroupPanel({ group, onDecision, embedded = false }: ToolGrou
       className={cn(
         "max-w-full text-sm text-muted-foreground",
         embedded
-          ? "rounded-lg bg-foreground/[0.02] px-2.5 py-2"
+          ? "py-0.5"
           : "rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5",
       )}
     >
@@ -74,7 +74,7 @@ export function ToolGroupPanel({ group, onDecision, embedded = false }: ToolGrou
             "data-[ending-style]:h-0 data-[ending-style]:opacity-0",
           )}
         >
-          <ul className="mt-2 flex flex-col gap-1.5">
+          <ul className="mt-1 flex flex-col gap-0.5">
             {group.runs.map((run, idx) => {
               // Prefer the result part (it carries the terminal outcome +
               // summary); fall back to the call when a run has no result.
@@ -82,7 +82,7 @@ export function ToolGroupPanel({ group, onDecision, embedded = false }: ToolGrou
               if (!part) return null;
               return (
                 <li key={`${run.id}-${idx}`} className="list-none">
-                  <ToolPartView part={part} onDecision={onDecision} />
+                  <ToolPartView part={part} onDecision={onDecision} embedded={embedded} />
                 </li>
               );
             })}

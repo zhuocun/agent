@@ -28,8 +28,8 @@ function formatSearchStatusLabel(
   return label;
 }
 
-function queryLabel(group: WebSearchGroup): string | null {
-  const queries = group.runs
+function extractQueries(group: WebSearchGroup): string[] {
+  return group.runs
     .map((run) => {
       const input = run.call?.input ?? run.result?.output;
       if (input && typeof input === "object" && !Array.isArray(input)) {
@@ -39,9 +39,6 @@ function queryLabel(group: WebSearchGroup): string | null {
       return null;
     })
     .filter((query): query is string => query !== null);
-  if (queries.length === 0) return null;
-  if (queries.length === 1) return queries[0];
-  return `${queries.length} queries`;
 }
 
 function sourceCount(group: WebSearchGroup): number {
@@ -83,7 +80,9 @@ export function WebSearchPanel({ group, onDecision, embedded = false }: WebSearc
         )
       : null;
   const summary = buildSummary(group);
-  const primaryQuery = queryLabel(group);
+  const queries = extractQueries(group);
+  const singleQueryLine =
+    queries.length === 1 ? queries[0] : null;
   const triggerDetail = statusLabel ?? summary;
   // Live turns default open; settled turns default closed unless the user toggled.
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
@@ -95,7 +94,7 @@ export function WebSearchPanel({ group, onDecision, embedded = false }: WebSearc
       className={cn(
         "max-w-full text-sm text-muted-foreground",
         embedded
-          ? "rounded-lg bg-foreground/[0.02] px-2.5 py-2"
+          ? "py-0.5"
           : "rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5",
       )}
     >
@@ -136,23 +135,20 @@ export function WebSearchPanel({ group, onDecision, embedded = false }: WebSearc
             "data-[ending-style]:h-0 data-[ending-style]:opacity-0",
           )}
         >
-          <div className="mt-2 space-y-2">
-            {primaryQuery && !isLive ? (
+          <div className="mt-1 space-y-1.5">
+            {singleQueryLine && !isLive ? (
               <p className="text-xs leading-snug text-muted-foreground">
                 <span className="font-medium text-foreground">Query:</span>{" "}
-                {primaryQuery}
+                {singleQueryLine}
               </p>
             ) : null}
-            {!isLive ? (
-              <p className="text-xs text-muted-foreground">{summary}</p>
-            ) : null}
-            <ul className="flex flex-col gap-1.5">
+            <ul className="flex flex-col gap-0.5">
               {group.runs.map((run, idx) => {
                 const part = run.result ?? run.call;
                 if (!part) return null;
                 return (
                   <li key={`${run.id}-${idx}`} className="list-none">
-                    <ToolPartView part={part} onDecision={onDecision} />
+                    <ToolPartView part={part} onDecision={onDecision} embedded={embedded} />
                   </li>
                 );
               })}

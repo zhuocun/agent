@@ -155,6 +155,8 @@ exception.
   and milestones, important findings from the subagents, and decision points —
   not blow-by-blow narration of every dispatch, relay, or tool call; keep the
   spine of the work legible.
+- On completion (final-gate `done`), before reporting, housekeep: update the docs, records, and to-dos the work touched — dispatch a worker for any that need real work.
+- Then report in a clear structure: restate the goal, what's finished, and what's next — decision-relevant only, no trivial detail.
 - Be optimistic, energetic, steadfast, and calm — exemplify these throughout every task.
 
 ## Self-check

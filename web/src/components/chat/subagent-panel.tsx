@@ -18,6 +18,8 @@ import type { RunCostState } from "@/lib/stream-client";
 import type { ToolGroup, WebSearchGroup } from "@/lib/tool-groups";
 import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
+import { ToolPartView } from "@/components/chat/tool-part";
+import type { MessagePart } from "@/lib/types";
 
 // One orchestrator subagent's section, shape-compatible with the live
 // `SubagentActivity` from stream-client AND derivable from a persisted
@@ -49,8 +51,12 @@ interface SubagentPanelProps {
   // web-search nesting above.
   panelToolGroups?: ToolGroup[];
   toolGroupsBySubagentId?: ReadonlyMap<string, ToolGroup[]>;
+  panelLiveToolParts?: LiveToolPart[];
+  liveToolPartsBySubagentId?: ReadonlyMap<string, LiveToolPart[]>;
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }
+
+type LiveToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
 
 // Mirrors attribution-row's cost summary so per-worker and run totals read in
 // the same grammar as the message byline.
@@ -90,6 +96,8 @@ export function SubagentPanel({
   webSearchBySubagentId,
   panelToolGroups = [],
   toolGroupsBySubagentId,
+  panelLiveToolParts = [],
+  liveToolPartsBySubagentId,
   onToolDecision,
 }: SubagentPanelProps) {
   if (sections.length === 0) return null;
@@ -159,11 +167,19 @@ export function SubagentPanel({
           ))}
         </div>
       ) : null}
+      {panelLiveToolParts.length > 0 ? (
+        <LiveToolPartsBlock
+          parts={panelLiveToolParts}
+          onToolDecision={onToolDecision}
+          testId="subagent-panel-live-tools"
+        />
+      ) : null}
       {singleAgentFlat ? (
         <SingleAgentContent
           section={sections[0]!}
           webSearchGroups={webSearchBySubagentId?.get(sections[0]!.subagentId)}
           toolGroups={toolGroupsBySubagentId?.get(sections[0]!.subagentId)}
+          liveToolParts={liveToolPartsBySubagentId?.get(sections[0]!.subagentId)}
           onToolDecision={onToolDecision}
         />
       ) : (
@@ -174,6 +190,7 @@ export function SubagentPanel({
                 section={section}
                 webSearchGroups={webSearchBySubagentId?.get(section.subagentId)}
                 toolGroups={toolGroupsBySubagentId?.get(section.subagentId)}
+                liveToolParts={liveToolPartsBySubagentId?.get(section.subagentId)}
                 onToolDecision={onToolDecision}
                 showCostBadge={sections.length > 1}
                 headerSubtotalUsd={subtotalUsd}
@@ -232,15 +249,45 @@ function RunCostMeter({
   );
 }
 
+function LiveToolPartsBlock({
+  parts,
+  onToolDecision,
+  testId,
+}: {
+  parts: LiveToolPart[];
+  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  testId: string;
+}) {
+  if (parts.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-0.5" data-testid={testId}>
+      {parts.map((part, idx) => (
+        <ToolPartView
+          key={
+            part.type === "tool_call"
+              ? `call-${part.id}`
+              : `result-${part.toolCallId}-${idx}`
+          }
+          part={part}
+          onDecision={onToolDecision}
+          embedded
+        />
+      ))}
+    </div>
+  );
+}
+
 function SingleAgentContent({
   section,
   webSearchGroups,
   toolGroups,
+  liveToolParts,
   onToolDecision,
 }: {
   section: SubagentSection;
   webSearchGroups?: WebSearchGroup[];
   toolGroups?: ToolGroup[];
+  liveToolParts?: LiveToolPart[];
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }) {
   const isRunning = section.status === "running";
@@ -305,6 +352,13 @@ function SingleAgentContent({
       ) : null}
       {webSearchBlock}
       {toolGroupsBlock}
+      {liveToolParts && liveToolParts.length > 0 ? (
+        <LiveToolPartsBlock
+          parts={liveToolParts}
+          onToolDecision={onToolDecision}
+          testId="subagent-row-live-tools"
+        />
+      ) : null}
     </div>
   );
 }
@@ -313,6 +367,7 @@ function SubagentRow({
   section,
   webSearchGroups,
   toolGroups,
+  liveToolParts,
   onToolDecision,
   showCostBadge = true,
   headerSubtotalUsd,
@@ -320,6 +375,7 @@ function SubagentRow({
   section: SubagentSection;
   webSearchGroups?: WebSearchGroup[];
   toolGroups?: ToolGroup[];
+  liveToolParts?: LiveToolPart[];
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
   showCostBadge?: boolean;
   headerSubtotalUsd?: number;
@@ -381,6 +437,15 @@ function SubagentRow({
       </div>
     ) : null;
 
+  const liveToolsBlock =
+    liveToolParts && liveToolParts.length > 0 ? (
+      <LiveToolPartsBlock
+        parts={liveToolParts}
+        onToolDecision={onToolDecision}
+        testId="subagent-row-live-tools"
+      />
+    ) : null;
+
   const textDetailBody = hasTextDetail ? (
     <div className="mt-1 space-y-1">
       {section.reasoning ? (
@@ -401,6 +466,7 @@ function SubagentRow({
       {textDetailBody}
       {webSearchBlock}
       {toolGroupsBlock}
+      {liveToolsBlock}
     </>
   );
 
@@ -471,6 +537,7 @@ function SubagentRow({
         </CollapsibleContent>
         {webSearchBlock}
         {toolGroupsBlock}
+        {liveToolsBlock}
       </div>
     </Collapsible>
   );

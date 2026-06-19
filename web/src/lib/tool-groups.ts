@@ -74,6 +74,15 @@ function isGroupablePart(
   return TERMINAL_STATUSES.has(effectiveStatus(part));
 }
 
+function isLiveNestableToolPart(
+  part: MessagePart,
+): part is ToolCallPart | ToolResultPart {
+  if (part.type !== "tool_call" && part.type !== "tool_result") return false;
+  if (part.name === PLAN_APPROVAL_TOOL_NAME) return false;
+  if (part.name === WEB_SEARCH_TOOL_NAME) return false;
+  return !TERMINAL_STATUSES.has(effectiveStatus(part));
+}
+
 function runStatus(run: ToolRun): ToolRunStatus {
   if (run.result) return effectiveStatus(run.result);
   if (run.call) return effectiveStatus(run.call);
@@ -317,10 +326,12 @@ export interface ToolGroupLayout {
   // Nested groups keyed by their owning subagent id — render inside that
   // worker's row, mirroring `webSearchBySubagentId`.
   bySubagentId: Map<string, ToolGroup[]>;
-  // The raw passthrough `tool_call` / `tool_result` parts that were folded into
-  // nested single-run groups. The render loop checks membership to SKIP these
-  // (they'd otherwise double-render flat). Untagged lone runs are absent here so
-  // they keep rendering in place.
+  // Live / awaiting generic tool parts owned by a subagent row — rendered as raw
+  // `ToolPartView` rows (not folded into a collapsed ToolGroupPanel).
+  liveToolPartsBySubagentId: Map<string, (ToolCallPart | ToolResultPart)[]>;
+  // Untagged (or unknown-tag) live generic tool parts at panel level.
+  panelLevelLiveToolParts: (ToolCallPart | ToolResultPart)[];
+  // Passthrough + live tool parts nested in the panel — skip flat render.
   nestedParts: Set<MessagePart>;
 }
 
@@ -337,9 +348,10 @@ export interface ToolGroupLayout {
  *    recorded in `nestedParts` for the render loop to skip. UNTAGGED lone runs
  *    are left untouched (they stay standalone, rendering flat in place).
  *
- * Live / awaiting-approval runs and `agentic_plan_approval` are never nested:
- * `isGroupablePart` already excludes them, so they remain passthrough parts.
- * When `nestInPanel` is false nothing nests — every real group is `standalone`.
+ * Live / awaiting-approval generic runs nest into the agent-activity panel as
+ * raw `ToolPartView` rows when subagent-tagged (mirroring live web search).
+ * `agentic_plan_approval` stays standalone. When `nestInPanel` is false nothing
+ * nests — every real group is `standalone`.
  */
 export function partitionToolGroups(
   parts: GroupedToolPart[],
@@ -349,6 +361,11 @@ export function partitionToolGroups(
   const standalone: ToolGroup[] = [];
   const panelLevel: ToolGroup[] = [];
   const bySubagentId = new Map<string, ToolGroup[]>();
+  const liveToolPartsBySubagentId = new Map<
+    string,
+    (ToolCallPart | ToolResultPart)[]
+  >();
+  const panelLevelLiveToolParts: (ToolCallPart | ToolResultPart)[] = [];
   const nestedParts = new Set<MessagePart>();
 
   const route = (group: ToolGroup, ownerId: string | undefined): void => {
@@ -392,5 +409,28 @@ export function partitionToolGroups(
     if (run.result) nestedParts.add(run.result);
   }
 
-  return { standalone, panelLevel, bySubagentId, nestedParts };
+  if (nestInPanel) {
+    for (const part of parts) {
+      if (part.type !== "tool_call" && part.type !== "tool_result") continue;
+      if (!isLiveNestableToolPart(part)) continue;
+      nestedParts.add(part);
+      const ownerId = part.subagentId;
+      if (ownerId !== undefined && subagentIds.has(ownerId)) {
+        const owned = liveToolPartsBySubagentId.get(ownerId) ?? [];
+        owned.push(part);
+        liveToolPartsBySubagentId.set(ownerId, owned);
+        continue;
+      }
+      panelLevelLiveToolParts.push(part);
+    }
+  }
+
+  return {
+    standalone,
+    panelLevel,
+    bySubagentId,
+    liveToolPartsBySubagentId,
+    panelLevelLiveToolParts,
+    nestedParts,
+  };
 }

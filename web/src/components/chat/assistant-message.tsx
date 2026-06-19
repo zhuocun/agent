@@ -30,10 +30,12 @@ import {
 import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
 import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
 import {
-  groupToolParts,
-  partitionToolGroups,
-  partitionWebSearchGroups,
-} from "@/lib/tool-groups";
+  buildAgenticPanelLayout,
+  buildMainSubagentIds,
+  buildSubagentSectionsFromParts,
+  isNestedToolGroup,
+  isNestedWebSearchGroup,
+} from "@/lib/agentic-layout";
 import { cn } from "@/lib/utils";
 import type {
   ChatMessage,
@@ -173,110 +175,35 @@ export function AssistantMessage({
   // section, tagged reasoning/text fill it, status settles to "done").
   const subagentSections = useMemo<SubagentSection[]>(() => {
     if (liveSubagents && liveSubagents.length > 0) return liveSubagents;
-    const sections: SubagentSection[] = [];
-    const byId = new Map<string, SubagentSection>();
-    for (const part of message.parts) {
-      if (part.type === "subagent") {
-        const section: SubagentSection = {
-          subagentId: part.subagentId,
-          label: part.label,
-          role: part.role,
-          status: "done",
-          ...(part.costUsd !== undefined ? { costUsd: part.costUsd } : {}),
-          reasoning: "",
-          answer: "",
-        };
-        byId.set(part.subagentId, section);
-        sections.push(section);
-        continue;
-      }
-      if (
-        (part.type === "reasoning" || part.type === "text") &&
-        part.subagentId
-      ) {
-        const section = byId.get(part.subagentId);
-        if (!section) continue;
-        if (part.type === "reasoning") section.reasoning += part.text;
-        else section.answer += part.text;
-      }
-    }
-    return sections;
+    return buildSubagentSectionsFromParts(message.parts);
   }, [liveSubagents, message.parts]);
 
-  // The subagents whose answer text is THE answer (rendered as the main
-  // markdown body rather than folded into the panel): `single` mode's primary
-  // and deep research's aggregator. Worker/orchestrator text stays panel-only —
-  // parallel worker answers as sibling markdown blocks would read as a wall of
-  // partial answers.
-  const mainSubagentIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const part of message.parts) {
-      if (
-        part.type === "subagent" &&
-        (part.role === "primary" || part.role === "aggregator")
-      ) {
-        ids.add(part.subagentId);
-      }
-    }
-    return ids;
-  }, [message.parts]);
-
-  // Fold contiguous spans of >=2 settled tool runs into `tool_group` items so a
-  // long agentic transcript doesn't render as a wall of identical tool cards.
-  // Grouping only touches tool parts — text/reasoning/sources/subagent markers
-  // pass through in place, so narrative ordering (and the subagent/agentic
-  // interplay below) is preserved. Live/awaiting/plan-approval tools and lone
-  // settled runs stay flat and render through `ToolPartView` exactly as before.
-  const renderedParts = useMemo(
-    () => groupToolParts(message.parts),
+  const mainSubagentIds = useMemo(
+    () => buildMainSubagentIds(message.parts),
     [message.parts],
   );
 
-  // The panel renders ONCE, in place of the first `subagent` marker, covering
-  // every section; later markers are skipped. Indexed into the grouped list so
-  // it lines up with the map below (grouping never folds subagent markers).
-  const firstSubagentIdx = useMemo(
-    () => renderedParts.findIndex((p) => p.type === "subagent"),
-    [renderedParts],
+  const agenticLayout = useMemo(
+    () => buildAgenticPanelLayout(message.parts),
+    [message.parts],
   );
+  const {
+    renderedParts,
+    firstSubagentIdx,
+    nestInPanel: nestWebSearchInPanel,
+    webSearchLayout,
+    toolLayout,
+  } = agenticLayout;
 
-  const nestWebSearchInPanel = firstSubagentIdx >= 0;
-
-  const subagentIds = useMemo(
-    () => new Set(subagentSections.map((section) => section.subagentId)),
-    [subagentSections],
-  );
-
-  const webSearchLayout = useMemo(
-    () =>
-      partitionWebSearchGroups(
-        renderedParts,
-        subagentIds,
-        nestWebSearchInPanel,
-      ),
-    [renderedParts, subagentIds, nestWebSearchInPanel],
-  );
-
-  const isNestedWebSearchGroup = useCallback(
+  const isNestedWebSearchGroupCb = useCallback(
     (group: (typeof renderedParts)[number]) =>
-      group.type === "web_search_group" && nestWebSearchInPanel,
+      isNestedWebSearchGroup(group, nestWebSearchInPanel),
     [nestWebSearchInPanel],
   );
 
-  // Generic tool-group analogue of the web-search layout: when the panel
-  // exists, ALL settled generic tool activity nests inside it (panel-level for
-  // untagged/unknown origin, per-row for subagent-tagged runs) instead of
-  // rendering as siblings. `nestInPanel` reuses the same `firstSubagentIdx >= 0`
-  // gate as web search.
-  const toolLayout = useMemo(
-    () =>
-      partitionToolGroups(renderedParts, subagentIds, nestWebSearchInPanel),
-    [renderedParts, subagentIds, nestWebSearchInPanel],
-  );
-
-  const isNestedToolGroup = useCallback(
+  const isNestedToolGroupCb = useCallback(
     (group: (typeof renderedParts)[number]) =>
-      group.type === "tool_group" && nestWebSearchInPanel,
+      isNestedToolGroup(group, nestWebSearchInPanel),
     [nestWebSearchInPanel],
   );
 
@@ -384,7 +311,7 @@ export function AssistantMessage({
 
       {renderedParts.map((part, idx) => {
         if (part.type === "web_search_group") {
-          if (isNestedWebSearchGroup(part)) return null;
+          if (isNestedWebSearchGroupCb(part)) return null;
           return (
             <WebSearchPanel
               key={idx}
@@ -397,7 +324,7 @@ export function AssistantMessage({
           // When the agentic panel exists, settled generic tool groups nest
           // inside it (see `toolLayout`); skip the standalone render here,
           // mirroring `isNestedWebSearchGroup`.
-          if (isNestedToolGroup(part)) return null;
+          if (isNestedToolGroupCb(part)) return null;
           return (
             <ToolGroupPanel
               key={idx}
@@ -420,6 +347,8 @@ export function AssistantMessage({
               webSearchBySubagentId={webSearchLayout.bySubagentId}
               panelToolGroups={toolLayout.panelLevel}
               toolGroupsBySubagentId={toolLayout.bySubagentId}
+              panelLiveToolParts={toolLayout.panelLevelLiveToolParts}
+              liveToolPartsBySubagentId={toolLayout.liveToolPartsBySubagentId}
               onToolDecision={isAwaitingApproval ? onToolDecision : undefined}
             />
           ) : null;

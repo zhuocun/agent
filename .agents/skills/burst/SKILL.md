@@ -15,7 +15,7 @@ Worker output is never integrated directly. Every worker deliverable passes thro
 
 ## Run it to done
 
-Before dispatching anything, define the to-dos and a high-standard definition of done (DoD) — the explicit bar the integrated work must clear. Then orchestrate with perseverance until that DoD is met: keep the chain running, proactively resolve blockers as they surface, and make the decisions the run needs — any choice that advances the DoD is yours to make. Do not pause mid-flight and call a round finished while to-dos remain open. Do not escalate trivial or obvious-answer decisions to the user — decide and keep moving.
+Before dispatching anything, define the to-dos and a high-standard definition of done (DoD) — the explicit bar the integrated work must clear. Then orchestrate with perseverance until that DoD is met: keep the chain running, proactively resolve blockers as they surface, and make the decisions the run needs — any choice that advances the DoD is yours to make. Do not pause mid-flight and call a round finished while to-dos remain open. Do not escalate trivial or obvious-answer decisions to the user — decide and keep moving. Proactively record the to-dos and progress (a running checklist) so nothing drifts over a long session.
 
 ## Mode
 

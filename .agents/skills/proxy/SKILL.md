@@ -58,7 +58,7 @@ the literal execution the subagents direct and the relaying between them.
 
 ## Run it to done
 
-Before any work starts, confirm the orchestrator-consultant has returned the to-dos and a high-standard definition of done — a clear bar the integrated work must clear and what the final-gate reviewer should check (Pass 1 returns this). Then keep the loop moving with perseverance: drive dispatch → review → re-consult until the final-gate reviewer returns `done`. Clear obstacles by routing each to the right subagent, never by deciding yourself. Don't stall on a fork — re-consult and proceed. Don't stop mid-flight with to-dos open, and don't declare done — only the final-gate reviewer does. Route trivial or obvious-answer decisions to a subagent, not to the user.
+Before any work starts, confirm the orchestrator-consultant has returned the to-dos and a high-standard definition of done — a clear bar the integrated work must clear and what the final-gate reviewer should check (Pass 1 returns this). Then keep the loop moving with perseverance: drive dispatch → review → re-consult until the final-gate reviewer returns `done`. Clear obstacles by routing each to the right subagent, never by deciding yourself. Don't stall on a fork — re-consult and proceed. Don't stop mid-flight with to-dos open, and don't declare done — only the final-gate reviewer does. Route trivial or obvious-answer decisions to a subagent, not to the user. Keep a running record of the to-dos and progress through the chain so nothing drifts over a long session.
 
 ## Pass 1 — Consult the orchestrator-consultant
 

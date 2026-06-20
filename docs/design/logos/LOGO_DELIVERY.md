@@ -1,81 +1,66 @@
-# Olune Logo Concepts — Delivery Summary (v3)
+# Olune Logo Concepts — Delivery (non-circular slate)
 
-> User feedback: v1 **too minimal**, v2 **still too quiet**. v3 pushes **presence**
-> per [`LOUDNESS_ADDENDUM.md`](./LOUDNESS_ADDENDUM.md): scale ≥75%, heavier mass,
-> ΔL≥0.14 value contrast, **dark luminous heroes**, welcome-only atmosphere.
-
----
-
-## What changed v2 → v3
-
-| v2 (quiet) | v3 (louder) |
-| --- | --- |
-| ~50% frame, thin strokes | **≥75–80%** frame, solid/heavy forms |
-| Pale field washed into canvas | Decisive `deep` `#14539C` shadow mass |
-| Light-only renders | **Dark luminous** `#5BA0F2` on `#080B11` heroes |
-| No atmosphere | **Welcome lockups** with sanctioned canvas bloom |
+> User directive: **ignore the name**; escape circular/O motifs. Fresh slate per
+> [`DECOUPLING_ADDENDUM.md`](./DECOUPLING_ADDENDUM.md). Still honors one-accent,
+> flat value steps, loudness targets.
 
 ---
 
-## 1. A′′ — "Aperture, full" (wordmark-led)
+## 1. L1 — "Stack" (layers / aperture-slot)
 
-**Lever:** Hero-scale serif wordmark + bold phase-O at equal weight.
+**Meaning:** Transparency, stacked context, see-through depth.
 
 | Asset | Path |
 | --- | --- |
-| Spec | [`CONCEPT_A.md`](./CONCEPT_A.md) §v3 |
-| Wordmark light | [`assets/concept-a/olune-logo-concept-a-v3-wordmark-light.png`](./assets/concept-a/olune-logo-concept-a-v3-wordmark-light.png) |
-| Wordmark dark ★ | [`assets/concept-a/olune-logo-concept-a-v3-wordmark-dark.png`](./assets/concept-a/olune-logo-concept-a-v3-wordmark-dark.png) |
-| Icon light / dark | `olune-logo-concept-a-v3-icon-{light,dark}.png` |
-| Welcome dark | [`assets/concept-a/olune-logo-concept-a-v3-welcome-dark.png`](./assets/concept-a/olune-logo-concept-a-v3-welcome-dark.png) |
+| Spec | [`CONCEPT_L1.md`](./CONCEPT_L1.md) |
+| Symbol light | [`assets/concept-l1/olune-logo-l1-stack-symbol-light.png`](./assets/concept-l1/olune-logo-l1-stack-symbol-light.png) |
+| Symbol dark ★ | [`assets/concept-l1/olune-logo-l1-stack-symbol-dark.png`](./assets/concept-l1/olune-logo-l1-stack-symbol-dark.png) |
+| Icon dark | [`assets/concept-l1/olune-logo-l1-stack-icon-dark.png`](./assets/concept-l1/olune-logo-l1-stack-icon-dark.png) |
+| Welcome | [`assets/concept-l1/olune-logo-l1-stack-welcome-dark.png`](./assets/concept-l1/olune-logo-l1-stack-welcome-dark.png) |
 
 ---
 
-## 2. B′′ — "Phase, eclipse" (boldest symbol)
+## 2. L2 — "Bracket" (dialogue / exchange)
 
-**Lever:** Near-solid eclipse mass edge-to-edge.
+**Meaning:** Multi-model conversation, call-and-response.
 
 | Asset | Path |
 | --- | --- |
-| Spec | [`CONCEPT_B.md`](./CONCEPT_B.md) §v3 |
-| Symbol light | [`assets/concept-b/olune-logo-concept-b-v3-symbol-light.png`](./assets/concept-b/olune-logo-concept-b-v3-symbol-light.png) |
-| Symbol dark ★ | [`assets/concept-b/olune-logo-concept-b-v3-symbol-dark.png`](./assets/concept-b/olune-logo-concept-b-v3-symbol-dark.png) |
-| Icon light / dark | `olune-logo-concept-b-v3-icon-{light,dark}.png` |
-| Welcome dark | [`assets/concept-b/olune-logo-concept-b-v3-welcome-dark.png`](./assets/concept-b/olune-logo-concept-b-v3-welcome-dark.png) |
+| Spec | [`CONCEPT_L2.md`](./CONCEPT_L2.md) |
+| Symbol light | [`assets/concept-l2/olune-logo-l2-bracket-symbol-light.png`](./assets/concept-l2/olune-logo-l2-bracket-symbol-light.png) |
+| Symbol dark ★ | [`assets/concept-l2/olune-logo-l2-bracket-symbol-dark.png`](./assets/concept-l2/olune-logo-l2-bracket-symbol-dark.png) |
+| Icon dark | [`assets/concept-l2/olune-logo-l2-bracket-icon-dark.png`](./assets/concept-l2/olune-logo-l2-bracket-icon-dark.png) |
+| Welcome | [`assets/concept-l2/olune-logo-l2-bracket-welcome-dark.png`](./assets/concept-l2/olune-logo-l2-bracket-welcome-dark.png) |
 
 ---
 
-## 3. C′′ — "Antiphon, struck" (heavy dialogue)
+## 3. L3 — "Fork" (routing / path)
 
-**Lever:** Thick calligraphic arcs + bold crossing.
+**Meaning:** Model routing, choice, agentic flow.
 
 | Asset | Path |
 | --- | --- |
-| Spec | [`CONCEPT_C.md`](./CONCEPT_C.md) §v3 |
-| Symbol light | [`assets/concept-c/olune-logo-concept-c-v3-symbol-light.png`](./assets/concept-c/olune-logo-concept-c-v3-symbol-light.png) |
-| Symbol dark ★ | [`assets/concept-c/olune-logo-concept-c-v3-symbol-dark.png`](./assets/concept-c/olune-logo-concept-c-v3-symbol-dark.png) |
-| Icon light / dark | `olune-logo-concept-c-v3-icon-{light,dark}.png` |
-| Welcome dark | [`assets/concept-c/olune-logo-concept-c-v3-welcome-dark.png`](./assets/concept-c/olune-logo-concept-c-v3-welcome-dark.png) |
-
-★ = recommended hero render (dark luminous parity)
+| Spec | [`CONCEPT_L3.md`](./CONCEPT_L3.md) |
+| Symbol light | [`assets/concept-l3/olune-logo-l3-fork-symbol-light.png`](./assets/concept-l3/olune-logo-l3-fork-symbol-light.png) |
+| Symbol dark ★ | [`assets/concept-l3/olune-logo-l3-fork-symbol-dark.png`](./assets/concept-l3/olune-logo-l3-fork-symbol-dark.png) |
+| Icon dark | [`assets/concept-l3/olune-logo-l3-fork-icon-dark.png`](./assets/concept-l3/olune-logo-l3-fork-icon-dark.png) |
+| Welcome | [`assets/concept-l3/olune-logo-l3-fork-welcome-dark.png`](./assets/concept-l3/olune-logo-l3-fork-welcome-dark.png) |
 
 ---
 
 ## Comparison
 
-| | A′′ full | B′′ eclipse | C′′ struck |
+| | L1 Stack | L2 Bracket | L3 Fork |
 | --- | --- | --- | --- |
-| **Dial** | Restrained-loud | **Boldest** | Medium-loud |
-| **Leads with** | Wordmark | Symbol | Symbol |
-| **Dark hero** | Phase wordmark | Eclipse mass | Struck arcs |
+| **Silhouette** | Stacked planes + slot | Paired `‹ ›` | Y-branch |
+| **Product read** | Transparency / depth | Dialogue / exchange | Routing / choice |
+| **Circular?** | No | No | No (diamond junction) |
 
-**Recommended lead for presence:** **B′′ Phase, eclipse** — largest mass, strongest dark luminous read.
+**Recommended lead:** **L1 Stack** — strongest "transparency" wedge, most distinctive at small size, clearest break from prior O marks.
 
 ---
 
-## Canon docs
+## Prior slates
 
-- [`BRAND_BRIEF.md`](../BRAND_BRIEF.md)
-- [`RICHNESS_CHARTER.md`](./RICHNESS_CHARTER.md)
-- [`LOUDNESS_ADDENDUM.md`](./LOUDNESS_ADDENDUM.md)
-- [`WELCOME_LOCKUPS.md`](./WELCOME_LOCKUPS.md)
+v1–v3 O/crescent concepts remain in `assets/concept-{a,b,c}/` for reference.
+This slate supersedes them for product direction per user.

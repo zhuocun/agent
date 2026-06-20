@@ -1,4 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Olune">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Olune" data-no-flip>
+  <!-- L1 Stack — maskable safe zone (~78% scale, centered) -->
   <rect width="512" height="512" fill="#f9fafc"/>
-  <path d="M 336.5 372.4 A 144 144 0 1 1 399.6 263.0" fill="none" stroke="#2079e8" stroke-width="51" stroke-linecap="round"/>
+  <defs>
+    <mask id="stack-slot-m">
+      <rect width="512" height="512" fill="#fff"/>
+      <rect x="232" y="28" width="48" height="456" fill="#000"/>
+    </mask>
+  </defs>
+  <g transform="translate(256 256) scale(0.78) translate(-256 -256)" mask="url(#stack-slot-m)">
+    <rect x="26" y="96" width="380" height="320" rx="32" fill="#14539c"/>
+    <rect x="58" y="64" width="380" height="320" rx="32" fill="#2079e8"/>
+    <rect x="90" y="32" width="380" height="320" rx="32" fill="#5ba0f2"/>
+  </g>
 </svg>

@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Olune" data-no-flip>
-  <!-- L1 Stack — figure ~87%×75% of frame (rescaled from CONCEPT_L1 spec) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Olune" data-no-flip="true">
+  <!-- L1 Stack — plane 308x328 rx26, stagger step 46 (14.9% of plane / 11.5% of figure); figure centered in 512; slot reveals canvas via group mask -->
   <rect width="512" height="512" fill="#f9fafc"/>
   <defs>
     <mask id="stack-slot">
       <rect width="512" height="512" fill="#fff"/>
-      <rect x="232" y="28" width="48" height="456" fill="#000"/>
+      <rect x="267" y="209" width="70" height="186" rx="18" fill="#000"/>
     </mask>
   </defs>
   <g mask="url(#stack-slot)">
-    <rect x="26" y="96" width="380" height="320" rx="32" fill="#14539c"/>
-    <rect x="58" y="64" width="380" height="320" rx="32" fill="#2079e8"/>
-    <rect x="90" y="32" width="380" height="320" rx="32" fill="#5ba0f2"/>
+    <rect x="56" y="46" width="308" height="328" rx="26" fill="#13539f"/>
+    <rect x="102" y="92" width="308" height="328" rx="26" fill="#1d7cec"/>
+    <rect x="148" y="138" width="308" height="328" rx="26" fill="#5ba4f6"/>
   </g>
 </svg>

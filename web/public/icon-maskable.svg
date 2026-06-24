@@ -1,15 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Olune" data-no-flip="true">
-  <!-- L1 Stack — maskable safe zone (0.78 scale, centered); slot reveals canvas via group mask -->
-  <rect width="512" height="512" fill="#f9fafc"/>
-  <defs>
-    <mask id="stack-slot-m">
-      <rect width="512" height="512" fill="#fff"/>
-      <rect x="267" y="209" width="70" height="186" rx="18" fill="#000"/>
-    </mask>
-  </defs>
-  <g transform="translate(256 256) scale(0.78) translate(-256 -256)" mask="url(#stack-slot-m)">
-    <rect x="56" y="46" width="308" height="328" rx="26" fill="#13539f"/>
-    <rect x="102" y="92" width="308" height="328" rx="26" fill="#1d7cec"/>
-    <rect x="148" y="138" width="308" height="328" rx="26" fill="#5ba4f6"/>
+  <!-- L3 Fork — maskable safe zone (~0.67 scale, centered) so arm caps clear Android squircle masks. -->
+  <style>
+    .fork-stroke { stroke: #2079E8; }
+    @media (prefers-color-scheme: dark) {
+      .fork-stroke { stroke: #5BA0F2; }
+    }
+  </style>
+  <g transform="translate(256 256) scale(0.67) translate(-256 -256)">
+    <path
+      class="fork-stroke"
+      d="M124 104 L256 300 L256 440 M388 104 L256 300"
+      fill="none"
+      stroke-width="88"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <rect
+      x="222"
+      y="266"
+      width="68"
+      height="68"
+      rx="8"
+      transform="rotate(45 256 300)"
+      fill="#14539C"
+    />
   </g>
 </svg>

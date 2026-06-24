@@ -1,5 +1,5 @@
 // Bump on each deploy so old caches are evicted on activate.
-const VERSION = "v4";
+const VERSION = "v5";
 const SHELL_CACHE = `olune-shell-${VERSION}`;
 const RUNTIME_CACHE = `olune-runtime-${VERSION}`;
 

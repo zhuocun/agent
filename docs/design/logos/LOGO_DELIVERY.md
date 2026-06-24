@@ -1,66 +1,48 @@
-# Olune Logo Concepts — Delivery (non-circular slate)
+# Olune Logo Concepts — Delivery (decoupled slate)
 
-> User directive: **ignore the name**; escape circular/O motifs. Fresh slate per
-> [`DECOUPLING_ADDENDUM.md`](./DECOUPLING_ADDENDUM.md). Still honors one-accent,
-> flat value steps, loudness targets.
-
----
-
-## 1. L1 — "Stack" (layers / aperture-slot)
-
-**Meaning:** Transparency, stacked context, see-through depth.
-
-| Asset | Path |
-| --- | --- |
-| Spec | [`CONCEPT_L1.md`](./CONCEPT_L1.md) |
-| Symbol light | [`assets/concept-l1/olune-logo-l1-stack-symbol-light.png`](./assets/concept-l1/olune-logo-l1-stack-symbol-light.png) |
-| Symbol dark ★ | [`assets/concept-l1/olune-logo-l1-stack-symbol-dark.png`](./assets/concept-l1/olune-logo-l1-stack-symbol-dark.png) |
-| Icon dark | [`assets/concept-l1/olune-logo-l1-stack-icon-dark.png`](./assets/concept-l1/olune-logo-l1-stack-icon-dark.png) |
-| Welcome | [`assets/concept-l1/olune-logo-l1-stack-welcome-dark.png`](./assets/concept-l1/olune-logo-l1-stack-welcome-dark.png) |
+> Non-circular symbol-led marks per `DECOUPLING_ADDENDUM.md`. L1 Stack (the prior
+> shipped mark) is **rejected** — do not reinstate.
 
 ---
 
-## 2. L2 — "Bracket" (dialogue / exchange)
+## Selected lead — L3 Fork (routing / path)
 
-**Meaning:** Multi-model conversation, call-and-response.
-
-| Asset | Path |
-| --- | --- |
-| Spec | [`CONCEPT_L2.md`](./CONCEPT_L2.md) |
-| Symbol light | [`assets/concept-l2/olune-logo-l2-bracket-symbol-light.png`](./assets/concept-l2/olune-logo-l2-bracket-symbol-light.png) |
-| Symbol dark ★ | [`assets/concept-l2/olune-logo-l2-bracket-symbol-dark.png`](./assets/concept-l2/olune-logo-l2-bracket-symbol-dark.png) |
-| Icon dark | [`assets/concept-l2/olune-logo-l2-bracket-icon-dark.png`](./assets/concept-l2/olune-logo-l2-bracket-icon-dark.png) |
-| Welcome | [`assets/concept-l2/olune-logo-l2-bracket-welcome-dark.png`](./assets/concept-l2/olune-logo-l2-bracket-welcome-dark.png) |
-
----
-
-## 3. L3 — "Fork" (routing / path)
-
-**Meaning:** Model routing, choice, agentic flow.
+**Meaning:** Model routing, agentic choice — one path splits into two through a
+diamond junction.
 
 | Asset | Path |
 | --- | --- |
 | Spec | [`CONCEPT_L3.md`](./CONCEPT_L3.md) |
+| Production SVG | `web/public/icon.svg`, `icon-maskable.svg`, `apple-touch-icon.svg` |
+| Symbol dark (exploration) | [`assets/concept-l3/olune-logo-l3-fork-symbol-dark.png`](./assets/concept-l3/olune-logo-l3-fork-symbol-dark.png) |
 | Symbol light | [`assets/concept-l3/olune-logo-l3-fork-symbol-light.png`](./assets/concept-l3/olune-logo-l3-fork-symbol-light.png) |
-| Symbol dark ★ | [`assets/concept-l3/olune-logo-l3-fork-symbol-dark.png`](./assets/concept-l3/olune-logo-l3-fork-symbol-dark.png) |
-| Icon dark | [`assets/concept-l3/olune-logo-l3-fork-icon-dark.png`](./assets/concept-l3/olune-logo-l3-fork-icon-dark.png) |
-| Welcome | [`assets/concept-l3/olune-logo-l3-fork-welcome-dark.png`](./assets/concept-l3/olune-logo-l3-fork-welcome-dark.png) |
+
+**Backup:** L2 Bracket — dialogue / exchange (`CONCEPT_L2.md`, `assets/concept-l2/`).
+
+**Rejected:** L4 Lattice — hashtag read, flatness issues (`CONCEPT_L4.md`, `assets/concept-l4/`).
 
 ---
 
 ## Comparison
 
-| | L1 Stack | L2 Bracket | L3 Fork |
+| | L2 Bracket | **L3 Fork ★** | L4 Lattice |
 | --- | --- | --- | --- |
-| **Silhouette** | Stacked planes + slot | Paired `‹ ›` | Y-branch |
-| **Product read** | Transparency / depth | Dialogue / exchange | Routing / choice |
-| **Circular?** | No | No | No (diamond junction) |
-
-**Recommended lead:** **L1 Stack** — strongest "transparency" wedge, most distinctive at small size, clearest break from prior O marks.
+| **Silhouette** | Paired `‹ ›` | Y-branch + diamond | Skewed `#` |
+| **Product read** | Dialogue / exchange | Routing / choice | System / weave |
+| **Circular?** | No | No | No |
+| **Down-select** | Backup (12/14) | **Lead (14/14)** | Reject (11/14) |
 
 ---
 
 ## Prior slates
 
-v1–v3 O/crescent concepts remain in `assets/concept-{a,b,c}/` for reference.
-This slate supersedes them for product direction per user.
+- v1–v3 O/crescent concepts: `assets/concept-{a,b,c}/` (superseded)
+- L1 Stack: was the shipped incumbent — **explicitly rejected** by user
+
+---
+
+## Raster export
+
+PNG sizes (`icon-192/512`, maskable, apple-touch, splash) are generated from the
+fork geometry via `web/scripts/export-logo-pngs.py`. Bump `web/public/sw.js`
+`VERSION` when icons change.

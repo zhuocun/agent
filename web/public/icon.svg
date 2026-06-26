@@ -1,26 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Olune" data-no-flip="true">
-  <!-- L3 Fork — routing / path. Ramp: brand #2079E8 (light) / #5BA0F2 (dark hero), deep #14539C junction. -->
-  <style>
-    .fork-stroke { stroke: #2079E8; }
-    @media (prefers-color-scheme: dark) {
-      .fork-stroke { stroke: #5BA0F2; }
-    }
-  </style>
-  <path
-    class="fork-stroke"
-    d="M124 104 L256 300 L256 440 M388 104 L256 300"
-    fill="none"
-    stroke-width="88"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
-  <rect
-    x="222"
-    y="266"
-    width="68"
-    height="68"
-    rx="8"
-    transform="rotate(45 256 300)"
-    fill="#14539C"
-  />
+  <!-- L3 Fork badge — full-bleed plate + contained white glyph (app-icon presentation). -->
+  <defs>
+    <linearGradient id="plate" x1="256" y1="0" x2="256" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2079E8"/>
+      <stop offset="1" stop-color="#14539C"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="114" fill="url(#plate)"/>
+  <g transform="translate(256 256) scale(0.70) translate(-256 -272)">
+    <path
+      d="M124 104 L256 300 L256 440 M388 104 L256 300"
+      fill="none"
+      stroke="#F9FAFC"
+      stroke-width="88"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <rect
+      x="222"
+      y="266"
+      width="68"
+      height="68"
+      rx="8"
+      transform="rotate(45 256 300)"
+      fill="#5BA0F2"
+    />
+  </g>
 </svg>

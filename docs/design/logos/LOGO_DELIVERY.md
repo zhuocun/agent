@@ -7,8 +7,8 @@
 
 ## Selected lead — L3 Fork (routing / path)
 
-**Meaning:** Model routing, agentic choice — one path splits into two through a
-diamond junction.
+**Presentation:** Full-bleed badge plate (`#2079E8`→`#14539C` gradient) with white fork
+glyph — reads as a real app icon on home screens (not a transparent diagram).
 
 | Asset | Path |
 | --- | --- |

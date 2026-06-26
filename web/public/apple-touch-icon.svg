@@ -1,21 +1,29 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Olune" data-no-flip="true">
-  <!-- L3 Fork — Apple touch icon on light canvas per platform convention. -->
-  <rect width="512" height="512" fill="#f9fafc"/>
-  <path
-    d="M124 104 L256 300 L256 440 M388 104 L256 300"
-    fill="none"
-    stroke="#2079E8"
-    stroke-width="88"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
-  <rect
-    x="222"
-    y="266"
-    width="68"
-    height="68"
-    rx="8"
-    transform="rotate(45 256 300)"
-    fill="#14539C"
-  />
+  <!-- L3 Fork badge — Apple touch: full-bleed plate (iOS applies its own mask). -->
+  <defs>
+    <linearGradient id="plate" x1="256" y1="0" x2="256" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2079E8"/>
+      <stop offset="1" stop-color="#14539C"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#plate)"/>
+  <g transform="translate(256 256) scale(0.70) translate(-256 -272)">
+    <path
+      d="M124 104 L256 300 L256 440 M388 104 L256 300"
+      fill="none"
+      stroke="#F9FAFC"
+      stroke-width="88"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <rect
+      x="222"
+      y="266"
+      width="68"
+      height="68"
+      rx="8"
+      transform="rotate(45 256 300)"
+      fill="#5BA0F2"
+    />
+  </g>
 </svg>

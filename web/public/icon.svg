@@ -1,29 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Olune" data-no-flip="true">
-  <!-- L3 Fork badge — full-bleed plate + contained white glyph (app-icon presentation). -->
+  <!-- L1 Stack — plane 308x328 rx26, stagger step 46 (14.9% of plane / 11.5% of figure); figure centered in 512; slot reveals canvas via group mask -->
+  <rect width="512" height="512" fill="#f9fafc"/>
   <defs>
-    <linearGradient id="plate" x1="256" y1="0" x2="256" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#2079E8"/>
-      <stop offset="1" stop-color="#14539C"/>
-    </linearGradient>
+    <mask id="stack-slot">
+      <rect width="512" height="512" fill="#fff"/>
+      <rect x="267" y="209" width="70" height="186" rx="18" fill="#000"/>
+    </mask>
   </defs>
-  <rect width="512" height="512" rx="114" fill="url(#plate)"/>
-  <g transform="translate(256 256) scale(0.70) translate(-256 -272)">
-    <path
-      d="M124 104 L256 300 L256 440 M388 104 L256 300"
-      fill="none"
-      stroke="#F9FAFC"
-      stroke-width="88"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-    <rect
-      x="222"
-      y="266"
-      width="68"
-      height="68"
-      rx="8"
-      transform="rotate(45 256 300)"
-      fill="#5BA0F2"
-    />
+  <g mask="url(#stack-slot)">
+    <rect x="56" y="46" width="308" height="328" rx="26" fill="#13539f"/>
+    <rect x="102" y="92" width="308" height="328" rx="26" fill="#1d7cec"/>
+    <rect x="148" y="138" width="308" height="328" rx="26" fill="#5ba4f6"/>
   </g>
 </svg>

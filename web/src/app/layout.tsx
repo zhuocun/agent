@@ -54,16 +54,6 @@ export const metadata: Metadata = {
       },
     ],
   },
-  icons: {
-    icon: [
-      { url: "/icon.svg", type: "image/svg+xml" },
-      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
-      { url: "/icon-512.png", type: "image/png", sizes: "512x512" },
-    ],
-    apple: [
-      { url: "/apple-touch-icon.png", type: "image/png", sizes: "180x180" },
-    ],
-  },
 };
 
 // Route-segment viewport export (Next.js 16). `viewportFit: "cover"` lets

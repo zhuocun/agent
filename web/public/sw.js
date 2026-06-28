@@ -1,5 +1,5 @@
 // Bump on each deploy so old caches are evicted on activate.
-const VERSION = "v4";
+const VERSION = "v5";
 const SHELL_CACHE = `olune-shell-${VERSION}`;
 const RUNTIME_CACHE = `olune-runtime-${VERSION}`;
 
@@ -9,13 +9,6 @@ const RUNTIME_CACHE = `olune-runtime-${VERSION}`;
 const SHELL_ASSETS = [
   "/",
   "/manifest.webmanifest",
-  "/icon.svg",
-  "/icon-maskable.svg",
-  "/apple-touch-icon.svg",
-  "/apple-touch-icon.png",
-  "/icon-192.png",
-  "/icon-512.png",
-  "/icon-maskable-512.png",
   "/splash-1170x2532-light.png",
   "/splash-1170x2532-dark.png",
 ];

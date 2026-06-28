@@ -18,24 +18,6 @@ export default function manifest(): MetadataRoute.Manifest {
     // `<meta name="theme-color" media=...>` tags emitted from the viewport
     // export in layout.tsx. Keep this the light surface.
     theme_color: "#f9fafc",
-    icons: [
-      // Scalable source first, raster PNGs for installers that require them.
-      { src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
-      { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
-      { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
-      {
-        src: "/icon-maskable.svg",
-        sizes: "any",
-        type: "image/svg+xml",
-        purpose: "maskable",
-      },
-      {
-        src: "/icon-maskable-512.png",
-        sizes: "512x512",
-        type: "image/png",
-        purpose: "maskable",
-      },
-    ],
     categories: ["productivity", "utilities"],
   };
 }

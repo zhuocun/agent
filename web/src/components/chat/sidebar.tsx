@@ -1521,6 +1521,7 @@ export function Sidebar({
           <Button
             type="button"
             variant="ghost"
+            data-sidebar-collapse
             aria-label={t("sidebar.collapse")}
             onClick={onCollapse}
             className="size-11 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground md:size-9"

@@ -201,7 +201,10 @@ export function UserMessage({
           {/* Edit reuses the SAME flat surface as the display bubble (see
               below) so entering edit doesn't change the bubble's surface — only
               its contents. A flat brand-muted wash, no highlight or hairline. */}
-          <div className="rounded-3xl bg-brand-muted px-5 py-3">
+          <div
+            data-testid="user-message-edit"
+            className="rounded-3xl bg-brand-muted px-5 py-3"
+          >
             <label className="block">
               <span className="sr-only">Edit message</span>
               <textarea

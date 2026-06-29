@@ -6,9 +6,10 @@
 //
 // The genuinely unreachable branches (toast `actions`/`ToastHandle`, the
 // `<Badge>` default variant, the `<TooltipProvider>` default delay, the unused
-// `Drawer*` subcomponents, and the right-side / showClose drawer variants) are
-// covered by justified `istanbul ignore` comments in the primitives themselves
-// rather than by contrived render harnesses.
+// `Drawer*` subcomponents, and the right-side drawer variant) are covered by
+// justified `istanbul ignore` comments in the primitives themselves rather than
+// by contrived render harnesses. The mobile nav drawer now mounts with
+// `showClose`, so its visible close affordance is exercised below.
 
 import { expect, test } from "./coverage-fixture";
 
@@ -160,8 +161,12 @@ test.describe("ui primitives on mobile", () => {
     // The drawer hosts the sidebar, so its primary affordance is reachable.
     await expect(drawer.getByTestId("sidebar-new-chat")).toBeVisible();
 
-    // Esc routes through Base UI's close path.
-    await page.keyboard.press("Escape");
+    // The rail-only collapse chevron is hidden inside the drawer; the visible
+    // close (X) affordance is what the drawer offers instead.
+    await expect(drawer.locator("[data-sidebar-collapse]")).toBeHidden();
+
+    // The visible close button (showClose) routes through Base UI's close path.
+    await drawer.getByRole("button", { name: "Close" }).click();
     await expect(drawer).toHaveCount(0);
   });
 

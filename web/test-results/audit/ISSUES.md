@@ -16,7 +16,8 @@ subfolder. Each issue carries a stable ID; do not renumber on edit. Severities:
   the overlap surfaces only when the coachmark is present on the short viewport.
   Candidate fix: reserve space for, or auto-dismiss, the coachmark above the
   suggestion list on short viewports.
-- **Status:** confirmed (GPT-5.5)
+- **Status:** fixed (PR #229)
+- **Fix:** `install-coachmark.tsx` — suppress coachmark while `ul[aria-label="Suggested prompts"]` is mounted (MutationObserver); reappears after first send or on surfaces without a rail (e.g. `/status`).
 - **GPT-5.5 re-review:** Confirmed. Both `st3-mobile/iphone13-welcome-light.png`
   and `-dark.png` show the install coachmark covering the 4th chip; the
   coachmark-free `st3-mobile/vp390-welcome-*` and ST1 desktop welcome captures
@@ -32,7 +33,8 @@ subfolder. Each issue carries a stable ID; do not renumber on edit. Severities:
   re-border the user message bubble, so it reads as floating text rather than a
   contained turn. Candidate fix: add a forced-colors border rule covering the user
   bubble surface.
-- **Status:** confirmed (GPT-5.5)
+- **Status:** fixed (PR #229)
+- **Fix:** `globals.css` `@media (forced-colors: active)` — `border: 1px solid CanvasText` on `[data-testid="user-message-text"]` and `[data-testid="user-message-edit"]`.
 - **GPT-5.5 re-review:** Confirmed. `st5-a11y/mobile-thread__forced-colors.png`
   shows the user bubble losing its visible container under `forced-colors:
   active`; the text stays visible but the turn reads as floating text.
@@ -46,7 +48,8 @@ subfolder. Each issue carries a stable ID; do not renumber on edit. Severities:
   with `showClose={false}`, so there is **no visible close control**; dismissal relies
   on backdrop-tap / Back. The only top-right glyph is the inherited desktop collapse
   icon. Worth confirming intent and surfacing a real close affordance.
-- **Status:** confirmed (GPT-5.5)
+- **Status:** fixed (PR #229)
+- **Fix:** `app-shell.tsx` `showClose={true}` on mobile drawer; `globals.css` hides `[data-sidebar-collapse]` inside `[data-slot="drawer-content"]` only.
 - **GPT-5.5 re-review:** Confirmed. All four drawer captures
   (`st3-mobile/iphone13-drawer-{light,dark}.png`,
   `st3-mobile/vp390-drawer-{light,dark}.png`) show the inherited desktop collapse
@@ -76,7 +79,8 @@ subfolder. Each issue carries a stable ID; do not renumber on edit. Severities:
   warning easy to miss.
   Cosmetic; candidate fix is a dark-mode-specific error token bump to clear contrast
   thresholds.
-- **Status:** confirmed (GPT-5.5)
+- **Status:** fixed (PR #229)
+- **Fix:** `globals.css` — scoped dark `--destructive-text` token + `text-destructive-text` utility; applied to spend/billing error alerts without changing `--destructive` button fills.
 - **GPT-5.5 re-review:** Confirmed. Both `st2-dialogs/settings-spend__dark.png`
   and `st2-dialogs/settings-general__dark.png` show the dark red "Spend data could
   not be loaded." error reading low-contrast against the dark surface; light-theme
@@ -145,3 +149,4 @@ These bound what the captures can and cannot prove. None are product bugs.
 - **New findings:** none across ST1–ST5.
 - **Net result:** 4 confirmed, 1 refuted (ISSUE-4). Refuted issue is retained with
   its disposition rather than deleted.
+- **Fix pass (2026-06-29):** ISSUE-1/2/3/5 fixed in PR #229; ISSUE-4 skipped (refuted).

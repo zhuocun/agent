@@ -54,6 +54,16 @@ export const BE_ENV = {
   // Pro/BYOK-gated; without it the BE coerces the turn down to `single`). The
   // fake provider's /api/billing/webhook accepts unsigned Stripe-shaped events.
   BILLING_BACKEND: "fake",
+  // The auth + BYOK routes are IP-rate-limited (5/min upgrade+login, 10/min
+  // BYOK — see api/app/config.py). The whole e2e suite shares one BE on
+  // 127.0.0.1, and several specs (auth-dialog, settings, agentic, spend,
+  // provider-selection) do real upgrade/login/BYOK round-trips that bunch well
+  // past the prod defaults within a single 60s window. No e2e asserts the real
+  // 429 path (those tests stub the route), so relax the limits here to keep the
+  // suite deterministic; the limiter itself is covered by the pytest suite.
+  RATE_LIMIT_UPGRADE: "10000/minute",
+  RATE_LIMIT_LOGIN: "10000/minute",
+  RATE_LIMIT_BYOK: "10000/minute",
   DATABASE_URL,
   CORS_ALLOWED_ORIGINS: FE_URL,
   // Long-and-fixed; assert_prod_safe() requires >=32 chars in prod, dev/test

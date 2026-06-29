@@ -11,7 +11,7 @@
 // orchestrator runs the real-BE specs after integration). The fallback spec at
 // the end drives the REAL FakeProvider, mirroring provider-selection.spec.ts.
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "./coverage-fixture";
 
 import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 

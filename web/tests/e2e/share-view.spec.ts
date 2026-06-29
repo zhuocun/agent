@@ -14,7 +14,7 @@
 // so navigating to /share/{token} issues a GET /api/share/{token} we can both
 // observe and let the React app render.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 

@@ -19,7 +19,7 @@
 // `DEEP_RESEARCH: a | b` decomposes into two sub-questions, so the fan-out
 // shape (2 workers + synthesis) is stable.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 

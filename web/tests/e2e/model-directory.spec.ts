@@ -6,7 +6,7 @@
 // "policy unavailable"). Also asserts the public /status page renders an
 // operational summary against the live BE.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { waitForBootstrap } from "./helpers";
 

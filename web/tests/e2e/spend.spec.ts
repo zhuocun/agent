@@ -7,7 +7,7 @@
 // totals, the daily bars, the by-model + top-conversation lists, the export
 // affordances, and that switching the range re-fetches.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, waitForBootstrap } from "./helpers";
 

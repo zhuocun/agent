@@ -20,7 +20,7 @@
 //   (d) the grouping survives a full reload (it derives from the persisted
 //       call+result parts, not live stream state)
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, waitForBootstrap } from "./helpers";
 

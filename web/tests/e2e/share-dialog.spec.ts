@@ -17,7 +17,7 @@
 // the Clipboard API happy path runs (and assert the copied value), exercising
 // the same code path real users hit on a secure origin.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, waitForBootstrap } from "./helpers";
 

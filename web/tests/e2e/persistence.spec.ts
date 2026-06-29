@@ -5,7 +5,7 @@
 // nav, (ii) the BE recognising the session, (iii) bootstrap returning the
 // conversation summary, and (iv) the active-thread load fetching messages.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage-fixture";
 
 import { BE_URL, sessionCookie, waitForBootstrap } from "./helpers";
 

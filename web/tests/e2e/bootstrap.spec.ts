@@ -6,7 +6,7 @@
 //   (c) the rendered shell carries the bootstrap-derived model tier list,
 //   (d) a second visit reuses the same anonymous user (no duplicate row).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage-fixture";
 
 import { BE_URL, sessionCookie, waitForBootstrap } from "./helpers";
 

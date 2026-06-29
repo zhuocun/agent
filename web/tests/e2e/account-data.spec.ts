@@ -23,7 +23,7 @@
 
 import { readFile } from "node:fs/promises";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, sessionCookie, waitForBootstrap } from "./helpers";
 

@@ -6,7 +6,7 @@
 // "Activity & data access" and assert the event renders newest-first with its
 // human-readable label, alongside the data-processing rollup section.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, waitForBootstrap } from "./helpers";
 

@@ -10,7 +10,7 @@
 // keeps it green regardless of whether the parallel BE half has shipped those
 // routes yet. Bootstrap itself still goes to the real BE on :8000.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { waitForBootstrap } from "./helpers";
 

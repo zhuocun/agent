@@ -23,7 +23,7 @@
 // rationale as streaming.spec.ts — `waitForResponse` is fragile against a
 // fast-completing SSE stream).
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { waitForBootstrap } from "./helpers";
 

@@ -11,7 +11,7 @@
 // orchestrator runs the real-BE specs after integration). The fallback spec at
 // the end drives the REAL FakeProvider, mirroring provider-selection.spec.ts.
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "./coverage-fixture";
 
 import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 
@@ -496,6 +496,95 @@ test.describe("view spend link", () => {
     const dialog = page.getByRole("dialog", { name: "Settings" });
     await expect(dialog).toBeVisible();
     await expect(page.getByTestId("spend-analytics-panel")).toBeVisible();
+  });
+});
+
+// --- Attribution byline variants (BYOK + structured-output chip) ------------
+//
+// The AttributionRow renders extra byline segments for BYOK turns ("Your <key>")
+// and for structured-output ("JSON mode") turns — a valid JSON chip vs an
+// invalid-JSON warning chip. These ride the same mocked-terminal attribution as
+// the cost specs above, so we drive them deterministically here.
+
+test.describe("attribution byline variants", () => {
+  test("a BYOK structured-output turn shows the key byline and a valid JSON chip", async ({
+    page,
+  }) => {
+    await mockBootstrap(page);
+    await mockCreateConversation(page);
+
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+        body: terminalFrame(
+          defaultAttribution({
+            isByok: true,
+            providerLabel: "DeepSeek",
+            outputFormat: "json_object",
+            outputValid: true,
+          }),
+        ),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByTestId("composer-textarea").fill("Return JSON please");
+    await page.getByTestId("composer-send").click();
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+
+    const attribution = assistant.getByTestId("message-attribution");
+    await expect(attribution).toBeVisible();
+    // BYOK byline segment ("Your DeepSeek key") + the accessible label clause.
+    await expect(attribution).toContainText("Your DeepSeek key");
+    await expect(attribution).toHaveAttribute(
+      "aria-label",
+      /billed to your deepseek key/i,
+    );
+
+    // Valid JSON chip — the Braces variant, label "JSON" (never "JSON (invalid)").
+    const jsonChip = assistant.getByTestId("json-output-chip");
+    await expect(jsonChip).toBeVisible();
+    await expect(jsonChip).toHaveText("JSON");
+  });
+
+  test("an invalid structured-output turn shows the JSON (invalid) warning chip", async ({
+    page,
+  }) => {
+    await mockBootstrap(page);
+    await mockCreateConversation(page);
+
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+        body: terminalFrame(
+          defaultAttribution({
+            outputFormat: "json_object",
+            outputValid: false,
+          }),
+        ),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.getByTestId("composer-textarea").fill("Return JSON please");
+    await page.getByTestId("composer-send").click();
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+
+    const jsonChip = assistant.getByTestId("json-output-chip");
+    await expect(jsonChip).toBeVisible();
+    await expect(jsonChip).toHaveText("JSON (invalid)");
   });
 });
 

@@ -6,7 +6,7 @@
 //      assert the rendered body lands in the composer with the cursor parked on
 //      the first `{{placeholder}}`.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { waitForBootstrap } from "./helpers";
 

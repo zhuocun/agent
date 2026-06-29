@@ -13,7 +13,7 @@
 //   (c) PDFs/text are NOT image attachments, so they are unaffected by the
 //       vision gate (covered implicitly — the gate filters on mediaType image)
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage-fixture";
 
 import { modelModeTrigger, waitForBootstrap } from "./helpers";
 

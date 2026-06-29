@@ -10,7 +10,7 @@
 // and the bootstrap route serves the current `prefs` — so a reload re-fetches the
 // updated state exactly as the real BE would.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 

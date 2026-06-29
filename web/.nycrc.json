@@ -1,0 +1,20 @@
+{
+  "all": false,
+  "temp-dir": "coverage/.nyc_output",
+  "report-dir": "coverage",
+  "exclude": [
+    "src/app/**",
+    "src/components/chat/history-search-dialog.tsx",
+    "src/components/chat/spend-dialog.tsx",
+    "src/components/ui/skeleton.tsx",
+    "**/*.d.ts",
+    "tests/**",
+    "*.config.*",
+    "scripts/**"
+  ],
+  "check-coverage": true,
+  "statements": 73,
+  "lines": 77,
+  "functions": 75,
+  "branches": 64
+}

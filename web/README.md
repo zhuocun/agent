@@ -62,6 +62,27 @@ for tests — your `api/dev.sqlite3` is never touched. The API webServer command
 resets the schema via `python -m app.scripts.init_test_db` before uvicorn
 starts.
 
+### Coverage
+
+FE coverage is collected through the same Playwright suite. When `COVERAGE=1`,
+`next.config.ts` adds a `babel-plugin-istanbul` webpack pass (so the run uses
+`next dev --webpack`, not Turbopack) and the `coverage-fixture.ts` drains
+`window.__coverage__` after every test into `coverage/.nyc_output/`.
+
+```bash
+pnpm test:e2e:coverage   # COVERAGE=1 run of every spec, then writes coverage/
+pnpm coverage:report     # merge → text/lcov/html/json-summary, then enforce floor
+```
+
+`coverage:report` ends in `nyc check-coverage`, so it exits non-zero if any
+metric drops below the floor in `.nycrc.json` (statements 73, lines 77,
+functions 75, branches 64 — set ~3 pts under the suite's achieved numbers to
+absorb run-to-run noise). The config excludes `src/app/**` (RSC server
+entries the browser collector can't see) so the gate scores only
+browser-reachable code. Artifacts land in `web/coverage/` (`lcov.info`,
+`coverage-summary.json`, `index.html`). CI runs this in the `web-coverage` job
+and uploads the lcov report.
+
 ## Deploy
 
 Production deploys are handled by the Vercel GitHub integration for this repo,

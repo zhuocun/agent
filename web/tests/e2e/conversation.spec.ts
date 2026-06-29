@@ -11,7 +11,7 @@
 // Each test gets a fresh browser context => fresh anon user => clean slate
 // for `/api/conversations` listings (per-user filtered in the repo).
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage-fixture";
 
 import { BE_URL, waitForBootstrap } from "./helpers";
 

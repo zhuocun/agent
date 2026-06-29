@@ -18,7 +18,7 @@
 // deny→rejected). See api/app/providers/fake.py + TOOLS_ENABLED in
 // shared-config.ts.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, waitForBootstrap } from "./helpers";
 

@@ -7,7 +7,7 @@
 // rejects a composer-invariant key inline. Deterministic — gated on the PUT
 // request body, not on timing.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage-fixture";
 
 import { BE_URL, waitForBootstrap } from "./helpers";
 

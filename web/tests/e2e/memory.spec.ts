@@ -7,7 +7,7 @@
 //      real (fake-provider) turn and assert the chip appears on the assistant
 //      message and opens the manager on click.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { waitForBootstrap } from "./helpers";
 

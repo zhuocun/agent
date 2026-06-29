@@ -31,6 +31,13 @@ import path from "node:path";
 
 import { BE_ENV, BE_URL, FE_PORT, FE_URL } from "./tests/e2e/shared-config";
 
+// Coverage mode (set by `pnpm test:e2e:coverage`). When on, the FE webServer is
+// swapped to an istanbul-instrumented `next dev --webpack` build and COVERAGE=1
+// is exported to the FE process only — the BE env (BE_ENV) is left untouched, so
+// this stays FE-only E2E coverage. With COVERAGE unset the config is identical to
+// the normal `pnpm test:e2e` run.
+const COVERAGE = process.env.COVERAGE === "1";
+
 export default defineConfig({
   testDir: "./tests/e2e",
   // Modest timeouts: the slowest spec is `streaming.spec.ts` (~3-4s for the
@@ -89,17 +96,23 @@ export default defineConfig({
     {
       // FE: next dev. Probes the root `/` and DOES NOT trigger an API call
       // — the BE may still be warming up at this moment, so probing a page
-      // that bootstraps would race.
-      command: "pnpm dev",
+      // that bootstraps would race. Under COVERAGE we must use the webpack
+      // builder (`--webpack`) because the istanbul instrumentation lives in the
+      // next.config.ts `webpack` hook, which Turbopack ignores.
+      command: COVERAGE ? "pnpm exec next dev --webpack" : "pnpm dev",
       cwd: __dirname,
       url: FE_URL,
       reuseExistingServer: false,
-      timeout: 120_000,
+      // Webpack + per-file istanbul instrumentation compiles slower than the
+      // default Turbopack dev server, so give the coverage build more headroom.
+      timeout: COVERAGE ? 240_000 : 120_000,
       env: {
         // NEXT_PUBLIC_* is inlined at module load by Next; make sure the dev
         // server picks up the same value the tests will assert against.
         NEXT_PUBLIC_API_BASE_URL: BE_URL,
         PORT: String(FE_PORT),
+        // FE-only: turns on the next.config.ts istanbul webpack pass.
+        ...(COVERAGE ? { COVERAGE: "1" } : {}),
       },
       stdout: "pipe",
       stderr: "pipe",

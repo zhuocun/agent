@@ -14,7 +14,7 @@
 // so navigating to /share/{token} issues a GET /api/share/{token} we can both
 // observe and let the React app render.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 
@@ -202,6 +202,47 @@ test.describe("public share view", () => {
 
     // Read-only chrome: no composer is rendered on the public page.
     await expect(page.getByTestId("composer-textarea")).toHaveCount(0);
+  });
+
+  test("a non-404 server error shows the retryable error state", async ({
+    page,
+  }) => {
+    // A 5xx (not a 404) is the "couldn't load" branch, distinct from the
+    // unknown-token "no longer available" empty state below.
+    let getCount = 0;
+    await page.route("**/api/share/*", async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      getCount += 1;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "INTERNAL",
+            severity: "error",
+            title: "Server error",
+            body: "boom",
+          },
+        }),
+      });
+    });
+
+    await page.goto("/share/server-error-token");
+
+    await expect(
+      page.getByRole("heading", { name: "Couldn't load this conversation" }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // "Try again" re-runs the fetch effect (bumps the attempt counter).
+    const before = getCount;
+    await page.getByRole("button", { name: "Try again" }).click();
+    await expect.poll(() => getCount, { timeout: 15_000 }).toBeGreaterThan(
+      before,
+    );
+    // Still failing → stays on the error state, retry button still offered.
+    await expect(
+      page.getByRole("heading", { name: "Couldn't load this conversation" }),
+    ).toBeVisible();
   });
 
   test("an unknown share token shows the unavailable empty state", async ({

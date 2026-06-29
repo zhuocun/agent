@@ -16,7 +16,7 @@
 // Runs against the REAL BE + FakeProvider (PROVIDER_BACKEND=fake) so an
 // assistant turn is available for the read-aloud control.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { waitForBootstrap } from "./helpers";
 

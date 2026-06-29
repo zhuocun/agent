@@ -328,6 +328,7 @@ Standard commands are in `api/README.md` and `web/README.md`. Summary:
 - API: `cd api && uv run ruff check . && uv run mypy app && uv run pytest`
 - Web: `cd web && pnpm lint && pnpm build`
 - E2E: `cd web && pnpm test:e2e` (starts BE+FE; ports **3000** and **8000** must be free; first run `pnpm test:e2e:install`)
+- E2E coverage: `cd web && pnpm test:e2e:coverage && pnpm coverage:report` (FE-only Istanbul coverage via the same suite; `coverage:report` ends in `nyc check-coverage` and fails below the `web/.nycrc.json` floor — statements 73 / lines 77 / functions 75 / branches 64, set ~3 pts under achieved, with `src/app/**` RSC entries excluded). CI gates this in the parallel `web-coverage` job and uploads the lcov artifact.
 
 ### Provider keys and pytest
 

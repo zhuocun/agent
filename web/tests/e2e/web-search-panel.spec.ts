@@ -3,7 +3,7 @@
 // Web-search tool calls and the search status line fold into a single
 // `web-search-panel` instead of separate tool cards plus a status row.
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./coverage-fixture";
 
 import { modelModeTrigger, waitForBootstrap } from "./helpers";
 

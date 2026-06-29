@@ -13,7 +13,7 @@
 // against a fast-completing SSE stream. A passive listener records the
 // headers once and lets the browser own the body lifecycle end-to-end.
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage-fixture";
 
 import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 

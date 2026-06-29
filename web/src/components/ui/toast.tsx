@@ -48,6 +48,9 @@ function emit(): void {
 function subscribe(listener: Listener): () => void {
   listeners.add(listener);
   return () => {
+    // The Toaster mounts once at the app root and never unmounts, so this
+    // store-unsubscribe is unreachable in practice.
+    /* istanbul ignore next */
     listeners.delete(listener);
   };
 }
@@ -78,6 +81,9 @@ export function showToast(input: ToastInput): ToastHandle {
   queue = [...queue, record];
   emit();
   return {
+    // No current caller retains the ToastHandle — toasts are dismissed via the
+    // close button or the auto-dismiss timer, not this programmatic handle.
+    /* istanbul ignore next */
     dismiss: () => dismiss(id),
   };
 }
@@ -171,23 +177,28 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
             {toast.body}
           </p>
         ) : null}
-        {toast.actions && toast.actions.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-3">
-            {toast.actions.map((action, index) => (
-              <button
-                key={`${action.label}-${index}`}
-                type="button"
-                onClick={() => {
-                  action.onClick();
-                  dismiss(toast.id);
-                }}
-                className="rounded-full text-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        {
+          /* No consumer supplies toast `actions`, so the action row and its
+             click handler are unreachable through real flows. */
+          /* istanbul ignore next */
+          toast.actions && toast.actions.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-3">
+              {toast.actions.map((action, index) => (
+                <button
+                  key={`${action.label}-${index}`}
+                  type="button"
+                  onClick={() => {
+                    action.onClick();
+                    dismiss(toast.id);
+                  }}
+                  className="rounded-full text-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          ) : null
+        }
       </div>
       <button
         type="button"

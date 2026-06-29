@@ -158,9 +158,108 @@ jobs:
           path: web/test-results
           retention-days: 14
 
+  web-coverage:
+    name: web-coverage
+    runs-on: ubuntu-latest
+    # Runs in parallel with `web-e2e`. This job boots its own instrumented
+    # (istanbul via `next dev --webpack`) BE+FE pair through Playwright's
+    # webServer and gates the FE coverage floor (see web/.nycrc.json). Kept
+    # separate from `web-e2e` so the Turbopack integration run and the slower
+    # webpack-instrumented coverage run don't serialize on one runner.
+    env:
+      ENV: test
+      PROVIDER_BACKEND: fake
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      SESSION_SECRET: playwright-e2e-session-secret-fixed-and-long-enough
+      BYOK_ENCRYPTION_KEK: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: lax
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "api/uv.lock"
+
+      - name: Sync API dependencies
+        working-directory: api
+        run: uv sync --frozen
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve Playwright version
+        id: pw-version
+        working-directory: web
+        run: |
+          version=$(node -p "require('./package.json').devDependencies['@playwright/test']")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw-version.outputs.version }}
+
+      - name: Install Chromium (with OS deps)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Chromium OS deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        working-directory: web
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Run E2E with coverage
+        working-directory: web
+        # Boots the instrumented webpack build, runs every spec, and writes the
+        # merged report under web/coverage. This step does not fail on a low
+        # floor (see test:e2e:coverage) — the gate is the next step.
+        run: pnpm test:e2e:coverage
+        timeout-minutes: 15
+
+      - name: Enforce coverage floor
+        working-directory: web
+        # Re-runs `nyc report && nyc check-coverage` against the merged output;
+        # exits non-zero if any metric is under the web/.nycrc.json threshold.
+        run: pnpm coverage:report
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-coverage-lcov
+          path: |
+            web/coverage/lcov.info
+            web/coverage/coverage-summary.json
+          retention-days: 14
+
   deploy-api:
     name: deploy-api
-    needs: [api, web-e2e]
+    needs: [api, web-e2e, web-coverage]
     runs-on: ubuntu-latest
     # Only deploy when CI passes on a push to main; PRs and feature-branch
     # pushes never reach this step. `flyctl deploy --remote-only` builds on

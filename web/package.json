@@ -13,7 +13,7 @@
     "test:e2e:install": "playwright install --with-deps chromium",
     "dev:coverage": "COVERAGE=1 next dev --webpack",
     "test:e2e:coverage": "rm -rf coverage && { COVERAGE=1 playwright test --retries=1; status=$?; pnpm run coverage:report; exit $status; }",
-    "coverage:report": "nyc report --reporter=text-summary --reporter=text --reporter=lcov --reporter=html --temp-dir coverage/.nyc_output --report-dir coverage"
+    "coverage:report": "nyc report --reporter=text-summary --reporter=text --reporter=lcov --reporter=html --reporter=json-summary --temp-dir coverage/.nyc_output --report-dir coverage && nyc check-coverage --temp-dir coverage/.nyc_output"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

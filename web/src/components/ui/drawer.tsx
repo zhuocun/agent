@@ -57,8 +57,10 @@ function DrawerContent({
   title?: string
 }) {
   // The sole consumer (app-shell.tsx) always passes explicit `side`/`showClose`
-  // and only ever mounts a left-side drawer with `showClose={false}`, so these
-  // fallbacks and the right-side variant are unreachable through real usage.
+  // and only ever mounts a left-side drawer, so the `??` fallbacks and the
+  // right-side variant are unreachable through real usage. The visible close
+  // affordance itself is now mounted (`showClose={true}`), so the JSX branch
+  // below is reachable — only the `?? true` default here stays untaken.
   // Resolved in statements so the ignores survive the SWC→istanbul pass.
   /* istanbul ignore next */
   const resolvedSide = side ?? "left"
@@ -96,9 +98,9 @@ function DrawerContent({
         </DialogPrimitive.Title>
         {children}
         {
-          /* The sole consumer renders with `showClose={false}`, so the visible
-             close affordance is unreachable through real usage. */
-          /* istanbul ignore next */
+          /* The sole consumer renders with `showClose={true}`, so the visible
+             close affordance is mounted; the `: null` arm stays untaken. */
+          /* istanbul ignore else */
           resolvedShowClose ? (
           <DialogPrimitive.Close
             data-slot="drawer-close"

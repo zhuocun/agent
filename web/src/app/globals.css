@@ -43,6 +43,9 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  /* Alert/error *text* only — never button fills. Lets dark mode brighten the
+     red for legible body text without touching the shared fill token. */
+  --color-destructive-text: var(--destructive-text);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
@@ -195,6 +198,8 @@
   /* Semantic warning/success/info/destructive — hues preserved, chroma trimmed ~10%. */
   --destructive: oklch(0.577 0.220 27.325);
   --destructive-foreground: oklch(0.985 0 0);
+  /* Light error text equals the fill token — already AA on the light canvas. */
+  --destructive-text: var(--destructive);
   --success: oklch(0.62 0.126 152);
   --success-foreground: oklch(0.985 0 0);
   --warning: oklch(0.72 0.135 75);
@@ -371,6 +376,9 @@
 
   --destructive: oklch(0.704 0.172 22.216);
   --destructive-foreground: oklch(0.985 0 0);
+  /* Error *text* runs lighter than the fill so small body copy clears AA on the
+     near-black canvas; the shared --destructive stays tuned for button fills. */
+  --destructive-text: oklch(0.8 0.15 22.216);
   --success: oklch(0.7 0.126 152);
   --success-foreground: oklch(0.18 0.02 152);
   --warning: oklch(0.8 0.126 80);
@@ -1088,4 +1096,20 @@ input[type="search"]::-webkit-search-decoration {
     backdrop-filter: none;
     box-shadow: none;
   }
+
+  /* The user bubble is a flat brand-muted wash with no border — forced-colors
+     flattens the fill so the bubble loses its boundary. Restore a real border
+     for both the display bubble and its edit-mode twin. */
+  [data-testid="user-message-text"],
+  [data-testid="user-message-edit"] {
+    border: 1px solid CanvasText;
+  }
+}
+
+/* The sidebar collapse chevron collapses the desktop rail — meaningless inside
+   the mobile drawer, which has its own close (X) affordance. The same sidebar
+   tree renders in both places, so hide the rail-only collapse control when the
+   sidebar is mounted inside the drawer. The desktop rail keeps its chevron. */
+[data-slot="drawer-content"] [data-sidebar-collapse] {
+  display: none;
 }

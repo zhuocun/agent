@@ -108,7 +108,7 @@ export function AppShell({
       <Drawer open={mobileNavOpen} onOpenChange={onMobileNavOpenChange}>
         <DrawerContent
           side="left"
-          showClose={false}
+          showClose={true}
           className="w-72 pl-[env(safe-area-inset-left)]"
         >
           {sidebar}

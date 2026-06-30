@@ -1282,7 +1282,7 @@ export function SettingsDialog({
               )}
             </div>
             {billingError ? (
-              <p className="text-xs text-destructive">{billingError}</p>
+              <p className="text-xs text-destructive-text">{billingError}</p>
             ) : null}
 
             {!anonymous ? (

@@ -7,6 +7,13 @@ import { cn } from "@/lib/utils";
 
 const DISMISS_KEY = "olune.ios-install-hint.dismissed";
 
+// The welcome state's suggestion rail. While it is mounted the fixed coachmark
+// (anchored above the composer) overlaps the last chip on short viewports —
+// iPhone 13 (390×844) occludes the 4th suggestion. The role/name pair is
+// load-bearing for the e2e suite (welcome-screen.tsx), so it doubles as a
+// stable hook to detect the rail's presence.
+const WELCOME_RAIL_SELECTOR = 'ul[aria-label="Suggested prompts"]';
+
 // Detect iOS Safari running in a browser tab (not an installed PWA). The UA
 // sniff is the accepted approach for this narrow case — iOS Safari does not
 // implement `beforeinstallprompt`, so there is no feature-detect alternative.
@@ -35,6 +42,7 @@ function isIosSafariTab(): boolean {
 
 export function InstallCoachmark(): React.JSX.Element | null {
   const [visible, setVisible] = useState(false);
+  const [welcomeRailVisible, setWelcomeRailVisible] = useState(false);
 
   useEffect(() => {
     if (!isIosSafariTab()) return;
@@ -48,6 +56,24 @@ export function InstallCoachmark(): React.JSX.Element | null {
     return () => window.clearTimeout(t);
   }, []);
 
+  // Track the welcome suggestion rail so the coachmark yields the bottom of the
+  // viewport to it (it would otherwise occlude the last chip on short phones).
+  // A MutationObserver keeps this live: the rail unmounts once the user sends a
+  // prompt, at which point the hint is free to appear. Surfaces without a rail
+  // (e.g. /status) keep this false, so the coachmark shows there as before.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const sync = (): void => {
+      setWelcomeRailVisible(
+        document.querySelector(WELCOME_RAIL_SELECTOR) !== null
+      );
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
   const dismiss = (): void => {
     setVisible(false);
     try {
@@ -57,7 +83,7 @@ export function InstallCoachmark(): React.JSX.Element | null {
     }
   };
 
-  if (!visible) return null;
+  if (!visible || welcomeRailVisible) return null;
 
   return (
     <div

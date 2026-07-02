@@ -381,9 +381,18 @@ export function MessageList({
           non-interactive: pointer-events-none + aria-hidden + tabIndex -1 keep
           it out of the tab order and from intercepting taps. 44pt (size-11)
           meets the iOS touch-target floor; icon-only by design. */}
-      {/* Anchored to clear the two-row composer card (~9rem of bottom chrome)
-          with the same ~1.5rem float the old pill layout had. */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-[calc(var(--bottom-inset)+9.5rem)] z-30 flex justify-center">
+      {/* Jump-to-latest anchor: clears the two-row composer card (~9rem of
+          bottom chrome; install-coachmark uses +9rem, list `pb` uses +12rem).
+          Mobile parks the pill on the trailing edge at the same +9.5rem float;
+          md+ keeps the centered +9.5rem placement above the composer gap. */}
+      <div
+        className={cn(
+          "pointer-events-none absolute inset-x-0 z-30 flex",
+          "bottom-[calc(var(--bottom-inset)+9.5rem)]",
+          "justify-end pr-[max(env(safe-area-inset-right),1rem)]",
+          "md:justify-center md:pr-0",
+        )}
+      >
         <Button
           type="button"
           variant="secondary"

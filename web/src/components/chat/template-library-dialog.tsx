@@ -163,8 +163,8 @@ export function TemplateLibraryBody({
     draftTitle.trim().length > 0 && draftBody.trim().length > 0 && !adding;
 
   return (
-    <div data-testid="template-dialog">
-      <div className="flex flex-col gap-1.5 text-center sm:text-left">
+    <div data-testid="template-dialog" className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-col gap-1.5 text-center sm:text-left">
         <h2 className="text-lg leading-none font-semibold">Prompt templates</h2>
         <p className="text-sm text-muted-foreground">
           Reusable prompts you can drop into the composer. Use{" "}
@@ -173,7 +173,7 @@ export function TemplateLibraryBody({
         </p>
       </div>
 
-      <div className="-mr-2 mt-4 max-h-[60dvh] space-y-5 overflow-y-auto pr-2 sm:max-h-[70dvh]">
+      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto pr-2 sm:max-h-none">
           {/* Add a template */}
           <div className="space-y-2">
             <label
@@ -369,7 +369,7 @@ export function TemplateLibraryDialog({
 }: TemplateLibraryDialogProps): JSX.Element {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[80dvh] sm:max-h-none">
+      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh]">
         {open ? <TemplateLibraryBody active={open} /> : null}
       </DialogContent>
     </Dialog>

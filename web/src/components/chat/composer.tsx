@@ -134,7 +134,9 @@ const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_ATTACHMENT_TYPES =
   "image/*,application/pdf,text/*,.pdf,.txt,.md,.markdown,.csv,.json,.log";
 const BUTTON_BASE =
-  "inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0 transition-[background-color,color,box-shadow] duration-300 ease-out";
+  "inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0 transition-[background-color,color,box-shadow] duration-300 ease-out focus-visible:shadow-none focus-visible:ring-2 focus-visible:ring-ring";
+const TOOLBAR_FOCUS_VISIBLE =
+  "focus-visible:shadow-none focus-visible:ring-2 focus-visible:ring-ring";
 
 function attachmentId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -943,6 +945,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         }
         className={cn(
           "size-11 shrink-0 rounded-full p-0",
+          TOOLBAR_FOCUS_VISIBLE,
           dictation.listening
             ? "text-brand hover:text-brand"
             : "text-muted-foreground hover:text-foreground",
@@ -1307,6 +1310,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                     data-testid="composer-more-actions"
                     className={cn(
                       "size-11 shrink-0 rounded-full p-0",
+                      TOOLBAR_FOCUS_VISIBLE,
                       moreActionsOpen
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",

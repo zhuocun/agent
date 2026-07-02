@@ -226,8 +226,8 @@ export function ModelDirectoryBody({
   const loading = open && !loaded && error === null;
 
   return (
-    <div data-testid="model-directory-dialog">
-      <div className="flex flex-col gap-1.5 text-center sm:text-left">
+    <div data-testid="model-directory-dialog" className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-col gap-1.5 text-center sm:text-left">
         <h2 className="text-lg leading-none font-semibold">
           Models &amp; data policies
         </h2>
@@ -237,7 +237,7 @@ export function ModelDirectoryBody({
         </p>
       </div>
 
-      <div className="-mr-2 mt-4 max-h-[60dvh] space-y-3 overflow-y-auto pr-2 sm:max-h-[70dvh]">
+      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-3 overflow-y-auto pr-2 sm:max-h-none">
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : error ? (
@@ -260,7 +260,7 @@ export function ModelDirectoryDialog({
 }: ModelDirectoryDialogProps): JSX.Element {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[80dvh] sm:max-h-none">
+      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh]">
         {open ? <ModelDirectoryBody active={open} /> : null}
       </DialogContent>
     </Dialog>

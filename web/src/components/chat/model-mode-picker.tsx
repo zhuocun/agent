@@ -34,7 +34,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
-import { formatTierListPriceLine } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type {
   ModelTier,
@@ -219,8 +218,8 @@ export function ModelModePicker({
           className="w-80 max-w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl p-1.5"
         >
           {/* Model tier — the only first-level decision, so it leads. Each row
-              is one tight line (label · model · price); the longer description
-              renders ONLY under the selected tier, in a quieter treatment. */}
+              is one tight line (label · model); the longer description renders
+              ONLY under the selected tier, in a quieter treatment. */}
           <DropdownMenuGroup>
             <GroupHeading>Model</GroupHeading>
             {tiers.map((t) => (
@@ -366,7 +365,7 @@ export function ModelModePicker({
           <div className="-mx-1 flex flex-col gap-4 overflow-y-auto">
             {/* Tier leads on mobile too, and is the ONLY section shown by
                 default. The full description rides only on the selected row; the
-                rest carry the compact model · price meta. */}
+                rest carry the compact model meta. */}
             <SheetSection title="Model">
               {tiers.map((t) => {
                 const selected = t.id === selectedTierId;
@@ -501,8 +500,8 @@ function GroupHeading({ children }: { children: ReactNode }): JSX.Element {
   );
 }
 
-// The primary tier row: a single scannable line (label · model · price) with a
-// trailing check. The longer marketing `description` is revealed ONLY for the
+// The primary tier row: a single scannable line (label · model) with a trailing
+// check. The longer marketing `description` is revealed ONLY for the
 // selected tier, in a lighter caption — matching visual weight to the user's
 // current intent (02-patterns §75-86) instead of repeating prose on every row.
 function TierRow({
@@ -784,16 +783,8 @@ function ValueBadge({ label }: { label: string }): JSX.Element {
 }
 
 function tierMeta(tier: ModelTier): string {
-  const parts = [
-    tier.modelLabel,
-    tierPriceMeta(tier),
-    tier.supportsAttachments ? "Attachments" : "",
-  ];
+  const parts = [tier.modelLabel, tier.supportsAttachments ? "Attachments" : ""];
   return parts.filter(Boolean).join(" · ");
-}
-
-function tierPriceMeta(tier: ModelTier): string {
-  return formatTierListPriceLine(tier.listPriceInPerM, tier.listPriceOutPerM);
 }
 
 // The cheapest tier with an AVAILABLE route and a real price, by combined

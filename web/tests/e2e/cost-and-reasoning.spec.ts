@@ -188,6 +188,38 @@ function defaultAttribution(
   };
 }
 
+// --- Model-mode picker: no monetary tier prices (main UI) -------------------
+
+test.describe("model-mode picker — no monetary prices", () => {
+  test("desktop tier rows show no dollar figures before Advanced", async ({
+    page,
+  }) => {
+    await mockBootstrap(page);
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await modelModeTrigger(page).click();
+    const menu = pickerMenu(page);
+    await expect(menu).toBeVisible();
+    expect((await menu.innerText()) ?? "").not.toMatch(/\$\s?\d/);
+    await page.keyboard.press("Escape");
+  });
+
+  test("mobile tier rows show no dollar figures", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockBootstrap(page);
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await modelModeTrigger(page).click();
+    const sheet = page.getByRole("dialog", { name: "Model and reasoning" });
+    await expect(sheet).toBeVisible();
+    expect((await sheet.innerText()) ?? "").not.toMatch(/\$\s?\d/);
+  });
+});
+
 // --- Feature 1: reasoning-effort wiring + hint chips ------------------------
 
 test.describe("reasoning effort", () => {
@@ -221,6 +253,7 @@ test.describe("reasoning effort", () => {
     await expect(
       menu.getByText("Cost high · Latency slow", { exact: true }),
     ).toBeVisible();
+    expect((await menu.innerText()) ?? "").not.toMatch(/\$\s?\d/);
     // Pick Extended (clicking the row's label span; mirrors how the existing
     // provider-selection specs select a row). Scoped to the open menu so the
     // match is unambiguous.

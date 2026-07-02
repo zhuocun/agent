@@ -6,7 +6,6 @@ import { Check, Database, Minus, ShieldCheck, ShieldOff } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { fetchModelDirectory } from "@/lib/apiClient";
-import { formatDirectoryPricePerM } from "@/lib/money";
 import type {
   ModelDirectoryEntry,
   ModelDirectoryTier,
@@ -143,10 +142,6 @@ function TierRow({ tier }: { tier: ModelDirectoryTier }): JSX.Element {
         <Capability on={tier.supportsWebSearch} label="Web" />
         <Capability on={tier.supportsAttachments} label="Files" />
         <Capability on={tier.supportsVision} label="Vision" />
-        <span className="font-mono text-xs tabular-nums text-muted-foreground">
-          in {formatDirectoryPricePerM(tier.listPriceInPerM)} · out{" "}
-          {formatDirectoryPricePerM(tier.listPriceOutPerM)}
-        </span>
       </div>
     </li>
   );

@@ -37,7 +37,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
-import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
+import type { SubagentActivity } from "@/lib/stream-client";
 import {
   buildAgenticPanelLayout,
   buildMainSubagentIds,
@@ -107,10 +107,6 @@ interface AssistantMessageProps {
   // status mid-stream; committed/reloaded messages omit it and the panel
   // derives its sections from the persisted `subagent` marker + tagged parts.
   liveSubagents?: SubagentActivity[];
-  // Agentic mode: live run-cost subtotal vs cap (the `run_cost` SSE event).
-  // Streaming bubble only — the BE doesn't persist the cap, so committed
-  // messages fall back to the summed per-subagent costs.
-  runCost?: RunCostState | null;
 }
 
 // Length above which the error body collapses into an expandable Details
@@ -176,7 +172,6 @@ export function AssistantMessage({
   defaultReasoningOpen = false,
   error,
   liveSubagents,
-  runCost,
 }: AssistantMessageProps) {
   // Agentic mode: per-subagent sections for the SubagentPanel. Live activity
   // (the streaming bubble) wins — it carries accurate running/done status;
@@ -351,7 +346,6 @@ export function AssistantMessage({
             <SubagentPanel
               key={idx}
               sections={subagentSections}
-              runCost={runCost}
               panelWebSearchGroups={webSearchLayout.panelLevel}
               webSearchBySubagentId={webSearchLayout.bySubagentId}
               panelToolGroups={toolLayout.panelLevel}

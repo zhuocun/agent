@@ -58,8 +58,10 @@ test.describe("model directory & platform status", () => {
     await expect(deepseek).toBeVisible();
     await expect(deepseek.getByTestId("data-policy")).toBeVisible();
     await expect(deepseek.getByText("Data residency: China")).toBeVisible();
-    // At least one tier row with a model label + price comparison.
+    // At least one tier row with a model label; no monetary prices in directory.
     await expect(deepseek.getByTestId("directory-tier").first()).toBeVisible();
+    const dialogText = (await dialog.innerText()) ?? "";
+    expect(dialogText).not.toMatch(/\$\s?\d/);
 
     // The pending Gemini route has no published policy — it renders honestly
     // as "unavailable", never a fabricated guess.

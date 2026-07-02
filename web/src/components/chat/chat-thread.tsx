@@ -3867,11 +3867,10 @@ export function ChatThread() {
                     message={pendingMessage}
                     status={state.status}
                     reasoningStreaming={state.reasoningStreaming}
-                    // Agentic mode: live per-worker activity + run-cost meter
-                    // for the streaming bubble. Both are empty/null on every
-                    // non-agentic turn.
+                    // Agentic mode: live per-worker activity for the streaming
+                    // bubble. Empty on every non-agentic turn. (`run_cost` SSE
+                    // frames are parsed in stream-client but not rendered here.)
                     liveSubagents={state.subagents}
-                    runCost={state.runCost}
                   />
                 ) : null}
               </MessageList>

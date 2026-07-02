@@ -221,6 +221,7 @@ test.describe("reasoning effort", () => {
     await expect(
       menu.getByText("Cost high · Latency slow", { exact: true }),
     ).toBeVisible();
+    expect((await menu.innerText()) ?? "").not.toMatch(/\$\s?\d/);
     // Pick Extended (clicking the row's label span; mirrors how the existing
     // provider-selection specs select a row). Scoped to the open menu so the
     // match is unambiguous.

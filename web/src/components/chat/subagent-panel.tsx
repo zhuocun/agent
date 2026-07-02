@@ -20,7 +20,6 @@ import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import type { MessagePart } from "@/lib/types";
-import { formatUsdSummary } from "@/lib/money";
 
 // One orchestrator subagent's section, shape-compatible with the live
 // `SubagentActivity` from stream-client AND derivable from a persisted
@@ -59,7 +58,7 @@ interface SubagentPanelProps {
 
 type LiveToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
 
-// Per-worker activity + run-cost meter for an agentic (multi-agent) turn.
+// Per-worker activity for an agentic (multi-agent) turn.
 // orchestrator (`primary` / `worker` / `aggregator` / `orchestrator`); unknown
 // future roles fall through verbatim rather than erroring.
 function roleLabel(role: string): string {
@@ -77,13 +76,12 @@ function roleLabel(role: string): string {
   }
 }
 
-// Per-worker activity + run-cost meter for an agentic (multi-agent) turn.
-// Modeled on the tool-part grammar: a quiet bordered card whose rows collapse
+// Per-worker activity for an agentic (multi-agent) turn. Modeled on the
+// tool-part grammar: a quiet bordered card whose rows collapse
 // their detail behind a one-line summary (progressive disclosure). Running
 // rows stay expanded — they carry live streaming text.
 export function SubagentPanel({
   sections,
-  runCost,
   panelWebSearchGroups = [],
   webSearchBySubagentId,
   panelToolGroups = [],
@@ -109,15 +107,6 @@ export function SubagentPanel({
         ? "1 agent"
         : `${sections.length} agents`;
 
-  // Run-cost meter: prefer the live `run_cost` frame (subtotal vs cap); on a
-  // reloaded transcript fall back to the summed per-subagent costs (no cap).
-  const summedCost = sections.reduce((acc, s) => acc + (s.costUsd ?? 0), 0);
-  const subtotalUsd = runCost ? runCost.subtotalUsd : summedCost;
-  const capUsd = runCost && runCost.capUsd > 0 ? runCost.capUsd : null;
-  // Header meter earns its place when a live cap exists, or when the summed
-  // cost is above the sub-cent noise floor — otherwise it duplicates row costs.
-  const showMeter =
-    (runCost != null && runCost.capUsd > 0) || summedCost >= 0.0001;
   const singleAgentFlat = sections.length === 1 && !isDeepResearch;
 
   return (
@@ -130,9 +119,6 @@ export function SubagentPanel({
         <span className="font-medium text-foreground">{title}</span>
         {!singleAgentFlat ? (
           <span className="text-xs text-muted-foreground">{summary}</span>
-        ) : null}
-        {showMeter ? (
-          <RunCostMeter subtotalUsd={subtotalUsd} capUsd={capUsd} />
         ) : null}
       </div>
       {panelWebSearchGroups.length > 0 ? (
@@ -190,52 +176,6 @@ export function SubagentPanel({
         </ul>
       )}
     </div>
-  );
-}
-
-// Subtotal-vs-cap meter, kept in the usage-meter grammar (hairline capacity
-// bar + mono figure). Without a cap (reloaded transcript) only the figure
-// renders — an uncapped bar would be a made-up ratio.
-function RunCostMeter({
-  subtotalUsd,
-  capUsd,
-}: {
-  subtotalUsd: number;
-  capUsd: number | null;
-}) {
-  const pct =
-    capUsd !== null ? Math.min(Math.round((subtotalUsd / capUsd) * 100), 100) : 0;
-  const label =
-    capUsd !== null
-      ? `Run cost ${formatUsdSummary(subtotalUsd)} of ${formatUsdSummary(capUsd)} cap`
-      : `Run cost ${formatUsdSummary(subtotalUsd)}`;
-  return (
-    <span
-      className="ml-auto inline-flex shrink-0 items-center gap-2 text-2xs"
-      data-testid="run-cost-meter"
-      title={label}
-    >
-      {capUsd !== null ? (
-        <span
-          role="progressbar"
-          aria-label={label}
-          aria-valuenow={pct}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuetext={label}
-          className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-foreground/8"
-        >
-          <span
-            className="block h-full rounded-full bg-brand/80 transition-[width] duration-300 ease-out"
-            style={{ width: `${pct}%` }}
-          />
-        </span>
-      ) : null}
-      <span className="font-mono tabular-nums">
-        {formatUsdSummary(subtotalUsd)}
-        {capUsd !== null ? ` / ${formatUsdSummary(capUsd)}` : ""}
-      </span>
-    </span>
   );
 }
 

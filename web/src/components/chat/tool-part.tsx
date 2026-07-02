@@ -20,7 +20,6 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { formatUsdSummary } from "@/lib/money";
 import type {
   JsonValue,
   MessagePart,
@@ -246,8 +245,8 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
 }
 
 // Structured body for the plan-approval pause: the planner's sub-question
-// decomposition as a numbered list plus the pre-spawn cost estimate against
-// the per-run cap, so the user approves a legible plan — not a JSON blob.
+// decomposition as a numbered list so the user approves a legible plan — not a
+// JSON blob.
 function PlanApprovalDetail({ input }: { input: PlanApprovalInput }) {
   return (
     <div className="mt-2 space-y-2" data-testid="plan-approval-detail">
@@ -258,17 +257,6 @@ function PlanApprovalDetail({ input }: { input: PlanApprovalInput }) {
           </li>
         ))}
       </ol>
-      {input.estimatedCostUsd !== null ? (
-        <p className="text-xs text-muted-foreground">
-          Estimated cost{" "}
-          <span className="font-mono tabular-nums text-foreground">
-            {formatUsdSummary(input.estimatedCostUsd)}
-          </span>
-          {input.capUsd !== null ? (
-            <> of {formatUsdSummary(input.capUsd)} run cap</>
-          ) : null}
-        </p>
-      ) : null}
     </div>
   );
 }

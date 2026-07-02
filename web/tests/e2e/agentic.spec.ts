@@ -156,6 +156,8 @@ async function sendAndPauseOnPlan(page: Page): Promise<string> {
   await expect(planDetail).toBeVisible();
   await expect(planDetail).toContainText("alpha topic");
   await expect(planDetail).toContainText("beta topic");
+  expect((await planDetail.innerText()) ?? "").not.toMatch(/\$\s?\d/);
+  await expect(page.getByTestId("run-cost-meter")).toHaveCount(0);
 
   // The pause reuses the shipped HITL terminal.
   await expect(paused).toHaveAttribute("data-status", "awaiting_approval", {
@@ -253,6 +255,8 @@ test.describe("agentic mode (deep research)", () => {
     await expect(panel).toContainText("Worker 1");
     await expect(panel).toContainText("Worker 2");
     await expect(panel).toContainText("Synthesis");
+    await expect(panel.getByTestId("run-cost-meter")).toHaveCount(0);
+    expect((await panel.innerText()) ?? "").not.toMatch(/\$\s?\d/);
 
     // The aggregator's synthesized answer renders as the bubble's main answer
     // (the deterministic fake-worker findings, merged in plan order).

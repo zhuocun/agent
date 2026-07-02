@@ -1,8 +1,8 @@
 // Canonical USD / list-price formatters for the Olune UI.
 //
-// Every surface that renders a dollar amount or per-million list price imports
-// from here — no local copies, no inline `$${n.toFixed(...)}`. Two cost
-// grammars are intentional: summary (byline/meter) and meter (usage bar).
+// Every surface that renders a dollar amount imports from here — no local
+// copies, no inline `$${n.toFixed(...)}`. Two cost grammars are intentional:
+// summary (byline/meter) and meter (usage bar).
 
 /** Per-turn / run-cost byline grammar: sub-cent floor + 4·3·2 decimals. */
 export function formatUsdSummary(amount: number): string {
@@ -33,19 +33,4 @@ export function formatUsdCurrencyOrNa(
 ): string {
   if (value === null || value === undefined) return "n/a";
   return formatUsdCurrency(value);
-}
-
-/** Model-picker tier row hint: "$0.14/M in · $0.28/M out". Empty when unpriced. */
-export function formatTierListPriceLine(
-  listPriceInPerM: number,
-  listPriceOutPerM: number,
-): string {
-  if (listPriceInPerM <= 0 && listPriceOutPerM <= 0) return "";
-  return `$${listPriceInPerM}/M in · $${listPriceOutPerM}/M out`;
-}
-
-/** Model directory per-million line; "varies" for auto / unpriced routes. */
-export function formatDirectoryPricePerM(perM: number): string {
-  if (!Number.isFinite(perM) || perM <= 0) return "varies";
-  return `$${perM.toFixed(2)}/M`;
 }

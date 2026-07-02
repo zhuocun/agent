@@ -421,7 +421,7 @@ test.describe("auth dialog", () => {
     ).toBeVisible();
   });
 
-  test("surfaces the server's own copy for a 400 validation error", async ({
+  test("maps INVALID_INPUT on sign-in to a friendly message", async ({
     page,
   }) => {
     await page.route("**/api/auth/login", async (route) => {
@@ -430,13 +430,34 @@ test.describe("auth dialog", () => {
         contentType: "application/json",
         body: JSON.stringify({
           error: {
-            code: "VALIDATION",
+            code: "INVALID_INPUT",
             severity: "error",
-            title: "Invalid",
-            body: "Email looks malformed.",
+            title: "Invalid input",
+            body: "The request body or query failed validation.",
           },
         }),
       });
+    });
+
+    await openAuthDialog(page);
+    await page.getByLabel("Email").fill("user@example.com");
+    await page.getByLabel("Password").fill("whatever-123");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+
+    await expect(page.getByText("Enter a valid email address.")).toBeVisible();
+  });
+
+  test("client-side email validation blocks malformed addresses before submit", async ({
+    page,
+  }) => {
+    let loginCalled = false;
+    page.on("request", (req) => {
+      if (
+        req.url().includes("/api/auth/login") &&
+        req.method() === "POST"
+      ) {
+        loginCalled = true;
+      }
     });
 
     await openAuthDialog(page);
@@ -444,6 +465,34 @@ test.describe("auth dialog", () => {
     await page.getByLabel("Password").fill("whatever-123");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    await expect(page.getByText("Email looks malformed.")).toBeVisible();
+    await expect(page.getByText("Enter a valid email address.")).toBeVisible();
+    expect(loginCalled).toBe(false);
+  });
+
+  test("client-side password length validation on create-account", async ({
+    page,
+  }) => {
+    let upgradeCalled = false;
+    page.on("request", (req) => {
+      if (
+        req.url().includes("/api/auth/upgrade") &&
+        req.method() === "POST"
+      ) {
+        upgradeCalled = true;
+      }
+    });
+
+    await openAuthDialog(page);
+    await page.getByRole("button", { name: "Create an account" }).click();
+    await page.getByLabel("Email").fill("new@example.com");
+    await page.getByLabel("Password").fill("short");
+    await page
+      .getByRole("button", { name: "Create account", exact: true })
+      .click();
+
+    await expect(
+      page.getByText("Password must be at least 8 characters."),
+    ).toBeVisible();
+    expect(upgradeCalled).toBe(false);
   });
 });

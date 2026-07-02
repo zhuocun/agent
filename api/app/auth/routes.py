@@ -73,12 +73,13 @@ _log = structlog.get_logger(__name__)
 _truncate_for_bcrypt = _truncate_for_bcrypt_impl
 
 
-# Shared password bound for the auth request models. 8..128 chars: a sane lower
-# floor against trivially-guessable secrets and an upper cap so an oversized
-# body can't drive the (deliberately slow) argon2id hash into a DoS. Applied via
-# `Annotated[str, StringConstraints(...)]` in pydantic v2 style; the upgrade
-# variant wraps it in `... | None` to keep password optional there.
-_Password = Annotated[str, StringConstraints(min_length=8, max_length=128)]
+# Password bounds for auth request models. Signup/upgrade enforces min_length=8
+# (policy for new secrets). Login only caps max_length so a short guess is
+# treated as wrong credentials (401), not a schema rejection (400) that leaks
+# the policy. The upper cap prevents an oversized body from driving the
+# (deliberately slow) argon2id verify into a DoS on every attempt.
+_SignupPassword = Annotated[str, StringConstraints(min_length=8, max_length=128)]
+_LoginPassword = Annotated[str, StringConstraints(max_length=128)]
 
 
 class UpgradeRequest(CamelModel):
@@ -91,7 +92,7 @@ class UpgradeRequest(CamelModel):
     """
 
     email: EmailStr
-    password: _Password | None = None
+    password: _SignupPassword | None = None
 
 
 class LoginRequest(CamelModel):
@@ -105,7 +106,7 @@ class LoginRequest(CamelModel):
     """
 
     email: EmailStr
-    password: _Password
+    password: _LoginPassword
 
 
 def _already_upgraded() -> AppError:

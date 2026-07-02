@@ -217,6 +217,7 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
         sourcesPanelRef={sourcesPanelRef}
         sourceItems={sourceItems}
         answerTestId="public-assistant-answer"
+        showEmptyFallback
       />
       {ungroundedPart ? <PublicUngroundedMarker /> : null}
 

@@ -40,11 +40,13 @@ import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
 import type { SubagentActivity } from "@/lib/stream-client";
 import {
   buildAgenticPanelLayout,
-  buildMainSubagentIds,
   buildSubagentSectionsFromParts,
-  isMainAnswerSubagent,
+  buildSubagentRoleById,
+  hasToolOrSubagentActivity,
   isNestedToolGroup,
   isNestedWebSearchGroup,
+  resolveMainBubbleText,
+  shouldRenderTextInMainBubble,
 } from "@/lib/agentic-layout";
 import { cn } from "@/lib/utils";
 import type {
@@ -183,11 +185,6 @@ export function AssistantMessage({
     return buildSubagentSectionsFromParts(message.parts);
   }, [liveSubagents, message.parts]);
 
-  const mainSubagentIds = useMemo(
-    () => buildMainSubagentIds(message.parts),
-    [message.parts],
-  );
-
   const agenticLayout = useMemo(
     () => buildAgenticPanelLayout(message.parts),
     [message.parts],
@@ -212,50 +209,15 @@ export function AssistantMessage({
     [nestWebSearchInPanel],
   );
 
-  const answerText = useMemo(
-    () =>
-      message.parts
-        .filter(
-          (p): p is Extract<MessagePart, { type: "text" }> =>
-            p.type === "text" &&
-            // Agentic turns: only the main (primary/aggregator) answer counts —
-            // copying a message should yield the synthesis, not every worker's
-            // intermediate finding.
-            // Reloaded messages serialize untagged text with subagentId: null;
-            // treat nullish the same as missing so answerText matches render.
-            (p.subagentId == null || mainSubagentIds.has(p.subagentId)),
-        )
-        .map((p) => p.text)
-        .join("\n\n"),
-    [message.parts, mainSubagentIds],
+  const subagentRoleById = useMemo(
+    () => buildSubagentRoleById(message.parts),
+    [message.parts],
   );
 
-  const subagentRoleById = useMemo(() => {
-    const roles = new Map<string, string>();
-    for (const part of message.parts) {
-      if (part.type === "subagent") roles.set(part.subagentId, part.role);
-    }
-    return roles;
-  }, [message.parts]);
-
-  const promotedAnswerText = useMemo(() => {
-    if (answerText.trim()) return "";
-    const subagentTexts = message.parts.filter(
-      (p): p is Extract<MessagePart, { type: "text" }> =>
-        p.type === "text" && p.subagentId != null && p.text.trim().length > 0,
-    );
-    if (subagentTexts.length === 0) return "";
-    for (let i = subagentTexts.length - 1; i >= 0; i--) {
-      const part = subagentTexts[i]!;
-      const subagentId = part.subagentId;
-      if (subagentId == null) continue;
-      const role = subagentRoleById.get(subagentId) ?? "subagent";
-      if (isMainAnswerSubagent(subagentId, role)) return part.text;
-    }
-    return subagentTexts[subagentTexts.length - 1]!.text;
-  }, [answerText, message.parts, subagentRoleById]);
-
-  const effectiveAnswerText = promotedAnswerText || answerText;
+  const { effectiveAnswerText } = useMemo(
+    () => resolveMainBubbleText(message.parts),
+    [message.parts],
+  );
 
   // Source list for this message (if any) drives the inline `[n]` citation
   // chips inside the answer markdown. Inline markers reveal the matching card
@@ -286,11 +248,9 @@ export function AssistantMessage({
   // so the turn still reads as finished. Only counts main-body text — a turn
   // whose only text lives inside subagent worker rows still has no top-level
   // answer.
-  const hasToolOrSubagentActivity = message.parts.some(
-    (p) =>
-      p.type === "tool_call" ||
-      p.type === "tool_result" ||
-      p.type === "subagent",
+  const hasToolOrSubagentActivityOnTurn = useMemo(
+    () => hasToolOrSubagentActivity(message.parts),
+    [message.parts],
   );
   const showTyping = status === "submitted" || (status === "streaming" && !hasContent);
   const isDone = status === "done";
@@ -401,7 +361,10 @@ export function AssistantMessage({
         if (part.type === "text") {
           // Subagent-tagged text: only the main (primary/aggregator) answer
           // renders as the markdown body; worker text stays panel-only.
-          if (part.subagentId != null && !mainSubagentIds.has(part.subagentId)) {
+          if (
+            part.subagentId != null &&
+            !shouldRenderTextInMainBubble(part, subagentRoleById)
+          ) {
             return null;
           }
           return part.text ? (
@@ -453,24 +416,13 @@ export function AssistantMessage({
         return null;
       })}
 
-      {isDone && hasToolOrSubagentActivity && !effectiveAnswerText.trim() ? (
+      {isDone && hasToolOrSubagentActivityOnTurn && !effectiveAnswerText.trim() ? (
         <p
           className="text-sm text-muted-foreground"
           data-testid="assistant-empty-fallback"
         >
           Finished without a written reply.
         </p>
-      ) : null}
-
-      {isDone && promotedAnswerText.trim() && !answerText.trim() ? (
-        <div data-testid="assistant-answer">
-          <MarkdownRenderer
-            sources={sourceItems}
-            onCitationClick={(id) => sourcesPanelRef.current?.revealSource(id)}
-          >
-            {promotedAnswerText}
-          </MarkdownRenderer>
-        </div>
       ) : null}
 
       {isErrored ? (

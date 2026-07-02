@@ -307,7 +307,7 @@ async def run_agent_loop(
                     _note_answer(event)
                     relayed_terminal = True
                 elif isinstance(event, Complete):
-                    if not answer_emitted:
+                    if tools_ran and not answer_emitted:
                         yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                         answer_emitted = True
                     relayed_terminal = True

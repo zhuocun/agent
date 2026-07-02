@@ -71,6 +71,55 @@ export function buildMainSubagentIds(parts: readonly MessagePart[]): Set<string>
   return ids;
 }
 
+export function buildSubagentRoleById(
+  parts: readonly MessagePart[],
+): Map<string, string> {
+  const roles = new Map<string, string>();
+  for (const part of parts) {
+    if (part.type === "subagent") roles.set(part.subagentId, part.role);
+  }
+  return roles;
+}
+
+/** Whether a text part belongs in the main bubble (not panel-only worker text). */
+export function shouldRenderTextInMainBubble(
+  part: Extract<MessagePart, { type: "text" }>,
+  subagentRoleById: ReadonlyMap<string, string>,
+): boolean {
+  if (part.subagentId == null) return true;
+  const role = subagentRoleById.get(part.subagentId) ?? "subagent";
+  return isMainAnswerSubagent(part.subagentId, role);
+}
+
+export interface MainBubbleTextResolution {
+  answerText: string;
+  effectiveAnswerText: string;
+}
+
+/** Resolve copy/render text for the main assistant bubble from persisted parts. */
+export function resolveMainBubbleText(
+  parts: readonly MessagePart[],
+): MainBubbleTextResolution {
+  const subagentRoleById = buildSubagentRoleById(parts);
+  const answerText = parts
+    .filter((p): p is Extract<MessagePart, { type: "text" }> => p.type === "text")
+    .filter((p) => shouldRenderTextInMainBubble(p, subagentRoleById))
+    .map((p) => p.text)
+    .join("\n\n");
+  return { answerText, effectiveAnswerText: answerText };
+}
+
+export function hasToolOrSubagentActivity(
+  parts: readonly MessagePart[],
+): boolean {
+  return parts.some(
+    (p) =>
+      p.type === "tool_call" ||
+      p.type === "tool_result" ||
+      p.type === "subagent",
+  );
+}
+
 /** Answer text shown in the agent-activity panel (excludes the main reply). */
 export function panelAnswerForSection(section: SubagentSection): string {
   return isMainAnswerSubagent(section.subagentId, section.role)

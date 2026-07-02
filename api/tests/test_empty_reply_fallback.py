@@ -18,6 +18,7 @@ from app.db.models import Conversation, Message, User
 from app.db.session import get_db
 from app.providers.protocol import (
     AnswerDelta,
+    AwaitingApproval,
     Complete,
     ProviderEvent,
     ReasoningDelta,
@@ -395,3 +396,209 @@ async def test_agentic_single_empty_primary_emits_fallback(
         str(p.get("text", "")) for p in text_parts if p.get("subagentId") == "primary"
     )
     assert primary_text.strip() == EMPTY_REPLY_FALLBACK
+
+
+async def test_agent_loop_awaiting_approval_does_not_emit_fallback() -> None:
+    """HITL pauses must never inject the empty-reply fallback."""
+    from app.config import Settings
+
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield ToolCall(
+                id="c1",
+                name="calendar_create_event",
+                status="awaiting_approval",
+                approval_state="pending",
+            )
+            yield AwaitingApproval(tool_call_id="c1")
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    fallback_answers = [
+        e for e in events if isinstance(e, AnswerDelta) and e.text == EMPTY_REPLY_FALLBACK
+    ]
+    assert not fallback_answers
+    assert any(isinstance(e, AwaitingApproval) for e in events)
+
+
+async def test_stopped_disconnect_does_not_persist_fallback(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Stop-path persistence must not run the done-path fallback injector."""
+
+    class _EmptyToolTurnProvider:
+        async def stream(self, **_kwargs: object) -> AsyncIterator[ProviderEvent]:
+            yield ToolCall(id="stub-1", name="web_search", status="running", input={"query": "x"})
+            yield ToolResult(
+                tool_call_id="stub-1",
+                name="web_search",
+                status="succeeded",
+                summary="1 source",
+                output={"query": "x", "results": []},
+            )
+            yield UsageUpdate(input_tokens=1, output_tokens=1)
+            yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="New chat",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    class _DisconnectAfterFirstPoll:
+        def __init__(self) -> None:
+            self._polls = 0
+
+        async def is_disconnected(self) -> bool:
+            self._polls += 1
+            return self._polls > 1
+
+    async with session_factory() as session:
+        gen = stream_and_persist(
+            request=_DisconnectAfterFirstPoll(),  # type: ignore[arg-type]
+            db=session,
+            provider=_EmptyToolTurnProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="hello",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+        )
+        async for _ev in gen:
+            pass
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .order_by(Message.created_at.desc())
+            )
+        ).scalar_one()
+        assert row.status == "stopped"
+        parts = row.parts
+        assert isinstance(parts, list)
+        text_parts = [p for p in parts if isinstance(p, dict) and p.get("type") == "text"]
+        if text_parts:
+            assert EMPTY_REPLY_FALLBACK not in str(text_parts[0].get("text", ""))
+        else:
+            assert True
+
+
+async def test_tool_complete_only_single_fallback_via_handler_and_agent_loop(
+    tools_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Agent-loop backstop + handler guard must not double-inject fallback text."""
+    await tools_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        tools_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "88888888-8888-8888-8888-888888888888",
+            "tierId": "smart",
+            "text": "TOOL_COMPLETE_ONLY: tools then complete only",
+        },
+    )
+    assert _names(frames)[-1] == "terminal"
+    fallback_frames = [
+        d
+        for n, d in frames
+        if n == "answer_delta" and str(d.get("text", "")) == EMPTY_REPLY_FALLBACK
+    ]
+    assert len(fallback_frames) == 1
+
+    messages = await _load_messages(session_factory, conv_id)
+    assistant = next(m for m in messages if m.role == "assistant")
+    text_parts = [
+        p for p in assistant.parts if isinstance(p, dict) and p.get("type") == "text"
+    ]
+    assert len(text_parts) == 1
+    assert str(text_parts[0].get("text", "")).strip() == EMPTY_REPLY_FALLBACK
+
+
+async def test_handler_reasoning_only_blank_done_emits_reasoning_done_then_fallback(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Reasoning-only blank done turns close reasoning then inject fallback."""
+
+    class _ReasoningOnlyBlankProvider:
+        async def stream(self, **_kwargs: object) -> AsyncIterator[ProviderEvent]:
+            yield ReasoningDelta(text="Thinking without answering.")
+            yield UsageUpdate(input_tokens=5, output_tokens=0)
+            yield Complete(usage=UsageUpdate(input_tokens=5, output_tokens=0))
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="New chat",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    class _StubRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    event_names: list[str] = []
+    answer_texts: list[str] = []
+    async with session_factory() as session:
+        gen = stream_and_persist(
+            request=_StubRequest(),  # type: ignore[arg-type]
+            db=session,
+            provider=_ReasoningOnlyBlankProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="hello",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+        )
+        async for ev in gen:
+            event_names.append(ev.event or "")
+            if ev.event == "answer_delta" and ev.data:
+                answer_texts.append(str(json.loads(ev.data).get("text", "")))
+
+    reasoning_done_idx = event_names.index("reasoning_done")
+    fallback_idx = event_names.index("answer_delta")
+    terminal_idx = event_names.index("terminal")
+    assert reasoning_done_idx < fallback_idx < terminal_idx
+    assert answer_texts == [EMPTY_REPLY_FALLBACK]

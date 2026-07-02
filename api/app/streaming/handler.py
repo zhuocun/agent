@@ -1010,7 +1010,9 @@ async def stream_and_persist(
             for subagent_id in ("aggregator", "primary"):
                 acc = agentic_subagents.get(subagent_id)
                 if acc is not None:
-                    return "".join(acc.answer).strip()
+                    text = "".join(acc.answer).strip()
+                    if text:
+                        return text
             return ""
         return "".join(answer_buf).strip()
 

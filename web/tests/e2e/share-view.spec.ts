@@ -196,6 +196,10 @@ test.describe("public share view", () => {
     await expect(nestedTools.first()).toBeVisible({ timeout: 15_000 });
     const nestedCount = await nestedTools.count();
     expect(nestedCount).toBeGreaterThan(0);
+    await expect(publicAssistant.getByTestId("public-assistant-answer")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(publicAssistant.getByTestId("assistant-empty-fallback")).toHaveCount(0);
     // No standalone sibling tool-group-panel leaked outside the panel.
     const totalToolPanels = await publicAssistant
       .getByTestId("tool-group-panel")

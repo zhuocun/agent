@@ -90,6 +90,7 @@ import {
   type SubagentActivity,
   type TerminalResult,
 } from "@/lib/stream-client";
+import { isMainAnswerSubagent } from "@/lib/agentic-layout";
 import {
   ApiError,
   ApiNetworkError,
@@ -462,8 +463,16 @@ function buildSubagentParts(
   for (const toolPart of toolParts) {
     if (toolPart.subagentId == null) parts.push(toolPart);
   }
-  if (flatAnswer?.trim()) {
-    parts.push({ type: "text", text: flatAnswer });
+  const trimmedFlat = flatAnswer?.trim();
+  if (trimmedFlat) {
+    const duplicatesMainAnswer = subagents.some(
+      (sub) =>
+        isMainAnswerSubagent(sub.subagentId, sub.role) &&
+        sub.answer.trim() === trimmedFlat,
+    );
+    if (!duplicatesMainAnswer) {
+      parts.push({ type: "text", text: flatAnswer! });
+    }
   }
   return parts;
 }

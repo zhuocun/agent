@@ -3619,7 +3619,10 @@ export function ChatThread() {
             onBulkDelete={handleBulkDelete}
             onBulkAddTag={handleBulkAddTag}
             onBulkRemoveTag={handleBulkRemoveTag}
-            onSignIn={() => setAuthOpen(true)}
+            onSignIn={() => {
+              setMobileNavOpen(false);
+              setAuthOpen(true);
+            }}
             onSignOut={handleSignOut}
             onCollapse={() => {
               setSidebarOpen(false);
@@ -3761,7 +3764,7 @@ export function ChatThread() {
             // not biased toward either the header or the composer.
             <div
               className={cn(
-                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+10rem)] pl-[env(safe-area-inset-left)] md:pb-[calc(var(--bottom-inset)+12rem)]",
+                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+20rem)] pl-[env(safe-area-inset-left)] md:pb-[calc(var(--bottom-inset)+12rem)]",
                 CHAT_CHROME_PAD_CLASS,
               )}
               style={topChromePaddingStyle("welcome", {

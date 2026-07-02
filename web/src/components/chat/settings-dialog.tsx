@@ -1032,8 +1032,8 @@ export function SettingsDialog({
           bottom padding, swipe-to-dismiss) and reverts to the centered modal at
           sm:. We keep the 80dvh cap here so the glass surface breathes a touch
           more than the default 90dvh on the settings panel. */}
-      <DialogContent className="max-h-[80dvh] sm:max-h-none sm:max-w-3xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh] sm:max-w-3xl">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
             Account, appearance, and preferences.
@@ -1043,7 +1043,7 @@ export function SettingsDialog({
         {/* Mobile drill-down list — iOS Settings-style grouped rows. Shown only
             below md when no tab content is active (mobileShowList). */}
         {!isDesktop && mobileShowList ? (
-          <nav aria-label="Settings sections" className="space-y-4">
+          <nav aria-label="Settings sections" className="min-h-0 flex-1 space-y-4 overflow-y-auto">
             {SETTINGS_TAB_GROUPS.map((group) => (
               <div key={group.id} className="space-y-1">
                 <span className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
@@ -1082,7 +1082,7 @@ export function SettingsDialog({
             data-testid="settings-back-button"
             aria-label="Back to Settings"
             onClick={() => setMobileShowList(true)}
-            className="inline-flex items-center gap-1 -ml-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            className="-ml-1 inline-flex shrink-0 items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
           >
             <ChevronLeft aria-hidden className="size-4" />
             <span>Settings</span>
@@ -1095,7 +1095,7 @@ export function SettingsDialog({
           role="tablist"
           aria-label="Settings sections"
           id={tablistId}
-          className="-mx-1 flex items-end gap-3 overflow-x-auto px-1 pb-1 [scrollbar-gutter:stable]"
+          className="-mx-1 flex shrink-0 items-end gap-3 overflow-x-auto px-1 pb-1 [scrollbar-gutter:stable]"
         >
           {SETTINGS_TAB_GROUPS.map((group, groupIndex) => (
             <div
@@ -1180,7 +1180,7 @@ export function SettingsDialog({
           hidden={activeTab !== "general" || (!isDesktop && mobileShowList)}
           className={cn(
             activeTab === "general" && (isDesktop || !mobileShowList)
-              ? "-mr-2 max-h-[60dvh] space-y-8 overflow-y-auto pr-2 sm:max-h-[70dvh]"
+              ? "-mr-2 min-h-0 flex-1 space-y-8 overflow-y-auto pr-2"
               : undefined,
           )}
         >
@@ -1587,6 +1587,7 @@ export function SettingsDialog({
             role="tabpanel"
             id={`${tablistId}-memory-panel`}
             {...tabPanelLabelProps("memory", tablistId, isDesktop)}
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             <MemoryBody
               active
@@ -1601,6 +1602,7 @@ export function SettingsDialog({
             role="tabpanel"
             id={`${tablistId}-templates-panel`}
             {...tabPanelLabelProps("templates", tablistId, isDesktop)}
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             <TemplateLibraryBody active />
           </div>
@@ -1611,6 +1613,7 @@ export function SettingsDialog({
             role="tabpanel"
             id={`${tablistId}-models-panel`}
             {...tabPanelLabelProps("models", tablistId, isDesktop)}
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             <ModelDirectoryBody active />
           </div>
@@ -1621,6 +1624,7 @@ export function SettingsDialog({
             role="tabpanel"
             id={`${tablistId}-shortcuts-panel`}
             {...tabPanelLabelProps("shortcuts", tablistId, isDesktop)}
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             <ShortcutsBody
               shortcuts={shortcuts}
@@ -1639,6 +1643,7 @@ export function SettingsDialog({
             role="tabpanel"
             id={`${tablistId}-activity-panel`}
             {...tabPanelLabelProps("activity", tablistId, isDesktop)}
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             <ActivityBody active onSwitchRoute={onActivitySwitchRoute} />
           </div>

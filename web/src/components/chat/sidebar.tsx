@@ -602,6 +602,7 @@ function ConversationRow({
               // E2E target: reads the rendered title text without depending on
               // the aria-label format (which appends ", pinned" for pinned rows).
               data-testid="sidebar-conversation-title"
+              title={conversation.title}
               className="block truncate"
             >
               {conversation.title}

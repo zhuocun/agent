@@ -283,8 +283,8 @@ export function ShortcutsBody({
   const stopCapture = useCallback(() => setCapturingId(null), []);
 
   return (
-    <div>
-      <div className="flex items-start justify-between gap-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-start justify-between gap-3">
         <div className="flex flex-col gap-1.5 text-center sm:text-left">
           <h2 className="text-lg leading-none font-semibold">
             Keyboard shortcuts
@@ -312,7 +312,7 @@ export function ShortcutsBody({
           </Button>
         ) : null}
       </div>
-      <div className="-mr-2 mt-4 max-h-[60dvh] space-y-5 overflow-y-auto pr-2">
+      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto pr-2 sm:max-h-none">
         {shortcuts.map((section) => (
           <section key={section.heading} className="space-y-1">
             <h3 className="px-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
@@ -380,7 +380,7 @@ export function ShortcutsDialog({
       {/* Bottom sheet on mobile (base default); cap width only at sm+ so the
           mobile sheet stays full-width. Home-indicator-safe bottom padding is
           provided by the base DialogContent. */}
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh] sm:max-w-md">
         {open ? <ShortcutsBody {...bodyProps} /> : null}
       </DialogContent>
     </Dialog>

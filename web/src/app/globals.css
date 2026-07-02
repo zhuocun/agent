@@ -1101,7 +1101,8 @@ input[type="search"]::-webkit-search-decoration {
      flattens the fill so the bubble loses its boundary. Restore a real border
      for both the display bubble and its edit-mode twin. */
   [data-testid="user-message-text"],
-  [data-testid="user-message-edit"] {
+  [data-testid="user-message-edit"],
+  [data-testid="public-user-message"] {
     border: 1px solid CanvasText;
   }
 }

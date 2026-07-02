@@ -14,7 +14,6 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import type { RunCostState } from "@/lib/stream-client";
 import type { ToolGroup, WebSearchGroup } from "@/lib/tool-groups";
 import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
@@ -38,10 +37,6 @@ export interface SubagentSection {
 
 interface SubagentPanelProps {
   sections: SubagentSection[];
-  // Live run-cost subtotal vs the per-run cap (the `run_cost` SSE event).
-  // Null/absent on a reloaded transcript — the BE doesn't persist the cap —
-  // so the meter then falls back to the summed per-subagent costs.
-  runCost?: RunCostState | null;
   // Web-search activity owned by a subagent (or untagged but co-occurring with
   // this panel) renders inside the agent-activity card instead of as a sibling.
   panelWebSearchGroups?: WebSearchGroup[];

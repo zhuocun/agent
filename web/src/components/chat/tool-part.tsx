@@ -31,13 +31,15 @@ type ToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
 
 // The agentic orchestrator's plan-approval pause rides a PSEUDO tool call with
 // this name (api/app/agentic/orchestrator.py PLAN_APPROVAL_TOOL_NAME). Its
-// input carries the research plan + cost estimate, which deserve a structured
-// rendering instead of the generic one-line JSON preview.
+// input carries the research plan (plus cost fields on the wire that the main
+// UI does not render), which deserve a structured rendering instead of the
+// generic one-line JSON preview.
 const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
 
 // Narrowed view of the plan-approval tool input:
-// `{ plan: string[], estimatedCostUsd: number, capUsd: number }`. Null when the
-// shape doesn't match (the renderer then falls back to the generic preview).
+// `{ plan: string[], estimatedCostUsd?: number, capUsd?: number }`. Null when
+// the plan shape doesn't match (the renderer then falls back to the generic
+// preview). Cost fields are parsed for wire compatibility but not displayed.
 interface PlanApprovalInput {
   plan: string[];
   estimatedCostUsd: number | null;
@@ -73,9 +75,9 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
   const status = part.status ?? (isResult ? "succeeded" : "pending");
   const approvalState = part.approvalState ?? "not_required";
   const label = part.label ?? humanizeName(part.name);
-  // Plan-approval pseudo tool (agentic): render the research plan + cost
-  // estimate structurally instead of the generic JSON preview. Falls back to
-  // the preview when the input doesn't match the expected shape.
+  // Plan-approval pseudo tool (agentic): render the research plan structurally
+  // instead of the generic JSON preview. Falls back to the preview when the
+  // input doesn't match the expected shape.
   const planApproval =
     part.type === "tool_call" && part.name === PLAN_APPROVAL_TOOL_NAME
       ? parsePlanApprovalInput(part.input)

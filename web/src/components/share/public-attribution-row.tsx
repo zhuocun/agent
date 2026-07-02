@@ -30,13 +30,6 @@ function assertServedTier(id: ModelTierId): ServedTierId {
   return id;
 }
 
-// Bare interpunct between byline segments — mirrors attribution-row.tsx.
-const Dot = (
-  <span aria-hidden className="text-muted-foreground/60">
-    ·
-  </span>
-);
-
 export function PublicAttributionRow({
   attribution,
 }: PublicAttributionRowProps): React.JSX.Element {
@@ -44,47 +37,35 @@ export function PublicAttributionRow({
   const servedTierId = assertServedTier(attribution.servedTierId);
   const tierLabel = MODEL_TIERS_BY_ID[servedTierId].label;
   const providerLabel = attribution.providerLabel?.trim() || undefined;
-  // Drop the redundant tier segment when the served model label already equals
-  // the tier label, so the byline doesn't stutter ("Fast · Fast"). Mirrors the
-  // private row's dedupe.
-  const showTier = tierLabel !== servedModelLabel;
-  const showProvider =
-    providerLabel !== undefined &&
-    providerLabel !== servedModelLabel &&
-    providerLabel !== tierLabel;
   const byokLabel = providerLabel
     ? `Your ${providerLabel} key`
     : "Your API key";
   const substitutionPrefix = substitution
     ? `Rerouted from ${MODEL_TIERS_BY_ID[attribution.requestedTierId].label} tier — `
     : null;
+  const ariaLabel = [
+    substitutionPrefix,
+    `served by ${servedModelLabel}`,
+    providerLabel ? `provider ${providerLabel}` : null,
+    `${tierLabel} tier`,
+    isByok ? byokLabel : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return (
     <div
       className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-sm text-muted-foreground"
       data-testid="public-attribution"
+      aria-label={ariaLabel}
     >
-      <span className="inline-flex flex-wrap items-center gap-1">
-        {substitutionPrefix ? (
-          <span className="inline-flex items-center gap-1 text-muted-foreground/80">
-            <Info aria-hidden className="size-3" />
-            <span>{substitutionPrefix}</span>
-          </span>
-        ) : null}
-        <span>{servedModelLabel}</span>
-        {showProvider ? (
-          <>
-            {Dot}
-            <span>{providerLabel}</span>
-          </>
-        ) : null}
-        {showTier ? (
-          <>
-            {Dot}
-            <span>{tierLabel}</span>
-          </>
-        ) : null}
-      </span>
+      {substitutionPrefix ? (
+        <span className="inline-flex items-center gap-1 text-muted-foreground/80">
+          <Info aria-hidden className="size-3" />
+          <span>{substitutionPrefix}</span>
+        </span>
+      ) : null}
+      <span>{tierLabel}</span>
 
       {isByok ? (
         <span

@@ -364,12 +364,17 @@ test.describe("streaming", () => {
     await expect(answer).toContainText("ok", { timeout: 15_000 });
     await expect(answer).toContainText("items");
 
-    // (c) The "JSON" attribution chip appears inline on the static byline
-    // (valid JSON → no "(invalid)" affordance).
-    const jsonChip = assistant.getByTestId("json-output-chip");
-    await expect(jsonChip).toBeVisible({ timeout: 15_000 });
-    await expect(jsonChip).toContainText("JSON");
-    await expect(jsonChip).not.toContainText("invalid");
+    // (c) Structured-output metadata is exposed on the attribution aria-label.
+    const attribution = assistant.getByTestId("message-attribution");
+    await expect(attribution).toBeVisible({ timeout: 15_000 });
+    await expect(attribution).toHaveAttribute(
+      "aria-label",
+      /structured json output/i,
+    );
+    await expect(attribution).not.toHaveAttribute(
+      "aria-label",
+      /invalid/i,
+    );
   });
 
   // Mermaid rendering path. The FakeProvider emits a well-formed, closed

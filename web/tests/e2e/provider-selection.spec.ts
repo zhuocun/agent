@@ -307,10 +307,9 @@ test.describe("provider selection", () => {
       "data:text/plain;base64,",
     );
     await expect(page.getByText("Request only")).toBeVisible();
-    // The trigger at rest carries the served model label; cost metadata is
-    // deferred to the Spend hub (D41).
+    // The attribution byline shows the served tier label.
     await expect(page.getByTestId("message-attribution")).toContainText(
-      "DeepSeek V4 Flash",
+      "Fast",
     );
     await expect(page.getByTestId("message-attribution")).not.toContainText("$");
 

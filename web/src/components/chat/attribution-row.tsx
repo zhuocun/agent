@@ -1,10 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { Braces, Info, Key, TriangleAlert } from "lucide-react";
+import { Info, Key } from "lucide-react";
 
 import type { ModelAttribution, ModelTierId } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import { MODEL_TIERS_BY_ID } from "@/lib/model-tiers";
 
 export interface AttributionRowProps {
@@ -36,18 +35,10 @@ function assertServedTier(id: ModelTierId): ServedTierId {
   return id;
 }
 
-// Bare interpunct used between byline segments.
-const Dot = (
-  <span aria-hidden className="text-muted-foreground/60">
-    ·
-  </span>
-);
-
 export function AttributionRow({
   attribution,
 }: AttributionRowProps): React.JSX.Element {
   const { substitution, isByok, servedModelLabel, outputFormat } = attribution;
-  const showJsonChip = outputFormat !== undefined;
   const jsonInvalid = attribution.outputValid === false;
   const servedTierId = assertServedTier(attribution.servedTierId);
   const providerLabel = attribution.providerLabel?.trim() || undefined;
@@ -55,11 +46,6 @@ export function AttributionRow({
   const byokLabel = providerLabel
     ? `Your ${providerLabel} key`
     : "Your API key";
-  const showTier = tierLabel !== servedModelLabel;
-  const showProvider =
-    providerLabel !== undefined &&
-    providerLabel !== servedModelLabel &&
-    providerLabel !== tierLabel;
 
   const triggerLabel = [
     substitution
@@ -69,6 +55,11 @@ export function AttributionRow({
     providerLabel ? `provider ${providerLabel}` : null,
     `${tierLabel} tier`,
     isByok ? `billed to ${byokLabel.toLowerCase()}` : null,
+    outputFormat !== undefined
+      ? jsonInvalid
+        ? "structured JSON output (invalid)"
+        : "structured JSON output"
+      : null,
   ]
     .filter(Boolean)
     .join(", ");
@@ -88,41 +79,11 @@ export function AttributionRow({
           <span>Rerouted</span>
         </span>
       ) : null}
-      <span className="inline-flex flex-wrap items-center gap-1">
-        <span>{servedModelLabel}</span>
-        {showProvider ? (
-          <>
-            {Dot}
-            <span>{providerLabel}</span>
-          </>
-        ) : null}
-        {showTier ? (
-          <>
-            {Dot}
-            <span>{tierLabel}</span>
-          </>
-        ) : null}
-      </span>
+      <span>{tierLabel}</span>
       {isByok ? (
         <span className="inline-flex items-center gap-1 text-muted-foreground/80">
           <Key aria-hidden className="size-3" />
           <span>{byokLabel}</span>
-        </span>
-      ) : null}
-      {showJsonChip ? (
-        <span
-          className={cn(
-            "inline-flex items-center gap-1",
-            jsonInvalid ? "text-warning" : "text-muted-foreground/80",
-          )}
-          data-testid="json-output-chip"
-        >
-          {jsonInvalid ? (
-            <TriangleAlert aria-hidden className="size-3" />
-          ) : (
-            <Braces aria-hidden className="size-3" />
-          )}
-          <span>{jsonInvalid ? "JSON (invalid)" : "JSON"}</span>
         </span>
       ) : null}
     </div>

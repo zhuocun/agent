@@ -451,7 +451,7 @@ test.describe("regenerate with model", () => {
       timeout: 15_000,
     });
     await expect(page.getByTestId("message-attribution")).toContainText(
-      "DeepSeek V4 Flash",
+      "Fast",
     );
 
     // Open the message "…" overflow menu (the regenerate split control lives
@@ -466,7 +466,7 @@ test.describe("regenerate with model", () => {
       timeout: 15_000,
     });
     await expect(page.getByTestId("message-attribution")).toContainText(
-      "DeepSeek V4 Pro",
+      "Pro",
     );
 
     // The picker reflects the new served model going forward.
@@ -532,15 +532,13 @@ test.describe("view spend link", () => {
   });
 });
 
-// --- Attribution byline variants (BYOK + structured-output chip) ------------
+// --- Attribution byline variants (BYOK + structured-output) ---------------
 //
-// The AttributionRow renders extra byline segments for BYOK turns ("Your <key>")
-// and for structured-output ("JSON mode") turns — a valid JSON chip vs an
-// invalid-JSON warning chip. These ride the same mocked-terminal attribution as
-// the cost specs above, so we drive them deterministically here.
+// The AttributionRow shows the served tier label at rest; BYOK and structured-
+// output details live in the accessible aria-label.
 
 test.describe("attribution byline variants", () => {
-  test("a BYOK structured-output turn shows the key byline and a valid JSON chip", async ({
+  test("a BYOK structured-output turn shows the key byline and JSON in aria-label", async ({
     page,
   }) => {
     await mockBootstrap(page);
@@ -579,14 +577,13 @@ test.describe("attribution byline variants", () => {
       "aria-label",
       /billed to your deepseek key/i,
     );
-
-    // Valid JSON chip — the Braces variant, label "JSON" (never "JSON (invalid)").
-    const jsonChip = assistant.getByTestId("json-output-chip");
-    await expect(jsonChip).toBeVisible();
-    await expect(jsonChip).toHaveText("JSON");
+    await expect(attribution).toHaveAttribute(
+      "aria-label",
+      /structured json output/i,
+    );
   });
 
-  test("an invalid structured-output turn shows the JSON (invalid) warning chip", async ({
+  test("an invalid structured-output turn surfaces JSON validity in aria-label", async ({
     page,
   }) => {
     await mockBootstrap(page);
@@ -615,9 +612,11 @@ test.describe("attribution byline variants", () => {
       timeout: 15_000,
     });
 
-    const jsonChip = assistant.getByTestId("json-output-chip");
-    await expect(jsonChip).toBeVisible();
-    await expect(jsonChip).toHaveText("JSON (invalid)");
+    const attribution = assistant.getByTestId("message-attribution");
+    await expect(attribution).toHaveAttribute(
+      "aria-label",
+      /structured json output \(invalid\)/i,
+    );
   });
 });
 

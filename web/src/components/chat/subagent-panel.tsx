@@ -18,6 +18,7 @@ import type { ToolGroup, WebSearchGroup } from "@/lib/tool-groups";
 import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
+import { panelAnswerForSection } from "@/lib/agentic-layout";
 import type { MessagePart } from "@/lib/types";
 
 // One orchestrator subagent's section, shape-compatible with the live
@@ -216,7 +217,8 @@ function SingleAgentContent({
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }) {
   const isRunning = section.status === "running";
-  const hasText = section.reasoning.length > 0 || section.answer.length > 0;
+  const panelAnswer = panelAnswerForSection(section);
+  const hasText = section.reasoning.length > 0 || panelAnswer.length > 0;
 
   const webSearchBlock =
     webSearchGroups && webSearchGroups.length > 0 ? (
@@ -268,9 +270,9 @@ function SingleAgentContent({
               {section.reasoning}
             </p>
           ) : null}
-          {section.answer ? (
+          {panelAnswer ? (
             <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
-              {section.answer}
+              {panelAnswer}
             </p>
           ) : null}
         </div>
@@ -302,8 +304,9 @@ function SubagentRow({
   onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
 }) {
   const isRunning = section.status === "running";
+  const panelAnswer = panelAnswerForSection(section);
   const hasTextDetail =
-    section.reasoning.length > 0 || section.answer.length > 0;
+    section.reasoning.length > 0 || panelAnswer.length > 0;
 
   const summaryRow = (trailing?: ReactNode) => (
     <div className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -363,9 +366,9 @@ function SubagentRow({
           {section.reasoning}
         </p>
       ) : null}
-      {section.answer ? (
+      {panelAnswer ? (
         <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
-          {section.answer}
+          {panelAnswer}
         </p>
       ) : null}
     </div>

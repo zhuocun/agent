@@ -257,6 +257,9 @@ test.describe("agentic mode (deep research)", () => {
     await expect(panel).toContainText("Synthesis");
     await expect(panel.getByTestId("run-cost-meter")).toHaveCount(0);
     expect((await panel.innerText()) ?? "").not.toMatch(/\$\s?\d/);
+    // Worker intermediate findings stay in the panel; the synthesis answer does not.
+    await expect(panel).toContainText("Worker 1 finding");
+    await expect(panel).not.toContainText("Synthesis of 2 findings");
 
     // The aggregator's synthesized answer renders as the bubble's main answer
     // (the deterministic fake-worker findings, merged in plan order).
@@ -317,6 +320,7 @@ test.describe("agentic mode (deep research)", () => {
     await expect(panel).toBeVisible();
     await expect(panel.getByTestId("subagent-row")).toHaveCount(1);
     await expect(panel).toContainText("Synthesis");
+    await expect(panel).not.toContainText("the research plan was declined");
 
     // The resume reused the user turn (continue-style invariant).
     await expect(page.getByTestId("user-message-text")).toHaveCount(1);
@@ -407,6 +411,10 @@ test.describe("agentic mode (deep research)", () => {
     // One primary subagent → the panel titles itself "Agent activity", never
     // "Deep research" (which only worker/aggregator roles claim).
     await expect(panel).toContainText("Agent activity");
+
+    const answerText = "Both current times were retrieved by the tools.";
+    await expect(resumed.getByTestId("assistant-answer")).toContainText(answerText);
+    await expect(panel).not.toContainText(answerText);
 
     // (a) The folded generic tool group renders INSIDE the agent-activity panel.
     const nestedTools = panel.getByTestId("tool-group-panel");

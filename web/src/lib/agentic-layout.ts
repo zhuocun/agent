@@ -45,17 +45,23 @@ export function buildSubagentSectionsFromParts(
   return sections;
 }
 
+export function isMainAnswerRole(role: string): boolean {
+  return role === "primary" || role === "aggregator";
+}
+
 export function buildMainSubagentIds(parts: readonly MessagePart[]): Set<string> {
   const ids = new Set<string>();
   for (const part of parts) {
-    if (
-      part.type === "subagent" &&
-      (part.role === "primary" || part.role === "aggregator")
-    ) {
+    if (part.type === "subagent" && isMainAnswerRole(part.role)) {
       ids.add(part.subagentId);
     }
   }
   return ids;
+}
+
+/** Answer text shown in the agent-activity panel (excludes the main reply). */
+export function panelAnswerForSection(section: SubagentSection): string {
+  return isMainAnswerRole(section.role) ? "" : section.answer;
 }
 
 export interface AgenticPanelLayout {

@@ -56,6 +56,7 @@ from app.providers.protocol import (
     ToolCall,
     ToolResult,
 )
+from app.streaming.constants import EMPTY_REPLY_FALLBACK
 from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolApprovalState, ToolCallRequest
 
@@ -188,6 +189,13 @@ async def run_agent_loop(
     """
     tool_feedback: list[ToolResult] = []
     max_rounds = max(1, settings.tool_max_rounds)
+    answer_emitted = False
+    tools_ran = False
+
+    def _note_answer(delta: AnswerDelta) -> None:
+        nonlocal answer_emitted
+        if delta.text.strip():
+            answer_emitted = True
 
     for _round in range(max_rounds):
         is_final_round = _round == max_rounds - 1
@@ -216,7 +224,13 @@ async def run_agent_loop(
                 # ToolCall before this). Relay and stop — do NOT execute.
                 yield event
                 return
-            elif isinstance(event, (AnswerDelta, Complete)):
+            elif isinstance(event, AnswerDelta):
+                _note_answer(event)
+                relayed_terminal = True
+            elif isinstance(event, Complete):
+                if tools_ran and not answer_emitted:
+                    yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+                    answer_emitted = True
                 relayed_terminal = True
             yield event
 
@@ -224,6 +238,11 @@ async def run_agent_loop(
         unresolved = [c for c in pending_calls if c.id not in provider_resolved]
         if not unresolved:
             # No tool work left → the relayed content WAS the final answer.
+            if tools_ran and not answer_emitted:
+                yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+                answer_emitted = True
+                if not relayed_terminal:
+                    yield Complete()
             return
 
         round_results: list[ToolResult] = []
@@ -272,6 +291,7 @@ async def run_agent_loop(
             round_results.append(result_event)
 
         tool_feedback.extend(round_results)
+        tools_ran = True
 
         if is_final_round:
             # Loop bound reached with tools still being requested. Do one final
@@ -283,19 +303,18 @@ async def run_agent_loop(
             # prevents them at the source.
             final_stream = make_stream(list(tool_feedback), True)
             async for event in final_stream:
-                if isinstance(event, (AnswerDelta, Complete)):
+                if isinstance(event, AnswerDelta):
+                    _note_answer(event)
+                    relayed_terminal = True
+                elif isinstance(event, Complete):
+                    if not answer_emitted:
+                        yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+                        answer_emitted = True
                     relayed_terminal = True
                 yield event
-            if not relayed_terminal:
-                # Defensive backstop: even with tools suppressed the provider
-                # produced no answer / Complete (a pathologically greedy or empty
-                # provider). NEVER end the turn blank — emit a minimal answer and
-                # a Complete so the handler commits a non-empty, terminated turn.
-                yield AnswerDelta(
-                    text=(
-                        "I wasn't able to finish using the tools, but here's the "
-                        "best answer I can give based on what I gathered."
-                    )
-                )
-                yield Complete()
+            if tools_ran and not answer_emitted:
+                yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+                answer_emitted = True
+                if not relayed_terminal:
+                    yield Complete()
             return

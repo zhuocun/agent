@@ -55,6 +55,7 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.schemas.common import SubstitutionReasonCode
+from app.streaming.constants import EMPTY_REPLY_FALLBACK
 from app.tools.agent_loop import MakeStream, run_agent_loop
 
 _log = logging.getLogger(__name__)
@@ -383,12 +384,17 @@ async def _run_single(
     subagent_id = "primary"
     yield SubagentStarted(subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary")
     usage = UsageUpdate()
+    answer_parts: list[str] = []
     with invoke_agent_span(subagent_id=subagent_id, role="primary", label=_PRIMARY_LABEL):
         async for event in run_agent_loop(
             make_stream=make_stream_for(user_text), settings=settings
         ):
+            if isinstance(event, AnswerDelta):
+                answer_parts.append(event.text)
             usage = _fold_usage(event, usage)
             yield _tag(event, subagent_id)
+    if not "".join(answer_parts).strip():
+        yield AnswerDelta(text=EMPTY_REPLY_FALLBACK, subagent_id=subagent_id)
     cost = cost_for_usage(usage)
     yield SubagentDone(
         subagent_id=subagent_id,

@@ -334,6 +334,28 @@ class FakeProvider:
             yield Complete(usage=usage)
             return
 
+        if tools_on and user_text.startswith("TOOL_COMPLETE_ONLY:"):
+            if not has_tool_feedback:
+                await asyncio.sleep(self._delay)
+                yield ToolCall(
+                    id="fake_complete_only_1",
+                    name="get_current_time",
+                    label="Get current time",
+                    status="running",
+                    input={},
+                )
+                return
+            await asyncio.sleep(self._delay)
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
         if tools_on and user_text.startswith("TOOL_MULTI:"):
             if not has_tool_feedback:
                 # Round 1: request TWO auto tools so the agent loop settles both

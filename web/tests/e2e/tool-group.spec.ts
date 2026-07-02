@@ -55,6 +55,7 @@ async function sendMultiTool(page: Page): Promise<string> {
   await expect(assistant.getByTestId("assistant-answer")).toBeVisible({
     timeout: 15_000,
   });
+  await expect(assistant.getByTestId("assistant-empty-fallback")).toHaveCount(0);
   return convId;
 }
 

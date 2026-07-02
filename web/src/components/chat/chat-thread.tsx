@@ -434,6 +434,7 @@ type ToolTranscriptPart = Extract<
 function buildSubagentParts(
   subagents: SubagentActivity[],
   toolParts: ToolTranscriptPart[],
+  flatAnswer?: string,
 ): MessagePart[] {
   const parts: MessagePart[] = [];
   for (const sub of subagents) {
@@ -457,6 +458,12 @@ function buildSubagentParts(
     if (sub.answer) {
       parts.push({ type: "text", text: sub.answer, subagentId: sub.subagentId });
     }
+  }
+  for (const toolPart of toolParts) {
+    if (toolPart.subagentId == null) parts.push(toolPart);
+  }
+  if (flatAnswer?.trim()) {
+    parts.push({ type: "text", text: flatAnswer });
   }
   return parts;
 }
@@ -965,7 +972,13 @@ export function ChatThread() {
       // Agentic turn: commit the same subagent-grouped layout the BE persists
       // (and the live pendingMessage already rendered), so the settled bubble
       // and a later reload are pixel-identical.
-      parts.push(...buildSubagentParts(result.subagents, result.toolParts));
+      parts.push(
+        ...buildSubagentParts(
+          result.subagents,
+          result.toolParts,
+          result.answer,
+        ),
+      );
     } else {
       if (result.reasoning) {
         parts.push({
@@ -1545,7 +1558,13 @@ export function ChatThread() {
       // accumulators below are empty — build the subagent-grouped layout the
       // BE persists instead (marker + tagged reasoning/tools/text per
       // subagent). AssistantMessage renders the panel + main answer from it.
-      parts.push(...buildSubagentParts(state.subagents, state.toolParts));
+      parts.push(
+        ...buildSubagentParts(
+          state.subagents,
+          state.toolParts,
+          state.answer,
+        ),
+      );
     } else {
       if (state.reasoning) {
         parts.push({

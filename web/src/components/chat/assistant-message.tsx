@@ -42,6 +42,7 @@ import {
   buildAgenticPanelLayout,
   buildMainSubagentIds,
   buildSubagentSectionsFromParts,
+  isMainAnswerSubagent,
   isNestedToolGroup,
   isNestedWebSearchGroup,
 } from "@/lib/agentic-layout";
@@ -228,6 +229,33 @@ export function AssistantMessage({
         .join("\n\n"),
     [message.parts, mainSubagentIds],
   );
+
+  const subagentRoleById = useMemo(() => {
+    const roles = new Map<string, string>();
+    for (const part of message.parts) {
+      if (part.type === "subagent") roles.set(part.subagentId, part.role);
+    }
+    return roles;
+  }, [message.parts]);
+
+  const promotedAnswerText = useMemo(() => {
+    if (answerText.trim()) return "";
+    const subagentTexts = message.parts.filter(
+      (p): p is Extract<MessagePart, { type: "text" }> =>
+        p.type === "text" && p.subagentId != null && p.text.trim().length > 0,
+    );
+    if (subagentTexts.length === 0) return "";
+    for (let i = subagentTexts.length - 1; i >= 0; i--) {
+      const part = subagentTexts[i]!;
+      const subagentId = part.subagentId;
+      if (subagentId == null) continue;
+      const role = subagentRoleById.get(subagentId) ?? "subagent";
+      if (isMainAnswerSubagent(subagentId, role)) return part.text;
+    }
+    return subagentTexts[subagentTexts.length - 1]!.text;
+  }, [answerText, message.parts, subagentRoleById]);
+
+  const effectiveAnswerText = promotedAnswerText || answerText;
 
   // Source list for this message (if any) drives the inline `[n]` citation
   // chips inside the answer markdown. Inline markers reveal the matching card
@@ -425,13 +453,24 @@ export function AssistantMessage({
         return null;
       })}
 
-      {isDone && hasToolOrSubagentActivity && !answerText.trim() ? (
+      {isDone && hasToolOrSubagentActivity && !effectiveAnswerText.trim() ? (
         <p
           className="text-sm text-muted-foreground"
           data-testid="assistant-empty-fallback"
         >
           Finished without a written reply.
         </p>
+      ) : null}
+
+      {isDone && promotedAnswerText.trim() && !answerText.trim() ? (
+        <div data-testid="assistant-answer">
+          <MarkdownRenderer
+            sources={sourceItems}
+            onCitationClick={(id) => sourcesPanelRef.current?.revealSource(id)}
+          >
+            {promotedAnswerText}
+          </MarkdownRenderer>
+        </div>
       ) : null}
 
       {isErrored ? (
@@ -469,7 +508,7 @@ export function AssistantMessage({
               redesign. */}
           <div className="flex flex-wrap items-center gap-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
             <MessageActions
-              text={answerText}
+              text={effectiveAnswerText}
               feedback={message.feedback ?? null}
               canBranch={canBranch}
               isBranching={isBranching}
@@ -487,8 +526,8 @@ export function AssistantMessage({
               finished turn so a long thread doesn't sprout suggestions under
               every answer. Stopped/errored turns are excluded — they aren't a
               settled answer to follow up on. */}
-          {isDone && showFollowUps && onFollowUp && answerText.trim() ? (
-            <FollowUpChips text={answerText} onSelect={onFollowUp} />
+          {isDone && showFollowUps && onFollowUp && effectiveAnswerText.trim() ? (
+            <FollowUpChips text={effectiveAnswerText} onSelect={onFollowUp} />
           ) : null}
         </div>
       ) : null}

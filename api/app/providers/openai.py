@@ -68,6 +68,7 @@ from app.providers.protocol import (
 )
 from app.providers.steering import steer_user_text
 from app.search.protocol import SearchProvider, SourceItem
+from app.streaming.constants import EMPTY_REPLY_FALLBACK
 from app.tools.agent_loop import parse_tool_feedback_history
 
 _log = structlog.get_logger(__name__)
@@ -736,6 +737,7 @@ class OpenAIProvider:
         advertised_tools.extend(_openai_tool_schema(t) for t in registry_tools)
 
         accumulated_sources: list[SourceItem] = []
+        answer_relayed = False
         for round_index in range(_MAX_SEARCH_ROUNDS):
             is_final_round = round_index == _MAX_SEARCH_ROUNDS - 1
             # Advertise the tools every round so structured parsing holds. On the
@@ -789,6 +791,8 @@ class OpenAIProvider:
                 # No tool call this round → the streamed content was the final
                 # answer. Done.
                 for event in round_events:
+                    if isinstance(event, AnswerDelta) and event.text.strip():
+                        answer_relayed = True
                     yield event
                 break
 
@@ -893,6 +897,24 @@ class OpenAIProvider:
                     }
                 )
 
+        if not answer_relayed:
+            # Every round requested tools and discarded pre-tool content; compel a
+            # final no-tools completion from the gathered search results.
+            async for event in self._consume_completion(
+                client=client,
+                model_id=model_id,
+                messages=messages,
+                extra_kwargs=kwargs,
+                usage_acc=usage_acc,
+                tool_calls=None,
+                sanitizer=None,
+            ):
+                if isinstance(event, AnswerDelta) and event.text.strip():
+                    answer_relayed = True
+                yield event
+            if not answer_relayed:
+                yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+
         usage_update = usage_acc.to_usage_update()
         yield usage_update
         yield Complete(usage=usage_update)
@@ -981,6 +1003,9 @@ class OpenAIProvider:
                         yield ReasoningDone()
                         reasoning_done_sent = True
                     yield AnswerDelta(text=tail)
+            if reasoning_seen and not reasoning_done_sent:
+                yield ReasoningDone()
+                reasoning_done_sent = True
         except openai.APIError as exc:
             raise _map_sdk_error(exc) from exc
 

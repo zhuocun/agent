@@ -106,6 +106,7 @@ from app.schemas.stream_events import (
     ToolResultEvent,
 )
 from app.search.protocol import SourceItem
+from app.streaming.constants import EMPTY_REPLY_FALLBACK
 from app.streaming.replay_registry import ReplayLogBuffer
 from app.streaming.sse import (
     encode_answer_delta,
@@ -1003,6 +1004,36 @@ async def stream_and_persist(
             and _no_output_yet()
         )
 
+    def _resolved_main_answer_text() -> str:
+        """Main answer text for the done-path empty-reply guard."""
+        if agentic_active:
+            for subagent_id in ("aggregator", "primary"):
+                acc = agentic_subagents.get(subagent_id)
+                if acc is not None:
+                    return "".join(acc.answer).strip()
+            return ""
+        return "".join(answer_buf).strip()
+
+    def _inject_empty_reply_fallback_if_needed() -> tuple[bool, str | None]:
+        """Inject fallback main text when a done turn would persist blank.
+
+        Returns `(injected, subagent_id)` where `subagent_id` tags the live
+        `answer_delta` for agentic turns and is None on non-agentic turns.
+        """
+        if _resolved_main_answer_text():
+            return False, None
+        target_subagent: str | None = None
+        if agentic_active:
+            for subagent_id in ("primary", "aggregator"):
+                if subagent_id in agentic_subagents:
+                    target_subagent = subagent_id
+                    break
+        if target_subagent is not None:
+            agentic_subagents[target_subagent].answer.append(EMPTY_REPLY_FALLBACK)
+        else:
+            answer_buf.append(EMPTY_REPLY_FALLBACK)
+        return True, target_subagent
+
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
 
@@ -1747,6 +1778,20 @@ async def stream_and_persist(
             memory_applied=memory_applied_count,
             memory_fact_ids=memory_fact_ids_applied,
         )
+        fallback_injected, fallback_subagent_id = _inject_empty_reply_fallback_if_needed()
+        if fallback_injected:
+            if not agentic_active and reasoning_buf and not emitted_reasoning_done:
+                yield encode_reasoning_done(ReasoningDoneEvent())
+                emitted_reasoning_done = True
+            if first_answer_ms is None:
+                first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
+            yield encode_answer_delta(
+                AnswerDeltaEvent(
+                    text=EMPTY_REPLY_FALLBACK,
+                    subagent_id=fallback_subagent_id,
+                )
+            )
+        resolved_answer_text = _resolved_main_answer_text()
         # Structured-output boundary validation. No-op unless a `response_format`
         # was requested; then it sets `output_format` and validates the
         # accumulated answer text (JSON parse + optional JSON Schema check),
@@ -1754,7 +1799,7 @@ async def stream_and_persist(
         _apply_structured_output(
             attribution,
             response_format=response_format,
-            answer_text="".join(answer_buf),
+            answer_text=resolved_answer_text,
         )
 
         # Persist the assistant message (skipped for temporary).
@@ -1878,7 +1923,7 @@ async def stream_and_persist(
                         conversation_id=conversation_id,
                         user_id=user_id,
                         user_text=user_text,
-                        answer_text="".join(answer_buf),
+                        answer_text=resolved_answer_text,
                         session_factory=_derive_session_factory(db),
                     )
                 )

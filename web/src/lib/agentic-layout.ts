@@ -49,10 +49,22 @@ export function isMainAnswerRole(role: string): boolean {
   return role === "primary" || role === "aggregator";
 }
 
+/** Main-bubble answer: role primary/aggregator, or canonical orchestrator ids. */
+export function isMainAnswerSubagent(subagentId: string, role: string): boolean {
+  return (
+    subagentId === "primary" ||
+    subagentId === "aggregator" ||
+    isMainAnswerRole(role)
+  );
+}
+
 export function buildMainSubagentIds(parts: readonly MessagePart[]): Set<string> {
   const ids = new Set<string>();
   for (const part of parts) {
-    if (part.type === "subagent" && isMainAnswerRole(part.role)) {
+    if (
+      part.type === "subagent" &&
+      isMainAnswerSubagent(part.subagentId, part.role)
+    ) {
       ids.add(part.subagentId);
     }
   }
@@ -61,7 +73,9 @@ export function buildMainSubagentIds(parts: readonly MessagePart[]): Set<string>
 
 /** Answer text shown in the agent-activity panel (excludes the main reply). */
 export function panelAnswerForSection(section: SubagentSection): string {
-  return isMainAnswerRole(section.role) ? "" : section.answer;
+  return isMainAnswerSubagent(section.subagentId, section.role)
+    ? ""
+    : section.answer;
 }
 
 export interface AgenticPanelLayout {

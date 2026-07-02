@@ -236,6 +236,49 @@ async def test_login_wrong_password_401(
     assert _error(response.json())["code"] == "INVALID_CREDENTIALS"
 
 
+async def test_login_short_password_returns_401_not_400(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A <8-char password on login is wrong credentials, not schema validation."""
+    await _seed_registered_user(
+        session_factory,
+        email="short@example.com",
+        password_hash=hash_password("longenough"),
+    )
+    await client.get("/api/bootstrap")
+    response = await client.post(
+        "/api/auth/login",
+        json={"email": "short@example.com", "password": "abcde"},
+    )
+    assert response.status_code == 401
+    assert _error(response.json())["code"] == "INVALID_CREDENTIALS"
+
+
+async def test_login_unknown_email_short_password_matches_wrong_password_envelope(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Short-password 401 matches the uniform envelope (timing-equalized path)."""
+    await _seed_registered_user(
+        session_factory,
+        email="known@example.com",
+        password_hash=hash_password("correct"),
+    )
+    await client.get("/api/bootstrap")
+
+    short_pw_known = await client.post(
+        "/api/auth/login",
+        json={"email": "known@example.com", "password": "abcde"},
+    )
+    short_pw_unknown = await client.post(
+        "/api/auth/login",
+        json={"email": "nobody@example.com", "password": "abcde"},
+    )
+    assert short_pw_known.status_code == short_pw_unknown.status_code == 401
+    assert _error(short_pw_known.json()) == _error(short_pw_unknown.json())
+
+
 async def test_login_unknown_email_matches_wrong_password_envelope(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

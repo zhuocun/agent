@@ -29,6 +29,13 @@ export interface AuthDialogProps {
   onSuccess: (account: AccountInfo) => void;
 }
 
+// Lightweight email shape check before submit. The form uses `noValidate`, so
+// the browser's built-in `type="email"` guard does not run; catch obvious typos
+// client-side instead of a generic 400 from the BE's EmailStr validator.
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 // Map the frozen backend error contract to short, non-enumerating copy. Anything
 // we don't recognize falls through to a generic message so a surprise status
 // (or a network blip) never leaves the form silent.
@@ -46,7 +53,11 @@ function messageForError(cause: unknown, mode: AuthMode): string {
     if (cause.code === "ALREADY_UPGRADED") {
       return "This session is already linked to an account. Sign in instead.";
     }
-    // Surface the server's own copy for validation (400) and anything else.
+    if (cause.code === "INVALID_INPUT") {
+      return mode === "signup"
+        ? "Enter a valid email and a password with at least 8 characters."
+        : "Enter a valid email address.";
+    }
     return cause.body || cause.title;
   }
   if (cause instanceof ApiNetworkError) {
@@ -104,6 +115,14 @@ export function AuthDialog({
     const trimmedEmail = email.trim();
     if (trimmedEmail.length === 0 || password.length === 0) {
       setError("Enter your email and password.");
+      return;
+    }
+    if (!isValidEmail(trimmedEmail)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (mode === "signup" && password.length < 8) {
+      setError("Password must be at least 8 characters.");
       return;
     }
 

@@ -555,4 +555,35 @@ test.describe("streaming", () => {
     // and must not mint a duplicate.
     await expect(page.getByTestId("user-message-text")).toHaveCount(1);
   });
+
+  test("malformed answer_delta frames with no synthesis surface a stream error", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+        body: [
+          'event: submitted\ndata: {"messageId":"11111111-1111-4111-8111-111111111111"}\n\n',
+          "event: answer_delta\ndata: {}\n\n",
+          'event: answer_delta\ndata: {"text": null}\n\n',
+          'event: terminal\ndata: {"status":"done","messageId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}\n\n',
+        ].join(""),
+      });
+    });
+
+    await page.getByTestId("composer-textarea").fill("Malformed answer deltas");
+    await page.getByTestId("composer-send").click();
+
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toHaveAttribute("data-status", "error", {
+      timeout: 15_000,
+    });
+    await expect(assistant).toContainText("Bad stream payload");
+    await expect(assistant.getByTestId("assistant-empty-fallback")).toHaveCount(0);
+    await expect(assistant.getByTestId("assistant-answer")).toHaveCount(0);
+  });
 });

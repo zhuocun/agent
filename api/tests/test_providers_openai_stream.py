@@ -1326,22 +1326,30 @@ async def test_stream_web_search_round_cap_forces_terminal_answer() -> None:
     """If the model calls the tool EVERY round, the loop stops at the cap.
 
     Every round streams a `web_search` tool_call. The loop must stop after
-    `_MAX_SEARCH_ROUNDS` completions; the final round is sent with
-    `tool_choice="none"`. A terminal UsageUpdate + Complete still arrive, with
-    usage summed across all capped rounds.
+    `_MAX_SEARCH_ROUNDS` completions, run one extra no-tools completion when
+    nothing was relayed, and still finish with UsageUpdate + Complete.
     """
     from app.providers.openai import _MAX_SEARCH_ROUNDS
+    from app.streaming.constants import EMPTY_REPLY_FALLBACK
 
-    # Enough tool-call bodies to exceed the cap; only _MAX_SEARCH_ROUNDS consumed.
     bodies = [
         _sse_response(_tool_call_stream_body(query=f"q{i}", prompt_tokens=2, completion_tokens=3))
-        for i in range(_MAX_SEARCH_ROUNDS + 2)
+        for i in range(_MAX_SEARCH_ROUNDS)
+    ] + [
+        _sse_response(
+            _stream_body(
+                prompt_tokens=0,
+                completion_tokens=0,
+                answer_chunks=(),
+            )
+        )
     ]
     route = respx.post(_COMPLETIONS_URL).mock(side_effect=bodies)
 
     provider = _search_provider()
     usage_updates: list[UsageUpdate] = []
     completes: list[Complete] = []
+    answer_parts: list[str] = []
     async for event in provider.stream(
         model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
     ):
@@ -1349,13 +1357,13 @@ async def test_stream_web_search_round_cap_forces_terminal_answer() -> None:
             usage_updates.append(event)
         elif isinstance(event, Complete):
             completes.append(event)
+        elif isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
 
-    # Stops exactly at the cap — no infinite loop.
-    assert route.call_count == _MAX_SEARCH_ROUNDS
-    # The final round was forced to answer (tool_choice="none").
+    assert route.call_count == _MAX_SEARCH_ROUNDS + 1
     final_body = json.loads(route.calls[-1].request.content)
-    assert final_body.get("tool_choice") == "none"
-    # Still a single terminal UsageUpdate + Complete, usage summed across rounds.
+    assert "tools" not in final_body
+    assert "".join(answer_parts).strip() == EMPTY_REPLY_FALLBACK
     assert len(usage_updates) == 1
     assert len(completes) == 1
     assert usage_updates[0].input_tokens == 2 * _MAX_SEARCH_ROUNDS

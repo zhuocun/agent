@@ -270,6 +270,7 @@ test.describe("agentic mode (deep research)", () => {
     await expect(answer).toContainText("Synthesis of 2 findings");
     await expect(answer).toContainText("alpha topic");
     await expect(answer).toContainText("beta topic");
+    await expect(resumed.getByTestId("assistant-empty-fallback")).toHaveCount(0);
 
     // The resume rode with the mode; no duplicate user bubble was minted.
     expect(sentModes).toEqual(["deep_research", "deep_research"]);
@@ -291,6 +292,20 @@ test.describe("agentic mode (deep research)", () => {
     expect(assistantRows.length).toBe(2);
     const fanout = assistantRows[assistantRows.length - 1]!;
     expect(fanout.parts.some((p) => p.type === "subagent")).toBe(true);
+
+    // Reload: persisted subagent parts must still render a written answer, not
+    // the empty-fallback note.
+    await page.reload();
+    await waitForBootstrap(page);
+    const row = page.locator(`[data-conversation-id="${convId}"]`);
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByTestId("sidebar-conversation-link").click();
+
+    const reloaded = page.getByTestId("assistant-message").last();
+    await expect(reloaded.getByTestId("assistant-answer")).toContainText(
+      "Synthesis of 2 findings",
+    );
+    await expect(reloaded.getByTestId("assistant-empty-fallback")).toHaveCount(0);
   });
 
   test("deny the plan: no fan-out, a labeled declined synthesis streams", async ({
@@ -315,6 +330,7 @@ test.describe("agentic mode (deep research)", () => {
     await expect(resumed.getByTestId("assistant-answer")).toContainText(
       "the research plan was declined",
     );
+    await expect(resumed.getByTestId("assistant-empty-fallback")).toHaveCount(0);
     // Only the synthesis row — no workers ran.
     const panel = resumed.getByTestId("subagent-panel");
     await expect(panel).toBeVisible();
@@ -414,6 +430,7 @@ test.describe("agentic mode (deep research)", () => {
 
     const answerText = "Both current times were retrieved by the tools.";
     await expect(resumed.getByTestId("assistant-answer")).toContainText(answerText);
+    await expect(resumed.getByTestId("assistant-empty-fallback")).toHaveCount(0);
     await expect(panel).not.toContainText(answerText);
 
     // (a) The folded generic tool group renders INSIDE the agent-activity panel.
@@ -443,5 +460,52 @@ test.describe("agentic mode (deep research)", () => {
     const reloadedNested = await reloadedPanel.getByTestId("tool-group-panel").count();
     expect(reloadedNested).toBeGreaterThan(0);
     expect(reloadedTotal).toBe(reloadedNested);
+    await expect(reloaded.getByTestId("assistant-empty-fallback")).toHaveCount(0);
+  });
+
+  // TOOL_GREEDY drives several tool rounds then a compelled final answer (no
+  // synthesis skipped). The BE may inject a fallback string on empty synthesis;
+  // either way the bubble must show a non-empty assistant-answer, never the
+  // empty-fallback note.
+  test("greedy tool loop settles with a written answer, not the empty fallback", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    const composer = page.getByTestId("composer-textarea");
+    await composer.fill("TOOL_GREEDY: keep calling tools");
+
+    const createPromise = page.waitForResponse(
+      (r) =>
+        r.url() === `${BE_URL}/api/conversations` &&
+        r.request().method() === "POST",
+    );
+    await page.getByTestId("composer-send").click();
+
+    const createResp = await createPromise;
+    const { id: convId } = (await createResp.json()) as { id: string };
+    expect(convId).toBeTruthy();
+
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toHaveAttribute("data-status", "done", {
+      timeout: 30_000,
+    });
+    await expect(assistant.getByTestId("assistant-answer")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(assistant.getByTestId("assistant-empty-fallback")).toHaveCount(0);
+
+    await page.reload();
+    await waitForBootstrap(page);
+    const row = page.locator(`[data-conversation-id="${convId}"]`);
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByTestId("sidebar-conversation-link").click();
+
+    const reloaded = page.getByTestId("assistant-message").last();
+    await expect(reloaded.getByTestId("assistant-answer")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(reloaded.getByTestId("assistant-empty-fallback")).toHaveCount(0);
   });
 });

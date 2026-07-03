@@ -639,6 +639,7 @@ export function useApiStream(
   // fire from three places (server `terminal`, server `error`, client
   // `stop()` / abort) — we never want to deliver twice.
   const terminalEmittedRef = useRef(false);
+  const droppedAnswerDeltaRef = useRef(0);
 
   const onTerminalRef = useRef(onTerminal);
   useEffect(() => {
@@ -739,6 +740,7 @@ export function useApiStream(
     serverUserIdRef.current = undefined;
     streamIdRef.current = undefined;
     terminalEmittedRef.current = false;
+    droppedAnswerDeltaRef.current = 0;
   }, []);
 
   const resetForReplay = useCallback((): void => {
@@ -755,6 +757,7 @@ export function useApiStream(
     runCostRef.current = null;
     serverUserIdRef.current = undefined;
     streamIdRef.current = streamId;
+    droppedAnswerDeltaRef.current = 0;
     cancelScheduledFlush();
     setState({ ...INITIAL, status: "submitted" });
   }, [cancelScheduledFlush]);
@@ -838,9 +841,15 @@ export function useApiStream(
           return false;
         }
         case "answer_delta": {
-          if (!isRecord(payload)) return false;
+          if (!isRecord(payload)) {
+            droppedAnswerDeltaRef.current += 1;
+            return false;
+          }
           const text = readStringField(payload, "text");
-          if (text === null) return false;
+          if (text === null) {
+            droppedAnswerDeltaRef.current += 1;
+            return false;
+          }
           // Tagged (agentic) answer text accumulates per-subagent — mirrors
           // the tagged reasoning branch above.
           const subagentId = readStringField(payload, "subagentId");
@@ -876,6 +885,26 @@ export function useApiStream(
                 severity: "error",
                 title: "Bad terminal payload",
                 body: "The server sent a terminal frame with an unexpected shape.",
+              },
+              0,
+            );
+            queueState({ status: "error" });
+            flushPending();
+            emitTerminal("error", { error: err });
+            return true;
+          }
+          if (
+            parsed.status === "done" &&
+            !answerRef.current.trim() &&
+            subagentsRef.current.every((s) => !s.answer.trim()) &&
+            droppedAnswerDeltaRef.current > 0
+          ) {
+            const err = new ApiError(
+              {
+                code: "PROTOCOL",
+                severity: "error",
+                title: "Bad stream payload",
+                body: "The server sent unreadable answer frames and no answer text.",
               },
               0,
             );

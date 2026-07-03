@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, type RefObject } from "react";
+import { useMemo, useRef, type RefObject } from "react";
 
 import { MarkdownRenderer } from "@/components/chat/markdown-renderer";
 import { ReasoningPanel } from "@/components/chat/reasoning-panel";
@@ -14,10 +14,13 @@ import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import {
   buildAgenticPanelLayout,
-  buildMainSubagentIds,
+  buildSubagentRoleById,
   buildSubagentSectionsFromParts,
+  hasToolOrSubagentActivity,
   isNestedToolGroup,
   isNestedWebSearchGroup,
+  resolveMainBubbleText,
+  shouldRenderTextInMainBubble,
 } from "@/lib/agentic-layout";
 import type { MessagePart } from "@/lib/types";
 
@@ -26,11 +29,14 @@ export function AgenticAssistantParts({
   sourcesPanelRef,
   sourceItems,
   answerTestId = "assistant-answer",
+  showEmptyFallback = false,
 }: {
   parts: readonly MessagePart[];
   sourcesPanelRef: RefObject<SourcesPanelHandle | null>;
   sourceItems: Extract<MessagePart, { type: "sources" }>["items"];
   answerTestId?: string;
+  /** When true, show the calm empty-reply note on tool/subagent turns with no main answer. */
+  showEmptyFallback?: boolean;
 }) {
   const layout = buildAgenticPanelLayout(parts);
   const {
@@ -41,7 +47,15 @@ export function AgenticAssistantParts({
     toolLayout,
   } = layout;
   const subagentSections = buildSubagentSectionsFromParts(parts);
-  const mainSubagentIds = buildMainSubagentIds(parts);
+  const subagentRoleById = useMemo(() => buildSubagentRoleById(parts), [parts]);
+  const { effectiveAnswerText } = useMemo(
+    () => resolveMainBubbleText(parts),
+    [parts],
+  );
+  const showEmptyReplyFallback =
+    showEmptyFallback &&
+    hasToolOrSubagentActivity(parts) &&
+    !effectiveAnswerText.trim();
 
   return (
     <>
@@ -82,7 +96,7 @@ export function AgenticAssistantParts({
         if (part.type === "text") {
           if (
             part.subagentId != null &&
-            !mainSubagentIds.has(part.subagentId)
+            !shouldRenderTextInMainBubble(part, subagentRoleById)
           ) {
             return null;
           }
@@ -111,6 +125,14 @@ export function AgenticAssistantParts({
         }
         return null;
       })}
+      {showEmptyReplyFallback ? (
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="assistant-empty-fallback"
+        >
+          Finished without a written reply.
+        </p>
+      ) : null}
     </>
   );
 }

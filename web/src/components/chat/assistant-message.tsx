@@ -40,10 +40,13 @@ import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
 import type { SubagentActivity } from "@/lib/stream-client";
 import {
   buildAgenticPanelLayout,
-  buildMainSubagentIds,
   buildSubagentSectionsFromParts,
+  buildSubagentRoleById,
+  hasToolOrSubagentActivity,
   isNestedToolGroup,
   isNestedWebSearchGroup,
+  resolveMainBubbleText,
+  shouldRenderTextInMainBubble,
 } from "@/lib/agentic-layout";
 import { cn } from "@/lib/utils";
 import type {
@@ -182,11 +185,6 @@ export function AssistantMessage({
     return buildSubagentSectionsFromParts(message.parts);
   }, [liveSubagents, message.parts]);
 
-  const mainSubagentIds = useMemo(
-    () => buildMainSubagentIds(message.parts),
-    [message.parts],
-  );
-
   const agenticLayout = useMemo(
     () => buildAgenticPanelLayout(message.parts),
     [message.parts],
@@ -211,22 +209,14 @@ export function AssistantMessage({
     [nestWebSearchInPanel],
   );
 
-  const answerText = useMemo(
-    () =>
-      message.parts
-        .filter(
-          (p): p is Extract<MessagePart, { type: "text" }> =>
-            p.type === "text" &&
-            // Agentic turns: only the main (primary/aggregator) answer counts —
-            // copying a message should yield the synthesis, not every worker's
-            // intermediate finding.
-            // Reloaded messages serialize untagged text with subagentId: null;
-            // treat nullish the same as missing so answerText matches render.
-            (p.subagentId == null || mainSubagentIds.has(p.subagentId)),
-        )
-        .map((p) => p.text)
-        .join("\n\n"),
-    [message.parts, mainSubagentIds],
+  const subagentRoleById = useMemo(
+    () => buildSubagentRoleById(message.parts),
+    [message.parts],
+  );
+
+  const { effectiveAnswerText } = useMemo(
+    () => resolveMainBubbleText(message.parts),
+    [message.parts],
   );
 
   // Source list for this message (if any) drives the inline `[n]` citation
@@ -258,11 +248,9 @@ export function AssistantMessage({
   // so the turn still reads as finished. Only counts main-body text — a turn
   // whose only text lives inside subagent worker rows still has no top-level
   // answer.
-  const hasToolOrSubagentActivity = message.parts.some(
-    (p) =>
-      p.type === "tool_call" ||
-      p.type === "tool_result" ||
-      p.type === "subagent",
+  const hasToolOrSubagentActivityOnTurn = useMemo(
+    () => hasToolOrSubagentActivity(message.parts),
+    [message.parts],
   );
   const showTyping = status === "submitted" || (status === "streaming" && !hasContent);
   const isDone = status === "done";
@@ -373,7 +361,10 @@ export function AssistantMessage({
         if (part.type === "text") {
           // Subagent-tagged text: only the main (primary/aggregator) answer
           // renders as the markdown body; worker text stays panel-only.
-          if (part.subagentId != null && !mainSubagentIds.has(part.subagentId)) {
+          if (
+            part.subagentId != null &&
+            !shouldRenderTextInMainBubble(part, subagentRoleById)
+          ) {
             return null;
           }
           return part.text ? (
@@ -425,7 +416,7 @@ export function AssistantMessage({
         return null;
       })}
 
-      {isDone && hasToolOrSubagentActivity && !answerText.trim() ? (
+      {isDone && hasToolOrSubagentActivityOnTurn && !effectiveAnswerText.trim() ? (
         <p
           className="text-sm text-muted-foreground"
           data-testid="assistant-empty-fallback"
@@ -469,7 +460,7 @@ export function AssistantMessage({
               redesign. */}
           <div className="flex flex-wrap items-center gap-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
             <MessageActions
-              text={answerText}
+              text={effectiveAnswerText}
               feedback={message.feedback ?? null}
               canBranch={canBranch}
               isBranching={isBranching}
@@ -487,8 +478,8 @@ export function AssistantMessage({
               finished turn so a long thread doesn't sprout suggestions under
               every answer. Stopped/errored turns are excluded — they aren't a
               settled answer to follow up on. */}
-          {isDone && showFollowUps && onFollowUp && answerText.trim() ? (
-            <FollowUpChips text={answerText} onSelect={onFollowUp} />
+          {isDone && showFollowUps && onFollowUp && effectiveAnswerText.trim() ? (
+            <FollowUpChips text={effectiveAnswerText} onSelect={onFollowUp} />
           ) : null}
         </div>
       ) : null}

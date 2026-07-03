@@ -524,4 +524,44 @@ test.describe("agentic mode (deep research)", () => {
     });
     await expect(reloaded.getByTestId("assistant-empty-fallback")).toHaveCount(0);
   });
+
+  // The "Agent activity" card is a disclosure: its body (the nested tool-group
+  // panel, here) folds behind `subagent-panel-trigger` while the header/title
+  // row stays put. Reuses the degraded single-mode fan-out — one `primary`
+  // subagent with a folded generic tool group — since that's the cheapest turn
+  // that renders the panel with nested content.
+  test("agent activity panel folds and unfolds its nested content", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await enableDeepResearch(page);
+
+    await sendMultiToolNewChat(page);
+
+    const resumed = page.getByTestId("assistant-message").last();
+    const panel = resumed.getByTestId("subagent-panel");
+    await expect(panel).toBeVisible({ timeout: 15_000 });
+
+    // The nested tool-group panel is the body content this disclosure guards.
+    const nested = panel.getByTestId("tool-group-panel").first();
+    const trigger = panel.getByTestId("subagent-panel-trigger");
+    const header = panel.getByText("Agent activity");
+
+    // (1) Default-open: trigger + header + nested content all visible.
+    await expect(trigger).toBeVisible();
+    await expect(header).toBeVisible();
+    await expect(nested).toBeVisible({ timeout: 15_000 });
+
+    // (2) Click to fold → the nested content collapses (kept mounted, hidden),
+    // but the header row survives so the card is still re-openable.
+    await trigger.click();
+    await expect(nested).toBeHidden();
+    await expect(header).toBeVisible();
+
+    // (3) Click again to unfold → the nested content returns.
+    await trigger.click();
+    await expect(nested).toBeVisible();
+    await expect(header).toBeVisible();
+  });
 });

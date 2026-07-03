@@ -273,16 +273,16 @@ export function ByokForm({
                 // h-11 = 44pt (was h-9). Transparent against the card surface;
                 // right padding leaves room for the clear button. The password
                 // hardening (autoComplete/autoCorrect/spellCheck off) is kept.
-                className="block h-11 w-full rounded-xl bg-transparent pl-2.5 pr-10 font-mono text-sm text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)]"
+                className="block h-11 w-full rounded-xl bg-transparent pl-2.5 pr-12 font-mono text-base text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] md:pr-10 md:text-sm"
               />
               {apiKey.length > 0 ? (
                 <button
                   type="button"
                   onClick={() => setApiKey("")}
                   aria-label="Clear API key"
-                  // Centered in the 44px row; the size-9 hit area keeps a
-                  // comfortable target while the icon stays small.
-                  className="absolute right-1 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  // Centered in the 44px row; size-11 on mobile meets the touch
+                  // floor; size-9 on desktop keeps the icon compact.
+                  className="absolute right-1 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:size-9"
                 >
                   <X aria-hidden className="size-3.5" />
                 </button>

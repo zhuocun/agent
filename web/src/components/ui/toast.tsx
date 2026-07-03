@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   AlertOctagon,
   AlertTriangle,
@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useVisualViewport } from "@/lib/use-visual-viewport";
 
 export type ToastSeverity = "info" | "warning" | "error" | "success";
 
@@ -217,11 +218,27 @@ export function Toaster() {
   // first render matches whether or not anything has been queued before
   // hydration, and the client subscription takes over after mount.
   const toasts = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const { keyboardInset } = useVisualViewport();
+  // Below md: toasts stack above the composer at the bottom edge. SSR-safe.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 767.98px)");
+    const sync = () => setIsMobile(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+  // iOS keyboard does not shrink dvh; lift the viewport so validation toasts
+  // stay above the keyboard. md+ is top-anchored and unaffected.
+  const mobileKeyboardStyle =
+    isMobile && keyboardInset > 0 ? { bottom: keyboardInset } : undefined;
 
   if (toasts.length === 0) return null;
 
   return (
     <div
+      style={mobileKeyboardStyle}
       className="pointer-events-none fixed inset-x-0 bottom-0 z-[70] flex flex-col items-center gap-2 px-4 pb-[calc(var(--bottom-inset)+5rem)] pr-[max(env(safe-area-inset-right),1rem)] pl-[max(env(safe-area-inset-left),1rem)] md:inset-x-auto md:bottom-auto md:top-0 md:right-0 md:items-end md:pt-[max(env(safe-area-inset-top),1rem)] md:pb-0"
     >
       <ol className="flex w-full max-w-sm flex-col gap-2">

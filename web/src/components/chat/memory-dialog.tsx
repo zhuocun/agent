@@ -157,25 +157,25 @@ export function MemoryBody({
 
       <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto pr-2 sm:max-h-none">
           {/* Opt-in toggle */}
-          <div className="flex items-center justify-between gap-4">
+          <label
+            htmlFor={toggleId}
+            className="flex min-h-11 cursor-pointer items-center justify-between gap-4"
+          >
             <div className="min-w-0">
-              <label htmlFor={toggleId} className="text-sm font-medium">
-                Use memory in chats
-              </label>
+              <span className="text-sm font-medium">Use memory in chats</span>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 Off by default. When on, your saved facts are added to new,
                 non-temporary chats.
               </p>
             </div>
-            <div className="shrink-0">
-              <Switch
-                id={toggleId}
-                checked={memoryEnabled}
-                onCheckedChange={onMemoryEnabledChange}
-                data-testid="memory-enabled-switch"
-              />
-            </div>
-          </div>
+            <Switch
+              id={toggleId}
+              className="shrink-0"
+              checked={memoryEnabled}
+              onCheckedChange={onMemoryEnabledChange}
+              data-testid="memory-enabled-switch"
+            />
+          </label>
 
           {/* Add a fact */}
           <div className="space-y-2">
@@ -188,7 +188,7 @@ export function MemoryBody({
               maxLength={FACT_MAX}
               rows={2}
               onChange={(event) => setDraft(event.currentTarget.value)}
-              className="min-h-16 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+              className="min-h-16 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
               placeholder="e.g. I prefer concise answers and metric units."
               data-testid="memory-add-input"
             />
@@ -237,7 +237,7 @@ export function MemoryBody({
                           onChange={(event) =>
                             setEditingText(event.currentTarget.value)
                           }
-                          className="min-h-16 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25"
+                          className="min-h-16 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
                           data-testid="memory-edit-input"
                         />
                         <div className="flex justify-end gap-2">
@@ -322,7 +322,7 @@ export function MemoryDialog({
 }: MemoryDialogProps): JSX.Element {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh]">
+      <DialogContent className="flex [--dialog-max-h:80dvh] max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh]">
         {open ? (
           <MemoryBody
             active={open}

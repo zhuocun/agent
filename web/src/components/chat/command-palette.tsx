@@ -85,9 +85,9 @@ const SERVED_MODEL_OPTIONS: { value: ModelTierId; label: string }[] = [
 // Filter-control styling — copied from the former dialog so the inputs read as
 // part of the same surface family.
 const FILTER_INPUT_CLASS =
-  "w-full min-w-0 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25";
+  "w-full min-w-0 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 const FILTER_DATE_INPUT_CLASS =
-  "w-full min-w-[7.5rem] rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25";
+  "w-full min-w-[7.5rem] rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 const FILTER_SELECT_CLASS =
   "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25";
 
@@ -878,7 +878,7 @@ export function CommandPalette({
                                 <KeyCaps
                                   shortcut={item.action.shortcut}
                                   variant="compact"
-                                  className="ml-3"
+                                  className="ml-3 hidden [@media(hover:hover)_and_(pointer:fine)]:inline-flex"
                                 />
                               ) : null}
                             </li>
@@ -932,7 +932,7 @@ export function CommandPalette({
             )}
           </div>
 
-          <div className="hidden shrink-0 border-t border-foreground/10 px-5 py-2 text-2xs text-muted-foreground sm:block">
+          <div className="hidden shrink-0 border-t border-foreground/10 px-5 py-2 text-2xs text-muted-foreground [@media(hover:hover)_and_(pointer:fine)]:block">
             {filterMode ? (
               <>
                 <span className="font-mono">Tab</span> to move between filters ·{" "}

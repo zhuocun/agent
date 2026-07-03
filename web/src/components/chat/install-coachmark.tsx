@@ -43,6 +43,7 @@ function isIosSafariTab(): boolean {
 export function InstallCoachmark(): React.JSX.Element | null {
   const [visible, setVisible] = useState(false);
   const [welcomeRailVisible, setWelcomeRailVisible] = useState(false);
+  const [shortViewport, setShortViewport] = useState(false);
 
   useEffect(() => {
     if (!isIosSafariTab()) return;
@@ -54,6 +55,17 @@ export function InstallCoachmark(): React.JSX.Element | null {
     // Defer a beat so the hint does not race the first paint of the chat.
     const t = window.setTimeout(() => setVisible(true), 1200);
     return () => window.clearTimeout(t);
+  }, []);
+
+  // Hide on short viewports where the fixed pill would crowd the composer and
+  // follow-up chips once the welcome rail unmounts (iPhone SE 320×568).
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-height: 599px)");
+    const sync = (): void => setShortViewport(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
   }, []);
 
   // Track the welcome suggestion rail so the coachmark yields the bottom of the
@@ -83,10 +95,11 @@ export function InstallCoachmark(): React.JSX.Element | null {
     }
   };
 
-  if (!visible || welcomeRailVisible) return null;
+  if (!visible || welcomeRailVisible || shortViewport) return null;
 
   return (
     <div
+      data-testid="install-coachmark"
       role="status"
       aria-live="polite"
       className={cn(
@@ -96,7 +109,10 @@ export function InstallCoachmark(): React.JSX.Element | null {
         // same offset the toast stack clears), so reuse it here.
         // Clear the composer capsule, AI disclosure, and follow-up chips —
         // 5rem was too tight and the pill overlapped the send field on phones.
-        "bottom-[calc(var(--bottom-inset)+9rem)]",
+        // Park at +13rem so the pill sits above jump-to-latest (+9.5rem, h-11)
+        // — both are z-30 and the coachmark mounts after app children in
+        // layout.tsx, so any vertical overlap would steal taps from the button.
+        "bottom-[calc(var(--bottom-inset)+13rem)]",
         "mx-auto flex max-w-md items-center gap-3 rounded-2xl",
         // `glass-regular` supplies the translucent material: saturated/
         // contrasted backdrop-filter, the inset hairline rim, the top highlight,

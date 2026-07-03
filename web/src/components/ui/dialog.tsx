@@ -5,6 +5,7 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 
 import { cn } from "@/lib/utils"
 import { useSwipeDismiss } from "@/lib/use-swipe-dismiss"
+import { useVisualViewport } from "@/lib/use-visual-viewport"
 import { XIcon } from "lucide-react"
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
@@ -84,6 +85,21 @@ function DialogContent({
     onDismiss: () => closeRef.current?.click(),
   })
 
+  // The mobile sheet is bottom-pinned, so the iOS software keyboard (which does
+  // NOT shrink dvh) slides up *over* focused inputs. Lift the whole sheet by
+  // the measured keyboard inset and trim that much off its max-height, so form
+  // fields stay visible above the keyboard. Desktop (sm+) is unaffected.
+  const { keyboardInset } = useVisualViewport()
+  const mobileKeyboardStyle =
+    isMobile && keyboardInset > 0
+      ? {
+          bottom: keyboardInset,
+          // Respect each sheet's own cap (`--dialog-max-h`, default 90dvh) so
+          // an inline lift does not override Tailwind max-h-[80dvh] ceilings.
+          maxHeight: `calc(min(90dvh, var(--dialog-max-h, 90dvh)) - ${keyboardInset}px)`,
+        }
+      : undefined
+
   return (
     <DialogPortal>
       <DialogBackdrop />
@@ -97,13 +113,14 @@ function DialogContent({
             "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
           WebkitBackdropFilter:
             "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+          ...mobileKeyboardStyle,
         }}
         className={cn(
           // Mobile (default): iOS bottom sheet — full width, pinned to the
           // bottom, rounded top only, capped height, home-indicator-safe bottom
           // padding. Slides up/down with iOS sheet easing.
           "glass-strong fixed inset-x-0 bottom-0 z-50 grid w-full gap-4 rounded-t-3xl rounded-b-none p-6 pb-[max(env(safe-area-inset-bottom),1rem)] text-foreground",
-          "max-h-[90dvh] transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
+          "[--dialog-max-h:90dvh] max-h-[90dvh] transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
           // Desktop (sm+): restore the centered modal — reset the sheet anchor,
           // radius and slide, and swap back to the scale+fade transition. The
           // centering -translate keeps composing with scale during the anim.

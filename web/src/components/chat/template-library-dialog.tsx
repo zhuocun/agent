@@ -187,7 +187,7 @@ export function TemplateLibraryBody({
               value={draftTitle}
               maxLength={TITLE_MAX}
               onChange={(event) => setDraftTitle(event.currentTarget.value)}
-              className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+              className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
               placeholder="Title — e.g. Blog post outline"
               data-testid="template-add-title"
             />
@@ -197,7 +197,7 @@ export function TemplateLibraryBody({
               maxLength={BODY_MAX}
               rows={3}
               onChange={(event) => setDraftBody(event.currentTarget.value)}
-              className="min-h-20 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+              className="min-h-20 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
               placeholder="Body — e.g. Write a blog post about {{topic}} for {{audience}}."
               data-testid="template-add-body"
             />
@@ -208,7 +208,7 @@ export function TemplateLibraryBody({
               onChange={(event) =>
                 setDraftDescription(event.currentTarget.value)
               }
-              className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+              className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
               placeholder="Description (optional)"
               data-testid="template-add-description"
             />
@@ -257,7 +257,7 @@ export function TemplateLibraryBody({
                           onChange={(event) =>
                             setEditingTitle(event.currentTarget.value)
                           }
-                          className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25"
+                          className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
                           data-testid="template-edit-title"
                         />
                         <textarea
@@ -267,7 +267,7 @@ export function TemplateLibraryBody({
                           onChange={(event) =>
                             setEditingBody(event.currentTarget.value)
                           }
-                          className="min-h-20 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25"
+                          className="min-h-20 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
                           data-testid="template-edit-body"
                         />
                         <input
@@ -276,7 +276,7 @@ export function TemplateLibraryBody({
                           onChange={(event) =>
                             setEditingDescription(event.currentTarget.value)
                           }
-                          className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25"
+                          className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
                           placeholder="Description (optional)"
                           data-testid="template-edit-description"
                         />
@@ -369,7 +369,7 @@ export function TemplateLibraryDialog({
 }: TemplateLibraryDialogProps): JSX.Element {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh]">
+      <DialogContent className="flex [--dialog-max-h:80dvh] max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh]">
         {open ? <TemplateLibraryBody active={open} /> : null}
       </DialogContent>
     </Dialog>

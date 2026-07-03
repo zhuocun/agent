@@ -216,6 +216,30 @@ export function MessageList({
     virtualWindow.endIndex,
   );
 
+  const scrollToBottom = useCallback((smooth: boolean) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: smooth && !prefersReducedMotion() ? "smooth" : "auto",
+    });
+    refreshVirtualViewport();
+  }, [refreshVirtualViewport]);
+
+  const pinScrollForContent = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const overflows = el.scrollHeight > el.clientHeight + 1;
+    if (overflows) {
+      scrollToBottom(false);
+      return;
+    }
+    el.scrollTop = 0;
+    atBottomRef.current = true;
+    setAtBottom(true);
+    refreshVirtualViewport();
+  }, [scrollToBottom, refreshVirtualViewport]);
+
   // Detect genuine appends AFTER paint (useEffect, not useLayoutEffect, so the
   // just-applied entrance class is allowed to paint before any bookkeeping).
   // Writing AND reading `prevIdsRef` here is allowed — the lint rule only
@@ -259,6 +283,9 @@ export function MessageList({
       // Bulk: render the whole list static. Reset the set on a switch so the
       // departed conversation's ids don't linger (and the set stays bounded).
       setEntered((cur) => (cur.size === 0 ? cur : new Set()));
+      // Pin to bottom only when the loaded thread overflows; short threads stay
+      // top-aligned so the first message clears the fixed header.
+      window.requestAnimationFrame(pinScrollForContent);
     } else if (grew) {
       // Genuine append in the same conversation — flag only the new ids.
       const added = current.filter((id) => !prevSet.has(id));
@@ -274,7 +301,7 @@ export function MessageList({
     // deletion) — leave `entered` untouched so nothing (re-)animates.
 
     prevIdsRef.current = current;
-  }, [idsKey]);
+  }, [idsKey, pinScrollForContent]);
 
   const recompute = useCallback(() => {
     const el = scrollRef.current;
@@ -286,27 +313,26 @@ export function MessageList({
     refreshVirtualViewport();
   }, [refreshVirtualViewport]);
 
-  const scrollToBottom = useCallback((smooth: boolean) => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior: smooth && !prefersReducedMotion() ? "smooth" : "auto",
-    });
-    refreshVirtualViewport();
-  }, [refreshVirtualViewport]);
-
   useEffect(() => {
-    scrollToBottom(false);
     const content = contentRef.current;
     if (!content) return;
     // Auto-follow growth only while user is pinned at bottom.
     const ro = new ResizeObserver(() => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const overflows = el.scrollHeight > el.clientHeight + 1;
+      if (!overflows) {
+        el.scrollTop = 0;
+        atBottomRef.current = true;
+        setAtBottom(true);
+        refreshVirtualViewport();
+        return;
+      }
       if (atBottomRef.current) scrollToBottom(false);
     });
     ro.observe(content);
     return () => ro.disconnect();
-  }, [scrollToBottom]);
+  }, [scrollToBottom, refreshVirtualViewport]);
 
   return (
     <div className="relative min-h-0 min-w-0 flex-1 overflow-x-hidden">
@@ -382,7 +408,7 @@ export function MessageList({
           it out of the tab order and from intercepting taps. 44pt (size-11)
           meets the iOS touch-target floor; icon-only by design. */}
       {/* Jump-to-latest anchor: clears the two-row composer card (~9rem of
-          bottom chrome; install-coachmark uses +9rem, list `pb` uses +12rem).
+          bottom chrome; install-coachmark uses +13rem, list `pb` uses +12rem).
           Mobile parks the pill on the trailing edge at the same +9.5rem float;
           md+ keeps the centered +9.5rem placement above the composer gap. */}
       <div

@@ -140,7 +140,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
             </Button>
           }
         />
-        <DialogContent className="max-h-[80dvh] gap-3 px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
+        <DialogContent className="[--dialog-max-h:80dvh] max-h-[80dvh] gap-3 px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
           <DialogHeader>
             <DialogTitle>Model</DialogTitle>
             <DialogDescription className="sr-only">

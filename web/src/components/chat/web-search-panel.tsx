@@ -1,16 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, Globe, Loader2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ChevronDown, CircleDashed, Globe, Loader2, Search, ShieldQuestion } from "lucide-react";
 
-import { ToolPartView } from "@/components/chat/tool-part";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import type { WebSearchGroup } from "@/lib/tool-groups";
+import type { ToolRun, WebSearchGroup } from "@/lib/tool-groups";
 
 interface WebSearchPanelProps {
   group: WebSearchGroup;
@@ -26,19 +25,6 @@ function formatSearchStatusLabel(
   if (state !== "done") return label;
   if (label === "Searching the web…") return "Searched the web";
   return label;
-}
-
-function extractQueries(group: WebSearchGroup): string[] {
-  return group.runs
-    .map((run) => {
-      const input = run.call?.input ?? run.result?.output;
-      if (input && typeof input === "object" && !Array.isArray(input)) {
-        const query = (input as Record<string, unknown>).query;
-        if (typeof query === "string" && query.trim()) return query.trim();
-      }
-      return null;
-    })
-    .filter((query): query is string => query !== null);
 }
 
 function sourceCount(group: WebSearchGroup): number {
@@ -67,7 +53,117 @@ function buildSummary(group: WebSearchGroup): string {
   return parts.join(" · ");
 }
 
-export function WebSearchPanel({ group, onDecision, embedded = false }: WebSearchPanelProps) {
+function extractRunQuery(run: ToolRun): string | null {
+  const callInput = run.call?.input;
+  if (callInput && typeof callInput === "object" && !Array.isArray(callInput)) {
+    const query = (callInput as Record<string, unknown>).query;
+    if (typeof query === "string" && query.trim()) return query.trim();
+  }
+  const resultOutput = run.result?.output;
+  if (
+    resultOutput &&
+    typeof resultOutput === "object" &&
+    !Array.isArray(resultOutput)
+  ) {
+    const query = (resultOutput as Record<string, unknown>).query;
+    if (typeof query === "string" && query.trim()) return query.trim();
+  }
+  return null;
+}
+
+function extractRunSourceCount(run: ToolRun): number | null {
+  const output = run.result?.output;
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const results = (output as Record<string, unknown>).results;
+    if (Array.isArray(results)) return results.length;
+  }
+  const summary = run.result?.summary;
+  if (summary) {
+    const match = /^(\d+)\s+sources?$/.exec(summary);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function WebSearchRunRow({ run }: { run: ToolRun }) {
+  const query =
+    extractRunQuery(run) ??
+    run.call?.label ??
+    run.result?.label ??
+    "Web search";
+  const sourceCount = extractRunSourceCount(run);
+  const status = run.status;
+
+  let icon: ReactNode;
+  let statusSuffix: ReactNode = null;
+  let errorLine: ReactNode = null;
+  let showSourceCount = false;
+
+  switch (status) {
+    case "pending":
+    case "running":
+      icon = (
+        <Loader2
+          aria-hidden
+          className="mt-0.5 size-3.5 shrink-0 motion-safe:animate-spin"
+        />
+      );
+      statusSuffix = <span> · searching…</span>;
+      break;
+    case "awaiting_approval":
+      icon = (
+        <ShieldQuestion
+          aria-hidden
+          className="mt-0.5 size-3.5 shrink-0 text-warning"
+        />
+      );
+      statusSuffix = <span> · awaiting approval</span>;
+      break;
+    case "succeeded":
+      icon = <Search aria-hidden className="mt-0.5 size-3.5 shrink-0" />;
+      showSourceCount = true;
+      break;
+    case "failed":
+      icon = <Search aria-hidden className="mt-0.5 size-3.5 shrink-0" />;
+      errorLine = (
+        <p className="mt-0.5 text-destructive/80">
+          {run.result?.error ?? "Search failed"}
+        </p>
+      );
+      break;
+    case "cancelled":
+      icon = <CircleDashed aria-hidden className="mt-0.5 size-3.5 shrink-0" />;
+      statusSuffix = (
+        <span className="text-muted-foreground/70"> · cancelled</span>
+      );
+      break;
+    default: {
+      const _exhaustive: never = status;
+      return _exhaustive;
+    }
+  }
+
+  return (
+    <li data-testid="web-search-run" className="list-none">
+      <div className="flex min-w-0 items-start gap-1.5 text-xs leading-snug text-muted-foreground">
+        {icon}
+        <div className="min-w-0 flex-1">
+          <span className="text-foreground/90">{query}</span>
+          {showSourceCount && sourceCount !== null ? (
+            <span>
+              {" "}
+              · {sourceCount} source{sourceCount === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {statusSuffix}
+          {errorLine}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+export function WebSearchPanel({ group, embedded = false }: WebSearchPanelProps) {
   const isLive =
     group.status === "running" ||
     group.status === "pending" ||
@@ -80,9 +176,6 @@ export function WebSearchPanel({ group, onDecision, embedded = false }: WebSearc
         )
       : null;
   const summary = buildSummary(group);
-  const queries = extractQueries(group);
-  const singleQueryLine =
-    queries.length === 1 ? queries[0] : null;
   const triggerDetail = statusLabel ?? summary;
   // Live turns default open; settled turns default closed unless the user toggled.
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
@@ -135,25 +228,11 @@ export function WebSearchPanel({ group, onDecision, embedded = false }: WebSearc
             "data-[ending-style]:h-0 data-[ending-style]:opacity-0",
           )}
         >
-          <div className="mt-1 space-y-1.5">
-            {singleQueryLine && !isLive ? (
-              <p className="text-xs leading-snug text-muted-foreground">
-                <span className="font-medium text-foreground">Query:</span>{" "}
-                {singleQueryLine}
-              </p>
-            ) : null}
-            <ul className="flex flex-col gap-0.5">
-              {group.runs.map((run, idx) => {
-                const part = run.result ?? run.call;
-                if (!part) return null;
-                return (
-                  <li key={`${run.id}-${idx}`} className="list-none">
-                    <ToolPartView part={part} onDecision={onDecision} embedded={embedded} />
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {group.runs.map((run, idx) => (
+              <WebSearchRunRow key={`${run.id}-${idx}`} run={run} />
+            ))}
+          </ul>
         </CollapsibleContent>
       </Collapsible>
     </div>

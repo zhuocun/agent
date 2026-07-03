@@ -80,7 +80,12 @@ test.describe("web search panel consolidation", () => {
     });
 
     await panel.getByTestId("web-search-trigger").click();
-    await expect(panel.getByTestId("tool-result-part")).toHaveCount(2);
+    const runs = panel.getByTestId("web-search-run");
+    await expect(runs).toHaveCount(2);
+    await expect(runs.first()).toContainText("rust vs go");
+    await expect(runs.nth(1)).toContainText("rust vs go follow-up");
+    await expect(panel).not.toContainText('{"query"');
+    await expect(panel.getByTestId("tool-result-part")).toHaveCount(0);
     await expect(assistant.getByTestId("tool-call-part")).toHaveCount(0);
   });
 });

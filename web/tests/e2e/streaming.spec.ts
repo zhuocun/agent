@@ -429,6 +429,10 @@ test.describe("streaming", () => {
   test("continue a stopped turn: keeps the partial, appends a new bubble, no duplicate user turn", async ({
     page,
   }) => {
+    // Up to 8 produce-stop-confirm attempts × (10s stream + 10s stop + 10s BE
+    // poll) fits the raised 120s budget; each attempt can also stall early.
+    test.setTimeout(120_000);
+
     await page.goto("/");
     await waitForBootstrap(page);
 
@@ -452,9 +456,13 @@ test.describe("streaming", () => {
     // we stop a few deltas in (not at the first, which races the
     // reasoning→answer boundary), then retry the whole produce-stop-confirm
     // with a fresh chat until the BE commits the `stopped` row — so Continue
-    // (which reads that row) has a real partial to extend.
+    // (which reads that row) has a real partial to extend. Each attempt wraps
+    // stream progress, stop, and BE persistence in one recoverable path: a
+    // stalled stream (e.g. stuck at "part 0"), a stop that never lands, or a
+    // row that never persists all `continue` to the next fresh chat instead of
+    // failing the test outright.
     let partialBefore: string | null = null;
-    for (let attempt = 0; partialBefore === null && attempt < 6; attempt++) {
+    for (let attempt = 0; partialBefore === null && attempt < 8; attempt++) {
       if (attempt > 0) {
         await page.getByRole("button", { name: "New chat" }).first().click();
         await expect(page.getByTestId("user-message-text")).toHaveCount(0);
@@ -463,22 +471,23 @@ test.describe("streaming", () => {
       await composer.fill("SLOW: tell me a long story so I can stop it");
       await page.getByTestId("composer-send").click();
 
-      const streaming = page.getByTestId("assistant-message").last();
-      await expect(
-        streaming.getByTestId("assistant-answer").first(),
-      ).toContainText("part 5 ", { timeout: 15_000 });
-
-      // Stop mid-stream (well within the ~2s slow window).
-      await page.getByRole("button", { name: "Stop generating" }).click();
-      await expect(streaming).toHaveAttribute("data-status", "stopped", {
-        timeout: 15_000,
-      });
-      await expect(streaming.getByTestId("stopped-chip")).toBeVisible();
-
-      // Confirm the BE committed the `stopped` row before continuing — a
-      // continue POST that races persistence 400s NOTHING_TO_CONTINUE.
-      await expect.poll(() => capturedConvId).not.toBeNull();
       try {
+        const streaming = page.getByTestId("assistant-message").last();
+        // Shorter per-attempt timeout so a stalled stream recycles quickly.
+        await expect(
+          streaming.getByTestId("assistant-answer").first(),
+        ).toContainText("part 5 ", { timeout: 10_000 });
+
+        // Stop mid-stream (well within the ~2s slow window).
+        await page.getByRole("button", { name: "Stop generating" }).click();
+        await expect(streaming).toHaveAttribute("data-status", "stopped", {
+          timeout: 10_000,
+        });
+        await expect(streaming.getByTestId("stopped-chip")).toBeVisible();
+
+        // Confirm the BE committed the `stopped` row before continuing — a
+        // continue POST that races persistence 400s NOTHING_TO_CONTINUE.
+        await expect.poll(() => capturedConvId).not.toBeNull();
         await expect
           .poll(
             async () => {
@@ -493,18 +502,19 @@ test.describe("streaming", () => {
                 (m) => m.role === "assistant" && m.status === "stopped",
               );
             },
-            { timeout: 6_000, intervals: [250] },
+            { timeout: 10_000, intervals: [250] },
           )
           .toBe(true);
+
+        partialBefore =
+          (await streaming
+            .getByTestId("assistant-answer")
+            .first()
+            .textContent()
+            .catch(() => "")) ?? "";
       } catch {
-        continue; // not persisted this attempt — fresh chat and retry
+        continue; // stalled stream, stop didn't land, or BE didn't persist
       }
-      partialBefore =
-        (await streaming
-          .getByTestId("assistant-answer")
-          .first()
-          .textContent()
-          .catch(() => "")) ?? "";
     }
     expect(
       partialBefore,

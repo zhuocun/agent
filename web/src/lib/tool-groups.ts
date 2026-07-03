@@ -284,7 +284,49 @@ export function groupToolParts(parts: MessagePart[]): GroupedToolPart[] {
   return out;
 }
 
-/** Split web-search groups for agent-activity nesting vs standalone render. */
+function pickMergedStatusPart(
+  groups: WebSearchGroup[],
+): Pick<StatusPart, "label" | "state"> | undefined {
+  let last: Pick<StatusPart, "label" | "state"> | undefined;
+  for (const group of groups) {
+    if (group.statusPart?.state === "active") return group.statusPart;
+    if (group.statusPart) last = group.statusPart;
+  }
+  return last;
+}
+
+/** Merge multiple web-search groups that share the same nesting owner. */
+function mergeWebSearchGroups(groups: WebSearchGroup[]): WebSearchGroup | undefined {
+  if (groups.length === 0) return undefined;
+  if (groups.length === 1) return groups[0];
+
+  const runs: ToolRun[] = [];
+  for (const group of groups) {
+    runs.push(...group.runs);
+  }
+  const failedCount = runs.filter((run) => run.status === "failed").length;
+
+  const subagentId = groups[0]?.subagentId;
+  const statusPart = pickMergedStatusPart(groups);
+
+  return {
+    type: "web_search_group",
+    runs,
+    failedCount,
+    status: aggregateRunStatus(runs),
+    ...(subagentId !== undefined ? { subagentId } : {}),
+    ...(statusPart !== undefined ? { statusPart } : {}),
+  };
+}
+
+/**
+ * Split web-search groups for agent-activity nesting vs standalone render.
+ *
+ * When `nestInPanel` is true, groups routed to the same owner are merged into
+ * one `WebSearchGroup` per subagent id (values are single-element arrays) and
+ * all panel-level groups are merged into at most one panel-level group.
+ * Standalone (`nestInPanel` false) behavior is unchanged — groups are not merged.
+ */
 export function partitionWebSearchGroups(
   parts: GroupedToolPart[],
   subagentIds: ReadonlySet<string>,
@@ -295,8 +337,8 @@ export function partitionWebSearchGroups(
   bySubagentId: Map<string, WebSearchGroup[]>;
 } {
   const standalone: WebSearchGroup[] = [];
-  const panelLevel: WebSearchGroup[] = [];
-  const bySubagentId = new Map<string, WebSearchGroup[]>();
+  const panelLevelRaw: WebSearchGroup[] = [];
+  const bySubagentIdRaw = new Map<string, WebSearchGroup[]>();
 
   for (const part of parts) {
     if (part.type !== "web_search_group") continue;
@@ -306,12 +348,26 @@ export function partitionWebSearchGroups(
     }
     const ownerId = part.subagentId;
     if (ownerId !== undefined && subagentIds.has(ownerId)) {
-      const owned = bySubagentId.get(ownerId) ?? [];
+      const owned = bySubagentIdRaw.get(ownerId) ?? [];
       owned.push(part);
-      bySubagentId.set(ownerId, owned);
+      bySubagentIdRaw.set(ownerId, owned);
       continue;
     }
-    panelLevel.push(part);
+    panelLevelRaw.push(part);
+  }
+
+  if (!nestInPanel) {
+    return { standalone, panelLevel: [], bySubagentId: new Map() };
+  }
+
+  const panelLevel: WebSearchGroup[] = [];
+  const mergedPanelLevel = mergeWebSearchGroups(panelLevelRaw);
+  if (mergedPanelLevel) panelLevel.push(mergedPanelLevel);
+
+  const bySubagentId = new Map<string, WebSearchGroup[]>();
+  for (const [ownerId, groups] of bySubagentIdRaw) {
+    const merged = mergeWebSearchGroups(groups);
+    if (merged) bySubagentId.set(ownerId, [merged]);
   }
 
   return { standalone, panelLevel, bySubagentId };

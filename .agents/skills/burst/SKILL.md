@@ -54,7 +54,7 @@ Where a subagent comes from is a per-dispatch decision. Pick the source with the
 2. Cursor or any other platform: probe for a headless CLI (`command -v claude`, `command -v codex`). If present, spawning it is the primary source — `claude -p "<prompt>"` for Claude Code, `codex exec "<prompt>"` for Codex.
 3. Neither CLI available: fall back to the platform's own subagent mechanism.
 
-A headless CLI spawn needs working auth in that environment (a prior login or the relevant API key env var); if the CLI is present but unauthenticated, treat it as unavailable and fall back.
+A headless CLI spawn needs working auth in that environment (a prior login or the relevant API key env var); if the CLI is present but unauthenticated, treat it as unavailable and fall back. Headless spawns also have sharp edges an interactive terminal never shows (stdin/EOF, flag order, model slugs, effort defaults, output capture) — before the first CLI spawn in a session, read `references/cli-dispatch.md` in this skill's directory and apply its guards to every dispatch. Rules 1 and 3 need none of this.
 
 ## Reviewer
 

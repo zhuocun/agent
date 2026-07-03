@@ -370,6 +370,22 @@ test.describe("agentic mode (deep research)", () => {
     expect(totalSearchPanels).toBe(nestedCount);
     expect(nestedCount).toBeGreaterThan(0);
 
+    // Per-run rows show human-readable queries, not raw tool-argument JSON.
+    const firstNestedPanel = nestedSearch.first();
+    await firstNestedPanel.getByTestId("web-search-trigger").click();
+    const searchRuns = panel.getByTestId("web-search-run");
+    await expect(searchRuns.first()).toBeVisible({ timeout: 15_000 });
+    await expect(searchRuns.first()).toContainText("alpha topic");
+    await expect(panel).not.toContainText('{"query"');
+
+    // Each subagent row shows at most one aggregated web-search panel.
+    const rows = panel.getByTestId("subagent-row");
+    const rowCount = await rows.count();
+    for (let i = 0; i < rowCount; i++) {
+      const panelsInRow = await rows.nth(i).getByTestId("web-search-panel").count();
+      expect(panelsInRow).toBeLessThanOrEqual(1);
+    }
+
     // Reload should keep web search nested under agent activity.
     await page.reload();
     await waitForBootstrap(page);

@@ -3,7 +3,6 @@
 //   2. pre-send token estimate in the composer (no dollar figure — D41)
 //   3. monthly budget cap settings UI (+ refusal surface)
 //   4. regenerate-with-a-different-model
-//   5. View spend link opens the Spend hub
 //   + Phase 2: provider-fallback substitution clause (real BE)
 //
 // Most specs MOCK the BE via `page.route` so the FE half is exercised
@@ -471,64 +470,6 @@ test.describe("regenerate with model", () => {
 
     // The picker reflects the new served model going forward.
     await expect(modelModeTrigger(page)).toContainText("Pro");
-  });
-});
-
-// --- View spend hub link ----------------------------------------------------
-
-test.describe("view spend link", () => {
-  test("finished assistant turns link to the Spend hub and show no inline cost", async ({
-    page,
-  }) => {
-    await mockBootstrap(page);
-    await mockCreateConversation(page);
-
-    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
-      await route.fulfill({
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-        body: terminalFrame(defaultAttribution({ costUsd: 0.02 })),
-      });
-    });
-
-    await page.route(`${BE_URL}/api/account/spend*`, async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          rangeDays: 30,
-          currency: "USD",
-          survivingMessagesUsd: 0.02,
-          cumulativeMeterUsd: 0.02,
-          daily: [],
-          byModel: [],
-          byConversation: [],
-        }),
-      });
-    });
-
-    await page.goto("/");
-    await waitForBootstrap(page);
-
-    await page.getByTestId("composer-textarea").fill("Hello");
-    await page.getByTestId("composer-send").click();
-    const assistant = page.getByTestId("assistant-message").last();
-    await expect(assistant).toHaveAttribute("data-status", "done", {
-      timeout: 15_000,
-    });
-
-    await expect(assistant.getByTestId("message-attribution")).toBeVisible();
-    await expect(assistant.getByTestId("message-attribution")).not.toContainText(
-      "$",
-    );
-
-    const spendLink = assistant.getByTestId("assistant-spend-link");
-    await expect(spendLink).toBeVisible();
-    await spendLink.click();
-
-    const dialog = page.getByRole("dialog", { name: "Settings" });
-    await expect(dialog).toBeVisible();
-    await expect(page.getByTestId("spend-analytics-panel")).toBeVisible();
   });
 });
 

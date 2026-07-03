@@ -110,67 +110,92 @@ export function SubagentPanel({
       data-testid="subagent-panel"
       className="max-w-full rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5 text-sm text-muted-foreground"
     >
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <Telescope aria-hidden className="size-4 shrink-0" />
-        <span className="font-medium text-foreground">{title}</span>
-        {!singleAgentFlat ? (
-          <span className="text-xs text-muted-foreground">{summary}</span>
-        ) : null}
-      </div>
-      {panelWebSearchGroups.length > 0 ? (
-        <div className="mt-2 space-y-1" data-testid="subagent-panel-web-search">
-          {panelWebSearchGroups.map((group, idx) => (
-            <WebSearchPanel
-              key={`panel-web-search-${idx}`}
-              group={group}
-              onDecision={onToolDecision}
-              embedded
+      <Collapsible defaultOpen>
+        <CollapsibleTrigger
+          data-testid="subagent-panel-trigger"
+          className={cn(
+            "group/subagent-panel-trigger flex w-full min-w-0 items-center gap-x-2 gap-y-1 text-left",
+            "min-h-11 bg-transparent py-2 -my-2 outline-none md:min-h-0 md:py-0 md:my-0",
+            "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+          )}
+          aria-label={`${title} — toggle details`}
+        >
+          <Telescope aria-hidden className="size-4 shrink-0" />
+          <span className="font-medium text-foreground">{title}</span>
+          {!singleAgentFlat ? (
+            <span className="text-xs text-muted-foreground">{summary}</span>
+          ) : null}
+          <ChevronDown
+            aria-hidden
+            className="ml-auto size-3.5 shrink-0 transition-transform duration-300 ease-[var(--ease-ios-spring)] motion-reduce:transition-none group-data-[panel-open]/subagent-panel-trigger:rotate-180"
+          />
+        </CollapsibleTrigger>
+        <CollapsibleContent
+          keepMounted
+          className={cn(
+            "overflow-hidden",
+            "transition-[height,opacity] duration-200 ease-[var(--ease-ios-smooth)]",
+            "h-[var(--collapsible-panel-height)] opacity-100",
+            "data-[starting-style]:h-0 data-[starting-style]:opacity-0",
+            "data-[ending-style]:h-0 data-[ending-style]:opacity-0",
+          )}
+        >
+          {panelWebSearchGroups.length > 0 ? (
+            <div className="mt-2 space-y-1" data-testid="subagent-panel-web-search">
+              {panelWebSearchGroups.map((group, idx) => (
+                <WebSearchPanel
+                  key={`panel-web-search-${idx}`}
+                  group={group}
+                  onDecision={onToolDecision}
+                  embedded
+                />
+              ))}
+            </div>
+          ) : null}
+          {panelToolGroups.length > 0 ? (
+            <div className="mt-2 space-y-1" data-testid="subagent-panel-tools">
+              {panelToolGroups.map((group, idx) => (
+                <ToolGroupPanel
+                  key={`panel-tools-${idx}`}
+                  group={group}
+                  onDecision={onToolDecision}
+                  embedded
+                />
+              ))}
+            </div>
+          ) : null}
+          {panelLiveToolParts.length > 0 ? (
+            <LiveToolPartsBlock
+              parts={panelLiveToolParts}
+              onToolDecision={onToolDecision}
+              testId="subagent-panel-live-tools"
             />
-          ))}
-        </div>
-      ) : null}
-      {panelToolGroups.length > 0 ? (
-        <div className="mt-2 space-y-1" data-testid="subagent-panel-tools">
-          {panelToolGroups.map((group, idx) => (
-            <ToolGroupPanel
-              key={`panel-tools-${idx}`}
-              group={group}
-              onDecision={onToolDecision}
-              embedded
+          ) : null}
+          {singleAgentFlat ? (
+            <SingleAgentContent
+              section={sections[0]!}
+              webSearchGroups={webSearchBySubagentId?.get(sections[0]!.subagentId)}
+              toolGroups={toolGroupsBySubagentId?.get(sections[0]!.subagentId)}
+              liveToolParts={liveToolPartsBySubagentId?.get(sections[0]!.subagentId)}
+              onToolDecision={onToolDecision}
             />
-          ))}
-        </div>
-      ) : null}
-      {panelLiveToolParts.length > 0 ? (
-        <LiveToolPartsBlock
-          parts={panelLiveToolParts}
-          onToolDecision={onToolDecision}
-          testId="subagent-panel-live-tools"
-        />
-      ) : null}
-      {singleAgentFlat ? (
-        <SingleAgentContent
-          section={sections[0]!}
-          webSearchGroups={webSearchBySubagentId?.get(sections[0]!.subagentId)}
-          toolGroups={toolGroupsBySubagentId?.get(sections[0]!.subagentId)}
-          liveToolParts={liveToolPartsBySubagentId?.get(sections[0]!.subagentId)}
-          onToolDecision={onToolDecision}
-        />
-      ) : (
-        <ul className="mt-2 flex flex-col gap-1.5">
-          {sections.map((section) => (
-            <li key={section.subagentId} className="list-none">
-              <SubagentRow
-                section={section}
-                webSearchGroups={webSearchBySubagentId?.get(section.subagentId)}
-                toolGroups={toolGroupsBySubagentId?.get(section.subagentId)}
-                liveToolParts={liveToolPartsBySubagentId?.get(section.subagentId)}
-                onToolDecision={onToolDecision}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
+          ) : (
+            <ul className="mt-2 flex flex-col gap-1.5">
+              {sections.map((section) => (
+                <li key={section.subagentId} className="list-none">
+                  <SubagentRow
+                    section={section}
+                    webSearchGroups={webSearchBySubagentId?.get(section.subagentId)}
+                    toolGroups={toolGroupsBySubagentId?.get(section.subagentId)}
+                    liveToolParts={liveToolPartsBySubagentId?.get(section.subagentId)}
+                    onToolDecision={onToolDecision}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   );
 }

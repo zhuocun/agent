@@ -354,7 +354,7 @@ export function ModelModePicker({
             </button>
           }
         />
-        <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col gap-3 overflow-hidden px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
+        <DialogContent className="flex [--dialog-max-h:80dvh] max-h-[80dvh] min-h-0 flex-col gap-3 overflow-hidden px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
           <DialogHeader className="shrink-0">
             <DialogTitle>Model and reasoning</DialogTitle>
             <DialogDescription className="sr-only">

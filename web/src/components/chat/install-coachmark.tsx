@@ -99,6 +99,7 @@ export function InstallCoachmark(): React.JSX.Element | null {
 
   return (
     <div
+      data-testid="install-coachmark"
       role="status"
       aria-live="polite"
       className={cn(
@@ -108,7 +109,10 @@ export function InstallCoachmark(): React.JSX.Element | null {
         // same offset the toast stack clears), so reuse it here.
         // Clear the composer capsule, AI disclosure, and follow-up chips —
         // 5rem was too tight and the pill overlapped the send field on phones.
-        "bottom-[calc(var(--bottom-inset)+9rem)]",
+        // Park at +13rem so the pill sits above jump-to-latest (+9.5rem, h-11)
+        // — both are z-30 and the coachmark mounts after app children in
+        // layout.tsx, so any vertical overlap would steal taps from the button.
+        "bottom-[calc(var(--bottom-inset)+13rem)]",
         "mx-auto flex max-w-md items-center gap-3 rounded-2xl",
         // `glass-regular` supplies the translucent material: saturated/
         // contrasted backdrop-filter, the inset hairline rim, the top highlight,

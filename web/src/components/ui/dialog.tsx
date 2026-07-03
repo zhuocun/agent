@@ -94,7 +94,9 @@ function DialogContent({
     isMobile && keyboardInset > 0
       ? {
           bottom: keyboardInset,
-          maxHeight: `calc(90dvh - ${keyboardInset}px)`,
+          // Respect each sheet's own cap (`--dialog-max-h`, default 90dvh) so
+          // an inline lift does not override Tailwind max-h-[80dvh] ceilings.
+          maxHeight: `calc(min(90dvh, var(--dialog-max-h, 90dvh)) - ${keyboardInset}px)`,
         }
       : undefined
 
@@ -118,7 +120,7 @@ function DialogContent({
           // bottom, rounded top only, capped height, home-indicator-safe bottom
           // padding. Slides up/down with iOS sheet easing.
           "glass-strong fixed inset-x-0 bottom-0 z-50 grid w-full gap-4 rounded-t-3xl rounded-b-none p-6 pb-[max(env(safe-area-inset-bottom),1rem)] text-foreground",
-          "max-h-[90dvh] transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
+          "[--dialog-max-h:90dvh] max-h-[90dvh] transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
           // Desktop (sm+): restore the centered modal — reset the sheet anchor,
           // radius and slide, and swap back to the scale+fade transition. The
           // centering -translate keeps composing with scale during the anim.

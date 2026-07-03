@@ -450,14 +450,12 @@ export function AssistantMessage({
               {isStopped ? <StoppedChip /> : null}
             </div>
           ) : null}
-          {/* iOS-native progressive disclosure: the toolbar is hidden at rest
-              on every pointer (no more permanently-painted 5-icon strip on
-              touch). It reveals on focus-within (keyboard), on hover (desktop
-              mouse), or when the message is tapped active (touch). Kept as
-              an opacity-only transition — pointer-events stay auto so the
-              overflow button remains hit-testable by Playwright without a
-              prior synthetic hover, matching the desktop pattern before this
-              redesign. */}
+          {/* iOS-native progressive disclosure: visible at rest on touch;
+              hidden at rest on md+ pointer-fine, revealed on hover/focus/active.
+              Tap-to-activate (handleToggleActive) still toggles group-data-
+              [active=true] on coarse pointers for parity with the hover path.
+              Opacity-only transition — pointer-events stay auto so toolbar
+              buttons remain hit-testable without a prior synthetic hover. */}
           <div className="flex flex-wrap items-center gap-2 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
             <MessageActions
               text={effectiveAnswerText}

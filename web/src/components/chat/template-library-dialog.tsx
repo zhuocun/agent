@@ -369,7 +369,7 @@ export function TemplateLibraryDialog({
 }: TemplateLibraryDialogProps): JSX.Element {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh]">
+      <DialogContent className="flex [--dialog-max-h:80dvh] max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh]">
         {open ? <TemplateLibraryBody active={open} /> : null}
       </DialogContent>
     </Dialog>

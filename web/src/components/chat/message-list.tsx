@@ -408,7 +408,7 @@ export function MessageList({
           it out of the tab order and from intercepting taps. 44pt (size-11)
           meets the iOS touch-target floor; icon-only by design. */}
       {/* Jump-to-latest anchor: clears the two-row composer card (~9rem of
-          bottom chrome; install-coachmark uses +9rem, list `pb` uses +12rem).
+          bottom chrome; install-coachmark uses +13rem, list `pb` uses +12rem).
           Mobile parks the pill on the trailing edge at the same +9.5rem float;
           md+ keeps the centered +9.5rem placement above the composer gap. */}
       <div

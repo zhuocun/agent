@@ -1032,7 +1032,7 @@ export function SettingsDialog({
           bottom padding, swipe-to-dismiss) and reverts to the centered modal at
           sm:. We keep the 80dvh cap here so the glass surface breathes a touch
           more than the default 90dvh on the settings panel. */}
-      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh] sm:max-w-3xl">
+      <DialogContent className="flex [--dialog-max-h:80dvh] max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh] sm:max-w-3xl">
         <DialogHeader className="shrink-0 space-y-0.5 pb-0 md:space-y-1.5 md:pb-2">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>

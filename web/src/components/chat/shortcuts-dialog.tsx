@@ -380,7 +380,7 @@ export function ShortcutsDialog({
       {/* Bottom sheet on mobile (base default); cap width only at sm+ so the
           mobile sheet stays full-width. Home-indicator-safe bottom padding is
           provided by the base DialogContent. */}
-      <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh] sm:max-w-md">
+      <DialogContent className="flex [--dialog-max-h:80dvh] max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh] sm:max-w-md">
         {open ? <ShortcutsBody {...bodyProps} /> : null}
       </DialogContent>
     </Dialog>

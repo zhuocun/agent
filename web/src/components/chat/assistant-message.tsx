@@ -431,46 +431,49 @@ export function AssistantMessage({
 
       {isFinal && !isErrored ? (
         <div className="space-y-2 pt-1">
-          {message.attribution || isStopped ? (
-            // Unified footer byline: served-model attribution, optional Spend
-            // hub link, MemoryUsed / Stopped indicators share one grammar.
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              {message.attribution ? (
-                <AttributionRow attribution={message.attribution} />
-              ) : null}
-              {message.attribution ? (
-                <ViewSpendChip onOpen={onViewSpend} />
-              ) : null}
-              {message.attribution?.memoryApplied ? (
-                <MemoryUsedChip
-                  count={message.attribution.memoryApplied}
-                  onOpen={onMemoryOpen}
-                />
-              ) : null}
-              {isStopped ? <StoppedChip /> : null}
+          {/* Single-row footer: the always-visible metadata byline
+              (served-model attribution, optional Spend hub link, MemoryUsed /
+              Stopped indicators — one shared grammar) sits left; the
+              hover-revealed action toolbar is pushed right by ml-auto. Each
+              metadata child is guarded on its own so the row degrades cleanly
+              to just the toolbar when there's no attribution. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {message.attribution ? (
+              <AttributionRow attribution={message.attribution} />
+            ) : null}
+            {message.attribution ? (
+              <ViewSpendChip onOpen={onViewSpend} />
+            ) : null}
+            {message.attribution?.memoryApplied ? (
+              <MemoryUsedChip
+                count={message.attribution.memoryApplied}
+                onOpen={onMemoryOpen}
+              />
+            ) : null}
+            {isStopped ? <StoppedChip /> : null}
+            {/* iOS-native progressive disclosure, scoped to the action cluster
+                only (metadata stays visible at rest): hidden at rest on md+
+                pointer-fine, revealed on hover/focus/active. Tap-to-activate
+                (handleToggleActive) still toggles group-data-[active=true] on
+                coarse pointers for parity with the hover path. Opacity-only
+                transition — pointer-events stay auto so toolbar buttons remain
+                hit-testable without a prior synthetic hover. */}
+            <div className="ml-auto flex flex-wrap items-center gap-2 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
+              <MessageActions
+                text={effectiveAnswerText}
+                feedback={message.feedback ?? null}
+                canBranch={canBranch}
+                isBranching={isBranching}
+                canRegenerate={canRegenerate}
+                canContinue={canContinue && isStopped}
+                onBranch={onBranch}
+                onRegenerate={onRegenerate}
+                onRegenerateWith={onRegenerateWith}
+                regenerateOptions={regenerateOptions}
+                onContinue={onContinue}
+                onFeedback={onFeedback}
+              />
             </div>
-          ) : null}
-          {/* iOS-native progressive disclosure: visible at rest on touch;
-              hidden at rest on md+ pointer-fine, revealed on hover/focus/active.
-              Tap-to-activate (handleToggleActive) still toggles group-data-
-              [active=true] on coarse pointers for parity with the hover path.
-              Opacity-only transition — pointer-events stay auto so toolbar
-              buttons remain hit-testable without a prior synthetic hover. */}
-          <div className="flex flex-wrap items-center gap-2 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
-            <MessageActions
-              text={effectiveAnswerText}
-              feedback={message.feedback ?? null}
-              canBranch={canBranch}
-              isBranching={isBranching}
-              canRegenerate={canRegenerate}
-              canContinue={canContinue && isStopped}
-              onBranch={onBranch}
-              onRegenerate={onRegenerate}
-              onRegenerateWith={onRegenerateWith}
-              regenerateOptions={regenerateOptions}
-              onContinue={onContinue}
-              onFeedback={onFeedback}
-            />
           </div>
           {/* Heuristic follow-up chips (T11): only on the trailing, cleanly
               finished turn so a long thread doesn't sprout suggestions under
@@ -587,6 +590,9 @@ function MemoryUsedChip({
         "inline-flex items-center gap-1 text-xs text-muted-foreground/80",
         "outline-none transition-colors hover:text-foreground",
         "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+        // 44pt touch floor on coarse pointers, parity with ViewSpendChip;
+        // visual size unchanged on desktop.
+        "min-h-11 py-2 -my-2 md:min-h-0 md:py-0 md:my-0",
       )}
     >
       <Brain aria-hidden className="size-3" />

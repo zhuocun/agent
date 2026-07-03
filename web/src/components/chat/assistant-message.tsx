@@ -5,7 +5,6 @@ import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
-  BarChart3,
   Brain,
   CircleStop,
   Loader2,
@@ -97,7 +96,6 @@ interface AssistantMessageProps {
   // Gate the follow-up chips to a single message (the trailing assistant turn)
   // so a long thread doesn't sprout chips under every answer.
   showFollowUps?: boolean;
-  onViewSpend?: () => void;
   // Open the Memory manager (D19). Wired to the "Memory used here" chip that
   // appears when this turn injected saved facts.
   onMemoryOpen?: () => void;
@@ -170,7 +168,6 @@ export function AssistantMessage({
   onFeedback,
   onFollowUp,
   showFollowUps,
-  onViewSpend,
   onMemoryOpen,
   defaultReasoningOpen = false,
   error,
@@ -432,17 +429,14 @@ export function AssistantMessage({
       {isFinal && !isErrored ? (
         <div className="space-y-2 pt-1">
           {/* Single-row footer: the always-visible metadata byline
-              (served-model attribution, optional Spend hub link, MemoryUsed /
-              Stopped indicators — one shared grammar) sits left; the
+              (served-model attribution, MemoryUsed / Stopped indicators —
+              one shared grammar) sits left; the
               hover-revealed action toolbar is pushed right by ml-auto. Each
               metadata child is guarded on its own so the row degrades cleanly
               to just the toolbar when there's no attribution. */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             {message.attribution ? (
               <AttributionRow attribution={message.attribution} />
-            ) : null}
-            {message.attribution ? (
-              <ViewSpendChip onOpen={onViewSpend} />
             ) : null}
             {message.attribution?.memoryApplied ? (
               <MemoryUsedChip
@@ -542,27 +536,6 @@ function StoppedChip() {
   );
 }
 
-function ViewSpendChip({ onOpen }: { onOpen?: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label="View spend. Opens spend analytics in settings."
-      data-testid="assistant-spend-link"
-      className={cn(
-        "inline-flex items-center gap-1 text-xs text-muted-foreground/80",
-        "outline-none transition-colors hover:text-foreground",
-        "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
-        // 44pt touch floor on coarse pointers; visual size unchanged on desktop.
-        "min-h-11 py-2 -my-2 md:min-h-0 md:py-0 md:my-0",
-      )}
-    >
-      <BarChart3 aria-hidden className="size-3" />
-      <span>View spend</span>
-    </button>
-  );
-}
-
 // "Memory used here" indicator (D19): shown when this turn injected saved facts.
 // Turn-level (not per-fact) attribution is the v1 scope. Clicking opens the
 // Memory manager so the user can review/edit exactly what the assistant can see.
@@ -590,8 +563,7 @@ function MemoryUsedChip({
         "inline-flex items-center gap-1 text-xs text-muted-foreground/80",
         "outline-none transition-colors hover:text-foreground",
         "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
-        // 44pt touch floor on coarse pointers, parity with ViewSpendChip;
-        // visual size unchanged on desktop.
+        // 44pt touch floor on coarse pointers; visual size unchanged on desktop.
         "min-h-11 py-2 -my-2 md:min-h-0 md:py-0 md:my-0",
       )}
     >

@@ -19,5 +19,25 @@ export default function manifest(): MetadataRoute.Manifest {
     // export in layout.tsx. Keep this the light surface.
     theme_color: "#f9fafc",
     categories: ["productivity", "utilities"],
+    icons: [
+      {
+        src: "/icon-192.png",
+        sizes: "192x192",
+        type: "image/png",
+        purpose: "any",
+      },
+      {
+        src: "/icon-512.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "any",
+      },
+      {
+        src: "/icon-512-maskable.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "maskable",
+      },
+    ],
   };
 }

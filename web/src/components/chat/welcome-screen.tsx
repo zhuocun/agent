@@ -117,7 +117,7 @@ export function WelcomeScreen({
           <button
             type="button"
             onClick={onConnect}
-            className="animate-welcome-enter glass-clear mb-7 inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-medium tracking-wide text-muted-foreground transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/5 [@media(hover:hover)]:hover:text-foreground active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="animate-welcome-enter glass-clear mb-5 inline-flex min-h-11 items-center gap-1.5 rounded-full px-4 py-2.5 text-xs font-medium tracking-wide text-muted-foreground transition-colors duration-200 ease-out md:mb-7 md:min-h-0 md:py-1.5 [@media(hover:hover)]:hover:bg-foreground/5 [@media(hover:hover)]:hover:text-foreground active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={{ animationDelay: "0ms" }}
           >
             Connect your API key
@@ -130,7 +130,7 @@ export function WelcomeScreen({
             ships weight 400 only, so font-normal is structural, not stylistic.
             text-balance keeps two-line personalized greetings ragged-even. */}
         <h2
-          className="animate-welcome-enter font-heading text-5xl font-normal tracking-tight text-balance text-foreground md:text-6xl lg:text-7xl"
+          className="animate-welcome-enter font-heading text-4xl font-normal tracking-tight text-balance text-foreground min-[400px]:text-5xl md:text-6xl lg:text-7xl"
           style={{ animationDelay: "40ms" }}
         >
           {heading}
@@ -151,7 +151,7 @@ export function WelcomeScreen({
         {bootstrapPrompts || fallbackPrompts ? (
         <ul
           aria-label="Suggested prompts"
-          className="mt-10 flex w-full flex-wrap items-center justify-center gap-2.5 md:mt-12"
+          className="mt-6 flex w-full flex-wrap items-center justify-center gap-2 min-[400px]:mt-8 min-[400px]:gap-2.5 md:mt-12"
         >
           {bootstrapPrompts
             ? bootstrapPrompts.map((s, index) => {

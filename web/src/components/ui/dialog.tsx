@@ -5,6 +5,7 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 
 import { cn } from "@/lib/utils"
 import { useSwipeDismiss } from "@/lib/use-swipe-dismiss"
+import { useVisualViewport } from "@/lib/use-visual-viewport"
 import { XIcon } from "lucide-react"
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
@@ -84,6 +85,19 @@ function DialogContent({
     onDismiss: () => closeRef.current?.click(),
   })
 
+  // The mobile sheet is bottom-pinned, so the iOS software keyboard (which does
+  // NOT shrink dvh) slides up *over* focused inputs. Lift the whole sheet by
+  // the measured keyboard inset and trim that much off its max-height, so form
+  // fields stay visible above the keyboard. Desktop (sm+) is unaffected.
+  const { keyboardInset } = useVisualViewport()
+  const mobileKeyboardStyle =
+    isMobile && keyboardInset > 0
+      ? {
+          bottom: keyboardInset,
+          maxHeight: `calc(90dvh - ${keyboardInset}px)`,
+        }
+      : undefined
+
   return (
     <DialogPortal>
       <DialogBackdrop />
@@ -97,6 +111,7 @@ function DialogContent({
             "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
           WebkitBackdropFilter:
             "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
+          ...mobileKeyboardStyle,
         }}
         className={cn(
           // Mobile (default): iOS bottom sheet — full width, pinned to the

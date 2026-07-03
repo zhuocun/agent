@@ -354,15 +354,15 @@ export function ModelModePicker({
             </button>
           }
         />
-        <DialogContent className="max-h-[80dvh] gap-3 px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col gap-3 overflow-hidden px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Model and reasoning</DialogTitle>
             <DialogDescription className="sr-only">
               Choose which capability tier and reasoning effort answer your next
               message.
             </DialogDescription>
           </DialogHeader>
-          <div className="-mx-1 flex flex-col gap-4 overflow-y-auto">
+          <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain">
             {/* Tier leads on mobile too, and is the ONLY section shown by
                 default. The full description rides only on the selected row; the
                 rest carry the compact model meta. */}

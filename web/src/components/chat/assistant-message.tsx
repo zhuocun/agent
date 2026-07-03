@@ -458,7 +458,7 @@ export function AssistantMessage({
               overflow button remains hit-testable by Playwright without a
               prior synthetic hover, matching the desktop pattern before this
               redesign. */}
-          <div className="flex flex-wrap items-center gap-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
+          <div className="flex flex-wrap items-center gap-2 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
             <MessageActions
               text={effectiveAnswerText}
               feedback={message.feedback ?? null}
@@ -552,6 +552,8 @@ function ViewSpendChip({ onOpen }: { onOpen?: () => void }) {
         "inline-flex items-center gap-1 text-xs text-muted-foreground/80",
         "outline-none transition-colors hover:text-foreground",
         "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+        // 44pt touch floor on coarse pointers; visual size unchanged on desktop.
+        "min-h-11 py-2 -my-2 md:min-h-0 md:py-0 md:my-0",
       )}
     >
       <BarChart3 aria-hidden className="size-3" />

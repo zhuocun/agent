@@ -181,7 +181,7 @@ export function AuthDialog({
               aria-invalid={error !== null}
               aria-describedby={error ? errorId : undefined}
               placeholder="you@example.com"
-              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50"
+              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50 md:text-sm"
             />
           </div>
 
@@ -204,7 +204,7 @@ export function AuthDialog({
                 aria-invalid={error !== null}
                 aria-describedby={error ? errorId : undefined}
                 placeholder="••••••••"
-                className="block h-11 w-full rounded-2xl bg-muted/50 pl-3 pr-14 text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50"
+                className="block h-11 w-full rounded-2xl bg-muted/50 pl-3 pr-14 text-base text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50 md:text-sm"
               />
               <button
                 type="button"

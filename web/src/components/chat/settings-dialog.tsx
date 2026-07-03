@@ -414,7 +414,7 @@ function BudgetEditor({
             placeholder="No cap"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="budget-cap-input"
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-sm tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
         </div>
         <Button
@@ -493,7 +493,7 @@ function PerConversationBudgetEditor({
             placeholder="No cap"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="conversation-cap-input"
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-sm tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
         </div>
         <Button
@@ -707,7 +707,7 @@ function ProjectInstructionsEditor({
           if (draft !== value) onCommit(draft);
         }}
         data-testid="project-instructions-input"
-        className="min-h-24 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+        className="min-h-24 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
         placeholder="Context, tone, or constraints shared across this project"
       />
       <div className="text-right font-mono text-2xs tabular-nums text-muted-foreground">
@@ -766,7 +766,7 @@ function ProjectBudgetEditor({
             placeholder="Inherit"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="project-cap-input"
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-sm tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
         </div>
         <Button
@@ -1033,7 +1033,7 @@ export function SettingsDialog({
           sm:. We keep the 80dvh cap here so the glass surface breathes a touch
           more than the default 90dvh on the settings panel. */}
       <DialogContent className="flex max-h-[80dvh] min-h-0 flex-col overflow-hidden sm:max-h-[85dvh] sm:max-w-3xl">
-        <DialogHeader className="shrink-0">
+        <DialogHeader className="shrink-0 space-y-0.5 pb-0 md:space-y-1.5 md:pb-2">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
             Account, appearance, and preferences.
@@ -1043,10 +1043,13 @@ export function SettingsDialog({
         {/* Mobile drill-down list — iOS Settings-style grouped rows. Shown only
             below md when no tab content is active (mobileShowList). */}
         {!isDesktop && mobileShowList ? (
-          <nav aria-label="Settings sections" className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+          <nav
+            aria-label="Settings sections"
+            className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pb-1 md:space-y-4"
+          >
             {SETTINGS_TAB_GROUPS.map((group) => (
-              <div key={group.id} className="space-y-1">
-                <span className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              <div key={group.id} className="space-y-0.5 md:space-y-1">
+                <span className="px-1 text-2xs font-semibold tracking-wide text-muted-foreground uppercase md:text-xs">
                   {group.label}
                 </span>
                 <div className="overflow-hidden rounded-xl border border-border/60 bg-secondary/30">
@@ -1059,7 +1062,7 @@ export function SettingsDialog({
                         data-testid={tab.testId}
                         onClick={() => selectTab(tab.id)}
                         className={cn(
-                          "flex w-full items-center gap-3 px-4 py-3 text-left text-sm font-medium text-foreground transition-colors active:bg-secondary/60",
+                          "flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-medium text-foreground transition-colors active:bg-secondary/60 md:py-3",
                           tabIndex > 0 && "border-t border-border/40",
                         )}
                       >
@@ -1411,7 +1414,7 @@ export function SettingsDialog({
                     setCustomInstructionsDraft(event.currentTarget.value)
                   }
                   onBlur={commitCustomInstructions}
-                  className="min-h-28 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-sm leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25"
+                  className="min-h-28 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
                   placeholder="Preferred tone, formatting, and context for future chats"
                 />
                 <div className="text-right font-mono text-2xs tabular-nums text-muted-foreground">

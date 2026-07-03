@@ -43,6 +43,7 @@ function isIosSafariTab(): boolean {
 export function InstallCoachmark(): React.JSX.Element | null {
   const [visible, setVisible] = useState(false);
   const [welcomeRailVisible, setWelcomeRailVisible] = useState(false);
+  const [shortViewport, setShortViewport] = useState(false);
 
   useEffect(() => {
     if (!isIosSafariTab()) return;
@@ -54,6 +55,17 @@ export function InstallCoachmark(): React.JSX.Element | null {
     // Defer a beat so the hint does not race the first paint of the chat.
     const t = window.setTimeout(() => setVisible(true), 1200);
     return () => window.clearTimeout(t);
+  }, []);
+
+  // Hide on short viewports where the fixed pill would crowd the composer and
+  // follow-up chips once the welcome rail unmounts (iPhone SE 320×568).
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-height: 599px)");
+    const sync = (): void => setShortViewport(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
   }, []);
 
   // Track the welcome suggestion rail so the coachmark yields the bottom of the
@@ -83,7 +95,7 @@ export function InstallCoachmark(): React.JSX.Element | null {
     }
   };
 
-  if (!visible || welcomeRailVisible) return null;
+  if (!visible || welcomeRailVisible || shortViewport) return null;
 
   return (
     <div

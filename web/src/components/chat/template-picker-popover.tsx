@@ -135,8 +135,8 @@ export function TemplatePickerPopover({
               role="option"
               aria-selected={isSelected}
               onMouseEnter={() => onSelectedIndexChange(index)}
-              onMouseDown={(e) => {
-                // mousedown beats the textarea's blur, which would unmount the
+              onPointerDown={(e) => {
+                // pointerdown beats the textarea's blur, which would unmount the
                 // popover before the click resolved.
                 e.preventDefault();
                 onPick(template);

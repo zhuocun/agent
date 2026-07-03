@@ -46,6 +46,16 @@ Stay local only for genuinely tiny or tightly coupled work, and for the immediat
 
 Prefer one subagent per distinct subtask. **Maximize concurrency: run independent work in parallel rather than serializing it.** Bias toward spawning earlier rather than waiting for local exploration to finish, and launch concurrent subagents as early as dependencies allow — never hold back a strand that does not depend on one still in flight. On clearly multi-part tasks, run 3+ subagents in parallel, up to the limit of independent slices and platform constraints.
 
+## Subagent source
+
+Where a subagent comes from is a per-dispatch decision. Pick the source with the first rule that fits your platform; **Model selection** still governs its model and reasoning config:
+
+1. Claude Code or Codex platform: use the platform's own native subagents — Claude Code dispatches agents under `.claude/agents/` via its agent/Task tool; Codex dispatches its native subagents under `.codex/agents/`. This is top priority.
+2. Cursor or any other platform: probe for a headless CLI (`command -v claude`, `command -v codex`). If present, spawning it is the primary source — `claude -p "<prompt>"` for Claude Code, `codex exec "<prompt>"` for Codex.
+3. Neither CLI available: fall back to the platform's own subagent mechanism.
+
+A headless CLI spawn needs working auth in that environment (a prior login or the relevant API key env var); if the CLI is present but unauthenticated, treat it as unavailable and fall back.
+
 ## Reviewer
 
 After each worker returns, dispatch its output to a fresh reviewer subagent before integrating. Reviewers run in parallel across multiple worker outputs.
@@ -97,8 +107,8 @@ Platform-cap exception: if the platform forbids concurrent agents from using the
 
 Worker model: mid-tier — cheaper or faster than the orchestrator, never a forbidden tier. The worker must differ from the orchestrator in either model or reasoning budget. Apply the rule that fits your platform:
 
-1. Anthropic / OpenAI: step down one tier in the same family (Opus → Sonnet; top-tier GPT → next-tier non-mini GPT).
-2. Cursor: choose the best Composer model.
+1. Anthropic / OpenAI: step down one tier in the same family (Opus → Sonnet; top-tier GPT → next-tier non-mini GPT). This also covers subagents spawned as Claude Code / Codex CLIs per **Subagent source**, wherever the orchestrator runs.
+2. Cursor, when the work runs on Cursor's own subagents (**Subagent source** rule 3): choose the best Composer model.
 3. Fallback (no acceptable lower tier exists in your family): keep the orchestrator's model but drop the reasoning budget by at least one level (e.g. high → medium).
 
 Reasoning budget: moderate for sidecar/exploration/lookup work; high for implementation or integration-sensitive code paths. Pick the fastest setting that still meets the quality bar; escalate only when correctness is at risk.

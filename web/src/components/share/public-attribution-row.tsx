@@ -55,7 +55,7 @@ export function PublicAttributionRow({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-sm text-muted-foreground"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 font-sans ui-caption text-muted-foreground"
       data-testid="public-attribution"
       aria-label={ariaLabel}
     >
@@ -70,7 +70,7 @@ export function PublicAttributionRow({
       {isByok ? (
         <span
           className={cn(
-            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
+            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 ui-caption",
             "bg-byok-indicator text-byok-indicator-foreground",
           )}
         >

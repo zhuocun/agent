@@ -166,9 +166,9 @@ export function TemplateLibraryBody({
     <div data-testid="template-dialog" className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-col gap-1.5 text-center sm:text-left">
         <h2 className="text-lg leading-none font-semibold">Prompt templates</h2>
-        <p className="text-sm text-muted-foreground">
+        <p className="ui-body text-muted-foreground">
           Reusable prompts you can drop into the composer. Use{" "}
-          <code className="font-mono text-xs">{"{{placeholders}}"}</code> for the
+          <code className="font-mono ui-caption">{"{{placeholders}}"}</code> for the
           parts you fill in each time.
         </p>
       </div>
@@ -178,7 +178,7 @@ export function TemplateLibraryBody({
           <div className="space-y-2">
             <label
               htmlFor="template-add-title"
-              className="text-sm font-medium"
+              className="ui-list-row font-medium"
             >
               Add a template
             </label>
@@ -227,7 +227,7 @@ export function TemplateLibraryBody({
           </div>
 
           {error ? (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="ui-body text-destructive">
               {error}
             </p>
           ) : null}
@@ -235,9 +235,9 @@ export function TemplateLibraryBody({
           {/* The library */}
           <section className="space-y-2">
             {loading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
+              <p className="ui-body text-muted-foreground">Loading…</p>
             ) : showEmpty ? (
-              <p className="text-sm text-muted-foreground">
+              <p className="ui-body text-muted-foreground">
                 No templates yet. Add one above, and it&apos;ll appear here.
               </p>
             ) : (
@@ -313,15 +313,15 @@ export function TemplateLibraryBody({
                           className="mt-0.5 size-4 shrink-0 text-muted-foreground"
                         />
                         <div className="min-w-0 flex-1 space-y-0.5">
-                          <p className="text-sm font-medium break-words">
+                          <p className="ui-list-row font-medium break-words">
                             {template.title}
                           </p>
                           {template.description ? (
-                            <p className="text-xs text-muted-foreground break-words">
+                            <p className="ui-caption text-muted-foreground break-words">
                               {template.description}
                             </p>
                           ) : null}
-                          <p className="text-sm break-words whitespace-pre-wrap text-muted-foreground">
+                          <p className="ui-body break-words whitespace-pre-wrap text-muted-foreground">
                             {template.body}
                           </p>
                         </div>

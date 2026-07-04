@@ -82,7 +82,7 @@ function StatusHeader() {
         aria-label="Olune home"
       >
         <span className="text-base font-semibold tracking-tight">Olune</span>
-        <span className="hidden text-sm text-muted-foreground sm:inline">
+        <span className="hidden ui-body text-muted-foreground sm:inline">
           · status
         </span>
       </Link>
@@ -92,7 +92,7 @@ function StatusHeader() {
           nativeButton={false}
           render={<Link href="/" />}
           variant="secondary"
-          className="h-11 rounded-full px-3.5 text-sm sm:h-9"
+          className="h-11 rounded-full px-3.5 ui-list-row sm:h-9"
         >
           Back to chat
         </Button>
@@ -127,7 +127,7 @@ function StatusBody({ status }: { status: PlatformStatus }) {
               ? "Some requests are failing"
               : "All systems operational"}
           </h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="ui-body text-muted-foreground">
             {degraded
               ? "We're seeing an elevated error rate on recent requests. You may hit failures or retries — we're on it."
               : "Recent requests are completing normally. There are no known platform issues right now."}
@@ -135,7 +135,7 @@ function StatusBody({ status }: { status: PlatformStatus }) {
         </div>
       </div>
 
-      <dl className="mt-6 grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
+      <dl className="mt-6 grid grid-cols-2 gap-4 ui-body sm:grid-cols-3">
         <div>
           <dt className="text-muted-foreground">Sample window</dt>
           <dd className="mt-0.5 font-medium tabular-nums">
@@ -156,7 +156,7 @@ function StatusBody({ status }: { status: PlatformStatus }) {
         </div>
       </dl>
 
-      <p className="mt-6 text-xs text-muted-foreground">
+      <p className="mt-6 ui-caption text-muted-foreground">
         Updated {formatTimestamp(status.updatedAt)}. This page reflects
         platform-wide health derived from recent traffic, not your individual
         account.
@@ -184,7 +184,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
         <h1 className="text-lg font-semibold tracking-tight">
           Couldn&apos;t load platform status
         </h1>
-        <p className="mx-auto max-w-sm text-sm text-muted-foreground">
+        <p className="mx-auto max-w-sm ui-body text-muted-foreground">
           Something went wrong reaching the server. Check your connection and
           try again.
         </p>
@@ -193,7 +193,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
         type="button"
         variant="secondary"
         onClick={onRetry}
-        className="h-10 rounded-full px-4 text-sm"
+        className="h-10 rounded-full px-4 ui-list-row"
       >
         <RotateCw aria-hidden className="size-4" />
         <span>Try again</span>

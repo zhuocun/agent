@@ -225,7 +225,7 @@ export function UserMessage({
               type="button"
               variant="ghost"
               onClick={cancelEdit}
-              className="h-11 rounded-full px-4 text-sm text-muted-foreground hover:text-foreground"
+              className="h-11 rounded-full px-4 ui-list-row text-muted-foreground hover:text-foreground"
             >
               Cancel
             </Button>
@@ -236,13 +236,13 @@ export function UserMessage({
               aria-label="Save and resubmit"
               // Brand fill (matching the composer's primary send) so "submit a
               // turn" has one consistent primary color across the surface.
-              className="h-11 rounded-full bg-brand px-4 text-sm text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
+              className="h-11 rounded-full bg-brand px-4 ui-list-row text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
             >
               Save
             </Button>
           </div>
           {editSaveFailed ? (
-            <p className="text-right text-xs text-destructive" role="alert">
+            <p className="text-right ui-caption text-destructive" role="alert">
               Couldn&apos;t save — try again
             </p>
           ) : null}
@@ -277,7 +277,7 @@ export function UserMessage({
             {attachments.map((attachment) => (
               <span
                 key={attachment.id}
-                className="inline-flex h-8 max-w-full items-center gap-2 rounded-full bg-background/45 px-3 text-xs leading-none text-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]"
+                className="inline-flex h-8 max-w-full items-center gap-2 rounded-full bg-background/45 px-3 ui-caption leading-none text-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]"
                 title="File content was used for this request only and is not stored."
                 aria-label={`${attachment.name}, ${formatAttachmentSize(
                   attachment.sizeBytes,

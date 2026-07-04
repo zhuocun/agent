@@ -43,7 +43,7 @@ function retentionPhrase(policy: ProviderDataPolicy): string {
 
 function SectionHeading({ children }: { children: string }): JSX.Element {
   return (
-    <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+    <h3 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
       {children}
     </h3>
   );
@@ -61,7 +61,7 @@ function Capability({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 text-xs",
+        "inline-flex items-center gap-1 ui-caption",
         on ? "text-foreground" : "text-muted-foreground/60",
       )}
     >
@@ -85,7 +85,7 @@ function PolicyBlock({
     // never fabricate a guess (PRD 07 §5).
     return (
       <p
-        className="text-xs text-muted-foreground"
+        className="ui-caption text-muted-foreground"
         data-testid="policy-unavailable"
       >
         Data policy unavailable for this route.
@@ -94,7 +94,7 @@ function PolicyBlock({
   }
   return (
     <div className="space-y-1.5" data-testid="data-policy">
-      <p className="flex items-center gap-1.5 text-xs font-medium">
+      <p className="flex items-center gap-1.5 ui-caption font-medium">
         {policy.trainsOnData ? (
           <ShieldOff aria-hidden className="size-3.5 text-warning" />
         ) : (
@@ -102,7 +102,7 @@ function PolicyBlock({
         )}
         {policy.policyLabel}
       </p>
-      <ul className="grid grid-cols-1 gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+      <ul className="grid grid-cols-1 gap-1 ui-caption text-muted-foreground sm:grid-cols-2">
         <li className="flex items-center gap-1.5">
           <Database aria-hidden className="size-3 shrink-0" />
           Data residency: {policy.dataResidency}
@@ -131,9 +131,9 @@ function TierRow({ tier }: { tier: ModelDirectoryTier }): JSX.Element {
       data-testid="directory-tier"
     >
       <div className="flex min-w-0 items-center gap-2">
-        <span className="text-sm font-medium capitalize">{tier.tierId}</span>
+        <span className="ui-list-row font-medium capitalize">{tier.tierId}</span>
         {tier.modelLabel ? (
-          <span className="truncate text-xs text-muted-foreground">
+          <span className="truncate ui-caption text-muted-foreground">
             {tier.modelLabel}
           </span>
         ) : null}
@@ -160,7 +160,7 @@ function ProviderCard({
       data-provider={entry.providerId}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-sm font-semibold">{entry.label}</h3>
+        <h3 className="ui-list-row font-semibold">{entry.label}</h3>
         <Badge variant={status.variant}>{status.label}</Badge>
         {entry.defaultRouteEligible ? (
           <Badge variant="outline">Default-eligible</Badge>
@@ -176,7 +176,7 @@ function ProviderCard({
           ))}
         </ul>
       ) : (
-        <p className="border-t border-border/50 pt-2 text-xs text-muted-foreground">
+        <p className="border-t border-border/50 pt-2 ui-caption text-muted-foreground">
           No tiers available on this route yet.
         </p>
       )}
@@ -226,7 +226,7 @@ export function ModelDirectoryBody({
         <h2 className="text-lg leading-none font-semibold">
           Models &amp; data policies
         </h2>
-        <p className="text-sm text-muted-foreground">
+        <p className="ui-body text-muted-foreground">
           Compare each provider route&apos;s data handling, capabilities, and
           list prices. Facts come straight from the live model registry.
         </p>
@@ -234,9 +234,9 @@ export function ModelDirectoryBody({
 
       <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-3 overflow-y-auto pr-2 sm:max-h-none">
         {loading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <p className="ui-body text-muted-foreground">Loading…</p>
         ) : error ? (
-          <p role="alert" className="text-sm text-destructive">
+          <p role="alert" className="ui-body text-destructive">
             {error}
           </p>
         ) : (
@@ -269,7 +269,7 @@ function SectionListing({
 }): JSX.Element {
   if (entries.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="ui-body text-muted-foreground">
         No provider routes are configured.
       </p>
     );

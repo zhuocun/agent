@@ -73,7 +73,7 @@ function jurisdictionPhrase(jurisdiction: string | null): string {
 
 function SectionHeading({ children }: { children: string }): JSX.Element {
   return (
-    <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+    <h3 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
       {children}
     </h3>
   );
@@ -160,7 +160,7 @@ export function ActivityBody({
         <h2 className="text-lg leading-none font-semibold">
           Activity &amp; data access
         </h2>
-        <p className="text-sm text-muted-foreground">
+        <p className="ui-body text-muted-foreground">
           A record of sensitive actions on your account, and where your messages
           were processed. Only you can see this.
         </p>
@@ -184,7 +184,7 @@ export function ActivityBody({
                         className="mt-0.5 size-4 shrink-0 text-muted-foreground"
                       />
                       <div className="min-w-0 flex-1 space-y-1">
-                        <p className="text-sm">
+                        <p className="ui-body">
                           <span className="font-medium tabular-nums">
                             {bucket.messageCount}
                           </span>{" "}
@@ -197,7 +197,7 @@ export function ActivityBody({
                             ({bucket.providerLabel})
                           </span>
                         </p>
-                        <p className="text-xs text-muted-foreground">
+                        <p className="ui-caption text-muted-foreground">
                           {bucket.platformCount} on platform key
                           {bucket.isByokCount > 0
                             ? `, ${bucket.isByokCount} on your own key`
@@ -212,7 +212,7 @@ export function ActivityBody({
                 ))}
               </ul>
             ) : (
-              <p className="text-sm text-muted-foreground">
+              <p className="ui-body text-muted-foreground">
                 No processed messages yet. Once you chat, the providers that
                 handled your turns appear here.
               </p>
@@ -235,13 +235,13 @@ export function ActivityBody({
           <section className="space-y-3">
             <SectionHeading>Recent account activity</SectionHeading>
             {loading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
+              <p className="ui-body text-muted-foreground">Loading…</p>
             ) : error ? (
-              <p role="alert" className="text-sm text-destructive">
+              <p role="alert" className="ui-body text-destructive">
                 {error}
               </p>
             ) : showEmptyActivity ? (
-              <p className="text-sm text-muted-foreground">
+              <p className="ui-body text-muted-foreground">
                 No account activity recorded yet.
               </p>
             ) : (
@@ -253,12 +253,12 @@ export function ActivityBody({
                       className="flex items-baseline justify-between gap-3 rounded-xl px-1 py-1.5"
                       data-testid="activity-event"
                     >
-                      <span className="min-w-0 text-sm">
+                      <span className="min-w-0 ui-list-row">
                         {eventLabel(event.eventType)}
                       </span>
                       <time
                         dateTime={event.createdAt}
-                        className="shrink-0 font-mono text-2xs tabular-nums text-muted-foreground"
+                        className="shrink-0 font-mono ui-caption tabular-nums text-muted-foreground"
                       >
                         {formatTimestamp(event.createdAt)}
                       </time>

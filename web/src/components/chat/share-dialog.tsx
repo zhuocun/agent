@@ -185,7 +185,7 @@ export function ShareDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className="ui-body text-muted-foreground">
             Anyone with the link can view this conversation read-only. Costs and
             usage are hidden on the shared view.
           </p>
@@ -193,7 +193,7 @@ export function ShareDialog({
           {shareUrl ? (
             <div className="space-y-3">
               <div className="space-y-1.5">
-                <label htmlFor={urlFieldId} className="text-sm font-medium">
+                <label htmlFor={urlFieldId} className="ui-list-row font-medium">
                   Public link
                 </label>
                 <div className="flex items-center gap-2">
@@ -250,7 +250,7 @@ export function ShareDialog({
           )}
 
           {error ? (
-            <p id={errorId} role="alert" className="text-sm text-destructive">
+            <p id={errorId} role="alert" className="ui-body text-destructive">
               {error}
             </p>
           ) : null}

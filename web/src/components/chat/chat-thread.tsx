@@ -3551,7 +3551,7 @@ export function ChatThread() {
       <div className="flex h-full min-h-svh items-center justify-center p-6">
         <div className="max-w-sm space-y-4 text-center">
           <h1 className="text-lg font-semibold">{bootstrapError.title}</h1>
-          <p className="text-sm text-muted-foreground">{bootstrapError.body}</p>
+          <p className="ui-body text-muted-foreground">{bootstrapError.body}</p>
           <Button
             type="button"
             onClick={() => {
@@ -4194,7 +4194,7 @@ export function ChatThread() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">
+            <p className="ui-body text-muted-foreground">
               Type{" "}
               <span className="font-medium text-foreground">
                 {deleteConfirmExpected}

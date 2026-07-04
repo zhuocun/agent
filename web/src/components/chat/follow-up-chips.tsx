@@ -75,7 +75,7 @@ export function FollowUpChips({
             "inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 md:min-h-0",
             // A muted chip surface (not the near-transparent background tint)
             // so the chips stay visible in dark mode against the page.
-            "border border-border/70 bg-muted/40 text-xs text-foreground/80 dark:bg-muted/60 dark:text-muted-foreground",
+            "border border-border/70 bg-muted/40 ui-list-row text-foreground/80 dark:bg-muted/60 dark:text-muted-foreground",
             "transition-colors hover:border-border hover:bg-muted/70 hover:text-foreground",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}

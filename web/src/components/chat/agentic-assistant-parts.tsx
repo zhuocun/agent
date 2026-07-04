@@ -127,7 +127,7 @@ export function AgenticAssistantParts({
       })}
       {showEmptyReplyFallback ? (
         <p
-          className="text-sm text-muted-foreground"
+          className="ui-body text-muted-foreground"
           data-testid="assistant-empty-fallback"
         >
           Finished without a written reply.

@@ -145,7 +145,7 @@ function WebSearchRunRow({ run }: { run: ToolRun }) {
 
   return (
     <li data-testid="web-search-run" className="list-none">
-      <div className="flex min-w-0 items-start gap-1.5 text-xs leading-snug text-muted-foreground">
+      <div className="flex min-w-0 items-start gap-1.5 ui-caption leading-snug text-muted-foreground">
         {icon}
         <div className="min-w-0 flex-1">
           <span className="text-foreground/90">{query}</span>
@@ -185,7 +185,7 @@ export function WebSearchPanel({ group, embedded = false }: WebSearchPanelProps)
     <div
       data-testid="web-search-panel"
       className={cn(
-        "max-w-full text-sm text-muted-foreground",
+        "max-w-full ui-body text-muted-foreground",
         embedded
           ? "py-0.5"
           : "rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5",
@@ -211,7 +211,7 @@ export function WebSearchPanel({ group, embedded = false }: WebSearchPanelProps)
           )}
           <span className="font-medium text-foreground">Web search</span>
           {triggerDetail ? (
-            <span className="text-xs text-muted-foreground">{triggerDetail}</span>
+            <span className="ui-caption text-muted-foreground">{triggerDetail}</span>
           ) : null}
           <ChevronDown
             aria-hidden

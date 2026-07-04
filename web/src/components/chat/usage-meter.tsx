@@ -138,7 +138,7 @@ export function UsageMeter({ usage }: UsageMeterProps) {
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5",
           "bg-byok-indicator text-byok-indicator-foreground",
-          "text-xs font-medium",
+          "ui-caption font-medium",
         )}
         title="Your own provider key is active. Platform credits are not used for model token charges."
       >
@@ -162,7 +162,7 @@ export function UsageMeter({ usage }: UsageMeterProps) {
   return (
     <div
       className={cn(
-        "inline-flex min-w-0 items-center gap-2 text-xs",
+        "inline-flex min-w-0 items-center gap-2 ui-caption",
         isCritical
           ? "text-destructive"
           : isWarning

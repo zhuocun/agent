@@ -32,7 +32,7 @@ export function TemporaryChatBanner({
         // is still"). Height is governed by the h-11 "Turn off" button child so
         // the trailing tap target meets the touch-target minimum without making
         // the pill awkward.
-        className="inline-flex h-11 max-w-full items-center gap-1.5 rounded-full bg-temporary-chat-banner pl-3 pr-1 text-xs text-temporary-chat-banner-foreground ring-1 ring-temporary-chat-banner-border"
+        className="inline-flex h-11 max-w-full items-center gap-1.5 rounded-full bg-temporary-chat-banner pl-3 pr-1 ui-caption text-temporary-chat-banner-foreground ring-1 ring-temporary-chat-banner-border"
       >
         <Ghost aria-hidden className="size-3.5 shrink-0" />
         <span className="min-w-0">
@@ -46,7 +46,7 @@ export function TemporaryChatBanner({
           onClick={onTurnOff}
           // Ghost xs Button already gives us a quiet inline affordance; the
           // negative margin pulls the pill right edge tight against the label.
-          className="-mr-1 ml-0.5 h-11 px-3 text-xs"
+          className="-mr-1 ml-0.5 h-11 px-3 ui-caption"
         >
           Turn off
         </Button>

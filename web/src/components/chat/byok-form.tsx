@@ -201,7 +201,7 @@ export function ByokForm({
   if (anonymous) {
     return (
       <div className="space-y-3">
-        <p className="text-sm text-muted-foreground">
+        <p className="ui-body text-muted-foreground">
           Sign in to bring your own API key. Guest sessions can&apos;t store
           provider credentials.
         </p>
@@ -232,7 +232,7 @@ export function ByokForm({
           list. */}
       <div className="glass-clear overflow-hidden rounded-2xl">
         <div className="space-y-1.5 px-3.5 py-3">
-          <label htmlFor={providerId} className="text-sm font-medium">
+          <label htmlFor={providerId} className="ui-list-row font-medium">
             Provider
           </label>
           <select
@@ -257,7 +257,7 @@ export function ByokForm({
 
         {showKeyRow ? (
           <div className="space-y-1.5 border-t border-border/60 px-3.5 py-3">
-            <label htmlFor={keyId} className="text-sm font-medium">
+            <label htmlFor={keyId} className="ui-list-row font-medium">
               API key
             </label>
             <div className="relative">
@@ -294,7 +294,7 @@ export function ByokForm({
 
       {hasKeyForProvider && !editing ? (
         <div className="space-y-2">
-          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <p className="flex items-center gap-1.5 ui-caption text-muted-foreground">
             <Key aria-hidden className="size-3.5 shrink-0" />
             <span>
               {keyUsable
@@ -312,7 +312,7 @@ export function ByokForm({
           </p>
           {confirmingDelete ? (
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs text-muted-foreground">
+              <p className="ui-caption text-muted-foreground">
                 Remove this key? Future requests revert to platform credits.
               </p>
               <Button
@@ -369,7 +369,7 @@ export function ByokForm({
           the same `showKeyRow` so they appear together with the field. */}
       {showKeyRow ? (
         <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">
+          <p className="ui-caption text-muted-foreground">
             Stored encrypted server-side; never sent to other providers.
           </p>
           <div className="flex flex-wrap gap-2">

@@ -121,7 +121,7 @@ function PublicHeader() {
         aria-label="Olune home"
       >
         <span className="text-base font-semibold tracking-tight">Olune</span>
-        <span className="hidden text-sm text-muted-foreground sm:inline">
+        <span className="hidden ui-body text-muted-foreground sm:inline">
           · shared chat
         </span>
       </Link>
@@ -131,7 +131,7 @@ function PublicHeader() {
           nativeButton={false}
           render={<Link href="/" />}
           variant="secondary"
-          className="h-11 rounded-full px-3.5 text-sm sm:h-9"
+          className="h-11 rounded-full px-3.5 ui-list-row sm:h-9"
         >
           Start your own chat
         </Button>
@@ -154,13 +154,13 @@ function ConversationBody({
         >
           {conversation.title}
         </h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="ui-body text-muted-foreground">
           A read-only shared conversation.
         </p>
       </div>
 
       {conversation.messages.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
+        <p className="ui-body text-muted-foreground">
           This conversation has no messages yet.
         </p>
       ) : (
@@ -235,7 +235,7 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
 function PublicUngroundedMarker() {
   return (
     <div
-      className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+      className="inline-flex items-center gap-1.5 ui-caption text-muted-foreground"
       data-testid="ungrounded-marker"
     >
       <SearchX aria-hidden className="size-3.5" />
@@ -294,7 +294,7 @@ function EmptyState({
       </div>
       <div className="space-y-1.5">
         <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-        <p className="mx-auto max-w-sm text-sm text-muted-foreground">{body}</p>
+        <p className="mx-auto max-w-sm ui-body text-muted-foreground">{body}</p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
         {onRetry ? (
@@ -302,7 +302,7 @@ function EmptyState({
             type="button"
             variant="secondary"
             onClick={onRetry}
-            className="h-10 rounded-full px-4 text-sm"
+            className="h-10 rounded-full px-4 ui-list-row"
           >
             <RotateCw aria-hidden className="size-4" />
             <span>Try again</span>
@@ -311,7 +311,7 @@ function EmptyState({
         <Button
           nativeButton={false}
           render={<Link href="/" />}
-          className="h-10 rounded-full px-4 text-sm"
+          className="h-10 rounded-full px-4 ui-list-row"
         >
           Start your own chat
         </Button>

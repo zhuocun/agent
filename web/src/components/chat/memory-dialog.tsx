@@ -148,7 +148,7 @@ export function MemoryBody({
     <div data-testid="memory-dialog" className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-col gap-1.5 text-center sm:text-left">
         <h2 className="text-lg leading-none font-semibold">Memory</h2>
-        <p className="text-sm text-muted-foreground">
+        <p className="ui-body text-muted-foreground">
           The facts the assistant can remember about you. Add, edit, or remove
           them anytime — they&apos;re only used when memory is on, and never in
           temporary chats.
@@ -162,8 +162,8 @@ export function MemoryBody({
             className="flex min-h-11 cursor-pointer items-center justify-between gap-4"
           >
             <div className="min-w-0">
-              <span className="text-sm font-medium">Use memory in chats</span>
-              <p className="mt-0.5 text-xs text-muted-foreground">
+              <span className="ui-list-row font-medium">Use memory in chats</span>
+              <p className="mt-0.5 ui-caption text-muted-foreground">
                 Off by default. When on, your saved facts are added to new,
                 non-temporary chats.
               </p>
@@ -179,7 +179,7 @@ export function MemoryBody({
 
           {/* Add a fact */}
           <div className="space-y-2">
-            <label htmlFor="memory-add-input" className="text-sm font-medium">
+            <label htmlFor="memory-add-input" className="ui-list-row font-medium">
               Add a fact
             </label>
             <textarea
@@ -207,7 +207,7 @@ export function MemoryBody({
           </div>
 
           {error ? (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="ui-body text-destructive">
               {error}
             </p>
           ) : null}
@@ -215,9 +215,9 @@ export function MemoryBody({
           {/* The ledger */}
           <section className="space-y-2">
             {loading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
+              <p className="ui-body text-muted-foreground">Loading…</p>
             ) : showEmpty ? (
-              <p className="text-sm text-muted-foreground">
+              <p className="ui-body text-muted-foreground">
                 No saved facts yet. Add one above, and it&apos;ll appear here.
               </p>
             ) : (
@@ -271,7 +271,7 @@ export function MemoryBody({
                           aria-hidden
                           className="mt-0.5 size-4 shrink-0 text-muted-foreground"
                         />
-                        <p className="min-w-0 flex-1 text-sm break-words whitespace-pre-wrap">
+                        <p className="min-w-0 flex-1 ui-list-row break-words whitespace-pre-wrap">
                           {fact.content}
                         </p>
                         <div className="flex shrink-0 items-center gap-1">

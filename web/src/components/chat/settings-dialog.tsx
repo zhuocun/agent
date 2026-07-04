@@ -261,14 +261,14 @@ function SettingRow({
     <div className="flex items-center justify-between gap-4">
       <div className="min-w-0">
         {htmlFor ? (
-          <label htmlFor={htmlFor} className="text-sm font-medium">
+          <label htmlFor={htmlFor} className="ui-list-row font-medium">
             {label}
           </label>
         ) : (
-          <p className="text-sm font-medium">{label}</p>
+          <p className="ui-list-row font-medium">{label}</p>
         )}
         {helper ? (
-          <p className="mt-0.5 text-xs text-muted-foreground">{helper}</p>
+          <p className="mt-0.5 ui-caption text-muted-foreground">{helper}</p>
         ) : null}
       </div>
       <div className="shrink-0">{control}</div>
@@ -278,7 +278,7 @@ function SettingRow({
 
 function SectionHeading({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+    <h3 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
       {children}
     </h3>
   );
@@ -297,9 +297,9 @@ function GroupHeading({
 }): JSX.Element {
   return (
     <div className="space-y-0.5">
-      <h2 className="text-sm font-semibold text-foreground">{children}</h2>
+      <h2 className="ui-list-row font-semibold text-foreground">{children}</h2>
       {helper ? (
-        <p className="text-xs text-muted-foreground">{helper}</p>
+        <p className="ui-caption text-muted-foreground">{helper}</p>
       ) : null}
     </div>
   );
@@ -342,7 +342,7 @@ function RetentionPicker({
             title={option.description}
             onClick={() => onChange(option.value)}
             className={cn(
-              "min-w-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+              "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
               selected
                 ? "bg-background text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground",
@@ -393,14 +393,14 @@ function BudgetEditor({
 
   return (
     <div className="space-y-1.5 border-t border-border/50 pt-2">
-      <label htmlFor={inputId} className="text-xs font-medium">
+      <label htmlFor={inputId} className="ui-caption font-medium">
         Monthly budget cap
       </label>
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-xs text-muted-foreground"
+            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center ui-caption text-muted-foreground"
           >
             $
           </span>
@@ -427,7 +427,7 @@ function BudgetEditor({
           Save
         </Button>
       </div>
-      <p className="text-xs leading-snug text-muted-foreground">
+      <p className="ui-caption leading-snug text-muted-foreground">
         {showEnforced ? (
           <>
             Enforced cap:{" "}
@@ -472,14 +472,14 @@ function PerConversationBudgetEditor({
 
   return (
     <div className="space-y-1.5 border-t border-border/50 pt-2">
-      <label htmlFor={inputId} className="text-xs font-medium">
+      <label htmlFor={inputId} className="ui-caption font-medium">
         Per-conversation cap
       </label>
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-xs text-muted-foreground"
+            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center ui-caption text-muted-foreground"
           >
             $
           </span>
@@ -506,7 +506,7 @@ function PerConversationBudgetEditor({
           Save
         </Button>
       </div>
-      <p className="text-xs leading-snug text-muted-foreground">
+      <p className="ui-caption leading-snug text-muted-foreground">
         Pause platform-key turns in any single chat once its spend reaches this
         cap. Leave empty for no per-conversation cap.
       </p>
@@ -552,7 +552,7 @@ function ProjectSettingsPanel({
 
   if (projects.length === 0) {
     return (
-      <p className="text-xs leading-snug text-muted-foreground">
+      <p className="ui-caption leading-snug text-muted-foreground">
         No projects yet. Create one from the sidebar to scope a default model,
         retention, budget, and shared instructions for a group of chats.
       </p>
@@ -604,7 +604,7 @@ function ProjectSettingsPanel({
                     onUpdate(selected.id, { defaultTierId: option.value })
                   }
                   className={cn(
-                    "rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                    "rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
                     active
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",
@@ -638,7 +638,7 @@ function ProjectSettingsPanel({
                     onUpdate(selected.id, { retentionDays: option.value })
                   }
                   className={cn(
-                    "min-w-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                    "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
                     active
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",
@@ -661,7 +661,7 @@ function ProjectSettingsPanel({
       />
 
       <div className="space-y-2">
-        <label htmlFor={instructionsId} className="text-sm font-medium">
+        <label htmlFor={instructionsId} className="ui-list-row font-medium">
           Shared instructions
         </label>
         <ProjectInstructionsEditor
@@ -674,7 +674,7 @@ function ProjectSettingsPanel({
             })
           }
         />
-        <p className="text-xs leading-snug text-muted-foreground">
+        <p className="ui-caption leading-snug text-muted-foreground">
           Appended to your global custom instructions for every chat in this
           project.
         </p>
@@ -710,7 +710,7 @@ function ProjectInstructionsEditor({
         className="min-h-24 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
         placeholder="Context, tone, or constraints shared across this project"
       />
-      <div className="text-right font-mono text-2xs tabular-nums text-muted-foreground">
+      <div className="text-right font-mono ui-caption tabular-nums text-muted-foreground">
         {draft.length}/{CUSTOM_INSTRUCTIONS_LIMIT}
       </div>
     </>
@@ -745,14 +745,14 @@ function ProjectBudgetEditor({
 
   return (
     <div className="space-y-1.5">
-      <label htmlFor={inputId} className="text-xs font-medium">
+      <label htmlFor={inputId} className="ui-caption font-medium">
         Per-conversation cap
       </label>
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-xs text-muted-foreground"
+            className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center ui-caption text-muted-foreground"
           >
             $
           </span>
@@ -779,7 +779,7 @@ function ProjectBudgetEditor({
           Save
         </Button>
       </div>
-      <p className="text-xs leading-snug text-muted-foreground">
+      <p className="ui-caption leading-snug text-muted-foreground">
         Overrides your per-conversation cap for this project&apos;s chats. Empty
         inherits your preference.
       </p>
@@ -810,15 +810,15 @@ function UsageDetails({
           />
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-medium">Bring your own key</p>
+              <p className="ui-list-row font-medium">Bring your own key</p>
               <UsageMeter usage={usage} />
             </div>
-            <p className="text-xs leading-snug text-muted-foreground">
+            <p className="ui-caption leading-snug text-muted-foreground">
               Model token charges bill to your provider key. Platform credits
               remain available if you remove the key.
             </p>
             {usage.creditBalanceUsd != null ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="ui-caption text-muted-foreground">
                 Credit balance:{" "}
                 <span className="font-mono tabular-nums text-foreground">
                   {formatUsdCurrencyOrNa(usage.creditBalanceUsd)}
@@ -869,10 +869,10 @@ function UsageDetails({
         />
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium">Platform credits</p>
+            <p className="ui-list-row font-medium">Platform credits</p>
             <UsageMeter usage={usage} />
           </div>
-          <p className="text-xs leading-snug text-muted-foreground">
+          <p className="ui-caption leading-snug text-muted-foreground">
             {helper}
           </p>
         </div>
@@ -1049,7 +1049,7 @@ export function SettingsDialog({
           >
             {SETTINGS_TAB_GROUPS.map((group) => (
               <div key={group.id} className="space-y-0.5 md:space-y-1">
-                <span className="px-1 text-2xs font-semibold tracking-wide text-muted-foreground uppercase md:text-xs">
+                <span className="px-1 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
                   {group.label}
                 </span>
                 <div className="overflow-hidden rounded-xl border border-border/60 bg-secondary/30">
@@ -1062,7 +1062,7 @@ export function SettingsDialog({
                         data-testid={tab.testId}
                         onClick={() => selectTab(tab.id)}
                         className={cn(
-                          "flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm font-medium text-foreground transition-colors active:bg-secondary/60 md:py-3",
+                          "flex w-full items-center gap-3 px-4 py-2.5 text-left ui-list-row font-medium text-foreground transition-colors active:bg-secondary/60 md:py-3",
                           tabIndex > 0 && "border-t border-border/40",
                         )}
                       >
@@ -1085,7 +1085,7 @@ export function SettingsDialog({
             data-testid="settings-back-button"
             aria-label="Back to Settings"
             onClick={() => setMobileShowList(true)}
-            className="-ml-1 inline-flex shrink-0 items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            className="-ml-1 inline-flex shrink-0 items-center gap-1 ui-list-row font-medium text-muted-foreground transition-colors hover:text-foreground"
           >
             <ChevronLeft aria-hidden className="size-4" />
             <span>Settings</span>
@@ -1112,7 +1112,7 @@ export function SettingsDialog({
             >
               <span
                 aria-hidden
-                className="px-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                className="px-2 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase"
               >
                 {group.label}
               </span>
@@ -1158,7 +1158,7 @@ export function SettingsDialog({
                           ?.focus();
                       }}
                       className={cn(
-                        "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium whitespace-nowrap transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+                        "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 ui-list-row font-medium whitespace-nowrap transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
                         selected
                           ? "bg-secondary text-foreground shadow-sm ring-1 ring-ring/30"
                           : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
@@ -1203,12 +1203,12 @@ export function SettingsDialog({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <p className="truncate text-sm font-medium">{account.name}</p>
-                  <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground ring-1 ring-border">
+                  <p className="truncate ui-list-row font-medium">{account.name}</p>
+                  <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 ui-caption font-medium text-secondary-foreground ring-1 ring-border">
                     {billing.planLabel}
                   </span>
                 </div>
-                <p className="truncate text-xs text-muted-foreground">
+                <p className="truncate ui-caption text-muted-foreground">
                   {account.email}
                 </p>
               </div>
@@ -1285,7 +1285,7 @@ export function SettingsDialog({
               )}
             </div>
             {billingError ? (
-              <p className="text-xs text-destructive-text">{billingError}</p>
+              <p className="ui-body text-destructive-text">{billingError}</p>
             ) : null}
 
             {!anonymous ? (
@@ -1311,7 +1311,7 @@ export function SettingsDialog({
           <Collapsible className="space-y-3">
             <CollapsibleTrigger
               data-testid="byok-section-toggle"
-              className="flex w-full items-center gap-2 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+              className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
             >
               <ChevronRight
                 aria-hidden
@@ -1395,7 +1395,7 @@ export function SettingsDialog({
             <Collapsible className="space-y-2">
               <CollapsibleTrigger
                 data-testid="custom-instructions-toggle"
-                className="flex w-full items-center gap-2 text-left text-sm font-medium transition-colors hover:text-foreground"
+                className="flex w-full items-center gap-2 text-left ui-list-row font-medium transition-colors hover:text-foreground"
               >
                 <ChevronRight
                   aria-hidden
@@ -1417,7 +1417,7 @@ export function SettingsDialog({
                   className="min-h-28 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
                   placeholder="Preferred tone, formatting, and context for future chats"
                 />
-                <div className="text-right font-mono text-2xs tabular-nums text-muted-foreground">
+                <div className="text-right font-mono ui-caption tabular-nums text-muted-foreground">
                   {customInstructionsDraft.length}/{CUSTOM_INSTRUCTIONS_LIMIT}
                 </div>
               </CollapsibleContent>
@@ -1436,7 +1436,7 @@ export function SettingsDialog({
                 <Collapsible className="space-y-3">
                   <CollapsibleTrigger
                     data-testid="project-defaults-toggle"
-                    className="flex w-full items-center gap-2 text-left text-xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+                    className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
                   >
                     <ChevronRight
                       aria-hidden
@@ -1494,7 +1494,7 @@ export function SettingsDialog({
             <Collapsible className="space-y-4">
               <CollapsibleTrigger
                 data-testid="advanced-privacy-toggle"
-                className="flex w-full items-center gap-2 text-left text-2xs font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+                className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
               >
                 <ChevronRight
                   aria-hidden

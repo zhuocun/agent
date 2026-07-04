@@ -164,7 +164,7 @@ export function AuthDialog({
 
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <div className="space-y-1.5">
-            <label htmlFor={emailId} className="text-sm font-medium">
+            <label htmlFor={emailId} className="ui-list-row font-medium">
               Email
             </label>
             <input
@@ -186,7 +186,7 @@ export function AuthDialog({
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={passwordId} className="text-sm font-medium">
+            <label htmlFor={passwordId} className="ui-list-row font-medium">
               Password
             </label>
             <div className="relative">
@@ -226,7 +226,7 @@ export function AuthDialog({
           </div>
 
           {error ? (
-            <p id={errorId} role="alert" className="text-sm text-destructive">
+            <p id={errorId} role="alert" className="ui-body text-destructive">
               {error}
             </p>
           ) : null}
@@ -240,7 +240,7 @@ export function AuthDialog({
           </Button>
         </form>
 
-        <p className="text-center text-sm text-muted-foreground">
+        <p className="text-center ui-body text-muted-foreground">
           {isSignIn ? "New here?" : "Already have an account?"}{" "}
           <button
             type="button"

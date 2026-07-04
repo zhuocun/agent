@@ -245,7 +245,7 @@ export function ByokForm({
             // h-11 = 44pt, the iOS minimum touch target (was h-9/36px). The
             // field is transparent (`bg-transparent`) because the card behind
             // it is the surface now.
-            className="block h-11 w-full rounded-xl bg-transparent px-2.5 text-sm text-foreground outline-none focus-visible:shadow-[var(--focus-ring)]"
+            className="block h-11 w-full rounded-xl bg-transparent px-2.5 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] md:text-sm"
           >
             {providerChoices.map((p) => (
               <option key={p.id} value={p.id}>

@@ -89,7 +89,7 @@ const FILTER_INPUT_CLASS =
 const FILTER_DATE_INPUT_CLASS =
   "w-full min-w-[7.5rem] rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 const FILTER_SELECT_CLASS =
-  "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25";
+  "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 
 // Date input <-> ISO. The native date input gives `YYYY-MM-DD`; the BE parses
 // ISO-8601. `dateTo` widens to end-of-day so an inclusive "to" matches any time

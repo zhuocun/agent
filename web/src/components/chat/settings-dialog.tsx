@@ -573,7 +573,7 @@ function ProjectSettingsPanel({
             value={selected.id}
             onChange={(event) => setSelectedId(event.currentTarget.value)}
             data-testid="project-settings-select"
-            className="h-9 max-w-[12rem] truncate rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25"
+            className="h-9 max-w-[12rem] truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           >
             {projects.map((project) => (
               <option key={project.id} value={project.id}>

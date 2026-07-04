@@ -156,13 +156,17 @@ export function AuthDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="flex flex-col overflow-hidden sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+        {/* Scroll body: in landscape / short viewports the keyboard can push the
+            fields past the sheet cap, so the content scrolls within an
+            overflow-hidden flex shell rather than clipping (ST5 §c ST-8, R6). */}
+        <div className="-mr-2 min-h-0 flex-1 space-y-4 overflow-y-auto pr-2">
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <div className="space-y-1.5">
             <label htmlFor={emailId} className="ui-list-row font-medium">
               Email
@@ -238,19 +242,20 @@ export function AuthDialog({
           >
             {submitLabel}
           </Button>
-        </form>
+          </form>
 
-        <p className="text-center ui-body text-muted-foreground">
-          {isSignIn ? "New here?" : "Already have an account?"}{" "}
-          <button
-            type="button"
-            onClick={switchMode}
-            disabled={pending}
-            className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
-          >
-            {isSignIn ? "Create an account" : "Sign in"}
-          </button>
-        </p>
+          <p className="text-center ui-body text-muted-foreground">
+            {isSignIn ? "New here?" : "Already have an account?"}{" "}
+            <button
+              type="button"
+              onClick={switchMode}
+              disabled={pending}
+              className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+            >
+              {isSignIn ? "Create an account" : "Sign in"}
+            </button>
+          </p>
+        </div>
       </DialogContent>
     </Dialog>
   );

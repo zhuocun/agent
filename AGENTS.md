@@ -163,7 +163,7 @@ the sandbox; use the GitHub MCP tools or `git push` + GitHub web.
 - **Driver**: SQLAlchemy 2.0 async + asyncpg. Connection string uses
   `postgresql+asyncpg://...?ssl=require` (asyncpg uses `ssl`, not `sslmode`).
 - **Migrations**: Alembic under `api/alembic/versions/`. Head as of this writing
-  is `0025_conversation_tags_archive`. Migrations run once per deploy via the Fly
+  is `0027_preferences_popup_selections`. Migrations run once per deploy via the Fly
   `[deploy] release_command` in `fly.toml` (`uv run alembic upgrade head`) on a
   temporary release machine, BEFORE the app machines roll out — not on every
   machine boot. This keeps the schema-upgrade step off the cold-start request

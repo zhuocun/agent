@@ -2,9 +2,12 @@
 
 Issues found across the ST1–ST5 screenshot sweep (desktop core, dialogs/overlays,
 mobile, dynamic interaction-states, a11y media-emulation). Screenshot paths are
-relative to this directory (`web/test-results/audit/`) and name their stage
-subfolder. Each issue carries a stable ID; do not renumber on edit. Severities:
-`MAJOR` > `MINOR` > `NIT`.
+relative to the ephemeral audit run-output tree (`web/test-results/audit/`, which
+`web/.gitignore` marks ephemeral) and name their stage subfolder — the PNGs are
+**not** committed alongside this log, which was relocated here (from
+`web/test-results/audit/`) to `docs/design/audits/` for a non-ephemeral home. Each
+issue carries a stable ID; do not renumber on edit. Severities: `MAJOR` > `MINOR`
+> `NIT`.
 
 ## ISSUE-1 — MAJOR — Install coachmark occludes 4th suggestion chip
 

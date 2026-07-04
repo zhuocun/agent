@@ -1,2 +1,22 @@
+# Root-level catch-all. Per-package rules live in web/.gitignore and
+# api/.gitignore; these guard stray junk that can land at the repo root.
+
+# Deploy / tooling
 .vercel
 .claude/worktrees/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Coverage / build output at the repo root
+/coverage/
+/build/
+/dist/
+
+# Screenshot / walkthrough run-output. Canonical walkthrough artifacts live
+# outside the repo (/opt/cursor/artifacts); nothing in-repo should track this.
+/artifacts/

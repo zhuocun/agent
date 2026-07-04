@@ -1,6 +1,6 @@
 # Agentic Mode Plan (orchestrated bounded subagents)
 
-> **Implementation status**: **SHIPPED behind `AGENTIC_ENABLED` (default off, gated by `TOOLS_ENABLED`).** M0–M3 are built and tested on the fake provider (`api/app/agentic/*`, `api/tests/test_agentic_*.py`, `web/tests/e2e/agentic.spec.ts`). With the flag off, the stream path stays byte-identical to the pre-agentic build (`test_agentic_flag_off.py`). **M4 is PARTIALLY SHIPPED** — real-provider planner/synthesis code paths exist in `orchestrator.py`, but per-worker fallback, resumable-buffer sizing, and real-provider E2E proof remain open (see **Remaining gaps**). Do not enable `AGENTIC_ENABLED` in a real-key environment until M4 is proven.
+> **Implementation status**: **SHIPPED behind `AGENTIC_ENABLED` (default off, gated by `TOOLS_ENABLED`).** M0–M3 are built and tested on the fake provider (`api/app/agentic/*`, `api/tests/test_agentic_*.py`, `web/tests/e2e/agentic.spec.ts`). With the flag off, the stream path stays byte-identical to the pre-agentic build (`test_agentic_flag_off.py`). **M4 is PARTIALLY SHIPPED** — real-provider planner/synthesis code paths exist in `orchestrator.py`; per-worker fallback + failure-degrade, agentic resumable-buffer sizing, and per-worker attribution persistence are built and tested (`test_agentic_resilience.py`, `test_agentic_real_provider.py`). Still open: the provider-backed verifier (deterministic stub today), scoped per-worker tool subsets, per-subagent attribution *display* in the FE, and a true live-network real-provider E2E (the shipped real-provider test is deterministic/no-network). Do not enable `AGENTIC_ENABLED` in a real-key environment until the live-provider path is proven end to end (see **Remaining gaps**).
 
 The smallest extension that lets the existing chat turn spawn **bounded model subagents in-turn** — an orchestrator over N reuses of the shipped `run_agent_loop`, multiplexed back onto the one SSE stream — with **zero behavior change when `AGENTIC_ENABLED` is off**. Anchored to the shipped streaming/persistence path (`api/app/streaming/handler.py`), the shipped agent loop (`api/app/tools/agent_loop.py`), and the typed message-part union (`api/app/schemas/message.py`). PRDs guide direction; anything not gated behind a hard flag is out of scope.
 
@@ -174,13 +174,13 @@ All validated at boot in `app/config.py`; all bounds are config, never hardcoded
 
 | Gap | Status | Notes |
 | --- | --- | --- |
-| Per-subagent `ModelAttribution` + substitution persistence/display | **PARTIAL** | `SubagentPart.attribution` exists in schema; `_build_agentic_parts` never populates it; FE shows turn-level attribution only |
+| Per-subagent `ModelAttribution` + substitution persistence/display | **PARTIAL** | Persisted: `_build_agentic_parts` (`handler.py`) populates per-worker `SubagentPart.attribution` incl. substitution (`test_agentic_resilience.py::test_subagent_parts_carry_attribution`). Not rendered: `subagent-panel.tsx` still shows turn-level attribution only |
 | `execute_tool` OTel spans in `agent_loop.py` | **NOT BUILT** | `execute_tool_span` defined in `tracing.py`; only `invoke_agent_span` is wired in the orchestrator |
 | Provider-backed verifier / self-consistency (FR-26j) | **PARTIAL** | Deterministic stub appends a note; no provider sampling, no reviewer subagent, no verifier cost in meter |
-| Per-worker provider failure degrade (PRD 08) | **NOT BUILT (M4)** | Worker exception re-raises and fails the whole run; budget-halt partial synthesis is shipped |
-| Per-worker provider fallback on 429/5xx | **NOT BUILT (M4)** | Turn-level fallback only (`handler.py`) |
-| Resumable-buffer sizing for high fan-out event volume | **NOT BUILT (M4)** | Shipped caps unchanged (~1000 events / ~1MB) |
-| Real-provider agentic E2E proof | **NOT BUILT (M4 gate)** | All agentic tests use fake provider |
+| Per-worker provider failure degrade (PRD 08) | **SHIPPED (M4)** | A failed worker is omitted; the run still synthesizes + halts `done` with a "failed and were omitted" callout (`test_agentic_resilience.py::test_one_worker_failure_degrades_to_partial`, `::test_all_workers_fail_still_done`) |
+| Per-worker provider fallback on 429/5xx | **SHIPPED (M4)** | Retryable worker error falls back to the secondary route, tagged `substitution` (`orchestrator.py`; `test_agentic_resilience.py::test_one_worker_retryable_falls_back`) |
+| Resumable-buffer sizing for high fan-out event volume | **SHIPPED (M4)** | Agentic runs multiply the caps by `AGENTIC_RESUMABLE_BUFFER_MULTIPLIER` (default 4) when opening the buffer (`routes/conversations.py`) |
+| Live-network real-provider agentic E2E proof | **NOT BUILT (M4 gate)** | The real-provider code path is covered deterministically without network (`test_agentic_real_provider.py`, `PROVIDER_BACKEND=deepseek`); a true live-API E2E is still absent |
 | Scoped per-worker tool subsets | **NOT BUILT** | Workers inherit full `advertised_tool_specs()` |
 | `AGENTIC_MAX_DEPTH` runtime enforcement | **PARTIAL** | Config validated at boot; depth 1 by construction (workers never nest), not checked at runtime |
 | High-cost composer hint (FR-26f) | **NOT BUILT** | Toggle description only; no explicit cost warning |
@@ -225,7 +225,7 @@ Demo: `test_agentic_budget.py`, `test_agentic_approval.py`, `test_agentic_safety
 
 Scope: wire real providers (DeepSeek/OpenAI-compatible + Anthropic) as subagent backends through the same `run_agent_loop` real-provider tool path; **only after M1–M3 are proven on the fake provider** (FR-26d / D40). PRD-08 error envelope on every agentic path; structlog run/subagent keys; **net-new per-worker fallback** (degrade the 429'd/errored worker, keep the run — the shipped fallback is per-turn) and the rest of the concurrency-vs-rate-limit handling; the resumable-buffer build-time decision for high event-volume fan-out (bump the bound or cap/coalesce events); document remaining gaps.
 
-**As-built:** real-provider planner and model-written synthesis paths exist in `orchestrator.py` / `planner.py` / `aggregate.py`. **Still open:** per-worker fallback, per-worker failure degrade, resumable-buffer decision, real-provider E2E tests, full per-subagent attribution — see **Remaining gaps**.
+**As-built:** real-provider planner + model-written synthesis paths (`orchestrator.py` / `planner.py` / `aggregate.py`); per-worker fallback + failure-degrade (`test_agentic_resilience.py`); agentic resumable-buffer sizing (`AGENTIC_RESUMABLE_BUFFER_MULTIPLIER`); per-worker attribution persistence in `_build_agentic_parts`; a deterministic no-network real-provider path test (`test_agentic_real_provider.py`). **Still open:** provider-backed verifier (deterministic stub today), scoped per-worker tool subsets, per-subagent attribution *display* in the FE, and a true live-network real-provider E2E — see **Remaining gaps**.
 
 Demo (target): a real-provider `deep_research` run fans out, aggregates, and bills correctly with full transparency; a forced provider error/429 on one worker degrades **that worker only**, not the run.
 

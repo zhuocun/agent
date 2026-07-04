@@ -54,7 +54,7 @@ uv run pytest
 ```
 
 Tests use a per-test SQLite database — no Postgres needed. Current count:
-**261 passed + 1 known xfail** (the stop-path test; ASGITransport doesn't expose
+**815 passed + 1 known xfail** (the stop-path test; ASGITransport doesn't expose
 mid-stream disconnect to the server side, so we can't exercise that branch
 end-to-end in-process).
 
@@ -255,15 +255,16 @@ saved cost is marked as imprecise.
 ## Deploy
 
 `fly.toml` is configured for Fly.io (app `olune-agent-server`, region `nrt`).
-The `Dockerfile` runs `uv run alembic upgrade head` before launching uvicorn,
-so each deploy brings the schema forward. Fly's health check hits `/healthz`.
+Migrations run once per deploy via the Fly `[deploy] release_command`
+(`uv run alembic upgrade head`) on a temporary release machine, before the app
+machines roll out — the `Dockerfile` CMD is just uvicorn. Fly's health check
+hits `/healthz`.
 
-**Auto-deploy**: `.github/workflows/ci.yml` → `deploy-api` job fires
-`flyctl deploy --remote-only` on every push to `main`, after `api` + `web-e2e`
-jobs pass. Requires the `FLY_API_TOKEN` repo secret.
+For one-off manual deploys: `cd api && flyctl deploy --remote-only`.
 
-For one-off manual deploys: `cd api && flyctl deploy --remote-only`. See
-`../AGENTS.md` for the full Fly CLI cheat-sheet (logs, ssh, secrets,
+See `../AGENTS.md` for the deploy model (auto-deploy on push to `main`, the
+`deploy-api` CI gate after `api` + `web-e2e` + `web-coverage` pass, the
+`FLY_API_TOKEN` secret) and the full Fly CLI cheat-sheet (logs, ssh, secrets,
 rollback).
 
 ## Endpoints summary

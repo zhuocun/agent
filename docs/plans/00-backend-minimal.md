@@ -1,6 +1,6 @@
 # Backend Minimal Plan (Python / FastAPI)
 
-> **Implementation status**: M0–M4 + all Post-M4 hardening items shipped on `main`. 261 tests pass + 1 known xfail (stop-path). The [Post-M4: deferred hardening](#post-m4-deferred-hardening) section below is preserved as a record; each item is now checked off with its landing PR.
+> **Implementation status**: M0–M4 + all Post-M4 hardening items shipped on `main`. 815 tests pass + 1 known xfail (stop-path) (`api` suite, as of 2026-07-04). The [Post-M4: deferred hardening](#post-m4-deferred-hardening) section below is preserved as a record; each item is now checked off with its landing PR.
 
 The smallest Python backend that lets the existing Next.js FE at `web/` run against real persistence and a real model provider with **zero UI changes**. The BE is a **separate service** — FastAPI + Postgres, deployed independently. Production browser traffic reaches it through the FE's same-origin `/api/*` Next rewrite; direct cross-origin/CORS remains a local/e2e/diagnostic mode. Anchored to the FE wire shapes in `web/src/lib/types.ts` and the behavior in `web/src/components/chat/chat-thread.tsx`. PRDs guide direction; anything the FE does not yet render or call is deferred.
 
@@ -350,7 +350,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from itsdangerous import URLSafeSerializer, BadSignature
 
 from app.config import settings
-from app.deps import get_db
+from app.db.session import get_db
 from app.db.models import User, Session as DbSession
 
 signer = URLSafeSerializer(settings.session_secret, salt="session")
@@ -575,11 +575,10 @@ api/
     __init__.py
     main.py                             # FastAPI app + CORSMiddleware + lifespan + exception handlers
     config.py                           # pydantic-settings: env vars, dev vs prod, CORS origins, cookie flags
-    deps.py                             # dependency providers: get_db, current_user
     db/
       __init__.py
       base.py                           # SQLAlchemy declarative base + naming convention
-      session.py                        # async engine + AsyncSessionFactory
+      session.py                        # async engine + AsyncSessionFactory + get_db dependency
       models.py                         # ORM models
       repositories/
         conversations.py

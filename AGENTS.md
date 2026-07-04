@@ -22,9 +22,9 @@ Vercel apex alias `olune-agent.vercel.app` resolves to the same FE.
 - **FE**: Vercel GitHub integration — every push to `main` produces a production
   deploy. PR branches get preview deploys.
 - **BE**: `.github/workflows/ci.yml` → `deploy-api` job. Runs only on
-  `push: main`, after `api` + `web-e2e` jobs pass, using `flyctl deploy
-  --remote-only`. Needs the `FLY_API_TOKEN` repo secret (Fly deploy-scoped
-  token — `flyctl tokens create deploy -a olune-agent-server`).
+  `push: main`, after `api` + `web-e2e` + `web-coverage` jobs pass, using
+  `flyctl deploy --remote-only`. Needs the `FLY_API_TOKEN` repo secret (Fly
+  deploy-scoped token — `flyctl tokens create deploy -a olune-agent-server`).
 
 No manual deploy is required for normal merges. The FE proxies `/api/*` through
 Next.js to the BE (see `web/next.config.ts`) so the BE's `Set-Cookie` is
@@ -42,6 +42,8 @@ Never commit secrets. Each platform owns its own.
 | `BYOK_ENCRYPTION_KEK` (and `BYOK_KEK_VERSIONS` once rotation begins) | `flyctl secrets` | BE BYOK at-rest crypto |
 | Provider key (`DEEPSEEK_API_KEY` for prod `PROVIDER_BACKEND=deepseek`; `OPENAI_API_KEY` is accepted as a DeepSeek fallback and is required only for `PROVIDER_BACKEND=openai`; `ANTHROPIC_API_KEY` only if you switch the backend) | `flyctl secrets` | BE provider |
 | `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT` (optional) | `flyctl secrets` | BE observability |
+| `TAVILY_API_KEY` (only when `SEARCH_BACKEND=tavily`) | `flyctl secrets` | BE web search |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRO_PRICE_ID`, `STRIPE_CREDIT_PRICE_ID` (only when `BILLING_BACKEND=stripe`) | `flyctl secrets` | BE billing |
 | `NEXT_PUBLIC_API_BASE_URL` | Vercel env (set to empty for prod — same-origin via rewrite) | FE build |
 
 To list current Fly secrets without revealing values:

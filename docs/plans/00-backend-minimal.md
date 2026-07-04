@@ -575,11 +575,10 @@ api/
     __init__.py
     main.py                             # FastAPI app + CORSMiddleware + lifespan + exception handlers
     config.py                           # pydantic-settings: env vars, dev vs prod, CORS origins, cookie flags
-    deps.py                             # dependency providers: get_db, current_user
     db/
       __init__.py
       base.py                           # SQLAlchemy declarative base + naming convention
-      session.py                        # async engine + AsyncSessionFactory
+      session.py                        # async engine + AsyncSessionFactory + get_db dependency
       models.py                         # ORM models
       repositories/
         conversations.py

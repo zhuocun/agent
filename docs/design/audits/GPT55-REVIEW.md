@@ -3,8 +3,8 @@
 - **Model:** gpt-5.5-high
 - **Timestamp:** 2026-06-29 18:34:26 UTC (latest stage; stages ran 18:33:56–18:34:26 UTC)
 - **Total images reviewed:** 96 stage PNGs (ST1 16 · ST2 18 · ST3 28 · ST4 12 · ST5 22).
-- **Source reviews merged:** `GPT55-REVIEW-st1-st2.md`, `GPT55-REVIEW-st3.md`, `GPT55-REVIEW-st4.md`, `GPT55-REVIEW-st5.md`.
-- **Inputs:** `ISSUES.md`, `REVIEW-INVENTORY.md`, per-stage `manifest.md` files, and the PNG contents themselves.
+- **Source reviews merged:** the per-stage `GPT55-REVIEW-st1-st2.md`, `GPT55-REVIEW-st3.md`, `GPT55-REVIEW-st4.md`, `GPT55-REVIEW-st5.md` run-output files. These intermediate sources lived under the ephemeral `web/test-results/audit/` tree and were **untracked** when the two lasting docs (this file + `ISSUES.md`) were relocated to `docs/design/audits/`; they are not committed.
+- **Inputs:** `ISSUES.md` (committed alongside this file), the now-untracked `REVIEW-INVENTORY.md` + per-stage `manifest.md` files under `web/test-results/audit/`, and the PNG contents themselves.
 
 ## Per-file verdicts (all 96)
 
@@ -123,4 +123,4 @@ None. No stage (ST1–ST5) surfaced any new defect beyond the five prior issues.
 
 ## Curated artifacts note
 
-The 26 PNGs in `/opt/cursor/artifacts/` are **byte-identical (md5-verified) duplicates** of stage PNGs (per `REVIEW-INVENTORY.md`). They were **not** re-reviewed independently; each inherits the verdict of its stage source row above. No unique pixels exist to review, so they add no verdicts to the 96-image total.
+The 26 PNGs in `/opt/cursor/artifacts/` are **byte-identical (md5-verified) duplicates** of stage PNGs (per the now-untracked `REVIEW-INVENTORY.md` that lived under `web/test-results/audit/`). They were **not** re-reviewed independently; each inherits the verdict of its stage source row above. No unique pixels exist to review, so they add no verdicts to the 96-image total.

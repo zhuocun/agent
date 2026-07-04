@@ -189,7 +189,7 @@ export function CompareView({
             onClick={() => setActiveTab(index)}
             data-testid="compare-tab"
             className={cn(
-              "min-h-9 flex-1 rounded-full px-3 ui-list-row font-medium transition-colors",
+              "min-h-11 flex-1 rounded-full px-3 ui-list-row font-medium transition-colors",
               activeTab === index
                 ? "bg-foreground/[0.08] text-foreground"
                 : "text-muted-foreground hover:bg-foreground/[0.04]",

@@ -274,7 +274,7 @@ export function MemoryBody({
                         <p className="min-w-0 flex-1 ui-list-row break-words whitespace-pre-wrap">
                           {fact.content}
                         </p>
-                        <div className="flex shrink-0 items-center gap-1">
+                        <div className="flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
                           <Button
                             type="button"
                             variant="ghost"

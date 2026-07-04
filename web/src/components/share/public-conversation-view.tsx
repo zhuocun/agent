@@ -302,7 +302,7 @@ function EmptyState({
             type="button"
             variant="secondary"
             onClick={onRetry}
-            className="h-10 rounded-full px-4 ui-list-row"
+            className="h-10 rounded-full px-4 ui-list-row [@media(hover:none)]:h-11"
           >
             <RotateCw aria-hidden className="size-4" />
             <span>Try again</span>
@@ -311,7 +311,7 @@ function EmptyState({
         <Button
           nativeButton={false}
           render={<Link href="/" />}
-          className="h-10 rounded-full px-4 ui-list-row"
+          className="h-10 rounded-full px-4 ui-list-row [@media(hover:none)]:h-11"
         >
           Start your own chat
         </Button>

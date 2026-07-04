@@ -325,7 +325,7 @@ export function TemplateLibraryBody({
                             {template.body}
                           </p>
                         </div>
-                        <div className="flex shrink-0 items-center gap-1">
+                        <div className="flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
                           <Button
                             type="button"
                             variant="ghost"

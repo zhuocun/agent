@@ -328,7 +328,7 @@ function RetentionPicker({
 }): JSX.Element {
   return (
     <div
-      className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5"
+      className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
       role="group"
       aria-label="Chat retention"
     >
@@ -342,7 +342,7 @@ function RetentionPicker({
             title={option.description}
             onClick={() => onChange(option.value)}
             className={cn(
-              "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
+              "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
               selected
                 ? "bg-background text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground",
@@ -589,7 +589,7 @@ function ProjectSettingsPanel({
         helper="Tier new chats in this project start with."
         control={
           <div
-            className="flex flex-wrap gap-1 rounded-full border border-border/70 bg-secondary/40 p-0.5"
+            className="flex flex-wrap gap-1 rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
             role="group"
             aria-label="Project default model"
           >
@@ -604,7 +604,7 @@ function ProjectSettingsPanel({
                     onUpdate(selected.id, { defaultTierId: option.value })
                   }
                   className={cn(
-                    "rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
+                    "rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
                     active
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",
@@ -623,7 +623,7 @@ function ProjectSettingsPanel({
         helper="Overrides your global retention for this project's chats."
         control={
           <div
-            className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5"
+            className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
             role="group"
             aria-label="Project retention"
           >
@@ -638,7 +638,7 @@ function ProjectSettingsPanel({
                     onUpdate(selected.id, { retentionDays: option.value })
                   }
                   className={cn(
-                    "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
+                    "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
                     active
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",

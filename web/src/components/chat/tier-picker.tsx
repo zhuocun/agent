@@ -18,6 +18,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type { ModelTier, ModelTierId } from "@/lib/types";
 
@@ -43,6 +44,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
     : "Change model tier.";
 
   const handleSelect = (id: ModelTierId): void => {
+    haptic("selection");
     onSelect(id);
     setSheetOpen(false);
   };
@@ -84,7 +86,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
               <DropdownMenuItem
                 key={tier.id}
                 label={tier.label}
-                onClick={() => onSelect(tier.id)}
+                onClick={() => handleSelect(tier.id)}
                 className="py-2"
               >
                 <div className="min-w-0 flex-1">
@@ -147,7 +149,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
               Choose which capability tier answers your next message.
             </DialogDescription>
           </DialogHeader>
-          <ul className="-mx-1 flex flex-col overflow-y-auto">
+          <ul className="-mx-1 flex flex-col overflow-y-auto overscroll-contain">
             {tiers.map((tier) => {
               const isSelected = tier.id === selectedId;
               return (

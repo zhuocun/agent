@@ -312,7 +312,7 @@ export function ShortcutsBody({
           </Button>
         ) : null}
       </div>
-      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto pr-2 sm:max-h-none">
+      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto overscroll-contain pr-2 sm:max-h-none">
         {shortcuts.map((section) => (
           <section key={section.heading} className="space-y-1">
             <h3 className="px-2 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">

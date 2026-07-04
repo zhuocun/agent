@@ -173,7 +173,7 @@ export function TemplateLibraryBody({
         </p>
       </div>
 
-      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto pr-2 sm:max-h-none">
+      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto overscroll-contain pr-2 sm:max-h-none">
           {/* Add a template */}
           <div className="space-y-2">
             <label

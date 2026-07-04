@@ -784,9 +784,13 @@
   .chat-md :where(pre) {
     @apply max-w-full overflow-x-auto;
     overflow-wrap: normal;
+    /* Keep a horizontal fling at the scroller edge from chaining to the OS
+       back/forward swipe (iOS/Chromium) — settle in-block instead. */
+    overscroll-behavior-x: contain;
   }
   .chat-md :where(table) {
     @apply block max-w-full overflow-x-auto;
+    overscroll-behavior-x: contain;
   }
   .chat-md :where(ul) { @apply list-disc pl-6; }
   .chat-md :where(ol) { @apply list-decimal pl-6; }

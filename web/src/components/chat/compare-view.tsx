@@ -15,6 +15,7 @@ import {
   type CompareColumnHandle,
 } from "@/components/chat/compare-column";
 import { TierPicker } from "@/components/chat/tier-picker";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, ModelTier, ModelTierId } from "@/lib/types";
 
@@ -186,10 +187,13 @@ export function CompareView({
             id={`compare-tab-${tier.id}`}
             aria-selected={activeTab === index}
             aria-controls={`compare-panel-${tier.id}`}
-            onClick={() => setActiveTab(index)}
+            onClick={() => {
+              haptic("selection");
+              setActiveTab(index);
+            }}
             data-testid="compare-tab"
             className={cn(
-              "min-h-11 flex-1 rounded-full px-3 ui-list-row font-medium transition-colors",
+              "min-h-11 flex-1 rounded-full px-3 ui-list-row font-medium transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100",
               activeTab === index
                 ? "bg-foreground/[0.08] text-foreground"
                 : "text-muted-foreground hover:bg-foreground/[0.04]",

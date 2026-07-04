@@ -64,6 +64,7 @@ import {
   type UsageBudget,
 } from "@/lib/types";
 import type { ProjectUpdateInput } from "@/lib/apiClient";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 
 /**
@@ -973,6 +974,7 @@ export function SettingsDialog({
   }
 
   function selectTab(tab: SettingsTab): void {
+    haptic("selection");
     setActiveTab(tab);
     if (!isDesktop) setMobileShowList(false);
   }
@@ -1062,7 +1064,7 @@ export function SettingsDialog({
                         data-testid={tab.testId}
                         onClick={() => selectTab(tab.id)}
                         className={cn(
-                          "flex w-full items-center gap-3 px-4 py-2.5 text-left ui-list-row font-medium text-foreground transition-colors active:bg-secondary/60 md:py-3",
+                          "flex w-full items-center gap-3 px-4 py-2.5 text-left ui-list-row font-medium text-foreground transition-[transform,background-color,color] active:bg-secondary/60 active:scale-[0.98] active:duration-[70ms] motion-reduce:active:scale-100 md:py-3",
                           tabIndex > 0 && "border-t border-border/40",
                         )}
                       >
@@ -1158,7 +1160,7 @@ export function SettingsDialog({
                           ?.focus();
                       }}
                       className={cn(
-                        "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 ui-list-row font-medium whitespace-nowrap transition-colors focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+                        "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 ui-list-row font-medium whitespace-nowrap transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
                         selected
                           ? "bg-secondary text-foreground shadow-sm ring-1 ring-ring/30"
                           : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",

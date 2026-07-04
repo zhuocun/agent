@@ -34,6 +34,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type {
   ModelTier,
@@ -169,16 +170,19 @@ export function ModelModePicker({
   );
 
   const handleSelectTier = (id: ModelTierId): void => {
+    haptic("selection");
     onSelectTier(id);
     setSheetOpen(false);
   };
 
   const handleSelectProvider = (id: string): void => {
+    haptic("selection");
     onSelectProvider(id);
     setSheetOpen(false);
   };
 
   const handleSelectEffort = (id: ReasoningEffortId): void => {
+    haptic("selection");
     onSelectEffort(id);
     setSheetOpen(false);
   };
@@ -319,7 +323,7 @@ export function ModelModePicker({
                       label={e.label}
                       meta={effortMeta(e)}
                       selected={e.id === selectedEffortId}
-                      onSelect={() => onSelectEffort(e.id)}
+                      onSelect={() => handleSelectEffort(e.id)}
                     />
                   ))}
                 </DropdownMenuGroup>

@@ -109,7 +109,7 @@ function DrawerContent({
             // Offsets fold in the top/right safe-area insets so the control never
             // tucks under the notch/status bar (portrait) or the landscape notch
             // on a right-side drawer.
-            className="absolute top-[calc(env(safe-area-inset-top)+1rem)] right-[calc(env(safe-area-inset-right)+1rem)] inline-flex size-11 items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+            className="absolute top-[calc(env(safe-area-inset-top)+1rem)] right-[calc(env(safe-area-inset-right)+1rem)] inline-flex size-11 items-center justify-center rounded-sm opacity-70 transition-[opacity,transform] hover:opacity-100 active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
           >
             <XIcon />
             <span className="sr-only">Close</span>

@@ -119,7 +119,7 @@ function DialogContent({
           // Mobile (default): iOS bottom sheet — full width, pinned to the
           // bottom, rounded top only, capped height, home-indicator-safe bottom
           // padding. Slides up/down with iOS sheet easing.
-          "glass-strong fixed inset-x-0 bottom-0 z-50 grid w-full gap-4 rounded-t-3xl rounded-b-none p-6 pb-[max(env(safe-area-inset-bottom),1rem)] text-foreground",
+          "glass-strong fixed inset-x-0 bottom-0 z-50 grid w-full gap-4 rounded-t-3xl rounded-b-none p-6 pb-[max(env(safe-area-inset-bottom),1rem)] pl-[max(env(safe-area-inset-left),1.5rem)] pr-[max(env(safe-area-inset-right),1.5rem)] text-foreground",
           "[--dialog-max-h:90dvh] max-h-[90dvh] transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
           // Desktop (sm+): restore the centered modal — reset the sheet anchor,
           // radius and slide, and swap back to the scale+fade transition. The
@@ -146,7 +146,7 @@ function DialogContent({
           // Kept mounted even when hidden: swipe-to-dismiss clicks this ref.
           className={cn(
             showCloseButton
-              ? "absolute top-2 right-2 inline-flex size-11 items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+              ? "absolute top-2 right-2 inline-flex size-11 items-center justify-center rounded-sm opacity-70 transition-[opacity,transform] hover:opacity-100 active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
               : "sr-only"
           )}
         >

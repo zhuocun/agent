@@ -138,7 +138,7 @@ export function SlashCommandsPopover({
         id={resolvedListboxId}
         aria-labelledby={`${resolvedListboxId}-label`}
         className={cn(
-          "max-h-72 overflow-y-auto py-1",
+          "max-h-72 overflow-y-auto overscroll-contain py-1",
           filtered.length === 0 && "sr-only",
         )}
       >

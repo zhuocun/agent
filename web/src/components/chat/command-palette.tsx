@@ -522,7 +522,7 @@ export function CommandPalette({
           className={cn(
             // Mobile (default): iOS bottom sheet — full-width, bottom-pinned,
             // rounded top, slides up with iOS sheet easing, swipe-to-dismiss.
-            "glass-strong fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] w-full flex-col gap-0 overflow-hidden rounded-t-3xl rounded-b-none p-0 text-foreground",
+            "glass-strong fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] w-full flex-col gap-0 overflow-hidden rounded-t-3xl rounded-b-none p-0 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] text-foreground",
             "transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
             // Desktop (sm+): centered top-anchored modal with scale+fade. The
             // -translate-x keeps composing with scale during the anim.
@@ -609,7 +609,7 @@ export function CommandPalette({
           </div>
 
           <div
-            className="min-h-0 flex-1 space-y-0.5 overflow-y-auto py-2"
+            className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
             aria-busy={(filterMode ? filterPending : searchPending) || undefined}
           >
             {filterMode ? (

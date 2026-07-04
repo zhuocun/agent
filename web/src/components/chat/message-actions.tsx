@@ -38,6 +38,7 @@ import {
   MIN_RATE,
   useSpeechSynthesis,
 } from "@/lib/use-speech-synthesis";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type {
   Feedback,
@@ -118,6 +119,7 @@ export function MessageActions({
 
   const handleCopy = async () => {
     const markCopied = () => {
+      haptic("selection");
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     };
@@ -316,9 +318,10 @@ function OverflowMenu({
               aria-label="Helpful"
               checked={primary.feedback === "up"}
               closeOnClick={false}
-              onCheckedChange={(checked) =>
-                primary.onFeedback?.(checked ? "up" : null)
-              }
+              onCheckedChange={(checked) => {
+                haptic("selection");
+                primary.onFeedback?.(checked ? "up" : null);
+              }}
               className="py-2"
             >
               <ThumbsUp className="size-4" />
@@ -329,9 +332,10 @@ function OverflowMenu({
               aria-label="Not helpful"
               checked={primary.feedback === "down"}
               closeOnClick={false}
-              onCheckedChange={(checked) =>
-                primary.onFeedback?.(checked ? "down" : null)
-              }
+              onCheckedChange={(checked) => {
+                haptic("selection");
+                primary.onFeedback?.(checked ? "down" : null);
+              }}
               className="py-2"
             >
               <ThumbsDown className="size-4" />
@@ -466,7 +470,10 @@ function OverflowMenu({
                 <DropdownMenuItem
                   key={tier.id}
                   label={tier.label}
-                  onClick={() => modelChoice.onRegenerateWith(tier.id)}
+                  onClick={() => {
+                    haptic("selection");
+                    modelChoice.onRegenerateWith(tier.id);
+                  }}
                   data-testid={`regenerate-with-tier-${tier.id}`}
                   className="py-2"
                 >
@@ -490,12 +497,13 @@ function OverflowMenu({
                   <DropdownMenuItem
                     key={provider.providerId}
                     label={provider.label}
-                    onClick={() =>
+                    onClick={() => {
+                      haptic("selection");
                       modelChoice.onRegenerateWith(
                         modelChoice.options.selectedTierId,
                         provider.providerId,
-                      )
-                    }
+                      );
+                    }}
                     className="py-2"
                   >
                     <div className="min-w-0 flex-1">

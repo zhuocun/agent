@@ -3394,6 +3394,37 @@ export function ChatThread() {
   }));
   useKeyboardShortcuts(boundShortcuts);
 
+  // PWA manifest `shortcuts` (jump list) deep-link. Each shortcut opens the app
+  // at `/?action=…`; on first mount we dispatch the matching in-app action and
+  // strip the param so a reload/back doesn't re-fire it. `runActionRef` keeps a
+  // live handle to the freshly-built `runAction` without re-arming the effect.
+  const runActionRef = useRef(runAction);
+  useEffect(() => {
+    runActionRef.current = runAction;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const action = params.get("action");
+    if (!action) return;
+    const actionMap: Record<string, ShortcutId> = {
+      "new-chat": "new-chat",
+      search: "search-history",
+      settings: "open-settings",
+    };
+    params.delete("action");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname +
+        (query ? `?${query}` : "") +
+        window.location.hash,
+    );
+    const id = actionMap[action];
+    if (id) runActionRef.current(id);
+  }, []);
+
   // Palette actions: every keyboard-bound entry that isn't "Hidden", plus
   // the palette-only Settings/Theme entries. Icon set is hand-picked to stay
   // visually quiet (no emoji, all stroke icons).
@@ -3551,7 +3582,7 @@ export function ChatThread() {
       <div className="flex h-full min-h-svh items-center justify-center p-6">
         <div className="max-w-sm space-y-4 text-center">
           <h1 className="text-lg font-semibold">{bootstrapError.title}</h1>
-          <p className="text-sm text-muted-foreground">{bootstrapError.body}</p>
+          <p className="ui-body text-muted-foreground">{bootstrapError.body}</p>
           <Button
             type="button"
             onClick={() => {
@@ -4194,7 +4225,7 @@ export function ChatThread() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">
+            <p className="ui-body text-muted-foreground">
               Type{" "}
               <span className="font-medium text-foreground">
                 {deleteConfirmExpected}

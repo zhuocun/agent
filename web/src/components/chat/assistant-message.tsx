@@ -415,7 +415,7 @@ export function AssistantMessage({
 
       {isDone && hasToolOrSubagentActivityOnTurn && !effectiveAnswerText.trim() ? (
         <p
-          className="text-sm text-muted-foreground"
+          className="ui-body text-muted-foreground"
           data-testid="assistant-empty-fallback"
         >
           Finished without a written reply.
@@ -494,7 +494,7 @@ export function formatStatusLabel(
 
 function StatusLine({ label, state }: { label: string; state: "active" | "done" }) {
   return (
-    <div className="flex items-center gap-2 text-sm text-status-line">
+    <div className="flex items-center gap-2 ui-body text-status-line">
       {state === "active" ? (
         <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden />
       ) : null}
@@ -509,7 +509,7 @@ function StatusLine({ label, state }: { label: string; state: "active" | "done" 
 function UngroundedMarker() {
   return (
     <div
-      className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+      className="inline-flex items-center gap-1.5 ui-caption text-muted-foreground"
       data-testid="ungrounded-marker"
     >
       <SearchX aria-hidden className="size-3.5" />
@@ -527,7 +527,7 @@ function UngroundedMarker() {
 function StoppedChip() {
   return (
     <span
-      className="inline-flex items-center gap-1 text-xs text-muted-foreground/80"
+      className="inline-flex items-center gap-1 ui-caption text-muted-foreground/80"
       data-testid="stopped-chip"
     >
       <CircleStop aria-hidden className="size-3" />
@@ -560,7 +560,7 @@ function MemoryUsedChip({
       aria-label={`${label}. Open memory manager.`}
       data-testid="memory-used-chip"
       className={cn(
-        "inline-flex items-center gap-1 text-xs text-muted-foreground/80",
+        "inline-flex items-center gap-1 ui-caption text-muted-foreground/80",
         "outline-none transition-colors hover:text-foreground",
         "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
         // 44pt touch floor on coarse pointers; visual size unchanged on desktop.
@@ -657,7 +657,7 @@ function ErrorFooter({
         <span
           role="status"
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs",
+            "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 ui-caption",
             isDestructive
               ? "border-destructive/30 bg-destructive/10 text-destructive"
               : "border-warning-foreground/20 bg-warning text-warning-foreground",
@@ -667,7 +667,7 @@ function ErrorFooter({
           <span>{title}</span>
         </span>
         {hasShortBody ? (
-          <span className="text-xs text-muted-foreground">{body}</span>
+          <span className="ui-caption text-muted-foreground">{body}</span>
         ) : null}
         {onRetry ? (
           <>
@@ -714,7 +714,7 @@ function ErrorFooter({
           className="space-y-2 rounded-xl border border-warning-foreground/20 bg-warning/40 px-3 py-2"
           data-testid="safety-blocked-detail"
         >
-          <p className="text-xs leading-snug text-warning-foreground">
+          <p className="ui-body leading-snug text-warning-foreground">
             We couldn&apos;t send this because {safetySourceLabel(safetySource)}{" "}
             {safetyReasonLabel(safetyReasonCode)}. You can edit and try again, or
             ask us to review this decision.
@@ -723,7 +723,7 @@ function ErrorFooter({
             {appealStatus === "done" ? (
               <p
                 role="status"
-                className="text-xs text-muted-foreground"
+                className="ui-caption text-muted-foreground"
                 data-testid="safety-appeal-confirmation"
               >
                 Thanks — we&apos;ll review this block.
@@ -742,7 +742,7 @@ function ErrorFooter({
               </Button>
             )}
             {appealStatus === "error" ? (
-              <p role="alert" className="text-xs text-destructive">
+              <p role="alert" className="ui-body text-destructive">
                 Couldn&apos;t send your request. Please try again.
               </p>
             ) : null}
@@ -755,13 +755,13 @@ function ErrorFooter({
             render={
               <button
                 type="button"
-                className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                className="ui-body text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
               >
                 {detailsOpen ? "Hide details" : "Details"}
               </button>
             }
           />
-          <CollapsibleContent className="pt-2 text-xs text-muted-foreground">
+          <CollapsibleContent className="pt-2 ui-caption text-muted-foreground">
             {body}
           </CollapsibleContent>
         </Collapsible>

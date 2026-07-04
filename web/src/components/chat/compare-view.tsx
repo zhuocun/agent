@@ -15,6 +15,7 @@ import {
   type CompareColumnHandle,
 } from "@/components/chat/compare-column";
 import { TierPicker } from "@/components/chat/tier-picker";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, ModelTier, ModelTierId } from "@/lib/types";
 
@@ -38,7 +39,7 @@ export function CompareTierBar({
       className="mx-auto mb-2 flex w-full max-w-3xl flex-wrap items-center justify-center gap-x-2 gap-y-1.5 px-4"
       data-testid="compare-tier-bar"
     >
-      <span className="text-xs text-muted-foreground">Compare</span>
+      <span className="ui-caption text-muted-foreground">Compare</span>
       <div data-testid="compare-slot-0">
         <TierPicker
           tiers={tiers}
@@ -47,7 +48,7 @@ export function CompareTierBar({
           disabled={disabled}
         />
       </div>
-      <span aria-hidden className="text-xs text-muted-foreground">
+      <span aria-hidden className="ui-caption text-muted-foreground">
         vs
       </span>
       <div data-testid="compare-slot-1">
@@ -186,10 +187,13 @@ export function CompareView({
             id={`compare-tab-${tier.id}`}
             aria-selected={activeTab === index}
             aria-controls={`compare-panel-${tier.id}`}
-            onClick={() => setActiveTab(index)}
+            onClick={() => {
+              haptic("selection");
+              setActiveTab(index);
+            }}
             data-testid="compare-tab"
             className={cn(
-              "min-h-9 flex-1 rounded-full px-3 text-sm font-medium transition-colors",
+              "min-h-11 flex-1 rounded-full px-3 ui-list-row font-medium transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100",
               activeTab === index
                 ? "bg-foreground/[0.08] text-foreground"
                 : "text-muted-foreground hover:bg-foreground/[0.04]",

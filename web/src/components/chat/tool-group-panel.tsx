@@ -40,7 +40,7 @@ export function ToolGroupPanel({ group, onDecision, embedded = false }: ToolGrou
     <div
       data-testid="tool-group-panel"
       className={cn(
-        "max-w-full text-sm text-muted-foreground",
+        "max-w-full ui-body text-muted-foreground",
         embedded
           ? "py-0.5"
           : "rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5",
@@ -58,7 +58,7 @@ export function ToolGroupPanel({ group, onDecision, embedded = false }: ToolGrou
         >
           <Wrench aria-hidden className="size-4 shrink-0" />
           <span className="font-medium text-foreground">Tools</span>
-          <span className="text-xs text-muted-foreground">{summary}</span>
+          <span className="ui-caption text-muted-foreground">{summary}</span>
           <ChevronDown
             aria-hidden
             className="ml-auto size-3.5 shrink-0 transition-transform duration-300 ease-[var(--ease-ios-spring)] motion-reduce:transition-none group-data-[panel-open]/tool-group-trigger:rotate-180"

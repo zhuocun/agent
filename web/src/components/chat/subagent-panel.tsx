@@ -108,7 +108,7 @@ export function SubagentPanel({
   return (
     <div
       data-testid="subagent-panel"
-      className="max-w-full rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5 text-sm text-muted-foreground"
+      className="max-w-full rounded-xl border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5 ui-body text-muted-foreground"
     >
       <Collapsible defaultOpen>
         <CollapsibleTrigger
@@ -123,7 +123,7 @@ export function SubagentPanel({
           <Telescope aria-hidden className="size-4 shrink-0" />
           <span className="font-medium text-foreground">{title}</span>
           {!singleAgentFlat ? (
-            <span className="text-xs text-muted-foreground">{summary}</span>
+            <span className="ui-caption text-muted-foreground">{summary}</span>
           ) : null}
           <ChevronDown
             aria-hidden
@@ -280,7 +280,7 @@ function SingleAgentContent({
       className="mt-2"
     >
       {isRunning ? (
-        <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <div className="mb-1 flex items-center gap-1.5 ui-caption text-muted-foreground">
           <Loader2
             aria-hidden
             className="size-3.5 shrink-0 motion-safe:animate-spin"
@@ -291,12 +291,12 @@ function SingleAgentContent({
       {hasText ? (
         <div className="space-y-1">
           {section.reasoning ? (
-            <p className="line-clamp-3 break-words text-xs italic leading-snug text-muted-foreground">
+            <p className="line-clamp-3 break-words ui-caption italic leading-snug text-muted-foreground">
               {section.reasoning}
             </p>
           ) : null}
           {panelAnswer ? (
-            <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
+            <p className="whitespace-pre-wrap break-words ui-caption leading-snug text-muted-foreground">
               {panelAnswer}
             </p>
           ) : null}
@@ -338,7 +338,7 @@ function SubagentRow({
       <span className="min-w-0 truncate font-medium text-foreground">
         {section.label}
       </span>
-      <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground/[0.06] px-2 text-2xs text-muted-foreground">
+      <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground">
         {roleLabel(section.role)}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -387,12 +387,12 @@ function SubagentRow({
   const textDetailBody = hasTextDetail ? (
     <div className="mt-1 space-y-1">
       {section.reasoning ? (
-        <p className="line-clamp-3 break-words text-xs italic leading-snug text-muted-foreground">
+        <p className="line-clamp-3 break-words ui-caption italic leading-snug text-muted-foreground">
           {section.reasoning}
         </p>
       ) : null}
       {panelAnswer ? (
-        <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
+        <p className="whitespace-pre-wrap break-words ui-caption leading-snug text-muted-foreground">
           {panelAnswer}
         </p>
       ) : null}

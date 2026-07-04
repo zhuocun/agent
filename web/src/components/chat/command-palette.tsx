@@ -89,7 +89,7 @@ const FILTER_INPUT_CLASS =
 const FILTER_DATE_INPUT_CLASS =
   "w-full min-w-[7.5rem] rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 const FILTER_SELECT_CLASS =
-  "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25";
+  "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 
 // Date input <-> ISO. The native date input gives `YYYY-MM-DD`; the BE parses
 // ISO-8601. `dateTo` widens to end-of-day so an inclusive "to" matches any time
@@ -522,7 +522,7 @@ export function CommandPalette({
           className={cn(
             // Mobile (default): iOS bottom sheet — full-width, bottom-pinned,
             // rounded top, slides up with iOS sheet easing, swipe-to-dismiss.
-            "glass-strong fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] w-full flex-col gap-0 overflow-hidden rounded-t-3xl rounded-b-none p-0 text-foreground",
+            "glass-strong fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] w-full flex-col gap-0 overflow-hidden rounded-t-3xl rounded-b-none p-0 pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] text-foreground",
             "transition-[transform,opacity] duration-[400ms] ease-[var(--ease-ios-sheet)] max-sm:data-[ending-style]:translate-y-full max-sm:data-[starting-style]:translate-y-full",
             // Desktop (sm+): centered top-anchored modal with scale+fade. The
             // -translate-x keeps composing with scale during the anim.
@@ -609,15 +609,15 @@ export function CommandPalette({
           </div>
 
           <div
-            className="min-h-0 flex-1 space-y-0.5 overflow-y-auto py-2"
+            className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
             aria-busy={(filterMode ? filterPending : searchPending) || undefined}
           >
             {filterMode ? (
               <div className="space-y-4 px-5 py-2">
                 {/* Filters — native form controls (real focus, Tab order). */}
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <label className="space-y-1 text-sm">
-                    <span className="text-xs font-medium text-muted-foreground">
+                  <label className="space-y-1 ui-list-row">
+                    <span className="ui-caption font-medium text-muted-foreground">
                       Model
                     </span>
                     <select
@@ -637,8 +637,8 @@ export function CommandPalette({
                     </select>
                   </label>
 
-                  <label className="space-y-1 text-sm">
-                    <span className="text-xs font-medium text-muted-foreground">
+                  <label className="space-y-1 ui-list-row">
+                    <span className="ui-caption font-medium text-muted-foreground">
                       Project
                     </span>
                     <select
@@ -656,8 +656,8 @@ export function CommandPalette({
                     </select>
                   </label>
 
-                  <div className="space-y-1 text-sm">
-                    <span className="text-xs font-medium text-muted-foreground">
+                  <div className="space-y-1 ui-list-row">
+                    <span className="ui-caption font-medium text-muted-foreground">
                       Cost (USD)
                     </span>
                     <div className="flex items-center gap-2">
@@ -691,8 +691,8 @@ export function CommandPalette({
                     </div>
                   </div>
 
-                  <div className="space-y-1 text-sm sm:col-span-2">
-                    <span className="text-xs font-medium text-muted-foreground">
+                  <div className="space-y-1 ui-list-row sm:col-span-2">
+                    <span className="ui-caption font-medium text-muted-foreground">
                       Date
                     </span>
                     <div className="flex items-center gap-2">
@@ -719,8 +719,8 @@ export function CommandPalette({
                   </div>
 
                   {tags.length > 0 ? (
-                    <label className="space-y-1 text-sm">
-                      <span className="text-xs font-medium text-muted-foreground">
+                    <label className="space-y-1 ui-list-row">
+                      <span className="ui-caption font-medium text-muted-foreground">
                         Tag
                       </span>
                       <select
@@ -741,7 +741,7 @@ export function CommandPalette({
                 </div>
 
                 {filterError ? (
-                  <p role="alert" className="text-sm text-destructive">
+                  <p role="alert" className="ui-body text-destructive">
                     {filterError}
                   </p>
                 ) : null}
@@ -749,7 +749,7 @@ export function CommandPalette({
                 {/* Results */}
                 <section aria-busy={filterPending || undefined}>
                   {filterPending ? (
-                    <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <p className="flex items-center gap-2 ui-body text-muted-foreground">
                       <LoaderCircle
                         aria-hidden
                         className="size-4 motion-safe:animate-spin"
@@ -759,7 +759,7 @@ export function CommandPalette({
                   ) : filterSearched &&
                     filterError === null &&
                     filterResults.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
+                    <p className="ui-body text-muted-foreground">
                       No matches — try a different term or loosen the filters.
                     </p>
                   ) : filterResults.length > 0 ? (
@@ -780,11 +780,11 @@ export function CommandPalette({
                                 className="mt-0.5 size-4 shrink-0 text-muted-foreground"
                               />
                               <span className="min-w-0 flex-1 space-y-1">
-                                <span className="block truncate text-sm font-medium">
+                                <span className="block truncate ui-list-row font-medium">
                                   {result.title}
                                 </span>
                                 {snippet ? (
-                                  <span className="block truncate text-xs text-muted-foreground">
+                                  <span className="block truncate ui-caption text-muted-foreground">
                                     {snippet}
                                   </span>
                                 ) : null}
@@ -796,7 +796,7 @@ export function CommandPalette({
                                       </Badge>
                                     ) : null}
                                     {result.matchedAt ? (
-                                      <span className="text-2xs text-muted-foreground">
+                                      <span className="ui-caption text-muted-foreground">
                                         {new Date(
                                           result.matchedAt,
                                         ).toLocaleDateString()}
@@ -811,14 +811,14 @@ export function CommandPalette({
                       })}
                     </ul>
                   ) : (
-                    <p className="text-sm text-muted-foreground">
+                    <p className="ui-body text-muted-foreground">
                       Type to search your conversation history.
                     </p>
                   )}
                 </section>
               </div>
             ) : flat.length === 0 ? (
-              <div className="px-5 py-8 text-center text-sm text-muted-foreground">
+              <div className="px-5 py-8 text-center ui-body text-muted-foreground">
                 {searchPending
                   ? "Searching…"
                   : "No results — try a different term"}
@@ -829,7 +829,7 @@ export function CommandPalette({
                   <li key={section.heading} className="py-1">
                     <div
                       role="presentation"
-                      className="px-5 pb-1 pt-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                      className="px-5 pb-1 pt-2 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase"
                     >
                       {section.heading}
                     </div>
@@ -859,7 +859,7 @@ export function CommandPalette({
                                 // quiet translucent tint to match the model/tier
                                 // pickers' selected-row treatment — the solid
                                 // `bg-accent` fill read too loud against glass.
-                                "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-sm text-foreground",
+                                "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 ui-list-row text-foreground",
                                 isSelected && "bg-foreground/[0.06]",
                               )}
                             >
@@ -899,7 +899,7 @@ export function CommandPalette({
                             className={cn(
                               // min-h-11: 44pt touch floor; quiet selection
                               // tint consistent with the action rows above.
-                              "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-foreground",
+                              "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 ui-list-row text-foreground",
                               isSelected && "bg-foreground/[0.06]",
                             )}
                           >
@@ -912,13 +912,13 @@ export function CommandPalette({
                                 {item.conversation.title}
                               </span>
                               {matchSnippet ? (
-                                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                <span className="mt-0.5 block truncate ui-caption text-muted-foreground">
                                   {matchSnippet}
                                 </span>
                               ) : null}
                             </span>
                             {item.isActive ? (
-                              <span className="ml-3 shrink-0 text-xs text-muted-foreground">
+                              <span className="ml-3 shrink-0 ui-caption text-muted-foreground">
                                 Open
                               </span>
                             ) : null}

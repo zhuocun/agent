@@ -117,7 +117,7 @@ export function WelcomeScreen({
           <button
             type="button"
             onClick={onConnect}
-            className="animate-welcome-enter glass-clear mb-5 inline-flex min-h-11 items-center gap-1.5 rounded-full px-4 py-2.5 text-xs font-medium tracking-wide text-muted-foreground transition-colors duration-200 ease-out md:mb-7 md:min-h-0 md:py-1.5 [@media(hover:hover)]:hover:bg-foreground/5 [@media(hover:hover)]:hover:text-foreground active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="animate-welcome-enter glass-clear mb-5 inline-flex min-h-11 items-center gap-1.5 rounded-full px-4 py-2.5 ui-eyebrow font-medium tracking-wide text-muted-foreground transition-colors duration-200 ease-out md:mb-7 md:min-h-0 md:py-1.5 [@media(hover:hover)]:hover:bg-foreground/5 [@media(hover:hover)]:hover:text-foreground active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={{ animationDelay: "0ms" }}
           >
             Connect your API key

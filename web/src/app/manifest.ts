@@ -19,6 +19,29 @@ export default function manifest(): MetadataRoute.Manifest {
     // export in layout.tsx. Keep this the light surface.
     theme_color: "#f9fafc",
     categories: ["productivity", "utilities"],
+    // Long-press / jump-list shortcuts (Android/Chromium installs). Each target
+    // is an in-scope deep link the client resolves on mount (see chat-thread's
+    // `?action=` handler) — no new icon assets required.
+    shortcuts: [
+      {
+        name: "New chat",
+        short_name: "New chat",
+        description: "Start a fresh conversation",
+        url: "/?action=new-chat",
+      },
+      {
+        name: "Search chats",
+        short_name: "Search",
+        description: "Search your conversations",
+        url: "/?action=search",
+      },
+      {
+        name: "Settings",
+        short_name: "Settings",
+        description: "Open settings",
+        url: "/?action=settings",
+      },
+    ],
     icons: [
       {
         src: "/icon-192.png",

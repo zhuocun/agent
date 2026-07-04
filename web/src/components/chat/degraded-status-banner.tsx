@@ -68,7 +68,7 @@ export function DegradedStatusBanner({
       <div
         role="status"
         data-testid="degraded-status-banner"
-        className="inline-flex h-11 max-w-full items-center gap-1.5 rounded-full bg-warning pl-3 pr-1 text-xs text-warning-foreground ring-1 ring-warning-foreground/20"
+        className="inline-flex h-11 max-w-full items-center gap-1.5 rounded-full bg-warning pl-3 pr-1 ui-caption text-warning-foreground ring-1 ring-warning-foreground/20"
       >
         <TriangleAlert aria-hidden className="size-3.5 shrink-0" />
         <span className="min-w-0">
@@ -83,7 +83,7 @@ export function DegradedStatusBanner({
           render={<Link href="/status" />}
           variant="ghost"
           size="xs"
-          className="ml-0.5 h-11 px-3 text-xs underline-offset-4 hover:underline"
+          className="ml-0.5 h-11 px-3 ui-caption underline-offset-4 hover:underline"
         >
           View status
         </Button>

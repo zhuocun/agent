@@ -58,7 +58,7 @@ export function ReasoningPanel({
     >
       <CollapsibleTrigger
         className={cn(
-          "group/reasoning-trigger inline-flex items-center gap-1 text-left text-xs text-muted-foreground",
+          "group/reasoning-trigger inline-flex items-center gap-1 text-left ui-caption text-muted-foreground",
           // Tap target: the trigger is intrinsically ~16px tall (text-xs line +
           // p-0), well under the iOS 44pt floor. Expand the hit area vertically
           // with py-1.5 and cancel it back out with -my-1.5 so the surrounding
@@ -121,7 +121,7 @@ export function ReasoningPanel({
       >
         <p
           className={cn(
-            "mt-2 pl-3 text-sm leading-relaxed",
+            "mt-2 pl-3 ui-body leading-relaxed",
             "whitespace-pre-wrap break-words text-muted-foreground",
           )}
         >

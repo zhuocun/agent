@@ -66,13 +66,13 @@ export function AttributionRow({
 
   return (
     <div
-      className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-xs text-muted-foreground"
+      className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 font-sans ui-caption text-muted-foreground"
       data-testid="message-attribution"
       aria-label={triggerLabel}
     >
       {substitution ? (
         <span
-          className="inline-flex items-center gap-1 rounded-full bg-substitution-callout px-1.5 py-0.5 text-2xs font-medium text-substitution-callout-foreground ring-1 ring-substitution-callout-border"
+          className="inline-flex items-center gap-1 rounded-full bg-substitution-callout px-1.5 py-0.5 ui-caption font-medium text-substitution-callout-foreground ring-1 ring-substitution-callout-border"
           data-testid="attribution-substitution"
         >
           <Info aria-hidden className="size-3 shrink-0" />

@@ -161,13 +161,13 @@ export function CompareColumn({
     >
       <header className="flex items-center gap-2 border-b border-border/60 pb-2">
         <span
-          className="truncate text-sm font-semibold text-foreground"
+          className="truncate ui-list-row font-semibold text-foreground"
           data-testid="compare-column-tier"
         >
           {tier.label}
         </span>
         {tier.modelLabel ? (
-          <span className="truncate text-xs text-muted-foreground">
+          <span className="truncate ui-caption text-muted-foreground">
             {tier.modelLabel}
           </span>
         ) : null}
@@ -181,7 +181,7 @@ export function CompareColumn({
             defaultReasoningOpen={defaultReasoningOpen}
           />
         ) : (
-          <p className="text-sm text-muted-foreground">Waiting for your prompt…</p>
+          <p className="ui-body text-muted-foreground">Waiting for your prompt…</p>
         )}
       </div>
     </section>

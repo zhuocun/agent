@@ -138,7 +138,7 @@ export function SlashCommandsPopover({
         id={resolvedListboxId}
         aria-labelledby={`${resolvedListboxId}-label`}
         className={cn(
-          "max-h-72 overflow-y-auto py-1",
+          "max-h-72 overflow-y-auto overscroll-contain py-1",
           filtered.length === 0 && "sr-only",
         )}
       >
@@ -164,7 +164,7 @@ export function SlashCommandsPopover({
                 // desktop). Quiet translucent selection tint to match the
                 // model/tier pickers and command palette — the solid
                 // `bg-accent` fill read too loud against glass-strong.
-                "mx-1 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-foreground",
+                "mx-1 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 ui-list-row text-foreground",
                 isSelected && "bg-foreground/[0.06]",
               )}
             >
@@ -182,10 +182,10 @@ export function SlashCommandsPopover({
                 <Icon aria-hidden className="size-4" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block font-mono text-sm font-medium">
+                <span className="block font-mono ui-list-row font-medium">
                   /{command.name}
                 </span>
-                <span className="block truncate text-xs text-muted-foreground">
+                <span className="block truncate ui-caption text-muted-foreground">
                   {command.description}
                 </span>
               </span>
@@ -194,7 +194,7 @@ export function SlashCommandsPopover({
         })}
       </ul>
       {filtered.length === 0 ? (
-        <div className="px-4 py-3 text-sm text-muted-foreground">
+        <div className="px-4 py-3 ui-body text-muted-foreground">
           No commands match — keep typing for a regular message.
         </div>
       ) : null}

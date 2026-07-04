@@ -115,7 +115,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
     !showApprovalControls;
 
   const outerClassName = cn(
-    "flex max-w-full items-start gap-2 text-sm",
+    "flex max-w-full items-start gap-2 ui-body",
     compactEmbedded
       ? "py-1 text-muted-foreground"
       : cn(
@@ -142,7 +142,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       <span className="truncate font-medium text-foreground">{label}</span>
       {planApproval || compactEmbedded ? null : (
-        <span className="text-xs text-muted-foreground">
+        <span className="ui-caption text-muted-foreground">
           {isResult ? "result" : "tool call"}
         </span>
       )}
@@ -155,7 +155,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
     <>
       {planApproval ? <PlanApprovalDetail input={planApproval} /> : null}
       {detail ? (
-        <p className="mt-1 line-clamp-2 break-words text-xs leading-snug text-muted-foreground">
+        <p className="mt-1 line-clamp-2 break-words ui-caption leading-snug text-muted-foreground">
           {detail}
         </p>
       ) : null}
@@ -252,7 +252,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
 function PlanApprovalDetail({ input }: { input: PlanApprovalInput }) {
   return (
     <div className="mt-2 space-y-2" data-testid="plan-approval-detail">
-      <ol className="list-decimal space-y-1 pl-5 text-xs leading-snug text-muted-foreground">
+      <ol className="list-decimal space-y-1 pl-5 ui-caption leading-snug text-muted-foreground">
         {input.plan.map((step, idx) => (
           <li key={idx} className="break-words">
             {step}
@@ -305,7 +305,7 @@ function StatusIcon({
 
 function StatusPill({ status }: { status: ToolRunStatus }) {
   return (
-    <span className="inline-flex h-5 items-center rounded-full bg-foreground/[0.06] px-2 text-2xs text-muted-foreground">
+    <span className="inline-flex h-5 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground">
       {statusLabel(status)}
     </span>
   );
@@ -317,7 +317,7 @@ function ApprovalPill({ state }: { state: ToolApprovalState }) {
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center gap-1 rounded-full px-2 text-2xs",
+        "inline-flex h-5 items-center gap-1 rounded-full px-2 ui-caption",
         approved && "bg-success/10 text-success",
         rejected && "bg-destructive/10 text-destructive",
         !approved && !rejected && "bg-warning text-warning-foreground",

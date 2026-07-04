@@ -441,7 +441,7 @@ function ConversationRow({
       // strings and would race against the test).
       data-conversation-id={conversation.id}
       className={cn(
-        "group/conv relative isolate flex min-h-11 w-full items-center overflow-hidden rounded-2xl text-left text-sm transition-colors",
+        "group/conv relative isolate flex min-h-11 w-full items-center overflow-hidden rounded-2xl text-left ui-list-row transition-colors",
         // Single-accent doctrine: the active row is signalled by a 2px brand
         // stripe at the leading edge; rest state stays on pure typography + Ma
         // (no background fill). Hover tint is intentionally barely-perceptible.
@@ -482,7 +482,7 @@ function ConversationRow({
             onTogglePin(conversation.id);
             swipe.close();
           }}
-          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-muted text-xs font-medium text-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97]"
+          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-muted ui-list-row font-medium text-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97]"
         >
           {conversation.pinned ? (
             <PinOff className="size-4" aria-hidden />
@@ -500,7 +500,7 @@ function ConversationRow({
             onRequestDelete(conversation);
             swipe.close();
           }}
-          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-destructive text-xs font-medium text-destructive-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97]"
+          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-destructive ui-list-row font-medium text-destructive-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97]"
         >
           <Trash2 className="size-4" aria-hidden />
           <span>Delete</span>
@@ -633,7 +633,7 @@ function ConversationRow({
               </span>
             ) : null}
             {matchSnippet ? (
-              <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+              <span className="mt-0.5 block truncate ui-secondary text-muted-foreground">
                 {matchSnippet}
               </span>
             ) : retentionExpiresHint ? (
@@ -641,7 +641,7 @@ function ConversationRow({
                 // E2E + a11y target: the per-conversation retention countdown,
                 // shown only when an override is set (D31).
                 data-testid="sidebar-conversation-retention-hint"
-                className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground"
+                className="mt-0.5 flex items-center gap-1 truncate ui-caption text-muted-foreground"
               >
                 <Timer className="size-3 shrink-0" aria-hidden />
                 {retentionExpiresHint}
@@ -780,7 +780,7 @@ function ConversationRow({
           <div className="space-y-5">
             {/* Retention */}
             <section className="space-y-2">
-              <h3 className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              <h3 className="px-1 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
                 Retention
               </h3>
               <div
@@ -803,7 +803,7 @@ function ConversationRow({
                         onSetRetention(conversation.id, option.value)
                       }
                       className={cn(
-                        "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left text-sm outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                        "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
                         index > 0 && "border-t border-border/60",
                       )}
                     >
@@ -823,7 +823,7 @@ function ConversationRow({
             {/* Assign to project */}
             {onAssignProject ? (
               <section className="space-y-2">
-                <h3 className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                <h3 className="px-1 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
                   Assign to project
                 </h3>
                 <div
@@ -847,7 +847,7 @@ function ConversationRow({
                             onAssignProject(conversation.id, value)
                           }
                           className={cn(
-                            "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left text-sm outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                            "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
                             index > 0 && "border-t border-border/60",
                           )}
                         >
@@ -871,7 +871,7 @@ function ConversationRow({
             {/* Assign tags */}
             {onAssignTags && tags.length > 0 ? (
               <section className="space-y-2">
-                <h3 className="px-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                <h3 className="px-1 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
                   Assign tags
                 </h3>
                 <div
@@ -897,7 +897,7 @@ function ConversationRow({
                           onAssignTags(conversation.id, next);
                         }}
                         className={cn(
-                          "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left text-sm outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                          "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
                           index > 0 && "border-t border-border/60",
                         )}
                         data-testid="sidebar-conversation-tag-option"
@@ -1514,7 +1514,7 @@ export function Sidebar({
               Distinctiveness lives in the empty/welcome state, not here — so the
               brand recedes to a small, muted, normal-weight cap-tracked label
               that reads as orientation, not as a logo asking to be looked at. */}
-          <span className="text-xs font-normal uppercase tracking-wide text-muted-foreground">
+          <span className="ui-eyebrow font-normal uppercase tracking-wide text-muted-foreground">
             Olune
           </span>
         </div>
@@ -1542,7 +1542,7 @@ export function Sidebar({
           // E2E target: the header also has a "New chat" affordance, and the
           // testid keeps us from picking the wrong one.
           data-testid="sidebar-new-chat"
-          className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl px-3 py-2 text-left text-sm font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] active:scale-[0.97]"
+          className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl px-3 py-2 text-left ui-list-row font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] active:scale-[0.97]"
         >
           <Plus className="size-4" aria-hidden />
           <span>{t("sidebar.newChat")}</span>
@@ -1598,7 +1598,7 @@ export function Sidebar({
             onClick={onOpenAdvancedSearch}
             data-testid="sidebar-advanced-search"
             className={cn(
-              "mt-1 hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:inline-flex",
+              "mt-1 hidden items-center gap-1.5 rounded-full px-2.5 py-1 ui-caption text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:inline-flex",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users reach advanced search via Cmd+K instead.
               "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
@@ -1621,7 +1621,7 @@ export function Sidebar({
             onClick={() => setSelectionActive(true)}
             data-testid="sidebar-select-toggle"
             className={cn(
-              "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left text-xs font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex",
+              "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left ui-caption font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users use the conversation row's overflow menu.
               "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
@@ -1643,7 +1643,7 @@ export function Sidebar({
           data-testid="sidebar-bulk-bar"
         >
           <span
-            className="px-1 text-xs font-medium text-foreground"
+            className="px-1 ui-caption font-medium text-foreground"
             data-testid="sidebar-bulk-count"
           >
             {selectedIds.size} selected
@@ -1783,7 +1783,7 @@ export function Sidebar({
         >
           {isSearching ? (
             filteredConversations.length === 0 ? (
-              <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+              <div className="px-2 py-6 text-center ui-body text-muted-foreground">
                 {searchPending ? "Searching…" : "No matches"}
               </div>
             ) : (
@@ -1812,10 +1812,10 @@ export function Sidebar({
                     className="size-8 text-muted-foreground/40"
                   />
                   <div className="space-y-1">
-                    <p className="text-sm font-medium text-foreground">
+                    <p className="ui-body font-medium text-foreground">
                       No chats yet
                     </p>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="ui-body text-muted-foreground">
                       Type a message below to start
                     </p>
                   </div>
@@ -1830,7 +1830,7 @@ export function Sidebar({
                       aria-expanded={collectionsOpen}
                       aria-controls="sidebar-collections-panel"
                       data-testid="sidebar-collections-toggle"
-                      className="flex min-h-9 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left text-xs font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+                      className="flex min-h-9 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left ui-eyebrow font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
                     >
                       {collectionsOpen ? (
                         <ChevronDown className="size-3.5 shrink-0" aria-hidden />
@@ -1846,7 +1846,7 @@ export function Sidebar({
                           per-tag toggle below carries the state then. */}
                       {!collectionsOpen && activeFilterTag ? (
                         <span
-                          className="ml-1 inline-flex min-w-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-2xs font-medium text-foreground"
+                          className="ml-1 inline-flex min-w-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 ui-caption font-medium text-foreground"
                           data-testid="sidebar-collections-active-filter"
                         >
                           <TagIcon
@@ -1887,7 +1887,7 @@ export function Sidebar({
               {onCreateProject || projects.length > 0 ? (
                 <div className="mb-4" data-testid="sidebar-projects">
                   <div className="group/proj-head flex items-center justify-between px-2 pb-1 pt-1">
-                    <span className="text-xs font-semibold text-muted-foreground">
+                    <span className="ui-eyebrow font-semibold text-muted-foreground">
                       Projects
                     </span>
                     {onCreateProject ? (
@@ -1910,7 +1910,7 @@ export function Sidebar({
                     ) : null}
                   </div>
                   {projects.length === 0 ? (
-                    <div className="px-2 py-2 text-xs text-muted-foreground">
+                    <div className="px-2 py-2 ui-caption text-muted-foreground">
                       No projects yet
                     </div>
                   ) : (
@@ -1923,7 +1923,7 @@ export function Sidebar({
                           className="mb-2"
                           data-testid="sidebar-project"
                         >
-                          <div className="group/proj flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-sidebar-foreground hover:bg-muted/60">
+                          <div className="group/proj flex items-center gap-1 rounded-lg px-2 py-1 ui-list-row text-sidebar-foreground hover:bg-muted/60">
                             <Folder
                               className="size-4 shrink-0 text-muted-foreground"
                               aria-hidden
@@ -1934,7 +1934,7 @@ export function Sidebar({
                             >
                               {project.name}
                             </span>
-                            <span className="shrink-0 text-xs text-muted-foreground">
+                            <span className="shrink-0 ui-caption text-muted-foreground">
                               {filed.length}
                             </span>
                             <DropdownMenu>
@@ -2012,7 +2012,7 @@ export function Sidebar({
               {onCreateTag || tags.length > 0 ? (
                 <div className="mb-6" data-testid="sidebar-tags">
                   <div className="group/tags-head flex items-center justify-between px-2 pb-1 pt-1">
-                    <span className="text-xs font-semibold text-muted-foreground">
+                    <span className="ui-eyebrow font-semibold text-muted-foreground">
                       Tags
                     </span>
                     {onCreateTag ? (
@@ -2035,7 +2035,7 @@ export function Sidebar({
                     ) : null}
                   </div>
                   {tags.length === 0 ? (
-                    <div className="px-2 py-2 text-xs text-muted-foreground">
+                    <div className="px-2 py-2 ui-caption text-muted-foreground">
                       No tags yet
                     </div>
                   ) : (
@@ -2058,7 +2058,7 @@ export function Sidebar({
                               aria-pressed={isActiveFilter}
                               data-testid="sidebar-tag-filter"
                               className={cn(
-                                "flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left text-sm outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]",
+                                "flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left ui-list-row outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]",
                                 isActiveFilter
                                   ? "text-foreground"
                                   : "text-sidebar-foreground",
@@ -2149,7 +2149,7 @@ export function Sidebar({
               {displayConversations.length === 0 ? null : recencyConversations.length === 0 &&
                 archivedConversations.length === 0 ? (
                 activeTagFilter ? (
-                  <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                  <div className="px-2 py-6 text-center ui-body text-muted-foreground">
                     No conversations with this tag
                   </div>
                 ) : null
@@ -2164,7 +2164,7 @@ export function Sidebar({
                       // Ma: tripled inter-group gutter so the recency label
                       // gains weight from surrounding silence, not size/color.
                       <div key={key} className="mb-6">
-                        <div className="px-2 pb-2 pt-1 text-xs font-semibold text-muted-foreground">
+                        <div className="px-2 pb-2 pt-1 ui-eyebrow font-semibold text-muted-foreground">
                           {RECENCY_LABELS[key]}
                         </div>
                         <div role="list" aria-label={RECENCY_LABELS[key]}>
@@ -2182,7 +2182,7 @@ export function Sidebar({
                         onClick={() => setArchivedOpen((v) => !v)}
                         aria-expanded={archivedOpen}
                         data-testid="sidebar-archived-toggle"
-                        className="flex w-full items-center gap-1 rounded-lg px-2 pb-2 pt-1 text-left text-xs font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+                        className="flex w-full items-center gap-1 rounded-lg px-2 pb-2 pt-1 text-left ui-eyebrow font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
                       >
                         {archivedOpen ? (
                           <ChevronDown className="size-3.5" aria-hidden />
@@ -2217,14 +2217,14 @@ export function Sidebar({
                 aria-label="Account menu"
                 className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl p-2 text-left outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] aria-expanded:bg-muted/60 active:not-aria-[haspopup]:scale-[0.97]"
               >
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-medium text-secondary-foreground">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary ui-caption font-medium text-secondary-foreground">
                   {initials(account.name)}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">
+                  <div className="truncate ui-list-row font-medium">
                     {account.name}
                   </div>
-                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-1 ui-caption text-muted-foreground">
                     <span className="truncate">{account.planLabel}</span>
                     {account.byokEnabled ? (
                       <Key className="size-3.5 shrink-0" aria-hidden />

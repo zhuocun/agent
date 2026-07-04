@@ -21,6 +21,7 @@ import {
   CHAT_CHROME_PAD_CLASS,
   topChromePaddingStyle,
 } from "@/lib/chat-chrome-padding";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 
 // Pull the stable message id off a rendered child. UserMessage/AssistantMessage
@@ -422,7 +423,10 @@ export function MessageList({
         <Button
           type="button"
           variant="secondary"
-          onClick={() => scrollToBottom(true)}
+          onClick={() => {
+            haptic("light");
+            scrollToBottom(true);
+          }}
           aria-label="Jump to latest"
           aria-hidden={atBottom}
           tabIndex={atBottom ? -1 : 0}

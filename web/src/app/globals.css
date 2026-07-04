@@ -784,9 +784,13 @@
   .chat-md :where(pre) {
     @apply max-w-full overflow-x-auto;
     overflow-wrap: normal;
+    /* Keep a horizontal fling at the scroller edge from chaining to the OS
+       back/forward swipe (iOS/Chromium) — settle in-block instead. */
+    overscroll-behavior-x: contain;
   }
   .chat-md :where(table) {
     @apply block max-w-full overflow-x-auto;
+    overscroll-behavior-x: contain;
   }
   .chat-md :where(ul) { @apply list-disc pl-6; }
   .chat-md :where(ol) { @apply list-decimal pl-6; }
@@ -811,6 +815,17 @@
     position: relative;
     top: auto;
   }
+
+  /* ── Mobile-first type ramp (ST5 §b) ─────────────────────────────
+     Bigger on the phone, denser on desktop — mirrors .chat-md (17→15)
+     and the input pattern (16→14). Interactive roles hold the 16px iOS
+     no-zoom floor on mobile; captions bottom out at the 13px minimum.
+     Desktop steps reuse text-sm / text-xs / text-2xs unchanged. */
+  .ui-list-row  { @apply text-base md:text-sm; }                 /* 16 → 14 */
+  .ui-body      { @apply text-base md:text-sm; }                 /* 16 → 14 */
+  .ui-secondary { @apply text-[0.9375rem] md:text-[0.8125rem]; } /* 15 → 13 */
+  .ui-caption   { @apply text-[0.8125rem] md:text-xs; }          /* 13 → 12 */
+  .ui-eyebrow   { @apply text-[0.8125rem] md:text-2xs; }         /* 13 → 11 */
 }
 
 /* ===== Glass fallbacks ===== */

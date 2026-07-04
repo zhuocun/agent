@@ -162,7 +162,7 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
         // bottom edge, decel curve) fires once on mount. The shared util ships a
         // reduced-motion alternate that collapses to a pure cross-fade, so no
         // inline transform neutralizer is needed here. Exit is unchanged.
-        "glass-strong pointer-events-auto relative flex w-full max-w-sm items-start gap-3 overflow-hidden rounded-2xl px-4 py-3 text-sm shadow-[var(--shadow-glass-key)] animate-toast-in transition-opacity duration-200 ease-out data-[state=closing]:opacity-0 motion-reduce:transition-none",
+        "glass-strong pointer-events-auto relative flex w-full max-w-sm items-start gap-3 overflow-hidden rounded-2xl px-4 py-3 ui-body shadow-[var(--shadow-glass-key)] animate-toast-in transition-opacity duration-200 ease-out data-[state=closing]:opacity-0 motion-reduce:transition-none",
         SEVERITY_TONE[toast.severity],
       )}
     >
@@ -192,7 +192,7 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
                     action.onClick();
                     dismiss(toast.id);
                   }}
-                  className="rounded-full text-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="rounded-full ui-body font-medium text-foreground underline-offset-4 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                 >
                   {action.label}
                 </button>

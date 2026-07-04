@@ -34,11 +34,23 @@ export function AppShell({
 }: AppShellProps): React.JSX.Element {
   const { height, offsetTop, keyboardInset } = useVisualViewport();
 
+  // Single haptic owner for the mobile drawer: every open (edge-swipe, header
+  // tap routed here, programmatic) buzzes `selection` and every close (overlay,
+  // close button, Escape, Android back) buzzes the softer `light`, so the drawer
+  // feels consistent regardless of how it was triggered (G9). Feature-detected +
+  // no-op on iOS, so it's safe to call unconditionally.
+  const handleMobileNavOpenChange = useCallback(
+    (open: boolean) => {
+      haptic(open ? "selection" : "light");
+      onMobileNavOpenChange(open);
+    },
+    [onMobileNavOpenChange],
+  );
+
   const edgeSwipe = useEdgeSwipe(
     useCallback(() => {
-      haptic("selection");
-      onMobileNavOpenChange(true);
-    }, [onMobileNavOpenChange]),
+      handleMobileNavOpenChange(true);
+    }, [handleMobileNavOpenChange]),
     mobileNavOpen,
   );
 
@@ -56,11 +68,12 @@ export function AppShell({
   // We push a history entry when the drawer opens and pop it on close; a
   // `popstate` listener (the Back button) drives the drawer shut.
   const pushedRef = useRef(false);
-  const onCloseRef = useRef(onMobileNavOpenChange);
+  const onCloseRef = useRef(handleMobileNavOpenChange);
   // Keep the latest close handler in a ref without reading/writing it during
   // render (which React forbids). The popstate listener reads `onCloseRef`.
+  // Routed through the haptic-aware handler so an Android back close buzzes too.
   useEffect(() => {
-    onCloseRef.current = onMobileNavOpenChange;
+    onCloseRef.current = handleMobileNavOpenChange;
   });
 
   useEffect(() => {
@@ -105,7 +118,7 @@ export function AppShell({
         {sidebar}
       </aside>
 
-      <Drawer open={mobileNavOpen} onOpenChange={onMobileNavOpenChange}>
+      <Drawer open={mobileNavOpen} onOpenChange={handleMobileNavOpenChange}>
         <DrawerContent
           side="left"
           showClose={true}

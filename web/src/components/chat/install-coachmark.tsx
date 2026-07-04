@@ -103,7 +103,7 @@ export function InstallCoachmark(): React.JSX.Element | null {
       role="status"
       aria-live="polite"
       className={cn(
-        "pointer-events-auto fixed inset-x-3 z-30",
+        "pointer-events-auto fixed left-[max(env(safe-area-inset-left),0.75rem)] right-[max(env(safe-area-inset-right),0.75rem)] z-30",
         // Sit ABOVE the composer capsule, not on top of it. `--bottom-inset` is
         // the safe-area floor; the composer chrome occupies ~5rem above it (the
         // same offset the toast stack clears), so reuse it here.
@@ -127,7 +127,7 @@ export function InstallCoachmark(): React.JSX.Element | null {
         className="size-4 shrink-0 text-brand"
         strokeWidth={2}
       />
-      <p className="min-w-0 flex-1 text-sm leading-snug">
+      <p className="min-w-0 flex-1 ui-body leading-snug">
         Install Olune: tap{" "}
         <span className="font-medium">Share</span>, then{" "}
         <span className="font-medium">Add to Home Screen</span>.
@@ -138,7 +138,8 @@ export function InstallCoachmark(): React.JSX.Element | null {
         aria-label="Dismiss install hint"
         className={cn(
           "inline-flex size-11 shrink-0 items-center justify-center rounded-full",
-          "text-muted-foreground hover:bg-accent hover:text-foreground",
+          "text-muted-foreground transition-transform hover:bg-accent hover:text-foreground",
+          "active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100",
           "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         )}
       >

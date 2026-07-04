@@ -120,7 +120,7 @@ export const SourcesPanel = forwardRef<SourcesPanelHandle, SourcesPanelProps>(
       >
         <CollapsibleTrigger
           className={cn(
-            "group/sources-trigger inline-flex items-center gap-1 text-left text-xs text-muted-foreground",
+            "group/sources-trigger inline-flex items-center gap-1 text-left ui-caption text-muted-foreground",
             // Tap target: grow the hit area vertically to clear the iOS 44pt floor
             // without disturbing the surrounding gap stack (same trick as
             // ReasoningPanel).
@@ -148,7 +148,7 @@ export const SourcesPanel = forwardRef<SourcesPanelHandle, SourcesPanelProps>(
           )}
         >
           <p
-            className="mt-2 text-2xs text-muted-foreground"
+            className="mt-2 ui-caption text-muted-foreground"
             data-testid="sources-provenance"
           >
             {provenanceLabel(provenance)}
@@ -242,17 +242,17 @@ function SourceCard({
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
-          <span className="truncate text-sm font-medium text-foreground">
+          <span className="truncate ui-list-row font-medium text-foreground">
             {item.title}
           </span>
           {domain ? (
-            <span className="shrink-0 truncate text-2xs text-muted-foreground">
+            <span className="shrink-0 truncate ui-caption text-muted-foreground">
               {domain}
             </span>
           ) : null}
         </span>
         {item.snippet ? (
-          <span className="mt-0.5 line-clamp-2 block text-xs leading-snug text-muted-foreground">
+          <span className="mt-0.5 line-clamp-2 block ui-caption leading-snug text-muted-foreground">
             {item.snippet}
           </span>
         ) : null}

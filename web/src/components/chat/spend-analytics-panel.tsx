@@ -110,11 +110,11 @@ export function SpendAnalyticsPanel({
       <div className="space-y-1">
         <h4
           id="spend-analytics-heading"
-          className="text-sm font-medium text-foreground"
+          className="ui-list-row font-medium text-foreground"
         >
           Usage &amp; spend
         </h4>
-        <p className="text-xs leading-snug text-muted-foreground">
+        <p className="ui-caption leading-snug text-muted-foreground">
           Longitudinal model spend over the selected window.
         </p>
       </div>
@@ -134,7 +134,7 @@ export function SpendAnalyticsPanel({
               onClick={() => setDays(option.days)}
               data-testid={`spend-range-${option.days}`}
               className={cn(
-                "min-w-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
                 selected
                   ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground",
@@ -147,16 +147,16 @@ export function SpendAnalyticsPanel({
       </div>
 
       {error ? (
-        <p className="text-sm text-destructive-text" role="alert">
+        <p className="ui-body text-destructive-text" role="alert">
           {error}
         </p>
       ) : null}
 
       <div className="grid grid-cols-2 gap-2">
         <div className="glass-clear rounded-2xl px-3.5 py-3">
-          <p className="text-xs text-muted-foreground">
+          <p className="ui-caption text-muted-foreground">
             <span>Cumulative meter</span>
-            <span className="ml-1 text-2xs opacity-70">(month-to-date)</span>
+            <span className="ml-1 ui-caption opacity-70">(month-to-date)</span>
           </p>
           <p
             className="mt-0.5 font-mono text-base tabular-nums"
@@ -166,7 +166,7 @@ export function SpendAnalyticsPanel({
           </p>
         </div>
         <div className="glass-clear rounded-2xl px-3.5 py-3">
-          <p className="text-xs text-muted-foreground">Surviving messages</p>
+          <p className="ui-caption text-muted-foreground">Surviving messages</p>
           <p
             className="mt-0.5 font-mono text-base tabular-nums"
             data-testid="spend-total-surviving"
@@ -175,7 +175,7 @@ export function SpendAnalyticsPanel({
           </p>
         </div>
       </div>
-      <p className="text-xs leading-snug text-muted-foreground">
+      <p className="ui-caption leading-snug text-muted-foreground">
         The <span className="font-medium">cumulative meter</span> counts every
         generation you triggered this calendar month — including regenerated or
         deleted turns.{" "}
@@ -184,7 +184,7 @@ export function SpendAnalyticsPanel({
       </p>
 
       <section className="space-y-2">
-        <h5 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+        <h5 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
           Daily spend
         </h5>
         {data && data.daily.length > 0 ? (
@@ -213,12 +213,12 @@ export function SpendAnalyticsPanel({
             })}
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground">
+          <p className="ui-caption text-muted-foreground">
             {loading ? "Loading…" : "No spend in this window."}
           </p>
         )}
         {data && data.daily.length > 0 ? (
-          <div className="flex justify-between text-2xs text-muted-foreground">
+          <div className="flex justify-between ui-caption text-muted-foreground">
             <span>{formatDayLabel(data.daily[0]!.date)}</span>
             <span>
               {formatDayLabel(data.daily[data.daily.length - 1]!.date)}
@@ -229,18 +229,18 @@ export function SpendAnalyticsPanel({
 
       {data && data.byModel.length > 0 ? (
         <section className="space-y-1.5">
-          <h5 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h5 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
             By model
           </h5>
           <ul className="space-y-1" data-testid="spend-by-model">
             {data.byModel.map((model) => (
               <li
                 key={model.label}
-                className="flex items-center justify-between gap-3 text-sm"
+                className="flex items-center justify-between gap-3 ui-list-row"
               >
                 <span className="min-w-0 truncate">
                   {model.label}
-                  <span className="ml-1.5 text-xs text-muted-foreground">
+                  <span className="ml-1.5 ui-caption text-muted-foreground">
                     {model.messageCount} msg
                   </span>
                 </span>
@@ -255,18 +255,18 @@ export function SpendAnalyticsPanel({
 
       {data && data.byConversation.length > 0 ? (
         <section className="space-y-1.5">
-          <h5 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <h5 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
             Top conversations
           </h5>
           <ul className="space-y-1" data-testid="spend-by-conversation">
             {data.byConversation.map((convo) => (
               <li
                 key={convo.conversationId}
-                className="flex items-center justify-between gap-3 text-sm"
+                className="flex items-center justify-between gap-3 ui-list-row"
               >
                 <span className="min-w-0 truncate">
                   {convo.title || "Untitled"}
-                  <span className="ml-1.5 text-xs text-muted-foreground">
+                  <span className="ml-1.5 ui-caption text-muted-foreground">
                     {convo.messageCount} msg
                   </span>
                 </span>

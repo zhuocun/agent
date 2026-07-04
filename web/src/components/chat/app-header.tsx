@@ -20,6 +20,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 
 interface AppHeaderProps {
@@ -105,7 +106,12 @@ export function AppHeader({
           type="button"
           variant="ghost"
           aria-label="Open sidebar"
-          onClick={onOpenMobileNav}
+          // Drawer open-by-tap buzzes to match the edge-swipe open path (G9);
+          // feature-detected + no-op on iOS.
+          onClick={() => {
+            haptic("selection");
+            onOpenMobileNav?.();
+          }}
           className={cn(FLOAT_BUTTON_TOUCH)}
         >
           <Menu className="size-[18px]" strokeWidth={2.25} />

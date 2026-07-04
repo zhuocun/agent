@@ -38,6 +38,7 @@ import {
   MIN_RATE,
   useSpeechSynthesis,
 } from "@/lib/use-speech-synthesis";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type {
   Feedback,
@@ -118,6 +119,7 @@ export function MessageActions({
 
   const handleCopy = async () => {
     const markCopied = () => {
+      haptic("selection");
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     };
@@ -316,9 +318,10 @@ function OverflowMenu({
               aria-label="Helpful"
               checked={primary.feedback === "up"}
               closeOnClick={false}
-              onCheckedChange={(checked) =>
-                primary.onFeedback?.(checked ? "up" : null)
-              }
+              onCheckedChange={(checked) => {
+                haptic("selection");
+                primary.onFeedback?.(checked ? "up" : null);
+              }}
               className="py-2"
             >
               <ThumbsUp className="size-4" />
@@ -329,9 +332,10 @@ function OverflowMenu({
               aria-label="Not helpful"
               checked={primary.feedback === "down"}
               closeOnClick={false}
-              onCheckedChange={(checked) =>
-                primary.onFeedback?.(checked ? "down" : null)
-              }
+              onCheckedChange={(checked) => {
+                haptic("selection");
+                primary.onFeedback?.(checked ? "down" : null);
+              }}
               className="py-2"
             >
               <ThumbsDown className="size-4" />
@@ -359,7 +363,7 @@ function OverflowMenu({
             )}
             <div className="min-w-0 flex-1">
               <span className="truncate font-medium">{readAloudLabel}</span>
-              <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground">
+              <p className="mt-0.5 truncate ui-caption leading-snug text-muted-foreground">
                 {readAloudHint}
               </p>
             </div>
@@ -380,7 +384,7 @@ function OverflowMenu({
               >
                 <Minus className="size-4" />
                 <span className="truncate font-medium">Slower</span>
-                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                <span className="ml-auto ui-caption tabular-nums text-muted-foreground">
                   {speech.rate.toFixed(2)}×
                 </span>
               </DropdownMenuItem>
@@ -397,7 +401,7 @@ function OverflowMenu({
               >
                 <Plus className="size-4" />
                 <span className="truncate font-medium">Faster</span>
-                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                <span className="ml-auto ui-caption tabular-nums text-muted-foreground">
                   {speech.rate.toFixed(2)}×
                 </span>
               </DropdownMenuItem>
@@ -413,7 +417,7 @@ function OverflowMenu({
                   <AudioLines className="size-4" />
                   <div className="min-w-0 flex-1">
                     <span className="truncate font-medium">Voice</span>
-                    <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                    <p className="mt-0.5 truncate ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
                       {currentVoiceName}
                     </p>
                   </div>
@@ -459,21 +463,24 @@ function OverflowMenu({
         {modelChoice ? (
           <>
             <DropdownMenuGroup>
-              <DropdownMenuLabel className="text-2xs font-semibold tracking-wide uppercase">
+              <DropdownMenuLabel className="ui-eyebrow font-semibold tracking-wide uppercase">
                 Regenerate with
               </DropdownMenuLabel>
               {modelChoice.options.tiers.map((tier) => (
                 <DropdownMenuItem
                   key={tier.id}
                   label={tier.label}
-                  onClick={() => modelChoice.onRegenerateWith(tier.id)}
+                  onClick={() => {
+                    haptic("selection");
+                    modelChoice.onRegenerateWith(tier.id);
+                  }}
                   data-testid={`regenerate-with-tier-${tier.id}`}
                   className="py-2"
                 >
                   <div className="min-w-0 flex-1">
                     <span className="truncate font-medium">{tier.label}</span>
                     {tier.modelLabel ? (
-                      <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                      <p className="mt-0.5 truncate ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
                         {tier.modelLabel}
                       </p>
                     ) : null}
@@ -483,19 +490,20 @@ function OverflowMenu({
             </DropdownMenuGroup>
             {showProviders ? (
               <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-2xs font-semibold tracking-wide uppercase">
+                <DropdownMenuLabel className="ui-eyebrow font-semibold tracking-wide uppercase">
                   Provider
                 </DropdownMenuLabel>
                 {availableProviders.map((provider) => (
                   <DropdownMenuItem
                     key={provider.providerId}
                     label={provider.label}
-                    onClick={() =>
+                    onClick={() => {
+                      haptic("selection");
                       modelChoice.onRegenerateWith(
                         modelChoice.options.selectedTierId,
                         provider.providerId,
-                      )
-                    }
+                      );
+                    }}
                     className="py-2"
                   >
                     <div className="min-w-0 flex-1">
@@ -503,7 +511,7 @@ function OverflowMenu({
                         {provider.label}
                       </span>
                       {provider.modelLabel ? (
-                        <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                        <p className="mt-0.5 truncate ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
                           {provider.modelLabel}
                         </p>
                       ) : null}

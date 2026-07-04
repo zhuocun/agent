@@ -174,7 +174,7 @@ export function ShareDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="flex flex-col overflow-hidden sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Share chat</DialogTitle>
           <DialogDescription>
@@ -184,8 +184,11 @@ export function ShareDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+        {/* Scroll body: landscape / short viewports can push the link field past
+            the sheet cap under the keyboard, so the content scrolls within the
+            overflow-hidden flex shell rather than clipping (ST5 §c ST-8, R6). */}
+        <div className="-mr-2 min-h-0 flex-1 space-y-4 overflow-y-auto pr-2">
+          <p className="ui-body text-muted-foreground">
             Anyone with the link can view this conversation read-only. Costs and
             usage are hidden on the shared view.
           </p>
@@ -193,7 +196,7 @@ export function ShareDialog({
           {shareUrl ? (
             <div className="space-y-3">
               <div className="space-y-1.5">
-                <label htmlFor={urlFieldId} className="text-sm font-medium">
+                <label htmlFor={urlFieldId} className="ui-list-row font-medium">
                   Public link
                 </label>
                 <div className="flex items-center gap-2">
@@ -250,7 +253,7 @@ export function ShareDialog({
           )}
 
           {error ? (
-            <p id={errorId} role="alert" className="text-sm text-destructive">
+            <p id={errorId} role="alert" className="ui-body text-destructive">
               {error}
             </p>
           ) : null}

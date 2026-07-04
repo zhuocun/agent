@@ -18,6 +18,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type { ModelTier, ModelTierId } from "@/lib/types";
 
@@ -32,7 +33,7 @@ export interface TierPickerProps {
 // mobile bottom-sheet variants per PRD 06 §5.6 / PRD 01 §5.3 (the trigger's
 // appearance is stable; only the disclosure surface changes by modality).
 const TRIGGER_CLASS =
-  "inline-flex h-11 items-center gap-1 rounded-full bg-muted/60 px-3 text-xs text-muted-foreground hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground data-[popup-open]:bg-muted data-[popup-open]:text-foreground [&_svg:not([class*='size-'])]:size-3.5";
+  "inline-flex h-11 items-center gap-1 rounded-full bg-muted/60 px-3 ui-list-row text-muted-foreground hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground data-[popup-open]:bg-muted data-[popup-open]:text-foreground [&_svg:not([class*='size-'])]:size-3.5";
 
 export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPickerProps): JSX.Element {
   const selected = tiers.find((t) => t.id === selectedId) ?? tiers[0];
@@ -43,6 +44,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
     : "Change model tier.";
 
   const handleSelect = (id: ModelTierId): void => {
+    haptic("selection");
     onSelect(id);
     setSheetOpen(false);
   };
@@ -84,7 +86,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
               <DropdownMenuItem
                 key={tier.id}
                 label={tier.label}
-                onClick={() => onSelect(tier.id)}
+                onClick={() => handleSelect(tier.id)}
                 className="py-2"
               >
                 <div className="min-w-0 flex-1">
@@ -97,11 +99,11 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                       />
                     ) : null}
                   </div>
-                  <p className="mt-0.5 text-xs leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                  <p className="mt-0.5 ui-secondary leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
                     {tier.description}
                   </p>
                   {tier.modelLabel ? (
-                    <p className="mt-0.5 text-2xs leading-snug text-muted-foreground/70 group-focus/dropdown-menu-item:text-accent-foreground/70">
+                    <p className="mt-0.5 ui-caption leading-snug text-muted-foreground/70 group-focus/dropdown-menu-item:text-accent-foreground/70">
                       {tier.modelLabel}
                     </p>
                   ) : null}
@@ -147,7 +149,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
               Choose which capability tier answers your next message.
             </DialogDescription>
           </DialogHeader>
-          <ul className="-mx-1 flex flex-col overflow-y-auto">
+          <ul className="-mx-1 flex flex-col overflow-y-auto overscroll-contain">
             {tiers.map((tier) => {
               const isSelected = tier.id === selectedId;
               return (
@@ -164,15 +166,15 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-foreground">
+                        <span className="ui-list-row font-medium text-foreground">
                           {tier.label}
                         </span>
                       </div>
-                      <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+                      <p className="mt-0.5 ui-secondary leading-snug text-muted-foreground">
                         {tier.description}
                       </p>
                       {tier.modelLabel ? (
-                        <p className="mt-0.5 text-2xs leading-snug text-muted-foreground/70">
+                        <p className="mt-0.5 ui-caption leading-snug text-muted-foreground/70">
                           {tier.modelLabel}
                         </p>
                       ) : null}

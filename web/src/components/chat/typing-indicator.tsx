@@ -14,7 +14,7 @@ export function TypingIndicator() {
           "motion-safe:animate-pulse-soft",
         )}
       />
-      <span className="text-xs font-medium text-muted-foreground">
+      <span className="ui-caption font-medium text-muted-foreground">
         Thinking…
       </span>
     </div>

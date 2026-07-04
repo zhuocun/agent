@@ -105,7 +105,7 @@ function ReadOnlyRow({
       aria-label={`${row.label}: ${spoken}`}
       className="flex items-center justify-between gap-4 rounded-lg px-2 py-1.5"
     >
-      <span className="text-sm text-foreground">{row.label}</span>
+      <span className="ui-list-row text-foreground">{row.label}</span>
       <KeyCaps shortcut={row.shortcut} variant="row" />
     </div>
   );
@@ -185,7 +185,7 @@ function EditableRow({
       className="flex flex-col gap-1 rounded-lg px-2 py-1.5"
     >
       <div className="flex items-center justify-between gap-3">
-        <span className="min-w-0 truncate text-sm text-foreground">
+        <span className="min-w-0 truncate ui-list-row text-foreground">
           {row.label}
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -219,7 +219,7 @@ function EditableRow({
             onBlur={() => onStopCapture()}
             className={
               capturing
-                ? "flex min-w-24 items-center justify-center rounded-md border border-ring bg-ring/10 px-2 py-1 text-xs font-medium text-foreground ring-2 ring-ring/25 outline-none"
+                ? "flex min-w-24 items-center justify-center rounded-md border border-ring bg-ring/10 px-2 py-1 ui-list-row font-medium text-foreground ring-2 ring-ring/25 outline-none"
                 : "flex min-w-24 items-center justify-center rounded-md border border-border bg-muted/40 px-2 py-1 outline-none transition-colors hover:bg-muted focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25"
             }
           >
@@ -234,7 +234,7 @@ function EditableRow({
       {capturing && error ? (
         <p
           role="alert"
-          className="text-right text-xs text-destructive"
+          className="text-right ui-caption text-destructive"
           data-testid={`shortcut-error-${id}`}
         >
           {error}
@@ -289,7 +289,7 @@ export function ShortcutsBody({
           <h2 className="text-lg leading-none font-semibold">
             Keyboard shortcuts
           </h2>
-          <p className="text-sm text-muted-foreground">
+          <p className="ui-body text-muted-foreground">
             {canEdit
               ? "Rebind any action — press a key combination to record it. Enter and Escape stay reserved for sending and stopping."
               : "Every action below is reachable without the mouse."}
@@ -312,10 +312,10 @@ export function ShortcutsBody({
           </Button>
         ) : null}
       </div>
-      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto pr-2 sm:max-h-none">
+      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto overscroll-contain pr-2 sm:max-h-none">
         {shortcuts.map((section) => (
           <section key={section.heading} className="space-y-1">
-            <h3 className="px-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+            <h3 className="px-2 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
               {section.heading}
             </h3>
             <div role="list" aria-label={section.heading}>

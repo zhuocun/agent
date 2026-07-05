@@ -51,7 +51,6 @@ import {
 } from "@/components/chat/settings-dialog";
 import { AuthDialog } from "@/components/chat/auth-dialog";
 import { ShareDialog } from "@/components/chat/share-dialog";
-import { AiDisclosure } from "@/components/chat/ai-disclosure";
 import { Composer, type ComposerHandle } from "@/components/chat/composer";
 import {
   CompareTierBar,
@@ -4003,7 +4002,6 @@ export function ChatThread() {
                 // ambient halo.
                 heroGlow={showWelcome && !welcomeExiting}
               />
-              <AiDisclosure />
             </div>
           </div>
         </div>

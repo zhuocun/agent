@@ -297,6 +297,7 @@ async def test_guest_hard_wall_refuses_after_limit(
     assert resp.status_code == 403, resp.text
     payload = resp.json()
     assert payload["error"]["code"] == "PLATFORM_GUEST_LIMIT"
+    assert payload["error"]["actions"][0]["kind"] == "open_settings"
     # The copy states the limit (PRD 08 copy rule).
     assert "2-message" in payload["error"]["body"]
 

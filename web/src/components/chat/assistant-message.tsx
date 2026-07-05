@@ -35,12 +35,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { postModerationAppeal, type ApiError } from "@/lib/apiClient";
-import type { SubagentActivity } from "@/lib/stream-client";
+import { postModerationAppeal, type ApiError, type ErrorActionPayload } from "@/lib/apiClient";
+import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
 import {
   buildAgenticPanelLayout,
   buildSubagentSectionsFromParts,
   buildSubagentRoleById,
+  deriveRunCostFromParts,
   hasToolOrSubagentActivity,
   isNestedToolGroup,
   isNestedWebSearchGroup,
@@ -103,11 +104,14 @@ interface AssistantMessageProps {
   // Set only when `status === "error"` — the canonical ApiErrorEnvelope from
   // the terminal frame. Drives the inline chip + Details + Retry.
   error?: ApiError;
+  onOpenSettings?: () => void;
+  onDismissError?: () => void;
   // Agentic mode: live per-subagent activity for the STREAMING bubble, straight
   // from `ApiStreamState.subagents`. Carries accurate per-worker running/done
   // status mid-stream; committed/reloaded messages omit it and the panel
   // derives its sections from the persisted `subagent` marker + tagged parts.
   liveSubagents?: SubagentActivity[];
+  liveRunCost?: RunCostState | null;
 }
 
 // Length above which the error body collapses into an expandable Details
@@ -171,7 +175,10 @@ export function AssistantMessage({
   onMemoryOpen,
   defaultReasoningOpen = false,
   error,
+  onOpenSettings,
+  onDismissError,
   liveSubagents,
+  liveRunCost = null,
 }: AssistantMessageProps) {
   // Agentic mode: per-subagent sections for the SubagentPanel. Live activity
   // (the streaming bubble) wins — it carries accurate running/done status;
@@ -181,6 +188,11 @@ export function AssistantMessage({
     if (liveSubagents && liveSubagents.length > 0) return liveSubagents;
     return buildSubagentSectionsFromParts(message.parts);
   }, [liveSubagents, message.parts]);
+
+  const runCost = useMemo<RunCostState | null>(() => {
+    if (liveRunCost) return liveRunCost;
+    return deriveRunCostFromParts(message.parts);
+  }, [liveRunCost, message.parts]);
 
   const agenticLayout = useMemo(
     () => buildAgenticPanelLayout(message.parts),
@@ -331,6 +343,7 @@ export function AssistantMessage({
             <SubagentPanel
               key={idx}
               sections={subagentSections}
+              runCost={runCost}
               panelWebSearchGroups={webSearchLayout.panelLevel}
               webSearchBySubagentId={webSearchLayout.bySubagentId}
               panelToolGroups={toolLayout.panelLevel}
@@ -423,7 +436,12 @@ export function AssistantMessage({
       ) : null}
 
       {isErrored ? (
-        <ErrorFooter error={error} onRetry={onRegenerate} />
+        <ErrorFooter
+          error={error}
+          onRetry={onRegenerate}
+          onOpenSettings={onOpenSettings}
+          onDismissError={onDismissError}
+        />
       ) : null}
 
       {isFinal && !isErrored ? (
@@ -576,9 +594,13 @@ function MemoryUsedChip({
 function ErrorFooter({
   error,
   onRetry,
+  onOpenSettings,
+  onDismissError,
 }: {
   error?: ApiError;
   onRetry?: () => void;
+  onOpenSettings?: () => void;
+  onDismissError?: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   // PRD 08 §3 fallback: when the envelope is absent (shouldn't happen — the
@@ -623,6 +645,25 @@ function ErrorFooter({
   }, [deadline]);
 
   const retryDisabled = secondsLeft > 0;
+  const extraActions = error?.actions ?? [];
+
+  const handleAction = (action: ErrorActionPayload): void => {
+    switch (action.kind) {
+      case "retry":
+        if (!retryDisabled) onRetry?.();
+        break;
+      case "open_settings":
+        onOpenSettings?.();
+        break;
+      case "dismiss":
+        onDismissError?.();
+        break;
+      default: {
+        const _exhaustive: never = action.kind;
+        void _exhaustive;
+      }
+    }
+  };
 
   // SAFETY_BLOCKED: surface the WHY (category + which input) in calm language
   // and offer a request-review action. Mapped from the error envelope's meta.
@@ -695,6 +736,22 @@ function ErrorFooter({
             ) : null}
           </>
         ) : null}
+        {extraActions.map((action, index) => {
+          if (action.kind === "retry" && onRetry) return null;
+          return (
+            <Button
+              key={`${action.kind}-${action.label}-${index}`}
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => handleAction(action)}
+              className="min-h-11 rounded-full px-4 md:min-h-0"
+              data-testid={`assistant-error-action-${action.kind}`}
+            >
+              <span>{action.label}</span>
+            </Button>
+          );
+        })}
         {isProviderError ? (
           <Button
             nativeButton={false}

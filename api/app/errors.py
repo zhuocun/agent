@@ -173,6 +173,7 @@ def platform_guest_limit_envelope(*, limit: int) -> AppError:
                 f"You've reached the {limit}-message limit for guests. Sign up or "
                 "sign in to keep going — your current chat is preserved."
             ),
+            actions=[ErrorAction(label="Sign up", kind="open_settings")],
         ),
         status.HTTP_403_FORBIDDEN,
     )

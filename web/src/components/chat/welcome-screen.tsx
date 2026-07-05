@@ -12,6 +12,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 import type { PromptSuggestion } from "@/lib/types";
+import { AiDisclosure } from "@/components/chat/ai-disclosure";
 
 export interface WelcomeScreenProps {
   userName?: string;
@@ -135,6 +136,15 @@ export function WelcomeScreen({
         >
           {heading}
         </h2>
+
+        {!compact ? (
+          <div
+            className="animate-welcome-enter"
+            style={{ animationDelay: "80ms" }}
+          >
+            <AiDisclosure />
+          </div>
+        ) : null}
 
         {/* Suggestion rail: rounded glass pills wrapping under the greeting
             (the Lovable-style hero rail) in place of the old iOS inset group.

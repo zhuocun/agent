@@ -10,7 +10,38 @@ import {
   type GroupedToolPart,
   type ToolGroupLayout,
 } from "@/lib/tool-groups";
+import type { RunCostState } from "@/lib/stream-client";
 import type { MessagePart } from "@/lib/types";
+
+const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
+
+export function deriveRunCostFromParts(
+  parts: readonly MessagePart[],
+): RunCostState | null {
+  let subtotalUsd = 0;
+  let hasCost = false;
+  for (const part of parts) {
+    if (part.type === "subagent" && part.costUsd !== undefined) {
+      subtotalUsd += part.costUsd;
+      hasCost = true;
+    }
+  }
+  if (!hasCost) return null;
+
+  let capUsd = 0;
+  for (const part of parts) {
+    if (
+      part.type === "tool_call" &&
+      part.name === PLAN_APPROVAL_TOOL_NAME &&
+      part.input &&
+      typeof part.input.capUsd === "number"
+    ) {
+      capUsd = part.input.capUsd;
+      break;
+    }
+  }
+  return { subtotalUsd, capUsd };
+}
 
 export function buildSubagentSectionsFromParts(
   parts: readonly MessagePart[],
@@ -25,6 +56,7 @@ export function buildSubagentSectionsFromParts(
         role: part.role,
         status: "done",
         ...(part.costUsd !== undefined ? { costUsd: part.costUsd } : {}),
+        ...(part.attribution !== undefined ? { attribution: part.attribution } : {}),
         reasoning: "",
         answer: "",
       };

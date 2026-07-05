@@ -760,6 +760,9 @@
   .chat-message-row {
     content-visibility: auto;
     contain-intrinsic-size: auto 10rem;
+    /* WCAG 2.4.11: keep keyboard focus visible below sticky glass chrome. */
+    scroll-margin-top: 5rem;
+    scroll-margin-bottom: 6rem;
   }
   .chat-message-row[data-message-role="user"] {
     contain-intrinsic-size: auto 5rem;

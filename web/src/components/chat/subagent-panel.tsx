@@ -13,8 +13,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { formatUsdMeter } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { ToolGroup, WebSearchGroup } from "@/lib/tool-groups";
+import type { RunCostState } from "@/lib/stream-client";
+import type { ModelAttribution } from "@/lib/types";
 import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
@@ -32,12 +35,14 @@ export interface SubagentSection {
   role: string;
   status: "running" | "done";
   costUsd?: number;
+  attribution?: ModelAttribution;
   reasoning: string;
   answer: string;
 }
 
 interface SubagentPanelProps {
   sections: SubagentSection[];
+  runCost?: RunCostState | null;
   // Web-search activity owned by a subagent (or untagged but co-occurring with
   // this panel) renders inside the agent-activity card instead of as a sibling.
   panelWebSearchGroups?: WebSearchGroup[];
@@ -78,6 +83,7 @@ function roleLabel(role: string): string {
 // rows stay expanded — they carry live streaming text.
 export function SubagentPanel({
   sections,
+  runCost = null,
   panelWebSearchGroups = [],
   webSearchBySubagentId,
   panelToolGroups = [],
@@ -122,6 +128,7 @@ export function SubagentPanel({
         >
           <Telescope aria-hidden className="size-4 shrink-0" />
           <span className="font-medium text-foreground">{title}</span>
+          {runCost ? <RunCostMeter runCost={runCost} /> : null}
           {!singleAgentFlat ? (
             <span className="ui-caption text-muted-foreground">{summary}</span>
           ) : null}
@@ -197,6 +204,26 @@ export function SubagentPanel({
         </CollapsibleContent>
       </Collapsible>
     </div>
+  );
+}
+
+function RunCostMeter({ runCost }: { runCost: RunCostState }) {
+  return (
+    <span
+      data-testid="run-cost-meter"
+      className="inline-flex h-5 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground"
+      aria-label={`Run cost ${formatUsdMeter(runCost.subtotalUsd)}${
+        runCost.capUsd > 0 ? ` of ${formatUsdMeter(runCost.capUsd)} cap` : ""
+      }`}
+    >
+      {formatUsdMeter(runCost.subtotalUsd)}
+      {runCost.capUsd > 0 ? (
+        <span className="text-muted-foreground/70">
+          {" "}
+          / {formatUsdMeter(runCost.capUsd)}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -341,6 +368,15 @@ function SubagentRow({
       <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground">
         {roleLabel(section.role)}
       </span>
+      {section.attribution?.substitution ? (
+        <span
+          className="max-w-full truncate ui-caption text-substitution-callout-foreground"
+          data-testid="subagent-substitution-callout"
+          title={section.attribution.substitution.reasonText}
+        >
+          Rerouted → {section.attribution.servedModelLabel}
+        </span>
+      ) : null}
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {trailing}
       </span>

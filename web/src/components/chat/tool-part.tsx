@@ -19,6 +19,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { formatUsdMeter } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type {
   JsonValue,
@@ -39,7 +40,7 @@ const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
 // Narrowed view of the plan-approval tool input:
 // `{ plan: string[], estimatedCostUsd?: number, capUsd?: number }`. Null when
 // the plan shape doesn't match (the renderer then falls back to the generic
-// preview). Cost fields are parsed for wire compatibility but not displayed.
+// preview).
 interface PlanApprovalInput {
   plan: string[];
   estimatedCostUsd: number | null;
@@ -250,8 +251,26 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
 // decomposition as a numbered list so the user approves a legible plan — not a
 // JSON blob.
 function PlanApprovalDetail({ input }: { input: PlanApprovalInput }) {
+  const showEstimate = input.estimatedCostUsd !== null;
+  const showCap = input.capUsd !== null;
   return (
     <div className="mt-2 space-y-2" data-testid="plan-approval-detail">
+      {showEstimate || showCap ? (
+        <p className="ui-caption text-muted-foreground" data-testid="plan-approval-cost">
+          {showEstimate ? (
+            <span>
+              Estimated run cost: {formatUsdMeter(input.estimatedCostUsd!)}
+              <span className="text-muted-foreground/70"> (estimate)</span>
+            </span>
+          ) : null}
+          {showCap ? (
+            <span>
+              {showEstimate ? " · " : null}
+              Per-run cap: {formatUsdMeter(input.capUsd!)}
+            </span>
+          ) : null}
+        </p>
+      ) : null}
       <ol className="list-decimal space-y-1 pl-5 ui-caption leading-snug text-muted-foreground">
         {input.plan.map((step, idx) => (
           <li key={idx} className="break-words">

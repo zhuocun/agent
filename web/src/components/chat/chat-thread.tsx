@@ -86,6 +86,7 @@ import {
 } from "@/lib/shortcut-defaults";
 import {
   useApiStream,
+  type RunCostState,
   type SubagentActivity,
   type TerminalResult,
 } from "@/lib/stream-client";
@@ -300,7 +301,10 @@ const localId = (): string => `local-${Date.now()}-${localIdCounter++}`;
 // In-memory message variant. ChatMessage is the canonical wire/persisted shape;
 // `error` is FE-only state from a stream-terminal error frame and never
 // round-trips to the server.
-type LocalChatMessage = ChatMessage & { error?: ApiError };
+type LocalChatMessage = ChatMessage & {
+  error?: ApiError;
+  runCost?: RunCostState | null;
+};
 type ConversationSearchState = {
   query: string;
   results: ConversationSummary[] | null;
@@ -1031,6 +1035,7 @@ export function ChatThread() {
       attribution: result.status === "done" ? result.attribution : undefined,
       parts,
       error: result.status === "error" ? result.error : undefined,
+      ...(result.runCost ? { runCost: result.runCost } : {}),
     };
 
     const optimisticUserId = pendingUserIdRef.current;
@@ -3907,6 +3912,15 @@ export function ChatThread() {
                       onMemoryOpen={() => openSettings("memory")}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
+                      liveRunCost={m.runCost ?? null}
+                      onOpenSettings={() => openSettings("general")}
+                      onDismissError={() =>
+                        setMessages((prev) =>
+                          prev.map((row) =>
+                            row.id === m.id ? { ...row, error: undefined } : row,
+                          ),
+                        )
+                      }
                     />
                   );
                 })}
@@ -3920,6 +3934,7 @@ export function ChatThread() {
                     // bubble. Empty on every non-agentic turn. (`run_cost` SSE
                     // frames are parsed in stream-client but not rendered here.)
                     liveSubagents={state.subagents}
+                    liveRunCost={state.runCost}
                   />
                 ) : null}
               </MessageList>

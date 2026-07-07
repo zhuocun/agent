@@ -334,8 +334,13 @@
      bg-foreground/30 read); see the .dark override for why this is a token. */
   --scrim: oklch(0.15 0.008 250);
 
-  /* Focus ring — aligned to brand hue 247. */
-  --focus-ring: 0 0 0 3px oklch(0.62 0.18 247 / 0.35);
+  /* Focus ring — aligned to brand hue 247. Two layers: a background-colored
+     inner gap plus an OPAQUE brand outer ring. The old single translucent ring
+     (35% alpha) blended to ~1.5:1 against the near-white page — invisible to
+     the low-vision keyboard users it exists for; the opaque L=0.59 brand blue
+     clears the 3:1 non-text contrast floor, and the gap keeps it legible on
+     any control fill. */
+  --focus-ring: 0 0 0 2px var(--background), 0 0 0 4px oklch(0.59 0.20 247);
 
   /* Activated focus glow — lit brand edge + soft outward halo that fades. */
   --focus-glow-edge: 0 0 0 1.5px oklch(0.59 0.20 247 / 0.8);
@@ -496,7 +501,9 @@
      every modal; a black-based dim keeps overlays darkening in dark mode. */
   --scrim: oklch(0 0 0);
 
-  --focus-ring: 0 0 0 3px oklch(0.74 0.17 247 / 0.42);
+  /* Two-layer ring, dark parity (see :root) — opaque L=0.74 brand blue over
+     the near-black canvas clears 3:1; the 42%-alpha single ring did not. */
+  --focus-ring: 0 0 0 2px var(--background), 0 0 0 4px oklch(0.74 0.17 247);
 
   /* Activated focus glow — lit brand edge + soft outward halo that fades. */
   --focus-glow-edge: 0 0 0 1.5px oklch(0.72 0.18 247 / 0.85);

@@ -273,7 +273,7 @@ Each item is a single assertable statement. `[P0]/[P1]/[P2]` priority; `(§N)` b
 
 ### §8 Onboarding & settings
 - [ ] [P0] AI-interaction disclosure at first interaction. (§8, §12) [C42]
-- [ ] [P0] iOS install coachmark at contextual moment. (§8) [C58]
+- [x] [P0] iOS install coachmark at contextual moment. (§8) [C58] — closed 2026-07-07: coachmark now yields while follow-up chips intersect its band and parks at the safe-area floor on composer-less surfaces (ISSUE-6/7).
 - [ ] [P0] Settings master-detail drill-down in bottom sheet. (§8)
 - [ ] [P1] All settings controls meet 44pt (ST2 audit items closed). (§8)
 
@@ -283,8 +283,8 @@ Each item is a single assertable statement. `[P0]/[P1]/[P2]` priority; `(§N)` b
 
 ### §10 Accessibility
 - [ ] [P0] Touch targets ≥44pt with ≥8px spacing on `@media (hover:none)`. (§10) [C52]
-- [ ] [P0] Announce "Stopped" through polite region. (§10) [C34]
-- [ ] [P0] `prefers-reduced-motion` static path for every animation. (§10)
+- [x] [P0] Announce "Stopped" through polite region. (§10) [C34] — verified 2026-07-07: `chat-thread.tsx` sets "Generation stopped" through the polite `LiveRegion` on stop/terminal.
+- [x] [P0] `prefers-reduced-motion` static path for every animation. (§10) — closed 2026-07-07: remaining animated controls (collapsible chevrons, swipe-tray/press-scale rows, header pill) gained `motion-reduce` paths.
 - [ ] [P1] Focus not fully obscured by keyboard or chrome. (§10)
 
 ### §11 Performance

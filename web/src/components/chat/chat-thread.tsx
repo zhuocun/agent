@@ -3751,6 +3751,12 @@ export function ChatThread() {
                 onOpenMobileNav={() => setMobileNavOpen(true)}
                 onOpenSidebar={() => setSidebarOpen(true)}
                 onNewChat={handleNewChat}
+                // Visible palette trigger — same open path as the Cmd/Ctrl+K
+                // shortcut, so the palette is discoverable without knowing the
+                // keystroke. The hint keycaps track the effective (remappable)
+                // binding.
+                onOpenCommandPalette={() => runAction("palette")}
+                paletteShortcut={effectiveBindings["palette"]}
                 isTemporary={isTemporary}
                 onToggleTemporary={handleToggleTemporary}
                 onCopyConversation={handleCopyConversation}

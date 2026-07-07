@@ -482,7 +482,7 @@ function ConversationRow({
             onTogglePin(conversation.id);
             swipe.close();
           }}
-          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-muted ui-list-row font-medium text-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97]"
+          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-muted ui-list-row font-medium text-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100"
         >
           {conversation.pinned ? (
             <PinOff className="size-4" aria-hidden />
@@ -500,7 +500,7 @@ function ConversationRow({
             onRequestDelete(conversation);
             swipe.close();
           }}
-          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-destructive ui-list-row font-medium text-destructive-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97]"
+          className="flex w-16 select-none flex-col items-center justify-center gap-1 bg-destructive ui-list-row font-medium text-destructive-foreground transition-transform duration-100 touch-manipulation active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100"
         >
           <Trash2 className="size-4" aria-hidden />
           <span>Delete</span>
@@ -1542,7 +1542,7 @@ export function Sidebar({
           // E2E target: the header also has a "New chat" affordance, and the
           // testid keeps us from picking the wrong one.
           data-testid="sidebar-new-chat"
-          className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl px-3 py-2 text-left ui-list-row font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] active:scale-[0.97]"
+          className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl px-3 py-2 text-left ui-list-row font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100"
         >
           <Plus className="size-4" aria-hidden />
           <span>{t("sidebar.newChat")}</span>
@@ -2215,7 +2215,7 @@ export function Sidebar({
               <button
                 type="button"
                 aria-label="Account menu"
-                className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl p-2 text-left outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] aria-expanded:bg-muted/60 active:not-aria-[haspopup]:scale-[0.97]"
+                className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl p-2 text-left outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] aria-expanded:bg-muted/60 active:not-aria-[haspopup]:scale-[0.97] motion-reduce:transition-none motion-reduce:active:not-aria-[haspopup]:scale-100"
               >
                 <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-secondary ui-caption font-medium text-secondary-foreground">
                   {initials(account.name)}

@@ -284,7 +284,7 @@ export function ModelModePicker({
             >
               <ChevronRight
                 aria-hidden
-                className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                className="size-3.5 shrink-0 transition-transform motion-reduce:transition-none [[data-panel-open]_&]:rotate-90"
               />
               Advanced
             </CollapsibleTrigger>
@@ -435,7 +435,7 @@ export function ModelModePicker({
               >
                 <ChevronRight
                   aria-hidden
-                  className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                  className="size-3.5 shrink-0 transition-transform motion-reduce:transition-none [[data-panel-open]_&]:rotate-90"
                 />
                 Advanced
               </CollapsibleTrigger>

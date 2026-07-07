@@ -59,6 +59,12 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  /* Backdrop scrim behind modals (dialog / drawer / command palette). Theme-
+     stable dim: always a dark ink so overlays darken the page in BOTH themes —
+     a foreground-based scrim inverts to near-white in dark mode and *lightens*
+     the scene instead of dimming it. Consumers pick alpha via the Tailwind
+     opacity modifier (bg-scrim/30, bg-scrim/45). */
+  --color-scrim: var(--scrim);
 
   /* Brand accent */
   --color-brand: var(--brand);
@@ -324,6 +330,10 @@
   --float-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 12px -2px rgba(0, 0, 0, 0.08);
   --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 10px 24px -8px rgba(0, 0, 0, 0.20);
 
+  /* Modal backdrop scrim — foreground-family ink in light (matches the old
+     bg-foreground/30 read); see the .dark override for why this is a token. */
+  --scrim: oklch(0.15 0.008 250);
+
   /* Focus ring — aligned to brand hue 247. */
   --focus-ring: 0 0 0 3px oklch(0.62 0.18 247 / 0.35);
 
@@ -480,6 +490,11 @@
   /* iOS-style halos — soft, no inner bevel. */
   --float-shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.32);
   --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 24px -8px rgba(0, 0, 0, 0.55);
+
+  /* Modal backdrop scrim — pure black, NOT the near-white dark foreground.
+     The former bg-foreground/30 backdrops washed the dark page lighter behind
+     every modal; a black-based dim keeps overlays darkening in dark mode. */
+  --scrim: oklch(0 0 0);
 
   --focus-ring: 0 0 0 3px oklch(0.74 0.17 247 / 0.42);
 

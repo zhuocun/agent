@@ -1317,7 +1317,7 @@ export function SettingsDialog({
             >
               <ChevronRight
                 aria-hidden
-                className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                className="size-3.5 shrink-0 transition-transform motion-reduce:transition-none [[data-panel-open]_&]:rotate-90"
               />
               Bring your own key
             </CollapsibleTrigger>
@@ -1401,7 +1401,7 @@ export function SettingsDialog({
               >
                 <ChevronRight
                   aria-hidden
-                  className="size-3.5 shrink-0 text-muted-foreground transition-transform [[data-panel-open]_&]:rotate-90"
+                  className="size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none [[data-panel-open]_&]:rotate-90"
                 />
                 Custom instructions
               </CollapsibleTrigger>
@@ -1442,7 +1442,7 @@ export function SettingsDialog({
                   >
                     <ChevronRight
                       aria-hidden
-                      className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                      className="size-3.5 shrink-0 transition-transform motion-reduce:transition-none [[data-panel-open]_&]:rotate-90"
                     />
                     Project defaults
                   </CollapsibleTrigger>
@@ -1500,7 +1500,7 @@ export function SettingsDialog({
               >
                 <ChevronRight
                   aria-hidden
-                  className="size-3.5 shrink-0 transition-transform [[data-panel-open]_&]:rotate-90"
+                  className="size-3.5 shrink-0 transition-transform motion-reduce:transition-none [[data-panel-open]_&]:rotate-90"
                 />
                 Advanced privacy
               </CollapsibleTrigger>

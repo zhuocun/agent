@@ -89,6 +89,135 @@ issue carries a stable ID; do not renumber on edit. Severities: `MAJOR` > `MINOR
   not be loaded." error reading low-contrast against the dark surface; light-theme
   spend captures do not exhibit it.
 
+## 2026-07-07 sweep (W2 triage) — new issues
+
+Source captures: `web/test-results/audit/` @ commit `31c01e7` (107 PNGs, five
+stages, per-stage `manifest.md`, run summary `SWEEP-RUN.md`). Regression
+verdicts for ISSUE-1/2/3/5: **all PASS** (see SWEEP-RUN.md table; re-verified
+against the cited PNGs during this triage). Probes live in the gitignored
+`web/test-results/audit/harness/probe-w2*.mjs`.
+
+## ISSUE-6 — MAJOR — Install coachmark occludes both follow-up chips on iPhone 13 thread
+
+- **Screenshots:** `st3-mobile/iphone13-thread-light.png`, `st3-mobile/iphone13-thread-dark.png`
+- **Observation:** After a completed turn on the iPhone 13 profile, the
+  "Install Olune…" pill renders directly on top of the "Tell me more" and
+  "Give an example" follow-up chips. Probe (`probe-w2.mjs` A): coachmark rect
+  `y 368–432` fully covers both chip rects (`y 392.5–436.5`);
+  `document.elementFromPoint` at both chip centers resolves INSIDE the
+  coachmark (`hitIsInsideCoachmark: true`), so taps on either chip are stolen
+  by the pill. Same interactive-occlusion class as ISSUE-1.
+- **Root cause:** `install-coachmark.tsx` parks the fixed pill at
+  `bottom-[calc(var(--bottom-inset)+13rem)]` z-30. The ISSUE-1 fix suppresses
+  it only while the welcome rail (`ul[aria-label="Suggested prompts"]`) is
+  mounted; the follow-up chips (`[data-testid="follow-up-chips"]`, rendered
+  in-flow after each done assistant turn) land in the same parked band on a
+  short thread and are not covered by the suppression selector.
+- **Candidate fix:** extend the coachmark's MutationObserver yield to also
+  suppress while a `[data-testid="follow-up-chips"]` rect intersects the
+  pill's fixed band (rect-intersection, not mere presence, so long threads
+  where chips sit above the band keep the pill).
+- **Disposition:** **fix** (W4)
+- **Status:** fixed (commit `e58e977`)
+- **Fix:** `install-coachmark.tsx` — pill measures its own rect against every
+  `[data-testid="follow-up-chips"]` group and yields via `visibility` (rect
+  stays measurable) while any intersects; rechecked on DOM mutations, scrolls,
+  and resizes.
+
+## ISSUE-7 — MINOR — Install coachmark overlaps /status page content on iPhone 13
+
+- **Screenshots:** `st3-mobile/iphone13-status-light.png`, `st3-mobile/iphone13-status-dark.png`
+- **Observation:** On /status the pill sits over the "Errors" metric value and
+  the "Updated Jul 7, 2026 …" caption. Probe (`probe-w2.mjs` B): coachmark
+  rect `y 368–432` overlaps the Errors value node (`y 368–392`) and the
+  Updated caption (`y 416–474.5`); `composerPresent: false`.
+- **Root cause:** the same `+13rem` parking offset exists to clear the
+  composer capsule + follow-up chips, but /status has no composer — the pill
+  floats mid-content instead of resting near the safe-area floor.
+- **Candidate fix:** when no composer is mounted, park the pill at the
+  safe-area floor (`bottom-[calc(var(--bottom-inset)+0.75rem)]`) so it hugs
+  the bottom edge on composer-less surfaces.
+- **Disposition:** **fix** (W4)
+- **Status:** fixed (commit `e58e977`)
+- **Fix:** `install-coachmark.tsx` — tracks composer presence and parks the
+  pill at the safe-area floor (`+0.75rem`) when no composer is mounted, so
+  composer-less surfaces like /status no longer get the 13rem mid-content
+  float.
+
+## ISSUE-8 — MINOR — Dark-mode overlay scrim lightens the page behind drawer/dialog
+
+- **Screenshots:** `st3-mobile/vp390-drawer-dark.png`, `st3-mobile/iphone13-drawer-dark.png`, `st3-mobile/iphone13-settings-dark.png`, `st2-dialogs/auth-dialog__dark.png`
+- **Observation:** In dark theme, the exposed page behind the drawer / settings
+  sheet / auth dialog reads as a washed-out light-gray column instead of a
+  dimmed dark page. Probe (`probe-w2.mjs` C): the backdrop computes to
+  `oklab(0.96 … / 0.3)` — i.e. near-WHITE at 30% + `blur(12px)` — and the same
+  page pixels measure relative luminance 0.0033–0.0051 before open vs
+  0.081–0.092 with the scrim up: the "scrim" makes the dark page ~23×
+  BRIGHTER. In light theme the same rule darkens (foreground is near-black),
+  so dimming direction is theme-inverted.
+- **Root cause:** `dialog.tsx` / `drawer.tsx` backdrops use `bg-foreground/30`
+  (command-palette uses `bg-foreground/45`). `--foreground` flips to
+  near-white in `.dark`, so the overlay tint inverts with the theme. PR #110
+  ("lighter scrim with stronger backdrop blur") tuned opacity, not the
+  theme-inverting base color; no design doc specifies a lightening scrim in
+  dark mode, and iOS sheet scrims dim toward black in both appearances.
+- **Candidate fix:** theme-stable dim — keep the blur, base the tint on black
+  in dark mode (e.g. a `--scrim` token: `foreground/30` in light,
+  `black/45`-ish in dark) across dialog, drawer, and command-palette
+  backdrops.
+- **Disposition:** **fix** (W4)
+- **Status:** fixed (commit `9744e92`)
+- **Fix:** `globals.css` — new `--scrim` color token (foreground-family ink in
+  light, pure black in dark) exposed as the Tailwind `scrim` color;
+  `dialog.tsx` / `drawer.tsx` backdrops moved to `bg-scrim/30` and
+  `command-palette.tsx` to `bg-scrim/45`, so modals dim (never lighten) in
+  both themes.
+
+## ISSUE-9 — NIT — Disabled Save in user-message edit capsule low contrast
+
+- **Screenshots:** `st4-dynamic/user-message-editing.png`
+- **Observation:** The disabled Save pill (draft unchanged ⇒ `canSave` false)
+  renders `bg-brand` + white label at `disabled:opacity-40`. Measured from the
+  PNG: label-on-fill ≈ 1.7:1; fill-on-surface ≈ 4.07:1 vs the page. The washed
+  pill reads clearly as disabled next to the fully-saturated enabled state
+  (the composer send affordance in `composer-filled.png` shows the enabled
+  reference).
+- **Root cause:** intended disabled-state token (`disabled:opacity-40` in
+  `user-message.tsx`), the same idiom the rest of the app uses; disabled
+  controls are exempt from WCAG 1.4.3/1.4.11 contrast minima.
+- **Disposition:** **refuted** — same reasoning as ISSUE-4: the
+  enabled/disabled distinction holds and the dimming is the intended token, so
+  low label contrast on an inert control is not a defect. Retained with this
+  disposition per ISSUE-4 precedent.
+
+### W2 triage — reviewed and NOT logged as defects
+
+- **Blank thread at `st4-dynamic/streaming-plus120ms.png`** (no hero, no user
+  bubble): refuted as a harness/timing artifact. Probe
+  (`probe-w2-sendgap.mjs`): the welcome hero unmounts and the optimistic user
+  message mounts in the SAME animation frame (`blankWindowMs: 0`); there is no
+  DOM state in which neither is present.
+- **Empty send-button circle in `streaming-mid-answer.png`**: race-adjacent
+  frame (stream finished between rAF-arm and shot; icon caught mid-swap with
+  `animations: "disabled"`). Not reproducible as a stable state; deferred.
+- **Stale "Needs approval" pill on the historical tool_call part after
+  Approve/Deny** (`tool-approved-resumed.png`, `tool-denied.png`): reads as
+  the persisted record of the gate; the result part carries the outcome pill
+  ("Approved"/"Rejected"). Matches `tool-part.tsx` status vocabulary; not a
+  defect.
+- **"Fast" tier label wraps to its own line under the substitution capsule on
+  390px threads** (`st3-mobile/vp390-thread-*.png`): natural flex-wrap of the
+  attribution row; deferred as a typographic nit, no fix proposed.
+- **All-zero "Daily spend" chart renders a 112px empty region with only axis
+  labels** (`st2-dialogs/settings-spend__light.png`, `__dark.png`): the
+  "No spend in this window." empty-state only covers `daily.length === 0`, not
+  all-zero windows; deferred (empty-state polish, product-intent call).
+- **`contrast-more`, `forced-colors`, `scheme-dark`, `reduced-motion` ST5
+  matrix**: clean; forced-colors user-bubble border (ISSUE-2 fix) holds in
+  both palettes; a suspected gray "smudge" above the user bubble in
+  forced-colors shots was disproven by pixel sampling (pure white — preview
+  scaling artifact).
+
 ## Harness caveats
 
 These bound what the captures can and cannot prove. None are product bugs.
@@ -153,3 +282,6 @@ These bound what the captures can and cannot prove. None are product bugs.
 - **Net result:** 4 confirmed, 1 refuted (ISSUE-4). Refuted issue is retained with
   its disposition rather than deleted.
 - **Fix pass (2026-06-29):** ISSUE-1/2/3/5 fixed in PR #229; ISSUE-4 skipped (refuted).
+- **Fix pass (2026-07-07):** ISSUE-6/7 fixed in commit `e58e977`, ISSUE-8 fixed in
+  commit `9744e92` (branch `cursor/ui-ux-sweep-fixes-10db`); ISSUE-9 skipped
+  (refuted, per ISSUE-4 precedent).

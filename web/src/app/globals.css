@@ -59,6 +59,12 @@
   --color-card-foreground: var(--card-foreground);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  /* Backdrop scrim behind modals (dialog / drawer / command palette). Theme-
+     stable dim: always a dark ink so overlays darken the page in BOTH themes —
+     a foreground-based scrim inverts to near-white in dark mode and *lightens*
+     the scene instead of dimming it. Consumers pick alpha via the Tailwind
+     opacity modifier (bg-scrim/30, bg-scrim/45). */
+  --color-scrim: var(--scrim);
 
   /* Brand accent */
   --color-brand: var(--brand);
@@ -324,8 +330,17 @@
   --float-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 12px -2px rgba(0, 0, 0, 0.08);
   --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 10px 24px -8px rgba(0, 0, 0, 0.20);
 
-  /* Focus ring — aligned to brand hue 247. */
-  --focus-ring: 0 0 0 3px oklch(0.62 0.18 247 / 0.35);
+  /* Modal backdrop scrim — foreground-family ink in light (matches the old
+     bg-foreground/30 read); see the .dark override for why this is a token. */
+  --scrim: oklch(0.15 0.008 250);
+
+  /* Focus ring — aligned to brand hue 247. Two layers: a background-colored
+     inner gap plus an OPAQUE brand outer ring. The old single translucent ring
+     (35% alpha) blended to ~1.5:1 against the near-white page — invisible to
+     the low-vision keyboard users it exists for; the opaque L=0.59 brand blue
+     clears the 3:1 non-text contrast floor, and the gap keeps it legible on
+     any control fill. */
+  --focus-ring: 0 0 0 2px var(--background), 0 0 0 4px oklch(0.59 0.20 247);
 
   /* Activated focus glow — lit brand edge + soft outward halo that fades. */
   --focus-glow-edge: 0 0 0 1.5px oklch(0.59 0.20 247 / 0.8);
@@ -481,7 +496,14 @@
   --float-shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.32);
   --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 24px -8px rgba(0, 0, 0, 0.55);
 
-  --focus-ring: 0 0 0 3px oklch(0.74 0.17 247 / 0.42);
+  /* Modal backdrop scrim — pure black, NOT the near-white dark foreground.
+     The former bg-foreground/30 backdrops washed the dark page lighter behind
+     every modal; a black-based dim keeps overlays darkening in dark mode. */
+  --scrim: oklch(0 0 0);
+
+  /* Two-layer ring, dark parity (see :root) — opaque L=0.74 brand blue over
+     the near-black canvas clears 3:1; the 42%-alpha single ring did not. */
+  --focus-ring: 0 0 0 2px var(--background), 0 0 0 4px oklch(0.74 0.17 247);
 
   /* Activated focus glow — lit brand edge + soft outward halo that fades. */
   --focus-glow-edge: 0 0 0 1.5px oklch(0.72 0.18 247 / 0.85);

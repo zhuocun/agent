@@ -291,11 +291,11 @@ Each item is a single assertable statement. `[P0]/[P1]/[P2]` priority; `(§N)` b
 - [ ] [P1] Plan comparison before Stripe checkout. (§9)
 
 ### §10 Accessibility
-- [ ] [P0] Announce "Stopped" through polite region when stream stopped. (§10) [C34]
+- [x] [P0] Announce "Stopped" through polite region when stream stopped. (§10) [C34] — verified 2026-07-07: `chat-thread.tsx` sets "Generation stopped" through the polite `LiveRegion` on stop/terminal.
 - [ ] [P0] Shortcuts dialog traps focus and restores to invoker on close. (§10) [C36]
 - [ ] [P0] All interactive targets ≥24×24 CSS px or meet spacing exception. (§10) [C30]
 - [x] [P1] Focus never fully obscured by sticky chrome (2.4.11). (§10) — `scroll-margin` on `.chat-message-row` (`globals.css`)
-- [ ] [P0] `prefers-reduced-motion` path for every animation. (§10)
+- [x] [P0] `prefers-reduced-motion` path for every animation. (§10) — closed 2026-07-07: remaining animated controls (collapsible chevrons, swipe-tray/press-scale rows, header pill) gained `motion-reduce` paths.
 - [x] [P0] Theme honors `prefers-color-scheme` with Light/Dark/System override and no boot flash. (§10, §13) — next-themes provider + `ThemeToggle` [C72]
 
 ### §11 Performance
@@ -310,7 +310,7 @@ Each item is a single assertable statement. `[P0]/[P1]/[P2]` priority; `(§N)` b
 
 ### §13 Platform (desktop)
 - [ ] [P0] Every shortcut has a visible menu equivalent. (§13) [C46]
-- [ ] [P0] Command palette has visible trigger and restores focus on close. (§13) [C48]
+- [x] [P0] Command palette has visible trigger and restores focus on close. (§13) [C48] — closed 2026-07-07: header-pill search segment triggers the palette (key-cap hint on desktop); dialog restores focus on close.
 - [ ] [P1] Right-click context menu mirrors kebab actions when implemented. (§13)
 - [ ] [P0] Any future drag-and-drop has single-pointer alternative (2.5.7). (§13) [C31]
 - [ ] [P0] Compare view renders 2-up on desktop with independent scroll. (§13) [C51]

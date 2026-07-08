@@ -8,6 +8,7 @@ import {
   Menu,
   MoreHorizontal,
   Printer,
+  Search,
   Share,
   SquarePen,
 } from "lucide-react";
@@ -20,11 +21,21 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { KeyCaps } from "@/components/chat/key-caps";
 import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
+import type { ShortcutKeys } from "@/lib/use-keyboard-shortcuts";
 
 interface AppHeaderProps {
   onNewChat?: () => void;
+  // Opens the command palette through the same path as the Cmd/Ctrl+K
+  // shortcut — the visible trigger for users who don't know (or can't use)
+  // the keystroke. Rendered as a search segment in the trailing pill.
+  onOpenCommandPalette?: () => void;
+  // The palette's EFFECTIVE keystroke (default or user remap), rendered as a
+  // desktop-only key-cap hint beside the search glyph so the affordance also
+  // teaches the shortcut.
+  paletteShortcut?: ShortcutKeys;
   onOpenMobileNav?: () => void;
   onOpenSidebar?: () => void;
   onToggleTemporary?: () => void;
@@ -75,10 +86,12 @@ const FLOAT_BUTTON = cn(
 const FLOAT_BUTTON_TOUCH = cn(FLOAT_BUTTON, "md:hidden");
 
 const PILL_HALF =
-  "inline-flex h-[45px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none active:not-aria-[haspopup]:scale-[0.97]";
+  "inline-flex h-[45px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none active:not-aria-[haspopup]:scale-[0.97] motion-reduce:transition-none motion-reduce:active:not-aria-[haspopup]:scale-100";
 
 export function AppHeader({
   onNewChat,
+  onOpenCommandPalette,
+  paletteShortcut,
   onOpenMobileNav,
   onOpenSidebar,
   onToggleTemporary,
@@ -140,6 +153,31 @@ export function AppHeader({
             FLOAT_SCRIM_DARK,
           )}
         >
+          {onOpenCommandPalette ? (
+            <>
+              <button
+                type="button"
+                aria-label="Search and commands"
+                onClick={onOpenCommandPalette}
+                // Mobile: icon-only pill half (45px tall — clears the 44pt hit
+                // floor). Desktop: widens to fit the key-cap hint so the
+                // affordance doubles as shortcut education.
+                className={cn(
+                  PILL_HALF,
+                  paletteShortcut && "md:w-auto md:gap-2 md:px-3.5",
+                )}
+              >
+                <Search className="size-[18px]" strokeWidth={2.25} />
+                {paletteShortcut ? (
+                  <KeyCaps
+                    shortcut={paletteShortcut}
+                    className="hidden md:flex"
+                  />
+                ) : null}
+              </button>
+              <span aria-hidden className="h-4 w-px bg-foreground/10" />
+            </>
+          ) : null}
           <button
             type="button"
             aria-label="New chat"

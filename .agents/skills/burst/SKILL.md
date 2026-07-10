@@ -17,23 +17,9 @@ Worker output is never integrated directly. Every worker deliverable passes thro
 
 Before dispatching anything, define the to-dos and a high-standard definition of done (DoD) — the explicit bar the integrated work must clear. Then orchestrate with perseverance until that DoD is met: keep the chain running, proactively resolve blockers as they surface, and make the decisions the run needs — any choice that advances the DoD is yours to make. Do not pause mid-flight and call a round finished while DoD to-dos are still open and actionable. Escalate only a genuine blocker — a decision you can't ground, or a subtask that fails its second review (see **Reviewer**) — not a trivial or obvious-answer fork; otherwise decide and keep moving. Proactively record the to-dos and progress (a running checklist) so nothing drifts over a long session.
 
-## Mode
-
-Burst has two modes:
-
-- **default** — every subagent role runs on top-tier models with high reasoning: workers, reviewers, verifiers, sidecar explorers, and any other delegated role. Workers may match the orchestrator's exact model and reasoning budget. Optimizes for correctness and depth per subagent; accept the cost.
-- **light** — worker-side roles may drop to mid-tier models: implementation workers, sidecar explorers, lookup agents, and mechanical verifiers. Reviewers stay top-tier with high reasoning; an independent quality-gate verifier should be treated like a reviewer. Optimizes for parallel throughput and cost when mid-tier worker quality is sufficient.
-
-Run in default mode unless the user explicitly specifies light mode. Do not infer light mode from task size, shallowness, or cost concerns unless the user says so. Switch to **light** only when:
-
-- the user explicitly asks ("light mode", "save tokens", "go fast")
-- the slash-command is invoked with a `light` argument
-
-A single subtask inside an otherwise-light task may be individually promoted to default config if integration-sensitive; the rest stays light.
-
 ## When to delegate
 
-Only delegate when the session or user authorizes subagents. If no subagent launcher exists, ignore this skill. Do not choose a cheaper or faster subagent configuration in default mode; use reduced-cost settings only under **light** mode.
+Only delegate when the session or user authorizes subagents. If no subagent launcher exists, ignore this skill. Do not choose a cheaper or faster subagent configuration to save tokens.
 
 When delegation is allowed, **subagents are the default executor**. Treat staying local as the exception. A task is worth delegating if any of these are true:
 
@@ -95,25 +81,11 @@ Map the terminology to whatever the platform exposes — `model`, `subagent_type
 
 Forbidden tiers — two edges, and neither should be chosen unless the user or a higher-priority instruction explicitly calls for it. **Too cheap**: the smallest/distilled variants (`*-mini`, `*-haiku`-class). **Too expensive**: oversized frontier models whose cost outruns their marginal value for delegated work (e.g. Fable / Mythos). Default to a tier between these edges; reach for either edge only when instructed.
 
-### Default
-
 All delegated roles use top-tier models — Opus on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers, and any specialized role spawned for the task. Workers may run the same model and reasoning budget as the orchestrator — or even a higher tier and larger reasoning budget.
 
-Reasoning budget: high across the board, including sidecar exploration. Do not downgrade reasoning to save tokens — that defeats the point of default mode.
+Reasoning budget: high across the board, including sidecar exploration. Do not downgrade reasoning to save tokens.
 
-Platform-cap exception: if the platform forbids concurrent agents from using the exact same top-tier model and reasoning budget, keep the top-tier model and use the highest reasoning budget the platform allows. State the exception in the progress/final note if it changes a subagent's requested config. Do not switch to light mode unless the user asked for light mode.
-
-### Light mode
-
-Worker model: mid-tier — cheaper or faster than the orchestrator, never a forbidden tier. The worker must differ from the orchestrator in either model or reasoning budget. Apply the rule that fits your platform:
-
-1. Anthropic / OpenAI: step down one tier in the same family (Opus → Sonnet; top-tier GPT → next-tier non-mini GPT). This also covers subagents spawned as Claude Code / Codex CLIs per **Subagent source**, wherever the orchestrator runs.
-2. Cursor, when the work runs on Cursor's own subagents (**Subagent source** rule 3): choose the best Composer model.
-3. Fallback (no acceptable lower tier exists in your family): keep the orchestrator's model but drop the reasoning budget by at least one level (e.g. high → medium).
-
-Reasoning budget: moderate for sidecar/exploration/lookup work; high for implementation or integration-sensitive code paths. Pick the fastest setting that still meets the quality bar; escalate only when correctness is at risk.
-
-**Reviewers are the explicit exception to the divergence rule above.** They always run top-tier with high reasoning — the cost premium buys an independent quality gate above the cheaper worker.
+Platform-cap exception: if the platform forbids concurrent agents from using the exact same top-tier model and reasoning budget, keep the top-tier model and use the highest reasoning budget the platform allows. State the exception in the progress/final note if it changes a subagent's requested config.
 
 ## Orchestrator final gate
 
@@ -127,7 +99,7 @@ A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask
 
 ## Communication
 
-- Briefly tell the user what stays local on the critical path and what is being delegated. Note when running in light mode; default mode needs no announcement.
+- Briefly tell the user what stays local on the critical path and what is being delegated.
 - Name the model (and reasoning tier) behind each delegated role when you announce or report it — say which model is running the worker, which the reviewer, and so on — so the user can see what each role runs.
 - Note when a reviewer flags issues that trigger worker rework. Escalate to the user before a third review cycle on the same subtask.
 - **Report milestones, not noise.** Emit updates only for what advances the user's understanding: key progress and milestones, important findings, and anything that informs a decision they face. Don't stream trivial steps, routine subagent dispatches, or blow-by-blow narration — that chatter exhausts the reader, buries the main thread, and obscures what matters. Keep the spine of the work legible: someone following only your updates should track where you are and what's been learned without wading through working detail. Keep these updates short and integration-focused.
@@ -143,7 +115,6 @@ Before declaring a burst task done, confirm:
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny or blocking-dependency steps.
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
 - [ ] Every subagent call set model and reasoning explicitly — no platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class or too-expensive oversized-frontier) unless instructed.
-- [ ] Mode is correct — default unless the user asked for light; reviewers stayed top-tier with high reasoning in either mode.
 - [ ] Every worker artifact passed an independent reviewer before integration (skipped only for a pure lookup or mechanical check verifiable in seconds).
 - [ ] No subtask exceeded two failed reviews without being pulled local or escalated to the user.
 - [ ] Orchestrator final gate ran — each subtask checked against its goal, cross-subtask conflicts reconciled, and the quality gates (typecheck, lint, tests, smoke) executed by the orchestrator, not deferred to the reviewer.

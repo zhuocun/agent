@@ -32,15 +32,14 @@ Stay local only for genuinely tiny or tightly coupled work, and for the immediat
 
 Prefer one subagent per distinct subtask. **Maximize concurrency: run independent work in parallel rather than serializing it.** Bias toward spawning earlier rather than waiting for local exploration to finish, and launch concurrent subagents as early as dependencies allow — never hold back a strand that does not depend on one still in flight. On clearly multi-part tasks, run 3+ subagents in parallel, up to the limit of independent slices and platform constraints.
 
-## Subagent source
+## Cursor subagent source
 
-Where a subagent comes from is a per-dispatch decision. Pick the source with the first rule that fits your platform; **Model selection** still governs its model and reasoning config:
+On Cursor (the Agent or a Cloud Agent), where a subagent comes from is a per-dispatch decision; **Model selection** still governs its model and reasoning config:
 
-1. Claude Code or Codex platform: use the platform's own native subagents — Claude Code dispatches agents under `.claude/agents/` via its agent/Task tool; Codex dispatches its native subagents under `.codex/agents/`. This is top priority.
-2. Cursor (the Agent or a Cloud Agent) or any other platform: probe for a headless CLI (`command -v claude`, `command -v codex`). If either is available, it MUST be the primary subagent source — `claude -p "<prompt>"` for Claude Code, `codex exec "<prompt>"` for Codex — and Cursor's own subagent tool is prohibited; do not dispatch through it while a usable CLI exists.
-3. Neither CLI available: fall back to the platform's own subagent mechanism. This is the only situation in which the Cursor subagent tool may be used.
+1. Probe for a headless CLI (`command -v claude`, `command -v codex`). If either is available, it MUST be the primary subagent source — `claude -p "<prompt>"` for Claude Code, `codex exec "<prompt>"` for Codex — and Cursor's own subagent tool is prohibited; do not dispatch through it while a usable CLI exists.
+2. Neither CLI available: fall back to Cursor's own subagent tool — the only situation in which it may be used.
 
-A headless CLI spawn needs working auth in that environment (a prior login or the relevant API key env var); if the CLI is present but unauthenticated, treat it as unavailable and fall back. Headless spawns also have sharp edges an interactive terminal never shows (stdin/EOF, flag order, model slugs, effort defaults, output capture) — before the first CLI spawn in a session, read `references/cli-dispatch.md` in this skill's directory and apply its guards to every dispatch. Rules 1 and 3 need none of this.
+A headless CLI spawn needs working auth in that environment (a prior login or the relevant API key env var); if the CLI is present but unauthenticated, treat it as unavailable and fall back. Headless spawns also have sharp edges an interactive terminal never shows (stdin/EOF, flag order, model slugs, effort defaults, output capture) — before the first CLI spawn in a session, read `references/cli-dispatch.md` in this skill's directory and apply its guards to every dispatch. Rule 2 needs none of this.
 
 ## Reviewer
 

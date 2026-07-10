@@ -1,6 +1,6 @@
 # CLI dispatch hygiene
 
-Mechanics for spawning Claude Code / Codex CLIs headlessly as subagents (**Subagent source** rule 2). A spawn that works in a terminal can hang or mis-parse when launched headless. Apply every guard on every dispatch:
+Mechanics for spawning Claude Code / Codex CLIs headlessly as subagents (**Cursor subagent source** rule 1). A spawn that works in a terminal can hang or mis-parse when launched headless. Apply every guard on every dispatch:
 
 - **Stdin**: an open, writer-less pipe makes both CLIs block waiting for EOF. Feed the prompt on stdin so it also delivers EOF (`echo "<prompt>" | claude -p`), or close stdin explicitly for Codex's positional prompt (`codex exec "<prompt>" < /dev/null`).
 - **Claude variadic flags**: `--allowedTools` takes space-separated values (`--allowedTools Read Edit "Bash(git *)"`), so a trailing positional prompt is swallowed. Put the prompt first (`claude -p "<prompt>" --allowedTools Read Edit`) or deliver it on stdin.

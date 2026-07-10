@@ -34,7 +34,7 @@ Prefer one subagent per distinct subtask. **Maximize concurrency: run independen
 
 ## Cursor subagent source
 
-On Cursor (the Agent or a Cloud Agent), where a subagent comes from is a per-dispatch decision; **Model selection** still governs its model and reasoning config:
+On Cursor Agent or Cursor Cloud Agent, where a subagent comes from is a per-dispatch decision; **Model selection** still governs its model and reasoning config:
 
 1. Probe for a headless CLI (`command -v claude`, `command -v codex`). If either is available, it MUST be the primary subagent source — `claude -p "<prompt>"` for Claude Code, `codex exec "<prompt>"` for Codex — and Cursor's own subagent tool is prohibited; do not dispatch through it while a usable CLI exists.
 2. Neither CLI available: fall back to Cursor's own subagent tool — the only situation in which it may be used.

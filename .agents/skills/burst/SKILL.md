@@ -19,7 +19,7 @@ Before dispatching anything, define the to-dos and a high-standard definition of
 
 ## When to delegate
 
-Only delegate when the session or user authorizes subagents. If no subagent launcher exists, ignore this skill. Do not choose a cheaper or faster subagent configuration to save tokens.
+Only delegate when the session or user authorizes subagents. If no subagent launcher exists, ignore this skill.
 
 When delegation is allowed, **subagents are the default executor**. Treat staying local as the exception. A task is worth delegating if any of these are true:
 
@@ -81,7 +81,7 @@ Map the terminology to whatever the platform exposes — `model`, `subagent_type
 
 Forbidden tiers — two edges, and neither should be chosen unless the user or a higher-priority instruction explicitly calls for it. **Too cheap**: the smallest/distilled variants (`*-mini`, `*-haiku`-class). **Too expensive**: oversized frontier models whose cost outruns their marginal value for delegated work (e.g. Fable / Mythos). Default to a tier between these edges; reach for either edge only when instructed.
 
-All delegated roles use top-tier models — Opus on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers, and any specialized role spawned for the task. Workers may run the same model and reasoning budget as the orchestrator — or even a higher tier and larger reasoning budget.
+Within those edges, all delegated roles use top-tier models — Opus on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers, and any specialized role spawned for the task. Workers may run the same model and reasoning budget as the orchestrator — or even a higher tier and larger reasoning budget.
 
 Reasoning budget: high across the board, including sidecar exploration. Do not downgrade reasoning to save tokens.
 

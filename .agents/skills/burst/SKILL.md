@@ -11,7 +11,7 @@ description: Orchestrate authorized parallel subagents as the primary performers
 
 Work as an orchestrator, not a single-threaded executor. **Subagents are the primary performers of research, audit, implementation, and review work** — exploration, analysis, lookups, implementation, refactors, fixes, tests, and verification all default to subagents. The orchestrator's job is to plan, decompose, scope, dispatch, review, and integrate — not to absorb that work itself unless it is genuinely tiny or tightly coupled to the next local action. Stay in this role deliberately: resist pulling subtask work local even when doing it yourself feels faster, because that is precisely what costs you the overview. Your attention is the scarce resource — spend it on the bigger picture (planning, decomposition, integration), not on implementation you could have delegated. The orchestrator's judgment remains the final authority throughout; reviewers and verifiers inform that judgment, they do not replace it.
 
-Worker output is never integrated directly. Every worker deliverable passes through a dedicated **reviewer subagent** (top-tier model, high reasoning) before the orchestrator runs its own final gate. The full chain: **orchestrator → worker → reviewer → orchestrator**.
+Worker output is never integrated directly. Every worker deliverable passes through a dedicated **reviewer subagent** (configured per **Model selection**) before the orchestrator runs its own final gate. The full chain: **orchestrator → worker → reviewer → orchestrator**.
 
 ## Run it to done
 
@@ -72,15 +72,17 @@ The reviewer does not edit the artifact or any shared deliverable — it judges,
 
 Stop after two failed reviews on the same subtask (initial review + one retry). Pull the work local or escalate to the user — do not start a third review.
 
+A **verifier** is the same gate in narrower form: a subagent dispatched to confirm one specific claim or behavior — run the test suite, reproduce a bug, re-check a cited source — rather than judge a whole artifact. Verifiers follow the reviewer's rules: independent, grounded in external truth, never the author of the fix.
+
 ## Model selection
 
 Map the terminology to whatever the platform exposes — `model`, `subagent_type`, `reasoning_effort`, extended thinking / thinking budget, etc.
 
 **Always set these parameters explicitly on every subagent call.** Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config.
 
-Forbidden tiers — two edges, and neither should be chosen unless the user or a higher-priority instruction explicitly calls for it. **Too cheap**: the smallest/distilled variants (`*-mini`, `*-haiku`-class). **Too expensive**: oversized frontier models whose cost outruns their marginal value for delegated work (e.g. Fable / Mythos). Default to a tier between these edges; reach for either edge only when instructed.
+Forbidden tiers — two edges, and neither should be chosen unless the user or a higher-priority instruction explicitly calls for it. **Too cheap**: the smallest/distilled variants (`*-mini`, `*-haiku`-class). **Too expensive**: oversized frontier models whose cost outruns their marginal value for delegated work (e.g. Fable / Mythos). Stay between these edges; reach for either only when instructed.
 
-Within those edges, all delegated roles use top-tier models — Opus on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers, and any specialized role spawned for the task. Workers may run the same model and reasoning budget as the orchestrator — or even a higher tier and larger reasoning budget.
+All delegated roles use top-tier models — the strongest model inside those edges: Opus on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers (read-only scouts probing in parallel, off the integration path), and any specialized role spawned for the task. A worker's config may be as strong as the orchestrator's own, capped at that top tier — the too-expensive edge stays forbidden even if the orchestrator itself runs there.
 
 Reasoning budget: high across the board, including sidecar exploration. Do not downgrade reasoning to save tokens.
 
@@ -100,7 +102,7 @@ A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask
 
 - Briefly tell the user what stays local on the critical path and what is being delegated.
 - Name the model (and reasoning tier) behind each delegated role when you announce or report it — say which model is running the worker, which the reviewer, and so on — so the user can see what each role runs.
-- Note when a reviewer flags issues that trigger worker rework. Escalate to the user before a third review cycle on the same subtask.
+- Note when a reviewer flags issues that trigger worker rework, and report when a subtask hits the two-failed-review stop (see **Reviewer**).
 - **Report milestones, not noise.** Emit updates only for what advances the user's understanding: key progress and milestones, important findings, and anything that informs a decision they face. Don't stream trivial steps, routine subagent dispatches, or blow-by-blow narration — that chatter exhausts the reader, buries the main thread, and obscures what matters. Keep the spine of the work legible: someone following only your updates should track where you are and what's been learned without wading through working detail. Keep these updates short and integration-focused.
 - If delegation is skipped, state whether the reason is task size, coupling, or policy.
 - On completion, before reporting, housekeep: update the docs, records, and to-dos the work touched.

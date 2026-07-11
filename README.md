@@ -41,7 +41,7 @@ the backend CORS settings.
 
 ## Status
 
-M0–M4 + Post-M4 hardening have shipped on `main`. Test suite: **815 passed + 1 xfail** (the stop-path test; see `api/README.md`).
+M0–M4 + Post-M4 hardening have shipped on `main`. See `api/README.md` for the authoritative test-suite count (passing tests plus the one known stop-path xfail).
 
 - FE: https://olune-agent-zhuocuns-projects.vercel.app (Vercel)
 - BE: https://olune-agent-server.fly.dev (Fly.io, `nrt`)

@@ -35,6 +35,7 @@ the backend CORS settings.
 ## Pointers
 
 - `AGENTS.md` — deployment platform, DB, debugging via CLI, repo conventions. Read this first.
+- `docs/README.md` — index of all PRDs, plans, design canon, UX best practices, and research.
 - `web/README.md` — frontend setup.
 - `api/README.md` — backend setup, env, tests, deploy.
 - `docs/plans/00-backend-minimal.md` — full backend plan and milestone breakdown.

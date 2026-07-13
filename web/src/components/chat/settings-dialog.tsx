@@ -1047,7 +1047,7 @@ export function SettingsDialog({
         {!isDesktop && mobileShowList ? (
           <nav
             aria-label="Settings sections"
-            className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pb-1 md:space-y-4"
+            className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pb-8 md:space-y-4"
           >
             {SETTINGS_TAB_GROUPS.map((group) => (
               <div key={group.id} className="space-y-0.5 md:space-y-1">
@@ -1185,7 +1185,7 @@ export function SettingsDialog({
           hidden={activeTab !== "general" || (!isDesktop && mobileShowList)}
           className={cn(
             activeTab === "general" && (isDesktop || !mobileShowList)
-              ? "-mr-2 min-h-0 flex-1 space-y-8 overflow-y-auto pr-2"
+              ? "-mr-2 min-h-0 flex-1 space-y-8 overflow-y-auto pr-2 pb-8"
               : undefined,
           )}
         >

@@ -22,9 +22,12 @@ export function KeyCaps({
   const { isMac } = usePlatform();
   const segments = formatShortcut(shortcut, isMac);
 
+  // Shortcut chords are inherently LTR (Ctrl → K, ⌘ → K). Isolate so an RTL
+  // document doesn't reverse flex children into "K Ctrl".
   if (variant === "row") {
     return (
       <span
+        dir="ltr"
         aria-hidden
         className={cn("flex shrink-0 items-center gap-1", className)}
       >
@@ -44,6 +47,7 @@ export function KeyCaps({
 
   return (
     <span
+      dir="ltr"
       aria-hidden
       className={cn(
         "flex shrink-0 items-center gap-1 text-xs text-muted-foreground",

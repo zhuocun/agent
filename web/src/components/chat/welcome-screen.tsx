@@ -130,7 +130,11 @@ export function WelcomeScreen({
             carve-out of Decision 04's working-surface rule). Instrument Serif
             ships weight 400 only, so font-normal is structural, not stylistic.
             text-balance keeps two-line personalized greetings ragged-even. */}
+        {/* English marketing copy until real locale strings land — isolate as
+            LTR so trailing punctuation ("?") isn't pulled to the visual start
+            by the document's RTL bidi paragraph direction. */}
         <h2
+          dir="ltr"
           className="animate-welcome-enter font-heading text-4xl font-normal tracking-tight text-balance text-foreground min-[400px]:text-5xl md:text-6xl lg:text-7xl"
           style={{ animationDelay: "40ms" }}
         >

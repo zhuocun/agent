@@ -6,8 +6,11 @@ import type { JSX } from "react";
 // Shown on the welcome/empty state — not below the composer (#245 removed that
 // placement as chrome clutter). Calm, readable, accessibility-conformant.
 export function AiDisclosure(): JSX.Element {
+  // English disclosure copy — isolate LTR so sentence-final punctuation
+  // stays with its Latin run under a document-level `dir=rtl`.
   return (
     <p
+      dir="ltr"
       role="note"
       aria-label="AI interaction disclosure"
       className="mt-4 max-w-md ui-caption leading-snug text-muted-foreground"

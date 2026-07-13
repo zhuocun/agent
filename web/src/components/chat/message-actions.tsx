@@ -295,7 +295,11 @@ function OverflowMenu({
       <DropdownMenuContent
         align="start"
         sideOffset={8}
-        className="w-60 max-w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl"
+        // Tall regenerate menu: keep a viewport gutter so the last tier row
+        // (and any badge) isn't mid-glyph clipped when the popup pins to the
+        // bottom. scroll-pb gives the overflow scroller the same breathing room.
+        collisionPadding={20}
+        className="w-60 max-w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl scroll-pb-4 pb-2.5"
       >
         {primary ? (
           <DropdownMenuGroup>
@@ -363,7 +367,7 @@ function OverflowMenu({
             )}
             <div className="min-w-0 flex-1">
               <span className="truncate font-medium">{readAloudLabel}</span>
-              <p className="mt-0.5 truncate ui-caption leading-snug text-muted-foreground">
+              <p className="mt-0.5 text-pretty ui-caption leading-snug text-muted-foreground">
                 {readAloudHint}
               </p>
             </div>
@@ -417,7 +421,7 @@ function OverflowMenu({
                   <AudioLines className="size-4" />
                   <div className="min-w-0 flex-1">
                     <span className="truncate font-medium">Voice</span>
-                    <p className="mt-0.5 truncate ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                    <p className="mt-0.5 line-clamp-2 text-pretty ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
                       {currentVoiceName}
                     </p>
                   </div>

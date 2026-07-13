@@ -72,16 +72,21 @@ export function AttributionRow({
     >
       {substitution ? (
         <span
-          className="inline-flex max-w-full flex-wrap items-center gap-x-1 gap-y-0.5 rounded-full bg-substitution-callout px-1.5 py-0.5 ui-caption font-medium text-substitution-callout-foreground ring-1 ring-substitution-callout-border"
+          className="inline-flex max-w-full flex-col items-start gap-0.5 rounded-md bg-substitution-callout px-2 py-1.5 ui-caption font-medium text-substitution-callout-foreground ring-1 ring-substitution-callout-border sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-1.5 sm:rounded-full sm:px-1.5 sm:py-0.5"
           data-testid="attribution-substitution"
         >
-          <Info aria-hidden className="size-3 shrink-0" />
-          <span>
-            Rerouted from {requestedTierLabelFor(attribution.requestedTierId)}{" "}
-            → {servedModelLabel}
+          <span className="inline-flex min-w-0 items-center gap-1">
+            <Info aria-hidden className="size-3 shrink-0" />
+            <span className="min-w-0 text-pretty">
+              Rerouted from {requestedTierLabelFor(attribution.requestedTierId)}{" "}
+              → {servedModelLabel}
+            </span>
           </span>
-          <span className="font-normal text-substitution-callout-foreground/85">
-            · {substitution.reasonText}
+          <span className="ps-4 font-normal text-substitution-callout-foreground/85 sm:ps-0">
+            <span className="hidden sm:inline" aria-hidden>
+              ·{" "}
+            </span>
+            {substitution.reasonText}
           </span>
         </span>
       ) : null}

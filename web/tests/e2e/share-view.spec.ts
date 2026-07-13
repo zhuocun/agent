@@ -79,17 +79,12 @@ test.describe("public share view", () => {
     const publicConvo = await publicResp.json();
     const assistantMsg = (publicConvo.messages as Array<{
       role: string;
-      attribution?: { servedTierId?: string };
+      attribution?: { servedTierId?: string; servedModelLabel?: string };
     }>).find((m) => m.role === "assistant");
     expect(assistantMsg).toBeTruthy();
-    const servedTierId = assistantMsg?.attribution?.servedTierId ?? "";
-    expect(servedTierId.length).toBeGreaterThan(0);
-    const tierLabels: Record<string, string> = {
-      fast: "Fast",
-      smart: "Smart",
-      pro: "Pro",
-    };
-    const tierLabel = tierLabels[servedTierId] ?? servedTierId;
+    const servedModelLabel =
+      assistantMsg?.attribution?.servedModelLabel?.trim() ?? "";
+    expect(servedModelLabel.length).toBeGreaterThan(0);
     // The public payload structurally has no cost — guard the contract by
     // asserting cost-bearing KEYS are absent. We match serialized keys rather
     // than the bare word "cost": a substitution `reasonText` can legitimately
@@ -114,10 +109,11 @@ test.describe("public share view", () => {
     await expect(publicAnswer).toBeVisible();
     await expect(publicAnswer).not.toHaveText("");
 
-    // The model attribution / served tier label is visible.
+    // The model attribution / served-model label is visible (quiet public
+    // phrasing: "Answered with {label}" — no router/tier jargon).
     const attribution = page.getByTestId("public-attribution").first();
     await expect(attribution).toBeVisible();
-    await expect(attribution).toContainText(tierLabel);
+    await expect(attribution).toContainText(`Answered with ${servedModelLabel}`);
 
     // NO cost figure anywhere on the page. The public contract is cost-free;
     // a "$" digit pattern would mean a leak. We scan the rendered body text.

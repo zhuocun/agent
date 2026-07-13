@@ -150,6 +150,9 @@ export function ModelModePicker({
   // the bar reads as one tap-target word; the provider + effort meta only return
   // at md+ where there's room for the full state line. The accessible
   // `triggerLabel` (above) still announces every value to AT regardless.
+  // Tier → provider → effort is an LTR label sequence (e.g. "Auto Fake").
+  // `dir=ltr` lands on the trigger buttons below so flex children keep that
+  // order under a document-level RTL (a `contents` wrapper would not).
   const triggerInner = (
     <>
       <span className="min-w-0 truncate font-medium text-foreground">
@@ -205,6 +208,7 @@ export function ModelModePicker({
           render={
             <button
               type="button"
+              dir="ltr"
               aria-label={triggerLabel}
               data-testid="model-mode-trigger"
               className={cn(TRIGGER_CLASS, "hidden md:inline-flex")}
@@ -350,6 +354,7 @@ export function ModelModePicker({
           render={
             <button
               type="button"
+              dir="ltr"
               aria-label={triggerLabel}
               data-testid="model-mode-trigger"
               className={cn(TRIGGER_CLASS, "md:hidden")}
@@ -366,7 +371,7 @@ export function ModelModePicker({
               message.
             </DialogDescription>
           </DialogHeader>
-          <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain">
+          <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pb-8">
             {/* Tier leads on mobile too, and is the ONLY section shown by
                 default. The full description rides only on the selected row; the
                 rest carry the compact model meta. */}

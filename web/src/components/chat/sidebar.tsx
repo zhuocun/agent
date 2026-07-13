@@ -1815,7 +1815,12 @@ export function Sidebar({
                     <p className="ui-body font-medium text-foreground">
                       No chats yet
                     </p>
-                    <p className="ui-body text-muted-foreground">
+                    {/* Phone drawer covers the composer, so "type below" is
+                        misleading there; desktop rail keeps the original cue. */}
+                    <p className="ui-body text-muted-foreground md:hidden">
+                      Start a new chat to begin
+                    </p>
+                    <p className="hidden ui-body text-muted-foreground md:block">
                       Type a message below to start
                     </p>
                   </div>

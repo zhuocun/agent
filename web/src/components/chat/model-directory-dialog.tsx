@@ -232,7 +232,7 @@ export function ModelDirectoryBody({
         </p>
       </div>
 
-      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-3 overflow-y-auto overscroll-contain pr-2 sm:max-h-none">
+      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-3 overflow-y-auto overscroll-contain pr-2 pb-8 sm:max-h-none">
         {loading ? (
           <p className="ui-body text-muted-foreground">Loading…</p>
         ) : error ? (

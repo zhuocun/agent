@@ -179,7 +179,7 @@ export function UsageMeter({ usage }: UsageMeterProps) {
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuetext={presentation.detailText}
-          className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-foreground/8"
+          className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted shadow-[inset_0_0_0_1px_var(--border)]"
         >
           <div
             className={cn(

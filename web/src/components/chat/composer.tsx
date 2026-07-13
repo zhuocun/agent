@@ -47,7 +47,8 @@ import { formatAttachmentSize } from "@/lib/format-attachment-size";
 import { fetchPromptTemplates } from "@/lib/apiClient";
 import { useSpeechRecognition } from "@/lib/use-speech-recognition";
 import { haptic } from "@/lib/use-haptic";
-import { useT } from "@/lib/i18n/context";
+import { useLocale, useT } from "@/lib/i18n/context";
+import { RTL_LOCALES } from "@/lib/i18n/messages";
 import { yieldToMain } from "@/lib/scheduler-yield";
 import {
   NEW_CHAT_DRAFT_KEY,
@@ -269,6 +270,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     forwardedRef,
   ) {
     const t = useT();
+    const locale = useLocale();
     const [value, setValue] = useState("");
     const [attachments, setAttachments] = useState<AttachmentPart[]>([]);
     const [pendingAttachmentReads, setPendingAttachmentReads] = useState(0);
@@ -1276,6 +1278,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             data-testid="composer-textarea"
             ref={ref}
             rows={1}
+            // Bind to message locale, not document/`?rtl=1` dir. Keeps the
+            // English placeholder LTR under the RTL shell test hook; switches
+            // when catalogs for ar/he/fa/ur land.
+            dir={RTL_LOCALES.has(locale) ? "rtl" : "ltr"}
             value={value}
             onChange={(e) => {
               updateValue(e.target.value);

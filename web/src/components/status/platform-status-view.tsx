@@ -81,7 +81,7 @@ function StatusHeader() {
         className="flex items-center gap-2 rounded-sm font-medium text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         aria-label="Olune home"
       >
-        <span className="text-base font-semibold tracking-tight">Olune</span>
+        <span className="font-heading text-base tracking-tight">Olune</span>
         <span className="hidden ui-body text-muted-foreground sm:inline">
           · status
         </span>
@@ -91,8 +91,8 @@ function StatusHeader() {
         <Button
           nativeButton={false}
           render={<Link href="/" />}
-          variant="secondary"
-          className="h-11 rounded-full px-3.5 ui-list-row sm:h-9"
+          variant="outline"
+          className="h-11 rounded-full border-brand/25 bg-brand/10 px-3.5 ui-list-row text-foreground hover:bg-brand/15 sm:h-9"
         >
           Back to chat
         </Button>
@@ -137,7 +137,7 @@ function StatusBody({ status }: { status: PlatformStatus }) {
 
       <dl className="mt-6 grid grid-cols-2 gap-4 ui-body sm:grid-cols-3">
         <div>
-          <dt className="text-muted-foreground">Sample window</dt>
+          <dt className="text-muted-foreground">Time window</dt>
           <dd className="mt-0.5 font-medium tabular-nums">
             last {windowMinutes} min
           </dd>

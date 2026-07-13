@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Info, Key } from "lucide-react";
+import { Key } from "lucide-react";
 
 import type { ModelTierId, PublicAttribution } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -15,9 +15,9 @@ export interface PublicAttributionRowProps {
 // cost (web/src/lib/types.ts `PublicAttribution`), so reusing that component
 // would force fabricated cost props. Instead this is a trimmed, static byline
 // that keeps the SAME typography and the SAME model-identity semantics — served
-// model label, optional tier, substitution clause, BYOK chip — minus the
-// interactive cost popover. Lowest-churn correct approach: a small sibling, not
-// a refactor of the cost-bearing private row.
+// model label, optional BYOK chip — minus the interactive cost popover and the
+// private row's substitution callout ("Rerouted from … tier"). Public strangers
+// get a quiet "Answered with {label}" line instead of router jargon.
 
 type ServedTierId = Exclude<ModelTierId, "auto">;
 
@@ -33,21 +33,19 @@ function assertServedTier(id: ModelTierId): ServedTierId {
 export function PublicAttributionRow({
   attribution,
 }: PublicAttributionRowProps): React.JSX.Element {
-  const { substitution, isByok, servedModelLabel } = attribution;
+  const { isByok, servedModelLabel } = attribution;
   const servedTierId = assertServedTier(attribution.servedTierId);
   const tierLabel = MODEL_TIERS_BY_ID[servedTierId].label;
   const providerLabel = attribution.providerLabel?.trim() || undefined;
   const byokLabel = providerLabel
     ? `Your ${providerLabel} key`
     : "Your API key";
-  const substitutionPrefix = substitution
-    ? `Rerouted from ${MODEL_TIERS_BY_ID[attribution.requestedTierId].label} tier — `
-    : null;
+  // Prefer the friendly served-model label; fall back to the tier display name.
+  const answerLabel = servedModelLabel.trim() || tierLabel;
+  const answerLine = `Answered with ${answerLabel}`;
   const ariaLabel = [
-    substitutionPrefix,
-    `served by ${servedModelLabel}`,
+    answerLine,
     providerLabel ? `provider ${providerLabel}` : null,
-    `${tierLabel} tier`,
     isByok ? byokLabel : null,
   ]
     .filter(Boolean)
@@ -59,13 +57,7 @@ export function PublicAttributionRow({
       data-testid="public-attribution"
       aria-label={ariaLabel}
     >
-      {substitutionPrefix ? (
-        <span className="inline-flex items-center gap-1 text-muted-foreground/80">
-          <Info aria-hidden className="size-3" />
-          <span>{substitutionPrefix}</span>
-        </span>
-      ) : null}
-      <span>{tierLabel}</span>
+      <span>{answerLine}</span>
 
       {isByok ? (
         <span

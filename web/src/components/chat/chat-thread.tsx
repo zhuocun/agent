@@ -324,6 +324,29 @@ const PREFERRED_PROVIDER_STORAGE_KEY = "olune.preferredProviderId";
 // UI instead of an unbounded spinner ("the page keeps loading").
 const BOOTSTRAP_TIMEOUT_MS = 30_000;
 
+// apiClient falls back to developer-facing envelopes ("HTTP 500 with unexpected
+// body shape") when the BE returns a non-envelope error. Bootstrap is a
+// first-paint gate — map those to calm user copy and keep the raw detail out
+// of the primary message. TIMEOUT / NETWORK are already authored for humans.
+const API_CLIENT_JARGON_BODY =
+  /HTTP \d+ with (unexpected body shape|non-JSON body)\.?/i;
+
+function friendlyBootstrapCopy(error: ApiError): { title: string; body: string } {
+  if (error.code === "TIMEOUT" || error.code === "NETWORK") {
+    return { title: error.title, body: error.body };
+  }
+  if (
+    error.title === "Request failed" ||
+    API_CLIENT_JARGON_BODY.test(error.body)
+  ) {
+    return {
+      title: "Couldn't start your session",
+      body: "Something went wrong loading Olune. Please try again in a moment.",
+    };
+  }
+  return { title: error.title, body: error.body };
+}
+
 function readStoredPreferredProviderId(): string | undefined {
   if (typeof window === "undefined") return undefined;
   try {
@@ -3582,11 +3605,19 @@ export function ChatThread() {
   // other than retrying.
 
   if (bootstrapError) {
+    const { title, body } = friendlyBootstrapCopy(bootstrapError);
     return (
-      <div className="flex h-full min-h-svh items-center justify-center p-6">
+      <div className="flex h-full min-h-svh flex-col items-center justify-center bg-background p-6 text-foreground">
         <div className="max-w-sm space-y-4 text-center">
-          <h1 className="text-lg font-semibold">{bootstrapError.title}</h1>
-          <p className="ui-body text-muted-foreground">{bootstrapError.body}</p>
+          <p className="font-heading text-2xl tracking-tight text-foreground/90">
+            Olune
+          </p>
+          <div className="space-y-2">
+            <h1 className="font-heading text-2xl tracking-tight text-balance md:text-3xl">
+              {title}
+            </h1>
+            <p className="ui-body text-muted-foreground">{body}</p>
+          </div>
           <Button
             type="button"
             onClick={() => {
@@ -3599,7 +3630,7 @@ export function ChatThread() {
               setBootstrapError(null);
               setBootstrapAttempt((n) => n + 1);
             }}
-            className="h-11 rounded-full px-5"
+            className="h-11 rounded-full bg-brand px-5 text-brand-foreground hover:bg-brand/90"
           >
             Try again
           </Button>

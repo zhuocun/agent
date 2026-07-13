@@ -31,7 +31,7 @@ export default function NotFound() {
         </p>
         <Link
           href="/"
-          className="mt-8 inline-flex h-11 items-center rounded-full bg-secondary px-5 text-sm font-medium text-secondary-foreground transition-colors hover:bg-secondary/80 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="mt-8 inline-flex h-11 items-center rounded-full bg-brand px-5 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand/90 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           Back to chat
         </Link>

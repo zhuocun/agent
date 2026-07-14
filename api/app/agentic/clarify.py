@@ -1,6 +1,6 @@
 """Clarify-before-plan helpers for deep-research HITL.
 
-Optional pause (``AGENTIC_CLARIFY_BEFORE_PLAN``) that asks 1–3 clarifying
+Optional pause (``AGENTIC_CLARIFY_BEFORE_PLAN``) that asks 1-3 clarifying
 questions before planning / admission / fan-out. Reuses the shipped
 ``awaiting_approval`` + ``toolApproval`` primitives via a pseudo-tool
 (``agentic_plan_clarify``), mirroring plan-approval.
@@ -30,8 +30,8 @@ _REAL_CLARIFY_QUESTIONS: tuple[str, ...] = (
 def needs_clarify(*, user_text: str, scaffolded: bool) -> bool:
     """Whether a deep-research turn should pause for clarifying questions.
 
-    Fake (scaffolded): only when ``CLARIFY:`` appears — deterministic marker.
-    Real: always ask 1–3 questions when the flag is on (callers gate the flag).
+    Fake (scaffolded): only when ``CLARIFY:`` appears - deterministic marker.
+    Real: always ask 1-3 questions when the flag is on (callers gate the flag).
     """
     text = (user_text or "").strip()
     if not text:
@@ -42,7 +42,7 @@ def needs_clarify(*, user_text: str, scaffolded: bool) -> bool:
 
 
 def build_clarify_questions(*, user_text: str, scaffolded: bool) -> list[str]:
-    """Return 1–3 clarifying questions for the pause card."""
+    """Return 1-3 clarifying questions for the pause card."""
     if scaffolded:
         # Optional: `CLARIFY: q1 | q2` overrides the fixed fake questions.
         if CLARIFY_MARKER in user_text:

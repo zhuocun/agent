@@ -1619,7 +1619,6 @@ async def stream_and_persist(
     # are [tool_result, …answer]. Approve runs the (timeout-wrapped) tool; deny
     # synthesizes a cancelled/rejected result WITHOUT executing — the side effect
     # must never happen on a denial.
-    seeded_tool_result_for_orch: ToolResult | None = None
     if resume_seed is not None and not resume_seed.is_plan and not resume_seed.is_clarify:
         # BE-007: prefer the route's settled result (already claimed/executed).
         if resume_seed.settled_result is not None:
@@ -1663,7 +1662,6 @@ async def stream_and_persist(
                 summary="User denied the tool call.",
                 error="User denied the tool call.",
             )
-        seeded_tool_result_for_orch = seeded_result
         seeded_part = _tool_result_part(seeded_result)
         tool_parts.append(seeded_part.model_dump(by_alias=True, exclude_none=True))
         yield encode_tool_result(

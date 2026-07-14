@@ -2800,7 +2800,7 @@ async def _prepare_resume_tool(
         return user_message_id, history, original_text, attachments, seed
 
     # Clarify-before-plan HITL resume (plan 02). Same pseudo-tool bypass as plan
-    # approval. Approve may carry `edited_input.answers` (1–3 strings); deny
+    # approval. Approve may carry `edited_input.answers` (1-3 strings); deny
     # declines the research run without planning.
     if tool_name == PLAN_CLARIFY_TOOL_NAME and is_plan_clarify_call_id(
         decision.tool_call_id

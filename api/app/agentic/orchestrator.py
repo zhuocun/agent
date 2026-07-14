@@ -42,7 +42,6 @@ from app.agentic.aggregate import WorkerOutput
 from app.agentic.continuation import (
     AgenticContinuation,
     CompletedWorkerState,
-    completed_to_worker_outputs,
     serialize_continuation,
 )
 from app.agentic.retry import is_retryable_provider_error
@@ -127,7 +126,7 @@ PLAN_APPROVAL_CALL_ID_PREFIX = "plan-approval-"
 PLAN_APPROVAL_CALL_ID = "plan-approval"
 
 # Clarify-before-plan HITL (plan 02). Same awaiting_approval / toolApproval
-# surface as plan approval; pseudo-tool carries 1–3 questions. Resume approve
+# surface as plan approval; pseudo-tool carries 1-3 questions. Resume approve
 # may include ``edited_input.answers``; then the orchestrator proceeds to
 # plan → (plan approval) → admit → fan-out.
 PLAN_CLARIFY_TOOL_NAME = "agentic_plan_clarify"
@@ -318,7 +317,7 @@ async def _maybe_clarify_before_plan(
     """Clarify-before-plan HITL gate — async generator of pause events.
 
     When `AGENTIC_CLARIFY_BEFORE_PLAN` is on and the ambiguity / marker check
-    fires, surfaces 1–3 clarifying questions on a planner pseudo-tool and
+    fires, surfaces 1-3 clarifying questions on a planner pseudo-tool and
     PAUSES with `awaiting_approval` BEFORE planning / admission / fan-out.
     Yields nothing when the flag is off or clarify is not needed.
     """
@@ -626,10 +625,11 @@ async def _finalize_synthesis_streamed(
             # Append only the delta beyond the already-streamed draft (pass note
             # or full corrected synthesis when the judge rewrote the answer).
             verified = verifier_result.answer
-            if verified.startswith(draft):
-                extra = verified[len(draft) :]
-            else:
-                extra = "\n\n" + verified
+            extra = (
+                verified[len(draft) :]
+                if verified.startswith(draft)
+                else "\n\n" + verified
+            )
             if extra:
                 yield AnswerDelta(text=extra, subagent_id=_AGGREGATOR_ID)
 
@@ -1064,9 +1064,11 @@ async def _run_deep_research(
     scaffolded = settings.provider_backend == "fake"
 
     # Clarify-before-plan HITL (plan 02). Runs BEFORE planning so we do not spend
-    # planner tokens / commit the ~15× budget on an ambiguous brief. Decline
-    # short-circuits with a labeled synthesis (no plan, no workers).
-    if clarify_answered is None:
+    # planner tokens / commit the ~15x budget on an ambiguous brief. Decline
+    # short-circuits with a labeled synthesis (no plan, no workers). Only on a
+    # fresh run (`plan_approved is None`) - a plan-approval resume has already
+    # passed this gate.
+    if clarify_answered is None and plan_approved is None:
         clarify_paused = False
         async for event in _maybe_clarify_before_plan(
             settings, user_text=user_text, scaffolded=scaffolded
@@ -1533,7 +1535,7 @@ async def _run_deep_research(
     # BE-005: after siblings finish, surface the worker tool pause with continuation.
     if worker_pause is not None:
         completed_states: list[CompletedWorkerState] = []
-        for index, sid, _label, sq in worker_meta:
+        for _index, sid, _label, sq in worker_meta:
             if sid not in results:
                 continue
             out = results[sid]

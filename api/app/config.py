@@ -462,7 +462,7 @@ class Settings(BaseSettings):
     # Plan-approval gate (M3). When True, a deep-research plan pauses for human
     # approval before fan-out (`agentic_plan_approval` pseudo-tool). Default-off.
     agentic_plan_approval: bool = Field(default=False, alias="AGENTIC_PLAN_APPROVAL")
-    # Clarify-before-plan (plan 02). When True, deep_research may pause with 1–3
+    # Clarify-before-plan (plan 02). When True, deep_research may pause with 1-3
     # clarifying questions (`agentic_plan_clarify` pseudo-tool) before planning /
     # admission / fan-out. Fake provider triggers only on the `CLARIFY:` marker;
     # real providers ask when the flag is on. Default-off (preserves current

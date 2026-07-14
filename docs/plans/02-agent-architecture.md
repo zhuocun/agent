@@ -183,8 +183,10 @@ plan/tool ids only.
 - Run total = **sum of parts** (planner + workers + aggregator + verifier).
 - Persist **per-worker** `ModelAttribution` (model/tier/substitution); **no
   silent downgrade**.
-- Live `run_cost` meter (`subtotalUsd` / `capUsd`) is a product feature — emit
-  estimate at plan pause, ticks as workers complete, final at done.
+- `run_cost` meter (`subtotalUsd` / `capUsd`) is a product feature.
+  - **Shipped:** estimate at plan pause + final at done (`orchestrator.py`;
+    matches as-built audit — not per-worker mid-fan-out).
+  - **Target:** mid-run ticks as workers complete (estimate + mid + final).
 - Multi-agent research ≈ **~15×** chat tokens (industry published figure;
   `[verify-at-build]` against Olune metering). Entitlement-gate `deep_research`.
 
@@ -194,12 +196,15 @@ plan/tool ids only.
 
 OTel GenAI span tree (env-gated; no-op when unset):
 
-- Parent request / workflow → `invoke_agent` per subagent (planner, worker,
-  aggregator, verifier) → `execute_tool` / `chat` leaves.
+- **Target tree:** parent request / workflow → `invoke_agent` per subagent
+  (planner, worker, aggregator, verifier) → `execute_tool` / `chat` leaves.
 - Spans carry ids, model/tier, token/cost rollups — **never message content**.
 
-Shipped: `invoke_agent_span` wired in orchestrator.  
-Target: wire `execute_tool_span` in `agent_loop.py` (helper already defined).
+**Shipped:** `invoke_agent_span` on worker / primary / aggregator paths in the
+orchestrator. Quiet planner and stub verifier emit **no** `invoke_agent` span.
+
+**Target:** planner + real-verifier `invoke_agent` spans; wire
+`execute_tool_span` in `agent_loop.py` (helper already defined).
 
 ---
 
@@ -211,7 +216,7 @@ Target: wire `execute_tool_span` in `agent_loop.py` (helper already defined).
 | Request | `agenticMode?: "single" \| "deep_research"` |
 | SSE | Additive `subagentId`; `subagent_started` / `subagent_done` / `run_cost`; roles `primary` \| `worker` \| `aggregator` \| `orchestrator` |
 | Persist | `SubagentPart` + tagged children; share view cost-stripped |
-| UI | Deep Research toggle; `SubagentPanel`; plan-approval via tool-approval UI; `RunCostMeter` |
+| UI | Deep Research toggle; `SubagentPanel`; plan-approval via tool-approval UI; `RunCostMeter` on `run_cost` (**shipped:** estimate @ plan pause + final; **target:** live mid-fan-out ticks) |
 
 Flag-off: byte-identical stream path (proven). Flag-on `single`: behavioral
 reuse of the loop **with** subagent tags — not wire-identical.
@@ -257,7 +262,7 @@ No cross-turn orchestrator memory. No background agent state store.
 - Untrusted DATA framing into aggregator; worker failure degrade + fallback
 - Subagent-tagged SSE + persisted parts; attribution persist; buffer × N
 - Real-provider planner/synthesis paths (deterministic no-network tests)
-- `invoke_agent` OTel spans; chat-anchored in-turn only; reuse `run_agent_loop`
+- `invoke_agent` OTel on worker/primary/aggregator; chat-anchored in-turn only; reuse `run_agent_loop`
 
 ### Target (gaps to close)
 
@@ -268,7 +273,8 @@ No cross-turn orchestrator memory. No background agent state store.
 | Tool subsets | Least-privilege per-worker tool allowlists |
 | Mid-run `run_cost` ticks | Emit as workers complete (estimate + mid + final); FE meter live |
 | `execute_tool` OTel | Wire in `agent_loop.py` |
-| FE attribution display | Per-worker served model + substitution callout |
+| Planner / verifier `invoke_agent` spans | Span quiet planner + real verifier (stub today has none) |
+| FE attribution display | Always-on per-worker served model (+ fuller callouts); substitution callout already exists in `subagent-panel.tsx` — gap is partial, not missing |
 | High-cost composer hint / PRD 08 warning chip | Surface before spend / on partial synthesis |
 | Clarify-before-plan | Optional HITL before plan/admit |
 | Structured worker artifacts | Refs over full-text telephone into lead |
@@ -324,14 +330,18 @@ every query class.
 
 ## Open questions / remaining gaps
 
-Aligned with the as-built audit and 01 remaining-gaps table:
+Aligned with the as-built audit; supersedes 01 where 01 drifts (e.g. 01 still
+lists share-view SubagentPanel as NOT BUILT and attribution display as missing;
+audit+02: share-view shipped cost-stripped; attribution UX partial — substitution
+callout exists, fuller per-worker served-model UX does not).
 
 1. **Real verifier** — CitationAgent vs fresh-context rubric judge vs both;
    cost accounting; keep `AGENTIC_VERIFIER` default off until proven.
 2. **`AGENTIC_VERIFIER_N`** — redefine or document so it cannot be read as
    free-form majority vote.
 3. **Per-worker tool subsets** — default scoped allowlist (least privilege).
-4. **Mid-run `run_cost` ticks** — wire + FE meter (estimate / mid / final).
+4. **Mid-run `run_cost` ticks** — wire + FE meter (estimate / mid / final);
+   shipped today is estimate @ plan pause + final only.
 5. **`execute_tool` OTel** — wire existing helper in the loop.
 6. **Live-network E2E** — hard gate before prod enablement of `AGENTIC_ENABLED`.
 7. **Clarify-before-plan** — latency vs budget-control trade; product call.
@@ -342,7 +352,8 @@ Aligned with the as-built audit and 01 remaining-gaps table:
 10. **Silent entitlement coerce** — whether to surface a FE callout when
     `deep_research` is coerced to `single`.
 11. **Partial-synthesis chip** — PRD 08 warning chip vs prose-only labeling.
-12. **Per-worker attribution display** — persisted; not yet fully rendered.
+12. **FE attribution display** — always-on per-worker served model (+ fuller
+    callouts); substitution callout already shipped.
 
 ---
 

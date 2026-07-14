@@ -462,14 +462,23 @@ class Settings(BaseSettings):
     # Plan-approval gate (M3). When True, a deep-research plan pauses for human
     # approval before fan-out (`agentic_plan_approval` pseudo-tool). Default-off.
     agentic_plan_approval: bool = Field(default=False, alias="AGENTIC_PLAN_APPROVAL")
-    # Answer verifier (M3). When True, the deterministic stub is an honest
-    # no-op (returns synthesis unchanged; no provider call; no "Verified…"
-    # claim). `AGENTIC_VERIFIER_N` is a reserved sample-count for a future
-    # closed-form / fresh-context judge path — not free-form majority vote
-    # over whole reports, and must not be billed as N phantom model calls
-    # while the stub is active. Default-off.
+    # Clarify-before-plan (plan 02). When True, deep_research may pause with 1-3
+    # clarifying questions (`agentic_plan_clarify` pseudo-tool) before planning /
+    # admission / fan-out. Fake provider triggers only on the `CLARIFY:` marker;
+    # real providers ask when the flag is on. Default-off (preserves current
+    # behavior).
+    agentic_clarify_before_plan: bool = Field(
+        default=False, alias="AGENTIC_CLARIFY_BEFORE_PLAN"
+    )
+    # Answer verifier (M3). When True, run a fresh-context LLM-as-judge over
+    # the draft + worker findings (DATA only + rubric). Default-off: no
+    # provider call, no cost, no "Verified…" claim. `AGENTIC_VERIFIER_N` is
+    # the independent judge sample count (default 1 = single judge). When
+    # N>1, majority/consensus applies ONLY to the closed-form VERDICT field
+    # (pass/fail) — never free-form majority vote over whole reports. Budget
+    # reserves N judge-call estimates (not N phantom full workers).
     agentic_verifier: bool = Field(default=False, alias="AGENTIC_VERIFIER")
-    agentic_verifier_n: int = Field(default=3, alias="AGENTIC_VERIFIER_N")
+    agentic_verifier_n: int = Field(default=1, alias="AGENTIC_VERIFIER_N")
 
     # Public platform-status derivation (PRD 08 §10). The `/api/status` route
     # derives platform health from recent `Stream` telemetry with one COUNT

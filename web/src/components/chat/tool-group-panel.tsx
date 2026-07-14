@@ -16,7 +16,7 @@ interface ToolGroupPanelProps {
   // HITL passthrough, threaded to each run's `ToolPartView`. A group only ever
   // holds settled runs, so the approve/deny controls never actually render —
   // but the prop is forwarded to keep the renderer uniform with the flat path.
-  onDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  onDecision?: (d: { toolCallId: string; decision: "approve" | "deny"; editedInput?: Record<string, unknown> }) => void;
   /** When nested inside agent activity, drop the outer card chrome. */
   embedded?: boolean;
 }

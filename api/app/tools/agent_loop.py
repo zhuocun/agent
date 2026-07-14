@@ -222,6 +222,7 @@ async def run_agent_loop(
     settings: Settings,
     allowed_tools: Collection[str] | None = None,
     server_approved_call_ids: Collection[str] | None = None,
+    initial_tool_results: list[ToolResult] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive a bounded tool-calling loop over a provider event stream.
 
@@ -239,15 +240,19 @@ async def run_agent_loop(
     ``server_approved_call_ids``: opaque call ids the *server* has authorized
     for gated-tool execution (resume capability). Provider-emitted
     ``approval_state="approved"`` is never trusted on its own.
+
+    ``initial_tool_results`` (BE-005): pre-seeded results from a HITL resume so
+    the loop continues the same subagent with validated tool feedback instead of
+    re-requesting the gated tool. Empty/None on every fresh run.
     """
-    tool_feedback: list[ToolResult] = []
+    tool_feedback: list[ToolResult] = list(initial_tool_results or [])
     max_rounds = max(1, settings.tool_max_rounds)
     # Reserve the last provider slot for a suppress-tools final pass when N>1.
     # With N=1 there is no reserved final — a tool request on that sole round
     # ends without an extra provider call (defensive empty fallback if needed).
     action_rounds = max_rounds if max_rounds == 1 else max_rounds - 1
     answer_emitted = False
-    tools_ran = False
+    tools_ran = bool(tool_feedback)
     accumulated_usage = UsageUpdate()
     allowed: set[str] | None = None if allowed_tools is None else set(allowed_tools)
     approved_ids: set[str] = (

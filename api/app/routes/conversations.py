@@ -32,10 +32,13 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.agentic import (
     PLAN_APPROVAL_TOOL_NAME,
+    PLAN_CLARIFY_TOOL_NAME,
     hash_plan,
     is_plan_approval_call_id,
+    is_plan_clarify_call_id,
 )
 from app.agentic.budget import compose_headroom
+from app.agentic.continuation import extract_continuation_from_tool_input
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -135,6 +138,7 @@ from app.streaming.sse import (
     encode_tool_result,
 )
 from app.streaming.stop_registry import request_stop_async
+from app.tools.approval_settlement import claim_and_settle_approval
 from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
 from app.uploads import extract_attachment_text, is_supported_attachment_type
 
@@ -2690,6 +2694,27 @@ def _find_pending_tool_call(
     return None
 
 
+def _find_resumable_tool_call(
+    parts: object,
+    tool_call_id: str,
+) -> dict[str, object] | None:
+    """Find a tool_call for resume: pending OR already settled (BE-007 retry)."""
+    pending = _find_pending_tool_call(parts, tool_call_id)
+    if pending is not None:
+        return pending
+    if not isinstance(parts, list):
+        return None
+    for part in parts:
+        if (
+            isinstance(part, dict)
+            and part.get("type") == "tool_call"
+            and part.get("id") == tool_call_id
+            and part.get("approvalState") in ("approved", "rejected")
+        ):
+            return part
+    return None
+
+
 async def _prepare_resume_tool(
     *,
     db: AsyncSession,
@@ -2728,7 +2753,7 @@ async def _prepare_resume_tool(
     if last_assistant is None or last_assistant.status != "awaiting_approval":
         raise _nothing_to_resume()
 
-    pending = _find_pending_tool_call(last_assistant.parts, decision.tool_call_id)
+    pending = _find_resumable_tool_call(last_assistant.parts, decision.tool_call_id)
     if pending is None:
         raise _invalid_input(
             "INVALID_INPUT",
@@ -2793,6 +2818,81 @@ async def _prepare_resume_tool(
             input=None,
             is_plan=True,
             approved_plan=approved_plan,
+            clarify_answers=(
+                tuple(
+                    str(item).strip()
+                    for item in plan_input["clarifications"]
+                    if isinstance(item, (str, int, float)) and str(item).strip()
+                )[:3]
+                if isinstance(plan_input.get("clarifications"), list)
+                else None
+            ),
+        )
+        original_text = _text_from_parts(user_row.parts)
+        return user_message_id, history, original_text, attachments, seed
+
+    # Clarify-before-plan HITL resume (plan 02). Same pseudo-tool bypass as plan
+    # approval. Approve may carry `edited_input.answers` (1-3 strings); deny
+    # declines the research run without planning.
+    if tool_name == PLAN_CLARIFY_TOOL_NAME and is_plan_clarify_call_id(
+        decision.tool_call_id
+    ):
+        user_message_id = last_assistant.responds_to_message_id
+        if user_message_id is None:
+            last_user = await messages_repo.get_last_user_message(db, conversation_id)
+            if last_user is None:
+                raise _nothing_to_resume()
+            user_message_id = last_user.id
+        user_row = await messages_repo.get_by_id(db, user_message_id)
+        if user_row is None:
+            raise _nothing_to_resume()
+        attachments = _attachment_payloads_from_parts(user_row.parts)
+        if attachments and not supports_attachments:
+            raise _attachments_unsupported()
+        if not supports_vision and any(
+            attachment.media_type == "image" for attachment in attachments
+        ):
+            raise _vision_unsupported()
+        clarify_label = pending.get("label")
+        clarify_answers: tuple[str, ...] | None = None
+        if decision.decision == "approve" and decision.edited_input is not None:
+            raw_answers = decision.edited_input.get("answers")
+            if isinstance(raw_answers, list):
+                clarify_answers = tuple(
+                    str(item).strip()
+                    for item in raw_answers
+                    if isinstance(item, (str, int, float)) and str(item).strip()
+                )[:3]
+            # Re-run safety on free-text answers (user-influenced content).
+            if clarify_answers:
+                answers_text = " ".join(clarify_answers)
+                safety_decision = check_user_turn(
+                    settings,
+                    text=answers_text,
+                    attachments=[],
+                    custom_instructions=custom_instructions,
+                )
+                if not safety_decision.allowed:
+                    await _record_moderation_blocked(
+                        db,
+                        user=user,
+                        decision=safety_decision,
+                        conversation_id=conversation_id,
+                    )
+                    raise _safety_blocked(safety_decision)
+        elif decision.decision == "approve":
+            clarify_answers = ()
+        history = await messages_repo.load_history(db, conversation_id)
+        await conversations_repo.touch_updated_at(db, conversation_id)
+        await db.commit()
+        seed = ResumeToolSeed(
+            tool_call_id=decision.tool_call_id,
+            name=tool_name,
+            label=str(clarify_label) if isinstance(clarify_label, str) else None,
+            decision=decision.decision,
+            input=None,
+            is_clarify=True,
+            clarify_answers=clarify_answers,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -2807,11 +2907,11 @@ async def _prepare_resume_tool(
         )
 
     # Effective input: a validated `edited_input` overrides the originally
-    # requested input; otherwise reuse the pending part's input.
+    # requested input; otherwise reuse the pending part's input. Strip the
+    # BE-005 continuation blob before schema validation / execution.
     raw_input = pending.get("input")
-    effective_input: dict[str, object] = (
-        raw_input if isinstance(raw_input, dict) else {}
-    )
+    cleaned_input, agentic_continuation = extract_continuation_from_tool_input(raw_input)
+    effective_input: dict[str, object] = cleaned_input
     if decision.edited_input is not None:
         try:
             effective_input = validate_tool_input(tool_name, decision.edited_input)
@@ -2860,21 +2960,44 @@ async def _prepare_resume_tool(
 
     history = await messages_repo.load_history(db, conversation_id)
     await conversations_repo.touch_updated_at(db, conversation_id)
-    await db.commit()
 
     label = pending.get("label")
+    label_str = str(label) if isinstance(label, str) else None
+
+    # BE-007: claim + execute + settle on the paused row before the model stream.
+    # A retry after post-execution stream failure reuses the settled result.
+    settled = await claim_and_settle_approval(
+        db,
+        paused_message=last_assistant,
+        tool_call_id=decision.tool_call_id,
+        decision=decision.decision,
+        effective_input=dict(effective_input),
+        label=label_str,
+    )
+
     seed = ResumeToolSeed(
         tool_call_id=decision.tool_call_id,
         name=tool_name,
-        label=str(label) if isinstance(label, str) else None,
+        label=label_str,
         decision=decision.decision,
         input=dict(effective_input),
+        settled_result=settled,
+        agentic_continuation=agentic_continuation,
+        resume_user_text=(
+            agentic_continuation.user_text if agentic_continuation is not None else None
+        ),
     )
-    instruction = (
-        _RESUME_APPROVE_INSTRUCTION
-        if decision.decision == "approve"
-        else _RESUME_DENY_INSTRUCTION
-    )
+    # Worker/aggregator continuation resumes with the original user text (the
+    # orchestrator continues that subagent). Non-agentic / primary HITL keeps the
+    # Tool approved/denied instruction the fake provider keys on.
+    if agentic_continuation is not None:
+        instruction = agentic_continuation.user_text
+    else:
+        instruction = (
+            _RESUME_APPROVE_INSTRUCTION
+            if decision.decision == "approve"
+            else _RESUME_DENY_INSTRUCTION
+        )
     return user_message_id, history, instruction, [], seed
 
 

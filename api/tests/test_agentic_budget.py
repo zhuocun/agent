@@ -336,7 +336,7 @@ def test_estimate_cost_defaults_unchanged() -> None:
     per_subagent = budget._expected_subagent_usage(settings)
     breakdown = compute_cost_breakdown(usage=per_subagent, binding=binding)
     base = breakdown.subtotal_usd + breakdown.session_surcharge_usd
-    # BE-016: planner + workers + aggregator (stub verifier adds 0).
+    # BE-016: planner + workers + aggregator (verifier off adds 0).
     subagents = 1 + 2 + 1
     expected = (
         base
@@ -347,14 +347,25 @@ def test_estimate_cost_defaults_unchanged() -> None:
     assert estimate == pytest.approx(expected)
 
 
-def test_subagent_count_includes_planner_not_stub_verifier(
+def test_subagent_count_reserves_verifier_judge_samples(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AGENTIC_VERIFIER", "true")
     monkeypatch.setenv("AGENTIC_VERIFIER_N", "5")
     get_settings.cache_clear()
     settings = get_settings()
-    # Stub verifier reserves 0 model calls (BE-017 / SAF-001).
+    # Real verifier reserves N judge samples (not N phantom full workers beyond).
+    assert budget._subagent_count(2, settings) == 1 + 2 + 1 + 5
+    get_settings.cache_clear()
+
+
+def test_subagent_count_verifier_off_excludes_n(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_VERIFIER", "false")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "5")
+    get_settings.cache_clear()
+    settings = get_settings()
     assert budget._subagent_count(2, settings) == 1 + 2 + 1
     get_settings.cache_clear()
 

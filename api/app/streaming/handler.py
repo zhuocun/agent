@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
 
 from app.agentic import budget
+from app.agentic.continuation import CONTINUATION_INPUT_KEY
 from app.agentic.orchestrator import run_orchestrator
 from app.agentic.retry import is_retryable_provider_error
 from app.config import get_settings
@@ -194,6 +195,13 @@ class ResumeToolSeed:
       ``ToolResult(approval_state="approved")``.
     - ``decision == "deny"`` → synthesize a cancelled/rejected ``ToolResult``
       WITHOUT executing (the side effect must not happen on a denial).
+
+    BE-007: when ``settled_result`` is set the route already claimed/settled the
+    side effect on the paused row — the handler must emit that result and must
+    NOT re-execute.
+
+    BE-005: ``agentic_continuation`` resumes a paused worker/aggregator in place
+    (no re-plan) when present.
     """
 
     tool_call_id: str
@@ -210,6 +218,17 @@ class ResumeToolSeed:
     # Immutable sub-questions from the paused plan tool input (BE-039). Only set
     # when ``is_plan`` and the pending part carried a ``plan`` list.
     approved_plan: tuple[str, ...] | None = None
+    # Clarify-before-plan resume (plan 02): True when this seed resumes an
+    # `agentic_plan_clarify` pause. Handler re-runs orchestrator with
+    # `clarify_answered` / `clarify_answers` instead of a seeded tool_result.
+    is_clarify: bool = False
+    clarify_answers: tuple[str, ...] | None = None
+    # BE-007: pre-settled execution result (claim happened in the route).
+    settled_result: Any | None = None
+    # BE-005: fan-out continuation for worker/aggregator tool HITL.
+    agentic_continuation: Any | None = None
+    # Original user text for agentic continuation resume (not the Tool approved: stub).
+    resume_user_text: str | None = None
 
 
 @dataclass
@@ -715,6 +734,31 @@ async def stream_and_persist(
         if plan_resume and resume_seed is not None and resume_seed.approved_plan is not None
         else None
     )
+    # Clarify-before-plan resume (plan 02): same pattern as plan approval.
+    # Plan-approval resume also carries prior clarifications (if any) so a
+    # clarify → plan-approval dual HITL keeps answers across the second pause.
+    clarify_resume = resume_seed is not None and resume_seed.is_clarify
+    clarify_answered: bool | None
+    clarify_answers: list[str] | None
+    if plan_resume and resume_seed is not None:
+        # Past the clarify gate; re-attach any clarifications stored on the plan
+        # tool input so workers/synthesis still see them.
+        clarify_answered = True
+        clarify_answers = (
+            list(resume_seed.clarify_answers)
+            if resume_seed.clarify_answers is not None
+            else []
+        )
+    elif clarify_resume and resume_seed is not None:
+        clarify_answered = resume_seed.decision == "approve"
+        clarify_answers = (
+            list(resume_seed.clarify_answers)
+            if resume_seed.clarify_answers is not None
+            else None
+        )
+    else:
+        clarify_answered = None
+        clarify_answers = None
     # Per-subagent accumulation for an agentic turn (T3). Ordered by first-seen
     # `SubagentStarted` so the persisted transcript groups subagents in emission
     # order. Empty (and unused) on every non-agentic turn.
@@ -881,6 +925,55 @@ async def stream_and_persist(
             tools=advertised,
         )
 
+    def _agentic_fresh_make_stream(
+        worker_user_text: str,
+        *,
+        allowed_tools: Collection[str] | None = None,
+    ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
+        """Fresh-context `MakeStream` for the verifier judge (agentic only).
+
+        Industry / plan 02 fresh-context means an empty judge session: no
+        conversation history, memory/system prefix, attachments, or web_search —
+        only the rubric + DATA prompt the orchestrator passes as ``user_text``.
+        ``allowed_tools`` still scopes advertise (verifier passes empty).
+        """
+        scoped_tools = (
+            _tool_definitions_for(allowed_tools)
+            if allowed_tools is not None
+            else None
+        )
+
+        def _make(
+            tool_feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            # Tool-feedback rounds (if any) stay isolated — never splice chat
+            # history into the judge session.
+            round_history = tool_feedback_to_history(tool_feedback)
+            return active_provider.stream(
+                model_id=binding.model_id,
+                history=round_history,
+                user_text=worker_user_text,
+                attachments=None,
+                api_key=active_api_key,
+                thinking=(
+                    thinking_override
+                    if thinking_override is not None
+                    else binding.thinking
+                ),
+                reasoning_effort=(
+                    reasoning_effort_override
+                    if reasoning_effort_override is not None
+                    else binding.reasoning_effort
+                ),
+                web_search=False,
+                response_format=None,
+                supports_vision=binding.supports_vision,
+                system_prefix=None,
+                tools=None if suppress_tools else scoped_tools,
+            )
+
+        return _make
+
     def _agentic_make_stream(
         worker_user_text: str,
         *,
@@ -1007,16 +1100,69 @@ async def stream_and_persist(
     def _build_provider_iter() -> AsyncIterator[ProviderEvent]:
         if agentic_active:
             assert agentic_mode is not None
+            orch_user_text = turn_user_text
+            orch_continuation = None
+            orch_resume_result: ToolResult | None = None
+            orch_approved_ids: set[str] | None = None
+            if resume_seed is not None and resume_seed.agentic_continuation is not None:
+                orch_continuation = resume_seed.agentic_continuation
+                if resume_seed.resume_user_text:
+                    orch_user_text = resume_seed.resume_user_text
+                if resume_seed.settled_result is not None:
+                    settled = resume_seed.settled_result
+                    orch_resume_result = ToolResult(
+                        tool_call_id=getattr(
+                            settled, "tool_call_id", resume_seed.tool_call_id
+                        ),
+                        name=getattr(settled, "name", resume_seed.name),
+                        label=resume_seed.label,
+                        status=getattr(settled, "status", "succeeded"),
+                        approval_state=getattr(
+                            settled, "approval_state", "approved"
+                        ),
+                        summary=getattr(settled, "summary", None),
+                        output=getattr(settled, "output", None) or None,
+                        error=getattr(settled, "error", None),
+                    )
+                orch_approved_ids = {resume_seed.tool_call_id}
+            elif (
+                resume_seed is not None
+                and not resume_seed.is_plan
+                and not resume_seed.is_clarify
+                and resume_seed.settled_result is not None
+                and agentic_mode == "single"
+            ):
+                # Primary HITL resume: feed settled result into the primary loop.
+                settled = resume_seed.settled_result
+                orch_resume_result = ToolResult(
+                    tool_call_id=getattr(
+                        settled, "tool_call_id", resume_seed.tool_call_id
+                    ),
+                    name=getattr(settled, "name", resume_seed.name),
+                    label=resume_seed.label,
+                    status=getattr(settled, "status", "succeeded"),
+                    approval_state=getattr(settled, "approval_state", "approved"),
+                    summary=getattr(settled, "summary", None),
+                    output=getattr(settled, "output", None) or None,
+                    error=getattr(settled, "error", None),
+                )
+                orch_approved_ids = {resume_seed.tool_call_id}
             return run_orchestrator(
                 make_stream_for=_agentic_make_stream,
+                verifier_make_stream_for=_agentic_fresh_make_stream,
                 settings=handler_settings,
                 mode=agentic_mode,
-                user_text=turn_user_text,
+                user_text=orch_user_text,
                 cost_for_usage=_cost_for_usage,
                 estimate_cost=_estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,
                 plan_approved=plan_approved,
                 approved_plan=approved_plan,
+                clarify_answered=clarify_answered,
+                clarify_answers=clarify_answers,
+                agentic_continuation=orch_continuation,
+                resume_tool_result=orch_resume_result,
+                server_approved_call_ids=orch_approved_ids,
                 fallback_make_stream_for=(
                     _agentic_fallback_make_stream if fallback_binding is not None else None
                 ),
@@ -1039,9 +1185,37 @@ async def stream_and_persist(
                 is_retryable=_is_retryable,
             )
         if tools_active:
+            approved_ids = None
+            initial_results = None
+            if (
+                resume_seed is not None
+                and not resume_seed.is_plan
+                and not resume_seed.is_clarify
+                and resume_seed.settled_result is not None
+            ):
+                settled = resume_seed.settled_result
+                initial_results = [
+                    ToolResult(
+                        tool_call_id=getattr(
+                            settled, "tool_call_id", resume_seed.tool_call_id
+                        ),
+                        name=getattr(settled, "name", resume_seed.name),
+                        label=resume_seed.label,
+                        status=getattr(settled, "status", "succeeded"),
+                        approval_state=getattr(
+                            settled, "approval_state", "approved"
+                        ),
+                        summary=getattr(settled, "summary", None),
+                        output=getattr(settled, "output", None) or None,
+                        error=getattr(settled, "error", None),
+                    )
+                ]
+                approved_ids = {resume_seed.tool_call_id}
             return run_agent_loop(
                 make_stream=_build_raw_stream,
                 settings=handler_settings,
+                server_approved_call_ids=approved_ids,
+                initial_tool_results=initial_results,
             )
         return _build_raw_stream([])
 
@@ -1506,8 +1680,21 @@ async def stream_and_persist(
     # are [tool_result, …answer]. Approve runs the (timeout-wrapped) tool; deny
     # synthesizes a cancelled/rejected result WITHOUT executing — the side effect
     # must never happen on a denial.
-    if resume_seed is not None and not resume_seed.is_plan:
-        if resume_seed.decision == "approve":
+    if resume_seed is not None and not resume_seed.is_plan and not resume_seed.is_clarify:
+        # BE-007: prefer the route's settled result (already claimed/executed).
+        if resume_seed.settled_result is not None:
+            settled = resume_seed.settled_result
+            seeded_result = ToolResult(
+                tool_call_id=getattr(settled, "tool_call_id", resume_seed.tool_call_id),
+                name=getattr(settled, "name", resume_seed.name),
+                label=resume_seed.label,
+                status=getattr(settled, "status", "succeeded"),
+                approval_state=getattr(settled, "approval_state", "approved"),
+                summary=getattr(settled, "summary", None),
+                output=getattr(settled, "output", None) or None,
+                error=getattr(settled, "error", None),
+            )
+        elif resume_seed.decision == "approve":
             exec_result = await execute_tool(
                 ToolCallRequest(
                     id=resume_seed.tool_call_id,
@@ -1854,6 +2041,23 @@ async def stream_and_persist(
                 # the pause and break — this is NOT an error, so it must NOT route
                 # through the fallback / `_PumpError` path. Post-loop branching on
                 # `paused` ends the turn in `awaiting_approval`.
+                # BE-005: embed orchestrator continuation onto the pending tool
+                # call's input so resume can continue that subagent in place.
+                if ev.continuation is not None:
+                    target_parts = (
+                        _sub(ev.subagent_id).tool_parts
+                        if agentic_active and ev.subagent_id is not None
+                        else tool_parts
+                    )
+                    for part in target_parts:
+                        if (
+                            part.get("type") == "tool_call"
+                            and part.get("id") == ev.tool_call_id
+                        ):
+                            inp = dict(part.get("input") or {})
+                            inp[CONTINUATION_INPUT_KEY] = ev.continuation
+                            part["input"] = inp
+                            break
                 paused = True
                 paused_tool_call_id = ev.tool_call_id
                 break

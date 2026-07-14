@@ -115,7 +115,7 @@ owner. Handoffs / peer swarm are out of scope for this product.
 | # | Phase | Normative behavior |
 | --- | --- | --- |
 | 1 | **Plan** | Decompose into ≤ `AGENTIC_MAX_WORKERS` independent sub-questions; scale effort to complexity; persist the plan before truncation risk. |
-| 2 | **Clarify (optional, target)** | Ask 1–3 clarifying questions before committing the ~15× budget when ambiguity is high. Product knob — not required for v1 enablement. |
+| 2 | **Clarify (optional)** | When `AGENTIC_CLARIFY_BEFORE_PLAN`, ask 1–3 clarifying questions before planning / admit when ambiguity is high (fake: `CLARIFY:` marker; real: always ask). Pause via `agentic_plan_clarify` + `awaiting_approval` / `toolApproval`; resume with optional `editedInput.answers`. |
 | 3 | **Plan approval (HITL)** | When `AGENTIC_PLAN_APPROVAL`, pause with plan + **estimated** cost (`costConfidence: "estimate"`); resume via server-issued `toolApproval` ids only. |
 | 4 | **Admit** | Pre-spawn worst-case estimate vs per-run cap + composed headroom; refuse spawn rather than silent overrun. |
 | 5 | **Fan-out** | Concurrent workers under concurrency semaphore; each reuses `run_agent_loop` (rounds, timeouts, tool HITL, untrusted feedback). |
@@ -155,7 +155,7 @@ partial** outcome — never hang or silent overrun.
 | --- | --- | --- |
 | Tool approval | Side-effecting tools inside any loop | Shipped `awaiting_approval` + `toolApproval` |
 | Plan approval | Before expensive fan-out | Same terminal; plan + estimate in pause card |
-| Clarify-before-plan | Optional, target | Product UX before plan/admit |
+| Clarify-before-plan | Optional HITL (`AGENTIC_CLARIFY_BEFORE_PLAN`, default off) | Same terminal; `agentic_plan_clarify` questions card; resume via `toolApproval` (+ optional answers) |
 | Stop | User cancels turn | Cancel workers; flush completed partials (`stopped`) |
 
 **Never** treat worker or model text as approval. Gates bind to **server-issued**
@@ -173,8 +173,8 @@ plan/tool ids only.
    artifact refs only — never as system/safety instructions; never as HITL
    authority.
 4. Prefer artifact refs over stuffing full worker text into the lead (telephone
-   loss + token bloat) as a target improvement; inline DATA framing is the
-   shipped minimum.
+   loss + token bloat); in-turn `WorkerArtifact` + JSON DATA envelope is the
+   shipped path (`aggregate.py`).
 
 ---
 
@@ -279,9 +279,9 @@ No cross-turn orchestrator memory. No background agent state store.
 | Planner / verifier `invoke_agent` spans | Quiet planner spanned; real-verifier spans when a real verifier ships (stub has none) |
 | FE attribution display | **Shipped** always-on served model + live substitution; fuller requested→served reason disclosure still open |
 | High-cost composer hint | Surface before spend (partial-synthesis chip shipped; pre-send composer hint still open) |
-| Clarify-before-plan | Optional HITL before plan/admit |
-| Structured worker artifacts | Refs over full-text telephone into lead |
-| Live E2E | True live-provider Deep Research E2E **before** prod `AGENTIC_ENABLED=true` |
+| Clarify-before-plan | **Shipped** (flag-gated, default off) — `agentic_plan_clarify` HITL before plan/admit; fake marker `CLARIFY:`; real always asks 1–3 |
+| Structured worker artifacts | **Shipped** (in-turn) — `WorkerArtifact` refs + JSON DATA envelope into aggregator; length caps; no DB table |
+| Live E2E | **Gate shipped** — `api/tests/test_agentic_live_e2e.py` (opt-in `AGENTIC_LIVE_E2E=1` + real provider key). Run before prod `AGENTIC_ENABLED=true`; default CI skips cleanly. See `api/README.md` / `.env.example`. |
 | Depth runtime check | **Shipped** boot pin `AGENTIC_MAX_DEPTH == 1`; runtime nesting counter only if recursion ever lands |
 
 ### Out of scope (do not grow into)
@@ -347,10 +347,14 @@ status; this section owns **target** decisions and **deferred hard gaps**.
 4. **Mid-run `run_cost` ticks** — **closed** (estimate / mid / final + FE Est.).
 5. **`execute_tool` OTel** — **closed**; quiet planner spanned; real-verifier
    spans remain when a real verifier ships.
-6. **Live-network E2E** — hard gate before prod enablement of `AGENTIC_ENABLED`.
-7. **Clarify-before-plan** — latency vs budget-control trade; product call.
-8. **Artifact store vs inline worker text** — direction high confidence;
-   implementation open (inline DATA framing is the shipped minimum).
+6. **Live-network E2E** — **gate shipped** (`test_agentic_live_e2e.py`); still a hard
+   ops checklist item before flipping Fly `AGENTIC_ENABLED` (not auto-run in CI).
+7. **Clarify-before-plan** — **shipped** behind `AGENTIC_CLARIFY_BEFORE_PLAN`
+   (default off). Product latency vs budget-control trade remains tunable.
+8. **Artifact store vs inline worker text** — **shipped minimum**: in-turn
+   `WorkerArtifact` refs + schema-tagged JSON DATA envelope in
+   `aggregate.build_synthesis_prompt` (no DB table). Durable artifact store
+   remains a future upgrade.
 9. **Sync vs async worker batches** — shipped sync wait is fine; async is a
    deliberate upgrade (head-of-line today).
 10. **Entitlement coerce callout** — **shipped** via `submitted` + FE banner;
@@ -359,14 +363,22 @@ status; this section owns **target** decisions and **deferred hard gaps**.
 12. **FE attribution display** — **shipped** always-on served model + live
     substitution; fuller requested→served reason disclosure still open.
     Public per-worker identity via `PublicAttribution` on `PublicSubagentPart`.
-13. **Worker HITL resume (BE-005)** — tool `awaiting_approval` inside a worker /
-    aggregator does not suspend and resume that subagent; the handler stops on
-    the first pause and a later `toolApproval` starts a new whole orchestrator
-    rather than continuing the paused worker. Hard deferred; do not claim shipped.
-14. **Approval idempotency (BE-007)** — approved side effects are not claimed /
-    settled transactionally before execution; a post-execution stream failure can
-    re-run the side effect on retry. Hard deferred; needs idempotency key +
-    settle-before-execute.
+13. **Worker HITL resume (BE-005)** — **shipped**: tool `awaiting_approval`
+    inside a worker suspends fan-out after siblings finish (wait policy),
+    persists continuation (including `partialAnswer`) on the pending tool
+    input (`_agenticContinuation`), and a later `toolApproval` continues that
+    subagent with validated tool feedback — not a full re-plan. Workers may
+    pause on the approval-gated stub `calendar_create_event` (allowlisted;
+    `prod_safe=False` so real providers do not advertise it) and on
+    provider-emitted pauses. Reuses the shipped `toolApproval` route +
+    server-issued call ids.
+14. **Approval idempotency (BE-007)** — **shipped**: approve/deny **CAS-claims**
+    the pending tool_call (pending→approved/rejected + `_approvalClaimId`) and
+    **commits before execute**, then settles a `tool_result` on the paused row.
+    Concurrent double-approve is serialized with `SELECT … FOR UPDATE`; only the
+    winner executes. Retries reuse the stored result; claimed-without-result
+    (crash/stop/disconnect between claim and settle) fails closed and does
+    **not** re-run the side effect.
 
 ---
 

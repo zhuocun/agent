@@ -103,6 +103,7 @@ import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 
+from app.agentic.clarify import CLARIFICATIONS_HEADER, parse_clarification_answers
 from app.config import get_settings
 from app.errors import AppError, ErrorEnvelope
 from app.providers.protocol import (
@@ -243,6 +244,15 @@ class FakeProvider:
         if user_text.startswith("DEEP_RESEARCH_WORKER:"):
             body = user_text[len("DEEP_RESEARCH_WORKER:") :]
             worker_index, _, sub_question = body.partition(":")
+            # Clarifications ride as a trailing DATA section (see clarify.py);
+            # keep the finding keyed on the clean sub-question, and echo answers
+            # so tests can assert they reached the worker prompt.
+            clarify_note = ""
+            if CLARIFICATIONS_HEADER in sub_question:
+                answers = parse_clarification_answers(sub_question)
+                sub_question = sub_question.split(CLARIFICATIONS_HEADER, 1)[0].strip()
+                if answers:
+                    clarify_note = " Clarified: " + "; ".join(answers)
             if "FAIL_WORKER" in sub_question:
                 raise RuntimeError("simulated worker failure")
             if sub_question.startswith("RETRYABLE_WORKER:") and model_id != "fake-fallback":
@@ -255,6 +265,22 @@ class FakeProvider:
                     ),
                     status_code=429,
                 )
+            # BE-005: mid-worker tool HITL. Sub-question containing TOOL_APPROVE
+            # pauses for calendar approval on the first pass; after tool feedback
+            # (HITL resume) the worker emits its finding so synthesis can include it.
+            if tools_on and "TOOL_APPROVE" in sub_question and not has_tool_feedback:
+                await asyncio.sleep(self._delay)
+                call_id = f"fake_worker_cal_{worker_index}"
+                yield ToolCall(
+                    id=call_id,
+                    name="calendar_create_event",
+                    label="Create calendar event",
+                    status="awaiting_approval",
+                    approval_state="pending",
+                    input={"title": f"Worker {worker_index} research event"},
+                )
+                yield AwaitingApproval(tool_call_id=call_id)
+                return
             worker_search_items: list[SourceItem] = []
             if web_search:
                 # Agentic workers can opt into web search on the same turn; emit
@@ -296,12 +322,38 @@ class FakeProvider:
                 )
             await asyncio.sleep(self._delay)
             yield AnswerDelta(
-                text=f"Worker {worker_index} finding on {sub_question}: result ready."
+                text=(
+                    f"Worker {worker_index} finding on {sub_question}: "
+                    f"result ready.{clarify_note}"
+                )
             )
             usage = UsageUpdate(
                 input_tokens=50,
                 output_tokens=100,
                 reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        # Agentic deep-research verifier (fresh-context judge). Scaffolded prompts
+        # are prefixed `DEEP_RESEARCH_VERIFIER:` so the fake returns a stable
+        # VERDICT/REPORT shape. Injection payloads inside DATA must not change
+        # this contract — the judge reply is fixed, not derived from findings.
+        if user_text.startswith("DEEP_RESEARCH_VERIFIER:"):
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(
+                text=(
+                    "VERDICT: pass\n"
+                    "REPORT: Findings support the draft; no unsupported claims "
+                    "detected in the provided data."
+                )
+            )
+            usage = UsageUpdate(
+                input_tokens=40,
+                output_tokens=60,
+                reasoning_tokens=5,
                 cached_input_tokens=0,
             )
             yield usage

@@ -65,7 +65,7 @@ interface SubagentPanelProps {
   toolGroupsBySubagentId?: ReadonlyMap<string, ToolGroup[]>;
   panelLiveToolParts?: LiveToolPart[];
   liveToolPartsBySubagentId?: ReadonlyMap<string, LiveToolPart[]>;
-  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny"; editedInput?: Record<string, unknown> }) => void;
 }
 
 type LiveToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
@@ -301,7 +301,7 @@ function LiveToolPartsBlock({
   testId,
 }: {
   parts: LiveToolPart[];
-  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny"; editedInput?: Record<string, unknown> }) => void;
   testId: string;
 }) {
   if (parts.length === 0) return null;
@@ -334,7 +334,7 @@ function SingleAgentContent({
   webSearchGroups?: WebSearchGroup[];
   toolGroups?: ToolGroup[];
   liveToolParts?: LiveToolPart[];
-  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny"; editedInput?: Record<string, unknown> }) => void;
 }) {
   const isRunning = section.status === "running";
   const panelAnswer = panelAnswerForSection(section);
@@ -421,7 +421,7 @@ function SubagentRow({
   webSearchGroups?: WebSearchGroup[];
   toolGroups?: ToolGroup[];
   liveToolParts?: LiveToolPart[];
-  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  onToolDecision?: (d: { toolCallId: string; decision: "approve" | "deny"; editedInput?: Record<string, unknown> }) => void;
 }) {
   const isRunning = section.status === "running";
   const panelAnswer = panelAnswerForSection(section);

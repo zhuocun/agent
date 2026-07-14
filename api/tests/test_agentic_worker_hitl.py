@@ -1,0 +1,380 @@
+"""BE-005 worker HITL resume + BE-007 approval side-effect idempotency.
+
+- Worker tool pause mid-fan-out waits for siblings, persists continuation, and
+  on approve continues that worker then synthesizes (includes the paused worker).
+- Double-resume after settle must not re-execute the gated tool.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.config import get_settings
+from app.db.models import Conversation, Message, User
+from app.db.repositories import billing as billing_repo
+from app.db.session import get_db
+from app.tools import approval_settlement
+from app.tools.protocol import ToolCallRequest, ToolExecutionResult
+
+pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture
+def agentic_env() -> Iterator[None]:
+    """Tools + agentic ON; plan-approval OFF so workers can hit tool HITL."""
+    keys = {
+        "TOOLS_ENABLED": "true",
+        "AGENTIC_ENABLED": "true",
+        "AGENTIC_PLAN_APPROVAL": "false",
+    }
+    prior = {key: os.environ.get(key) for key in keys}
+    os.environ.update(keys)
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
+
+
+@pytest.fixture
+def agentic_app(
+    agentic_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+):  # type: ignore[no-untyped-def]
+    from fastapi import FastAPI
+
+    from app.main import create_app
+    from app.middleware.ratelimit import limiter
+    from app.routes.conversations import _TEMP_IDS
+    from app.streaming import replay_registry, stop_registry
+
+    _TEMP_IDS.clear()
+    stop_registry._STOP_REQUESTS.clear()
+    replay_registry._BUFFERS.clear()
+    storage = limiter._storage
+    if hasattr(storage, "storage"):
+        storage.storage.clear()
+    if hasattr(storage, "expirations"):
+        storage.expirations.clear()
+
+    app_: FastAPI = create_app()
+
+    async def _get_db_override() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app_.dependency_overrides[get_db] = _get_db_override
+    try:
+        yield app_
+    finally:
+        _TEMP_IDS.clear()
+        stop_registry._STOP_REQUESTS.clear()
+        replay_registry._BUFFERS.clear()
+
+
+@pytest.fixture
+async def agentic_client(agentic_app) -> AsyncIterator[AsyncClient]:  # type: ignore[no-untyped-def]
+    transport = ASGITransport(app=agentic_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client_:
+        yield client_
+
+
+def _parse_sse(text: str) -> list[tuple[str, dict[str, object]]]:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    frames: list[tuple[str, dict[str, object]]] = []
+    for chunk in normalized.split("\n\n"):
+        if not chunk.strip():
+            continue
+        event_name: str | None = None
+        data_payload: str | None = None
+        for line in chunk.splitlines():
+            if line.startswith("event:"):
+                event_name = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                fragment = line[len("data:") :].strip()
+                data_payload = fragment if data_payload is None else data_payload + fragment
+        if event_name is None or data_payload is None:
+            continue
+        try:
+            parsed = json.loads(data_payload)
+        except json.JSONDecodeError:
+            parsed = {}
+        frames.append((event_name, parsed))
+    return frames
+
+
+async def _collect_sse(
+    client: AsyncClient, url: str, body: dict[str, object]
+) -> list[tuple[str, dict[str, object]]]:
+    async with client.stream("POST", url, json=body, timeout=15.0) as resp:
+        assert resp.status_code == 200, await resp.aread()
+        chunks: list[str] = []
+        async for chunk in resp.aiter_text():
+            chunks.append(chunk)
+    return _parse_sse("".join(chunks))
+
+
+async def _seed_conversation(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: object,
+    tier_id: str = "smart",
+) -> str:
+    async with session_factory() as session:
+        convo = Conversation(
+            user_id=user_id,
+            title="New chat",
+            selected_tier_id=tier_id,
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        return str(convo.id)
+
+
+async def _current_user_id(session_factory: async_sessionmaker[AsyncSession]) -> object:
+    async with session_factory() as session:
+        return (await session.execute(select(User))).scalar_one().id
+
+
+async def _grant_pro(
+    session_factory: async_sessionmaker[AsyncSession], *, user_id: object
+) -> None:
+    async with session_factory() as session:
+        await billing_repo.upsert_subscription_entitlement(
+            session,
+            user_id=UUID(str(user_id)),
+            provider="fake",
+            subscription_id=f"sub-{user_id}",
+            status="active",
+            customer_id=f"cus-{user_id}",
+            current_period_end=datetime.now(UTC) + timedelta(days=30),
+            event_created_at=datetime.now(UTC),
+        )
+        await session.commit()
+
+
+async def _load_messages(
+    session_factory: async_sessionmaker[AsyncSession], conv_id: str
+) -> list[Message]:
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(Message)
+                    .where(Message.conversation_id == conv_id)
+                    .order_by(Message.created_at.asc(), Message.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return list(rows)
+
+
+def _answer(frames: list[tuple[str, dict[str, object]]]) -> str:
+    return "".join(str(d.get("text", "")) for n, d in frames if n == "answer_delta")
+
+
+_WORKER_HITL_PROMPT = (
+    "DEEP_RESEARCH: TOOL_APPROVE schedule kickoff | sibling housing effects"
+)
+
+
+async def test_worker_hitl_pause_waits_for_siblings_then_approves(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """BE-005: pause mid-worker → approve → same worker continues → synthesis."""
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    pause_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "b0000000-0000-0000-0000-000000000001",
+            "tierId": "smart",
+            "text": _WORKER_HITL_PROMPT,
+            "agenticMode": "deep_research",
+        },
+    )
+    assert pause_frames[-1][0] == "terminal"
+    assert pause_frames[-1][1]["status"] == "awaiting_approval"
+
+    started = {str(d["subagentId"]) for n, d in pause_frames if n == "subagent_started"}
+    done = {str(d["subagentId"]) for n, d in pause_frames if n == "subagent_done"}
+    assert "worker-0" in started
+    assert "worker-1" in started
+    assert "worker-1" in done
+    assert "worker-0" not in done
+    assert "aggregator" not in started
+
+    tool_calls = [d for n, d in pause_frames if n == "tool_call"]
+    cal = next(c for c in tool_calls if c.get("name") == "calendar_create_event")
+    assert cal["status"] == "awaiting_approval"
+    assert cal["id"] == "fake_worker_cal_0"
+    assert cal.get("subagentId") == "worker-0"
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused = next(m for m in msgs if m.role == "assistant")
+    parts = [p for p in (paused.parts or []) if isinstance(p, dict)]
+    cal_part = next(
+        p for p in parts if p.get("type") == "tool_call" and p.get("id") == "fake_worker_cal_0"
+    )
+    cont = (cal_part.get("input") or {}).get("_agenticContinuation")
+    assert isinstance(cont, dict)
+    assert cont["phase"] == "worker"
+    assert cont["pausedSubagentId"] == "worker-0"
+    assert any(w["subagentId"] == "worker-1" for w in cont["completedWorkers"])
+
+    resume_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "b0000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": "fake_worker_cal_0",
+                "decision": "approve",
+            },
+        },
+    )
+    assert resume_frames[-1][0] == "terminal"
+    assert resume_frames[-1][1]["status"] == "done"
+
+    resume_started = {
+        str(d["subagentId"]) for n, d in resume_frames if n == "subagent_started"
+    }
+    resume_done = {
+        str(d["subagentId"]) for n, d in resume_frames if n == "subagent_done"
+    }
+    assert "worker-0" in resume_started
+    assert "worker-0" in resume_done
+    assert "aggregator" in resume_started
+
+    answer = _answer(resume_frames)
+    assert (
+        "Worker 0" in answer
+        or "kickoff" in answer.lower()
+        or "finding" in answer.lower()
+    )
+    assert "Worker 1" in answer or "housing" in answer.lower()
+    assert "Synthesis" in answer or "finding" in answer.lower()
+
+
+async def test_approval_idempotent_double_resume_does_not_reexecute(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BE-007: settle-before-stream; second resume reuses stored result."""
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "c0000000-0000-0000-0000-000000000001",
+            "tierId": "smart",
+            "text": "TOOL_APPROVE: schedule a meeting",
+        },
+    )
+
+    from app.tools import builtin
+
+    exec_count = {"n": 0}
+    real_exec = builtin._execute_calendar_create_event
+
+    async def _counting_exec(call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        return await real_exec(call)
+
+    original_spec = builtin.TOOL_REGISTRY["calendar_create_event"]
+    monkeypatch.setitem(
+        builtin.TOOL_REGISTRY,
+        "calendar_create_event",
+        builtin.ToolSpec(
+            name=original_spec.name,
+            label=original_spec.label,
+            needs_approval=original_spec.needs_approval,
+            schema=original_spec.schema,
+            executor=_counting_exec,
+            prod_safe=original_spec.prod_safe,
+        ),
+    )
+
+    frames1 = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "c0000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+        },
+    )
+    assert frames1[-1][1]["status"] == "done"
+    assert exec_count["n"] == 1
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused = next(m for m in msgs if m.role == "assistant" and m.status == "awaiting_approval")
+    settled = approval_settlement.find_settled_tool_result(paused.parts, "fake_cal_1")
+    assert settled is not None
+    assert settled.get("approvalState") == "approved"
+    first_output = settled.get("output")
+
+    done_rows = [m for m in msgs if m.role == "assistant" and m.status == "done"]
+    async with session_factory() as session:
+        for row in done_rows:
+            db_row = await session.get(Message, row.id)
+            if db_row is not None:
+                await session.delete(db_row)
+        await session.commit()
+
+    frames2 = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "c0000000-0000-0000-0000-000000000003",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+        },
+    )
+    assert frames2[-1][1]["status"] == "done"
+    assert exec_count["n"] == 1
+
+    msgs2 = await _load_messages(session_factory, conv_id)
+    paused2 = next(
+        m for m in msgs2 if m.role == "assistant" and m.status == "awaiting_approval"
+    )
+    settled2 = approval_settlement.find_settled_tool_result(paused2.parts, "fake_cal_1")
+    assert settled2 is not None
+    assert settled2.get("output") == first_output

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Check,
   CheckCircle2,
@@ -180,13 +181,22 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
   const detailBody = (
     <>
       {planApproval ? <PlanApprovalDetail input={planApproval} /> : null}
-      {planClarify ? <PlanClarifyDetail input={planClarify} /> : null}
+      {planClarify && showApprovalControls && toolCallId ? (
+        <PlanClarifyForm
+          questions={planClarify.questions}
+          toolCallId={toolCallId}
+          onDecision={onDecision!}
+        />
+      ) : null}
+      {planClarify && !(showApprovalControls && toolCallId) ? (
+        <PlanClarifyDetail input={planClarify} />
+      ) : null}
       {detail ? (
         <p className="mt-1 line-clamp-2 break-words ui-caption leading-snug text-muted-foreground">
           {detail}
         </p>
       ) : null}
-      {showApprovalControls && toolCallId ? (
+      {showApprovalControls && toolCallId && !planClarify ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Button
             type="button"
@@ -195,16 +205,13 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
               onDecision({
                 toolCallId,
                 decision: "approve",
-                ...(planClarify
-                  ? { editedInput: { answers: planClarify.questions.map(() => "") } }
-                  : {}),
               })
             }
             data-testid="tool-approve"
             className="min-h-11 rounded-full bg-brand px-4 text-brand-foreground hover:bg-brand/90 md:min-h-0"
           >
             <Check aria-hidden />
-            <span>{planClarify ? "Continue" : "Approve"}</span>
+            <span>Approve</span>
           </Button>
           <Button
             type="button"
@@ -215,7 +222,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
             className="min-h-11 rounded-full px-4 md:min-h-0"
           >
             <X aria-hidden />
-            <span>{planClarify ? "Skip research" : "Deny"}</span>
+            <span>Deny</span>
           </Button>
         </div>
       ) : null}
@@ -329,6 +336,89 @@ function PlanClarifyDetail({ input }: { input: PlanClarifyInput }) {
           </li>
         ))}
       </ol>
+    </div>
+  );
+}
+
+function PlanClarifyForm({
+  questions,
+  toolCallId,
+  onDecision,
+}: {
+  questions: string[];
+  toolCallId: string;
+  onDecision: (d: {
+    toolCallId: string;
+    decision: "approve" | "deny";
+    editedInput?: Record<string, unknown>;
+  }) => void;
+}) {
+  const [answers, setAnswers] = useState<string[]>(() => questions.map(() => ""));
+
+  return (
+    <div className="mt-2 space-y-3" data-testid="plan-clarify-detail">
+      <p className="ui-caption text-muted-foreground">
+        A few questions before starting the research run:
+      </p>
+      <ol className="list-none space-y-3 p-0">
+        {questions.map((question, idx) => (
+          <li key={idx} className="space-y-1.5">
+            <label
+              htmlFor={`plan-clarify-answer-${idx}`}
+              className="block ui-caption leading-snug text-foreground"
+            >
+              <span className="text-muted-foreground">{idx + 1}. </span>
+              {question}
+            </label>
+            <textarea
+              id={`plan-clarify-answer-${idx}`}
+              data-testid={`plan-clarify-answer-${idx}`}
+              value={answers[idx] ?? ""}
+              onChange={(e) => {
+                const next = [...answers];
+                next[idx] = e.target.value;
+                setAnswers(next);
+              }}
+              rows={2}
+              className={cn(
+                "w-full resize-y rounded-lg border border-foreground/10 bg-background px-2.5 py-2",
+                "ui-caption leading-snug text-foreground placeholder:text-muted-foreground/70",
+                "outline-none focus-visible:shadow-[var(--focus-ring)]",
+              )}
+              placeholder="Your answer (optional)"
+            />
+          </li>
+        ))}
+      </ol>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          onClick={() =>
+            onDecision({
+              toolCallId,
+              decision: "approve",
+              editedInput: { answers },
+            })
+          }
+          data-testid="tool-approve"
+          className="min-h-11 rounded-full bg-brand px-4 text-brand-foreground hover:bg-brand/90 md:min-h-0"
+        >
+          <Check aria-hidden />
+          <span>Continue</span>
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => onDecision({ toolCallId, decision: "deny" })}
+          data-testid="tool-deny"
+          className="min-h-11 rounded-full px-4 md:min-h-0"
+        >
+          <X aria-hidden />
+          <span>Skip research</span>
+        </Button>
+      </div>
     </div>
   );
 }

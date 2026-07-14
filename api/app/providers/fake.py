@@ -103,8 +103,8 @@ import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 
-from app.config import get_settings
 from app.agentic.clarify import CLARIFICATIONS_HEADER, parse_clarification_answers
+from app.config import get_settings
 from app.errors import AppError, ErrorEnvelope
 from app.providers.protocol import (
     AnswerDelta,

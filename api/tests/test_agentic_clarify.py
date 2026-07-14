@@ -4,7 +4,11 @@ Drives the FAKE provider behind `TOOLS_ENABLED=true`, `AGENTIC_ENABLED=true`,
 and `AGENTIC_CLARIFY_BEFORE_PLAN=true`. Covers:
 - Flag OFF: deep_research with the `CLARIFY:` marker does NOT pause.
 - Flag ON + marker: pause with clarifying questions before any plan/fan-out.
-- Resume approve (+ answers) proceeds to fan-out + aggregator.
+- Resume approve (+ answers) proceeds to fan-out + aggregator; answers reach
+  worker findings and the synthesis clarifications footer without polluting
+  the DEEP_RESEARCH pipe-split.
+- Resume deny declines the run without fan-out.
+- Dual HITL: clarify → plan-approval keeps answers across both pauses.
 """
 
 from __future__ import annotations
@@ -21,10 +25,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agentic import (
+    PLAN_APPROVAL_TOOL_NAME,
     PLAN_CLARIFY_CALL_ID_PREFIX,
     PLAN_CLARIFY_TOOL_NAME,
+    is_plan_approval_call_id,
     is_plan_clarify_call_id,
 )
+from app.agentic.clarify import (
+    CLARIFICATIONS_HEADER,
+    strip_clarify_marker,
+    with_clarifications,
+)
+from app.agentic.planner import decompose
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.repositories import billing as billing_repo
@@ -35,6 +47,7 @@ pytestmark = pytest.mark.asyncio
 _CLARIFY_PROMPT = (
     "DEEP_RESEARCH: causes of inflation | effects on housing\nCLARIFY:"
 )
+_CLARIFY_ANSWERS = ["Focus on housing affordability", "US, last 5 years"]
 
 
 @pytest.fixture
@@ -66,6 +79,28 @@ def clarify_off_env() -> Iterator[None]:
         "AGENTIC_ENABLED": "true",
         "AGENTIC_CLARIFY_BEFORE_PLAN": "false",
         "AGENTIC_PLAN_APPROVAL": "false",
+    }
+    prior = {key: os.environ.get(key) for key in keys}
+    os.environ.update(keys)
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
+
+
+@pytest.fixture
+def clarify_and_plan_env() -> Iterator[None]:
+    keys = {
+        "TOOLS_ENABLED": "true",
+        "AGENTIC_ENABLED": "true",
+        "AGENTIC_CLARIFY_BEFORE_PLAN": "true",
+        "AGENTIC_PLAN_APPROVAL": "true",
     }
     prior = {key: os.environ.get(key) for key in keys}
     os.environ.update(keys)
@@ -148,6 +183,23 @@ def clarify_off_app(
 
 
 @pytest.fixture
+def clarify_and_plan_app(
+    clarify_and_plan_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+):  # type: ignore[no-untyped-def]
+    from app.routes.conversations import _TEMP_IDS
+    from app.streaming import replay_registry, stop_registry
+
+    app_ = _build_app(session_factory)
+    try:
+        yield app_
+    finally:
+        _TEMP_IDS.clear()
+        stop_registry._STOP_REQUESTS.clear()
+        replay_registry._BUFFERS.clear()
+
+
+@pytest.fixture
 async def clarify_client(clarify_app) -> AsyncIterator[AsyncClient]:  # type: ignore[no-untyped-def]
     transport = ASGITransport(app=clarify_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client_:
@@ -157,6 +209,15 @@ async def clarify_client(clarify_app) -> AsyncIterator[AsyncClient]:  # type: ig
 @pytest.fixture
 async def clarify_off_client(clarify_off_app) -> AsyncIterator[AsyncClient]:  # type: ignore[no-untyped-def]
     transport = ASGITransport(app=clarify_off_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client_:
+        yield client_
+
+
+@pytest.fixture
+async def clarify_and_plan_client(
+    clarify_and_plan_app,
+) -> AsyncIterator[AsyncClient]:  # type: ignore[no-untyped-def]
+    transport = ASGITransport(app=clarify_and_plan_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client_:
         yield client_
 
@@ -284,6 +345,35 @@ async def _pause_on_clarify(
     return conv_id, frames
 
 
+async def test_strip_clarify_keeps_deep_research_scaffold_intact() -> None:
+    """Answers / CLARIFY tails must not enter decompose's pipe-split."""
+    cleaned = strip_clarify_marker(_CLARIFY_PROMPT)
+    assert "CLARIFY:" not in cleaned
+    assert cleaned.startswith("DEEP_RESEARCH:")
+    parts = decompose(cleaned, max_workers=4)
+    assert parts == ["causes of inflation", "effects on housing"]
+
+    # Custom questions after the marker must also be stripped.
+    with_custom = (
+        "DEEP_RESEARCH: causes of inflation | effects on housing\n"
+        "CLARIFY: prioritize housing | US only"
+    )
+    assert decompose(strip_clarify_marker(with_custom), max_workers=4) == [
+        "causes of inflation",
+        "effects on housing",
+    ]
+
+    # Appended clarification DATA is for planner/workers only — callers must
+    # never feed ``with_clarifications`` into ``decompose`` (use stripped text).
+    with_answers = with_clarifications(cleaned, _CLARIFY_ANSWERS)
+    assert CLARIFICATIONS_HEADER in with_answers
+    assert decompose(cleaned, max_workers=4) == [
+        "causes of inflation",
+        "effects on housing",
+    ]
+    assert "Focus on housing affordability" in with_answers
+
+
 async def test_clarify_flag_off_skips_pause(
     clarify_off_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
@@ -345,7 +435,7 @@ async def test_clarify_flag_on_pauses_before_plan(
     assert assistant[0].status == "awaiting_approval"
 
 
-async def test_clarify_approve_resumes_fanout(
+async def test_clarify_approve_resumes_fanout_with_answers_in_context(
     clarify_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -363,9 +453,7 @@ async def test_clarify_approve_resumes_fanout(
             "toolApproval": {
                 "toolCallId": call_id,
                 "decision": "approve",
-                "editedInput": {
-                    "answers": ["Focus on housing affordability", "US, last 5 years"]
-                },
+                "editedInput": {"answers": list(_CLARIFY_ANSWERS)},
             },
         },
     )
@@ -378,11 +466,129 @@ async def test_clarify_approve_resumes_fanout(
     assert "aggregator" in started_ids
     full_answer = _answer(frames)
     assert "Synthesis of 2 findings" in full_answer
-    assert "causes of inflation" in full_answer
-    assert "effects on housing" in full_answer
+    # Scaffold intact: clarifications did NOT land in the last sub-question.
+    assert "1. causes of inflation:" in full_answer
+    assert "2. effects on housing:" in full_answer
+    assert "CLARIFY:" not in full_answer
+    # Answers reached workers (fake echoes them) and the synthesis footer.
+    assert "Clarified: Focus on housing affordability; US, last 5 years" in full_answer
+    assert "Clarifications applied:" in full_answer
+    assert "Focus on housing affordability" in full_answer
+    assert "US, last 5 years" in full_answer
 
     msgs = await _load_messages(session_factory, conv_id)
     assistant = [m for m in msgs if m.role == "assistant"]
     assert len(assistant) == 2
     assert assistant[0].status == "awaiting_approval"
     assert assistant[1].status == "done"
+
+
+async def test_clarify_deny_declines_run(
+    clarify_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    conv_id, pause_frames = await _pause_on_clarify(clarify_client, session_factory)
+    call_id = next(str(d["id"]) for n, d in pause_frames if n == "tool_call")
+
+    frames = await _collect_sse(
+        clarify_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "c0000000-0000-0000-0000-000000000003",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": call_id,
+                "decision": "deny",
+            },
+        },
+    )
+
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+    started_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_started"}
+    assert not any(sid.startswith("worker-") for sid in started_ids)
+    assert "aggregator" in started_ids
+    full_answer = _answer(frames)
+    assert "clarifying questions were skipped" in full_answer.lower() or (
+        "no research plan" in full_answer.lower()
+    )
+
+    msgs = await _load_messages(session_factory, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"]
+    assert len(assistant) == 2
+    assert assistant[0].status == "awaiting_approval"
+    assert assistant[1].status == "done"
+
+
+async def test_clarify_then_plan_approval_keeps_answers(
+    clarify_and_plan_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Dual HITL: clarify answers persist onto the plan pause and into synthesis."""
+    assert get_settings().agentic_clarify_before_plan is True
+    assert get_settings().agentic_plan_approval is True
+
+    conv_id, clarify_frames = await _pause_on_clarify(
+        clarify_and_plan_client, session_factory
+    )
+    clarify_call_id = next(
+        str(d["id"]) for n, d in clarify_frames if n == "tool_call"
+    )
+
+    plan_pause = await _collect_sse(
+        clarify_and_plan_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "c0000000-0000-0000-0000-000000000004",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": clarify_call_id,
+                "decision": "approve",
+                "editedInput": {"answers": list(_CLARIFY_ANSWERS)},
+            },
+        },
+    )
+    assert plan_pause[-1][1]["status"] == "awaiting_approval"
+    plan_calls = [
+        d
+        for n, d in plan_pause
+        if n == "tool_call" and d.get("name") == PLAN_APPROVAL_TOOL_NAME
+    ]
+    assert len(plan_calls) == 1
+    plan_call = plan_calls[0]
+    assert is_plan_approval_call_id(str(plan_call["id"]))
+    assert plan_call["input"]["plan"] == [
+        "causes of inflation",
+        "effects on housing",
+    ]
+    assert plan_call["input"]["clarifications"] == list(_CLARIFY_ANSWERS)
+    # Still no workers until the plan is approved.
+    started_ids = {str(d["subagentId"]) for n, d in plan_pause if n == "subagent_started"}
+    assert not any(sid.startswith("worker-") for sid in started_ids)
+
+    final = await _collect_sse(
+        clarify_and_plan_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "c0000000-0000-0000-0000-000000000005",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": str(plan_call["id"]),
+                "decision": "approve",
+            },
+        },
+    )
+    assert final[-1][1]["status"] == "done"
+    full_answer = _answer(final)
+    assert "Synthesis of 2 findings" in full_answer
+    assert "1. causes of inflation:" in full_answer
+    assert "2. effects on housing:" in full_answer
+    assert "Clarifications applied:" in full_answer
+    assert "Focus on housing affordability" in full_answer
+    assert "US, last 5 years" in full_answer

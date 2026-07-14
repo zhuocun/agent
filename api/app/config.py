@@ -455,8 +455,12 @@ class Settings(BaseSettings):
     # Plan-approval gate (M3). When True, a deep-research plan pauses for human
     # approval before fan-out (`agentic_plan_approval` pseudo-tool). Default-off.
     agentic_plan_approval: bool = Field(default=False, alias="AGENTIC_PLAN_APPROVAL")
-    # Answer verifier (M3). When True, the synthesized answer is cross-checked by
-    # `AGENTIC_VERIFIER_N` passes (deterministic stub in v1). Default-off.
+    # Answer verifier (M3). When True, the deterministic stub is an honest
+    # no-op (returns synthesis unchanged; no provider call; no "Verified…"
+    # claim). `AGENTIC_VERIFIER_N` is a reserved sample-count for a future
+    # closed-form / fresh-context judge path — not free-form majority vote
+    # over whole reports, and must not be billed as N phantom model calls
+    # while the stub is active. Default-off.
     agentic_verifier: bool = Field(default=False, alias="AGENTIC_VERIFIER")
     agentic_verifier_n: int = Field(default=3, alias="AGENTIC_VERIFIER_N")
 

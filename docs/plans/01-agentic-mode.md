@@ -1,6 +1,8 @@
 # Agentic Mode Plan (orchestrated bounded subagents)
 
-> **Implementation status**: **SHIPPED behind `AGENTIC_ENABLED` (default off, gated by `TOOLS_ENABLED`).** M0–M3 are built and tested on the fake provider (`api/app/agentic/*`, `api/tests/test_agentic_*.py`, `web/tests/e2e/agentic.spec.ts`). With the flag off, the stream path stays byte-identical to the pre-agentic build (`test_agentic_flag_off.py`). **M4 is PARTIALLY SHIPPED** — real-provider planner/synthesis code paths exist in `orchestrator.py`; per-worker fallback + failure-degrade, agentic resumable-buffer sizing, and per-worker attribution persistence are built and tested (`test_agentic_resilience.py`, `test_agentic_real_provider.py`). Still open: the provider-backed verifier (deterministic stub today), scoped per-worker tool subsets, per-subagent attribution *display* in the FE, and a true live-network real-provider E2E (the shipped real-provider test is deterministic/no-network). Do not enable `AGENTIC_ENABLED` in a real-key environment until the live-provider path is proven end to end (see **Remaining gaps**).
+> **Implementation status**: **SHIPPED behind `AGENTIC_ENABLED` (default off, gated by `TOOLS_ENABLED`).** M0–M3 are built and tested on the fake provider (`api/app/agentic/*`, `api/tests/test_agentic_*.py`, `web/tests/e2e/agentic.spec.ts`). With the flag off, the stream path stays byte-identical to the pre-agentic build (`test_agentic_flag_off.py`). **M4 is PARTIALLY SHIPPED** — real-provider planner/synthesis code paths exist in `orchestrator.py`; per-worker fallback + failure-degrade, agentic resumable-buffer sizing, and per-worker attribution *persistence* are built and tested (`test_agentic_resilience.py`, `test_agentic_real_provider.py`). Still open (see **Remaining gaps**): provider-backed verifier (deterministic stub today), mid-fan-out `run_cost` ticks, scoped per-worker tool subsets, fuller live/always-on attribution UX, heterogeneous fallback pricing, and a true live-network real-provider E2E (the shipped real-provider test is deterministic/no-network). Do not enable `AGENTIC_ENABLED` in a real-key environment until the live-provider path is proven end to end.
+>
+> **Normative target architecture** lives in [`02-agent-architecture.md`](./02-agent-architecture.md). When this build plan and 02 disagree on *intent*, 02 wins; when either disagrees with *what code does today*, trust the [as-built audit](../research/2026-07-14/agent-architecture-as-built.md) and the code. Do not treat aspirational wording below as shipped.
 
 The smallest extension that lets the existing chat turn spawn **bounded model subagents in-turn** — an orchestrator over N reuses of the shipped `run_agent_loop`, multiplexed back onto the one SSE stream — with **zero behavior change when `AGENTIC_ENABLED` is off**. Anchored to the shipped streaming/persistence path (`api/app/streaming/handler.py`), the shipped agent loop (`api/app/tools/agent_loop.py`), and the typed message-part union (`api/app/schemas/message.py`). PRDs guide direction; anything not gated behind a hard flag is out of scope.
 
@@ -11,30 +13,31 @@ The smallest extension that lets the existing chat turn spawn **bounded model su
 In scope (justified by FR-26c–FR-26k):
 
 - An **orchestrator** at the existing `streaming/handler.py::_build_provider_iter()` seam that, within one assistant turn, fans out to **N bounded subagents** (each a `run_agent_loop` instance) and aggregates their outputs into one streamed answer.
-- A **default single ReAct loop** (today's behavior, unchanged) plus an **opt-in "Deep Research"** mode: planner → workers → aggregator → optional reviewer.
-- **Subagent-scoped** stream events + typed message parts + a **live per-run cost meter** + per-subagent model attribution (no silent downgrade inside a fan-out).
+- A **default single ReAct loop** (today's behavior, unchanged) plus an **opt-in "Deep Research"** mode: planner → workers → aggregator → optional verifier.
+- **Subagent-scoped** stream events + typed message parts + a **per-run cost meter** (orchestrator emits estimate @ plan pause, progress ticks as workers complete, and final; wire schema carries `confidence`/`phase` — confirm handler encode + FE parse stay in sync) + per-subagent model attribution persistence (live `subagent_done` attribution on the wire is target/partial — see **Remaining gaps**).
 - A **hard per-run USD cap**, **fan-out bounds**, a **recursion-depth bound**, and **plan approval** reusing the shipped `awaiting_approval` HITL terminal.
-- A **verifier / self-consistency** reviewer step (N≈3–5), config-driven.
+- A **deterministic verifier stub** when `AGENTIC_VERIFIER` is on (**honest no-op**: returns synthesis unchanged; no provider call; no user-facing "Verified…" claim). A real fresh-context judge / CitationAgent is target architecture in plan 02 — do not read `AGENTIC_VERIFIER_N` as free-form majority vote over whole reports; the stub must not be billed as N phantom model calls.
 - A **Pro/BYOK entitlement gate** on `deep_research` — the fan-out's token burn (below) makes it a paid-tier / bring-your-own-key capability; anonymous/free turns fall back to `single` even with the flag on.
-- **OTel `invoke_agent` / `execute_tool`** span tree on the shipped env-gated tracing path.
-- **Fake-provider orchestration v1 first**; real-provider subagent wiring as the gating prereq.
+- **OTel `invoke_agent`** spans on worker / primary / aggregator paths; **`execute_tool_span` wired** in `agent_loop.py` (quiet planner / stub verifier still omit `invoke_agent`).
+- **Fake-provider orchestration v1 first**; real-provider subagent wiring as the gating prereq (M4 partial — paths exist, live-network E2E does not).
 
 Explicitly out of scope:
 
 - **Any background, scheduled, or out-of-turn execution** — the orchestrator starts and ends within a single chat turn (the D23/D33 chat-anchored guardrail). No daemon, no cron, no "agent that runs without a chat turn."
 - A general agent/automation **platform**, an agent SDK surface, or user-authored agent graphs.
 - New tool primitives, a new loop engine, or changes to the shipped per-tool timeout / round-bound / untrusted-output model (subagents **reuse** them verbatim).
-- Resumable replay of an interrupted agentic run beyond the shipped `RESUMABLE_STREAMS_ENABLED` path (an agentic run reuses the same `Stream` reconciliation; mid-fan-out resume is not added here). **Caveat to size at build:** a multiplexed fan-out emits many more events than a single loop and can exceed the shipped resumable buffer bounds (~1000 events / ~1MB). The shipped caps stay as-is here; this plan flags it as a build-time decision — either bump the buffer bound for agentic runs or impose an event-volume cap (e.g. coalesce per-subagent deltas) so the buffer isn't silently truncated mid-run.
+- Resumable replay of an interrupted agentic run beyond the shipped `RESUMABLE_STREAMS_ENABLED` path (an agentic run reuses the same `Stream` reconciliation; mid-fan-out resume of a paused *worker* is not added here — known hard gap, see plan 02). Replay **semantics** are reused as-is; agentic runs **multiply** event/byte buffer caps by `AGENTIC_RESUMABLE_BUFFER_MULTIPLIER` (default 4). Truncation/coalescing remains an operational tuning concern if fan-out still overflows the multiplied bound.
 - Cross-turn / persistent orchestrator memory (memory stays the FR-40 account-global store; an agentic run holds only in-turn state).
-- Real-provider tool/subagent wiring before the fake-provider v1 is proven (M4 gate).
+- Real-provider tool/subagent wiring before the fake-provider v1 is proven (M4 gate; paths now exist — live E2E still open).
 
 Shipped FE (behind `AGENTIC_ENABLED`; PRD 01):
 
 - **Deep Research toggle** in the composer mode-row (`model-mode-picker.tsx`), peer of web-search / reasoning-effort; hidden when bootstrap does not advertise `agenticEnabled`.
-- **Subagent activity panel** (`subagent-panel.tsx`): per-worker label, status, intermediate output, and live per-run cost meter (per-subagent per-row cost badges removed per D41).
+- **Subagent activity panel** (`subagent-panel.tsx`): per-worker label, status, intermediate output, persisted substitution callout after reload, and run-cost meter fed by `run_cost` frames. Per-subagent per-row cost badges removed per D41.
 - **Plan-approval surface**: reuses the shipped tool-approval UI (`tool-part.tsx` approve/deny) at the orchestration boundary — plan + cost estimate in the pause card.
+- **Share-view `SubagentPanel`**: `public-conversation-view.tsx` → `AgenticAssistantParts` renders the panel cost-stripped. Public projection keeps nested `PublicAttribution` (identity/substitution) when the share schema is current; strip cost only.
 
-Remaining FE gaps (see **Remaining gaps**): per-subagent served-model/substitution callout, high-cost composer hint, PRD 08 partial-synthesis warning chip, share-view subagent rendering.
+Remaining FE gaps (see **Remaining gaps**): always-on per-worker served-model label + live-stream attribution (substitution callout exists on reload from persisted parts), high-cost composer hint, PRD 08 partial-synthesis warning chip, public per-worker attribution projection.
 
 ## Architecture overview
 
@@ -71,7 +74,7 @@ Stack picks (one-line justifications):
 
 - **Reuse `run_agent_loop`** — the bounded-round, per-tool-timeout, untrusted-output, HITL-pause behavior is already proven and tested; a subagent is just an instance of it over a scoped sub-prompt. No second loop engine.
 - **One seam (`_build_provider_iter()`)** — the orchestrator is a third branch beside the raw stream and the single loop. The branch *selection* is the only change to those two paths: with the flag off, the raw and single-loop branches are byte-identical. The shared accumulation does change — `_apply_event` / `_build_parts` become subagent-aware (group by `subagentId`) — but additively: an un-tagged stream (raw/single-loop) groups into exactly one default group, so its output is unchanged.
-- **`asyncio` fan-out** — workers run concurrently as `asyncio` tasks bounded by a semaphore (max concurrency), their `ProviderEvent` streams merged into the handler's existing queue. No Celery/arq/Redis — orchestration is in-turn on the same worker, exactly like the shipped title-autogen detachment is *not* (this stays on the request task so cancellation propagates).
+- **`asyncio` fan-out** — workers run concurrently via `asyncio.create_task` bounded by a semaphore (max concurrency), their `ProviderEvent` streams merged into the handler's existing queue (unbounded queue + `gather` on completion). No `TaskGroup` / structured concurrency today. No Celery/arq/Redis — orchestration is in-turn on the same worker (this stays on the request task so cancellation propagates).
 - **Subagent-tagged events** — every relayed `ProviderEvent` carries a `subagent_id` so the handler can group parts and the FE can render per-worker activity; the wire stays the same SSE event names with an added field (additive, camelCase).
 - **Budget on the shipped cost math** — the per-run cap reads `api/app/providers/pricing.py` output, the same per-message accounting the transparency wedge already computes (no parallel cost model).
 - **Flag discipline** — `AGENTIC_ENABLED` (default `False`) gated by `TOOLS_ENABLED`; both must be on. Validated at boot in `app/config.py` like the other backend flags.
@@ -81,9 +84,9 @@ Stack picks (one-line justifications):
 The biggest change: a turn may now drive **more than one** `run_agent_loop`. Knock-on effects:
 
 - **Event multiplexing.** Today the handler pumps one `ProviderEvent` iterator into its queue. The orchestrator merges N child iterators; each event is tagged with its `subagent_id` so accumulation groups correctly. The single-loop and raw paths are untouched (one un-tagged stream).
-- **Cost is a sum, not a single usage chunk.** The terminal cost for an agentic turn is the **sum of all subagent costs** (plus the aggregator/reviewer). Fan-out is **heterogeneous** — workers may run on different models/tiers — so there is no single per-turn `CostBreakdown`: the top-level `cost_breakdown` is a **cost-sum roll-up** (total USD), while each subagent's own `CostBreakdown` (model/tier/token split) persists on that subagent's parts. The per-message `cost_usd` is the roll-up; per-subagent breakdowns make the run auditable.
-- **HITL at two levels.** The shipped per-tool `awaiting_approval` gate still fires inside any worker; the orchestrator adds an optional **plan-level** `awaiting_approval` before fan-out. Both reuse the same terminal state + `toolApproval` resume route — no new pause primitive.
-- **Cancellation across a fan-out.** Workers run under a worker `TaskGroup`; cancelling the run tears the group down so no worker outlives the turn, and the orchestrator flushes completed-worker partials into `parts` (same `status="stopped"` discipline as the single path). **Disconnect ≠ cancel when resumable streaming is on**: with `RESUMABLE_STREAMS_ENABLED`, the handler wraps the request in `_NeverDisconnectedRequest`, so a client disconnect must **not** tear down the fan-out (the run keeps producing into the resumable buffer); only an explicit Stop cancels. The teardown path keys off the same cancel signal as the single loop, not raw disconnect.
+- **Cost is a sum, not a single usage chunk.** The intended terminal cost is the **sum of planner + workers + aggregator (+ real verifier when metered)**. **As-built caveat:** fallback workers may display substituted provider/model labels while still pricing usage and tier breakdowns against the **original** binding; planner spend can be dropped on pause/decline/admit-reject exits; mid-flight cap checks currently accumulate worker costs only. Do not call the roll-up fully heterogeneous/auditable until those gaps close (plan 02 / FE-009). Persist per-subagent markers with nested attribution where built; the top-level `cost_usd` is the roll-up the handler emits.
+- **HITL at two levels.** The shipped per-tool `awaiting_approval` gate still fires inside any worker; the orchestrator adds an optional **plan-level** `awaiting_approval` before fan-out. Both reuse the same terminal state + `toolApproval` resume route — no new pause primitive. **Known hard gap:** a tool pause *inside* a worker does not cleanly resume that worker (plan 02 open questions).
+- **Cancellation across a fan-out.** Workers are spawned with `asyncio.create_task`; on Stop or mid-flight budget breach the orchestrator cancels unfinished tasks and `gather`s them (no `TaskGroup`). Completed-worker partials flush into `parts` (same `status="stopped"` discipline as the single path). **Disconnect ≠ cancel when resumable streaming is on**: with `RESUMABLE_STREAMS_ENABLED`, the handler wraps the request in `_NeverDisconnectedRequest`, so a client disconnect must **not** tear down the fan-out (the run keeps producing into the resumable buffer); only an explicit Stop cancels. The teardown path keys off the same cancel signal as the single loop, not raw disconnect.
 
 ## Wire contract
 
@@ -104,12 +107,12 @@ No new endpoint. The agentic run rides the **existing** `POST /api/conversations
 
 Existing event names are unchanged; agentic events carry an optional `subagentId` and the orchestrator adds two:
 
-- `subagent_started` — `{ subagentId, label, role: "worker" | "reviewer" | "orchestrator" }`. A new bounded subagent began. The **planner** and **aggregator** phases both run under the `"orchestrator"` role (they are orchestrator-role `run_agent_loop` instances, not worker fan-out); they are distinguished by `label` (e.g. `"planner"`, `"aggregator"`) rather than a dedicated enum value, so the role set stays small while the phase is still legible per-part.
+- `subagent_started` — `{ subagentId, label, role }` where role is one of `primary` \| `worker` \| `aggregator` \| `orchestrator` (plan 02 / as-built). Shipped emitters use `primary` (single wrap), `worker` (fan-out), `aggregator` (synthesis), and may use `orchestrator` for planner-phase markers; there is **no** shipped `reviewer` role — reserve that only if/when a real verifier agent ships.
 - `reasoning_delta` / `answer_delta` / `status` / `tool_call` / `tool_result` — **unchanged payloads**, now optionally tagged `{ subagentId, ... }` so the FE groups them under the right worker.
-- `subagent_done` — `{ subagentId, attribution: ModelAttribution, costUsd }`. A subagent finished; its per-subagent attribution + cost.
-- `run_cost` — `{ subtotalUsd, capUsd }`. Live per-run cost meter tick (FR-26h); emitted as workers complete so the FE meter updates mid-run.
-- `terminal` — `{ status: "done" | "awaiting_approval", messageId, attribution }` where `attribution.costUsd` is the **run total** (sum of subagents). A plan-approval pause **emits a `terminal` with `status: "awaiting_approval"`** (same as a tool pause) carrying the plan decomposition and the **estimated** cost in `attribution` (`costConfidence: "estimate"`); the turn resumes via `toolApproval`. The estimate-vs-actual distinction is on `attribution.costConfidence`.
-- `error` — unchanged envelope (PRD 08). A per-run budget halt produces a **partial synthesis** + `done`, not an `error` (graceful degrade, FR-26g).
+- `subagent_done` — **wire schema** (`stream_events.py`): `{ subagentId, label?, role?, costUsd?, outcome?, attribution?, substitution?, … }`. **As-built emission:** orchestrator/handler still primarily send cost + split substitution fields; full nested `ModelAttribution` on the live frame and distinct failure `outcome` rendering remain partial until encoder + FE parse land together (persist path already builds nested attribution on `SubagentPart`).
+- `run_cost` — `{ subtotalUsd, capUsd, confidence?, phase?, … }`. **Orchestrator:** estimate @ plan pause (`confidence: estimate`, `phase: plan`), progress ticks as workers complete (`phase: progress`), final at completion. Confirm handler encode forwards `confidence`/`phase` and FE meter labels estimates — do not assume end-to-end until those layers match.
+- `terminal` — `{ status: "done" | "awaiting_approval", messageId, attribution }` where `attribution.costUsd` is the **run total** when present. A plan-approval pause **emits a `terminal` with `status: "awaiting_approval"`** (same as a tool pause) carrying the plan decomposition and the **estimated** cost in `attribution` (`costConfidence: "estimate"`); the turn resumes via `toolApproval`. The estimate-vs-actual distinction is on `attribution.costConfidence`.
+- `error` — unchanged envelope (PRD 08). A per-run budget halt produces a **partial synthesis** + `done`, not an `error` (graceful degrade, FR-26g). Partial labeling today is **prose in the answer**, not a typed PRD 08 warning chip.
 
 ### Persistence (additive part grouping)
 
@@ -121,11 +124,11 @@ The orchestrator (`api/app/agentic/orchestrator.py`, NEW) is a thin coordinator 
 
 1. **Plans.** For `deep_research`, a bounded planning step (itself a `run_agent_loop` over the orchestrator role) decomposes the prompt into ≤`AGENTIC_MAX_WORKERS` independent sub-questions. For `single`, planning is a no-op and the run is one loop (today's path).
 2. **(Optional) pauses for plan approval.** If `AGENTIC_PLAN_APPROVAL` (or a per-turn flag) is set, emit `AwaitingApproval` at the plan boundary with the decomposition + estimated cost; the handler renders this as a `terminal` with `status:"awaiting_approval"` carrying the plan + estimate (`costConfidence:"estimate"`), resumed via `toolApproval`.
-3. **Reserves + fans out.** **Pre-spawn admission control**: estimate the run's worst-case cost (Cost & budget methodology) and reserve it against the per-run cap + composed user/platform headroom; if the estimate already exceeds headroom, don't spawn (pause for approval or return an explained empty/partial synthesis). Otherwise spawn one worker `run_agent_loop` per sub-question as `asyncio` tasks (under a worker `TaskGroup`) bounded by an `AGENTIC_MAX_CONCURRENCY` semaphore; merge their `ProviderEvent` streams (tagged with `subagent_id`) into the handler's queue. Each worker gets a scoped sub-prompt and (optionally) a restricted tool subset; each is bounded by the shipped `TOOL_MAX_ROUNDS` + per-tool timeout.
-4. **Enforces bounds.** A recursion-depth bound (default 1 orchestrator→worker level; workers do **not** spawn unbounded sub-trees) and the per-run USD cap, checked against **actuals** from `pricing.py` as subagents complete. On cap breach (**mid-flight kill**): stop spawning, cancel un-started **and in-flight** workers (worker `TaskGroup` teardown), and proceed to aggregate the completed workers' outputs (partial synthesis, labeled).
-5. **Aggregates.** A synthesis step (a bounded subagent) composes the workers' outputs — **fed back only as structured data, never spliced into instructions** (transitive untrusted-output, FR-26i) — into the final answer streamed on the turn.
-6. **(Optional) verifies.** If `AGENTIC_VERIFIER` is on, run a reviewer subagent or an N≈3–5 self-consistency pass over the synthesis before finalizing (FR-26j); its cost rolls into the run total.
-7. **Finalizes.** The handler computes the run-total `CostBreakdown` + `ModelAttribution` (sum over subagents), persists the subagent-grouped `parts`, and yields `terminal`.
+3. **Reserves + fans out.** **Pre-spawn admission control**: estimate the run's worst-case cost (Cost & budget methodology) and reserve it against the per-run cap + composed user/platform headroom; if the estimate already exceeds headroom, don't spawn (pause for approval or return an explained empty/partial synthesis). Otherwise spawn one worker `run_agent_loop` per sub-question via `asyncio.create_task` bounded by an `AGENTIC_MAX_CONCURRENCY` semaphore; merge their `ProviderEvent` streams (tagged with `subagent_id`) into an in-orchestrator queue. Each worker gets a scoped sub-prompt and (target) a restricted tool subset; each is bounded by the shipped `TOOL_MAX_ROUNDS` + per-tool timeout. **As-built:** workers inherit the full advertised tool registry (scoped subsets not built).
+4. **Enforces bounds.** A recursion-depth bound (default 1 orchestrator→worker level; workers do **not** spawn unbounded sub-trees — depth 1 by construction; runtime assert is target) and the per-run USD cap, checked against **worker actuals** from `pricing.py` as `SubagentDone` lands. On cap breach (**mid-flight kill**): stop spawning, cancel unfinished tasks, and proceed to aggregate the completed workers' outputs (partial synthesis, labeled in prose).
+5. **Aggregates.** A synthesis step (a bounded subagent / `aggregator` role) composes the workers' outputs — **fed back only as structured data, never spliced into instructions** (transitive untrusted-output, FR-26i) — into the final answer streamed on the turn.
+6. **(Optional) verifies.** If `AGENTIC_VERIFIER` is on, run the **deterministic stub** in `verifier.py` (**honest no-op**: returns synthesis unchanged; **no** provider call; **no** "Verified…" prose; **no** verifier cost in the meter). `AGENTIC_VERIFIER_N` is a reserved sample-count knob for a future closed-form / judge path — **not** free-form majority vote over whole reports, and must not be estimated as N phantom model calls while the stub is active. Target: fresh-context judge / CitationAgent (plan 02).
+7. **Finalizes.** The handler computes the run-total attribution (with the as-built pricing caveats above), persists the subagent-grouped `parts`, and yields `terminal`.
 
 **Invariants:**
 
@@ -137,7 +140,7 @@ The orchestrator (`api/app/agentic/orchestrator.py`, NEW) is a thin coordinator 
 
 ## Cost & budget
 
-Per-run cost reuses `api/app/providers/pricing.py` — no parallel cost model. The run total is the **sum of subagent `cost_usd`** (workers + planner + aggregator + reviewer). Two multipliers are budgeted **separately** (FR-26g) so the cap is sized against their product, not either alone:
+Per-run cost reuses `api/app/providers/pricing.py` — no parallel cost model. The **intended** run total is the **sum of planner + workers + aggregator (+ real verifier when metered)**. Two multipliers are budgeted **separately** (FR-26g) so the cap is sized against their product, not either alone:
 
 - **Reasoning-token multiplier** — thinking tokens are full-price, never cache-eligible; the 2026 research observed **~4–15× cost vs a non-reasoning turn** (PRD 02 FR-18, `[verify-at-build]`).
 - **Multi-agent fan-out multiplier** — a multi-agent system burns materially more tokens than one chat turn; **Anthropic's multi-agent research reports ~15× the tokens of a single chat** (`[verify-at-build]`).
@@ -146,14 +149,14 @@ The per-run cap composes with the shipped user/platform budget caps (`USAGE_BUDG
 
 **Admission control (two gates, not just a post-hoc roll-up):**
 
-- **Pre-spawn reservation.** Before fan-out, the orchestrator estimates the run's worst-case cost (see methodology below) and reserves it against the per-run cap *and* the composed user/platform headroom. If the estimate already exceeds available headroom, workers are **not spawned** — the run either pauses for plan approval (if enabled) or returns immediately with an explanatory partial/empty synthesis, never a silent overrun. Reservation is released/trued-up as actuals land.
-- **Mid-flight kill.** Because reservation is only an estimate, actual cost is checked against the cap as each subagent's `cost_usd` lands (the `run_cost` tick). On breach, the orchestrator stops spawning, **cancels in-flight workers** (worker `TaskGroup` teardown), and proceeds to aggregate whatever completed — the graceful-degrade path above.
+- **Pre-spawn reservation.** Before fan-out, the orchestrator estimates the run's worst-case cost (see methodology below) and reserves it against the per-run cap *and* the composed user/platform headroom. If the estimate already exceeds available headroom, workers are **not spawned** — the run either pauses for plan approval (if enabled) or returns immediately with an explanatory partial/empty synthesis, never a silent overrun. Reservation is released/trued-up as actuals land. **As-built:** admission should count planner + workers + aggregator; the stub verifier adds **0** model calls (do not reserve `AGENTIC_VERIFIER_N` phantoms).
+- **Mid-flight kill.** Because reservation is only an estimate, actual cost is checked against the cap as each **worker** `SubagentDone` lands. On breach, the orchestrator cancels unfinished tasks and proceeds to aggregate whatever completed — the graceful-degrade path above. The orchestrator also yields a mid-run `run_cost` progress tick per worker done. Planner/aggregator spend folding and early-exit planner billing have known gaps (plan 02); the stub verifier adds $0 and must not reserve phantom N calls.
 
-**Cost-estimation methodology (drives the plan-approval estimate + the reservation):** the estimate is `Σ worker estimates + planner + aggregator (+ verifier × N)`, where each subagent's estimate is `expected_tokens × tier_price` from `pricing.py`, expected tokens derived from the planner's decomposition (sub-question count and per-worker round budget = `TOOL_MAX_ROUNDS`), then scaled by the two FR-26g multipliers (reasoning-token × fan-out) so the estimate is sized against their **product**. This same number is what the `awaiting_approval` terminal surfaces as the plan's estimated cost (`costConfidence: "estimate"`) and what the pre-spawn reservation holds.
+**Cost-estimation methodology (drives the plan-approval estimate + the reservation):** the estimate is `Σ worker estimates + planner + aggregator (+ real verifier calls when metered)`, where each subagent's estimate is `expected_tokens × tier_price` from `pricing.py`, expected tokens derived from the planner's decomposition (sub-question count and per-worker round budget = `TOOL_MAX_ROUNDS`), then scaled by the two FR-26g multipliers (reasoning-token × fan-out) so the estimate is sized against their **product**. This same number is what the `awaiting_approval` terminal surfaces as the plan's estimated cost (`costConfidence: "estimate"`) and what the pre-spawn reservation holds. While the verifier is the deterministic stub, **do not** add `AGENTIC_VERIFIER_N` phantom model calls to the estimate.
 
 ## Observability
 
-Agentic runs emit OpenTelemetry spans on the shipped env-gated path (`api/app/observability/tracing.py`, no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` unset): one **`invoke_agent`** span per subagent (orchestrator → worker → reviewer) nested under the turn's request span, with **new `execute_tool` spans (net-new manual instrumentation)** nested under each subagent. Both span kinds are added in this work — the shipped tracing path auto-instruments the request span, but the `invoke_agent` and `execute_tool` spans are manual `tracer.start_as_current_span` calls added here, not pre-existing. Spans carry ids + model/tier + token/cost rollups, **never message content** (matching the structured-log discipline). structlog already injects `trace_id` / `span_id` when a span is active, so a run's fan-out tree is correlatable in logs.
+Agentic runs emit OpenTelemetry spans on the shipped env-gated path (`api/app/observability/tracing.py`, no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` unset): **`invoke_agent`** spans on worker / primary / aggregator paths in the orchestrator (quiet planner and stub verifier emit none today). **`execute_tool_span` is wired** in `agent_loop.py` around tool execution. Target: planner + real-verifier `invoke_agent` spans. Spans carry ids + model/tier + token/cost rollups, **never message content** (matching the structured-log discipline). structlog already injects `trace_id` / `span_id` when a span is active, so a run's fan-out tree is correlatable in logs when spans are active.
 
 ## Config / flags
 
@@ -165,27 +168,36 @@ Agentic runs emit OpenTelemetry spans on the shipped env-gated path (`api/app/ob
 | `AGENTIC_MAX_DEPTH` | `1` | Recursion-depth bound (orchestrator→worker levels). |
 | `AGENTIC_RUN_BUDGET_USD` | small | Hard per-run USD cap. |
 | `AGENTIC_PLAN_APPROVAL` | `False` | Require plan approval (HITL) before fan-out. |
-| `AGENTIC_VERIFIER` | `False` | Enable reviewer / self-consistency step. |
-| `AGENTIC_VERIFIER_N` | `3` | Self-consistency sample count (≈3–5). |
+| `AGENTIC_VERIFIER` | `False` | Enable verifier step (deterministic honest no-op stub today). |
+| `AGENTIC_VERIFIER_N` | `3` | Reserved sample-count for a future judge / closed-form path. **Not** free-form majority vote over whole reports; the stub does not run N provider samples and must not be billed as N phantom calls. |
+| `AGENTIC_RESUMABLE_BUFFER_MULTIPLIER` | `4` | Multiplies global resumable event/byte caps for agentic turns (`routes/conversations.py`). |
+
+Estimation knobs (`AGENTIC_REASONING_TOKEN_MULTIPLIER`, `AGENTIC_FANOUT_TOKEN_MULTIPLIER`, per-round token expectations) live in `.env.example` / `config.py` — see there for defaults.
 
 All validated at boot in `app/config.py`; all bounds are config, never hardcoded (mirrors the no-hardcoding discipline of PRD 02 §5).
 
-## Remaining gaps (as-built vs PRD)
+## Remaining gaps (as-built vs PRD / plan 02)
+
+Target architecture and gap ownership: [`02-agent-architecture.md`](./02-agent-architecture.md). This table is the build-plan view of **code truth today**.
 
 | Gap | Status | Notes |
 | --- | --- | --- |
-| Per-subagent `ModelAttribution` + substitution persistence/display | **PARTIAL** | Persisted: `_build_agentic_parts` (`handler.py`) populates per-worker `SubagentPart.attribution` incl. substitution (`test_agentic_resilience.py::test_subagent_parts_carry_attribution`). Not rendered: `subagent-panel.tsx` still shows turn-level attribution only |
-| `execute_tool` OTel spans in `agent_loop.py` | **NOT BUILT** | `execute_tool_span` defined in `tracing.py`; only `invoke_agent_span` is wired in the orchestrator |
-| Provider-backed verifier / self-consistency (FR-26j) | **PARTIAL** | Deterministic stub appends a note; no provider sampling, no reviewer subagent, no verifier cost in meter |
-| Per-worker provider failure degrade (PRD 08) | **SHIPPED (M4)** | A failed worker is omitted; the run still synthesizes + halts `done` with a "failed and were omitted" callout (`test_agentic_resilience.py::test_one_worker_failure_degrades_to_partial`, `::test_all_workers_fail_still_done`) |
-| Per-worker provider fallback on 429/5xx | **SHIPPED (M4)** | Retryable worker error falls back to the secondary route, tagged `substitution` (`orchestrator.py`; `test_agentic_resilience.py::test_one_worker_retryable_falls_back`) |
+| Per-subagent `ModelAttribution` + substitution | **PARTIAL** | **Persisted** on `SubagentPart`. **FE:** substitution callout renders from persisted attribution after reload; always-on served-model label, live-stream attribution parse, fuller requested→served+reason callouts remain open |
+| `subagent_done` full attribution + outcome on wire | **PARTIAL** | Schema includes `attribution` / `outcome`; end-to-end encode + FE parse still catching up — persist path remains the reliable reload source |
+| `execute_tool` OTel spans in `agent_loop.py` | **SHIPPED** | `execute_tool_span` wrapped around tool execution in `agent_loop.py` |
+| Provider-backed verifier / self-consistency (FR-26j) | **PARTIAL** | Deterministic honest no-op stub (no false "Verified…" claim, $0, N not billed); no provider judge yet |
+| Per-worker provider failure degrade (PRD 08) | **SHIPPED (M4)** | A failed worker is omitted; the run still synthesizes + halts `done` with a "failed and were omitted" callout (`test_agentic_resilience.py`) |
+| Per-worker provider fallback on 429/5xx | **SHIPPED (M4)** | Retryable worker error falls back to the secondary route, tagged `substitution` (`orchestrator.py`; `test_agentic_resilience.py`) |
+| Heterogeneous fallback pricing / roll-up | **NOT BUILT** | Fallback labels/provider can substitute; cost + tier breakdown may still price on the original binding — verify against current orchestrator before claiming auditable |
+| Mid-run `run_cost` ticks | **PARTIAL → closing** | Orchestrator emits plan / progress / final ticks with `confidence`/`phase` on the protocol event; keep handler encode + FE meter labeling honest before calling this fully shipped |
 | Resumable-buffer sizing for high fan-out event volume | **SHIPPED (M4)** | Agentic runs multiply the caps by `AGENTIC_RESUMABLE_BUFFER_MULTIPLIER` (default 4) when opening the buffer (`routes/conversations.py`) |
-| Live-network real-provider agentic E2E proof | **NOT BUILT (M4 gate)** | The real-provider code path is covered deterministically without network (`test_agentic_real_provider.py`, `PROVIDER_BACKEND=deepseek`); a true live-API E2E is still absent |
-| Scoped per-worker tool subsets | **NOT BUILT** | Workers inherit full `advertised_tool_specs()` |
+| Live-network real-provider agentic E2E proof | **NOT BUILT (M4 gate)** | Deterministic no-network path covered (`test_agentic_real_provider.py`); true live-API E2E absent |
+| Scoped per-worker tool subsets | **NOT BUILT** | Workers inherit full `advertised_tool_specs()` unless a concurrent allowlist lands |
 | `AGENTIC_MAX_DEPTH` runtime enforcement | **PARTIAL** | Config validated at boot; depth 1 by construction (workers never nest), not checked at runtime |
 | High-cost composer hint (FR-26f) | **NOT BUILT** | Toggle description only; no explicit cost warning |
-| Share-view subagent rendering | **NOT BUILT** | `public-conversation-view.tsx` omits `SubagentPanel` |
-| PRD 08 partial-synthesis warning chip | **NOT BUILT** | Budget halt labels inline answer text only |
+| Share-view subagent rendering | **SHIPPED (partial)** | `SubagentPanel` on public shares; `PublicSubagentPart` keeps cost-stripped `PublicAttribution` when share projection is current |
+| PRD 08 partial-synthesis warning chip | **PARTIAL** | Wire may carry partial flags on final `run_cost`; dedicated FE warning chip still open |
+| Worker tool-HITL resume / approval idempotency | **NOT BUILT (hard)** | Documented as deferred in plan 02 open questions |
 
 ## Open questions / decisions for the user
 
@@ -209,23 +221,23 @@ Demo: `test_agentic_fanout.py::test_single_mode_wraps_one_primary_subagent`.
 
 ### M2 — Fake-provider Deep-Research fan-out + aggregate — **SHIPPED**
 
-Scope: deterministic planner decomposition; `asyncio` fan-out to N bounded workers under the concurrency semaphore; event multiplexing into the handler queue; the synthesis/aggregation step (untrusted-output discipline); `subagent_started` / `subagent_done` / `run_cost` events; subagent-grouped parts for N>1.
+Scope: deterministic planner decomposition; `asyncio` fan-out to N bounded workers under the concurrency semaphore (`create_task` + gather); event multiplexing into the handler queue; the synthesis/aggregation step (untrusted-output discipline); `subagent_started` / `subagent_done` / `run_cost` events; subagent-grouped parts for N>1.
 
 Demo: `test_agentic_fanout.py::test_deep_research_fans_out_workers_and_aggregates`; `web/tests/e2e/agentic.spec.ts`.
 
-### M3 — Budget, plan-approval HITL, verifier, transparency + OTel — **SHIPPED (partials noted)**
+### M3 — Budget, plan-approval HITL, verifier stub, transparency + OTel — **SHIPPED (partials noted)**
 
-Scope: per-run USD cap with **admission control** — a **pre-spawn reservation** against the cap + composed user/platform headroom (estimate via the Cost & budget methodology) and a **mid-flight kill** that cancels in-flight workers (worker `TaskGroup` teardown) on actual-cost breach, both ending in a graceful partial-synthesis halt; plan-approval pause that **emits a `terminal` with `status:"awaiting_approval"`** carrying the plan decomposition + estimated cost (`costConfidence:"estimate"`), resumed via `toolApproval`; the Pro/BYOK entitlement gate coercing non-entitled `deep_research` to `single`; verifier / self-consistency step (config N); the live per-run cost meter; `invoke_agent` OTel spans.
+Scope: per-run USD cap with **admission control** — a **pre-spawn reservation** against the cap + composed user/platform headroom and a **mid-flight kill** that cancels unfinished worker tasks on worker-actual breach, both ending in a graceful partial-synthesis halt; plan-approval pause that **emits a `terminal` with `status:"awaiting_approval"`** carrying the plan decomposition + estimated cost (`costConfidence:"estimate"`), resumed via `toolApproval`; the Pro/BYOK entitlement gate coercing non-entitled `deep_research` to `single`; deterministic verifier stub (config N); run-cost meter frames; `invoke_agent` OTel spans on worker/primary/aggregator.
 
-**Partials vs this milestone's original scope:** per-subagent `ModelAttribution` + substitution codes are **not** persisted or rendered; `execute_tool` spans are **not** wired into `agent_loop.py`; the verifier is a **deterministic stub** (no provider-backed reviewer); `AGENTIC_MAX_DEPTH` is config-only (depth 1 by construction).
+**Partials vs this milestone's original scope (historical note — see Remaining gaps for current status):** at M3 cut, per-subagent attribution persistence and FE display were incomplete. **Current (post-M4 + hardening):** attribution **is persisted** on `SubagentPart`; FE substitution callout renders after reload; `execute_tool` spans are wired in `agent_loop.py`; the verifier is an **honest no-op stub** (no false "Verified…" claim; N not billed); mid-run `run_cost` progress ticks emit from the orchestrator (handler/FE honesty labels may still be catching up); live-stream attribution + always-on served model + heterogeneous fallback pricing remain open; `AGENTIC_MAX_DEPTH` is config-only (depth 1 by construction).
 
 Demo: `test_agentic_budget.py`, `test_agentic_approval.py`, `test_agentic_safety.py`.
 
 ### M4 — Real-provider subagent wiring + hardening (gating prereq) — **PARTIALLY SHIPPED**
 
-Scope: wire real providers (DeepSeek/OpenAI-compatible + Anthropic) as subagent backends through the same `run_agent_loop` real-provider tool path; **only after M1–M3 are proven on the fake provider** (FR-26d / D40). PRD-08 error envelope on every agentic path; structlog run/subagent keys; **net-new per-worker fallback** (degrade the 429'd/errored worker, keep the run — the shipped fallback is per-turn) and the rest of the concurrency-vs-rate-limit handling; the resumable-buffer build-time decision for high event-volume fan-out (bump the bound or cap/coalesce events); document remaining gaps.
+Scope: wire real providers (DeepSeek/OpenAI-compatible + Anthropic) as subagent backends through the same `run_agent_loop` real-provider tool path; **only after M1–M3 are proven on the fake provider** (FR-26d / D40). PRD-08 error envelope on every agentic path; structlog run/subagent keys; **net-new per-worker fallback** (degrade the 429'd/errored worker, keep the run — the shipped fallback is per-turn) and the rest of the concurrency-vs-rate-limit handling; the resumable-buffer sizing for high event-volume fan-out (`AGENTIC_RESUMABLE_BUFFER_MULTIPLIER`); document remaining gaps.
 
-**As-built:** real-provider planner + model-written synthesis paths (`orchestrator.py` / `planner.py` / `aggregate.py`); per-worker fallback + failure-degrade (`test_agentic_resilience.py`); agentic resumable-buffer sizing (`AGENTIC_RESUMABLE_BUFFER_MULTIPLIER`); per-worker attribution persistence in `_build_agentic_parts`; a deterministic no-network real-provider path test (`test_agentic_real_provider.py`). **Still open:** provider-backed verifier (deterministic stub today), scoped per-worker tool subsets, per-subagent attribution *display* in the FE, and a true live-network real-provider E2E — see **Remaining gaps**.
+**As-built:** real-provider planner + model-written synthesis paths (`orchestrator.py` / `planner.py` / `aggregate.py`); per-worker fallback + failure-degrade (`test_agentic_resilience.py`); agentic resumable-buffer sizing; per-worker attribution persistence in `_build_agentic_parts`; a deterministic no-network real-provider path test (`test_agentic_real_provider.py`). **Still open:** provider-backed verifier, fuller attribution UX, heterogeneous fallback pricing (verify current code), live-network E2E — see **Remaining gaps** and plan 02.
 
 Demo (target): a real-provider `deep_research` run fans out, aggregates, and bills correctly with full transparency; a forced provider error/429 on one worker degrades **that worker only**, not the run.
 
@@ -254,7 +266,7 @@ api/app/
     orchestrator.py        # run_orchestrator: plan → fan-out → aggregate → verify; bounds + budget
     planner.py             # decomposition (deterministic for fake-provider v1)
     aggregate.py           # synthesis of worker outputs (untrusted-output discipline)
-    verifier.py            # reviewer / self-consistency (N≈3–5)
+    verifier.py            # deterministic stub verifier (N reserved for future judge; not majority vote)
     budget.py              # per-run USD cap + fan-out/depth bounds (reads providers/pricing.py)
   streaming/
     handler.py             # _build_provider_iter(): + run_orchestrator branch (gated)
@@ -264,7 +276,7 @@ api/app/
     conversation.py        # + agenticMode on the send body
   config.py                # + AGENTIC_* flags (boot-validated, gated by TOOLS_ENABLED)
   observability/
-    tracing.py             # + invoke_agent + execute_tool spans (both net-new manual instrumentation)
+    tracing.py             # + invoke_agent (wired in orchestrator) + execute_tool (wired in agent_loop)
 tests/
   test_agentic_flag_off.py     # byte-identity with the shipped single-loop path
   test_agentic_fanout.py       # fake-provider fan-out + aggregate + part grouping

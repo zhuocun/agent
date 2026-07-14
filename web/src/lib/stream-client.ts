@@ -122,8 +122,9 @@ export interface TerminalResult {
   // `awaiting_approval` is a server terminal (HITL pause): the turn ended
   // pending a tool-approval decision. The bubble is committed in place (with
   // its tool parts) and shows the approve/deny card. Like `done` it carries
-  // the assistant message id, but never an `attribution` (the cost lands on
-  // the resumed turn).
+  // the assistant message id. Plan-approval pauses also carry estimated
+  // `attribution` (`costConfidence: "estimate"`); ordinary tool pauses may omit
+  // it until the resumed turn.
   status: "done" | "stopped" | "error" | "awaiting_approval";
   reasoning: string;
   reasoningDurationSec: number;
@@ -316,8 +317,8 @@ function isErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
 // `terminal` payload narrows to `{ status?, messageId, attribution? }`. `status`
 // widens from the original `"done"`-only to also carry `"awaiting_approval"`
 // (the HITL pause), defaulting to `"done"` when the field is absent (older
-// backends). On the `awaiting_approval` pause there's no `attribution` yet — the
-// cost lands on the resumed turn — so attribution is optional here.
+// backends). Plan-approval pauses send estimated `attribution`; ordinary tool
+// pauses may omit it. Attribution is optional on the wire frame.
 type TerminalFrameStatus = "done" | "awaiting_approval";
 
 interface TerminalPayload {
@@ -339,8 +340,8 @@ function parseTerminal(value: unknown): TerminalPayload | null {
   // We don't deep-validate ModelAttribution here — the BE owns its wire
   // shape via Pydantic, and the FE renders it through `AttributionRow`
   // which tolerates partial shapes. A bad attribution is a contract bug,
-  // not a recoverable client-side error. On the `awaiting_approval` pause the
-  // BE sends no attribution, so it stays undefined there.
+  // not a recoverable client-side error. Plan-approval pauses include
+  // estimated attribution; tool pauses may leave it undefined.
   return {
     status,
     messageId,
@@ -914,10 +915,9 @@ export function useApiStream(
             return true;
           }
           // Surface the frame's status (default "done"). On the HITL pause the
-          // BE sends `status: "awaiting_approval"` and no attribution — the
-          // bubble settles into the approval card and the cost lands on the
-          // resumed turn. Flush synchronously so the final answer is committed
-          // to state before the terminal callback fires.
+          // BE sends `status: "awaiting_approval"`; plan-approval pauses also
+          // carry estimated attribution. Flush synchronously so the final
+          // answer is committed to state before the terminal callback fires.
           queueState({
             status: parsed.status,
             reasoningStreaming: false,

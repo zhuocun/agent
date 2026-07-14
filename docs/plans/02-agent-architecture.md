@@ -262,17 +262,19 @@ No cross-turn orchestrator memory. No background agent state store.
 - Untrusted DATA framing into aggregator; worker failure degrade + fallback
 - Subagent-tagged SSE + persisted parts; attribution persist; buffer × N
 - Real-provider planner/synthesis paths (deterministic no-network tests)
-- `invoke_agent` OTel on worker/primary/aggregator; chat-anchored in-turn only; reuse `run_agent_loop`
+- `invoke_agent` OTel on worker/primary/aggregator; `execute_tool` OTel in `agent_loop`
+- Orchestrator mid-run `run_cost` progress ticks (confirm handler/FE honesty labels)
+- Honest verifier stub (no-op; N not billed); chat-anchored in-turn only; reuse `run_agent_loop`
 
 ### Target (gaps to close)
 
 | Gap | Normative target |
 | --- | --- |
-| Verifier | Replace stub with CitationAgent and/or fresh-context judge; cost in meter; keep flag-gated |
-| `AGENTIC_VERIFIER_N` semantics | Document: not free-form majority vote; optional closed-form sub-answer use only |
+| Verifier | Replace stub with CitationAgent and/or fresh-context judge; cost in meter; keep flag-gated. Stub today is honest no-op (no false "Verified…"; N not billed). |
+| `AGENTIC_VERIFIER_N` semantics | **Documented** in config / `.env.example` / plan 01: not free-form majority vote; optional closed-form / future judge use only. Stub ignores N as independent samples. |
 | Tool subsets | Least-privilege per-worker tool allowlists |
-| Mid-run `run_cost` ticks | Emit as workers complete (estimate + mid + final); FE meter live |
-| `execute_tool` OTel | Wire in `agent_loop.py` |
+| Mid-run `run_cost` ticks | Orchestrator emits estimate + mid + final with `confidence`/`phase`; close handler encode + FE meter labeling before calling end-to-end done |
+| `execute_tool` OTel | **Shipped** — wired in `agent_loop.py` |
 | Planner / verifier `invoke_agent` spans | Span quiet planner + real verifier (stub today has none) |
 | FE attribution display | Always-on per-worker served model (+ fuller callouts); substitution callout already exists in `subagent-panel.tsx` — gap is partial, not missing |
 | High-cost composer hint / PRD 08 warning chip | Surface before spend / on partial synthesis |
@@ -330,19 +332,20 @@ every query class.
 
 ## Open questions / remaining gaps
 
-Aligned with the as-built audit; supersedes 01 where 01 drifts (e.g. 01 still
-lists share-view SubagentPanel as NOT BUILT and attribution display as missing;
-audit+02: share-view shipped cost-stripped; attribution UX partial — substitution
-callout exists, fuller per-worker served-model UX does not).
+Aligned with the as-built audit. Plan 01's remaining-gaps table tracks build-plan
+status; this section owns **target** decisions and **deferred hard gaps**.
 
 1. **Real verifier** — CitationAgent vs fresh-context rubric judge vs both;
    cost accounting; keep `AGENTIC_VERIFIER` default off until proven.
-2. **`AGENTIC_VERIFIER_N`** — redefine or document so it cannot be read as
-   free-form majority vote.
+2. **`AGENTIC_VERIFIER_N`** — documented in `config.py` / `.env.example` / plan 01:
+   not free-form majority vote; reserved for a future closed-form / judge path;
+   stub does not run N provider samples. Redefine the knob when a real verifier
+   ships.
 3. **Per-worker tool subsets** — default scoped allowlist (least privilege).
-4. **Mid-run `run_cost` ticks** — wire + FE meter (estimate / mid / final);
-   shipped today is estimate @ plan pause + final only.
-5. **`execute_tool` OTel** — wire existing helper in the loop.
+4. **Mid-run `run_cost` ticks** — orchestrator emits estimate / mid / final;
+   finish handler encode + FE meter honesty labels if not already complete.
+5. **`execute_tool` OTel** — **closed** (wired in `agent_loop.py`); keep
+   planner/real-verifier `invoke_agent` spans as remaining observability work.
 6. **Live-network E2E** — hard gate before prod enablement of `AGENTIC_ENABLED`.
 7. **Clarify-before-plan** — latency vs budget-control trade; product call.
 8. **Artifact store vs inline worker text** — direction high confidence;
@@ -353,7 +356,16 @@ callout exists, fuller per-worker served-model UX does not).
     `deep_research` is coerced to `single`.
 11. **Partial-synthesis chip** — PRD 08 warning chip vs prose-only labeling.
 12. **FE attribution display** — always-on per-worker served model (+ fuller
-    callouts); substitution callout already shipped.
+    callouts); substitution callout already shipped on reload from persisted
+    parts; live-stream attribution and public per-worker identity remain open.
+13. **Worker HITL resume (BE-005)** — tool `awaiting_approval` inside a worker /
+    aggregator does not suspend and resume that subagent; the handler stops on
+    the first pause and a later `toolApproval` starts a new whole orchestrator
+    rather than continuing the paused worker. Hard deferred; do not claim shipped.
+14. **Approval idempotency (BE-007)** — approved side effects are not claimed /
+    settled transactionally before execution; a post-execution stream failure can
+    re-run the side effect on retry. Hard deferred; needs idempotency key +
+    settle-before-execute.
 
 ---
 

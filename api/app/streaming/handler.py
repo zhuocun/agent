@@ -735,19 +735,28 @@ async def stream_and_persist(
         else None
     )
     # Clarify-before-plan resume (plan 02): same pattern as plan approval.
+    # Plan-approval resume also carries prior clarifications (if any) so a
+    # clarify → plan-approval dual HITL keeps answers across the second pause.
     clarify_resume = resume_seed is not None and resume_seed.is_clarify
-    clarify_answered: bool | None = (
-        (resume_seed.decision == "approve")
-        if clarify_resume and resume_seed is not None
-        else None
-    )
-    clarify_answers: list[str] | None = (
-        list(resume_seed.clarify_answers)
-        if clarify_resume
-        and resume_seed is not None
-        and resume_seed.clarify_answers is not None
-        else None
-    )
+    if plan_resume and resume_seed is not None:
+        # Past the clarify gate; re-attach any clarifications stored on the plan
+        # tool input so workers/synthesis still see them.
+        clarify_answered = True
+        clarify_answers = (
+            list(resume_seed.clarify_answers)
+            if resume_seed.clarify_answers is not None
+            else []
+        )
+    elif clarify_resume and resume_seed is not None:
+        clarify_answered = resume_seed.decision == "approve"
+        clarify_answers = (
+            list(resume_seed.clarify_answers)
+            if resume_seed.clarify_answers is not None
+            else None
+        )
+    else:
+        clarify_answered = None
+        clarify_answers = None
     # Per-subagent accumulation for an agentic turn (T3). Ordered by first-seen
     # `SubagentStarted` so the persisted transcript groups subagents in emission
     # order. Empty (and unused) on every non-agentic turn.
@@ -913,6 +922,55 @@ async def stream_and_persist(
             # and returning a blank turn.
             tools=advertised,
         )
+
+    def _agentic_fresh_make_stream(
+        worker_user_text: str,
+        *,
+        allowed_tools: Collection[str] | None = None,
+    ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
+        """Fresh-context `MakeStream` for the verifier judge (agentic only).
+
+        Industry / plan 02 fresh-context means an empty judge session: no
+        conversation history, memory/system prefix, attachments, or web_search —
+        only the rubric + DATA prompt the orchestrator passes as ``user_text``.
+        ``allowed_tools`` still scopes advertise (verifier passes empty).
+        """
+        scoped_tools = (
+            _tool_definitions_for(allowed_tools)
+            if allowed_tools is not None
+            else None
+        )
+
+        def _make(
+            tool_feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            # Tool-feedback rounds (if any) stay isolated — never splice chat
+            # history into the judge session.
+            round_history = tool_feedback_to_history(tool_feedback)
+            return active_provider.stream(
+                model_id=binding.model_id,
+                history=round_history,
+                user_text=worker_user_text,
+                attachments=None,
+                api_key=active_api_key,
+                thinking=(
+                    thinking_override
+                    if thinking_override is not None
+                    else binding.thinking
+                ),
+                reasoning_effort=(
+                    reasoning_effort_override
+                    if reasoning_effort_override is not None
+                    else binding.reasoning_effort
+                ),
+                web_search=False,
+                response_format=None,
+                supports_vision=binding.supports_vision,
+                system_prefix=None,
+                tools=None if suppress_tools else scoped_tools,
+            )
+
+        return _make
 
     def _agentic_make_stream(
         worker_user_text: str,
@@ -1089,6 +1147,7 @@ async def stream_and_persist(
                 orch_approved_ids = {resume_seed.tool_call_id}
             return run_orchestrator(
                 make_stream_for=_agentic_make_stream,
+                verifier_make_stream_for=_agentic_fresh_make_stream,
                 settings=handler_settings,
                 mode=agentic_mode,
                 user_text=orch_user_text,

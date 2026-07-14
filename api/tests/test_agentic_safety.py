@@ -442,6 +442,121 @@ async def test_verifier_majority_is_closed_form_only() -> None:
     assert select_report(samples, "pass") == "caveat A"
 
 
+async def test_verifier_n_issues_n_provider_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Integration: AGENTIC_VERIFIER_N>1 runs N independent judge samples."""
+    from collections.abc import AsyncIterator
+
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import run_verifier
+    from app.config import Settings
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "3")
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.agentic_verifier_n == 3
+
+    calls = {"n": 0}
+
+    def make_stream_for(prompt: str, *, allowed_tools: object = None):
+        assert "DEEP_RESEARCH_VERIFIER:" in prompt or "VERDICT:" in prompt or "independent verifier" in prompt
+
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            calls["n"] += 1
+
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="VERDICT: pass\nREPORT: none")
+                usage = UsageUpdate(input_tokens=1, output_tokens=2)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft="draft",
+        outputs=[
+            WorkerOutput(subagent_id="w0", sub_question="q", answer="a"),
+        ],
+        scaffolded=True,
+    )
+    assert calls["n"] == 3
+    assert len(result.samples) == 3
+    assert result.verdict == "pass"
+    assert "Verification: pass" in result.answer
+    get_settings.cache_clear()
+
+
+async def test_streamed_verifier_delta_fail_uses_replacement_marker() -> None:
+    from app.agentic.verifier import (
+        VERIFIER_REPLACEMENT_MARKER,
+        streamed_verifier_delta,
+    )
+
+    draft = "original draft answer"
+    rewrite = "corrected synthesis only"
+    delta = streamed_verifier_delta(draft, rewrite)
+    assert VERIFIER_REPLACEMENT_MARKER in delta
+    assert delta.endswith(rewrite)
+    assert not rewrite.startswith(draft)
+    # Pass note is a suffix only.
+    noted = draft + "\n\n[Verification: pass]"
+    assert streamed_verifier_delta(draft, noted) == "\n\n[Verification: pass]"
+
+
+async def test_verifier_skips_when_budget_blocks_first_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _run_verifier_if_enabled
+    from app.config import Settings
+    from app.providers.protocol import UsageUpdate
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "2")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    calls = {"n": 0}
+
+    def make_stream_for(prompt: str, *, allowed_tools: object = None):
+        def _make(_feedback: list, suppress_tools: bool = False):
+            calls["n"] += 1
+
+            async def _gen():
+                yield UsageUpdate(input_tokens=1, output_tokens=1)
+
+            return _gen()
+
+        return _make
+
+    result = await _run_verifier_if_enabled(
+        settings=settings,
+        draft="draft",
+        make_stream_for=make_stream_for,
+        user_text="req",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        cost_for_usage=lambda _u: 10.0,
+        ledger_usd=0.0,
+        cap_usd=1.0,  # estimate for one sample will exceed
+        budget_headroom_usd=None,
+    )
+    assert result is None
+    assert calls["n"] == 0
+    get_settings.cache_clear()
+
+
 # 5. OTel manual spans ---------------------------------------------------------
 
 

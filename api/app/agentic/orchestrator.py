@@ -107,10 +107,13 @@ _VERIFIER_ID = verifier.VERIFIER_ID
 _VERIFIER_LABEL = verifier.VERIFIER_LABEL
 
 # Deep-research workers are flat (AGENTIC_MAX_DEPTH == 1 by construction): each
-# worker runs one `run_agent_loop` and never re-enters the orchestrator. No
-# registry tools are advertised or executed on workers (least privilege);
-# provider-internal web_search remains available via the handler flag.
-_WORKER_ALLOWED_TOOLS: frozenset[str] = frozenset()
+# worker runs one `run_agent_loop` and never re-enters the orchestrator.
+# Provider-internal web_search remains available via the handler flag.
+# BE-005: allow the approval-gated stub `calendar_create_event` so registry-tool
+# HITL can pause inside a worker (prod_safe=False ⇒ real providers still do not
+# advertise it; fake / resume paths exercise the gate). Other registry tools
+# stay denied (least privilege).
+_WORKER_ALLOWED_TOOLS: frozenset[str] = frozenset({"calendar_create_event"})
 
 # Plan-approval HITL (M3). The plan pause reuses the shipped tool-approval
 # terminal: the orchestrator emits a pseudo `tool_call` whose name is this
@@ -354,6 +357,7 @@ async def _maybe_plan_approval(
     cap_usd: float,
     skip_started: bool = False,
     call_id: str | None = None,
+    clarifications: list[str] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan-approval HITL gate (M3) — async generator of pause events.
 
@@ -366,6 +370,8 @@ async def _maybe_plan_approval(
 
     ``skip_started`` is True when the caller already opened the planner bracket
     (e.g. after emitting a planner usage receipt) so we do not double-start.
+    ``clarifications`` (optional) are prior clarify-before-plan answers persisted
+    on the pause tool input so a later plan-approval resume can re-attach them.
     """
     if not settings.agentic_plan_approval:
         return
@@ -383,21 +389,67 @@ async def _maybe_plan_approval(
     )
     plan_call_id = call_id or mint_plan_approval_call_id()
     plan_list = list(sub_questions)
+    plan_input: dict[str, object] = {
+        "plan": plan_list,
+        "planHash": hash_plan(plan_list),
+        "estimatedCostUsd": estimate_usd,
+        "capUsd": cap_usd,
+    }
+    cleaned_clarifications = clarify.clean_answers(clarifications)
+    if cleaned_clarifications:
+        plan_input["clarifications"] = cleaned_clarifications
     yield ToolCall(
         id=plan_call_id,
         name=PLAN_APPROVAL_TOOL_NAME,
         label="Review research plan",
         status="awaiting_approval",
         approval_state="pending",
-        input={
-            "plan": plan_list,
-            "planHash": hash_plan(plan_list),
-            "estimatedCostUsd": estimate_usd,
-            "capUsd": cap_usd,
-        },
+        input=plan_input,
         subagent_id=_PLANNER_ID,
     )
     yield AwaitingApproval(tool_call_id=plan_call_id, subagent_id=_PLANNER_ID)
+
+
+def _verifier_phase_estimate(
+    *,
+    settings: Settings,
+    cost_for_usage: CostForUsage,
+    sample_count: int | None = None,
+) -> float:
+    """USD estimate for ``sample_count`` judge samples (default: configured N)."""
+    if not settings.agentic_verifier:
+        return 0.0
+    n = max(1, sample_count if sample_count is not None else settings.agentic_verifier_n)
+    expected = budget._expected_subagent_usage(settings)
+    return (
+        cost_for_usage(expected)
+        * settings.agentic_reasoning_token_multiplier
+        * n
+    )
+
+
+def _can_fund_verifier(
+    *,
+    ledger_usd: float,
+    settings: Settings,
+    cost_for_usage: CostForUsage,
+    cap_usd: float,
+    budget_headroom_usd: float | None,
+    sample_count: int | None = None,
+) -> bool:
+    """True when ledger + estimated judge sample(s) still fit the effective cap."""
+    if not settings.agentic_verifier:
+        return False
+    estimate = _verifier_phase_estimate(
+        settings=settings,
+        cost_for_usage=cost_for_usage,
+        sample_count=sample_count,
+    )
+    return not budget.exceeds_cap(
+        actual_usd=ledger_usd + estimate,
+        cap_usd=cap_usd,
+        headroom_usd=budget_headroom_usd,
+    )
 
 
 async def _run_verifier_if_enabled(
@@ -408,10 +460,41 @@ async def _run_verifier_if_enabled(
     user_text: str,
     outputs: list[WorkerOutput],
     scaffolded: bool,
+    cost_for_usage: CostForUsage | None = None,
+    ledger_usd: float = 0.0,
+    cap_usd: float = 0.0,
+    budget_headroom_usd: float | None = None,
 ) -> verifier.VerifyResult | None:
-    """Fresh-context judge when `AGENTIC_VERIFIER` is on; else ``None`` (no-op)."""
+    """Fresh-context judge when `AGENTIC_VERIFIER` is on and budget allows.
+
+    Returns ``None`` when the flag is off or the first judge sample cannot fit
+    the remaining run cap (skip / degrade without a Verification claim).
+    """
     if not settings.agentic_verifier:
         return None
+    if cost_for_usage is not None and not _can_fund_verifier(
+        ledger_usd=ledger_usd,
+        settings=settings,
+        cost_for_usage=cost_for_usage,
+        cap_usd=cap_usd,
+        budget_headroom_usd=budget_headroom_usd,
+        sample_count=1,
+    ):
+        return None
+
+    def _can_afford_next(usage_so_far: UsageUpdate) -> bool:
+        if cost_for_usage is None:
+            return True
+        spent = cost_for_usage(usage_so_far)
+        return _can_fund_verifier(
+            ledger_usd=ledger_usd + spent,
+            settings=settings,
+            cost_for_usage=cost_for_usage,
+            cap_usd=cap_usd,
+            budget_headroom_usd=budget_headroom_usd,
+            sample_count=1,
+        )
+
     return await verifier.run_verifier(
         make_stream_for=make_stream_for,
         settings=settings,
@@ -419,6 +502,7 @@ async def _run_verifier_if_enabled(
         draft=draft,
         outputs=outputs,
         scaffolded=scaffolded,
+        can_afford_next_sample=_can_afford_next if cost_for_usage is not None else None,
     )
 
 
@@ -533,6 +617,7 @@ async def _finalize_synthesis(
 async def _finalize_synthesis_streamed(
     *,
     make_stream_for: StreamFactory,
+    verifier_make_stream_for: StreamFactory | None = None,
     settings: Settings,
     user_text: str,
     outputs: list[WorkerOutput],
@@ -545,17 +630,14 @@ async def _finalize_synthesis_streamed(
     failed: int = 0,
     budget_headroom_usd: float | None = None,
     scaffolded: bool = False,
+    artifacts: list[aggregate.WorkerArtifact] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
-    Drives a bounded `run_agent_loop` over the synthesis prompt built from the
-    workers' (untrusted) findings and relays its content TAGGED to the aggregator,
-    so the FE renders a streamed, model-authored answer instead of the
-    deterministic string composition. Closes with the run's summed totals exactly
-    like `_finalize_synthesis`. Falls back to the deterministic synthesis when the
-    model streams nothing, so the turn never ends with an empty aggregator answer.
-    The graceful-degrade (budget) note and optional verifier note are re-applied
-    as trailing deltas so behavior is consistent across paths.
+    When ``AGENTIC_VERIFIER`` is off, relays aggregator AnswerDeltas live.
+    When on, collects the aggregator draft quietly, runs the fresh-context
+    judge (if the remaining budget can fund it), then emits a single final
+    answer — so a fail verdict never duplicates draft + rewrite on the wire.
 
     Mid-aggregator (BE-014): if accumulated aggregator spend pushes the run over
     the cap, stop the stream early and label the partial.
@@ -563,15 +645,26 @@ async def _finalize_synthesis_streamed(
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
     )
-    prompt = aggregate.build_synthesis_prompt(user_text, outputs)
+    prompt = aggregate.build_synthesis_prompt(
+        user_text, outputs, artifacts=artifacts
+    )
     aggregator_usage = UsageUpdate()
     answer_parts: list[str] = []
     agg_budget_halted = False
+    verify_after = settings.agentic_verifier
+    judge_factory = verifier_make_stream_for or make_stream_for
+
     async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
         if isinstance(event, AnswerDelta):
             answer_parts.append(event.text)
+            if not verify_after:
+                yield _tag(event, _AGGREGATOR_ID)
+        elif not verify_after:
+            yield _tag(event, _AGGREGATOR_ID)
         aggregator_usage = _fold_usage(event, aggregator_usage)
-        yield _tag(event, _AGGREGATOR_ID)
+        if verify_after and isinstance(event, (UsageUpdate, Complete)):
+            # Quiet collect still needs usage folded; non-answer events stay off-wire.
+            pass
         if not agg_budget_halted and budget.exceeds_cap(
             actual_usd=worker_total_cost + cost_for_usage(aggregator_usage),
             cap_usd=cap_usd,
@@ -583,55 +676,53 @@ async def _finalize_synthesis_streamed(
         budget_halted = True
     streamed = "".join(answer_parts)
     draft = streamed
+    suffix = ""
+    if budget_halted:
+        suffix += (
+            "\n\n[Partial answer: stopped early to stay within the run budget; "
+            f"answered {len(outputs)} of {planned} planned steps.]"
+        )
+    if failed > 0:
+        suffix += (
+            f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"
+        )
     if not streamed.strip():
-        # Model produced no usable synthesis — fall back to the deterministic
-        # composition so the turn never ends with an empty aggregator answer.
         draft = aggregate.synthesize(
             outputs, planned=planned, budget_halted=budget_halted, failed=failed
         )
-        yield AnswerDelta(text=draft, subagent_id=_AGGREGATOR_ID)
-    else:
-        suffix = ""
-        if budget_halted:
-            suffix += (
-                "\n\n[Partial answer: stopped early to stay within the run budget; "
-                f"answered {len(outputs)} of {planned} planned steps.]"
-            )
-        if failed > 0:
-            suffix += (
-                f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"
-            )
-        if suffix:
-            draft = streamed + suffix
-            yield AnswerDelta(text=suffix, subagent_id=_AGGREGATOR_ID)
+    elif suffix:
+        draft = streamed + suffix
 
     verifier_result: verifier.VerifyResult | None = None
     verifier_outcome: Literal["succeeded", "failed"] = "succeeded"
-    if settings.agentic_verifier:
+    final_answer = draft
+    if verify_after:
+        aggregator_cost_so_far = cost_for_usage(aggregator_usage)
         try:
             verifier_result = await _run_verifier_if_enabled(
                 settings=settings,
                 draft=draft,
-                make_stream_for=make_stream_for,
+                make_stream_for=judge_factory,
                 user_text=user_text,
                 outputs=outputs,
                 scaffolded=scaffolded,
+                cost_for_usage=cost_for_usage,
+                ledger_usd=worker_total_cost + aggregator_cost_so_far,
+                cap_usd=cap_usd,
+                budget_headroom_usd=budget_headroom_usd,
             )
         except Exception:
             _log.exception("agentic.verifier_failed")
             verifier_outcome = "failed"
             verifier_result = None
-        if verifier_result is not None and verifier_result.answer != draft:
-            # Append only the delta beyond the already-streamed draft (pass note
-            # or full corrected synthesis when the judge rewrote the answer).
-            verified = verifier_result.answer
-            extra = (
-                verified[len(draft) :]
-                if verified.startswith(draft)
-                else "\n\n" + verified
-            )
-            if extra:
-                yield AnswerDelta(text=extra, subagent_id=_AGGREGATOR_ID)
+        if verifier_result is not None and verifier_result.samples:
+            final_answer = verifier_result.answer
+        # Emit the post-verify answer once (no draft+rewrite duplication).
+        yield AnswerDelta(text=final_answer, subagent_id=_AGGREGATOR_ID)
+    elif not streamed.strip():
+        yield AnswerDelta(text=draft, subagent_id=_AGGREGATOR_ID)
+    elif suffix:
+        yield AnswerDelta(text=suffix, subagent_id=_AGGREGATOR_ID)
 
     aggregator_cost = cost_for_usage(aggregator_usage)
     yield Complete(usage=aggregator_usage, subagent_id=_AGGREGATOR_ID)
@@ -645,16 +736,21 @@ async def _finalize_synthesis_streamed(
     )
     verifier_cost = 0.0
     v_usage = UsageUpdate()
-    if settings.agentic_verifier:
+    ran_verifier = verifier_result is not None and bool(verifier_result.samples)
+    if ran_verifier or verifier_outcome == "failed":
         async for event in _emit_verifier_receipt(
-            result=verifier_result,
+            result=verifier_result if ran_verifier else None,
             cost_for_usage=cost_for_usage,
             ledger_usd=worker_total_cost + aggregator_cost,
             cap_usd=cap_usd,
-            outcome=verifier_outcome,
+            outcome=(
+                verifier_outcome
+                if ran_verifier or verifier_outcome == "failed"
+                else "succeeded"
+            ),
         ):
             yield event
-        if verifier_result is not None:
+        if ran_verifier and verifier_result is not None:
             v_usage = verifier_result.usage
             verifier_cost = cost_for_usage(v_usage)
     total_usage = _sum_usages([*worker_usages, aggregator_usage, v_usage])
@@ -835,6 +931,7 @@ async def _resume_worker_continuation(
     fallback_model_id: str | None = None,
     fallback_display_label: str | None = None,
     is_retryable: IsRetryable = is_retryable_provider_error,
+    verifier_make_stream_for: StreamFactory | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Continue a paused worker then synthesize (BE-005).
 
@@ -882,13 +979,22 @@ async def _resume_worker_continuation(
     planner_cost = continuation.planner_cost_usd
 
     # Re-open the paused worker bracket and continue its agent loop.
+    # Seed any pre-tool partial answer so synthesis keeps text emitted before HITL.
     answer_parts: list[str] = []
     source_ids: list[str] = []
     usage = UsageUpdate()
     initial = [resume_tool_result] if resume_tool_result is not None else []
-    prompt = planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
+    prompt = clarify.with_clarifications(
+        planner.worker_prompt(index, sub_question, scaffolded=scaffolded),
+        clarify.parse_clarification_answers(effective_user_text),
+    )
     with invoke_agent_span(subagent_id=paused_id, role="worker", label=label):
         yield SubagentStarted(subagent_id=paused_id, label=label, role="worker")
+        if continuation.partial_answer:
+            answer_parts.append(continuation.partial_answer)
+            yield AnswerDelta(
+                text=continuation.partial_answer, subagent_id=paused_id
+            )
         async for event in run_agent_loop(
             make_stream=make_stream_for(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS),
             settings=settings,
@@ -920,6 +1026,7 @@ async def _resume_worker_continuation(
                     actual_cost_usd=continuation.actual_cost_usd,
                     paused_worker_index=index,
                     paused_sub_question=sub_question,
+                    partial_answer="".join(answer_parts),
                 )
                 yield _tag(
                     replace(event, continuation=serialize_continuation(cont)),
@@ -950,12 +1057,14 @@ async def _resume_worker_continuation(
         for i, sq in enumerate(sub_questions)
     ]
     ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
+    ordered_artifacts = aggregate.build_artifacts(ordered_outputs)
     ordered_usages = [usages[sid] for _, sid, _, _ in worker_meta if sid in usages]
     ordered_usages.append(planner_usage)
     worker_total_cost = sum(
         costs.get(sid, 0.0) for _, sid, _, _ in worker_meta
     ) + cost_for_usage(planner_usage)
     completed_count = len(ordered_outputs)
+    resume_clarifications = clarify.parse_clarification_answers(effective_user_text)
 
     with invoke_agent_span(
         subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
@@ -965,11 +1074,13 @@ async def _resume_worker_continuation(
             planned=len(sub_questions),
             budget_halted=budget_halted,
             failed=failed_workers,
+            clarifications=resume_clarifications,
         )
         # Prefer deterministic synthesis on resume for both fake and empty-safe paths.
         if not scaffolded and ordered_outputs:
             async for event in _finalize_synthesis_streamed(
                 make_stream_for=make_stream_for,
+                verifier_make_stream_for=verifier_make_stream_for,
                 settings=settings,
                 user_text=effective_user_text,
                 outputs=ordered_outputs,
@@ -982,6 +1093,7 @@ async def _resume_worker_continuation(
                 failed=failed_workers,
                 budget_headroom_usd=budget_headroom_usd,
                 scaffolded=scaffolded,
+                artifacts=ordered_artifacts,
             ):
                 yield event
             return
@@ -1023,6 +1135,7 @@ async def _run_deep_research(
     fallback_model_id: str | None = None,
     fallback_display_label: str | None = None,
     is_retryable: IsRetryable = is_retryable_provider_error,
+    verifier_make_stream_for: StreamFactory | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Clarify? → plan → (approve) → admit → parallel fan-out → (verify) → synthesis.
 
@@ -1057,6 +1170,7 @@ async def _run_deep_research(
             fallback_model_id=fallback_model_id,
             fallback_display_label=fallback_display_label,
             is_retryable=is_retryable,
+            verifier_make_stream_for=verifier_make_stream_for,
         ):
             yield event
         return
@@ -1091,10 +1205,13 @@ async def _run_deep_research(
             yield event
         return
 
-    # Fold clarifications into the request text for planner + workers (DATA only).
-    effective_user_text = clarify.augment_user_text_with_answers(
-        user_text, list(clarify_answers or [])
-    )
+    # Fold clarifications as SEPARATE DATA — never into the DEEP_RESEARCH
+    # scaffold that ``decompose`` pipe-splits. Strip the CLARIFY: marker first
+    # so leftover marker text cannot land in the last sub-question.
+    plan_text = clarify.strip_clarify_marker(user_text)
+    answers = clarify.clean_answers(clarify_answers)
+    # Context for planner / workers / synthesis: plan text + clarification DATA.
+    effective_user_text = clarify.with_clarifications(plan_text, answers)
 
     planner_usage = UsageUpdate()
     max_workers = settings.agentic_max_workers
@@ -1105,28 +1222,28 @@ async def _run_deep_research(
             :max_workers
         ]
         if not sub_questions:
-            sub_questions = [effective_user_text]
+            sub_questions = [plan_text]
     elif (
         scaffolded
-        or effective_user_text.startswith(planner.DEEP_RESEARCH_PREFIX)
+        or plan_text.startswith(planner.DEEP_RESEARCH_PREFIX)
         or plan_approved is False
     ):
         # Deterministic decomposition: the fake provider, an explicit
         # `DEEP_RESEARCH:` opt-in, or a decline (sub-questions go unused — no
-        # fan-out — so skip the model planner call entirely).
-        sub_questions = planner.decompose(effective_user_text, max_workers=max_workers)
+        # fan-out — so skip the model planner call entirely). Uses plan_text
+        # only so clarifications never enter the pipe-split.
+        sub_questions = planner.decompose(plan_text, max_workers=max_workers)
     else:
         # Real-provider planner: a bounded model pass decomposes the prompt into
         # sub-questions so a plain request fans out without the user typing the
-        # `DEEP_RESEARCH:` marker. Degrades to a single sub-question (the whole
-        # request) when the planner yields nothing.
+        # `DEEP_RESEARCH:` marker. Clarifications ride as trailing DATA.
         plan_reply, planner_usage = await _collect_answer(
             make_stream_for,
             settings,
             planner.build_planner_prompt(effective_user_text, max_workers=max_workers),
         )
         sub_questions = planner.parse_plan(
-            plan_reply, max_workers=max_workers, fallback=effective_user_text
+            plan_reply, max_workers=max_workers, fallback=plan_text
         )
     cap = settings.agentic_run_budget_usd
     estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
@@ -1152,6 +1269,7 @@ async def _run_deep_research(
                 estimate_usd=estimate,
                 cap_usd=cap,
                 skip_started=True,
+                clarifications=answers,
             ):
                 yield event
             return
@@ -1242,9 +1360,6 @@ async def _run_deep_research(
         for index, sub_question in enumerate(sub_questions)
     ]
     results: dict[str, WorkerOutput] = {}
-    # In-turn structured artifact refs (plan 02) — not a DB table; handed to the
-    # aggregator as schema-shaped DATA rather than raw telephone stuffing.
-    worker_artifacts: list[aggregate.WorkerArtifact] = []
     usages: dict[str, UsageUpdate] = {}
     costs: dict[str, float] = {}
     failed_workers = 0
@@ -1329,7 +1444,12 @@ async def _run_deep_research(
                         SubagentStarted(subagent_id=subagent_id, label=label, role="worker")
                     )
                     worker_started = True
-                    prompt = planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
+                    prompt = clarify.with_clarifications(
+                        planner.worker_prompt(
+                            index, sub_question, scaffolded=scaffolded
+                        ),
+                        answers,
+                    )
                     try:
                         paused = await _consume(
                             make_stream_for(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS)
@@ -1429,9 +1549,6 @@ async def _run_deep_research(
                             source_ids=tuple(source_ids),
                         )
                         results[subagent_id] = output
-                        worker_artifacts.append(
-                            aggregate.to_artifact(output, index=index + 1)
-                        )
                         usages[subagent_id] = usage
                         costs[subagent_id] = cost
         except asyncio.CancelledError:
@@ -1563,6 +1680,7 @@ async def _run_deep_research(
             actual_cost_usd=actual_cost,
             paused_worker_index=worker_pause.index,
             paused_sub_question=worker_pause.sub_question,
+            partial_answer=worker_pause.partial_answer,
         )
         yield AwaitingApproval(
             tool_call_id=worker_pause.tool_call_id,
@@ -1572,11 +1690,9 @@ async def _run_deep_research(
         return
 
     ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
-    # Prefer ordered artifacts rebuilt from ordered outputs (stable index) over
-    # completion-order appends collected mid-flight.
+    # In-turn structured artifact refs (plan 02) — handed to the aggregator as
+    # schema-shaped DATA rather than raw telephone stuffing.
     ordered_artifacts = aggregate.build_artifacts(ordered_outputs)
-    _ = worker_artifacts  # in-turn state retained for debugging / future persistence
-    _ = ordered_artifacts
     # Fold the (real-provider) planner pass into the run totals so its tokens are
     # billed honestly. `planner_usage` is the zero default on the scaffolded /
     # explicit-marker path, so the fake-provider totals are unchanged.
@@ -1588,20 +1704,17 @@ async def _run_deep_research(
     completed_count = len(ordered_outputs)
 
     # BE-014 residual: before starting the aggregator, refuse a model synthesis
-    # call when the ledger already exceeds the cap or the next phase estimate
-    # cannot fit. Degrade to deterministic (zero-token) synthesis instead.
-    # When the verifier is on, reserve its N judge samples in the same gate.
+    # call when the ledger already exceeds the cap or the aggregator phase
+    # estimate cannot fit. Degrade to deterministic (zero-token) synthesis.
+    # Verifier funding is a SEPARATE gate after the aggregator draft exists —
+    # do not fold N judge slots into this check.
     expected_agg = budget._expected_subagent_usage(settings)
-    per_phase = (
+    aggregator_estimate = (
         cost_for_usage(expected_agg)
         * settings.agentic_reasoning_token_multiplier
     )
-    verifier_slots = (
-        max(1, settings.agentic_verifier_n) if settings.agentic_verifier else 0
-    )
-    next_phase_estimate = per_phase * (1 + verifier_slots)
     cannot_fund_aggregator = budget.exceeds_cap(
-        actual_usd=worker_total_cost + next_phase_estimate,
+        actual_usd=worker_total_cost + aggregator_estimate,
         cap_usd=cap,
         headroom_usd=budget_headroom_usd,
     ) or budget.exceeds_cap(
@@ -1611,6 +1724,8 @@ async def _run_deep_research(
     )
     if cannot_fund_aggregator:
         budget_halted = True
+
+    judge_factory = verifier_make_stream_for or make_stream_for
 
     with invoke_agent_span(
         subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
@@ -1624,6 +1739,7 @@ async def _run_deep_research(
                 planned=len(sub_questions),
                 budget_halted=budget_halted,
                 failed=failed_workers,
+                clarifications=answers,
             )
             verifier_result: verifier.VerifyResult | None = None
             verifier_outcome: Literal["succeeded", "failed"] = "succeeded"
@@ -1632,17 +1748,24 @@ async def _run_deep_research(
                     verifier_result = await _run_verifier_if_enabled(
                         settings=settings,
                         draft=synthesis,
-                        make_stream_for=make_stream_for,
+                        make_stream_for=judge_factory,
                         user_text=effective_user_text,
                         outputs=ordered_outputs,
                         scaffolded=scaffolded,
+                        cost_for_usage=cost_for_usage,
+                        ledger_usd=worker_total_cost,
+                        cap_usd=cap,
+                        budget_headroom_usd=budget_headroom_usd,
                     )
                 except Exception:
                     _log.exception("agentic.verifier_failed")
                     verifier_outcome = "failed"
                     verifier_result = None
-                if verifier_result is not None:
+                if verifier_result is not None and verifier_result.samples:
                     synthesis = verifier_result.answer
+            ran_verifier = (
+                verifier_result is not None and bool(verifier_result.samples)
+            )
             async for event in _finalize_synthesis(
                 synthesis=synthesis,
                 worker_usages=ordered_usages,
@@ -1653,9 +1776,9 @@ async def _run_deep_research(
                 failed_worker_count=failed_workers,
                 planned_workers=len(sub_questions),
                 completed_workers=completed_count,
-                verifier_result=verifier_result,
+                verifier_result=verifier_result if ran_verifier else None,
                 verifier_outcome=verifier_outcome,
-                emit_verifier_bracket=settings.agentic_verifier,
+                emit_verifier_bracket=ran_verifier or verifier_outcome == "failed",
             ):
                 yield event
         else:
@@ -1663,6 +1786,7 @@ async def _run_deep_research(
             # worker artifact refs (untrusted DATA envelope).
             async for event in _finalize_synthesis_streamed(
                 make_stream_for=make_stream_for,
+                verifier_make_stream_for=judge_factory,
                 settings=settings,
                 user_text=effective_user_text,
                 outputs=ordered_outputs,
@@ -1675,6 +1799,7 @@ async def _run_deep_research(
                 failed=failed_workers,
                 budget_headroom_usd=budget_headroom_usd,
                 scaffolded=scaffolded,
+                artifacts=ordered_artifacts,
             ):
                 yield event
 
@@ -1704,6 +1829,7 @@ async def run_orchestrator(
     fallback_model_id: str | None = None,
     fallback_display_label: str | None = None,
     is_retryable: IsRetryable = is_retryable_provider_error,
+    verifier_make_stream_for: StreamFactory | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive an agentic turn, yielding the handler's `ProviderEvent` union.
 
@@ -1724,6 +1850,9 @@ async def run_orchestrator(
       `plan_approved` is True (BE-039); ignored otherwise.
     - `clarify_answered` / `clarify_answers` — clarify-before-plan HITL resume
       (None = fresh; True + answers = proceed to plan; False = decline).
+    - `verifier_make_stream_for` — fresh-context factory for the verifier judge
+      (empty history / no memory / no web_search). Falls back to
+      ``make_stream_for`` when omitted (tests).
     - `fallback_make_stream_for` / `fallback_cost_for_usage` — per-worker
       fallback route + pricer when the primary binding fails retryably (FE-009).
     - `fallback_provider_id` / `fallback_model_id` / `fallback_display_label` —
@@ -1750,6 +1879,7 @@ async def run_orchestrator(
             fallback_model_id=fallback_model_id,
             fallback_display_label=fallback_display_label,
             is_retryable=is_retryable,
+            verifier_make_stream_for=verifier_make_stream_for,
         ):
             yield event
     else:

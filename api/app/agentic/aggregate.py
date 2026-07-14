@@ -145,16 +145,24 @@ def artifact_envelope(artifacts: list[WorkerArtifact], *, user_text: str) -> dic
     }
 
 
-def build_synthesis_prompt(user_text: str, outputs: list[WorkerOutput]) -> str:
+def build_synthesis_prompt(
+    user_text: str,
+    outputs: list[WorkerOutput],
+    *,
+    artifacts: list[WorkerArtifact] | None = None,
+) -> str:
     """Build the real-provider synthesis prompt from structured worker artifacts.
 
     Policy (`_SYNTHESIS_INSTRUCTION`) is placed first as an instruction block.
     Worker findings are then embedded as short artifact refs plus a single
     schema-tagged JSON DATA envelope (escaped, length-capped). The orchestrator
     runs a bounded agent loop over the result to stream a model-written answer.
+
+    ``artifacts`` — when provided (from the orchestrator's ordered in-turn refs),
+    used as-is instead of rebuilding from ``outputs``.
     """
-    artifacts = build_artifacts(outputs)
-    envelope = artifact_envelope(artifacts, user_text=user_text)
+    arts = artifacts if artifacts is not None else build_artifacts(outputs)
+    envelope = artifact_envelope(arts, user_text=user_text)
     # Ensure the JSON itself cannot smuggle delimiter lookalikes.
     envelope_json = _escape_data(
         json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
@@ -170,10 +178,10 @@ def build_synthesis_prompt(user_text: str, outputs: list[WorkerOutput]) -> str:
         "",
         "=== ARTIFACT REFS (short; untrusted) ===",
     ]
-    if not artifacts:
+    if not arts:
         lines.append("(none)")
     else:
-        for art in artifacts:
+        for art in arts:
             src = ",".join(art.source_ids) if art.source_ids else "-"
             lines.append(
                 f"- {art.id}: sub_question={art.sub_question[:120]!r} "
@@ -197,6 +205,7 @@ def synthesize(
     planned: int | None = None,
     budget_halted: bool = False,
     failed: int = 0,
+    clarifications: list[str] | None = None,
 ) -> str:
     """Deterministically merge worker outputs into one synthesized answer.
 
@@ -208,7 +217,8 @@ def synthesize(
     was cut short by the per-run budget (`budget_halted`), the synthesis is
     LABELED as a partial answer ("answered N of M planned steps") rather than an
     error — the graceful-degrade path (FR-26g). With `budget_halted=False` (the
-    default) the output is byte-for-byte the historical synthesis.
+    default) the output is byte-for-byte the historical synthesis (modulo an
+    optional clarifications footer when answers were collected).
     """
     completed = len(outputs)
     total = planned if planned is not None else completed
@@ -220,6 +230,11 @@ def synthesize(
             answer = output.answer.strip() or "(no answer)"
             lines.append(f"{index}. {output.sub_question}: {answer}")
         base = "\n".join(lines)
+    cleaned = [a.strip() for a in (clarifications or []) if isinstance(a, str) and a.strip()]
+    if cleaned:
+        base += "\n\nClarifications applied:\n" + "\n".join(
+            f"- {a}" for a in cleaned
+        )
     if failed > 0:
         base += (
             f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"

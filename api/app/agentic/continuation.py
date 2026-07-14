@@ -58,6 +58,8 @@ class AgenticContinuation:
     actual_cost_usd: float = 0.0
     paused_worker_index: int | None = None
     paused_sub_question: str | None = None
+    # Pre-tool worker text accumulated before the HITL pause (BE-005).
+    partial_answer: str = ""
     version: int = 1
 
 
@@ -112,6 +114,7 @@ def serialize_continuation(state: AgenticContinuation) -> dict[str, Any]:
         "actualCostUsd": state.actual_cost_usd,
         "pausedWorkerIndex": state.paused_worker_index,
         "pausedSubQuestion": state.paused_sub_question,
+        "partialAnswer": state.partial_answer,
     }
 
 
@@ -161,6 +164,7 @@ def parse_continuation(raw: object) -> AgenticContinuation | None:
     idx_raw = raw.get("pausedWorkerIndex", raw.get("paused_worker_index"))
     paused_index = int(idx_raw) if isinstance(idx_raw, int) else None
     paused_sq = raw.get("pausedSubQuestion") or raw.get("paused_sub_question")
+    partial_raw = raw.get("partialAnswer") or raw.get("partial_answer") or ""
     return AgenticContinuation(
         version=int(raw.get("version") or 1),
         phase=phase,
@@ -181,6 +185,7 @@ def parse_continuation(raw: object) -> AgenticContinuation | None:
         ),
         paused_worker_index=paused_index,
         paused_sub_question=str(paused_sq) if isinstance(paused_sq, str) else None,
+        partial_answer=str(partial_raw) if partial_raw is not None else "",
     )
 
 

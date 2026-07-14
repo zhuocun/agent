@@ -2818,6 +2818,15 @@ async def _prepare_resume_tool(
             input=None,
             is_plan=True,
             approved_plan=approved_plan,
+            clarify_answers=(
+                tuple(
+                    str(item).strip()
+                    for item in plan_input["clarifications"]
+                    if isinstance(item, (str, int, float)) and str(item).strip()
+                )[:3]
+                if isinstance(plan_input.get("clarifications"), list)
+                else None
+            ),
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed

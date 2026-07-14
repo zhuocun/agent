@@ -104,6 +104,7 @@ import hashlib
 from collections.abc import AsyncIterator
 
 from app.config import get_settings
+from app.agentic.clarify import CLARIFICATIONS_HEADER, parse_clarification_answers
 from app.errors import AppError, ErrorEnvelope
 from app.providers.protocol import (
     AnswerDelta,
@@ -243,6 +244,15 @@ class FakeProvider:
         if user_text.startswith("DEEP_RESEARCH_WORKER:"):
             body = user_text[len("DEEP_RESEARCH_WORKER:") :]
             worker_index, _, sub_question = body.partition(":")
+            # Clarifications ride as a trailing DATA section (see clarify.py);
+            # keep the finding keyed on the clean sub-question, and echo answers
+            # so tests can assert they reached the worker prompt.
+            clarify_note = ""
+            if CLARIFICATIONS_HEADER in sub_question:
+                answers = parse_clarification_answers(sub_question)
+                sub_question = sub_question.split(CLARIFICATIONS_HEADER, 1)[0].strip()
+                if answers:
+                    clarify_note = " Clarified: " + "; ".join(answers)
             if "FAIL_WORKER" in sub_question:
                 raise RuntimeError("simulated worker failure")
             if sub_question.startswith("RETRYABLE_WORKER:") and model_id != "fake-fallback":
@@ -312,7 +322,10 @@ class FakeProvider:
                 )
             await asyncio.sleep(self._delay)
             yield AnswerDelta(
-                text=f"Worker {worker_index} finding on {sub_question}: result ready."
+                text=(
+                    f"Worker {worker_index} finding on {sub_question}: "
+                    f"result ready.{clarify_note}"
+                )
             )
             usage = UsageUpdate(
                 input_tokens=50,

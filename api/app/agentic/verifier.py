@@ -245,6 +245,27 @@ def compose_verified_answer(draft: str, *, verdict: Verdict, report: str) -> str
     )
 
 
+# Marker the streamed path emits when a fail verdict replaces an already-shown
+# draft. FE may key on this string to prefer the corrected body.
+VERIFIER_REPLACEMENT_MARKER = (
+    "[Verification: fail — corrected synthesis replaces the draft above]"
+)
+
+
+def streamed_verifier_delta(draft: str, verified: str) -> str:
+    """Delta to append after a streamed draft when verification mutates the text.
+
+    Pass notes start with ``draft`` → return the suffix only.
+    Fail rewrites do not start with ``draft`` → emit a clear replacement marker
+    plus the corrected synthesis (never silently concatenate rewrite onto draft).
+    """
+    if verified == draft:
+        return ""
+    if verified.startswith(draft):
+        return verified[len(draft) :]
+    return f"\n\n{VERIFIER_REPLACEMENT_MARKER}\n\n{verified}"
+
+
 async def _collect_judge_sample(
     make_stream_for: StreamFactory,
     settings: Settings,
@@ -277,11 +298,14 @@ async def run_verifier(
     draft: str,
     outputs: list[WorkerOutput],
     scaffolded: bool = False,
+    can_afford_next_sample: Callable[[UsageUpdate], bool] | None = None,
 ) -> VerifyResult:
     """Run the fresh-context judge (N independent samples when configured).
 
     Callers must gate on ``settings.agentic_verifier`` — this function always
-    performs provider work.
+    performs provider work. ``can_afford_next_sample(usage_so_far)`` is checked
+    before each sample; when it returns False, sampling stops early and majority
+    is taken over the samples collected so far (empty → fail-closed compose).
     """
     n = max(1, settings.agentic_verifier_n)
     prompt = build_verifier_prompt(
@@ -293,9 +317,21 @@ async def run_verifier(
     samples: list[JudgeSample] = []
     total_usage = UsageUpdate()
     for _ in range(n):
+        if can_afford_next_sample is not None and not can_afford_next_sample(
+            total_usage
+        ):
+            break
         raw, usage = await _collect_judge_sample(make_stream_for, settings, prompt)
         samples.append(parse_judge_output(raw))
         total_usage = _sum_usage(total_usage, usage)
+    if not samples:
+        # Budget blocked every sample — keep the draft, no Verification claim.
+        return VerifyResult(
+            answer=draft,
+            usage=total_usage,
+            verdict="fail",
+            samples=(),
+        )
     verdict = majority_verdict(samples)
     report = select_report(samples, verdict)
     answer = compose_verified_answer(draft, verdict=verdict, report=report)

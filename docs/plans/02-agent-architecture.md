@@ -365,14 +365,20 @@ status; this section owns **target** decisions and **deferred hard gaps**.
     Public per-worker identity via `PublicAttribution` on `PublicSubagentPart`.
 13. **Worker HITL resume (BE-005)** — **shipped**: tool `awaiting_approval`
     inside a worker suspends fan-out after siblings finish (wait policy),
-    persists continuation on the pending tool input (`_agenticContinuation`),
-    and a later `toolApproval` continues that subagent with validated tool
-    feedback — not a full re-plan. Reuses the shipped `toolApproval` route +
+    persists continuation (including `partialAnswer`) on the pending tool
+    input (`_agenticContinuation`), and a later `toolApproval` continues that
+    subagent with validated tool feedback — not a full re-plan. Workers may
+    pause on the approval-gated stub `calendar_create_event` (allowlisted;
+    `prod_safe=False` so real providers do not advertise it) and on
+    provider-emitted pauses. Reuses the shipped `toolApproval` route +
     server-issued call ids.
-14. **Approval idempotency (BE-007)** — **shipped**: approve/deny
-    claim/settles on the paused assistant row before the post-approval model
-    stream; retries reuse the stored `tool_result` and do not re-run the side
-    effect.
+14. **Approval idempotency (BE-007)** — **shipped**: approve/deny **CAS-claims**
+    the pending tool_call (pending→approved/rejected + `_approvalClaimId`) and
+    **commits before execute**, then settles a `tool_result` on the paused row.
+    Concurrent double-approve is serialized with `SELECT … FOR UPDATE`; only the
+    winner executes. Retries reuse the stored result; claimed-without-result
+    (crash/stop/disconnect between claim and settle) fails closed and does
+    **not** re-run the side effect.
 
 ---
 

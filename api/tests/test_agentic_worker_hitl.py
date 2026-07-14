@@ -11,7 +11,6 @@ import json
 import os
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from uuid import UUID
 
 import pytest

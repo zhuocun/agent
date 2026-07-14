@@ -738,6 +738,8 @@ async def stream_and_persist(
     # Plan-approval resume also carries prior clarifications (if any) so a
     # clarify → plan-approval dual HITL keeps answers across the second pause.
     clarify_resume = resume_seed is not None and resume_seed.is_clarify
+    clarify_answered: bool | None
+    clarify_answers: list[str] | None
     if plan_resume and resume_seed is not None:
         # Past the clarify gate; re-attach any clarifications stored on the plan
         # tool input so workers/synthesis still see them.

@@ -446,11 +446,9 @@ async def test_verifier_n_issues_n_provider_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Integration: AGENTIC_VERIFIER_N>1 runs N independent judge samples."""
-    from collections.abc import AsyncIterator
 
     from app.agentic.aggregate import WorkerOutput
     from app.agentic.verifier import run_verifier
-    from app.config import Settings
     from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
     from app.tools.agent_loop import ToolResult
 
@@ -463,7 +461,11 @@ async def test_verifier_n_issues_n_provider_calls(
     calls = {"n": 0}
 
     def make_stream_for(prompt: str, *, allowed_tools: object = None):
-        assert "DEEP_RESEARCH_VERIFIER:" in prompt or "VERDICT:" in prompt or "independent verifier" in prompt
+        assert (
+            "DEEP_RESEARCH_VERIFIER:" in prompt
+            or "VERDICT:" in prompt
+            or "independent verifier" in prompt
+        )
 
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
@@ -560,7 +562,7 @@ async def test_verify_after_aggregator_uses_empty_tool_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Quiet-collect before verify must not advertise turn tools (HITL swallow)."""
-    from collections.abc import AsyncIterator, Collection
+    from collections.abc import Collection
 
     from app.agentic.aggregate import WorkerOutput
     from app.agentic.orchestrator import _finalize_synthesis_streamed
@@ -646,17 +648,15 @@ async def test_verify_after_preserves_awaiting_approval_if_emitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Defense: if quiet-collect still sees AwaitingApproval, yield and stop."""
-    from collections.abc import AsyncIterator, Collection
+    from collections.abc import Collection
 
     from app.agentic.aggregate import WorkerOutput
     from app.agentic.orchestrator import _finalize_synthesis_streamed
     from app.providers.protocol import (
         AnswerDelta,
         AwaitingApproval,
-        Complete,
         ProviderEvent,
         SubagentDone,
-        UsageUpdate,
     )
     from app.tools.agent_loop import ToolResult
 

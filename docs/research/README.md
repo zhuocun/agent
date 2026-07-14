@@ -29,6 +29,15 @@ The pass that seeded [`docs/ux-best-practices/`](../ux-best-practices/README.md)
 
 - [ux-best-practices/README.md](./ux-best-practices/README.md) — onboarding, guest→signup, BYOK, settings, billing, limit-states findings (R2).
 
+### 2026-07-14 — AI agent architecture
+
+Industry patterns + Olune as-built audit grounding the normative design at
+[`docs/plans/02-agent-architecture.md`](../plans/02-agent-architecture.md).
+
+- [Pass index](./2026-07-14/README.md)
+- [agent-architecture-industry.md](./2026-07-14/agent-architecture-industry.md) — mid-2026 runtime patterns, bounds, HITL, cost, OTel, anti-patterns.
+- [agent-architecture-as-built.md](./2026-07-14/agent-architecture-as-built.md) — shipped topology, invariants, and gaps vs plan 01.
+
 ## Related canon
 
 - [Docs index](../README.md)

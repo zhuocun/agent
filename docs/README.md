@@ -22,6 +22,7 @@ The authoritative implementation contracts.
 
 - [00 — Backend Minimal Plan](./plans/00-backend-minimal.md)
 - [01 — Agentic Mode Plan](./plans/01-agentic-mode.md)
+- [02 — Agent Architecture (normative)](./plans/02-agent-architecture.md)
 
 ## Design — [`design/`](./design/README.md)
 
@@ -42,4 +43,4 @@ Design-principle canon plus brand assets.
 
 ## Research — [`research/`](./research/README.md)
 
-- [Research index](./research/README.md) — 2026-05-27 PRD review, 2026-07-05 UX best-practices pass, and R2 findings.
+- [Research index](./research/README.md) — 2026-05-27 PRD review, 2026-07-05 UX best-practices pass, R2 findings, and 2026-07-14 agent architecture.

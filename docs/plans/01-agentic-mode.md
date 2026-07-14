@@ -197,7 +197,7 @@ Target architecture and gap ownership: [`02-agent-architecture.md`](./02-agent-a
 | High-cost composer hint (FR-26f) | **NOT BUILT** | Toggle description only; no explicit cost warning |
 | Share-view subagent rendering | **SHIPPED (partial)** | `SubagentPanel` on public shares; `PublicSubagentPart` keeps cost-stripped `PublicAttribution` when share projection is current |
 | PRD 08 partial-synthesis warning chip | **PARTIAL** | Wire may carry partial flags on final `run_cost`; dedicated FE warning chip still open |
-| Worker tool-HITL resume / approval idempotency | **NOT BUILT (hard)** | Documented as deferred in plan 02 open questions |
+| Worker tool-HITL resume / approval idempotency | **SHIPPED** | BE-005 wait-siblings + continuation resume; BE-007 claim/settle on paused row |
 
 ## Open questions / decisions for the user
 

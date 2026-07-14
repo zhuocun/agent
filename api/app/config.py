@@ -404,6 +404,9 @@ class Settings(BaseSettings):
     # requested; with N=1 there is no reserved final pass. Guarantees the loop
     # terminates even if the model never stops requesting tools.
     tool_max_rounds: int = Field(default=4, alias="TOOL_MAX_ROUNDS")
+    # Hard upper bound on tool executions per provider round (BE-012). Excess
+    # calls become failed ToolResults without executing; the model can recover.
+    tool_max_calls_per_round: int = Field(default=8, alias="TOOL_MAX_CALLS_PER_ROUND")
     # Per-tool execution timeout (seconds). A tool whose executor exceeds this is
     # cancelled and reported as a failed result rather than hanging the turn.
     tool_timeout_seconds: float = Field(default=10.0, alias="TOOL_TIMEOUT_SECONDS")

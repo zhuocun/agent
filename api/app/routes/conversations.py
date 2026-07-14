@@ -30,7 +30,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
-from app.agentic import PLAN_APPROVAL_CALL_ID, PLAN_APPROVAL_TOOL_NAME
+from app.agentic import (
+    PLAN_APPROVAL_TOOL_NAME,
+    hash_plan,
+    is_plan_approval_call_id,
+)
 from app.agentic.budget import compose_headroom
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
@@ -2736,11 +2740,12 @@ async def _prepare_resume_tool(
     # Plan-approval HITL resume (agentic, T6). The orchestrator pauses on a
     # PSEUDO `agentic_plan_approval` tool that is NOT in `TOOL_REGISTRY`, so it
     # must bypass the registry/`needs_approval` gate and the tool-input
-    # allowlist below. We re-run the orchestrator with `plan_approved` derived
-    # from the decision (the handler reads `is_plan` and skips seeding a
-    # `tool_result`), re-decomposing the ORIGINAL prompt — so `provider_user_text`
-    # is the original user turn, not the approve/deny continuation instruction.
-    if decision.tool_call_id == PLAN_APPROVAL_CALL_ID and tool_name == PLAN_APPROVAL_TOOL_NAME:
+    # allowlist below. Approve reuses the immutable plan stored on the pending
+    # tool input (BE-039) — never re-decomposes. Call id must be a server-minted
+    # plan-approval id bound to this pending row (BE-040 / SAF-010).
+    if tool_name == PLAN_APPROVAL_TOOL_NAME and is_plan_approval_call_id(
+        decision.tool_call_id
+    ):
         user_message_id = last_assistant.responds_to_message_id
         if user_message_id is None:
             last_user = await messages_repo.get_last_user_message(db, conversation_id)
@@ -2761,6 +2766,25 @@ async def _prepare_resume_tool(
         await conversations_repo.touch_updated_at(db, conversation_id)
         await db.commit()
         plan_label = pending.get("label")
+        raw_input = pending.get("input")
+        plan_input = raw_input if isinstance(raw_input, dict) else {}
+        raw_plan = plan_input.get("plan")
+        approved_plan: tuple[str, ...] | None = None
+        if isinstance(raw_plan, list):
+            approved_plan = tuple(
+                str(item) for item in raw_plan if isinstance(item, str) and item.strip()
+            )
+        stored_hash = plan_input.get("planHash")
+        if (
+            isinstance(stored_hash, str)
+            and stored_hash
+            and approved_plan is not None
+            and hash_plan(list(approved_plan)) != stored_hash
+        ):
+            raise _invalid_input(
+                "INVALID_INPUT",
+                "Persisted plan hash does not match the approved plan.",
+            )
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
@@ -2768,6 +2792,7 @@ async def _prepare_resume_tool(
             decision=decision.decision,
             input=None,
             is_plan=True,
+            approved_plan=approved_plan,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed

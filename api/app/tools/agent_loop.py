@@ -331,7 +331,27 @@ async def run_agent_loop(
 
         round_results: list[ToolResult] = []
         round_reasoning = "".join(round_reasoning_parts) or None
+        max_calls = max(1, settings.tool_max_calls_per_round)
         for i, call in enumerate(unresolved):
+            # BE-012: reject excess calls in this round as failed results.
+            if i >= max_calls:
+                exec_result = ToolExecutionResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    status="failed",
+                    output={},
+                    error=(
+                        f"Exceeded max tool calls per round ({max_calls}); "
+                        "call was not executed."
+                    ),
+                    approval_state="not_required",
+                )
+                result_event = _to_result_event(call=call, exec_result=exec_result)
+                if i == 0 and round_reasoning is not None:
+                    result_event = replace(result_event, round_reasoning=round_reasoning)
+                yield result_event
+                round_results.append(result_event)
+                continue
             spec = TOOL_REGISTRY.get(call.name)
             not_allowed = allowed is not None and call.name not in allowed
             if spec is None or not_allowed:

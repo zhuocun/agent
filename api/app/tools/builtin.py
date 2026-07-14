@@ -31,6 +31,8 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import jsonschema
+
 from app.config import get_settings
 from app.tools.protocol import (
     ToolApprovalState,
@@ -316,8 +318,10 @@ async def execute_tool(
     Unknown tool → failed result (never raises). Approval-gated tools require
     ``approval_state == "approved"`` at this boundary (defense in depth — the
     agent loop also gates); otherwise returns a failed result and does not
-    invoke the executor. Ordinary executor exceptions become failed results;
-    ``CancelledError`` / ``asyncio.CancelledError`` always propagate.
+    invoke the executor. Arguments are validated against the tool's advertised
+    JSON Schema before dispatch (BE-009). Ordinary executor exceptions become
+    failed results; ``CancelledError`` / ``asyncio.CancelledError`` always
+    propagate.
 
     ``timeout_seconds`` overrides the process settings when the agent loop
     passes its configured timeout explicitly.
@@ -334,6 +338,24 @@ async def execute_tool(
                 "pending" if call.approval_state != "rejected" else "rejected"
             ),
         )
+    # Central JSON Schema gate (BE-009) — before any executor runs.
+    if spec.schema:
+        try:
+            jsonschema.validate(instance=call.input or {}, schema=spec.schema)
+        except jsonschema.ValidationError as exc:
+            return _failed_result(
+                call,
+                name=spec.name,
+                error=f"Invalid tool input: {exc.message}",
+                approval_state=call.approval_state,
+            )
+        except jsonschema.SchemaError:
+            return _failed_result(
+                call,
+                name=spec.name,
+                error="Tool schema is invalid.",
+                approval_state=call.approval_state,
+            )
     timeout = (
         timeout_seconds
         if timeout_seconds is not None

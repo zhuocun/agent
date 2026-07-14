@@ -207,6 +207,9 @@ class ResumeToolSeed:
     # orchestrator with `plan_approved=(decision == "approve")` instead of
     # emitting a seeded `tool_result`.
     is_plan: bool = False
+    # Immutable sub-questions from the paused plan tool input (BE-039). Only set
+    # when ``is_plan`` and the pending part carried a ``plan`` list.
+    approved_plan: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -688,6 +691,11 @@ async def stream_and_persist(
     plan_approved: bool | None = (
         (resume_seed.decision == "approve") if plan_resume and resume_seed is not None else None
     )
+    approved_plan: list[str] | None = (
+        list(resume_seed.approved_plan)
+        if plan_resume and resume_seed is not None and resume_seed.approved_plan is not None
+        else None
+    )
     # Per-subagent accumulation for an agentic turn (T3). Ordered by first-seen
     # `SubagentStarted` so the persisted transcript groups subagents in emission
     # order. Empty (and unused) on every non-agentic turn.
@@ -956,11 +964,25 @@ async def stream_and_persist(
                 estimate_cost=_estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,
                 plan_approved=plan_approved,
+                approved_plan=approved_plan,
                 fallback_make_stream_for=(
                     _agentic_fallback_make_stream if fallback_binding is not None else None
                 ),
                 fallback_cost_for_usage=(
                     _fallback_cost_for_usage if fallback_binding is not None else None
+                ),
+                fallback_provider_id=(
+                    (fallback_provider_id or fallback_binding.provider_id)
+                    if fallback_binding is not None
+                    else None
+                ),
+                fallback_model_id=(
+                    fallback_binding.model_id if fallback_binding is not None else None
+                ),
+                fallback_display_label=(
+                    (fallback_binding.model_label or fallback_binding.model_id)
+                    if fallback_binding is not None
+                    else None
                 ),
                 is_retryable=_is_retryable,
             )
@@ -1063,6 +1085,32 @@ async def stream_and_persist(
         else:
             answer_buf.append(EMPTY_REPLY_FALLBACK)
         return True, target_subagent
+
+    def _agentic_sum_cost_usd() -> float:
+        """Monetary run total = sum of per-subagent receipts (BE-022 / BE-028).
+
+        Prefer each accumulator's ``cost_usd`` from ``SubagentDone``. For an
+        in-flight subagent that reported usage but not yet Done (stop drain),
+        price the latest usage against the binding that served it.
+        """
+        total = 0.0
+        for acc in agentic_subagents.values():
+            if acc.cost_usd is not None:
+                total += acc.cost_usd
+                continue
+            has_tokens = bool(
+                acc.usage.input_tokens
+                or acc.usage.output_tokens
+                or acc.usage.reasoning_tokens
+                or acc.usage.cached_input_tokens
+            )
+            if not has_tokens:
+                continue
+            if acc.substitution is not None and fallback_binding is not None:
+                total += _fallback_cost_for_usage(acc.usage)
+            else:
+                total += _cost_for_usage(acc.usage)
+        return total
 
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
@@ -1248,12 +1296,97 @@ async def stream_and_persist(
     def _apply_event(ev: ProviderEvent) -> None:
         """Fold a queue event into accumulators (no yields).
 
-        Used to drain any remaining UsageUpdate / Complete events after
-        cancelling the pump on disconnect, so `final_usage` reflects the
-        latest cumulative usage even on stopped turns.
+        Used to drain any remaining events after cancelling the pump on
+        disconnect/stop, so persisted parts + usage reflect work already queued
+        (BE-027). Agentic drains use the same subagent-aware fold as the live
+        path so queued partials are not dropped into flat buffers.
         """
         nonlocal final_usage, first_answer_ms, sub_code, sub_provider, sub_model, sub_label
-        nonlocal latest_status, search_items, saw_sources_event
+        nonlocal latest_status, search_items, saw_sources_event, agentic_run_summary
+
+        if agentic_active:
+            if isinstance(ev, SubagentStarted):
+                if ev.subagent_id not in agentic_subagents:
+                    agentic_subagents[ev.subagent_id] = _SubagentAccumulator(
+                        label=ev.label or ev.subagent_id,
+                        role=ev.role or "subagent",
+                    )
+                    agentic_order.append(ev.subagent_id)
+                return
+            if isinstance(ev, SubagentDone):
+                done_acc = agentic_subagents.get(ev.subagent_id)
+                if done_acc is None:
+                    done_acc = _SubagentAccumulator(
+                        label=ev.label or ev.subagent_id,
+                        role=ev.role or "subagent",
+                    )
+                    agentic_subagents[ev.subagent_id] = done_acc
+                    agentic_order.append(ev.subagent_id)
+                done_acc.cost_usd = ev.cost_usd
+                done_acc.usage = ev.usage
+                done_acc.outcome = ev.outcome
+                done_acc.substitution = ev.substitution
+                done_acc.substituted_provider = ev.substituted_provider
+                done_acc.substituted_model = ev.substituted_model
+                done_acc.substituted_display_label = ev.substituted_display_label
+                return
+            if isinstance(ev, RunCost):
+                if ev.partial or ev.budget_halted or ev.failed_worker_count > 0:
+                    agentic_run_summary = AgenticRunSummaryPart(
+                        outcome="partial",
+                        budget_halted=ev.budget_halted,
+                        failed_workers=ev.failed_worker_count,
+                    )
+                return
+            sid = getattr(ev, "subagent_id", None)
+            if isinstance(ev, ReasoningDelta) and sid is not None:
+                _sub(sid).reasoning.append(ev.text)
+                return
+            if isinstance(ev, AnswerDelta) and sid is not None:
+                if first_answer_ms is None:
+                    first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
+                _sub(sid).answer.append(ev.text)
+                return
+            if isinstance(ev, StatusUpdate) and sid is not None:
+                _sub(sid).latest_status = (ev.label, ev.state)
+                return
+            if isinstance(ev, Sources) and sid is not None:
+                acc = _sub(sid)
+                acc.search_items = list(ev.items)
+                acc.saw_sources = True
+                return
+            if isinstance(ev, ToolCall) and sid is not None:
+                _sub(sid).tool_parts.append(
+                    _tool_call_part(ev).model_dump(by_alias=True, exclude_none=True)
+                )
+                return
+            if isinstance(ev, ToolResult) and sid is not None:
+                target = _sub(sid).tool_parts
+                for part in target:
+                    if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
+                        part["status"] = ev.status
+                        break
+                target.append(
+                    _tool_result_part(ev).model_dump(by_alias=True, exclude_none=True)
+                )
+                return
+            if isinstance(ev, UsageUpdate):
+                if sid is not None:
+                    _sub(sid).usage = ev
+                else:
+                    final_usage = ev
+                return
+            if isinstance(ev, Complete):
+                if sid is not None:
+                    _sub(sid).usage = ev.usage
+                else:
+                    final_usage = ev.usage
+                    sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
+                        ev, (sub_code, sub_provider, sub_model, sub_label)
+                    )
+                return
+            # Untagged agentic content (rare): fall through to flat buffers.
+
         if isinstance(ev, ReasoningDelta):
             reasoning_buf.append(ev.text)
         elif isinstance(ev, AnswerDelta):
@@ -1385,15 +1518,28 @@ async def stream_and_persist(
                         continue
                     _apply_event(drained)
                 # Flush accumulators, persist with status=stopped + estimate.
-                breakdown = compute_cost_breakdown(
-                    usage=final_usage,
-                    binding=binding,
-                    image_count=image_attachment_count,
-                )
-                # Per-turn cost: matches what build_attribution exposes as
-                # `attribution.costUsd` (pricing.py) so the ledger and the
-                # wire stay consistent.
-                turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+                # Agentic: sum completed/partial subagent receipts (BE-022 /
+                # BE-028) rather than repricing an arbitrary last UsageUpdate.
+                if agentic_active and agentic_subagents:
+                    turn_cost = _agentic_sum_cost_usd()
+                    breakdown = compute_cost_breakdown(
+                        usage=final_usage,
+                        binding=binding,
+                        image_count=image_attachment_count,
+                    )
+                    breakdown = breakdown.model_copy(
+                        update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
+                    )
+                else:
+                    breakdown = compute_cost_breakdown(
+                        usage=final_usage,
+                        binding=binding,
+                        image_count=image_attachment_count,
+                    )
+                    # Per-turn cost: matches what build_attribution exposes as
+                    # `attribution.costUsd` (pricing.py) so the ledger and the
+                    # wire stay consistent.
+                    turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
@@ -1754,16 +1900,22 @@ async def stream_and_persist(
                     )
                 )
             elif isinstance(ev, UsageUpdate):
-                final_usage = ev
+                if agentic_active and ev.subagent_id is not None:
+                    _sub(ev.subagent_id).usage = ev
+                else:
+                    final_usage = ev
             elif isinstance(ev, Complete):
-                final_usage = ev.usage
-                # Provider-side fallback wins over the router-side seed, but
-                # only when the provider ACTUALLY substituted; a `None` here
-                # must not clobber a router-side `auto_downgrade` seed. Shared
-                # with the drain branch via `_fold_complete_substitution`.
-                sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
-                    ev, (sub_code, sub_provider, sub_model, sub_label)
-                )
+                if agentic_active and ev.subagent_id is not None:
+                    _sub(ev.subagent_id).usage = ev.usage
+                else:
+                    final_usage = ev.usage
+                    # Provider-side fallback wins over the router-side seed, but
+                    # only when the provider ACTUALLY substituted; a `None` here
+                    # must not clobber a router-side `auto_downgrade` seed. Shared
+                    # with the drain branch via `_fold_complete_substitution`.
+                    sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
+                        ev, (sub_code, sub_provider, sub_model, sub_label)
+                    )
 
         # HITL pause terminal. The agent loop hit an approval-gated tool and
         # emitted `AwaitingApproval`; end the turn in the NEW terminal state
@@ -1779,7 +1931,13 @@ async def stream_and_persist(
                 binding=binding,
                 image_count=image_attachment_count,
             )
-            turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+            if agentic_active and agentic_subagents:
+                turn_cost = _agentic_sum_cost_usd()
+                breakdown = breakdown.model_copy(
+                    update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
+                )
+            else:
+                turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
             attribution = build_attribution(
                 requested_tier_id=requested_tier_id,
                 binding=binding,
@@ -1876,13 +2034,11 @@ async def stream_and_persist(
         )
         # Per-turn cost: matches what build_attribution exposes as
         # `attribution.costUsd` (pricing.py) so the cost ledger row and the
-        # wire attribution agree. Agentic heterogeneous routes (FE-009): sum
+        # wire attribution agree. Agentic heterogeneous routes (BE-022): sum
         # per-subagent monetary costs rather than repricing the summed tokens
         # once against the original binding.
         if agentic_active and agentic_subagents:
-            turn_cost = sum(
-                (acc.cost_usd or 0.0) for acc in agentic_subagents.values()
-            )
+            turn_cost = _agentic_sum_cost_usd()
             # Keep breakdown for structure, but override the displayed total.
             breakdown = breakdown.model_copy(
                 update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}

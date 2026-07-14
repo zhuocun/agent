@@ -28,7 +28,10 @@ gates (admission / plan-approval pause / verifier), each gated by its setting.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import secrets
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -101,10 +104,32 @@ _PLANNER_LABEL = "Planner"
 # sentinel (NOT a real registry tool) plus the standard `AwaitingApproval`
 # pause. The resume route (`_prepare_resume_tool`) recognizes this name and
 # short-circuits the registry/`needs_approval` checks, threading the decision
-# back as `plan_approved` instead of executing a tool. `PLAN_APPROVAL_CALL_ID`
-# is the stable id the resume `toolApproval.toolCallId` must match.
+# back as `plan_approved` + the immutable approved plan instead of executing a
+# tool. Each pause mints a unique call id under ``PLAN_APPROVAL_CALL_ID_PREFIX``
+# so a stale approve cannot authorize a later plan (BE-040 / SAF-010).
 PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval"
+PLAN_APPROVAL_CALL_ID_PREFIX = "plan-approval-"
+# Legacy constant kept for importers; new pauses never reuse this exact id.
 PLAN_APPROVAL_CALL_ID = "plan-approval"
+
+
+def mint_plan_approval_call_id() -> str:
+    """Opaque per-pause plan-approval tool-call id (server-issued)."""
+    return f"{PLAN_APPROVAL_CALL_ID_PREFIX}{secrets.token_urlsafe(12)}"
+
+
+def is_plan_approval_call_id(tool_call_id: str) -> bool:
+    """True when ``tool_call_id`` is a (legacy or minted) plan-approval id."""
+    return (
+        tool_call_id == PLAN_APPROVAL_CALL_ID
+        or tool_call_id.startswith(PLAN_APPROVAL_CALL_ID_PREFIX)
+    )
+
+
+def hash_plan(sub_questions: list[str]) -> str:
+    """Stable SHA-256 of the normalized plan list (BE-040 identity bind)."""
+    canonical = json.dumps(list(sub_questions), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -245,13 +270,14 @@ async def _maybe_plan_approval(
     estimate_usd: float,
     cap_usd: float,
     skip_started: bool = False,
+    call_id: str | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan-approval HITL gate (M3) — async generator of pause events.
 
     When `AGENTIC_PLAN_APPROVAL` is on, surfaces the plan decomposition + the
     estimated cost as a `planner` subagent and PAUSES the run with the shipped
     `awaiting_approval` terminal (a pseudo `tool_call` + `AwaitingApproval`)
-    BEFORE any fan-out. A `toolApproval` resume carrying `PLAN_APPROVAL_CALL_ID`
+    BEFORE any fan-out. A `toolApproval` resume matching the minted call id
     continues (approve) or declines (deny) the run. Yields nothing when the flag
     is off, so the caller falls straight through to admission + fan-out.
 
@@ -272,20 +298,23 @@ async def _maybe_plan_approval(
         confidence="estimate",
         phase="plan",
     )
+    plan_call_id = call_id or mint_plan_approval_call_id()
+    plan_list = list(sub_questions)
     yield ToolCall(
-        id=PLAN_APPROVAL_CALL_ID,
+        id=plan_call_id,
         name=PLAN_APPROVAL_TOOL_NAME,
         label="Review research plan",
         status="awaiting_approval",
         approval_state="pending",
         input={
-            "plan": list(sub_questions),
+            "plan": plan_list,
+            "planHash": hash_plan(plan_list),
             "estimatedCostUsd": estimate_usd,
             "capUsd": cap_usd,
         },
         subagent_id=_PLANNER_ID,
     )
-    yield AwaitingApproval(tool_call_id=PLAN_APPROVAL_CALL_ID, subagent_id=_PLANNER_ID)
+    yield AwaitingApproval(tool_call_id=plan_call_id, subagent_id=_PLANNER_ID)
 
 
 async def _maybe_verify(settings: Settings, answer: str) -> str:
@@ -597,16 +626,21 @@ async def _run_deep_research(
     estimate_cost: CostEstimator | None = None,
     budget_headroom_usd: float | None = None,
     plan_approved: bool | None = None,
+    approved_plan: list[str] | None = None,
     fallback_make_stream_for: StreamFactory | None = None,
     fallback_cost_for_usage: CostForUsage | None = None,
+    fallback_provider_id: str | None = None,
+    fallback_model_id: str | None = None,
+    fallback_display_label: str | None = None,
     is_retryable: IsRetryable = is_retryable_provider_error,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan → (approve) → admit → parallel fan-out → (verify) → synthesis.
 
     `plan_approved` carries the plan-approval HITL decision across the resume:
     None on a fresh run (pause if the flag is on), True/False on the resume
-    (fan out / decline). `estimate_cost` + `budget_headroom_usd` drive the
-    pre-spawn reservation and the mid-flight kill.
+    (fan out / decline). When True, ``approved_plan`` is the immutable plan the
+    user approved (BE-039) — never re-planned. `estimate_cost` +
+    `budget_headroom_usd` drive the pre-spawn reservation and the mid-flight kill.
     """
     # Provider-backend split: the FAKE provider keys on the deterministic
     # `DEEP_RESEARCH_WORKER:`/`DEEP_RESEARCH:` scaffolding (the test contract), so
@@ -616,7 +650,16 @@ async def _run_deep_research(
     # prompts, then a streamed model-written synthesis.
     scaffolded = settings.provider_backend == "fake"
     planner_usage = UsageUpdate()
-    if (
+    max_workers = settings.agentic_max_workers
+    if plan_approved is True and approved_plan is not None:
+        # Resume after approve: execute the exact persisted plan (BE-039).
+        # Planner spend was already billed on the pause turn — do not re-plan.
+        sub_questions = [q for q in approved_plan if isinstance(q, str) and q.strip()][
+            :max_workers
+        ]
+        if not sub_questions:
+            sub_questions = [user_text]
+    elif (
         scaffolded
         or user_text.startswith(planner.DEEP_RESEARCH_PREFIX)
         or plan_approved is False
@@ -624,7 +667,7 @@ async def _run_deep_research(
         # Deterministic decomposition: the fake provider, an explicit
         # `DEEP_RESEARCH:` opt-in, or a decline (sub-questions go unused — no
         # fan-out — so skip the model planner call entirely).
-        sub_questions = planner.decompose(user_text, max_workers=settings.agentic_max_workers)
+        sub_questions = planner.decompose(user_text, max_workers=max_workers)
     else:
         # Real-provider planner: a bounded model pass decomposes the prompt into
         # sub-questions so a plain request fans out without the user typing the
@@ -633,10 +676,10 @@ async def _run_deep_research(
         plan_reply, planner_usage = await _collect_answer(
             make_stream_for,
             settings,
-            planner.build_planner_prompt(user_text, max_workers=settings.agentic_max_workers),
+            planner.build_planner_prompt(user_text, max_workers=max_workers),
         )
         sub_questions = planner.parse_plan(
-            plan_reply, max_workers=settings.agentic_max_workers, fallback=user_text
+            plan_reply, max_workers=max_workers, fallback=user_text
         )
     cap = settings.agentic_run_budget_usd
     estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
@@ -762,10 +805,33 @@ async def _run_deep_research(
         usage = UsageUpdate()
         worker_failed = False
         worker_started = False
+        used_fallback = False
         sub_code: SubstitutionReasonCode | None = None
         sub_provider: str | None = None
         sub_model: str | None = None
         sub_label: str | None = None
+
+        def _has_usage(u: UsageUpdate) -> bool:
+            return bool(
+                u.input_tokens
+                or u.output_tokens
+                or u.reasoning_tokens
+                or u.cached_input_tokens
+            )
+
+        def _price(u: UsageUpdate) -> float:
+            if used_fallback and fallback_cost_for_usage is not None:
+                return fallback_cost_for_usage(u)
+            return cost_for_usage(u)
+
+        def _stamp_fallback_route() -> None:
+            nonlocal sub_provider, sub_model, sub_label
+            if sub_provider is None and fallback_provider_id is not None:
+                sub_provider = fallback_provider_id
+            if sub_model is None and fallback_model_id is not None:
+                sub_model = fallback_model_id
+            if sub_label is None and fallback_display_label is not None:
+                sub_label = fallback_display_label
 
         async def _consume(make_stream: MakeStream) -> None:
             nonlocal usage, sub_code, sub_provider, sub_model, sub_label
@@ -800,12 +866,7 @@ async def _run_deep_research(
                         # SAF-008 / BE-024: never retry after visible partial
                         # output or usage — that concatenates two attempts and
                         # drops primary spend from the roll-up.
-                        had_partial = bool(answer_parts) or bool(
-                            usage.input_tokens
-                            or usage.output_tokens
-                            or usage.reasoning_tokens
-                            or usage.cached_input_tokens
-                        )
+                        had_partial = bool(answer_parts) or _has_usage(usage)
                         if (
                             not had_partial
                             and fallback_make_stream_for is not None
@@ -815,8 +876,11 @@ async def _run_deep_research(
                                 sub_code = "rate_limited"
                             else:
                                 sub_code = "provider_fallback"
+                            used_fallback = True
+                            _stamp_fallback_route()
                             try:
                                 await _consume(fallback_make_stream_for(prompt))
+                                _stamp_fallback_route()
                             except asyncio.CancelledError:
                                 raise
                             except BaseException as retry_exc:
@@ -836,9 +900,9 @@ async def _run_deep_research(
                             worker_failed = True
                     if worker_failed:
                         failed_workers += 1
-                        # Bill any partial primary usage even when the worker
-                        # fails (or when post-partial retry is refused).
-                        failed_cost = cost_for_usage(usage)
+                        # Bill any partial primary/fallback usage even when the
+                        # worker fails (or when post-partial retry is refused).
+                        failed_cost = _price(usage)
                         await queue.put(
                             SubagentDone(
                                 subagent_id=subagent_id,
@@ -847,20 +911,20 @@ async def _run_deep_research(
                                 usage=usage,
                                 cost_usd=failed_cost,
                                 outcome="failed",
+                                substitution=sub_code,
+                                substituted_provider=sub_provider,
+                                substituted_model=sub_model,
+                                substituted_display_label=sub_label,
                             )
                         )
-                        if failed_cost > 0:
-                            usages[subagent_id] = usage
-                            costs[subagent_id] = failed_cost
+                        # Always record usage for the final Complete roll-up
+                        # (SAF-005) — even a zero-token failure is a closed row.
+                        usages[subagent_id] = usage
+                        costs[subagent_id] = failed_cost
                     else:
-                        # Price on the binding that actually served (FE-009).
-                        if (
-                            sub_code is not None
-                            and fallback_cost_for_usage is not None
-                        ):
-                            cost = fallback_cost_for_usage(usage)
-                        else:
-                            cost = cost_for_usage(usage)
+                        # Price on the binding that actually served (FE-009 /
+                        # BE-023 / SAF-006).
+                        cost = _price(usage)
                         await queue.put(
                             SubagentDone(
                                 subagent_id=subagent_id,
@@ -885,22 +949,26 @@ async def _run_deep_research(
         except asyncio.CancelledError:
             # Budget mid-flight kill (or outer teardown): emit a terminal done
             # for every started worker so the FE never shows a green check for
-            # a cancelled row (FE-002).
+            # a cancelled row (FE-002). Snapshot usage into the run ledger so
+            # already-reported spend survives into the final Complete (SAF-005).
             if worker_started:
+                cancel_cost = _price(usage) if _has_usage(usage) else 0.0
                 await queue.put(
                     SubagentDone(
                         subagent_id=subagent_id,
                         label=label,
                         role="worker",
                         usage=usage,
-                        cost_usd=(
-                            cost_for_usage(usage)
-                            if (usage.input_tokens or usage.output_tokens)
-                            else 0.0
-                        ),
+                        cost_usd=cancel_cost,
                         outcome="budget_cancelled",
+                        substitution=sub_code,
+                        substituted_provider=sub_provider,
+                        substituted_model=sub_model,
+                        substituted_display_label=sub_label,
                     )
                 )
+                usages[subagent_id] = usage
+                costs[subagent_id] = cancel_cost
             raise
         finally:
             await queue.put(_WorkerSentinel(subagent_id))
@@ -951,9 +1019,12 @@ async def _run_deep_research(
                     exc_info=outcome,
                 )
     finally:
+        # BE-025: cancel AND join so workers cannot outlive the turn.
         for task in tasks:
             if not task.done():
                 task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
     # Fold the (real-provider) planner pass into the run totals so its tokens are
@@ -1023,8 +1094,12 @@ async def run_orchestrator(
     estimate_cost: CostEstimator | None = None,
     budget_headroom_usd: float | None = None,
     plan_approved: bool | None = None,
+    approved_plan: list[str] | None = None,
     fallback_make_stream_for: StreamFactory | None = None,
     fallback_cost_for_usage: CostForUsage | None = None,
+    fallback_provider_id: str | None = None,
+    fallback_model_id: str | None = None,
+    fallback_display_label: str | None = None,
     is_retryable: IsRetryable = is_retryable_provider_error,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive an agentic turn, yielding the handler's `ProviderEvent` union.
@@ -1042,8 +1117,12 @@ async def run_orchestrator(
       `single` and `deep_research`.
     - `plan_approved` — the plan-approval HITL decision carried across a resume
       (None = fresh run, True = approved, False = declined).
+    - `approved_plan` — immutable sub-questions from the paused tool input when
+      `plan_approved` is True (BE-039); ignored otherwise.
     - `fallback_make_stream_for` / `fallback_cost_for_usage` — per-worker
       fallback route + pricer when the primary binding fails retryably (FE-009).
+    - `fallback_provider_id` / `fallback_model_id` / `fallback_display_label` —
+      served-route identity stamped onto substituted workers (BE-023 / SAF-006).
     """
     if mode == "deep_research":
         async for event in _run_deep_research(
@@ -1054,8 +1133,12 @@ async def run_orchestrator(
             estimate_cost=estimate_cost,
             budget_headroom_usd=budget_headroom_usd,
             plan_approved=plan_approved,
+            approved_plan=approved_plan,
             fallback_make_stream_for=fallback_make_stream_for,
             fallback_cost_for_usage=fallback_cost_for_usage,
+            fallback_provider_id=fallback_provider_id,
+            fallback_model_id=fallback_model_id,
+            fallback_display_label=fallback_display_label,
             is_retryable=is_retryable,
         ):
             yield event

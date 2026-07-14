@@ -1175,11 +1175,59 @@ async def revoke_share_token(
     return True
 
 
-def _sanitize_public_message_parts(parts: list[MessagePart]) -> list[dict[str, object]]:
-    """Strip cost-bearing fields from subagent markers before public serialization.
+# Cost-bearing keys that must never appear in public share JSON (FE-008).
+_PUBLIC_COST_KEYS = frozenset(
+    {
+        "costUsd",
+        "cost_usd",
+        "estimatedCostUsd",
+        "estimated_cost_usd",
+        "capUsd",
+        "cap_usd",
+        "subtotalUsd",
+        "subtotal_usd",
+        "costConfidence",
+        "cost_confidence",
+        "breakdown",
+        "listPriceInPerM",
+        "list_price_in_per_m",
+        "listPriceOutPerM",
+        "list_price_out_per_m",
+        "sessionSurchargeUsd",
+        "session_surcharge_usd",
+        "inputTokens",
+        "input_tokens",
+        "outputTokens",
+        "output_tokens",
+        "reasoningTokens",
+        "reasoning_tokens",
+        "cachedInputTokens",
+        "cached_input_tokens",
+    }
+)
 
-    `SubagentPart` may carry `cost_usd` and nested `attribution` in the DB row;
-    the public contract must not leak them anywhere in the parts tree.
+
+def _strip_cost_keys(value: object) -> object:
+    """Recursively drop known cost aliases from nested JSON-ish values."""
+    if isinstance(value, dict):
+        out: dict[str, object] = {}
+        for key, child in cast(dict[str, object], value).items():
+            if key in _PUBLIC_COST_KEYS:
+                continue
+            out[key] = _strip_cost_keys(child)
+        return out
+    if isinstance(value, list):
+        return [_strip_cost_keys(item) for item in cast(list[object], value)]
+    return value
+
+
+def _sanitize_public_message_parts(parts: list[MessagePart]) -> list[dict[str, object]]:
+    """Strip cost-bearing fields before public serialization (FE-007 / FE-008).
+
+    `SubagentPart` may carry `cost_usd` and nested private attribution in the DB
+    row; project identity/substitution through `PublicAttribution` instead.
+    Plan-approval tool inputs may embed `estimatedCostUsd` / `capUsd` — strip
+    those (and any nested cost aliases) recursively from tool parts.
     """
     sanitized: list[dict[str, object]] = []
     for part in parts:
@@ -1188,11 +1236,30 @@ def _sanitize_public_message_parts(parts: list[MessagePart]) -> list[dict[str, o
         else:
             raw = part.model_dump(by_alias=True)
         if raw.get("type") == "subagent":
+            public_attr: dict[str, object] | None = None
+            attr = raw.get("attribution")
+            if isinstance(attr, dict):
+                try:
+                    public_attr = PublicAttribution.model_validate(attr).model_dump(
+                        by_alias=True, exclude_none=True
+                    )
+                except Exception:
+                    public_attr = None
+            outcome = raw.get("outcome")
+            if outcome is None:
+                outcome = "succeeded"
             raw = {
-                k: v
-                for k, v in raw.items()
-                if k not in {"costUsd", "cost_usd", "attribution"}
+                "type": "subagent",
+                "subagentId": raw.get("subagentId") or raw.get("subagent_id"),
+                "label": raw.get("label"),
+                "role": raw.get("role"),
+                "outcome": outcome,
             }
+            if public_attr is not None:
+                raw["attribution"] = public_attr
+        elif raw.get("type") in {"tool_call", "tool_result"}:
+            stripped = cast(dict[str, object], _strip_cost_keys(raw))
+            raw = stripped
         sanitized.append(raw)
     return sanitized
 

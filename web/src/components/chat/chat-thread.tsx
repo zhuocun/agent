@@ -86,6 +86,7 @@ import {
 } from "@/lib/shortcut-defaults";
 import {
   useApiStream,
+  type AgenticCoercionState,
   type RunCostState,
   type SubagentActivity,
   type TerminalResult,
@@ -304,6 +305,7 @@ const localId = (): string => `local-${Date.now()}-${localIdCounter++}`;
 type LocalChatMessage = ChatMessage & {
   error?: ApiError;
   runCost?: RunCostState | null;
+  agenticCoercion?: AgenticCoercionState | null;
 };
 type ConversationSearchState = {
   query: string;
@@ -471,6 +473,8 @@ function buildSubagentParts(
       label: sub.label,
       role: sub.role,
       ...(sub.costUsd !== undefined ? { costUsd: sub.costUsd } : {}),
+      ...(sub.outcome !== undefined ? { outcome: sub.outcome } : {}),
+      ...(sub.attribution !== undefined ? { attribution: sub.attribution } : {}),
     });
     if (sub.reasoning) {
       parts.push({
@@ -481,6 +485,22 @@ function buildSubagentParts(
     }
     for (const toolPart of toolParts) {
       if (toolPart.subagentId === sub.subagentId) parts.push(toolPart);
+    }
+    if (sub.searchStatus) {
+      parts.push({
+        type: "status",
+        label: sub.searchStatus.label,
+        state: sub.searchStatus.state,
+        subagentId: sub.subagentId,
+      });
+    }
+    if (sub.sourcesRequested || (sub.sources && sub.sources.length > 0)) {
+      parts.push({
+        type: "sources",
+        items: sub.sources ?? [],
+        requested: sub.sourcesRequested === true,
+        subagentId: sub.subagentId,
+      });
     }
     if (sub.answer) {
       parts.push({ type: "text", text: sub.answer, subagentId: sub.subagentId });
@@ -1014,6 +1034,19 @@ export function ChatThread() {
           result.answer,
         ),
       );
+      if (
+        result.runCost?.partial ||
+        result.runCost?.budgetHalted ||
+        (result.runCost?.failedWorkerCount ?? 0) > 0
+      ) {
+        const rc = result.runCost;
+        parts.push({
+          type: "agentic_run_summary",
+          outcome: "partial",
+          budgetHalted: rc?.budgetHalted === true,
+          failedWorkers: rc?.failedWorkerCount ?? 0,
+        });
+      }
     } else {
       if (result.reasoning) {
         parts.push({
@@ -1059,6 +1092,9 @@ export function ChatThread() {
       parts,
       error: result.status === "error" ? result.error : undefined,
       ...(result.runCost ? { runCost: result.runCost } : {}),
+      ...(result.agenticCoercion
+        ? { agenticCoercion: result.agenticCoercion }
+        : {}),
     };
 
     const optimisticUserId = pendingUserIdRef.current;
@@ -3950,6 +3986,7 @@ export function ChatThread() {
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
                       liveRunCost={m.runCost ?? null}
+                      agenticCoercion={m.agenticCoercion ?? null}
                       onOpenSettings={() => openSettings("general")}
                       onDismissError={() =>
                         setMessages((prev) =>
@@ -3971,6 +4008,7 @@ export function ChatThread() {
                     // for the streaming bubble. Empty / null on non-agentic turns.
                     liveSubagents={state.subagents}
                     liveRunCost={state.runCost}
+                    agenticCoercion={state.agenticCoercion}
                   />
                 ) : null}
               </MessageList>

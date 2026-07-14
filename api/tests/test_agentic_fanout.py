@@ -260,9 +260,18 @@ async def test_single_mode_wraps_one_primary_subagent(
     assert answer_deltas
     assert all(d.get("subagentId") == "primary" for d in answer_deltas)
 
-    run_cost = next(d for n, d in frames if n == "run_cost")
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs
+    run_cost = run_costs[-1]
     assert run_cost["capUsd"] == get_settings().agentic_run_budget_usd
     assert float(run_cost["subtotalUsd"]) >= 0.0
+    assert run_cost.get("confidence") == "exact"
+    assert run_cost.get("phase") == "final"
+
+    done = [d for n, d in frames if n == "subagent_done"]
+    assert done
+    assert done[0].get("outcome") == "succeeded"
+    assert "attribution" in done[0] or done[0].get("costUsd") is not None
 
     # Persisted transcript opens with a `subagent` marker, then primary-tagged
     # reasoning + text.
@@ -273,6 +282,7 @@ async def test_single_mode_wraps_one_primary_subagent(
     assert parts[0]["type"] == "subagent"
     assert parts[0]["subagentId"] == "primary"
     assert parts[0]["role"] == "primary"
+    assert parts[0].get("outcome") == "succeeded"
     types = [p["type"] for p in parts]
     assert "text" in types
     text_part = next(p for p in parts if p["type"] == "text")

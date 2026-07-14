@@ -4,8 +4,10 @@ import type { ReactNode } from "react";
 import {
   CheckCircle2,
   ChevronDown,
+  CircleMinus,
   Loader2,
   Telescope,
+  XCircle,
 } from "lucide-react";
 
 import {
@@ -17,7 +19,7 @@ import { formatUsdMeter } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { ToolGroup, WebSearchGroup } from "@/lib/tool-groups";
 import type { RunCostState } from "@/lib/stream-client";
-import type { ModelAttribution } from "@/lib/types";
+import type { ModelAttribution, SubagentOutcome } from "@/lib/types";
 import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
@@ -34,8 +36,17 @@ export interface SubagentSection {
   label: string;
   role: string;
   status: "running" | "done";
+  outcome?: SubagentOutcome;
   costUsd?: number;
-  attribution?: ModelAttribution;
+  attribution?: Pick<
+    ModelAttribution,
+    | "servedModelLabel"
+    | "providerLabel"
+    | "requestedTierId"
+    | "servedTierId"
+    | "substitution"
+  > &
+    Partial<ModelAttribution>;
   reasoning: string;
   answer: string;
 }
@@ -208,14 +219,21 @@ export function SubagentPanel({
 }
 
 function RunCostMeter({ runCost }: { runCost: RunCostState }) {
+  const isEstimate =
+    runCost.confidence === "estimate" || runCost.phase === "plan";
+  const prefix = isEstimate ? "Est. " : "";
+  const ariaExtra = isEstimate ? " estimated" : "";
   return (
     <span
       data-testid="run-cost-meter"
+      data-confidence={runCost.confidence ?? "exact"}
+      data-phase={runCost.phase ?? "final"}
       className="inline-flex h-5 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground"
-      aria-label={`Run cost ${formatUsdMeter(runCost.subtotalUsd)}${
+      aria-label={`Run cost${ariaExtra} ${formatUsdMeter(runCost.subtotalUsd)}${
         runCost.capUsd > 0 ? ` of ${formatUsdMeter(runCost.capUsd)} cap` : ""
       }`}
     >
+      {prefix}
       {formatUsdMeter(runCost.subtotalUsd)}
       {runCost.capUsd > 0 ? (
         <span className="text-muted-foreground/70">
@@ -225,6 +243,56 @@ function RunCostMeter({ runCost }: { runCost: RunCostState }) {
       ) : null}
     </span>
   );
+}
+
+function OutcomeIcon({
+  status,
+  outcome,
+}: {
+  status: "running" | "done";
+  outcome?: SubagentOutcome;
+}) {
+  if (status === "running") {
+    return (
+      <Loader2
+        aria-hidden
+        className="mt-0.5 size-4 shrink-0 motion-safe:animate-spin"
+      />
+    );
+  }
+  const resolved: SubagentOutcome = outcome ?? "succeeded";
+  switch (resolved) {
+    case "failed":
+      return (
+        <XCircle
+          aria-hidden
+          data-testid="subagent-outcome-failed"
+          className="mt-0.5 size-4 shrink-0 text-destructive"
+        />
+      );
+    case "cancelled":
+    case "budget_cancelled":
+    case "stopped":
+      return (
+        <CircleMinus
+          aria-hidden
+          data-testid="subagent-outcome-cancelled"
+          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+        />
+      );
+    case "succeeded":
+      return (
+        <CheckCircle2
+          aria-hidden
+          data-testid="subagent-outcome-succeeded"
+          className="mt-0.5 size-4 shrink-0 text-success"
+        />
+      );
+    default: {
+      const _exhaustive: never = resolved;
+      return _exhaustive;
+    }
+  }
 }
 
 function LiveToolPartsBlock({
@@ -368,6 +436,19 @@ function SubagentRow({
       <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground">
         {roleLabel(section.role)}
       </span>
+      {section.status === "done" && section.attribution?.servedModelLabel ? (
+        <span
+          className="max-w-[10rem] truncate ui-caption text-muted-foreground"
+          data-testid="subagent-served-model"
+          title={
+            section.attribution.providerLabel
+              ? `${section.attribution.servedModelLabel} · ${section.attribution.providerLabel}`
+              : section.attribution.servedModelLabel
+          }
+        >
+          {section.attribution.servedModelLabel}
+        </span>
+      ) : null}
       {section.attribution?.substitution ? (
         <span
           className="max-w-full truncate ui-caption text-substitution-callout-foreground"
@@ -444,13 +525,8 @@ function SubagentRow({
     </>
   );
 
-  const statusIcon = isRunning ? (
-    <Loader2
-      aria-hidden
-      className="mt-0.5 size-4 shrink-0 motion-safe:animate-spin"
-    />
-  ) : (
-    <CheckCircle2 aria-hidden className="mt-0.5 size-4 shrink-0 text-success" />
+  const statusIcon = (
+    <OutcomeIcon status={section.status} outcome={section.outcome} />
   );
 
   // Running rows render fully expanded — their text is streaming in live and

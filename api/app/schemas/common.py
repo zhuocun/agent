@@ -72,6 +72,20 @@ SubstitutionReasonCode = Literal[
 
 CostConfidence = Literal["exact", "estimate"]
 
+# Agentic worker terminal outcome on `subagent_done` / `SubagentPart` (FE-002).
+SubagentOutcome = Literal[
+    "succeeded",
+    "failed",
+    "cancelled",
+    "budget_cancelled",
+    "stopped",
+]
+
+# Run-cost meter honesty (FE-012): estimate at plan pause, exact thereafter.
+RunCostConfidence = Literal["estimate", "exact"]
+# plan = pre-spawn estimate; progress = mid-fan-out ticks; final = terminal total.
+RunCostPhase = Literal["plan", "progress", "final"]
+
 SpeedHint = Literal["fastest", "fast", "balanced", "slow"]
 CostHint = Literal["lowest", "low", "medium", "high"]
 

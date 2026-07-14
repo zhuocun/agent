@@ -36,11 +36,16 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { postModerationAppeal, type ApiError, type ErrorActionPayload } from "@/lib/apiClient";
-import type { RunCostState, SubagentActivity } from "@/lib/stream-client";
+import type {
+  AgenticCoercionState,
+  RunCostState,
+  SubagentActivity,
+} from "@/lib/stream-client";
 import {
   buildAgenticPanelLayout,
   buildSubagentSectionsFromParts,
   buildSubagentRoleById,
+  deriveAgenticRunSummary,
   deriveRunCostFromParts,
   hasToolOrSubagentActivity,
   isNestedToolGroup,
@@ -112,6 +117,7 @@ interface AssistantMessageProps {
   // derives its sections from the persisted `subagent` marker + tagged parts.
   liveSubagents?: SubagentActivity[];
   liveRunCost?: RunCostState | null;
+  agenticCoercion?: AgenticCoercionState | null;
 }
 
 // Length above which the error body collapses into an expandable Details
@@ -179,6 +185,7 @@ export function AssistantMessage({
   onDismissError,
   liveSubagents,
   liveRunCost = null,
+  agenticCoercion = null,
 }: AssistantMessageProps) {
   // Agentic mode: per-subagent sections for the SubagentPanel. Live activity
   // (the streaming bubble) wins — it carries accurate running/done status;
@@ -193,6 +200,11 @@ export function AssistantMessage({
     if (liveRunCost) return liveRunCost;
     return deriveRunCostFromParts(message.parts);
   }, [liveRunCost, message.parts]);
+
+  const partialSummary = useMemo(
+    () => deriveAgenticRunSummary(message.parts, liveRunCost),
+    [message.parts, liveRunCost],
+  );
 
   const agenticLayout = useMemo(
     () => buildAgenticPanelLayout(message.parts),
@@ -310,6 +322,34 @@ export function AssistantMessage({
     >
       {showTyping ? <TypingIndicator /> : null}
 
+      {agenticCoercion ? (
+        <p
+          role="status"
+          data-testid="agentic-coercion-callout"
+          className="rounded-lg border border-warning-foreground/20 bg-warning/40 px-3 py-2 ui-caption text-warning-foreground"
+        >
+          Deep Research needs Pro or your own API key — ran as a single agent
+          instead.
+        </p>
+      ) : null}
+
+      {partialSummary ? (
+        <p
+          role="status"
+          data-testid="partial-synthesis-warning"
+          className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-warning-foreground/20 bg-warning px-2.5 py-1 ui-caption text-warning-foreground"
+        >
+          <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+          {partialSummary.budgetHalted
+            ? "Partial answer — stopped early to stay within the run budget."
+            : partialSummary.failedWorkers > 0
+              ? `Partial answer — ${partialSummary.failedWorkers} worker${
+                  partialSummary.failedWorkers === 1 ? "" : "s"
+                } failed.`
+              : "Partial answer — some research steps did not finish."}
+        </p>
+      ) : null}
+
       {renderedParts.map((part, idx) => {
         if (part.type === "web_search_group") {
           if (isNestedWebSearchGroupCb(part)) return null;
@@ -391,9 +431,14 @@ export function AssistantMessage({
           ) : null;
         }
         if (part.type === "status") {
+          // Per-subagent status lives with the worker section; skip flat render.
+          if (part.subagentId) return null;
           return <StatusLine key={idx} label={part.label} state={part.state} />;
         }
         if (part.type === "sources") {
+          // Per-subagent sources stay with the worker section (FE-001); skip
+          // the global panel when tagged.
+          if (part.subagentId) return null;
           // Rendered AFTER the answer text (the part ordering — text then
           // sources — is established upstream in chat-thread.tsx). Honesty rule
           // (PRD 07 §4.3): an empty list with `requested` is the ungrounded
@@ -422,6 +467,13 @@ export function AssistantMessage({
               onDecision={isAwaitingApproval ? onToolDecision : undefined}
             />
           );
+        }
+        if (part.type === "agentic_run_summary") {
+          // Surfaced once above via `partialSummary` chip (FE-015).
+          return null;
+        }
+        if (part.type === "attachment") {
+          return null;
         }
         return null;
       })}

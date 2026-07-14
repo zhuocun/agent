@@ -38,6 +38,10 @@ _FORBIDDEN_COST_KEYS = {
     "listPriceOutPerM",
     "subtotalUsd",
     "sessionSurchargeUsd",
+    "estimatedCostUsd",
+    "estimated_cost_usd",
+    "capUsd",
+    "cap_usd",
     "inputTokens",
     "outputTokens",
     "reasoningTokens",
@@ -259,7 +263,15 @@ async def test_public_get_strips_subagent_marker_cost(
     assert subagent_part["type"] == "subagent"
     assert subagent_part["label"] == "Agent"
     assert "costUsd" not in subagent_part
-    assert "attribution" not in subagent_part
+    # FE-007: public shares keep cost-stripped identity/substitution.
+    assert "attribution" in subagent_part
+    public_attr = subagent_part["attribution"]
+    assert public_attr["servedModelLabel"] == "Fake"
+    assert public_attr["requestedTierId"] == "smart"
+    assert "costUsd" not in public_attr
+    assert "breakdown" not in public_attr
+    assert "costConfidence" not in public_attr
+    assert subagent_part.get("outcome") == "succeeded"
 
 
 async def test_public_get_unknown_token_404(client: AsyncClient) -> None:

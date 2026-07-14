@@ -226,6 +226,13 @@ export type ToolRunStatus =
 // section can render before its subagent finishes. Mirrors `SubagentPart` in
 // api/app/schemas/message.py. Present ONLY on agentic turns — the union
 // addition is inert for every existing message.
+export type SubagentOutcome =
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "budget_cancelled"
+  | "stopped";
+
 export interface SubagentPart {
   type: "subagent";
   subagentId: string;
@@ -233,19 +240,40 @@ export interface SubagentPart {
   role: string;
   attribution?: ModelAttribution;
   costUsd?: number;
+  outcome?: SubagentOutcome;
+}
+
+/** Turn-level partial-synthesis signal (FE-015 / PRD08). */
+export interface AgenticRunSummaryPart {
+  type: "agentic_run_summary";
+  outcome: "complete" | "partial";
+  budgetHalted?: boolean;
+  failedWorkers?: number;
+  plannedWorkers?: number;
+  completedWorkers?: number;
 }
 
 export type MessagePart =
   | { type: "text"; text: string; subagentId?: string }
   | { type: "reasoning"; text: string; durationSec?: number; subagentId?: string }
-  | { type: "status"; label: string; state: "active" | "done" }
+  | {
+      type: "status";
+      label: string;
+      state: "active" | "done";
+      subagentId?: string;
+    }
   // Web-search sources, rendered AFTER the answer text. Added to the shared
   // `MessagePart` union so it auto-flows to the share surface (`PublicMessage`
   // reuses `MessagePart`) and round-trips via GET /api/conversations/:id.
   // `requested` is True when web search was EFFECTIVE for the turn: grounded ⇔
   // `items` non-empty; an empty `items` with `requested` is the ungrounded
   // state the UI marks "Answered without live sources".
-  | { type: "sources"; items: SourceItem[]; requested?: boolean }
+  | {
+      type: "sources";
+      items: SourceItem[];
+      requested?: boolean;
+      subagentId?: string;
+    }
   // User attachment metadata. Outgoing send requests may add transient payload
   // fields; the server strips those before persistence.
   | AttachmentPart
@@ -275,7 +303,8 @@ export type MessagePart =
       subagentId?: string;
     }
   // Agentic mode subagent section marker (see `SubagentPart` above).
-  | SubagentPart;
+  | SubagentPart
+  | AgenticRunSummaryPart;
 
 export interface AttachmentPart {
   type: "attachment";

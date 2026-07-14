@@ -18,6 +18,7 @@ from app.schemas.common import (
     MessageRole,
     ModelTierId,
     StreamStatus,
+    SubagentOutcome,
     SubstitutionReasonCode,
 )
 from app.search.protocol import SourceItem
@@ -44,6 +45,9 @@ class StatusPart(CamelModel):
     type: Literal["status"] = "status"
     label: str
     state: Literal["active", "done"]
+    # Agentic mode: owning subagent when web-search status is per-worker (FE-001).
+    # Omitted on non-agentic turns so the wire stays unchanged.
+    subagent_id: str | None = None
 
 
 class SourcesPart(CamelModel):
@@ -63,6 +67,8 @@ class SourcesPart(CamelModel):
     # is persisted at all, so this defaults to False for any legacy/non-search
     # part and never has to be backfilled.
     requested: bool = False
+    # Agentic mode: owning subagent when sources are per-worker (FE-001).
+    subagent_id: str | None = None
 
 
 class AttachmentPart(CamelModel):
@@ -258,6 +264,26 @@ class SubagentPart(CamelModel):
     role: str
     attribution: ModelAttribution | None = None
     cost_usd: float | None = None
+    # Terminal worker outcome (FE-002). Defaults to succeeded for legacy rows
+    # that predate the field; failed/cancelled/budget_cancelled/stopped drive
+    # distinct FE row states (not a green check for every settled worker).
+    outcome: SubagentOutcome = "succeeded"
+
+
+class AgenticRunSummaryPart(CamelModel):
+    """Turn-level agentic run outcome for partial-synthesis UX (FE-015 / PRD08).
+
+    Persisted on the final assistant message when a deep-research run completed
+    with missing/failed workers or a mid-flight budget halt. The FE renders a
+    warning chip from this part — independent of model-authored prose.
+    """
+
+    type: Literal["agentic_run_summary"] = "agentic_run_summary"
+    outcome: Literal["complete", "partial"] = "complete"
+    budget_halted: bool = False
+    failed_workers: int = 0
+    planned_workers: int | None = None
+    completed_workers: int | None = None
 
 
 MessagePart = Annotated[
@@ -268,7 +294,8 @@ MessagePart = Annotated[
     | AttachmentPart
     | ToolCallPart
     | ToolResultPart
-    | SubagentPart,
+    | SubagentPart
+    | AgenticRunSummaryPart,
     Field(discriminator="type"),
 ]
 

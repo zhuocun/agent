@@ -540,8 +540,9 @@ async def test_agent_loop_is_bounded_by_max_rounds() -> None:
 
     settings = Settings(TOOL_MAX_ROUNDS=2)  # type: ignore[call-arg]
     events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
-    # Bounded by max_rounds + the single compelled (suppressed) final pass.
-    assert rounds_seen <= settings.tool_max_rounds + 1
+    # TOOL_MAX_ROUNDS is a hard cap on TOTAL provider invocations including the
+    # compelled suppress-tools final pass (BE-011).
+    assert rounds_seen <= settings.tool_max_rounds
     # The final pass suppressed tools exactly once.
     assert suppressed_seen == 1
     # The turn terminated with a non-empty answer and a Complete (never blank).
@@ -622,6 +623,83 @@ async def test_execute_tool_times_out_to_failed_result(
     result = await execute_tool(ToolCallRequest(id="t1", name="get_current_time", input={}))
     assert result.status == "failed"
     assert result.error is not None
+
+
+async def test_agent_loop_relays_provider_internal_web_search_before_status() -> None:
+    """Provider-resolved web_search ToolCalls must reach the FE before StatusUpdate.
+
+    Batch A stopped relaying raw registry ToolCalls so HITL can emit a
+    server-normalized pending shape (BE-004). Provider-internal ``web_search``
+    self-resolves in the same stream (ToolCall → Status active → … → ToolResult);
+    dropping the ToolCall meant the FE panel only appeared after search settled,
+    so e2e could never observe live "Searching the web…" status.
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        ProviderEvent,
+        StatusUpdate,
+        ToolCall,
+        ToolResult,
+        UsageUpdate,
+    )
+    from app.tools.agent_loop import run_agent_loop
+
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> _AsyncIterator[ProviderEvent]:
+        async def _gen() -> _AsyncIterator[ProviderEvent]:
+            assert suppress_tools is False
+            yield ToolCall(
+                id="fake_web_search_1",
+                name="web_search",
+                label="Search web",
+                status="running",
+                input={"query": "playwright"},
+            )
+            yield StatusUpdate(label="Searching the web…", state="active")
+            yield StatusUpdate(label="Searching the web…", state="done")
+            yield ToolResult(
+                tool_call_id="fake_web_search_1",
+                name="web_search",
+                label="Search web",
+                status="succeeded",
+                summary="3 sources",
+                output={"results": []},
+            )
+            yield AnswerDelta(text="Based on the sources, ")
+            yield UsageUpdate(
+                input_tokens=1, output_tokens=1, reasoning_tokens=0, cached_input_tokens=0
+            )
+            yield Complete(
+                usage=UsageUpdate(
+                    input_tokens=1,
+                    output_tokens=1,
+                    reasoning_tokens=0,
+                    cached_input_tokens=0,
+                )
+            )
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=4)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+
+    tool_calls = [e for e in events if isinstance(e, ToolCall)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "web_search"
+    assert tool_calls[0].id == "fake_web_search_1"
+
+    first_status = next(i for i, e in enumerate(events) if isinstance(e, StatusUpdate))
+    first_call = next(i for i, e in enumerate(events) if isinstance(e, ToolCall))
+    assert first_call < first_status
+
+    assert any(isinstance(e, ToolResult) for e in events)
+    assert any(isinstance(e, AnswerDelta) for e in events)
+    assert any(isinstance(e, Complete) for e in events)
 
 
 # 7. Flag-off no-op invariant --------------------------------------------------

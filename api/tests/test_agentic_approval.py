@@ -24,7 +24,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agentic import PLAN_APPROVAL_CALL_ID, PLAN_APPROVAL_TOOL_NAME
+from app.agentic import (
+    PLAN_APPROVAL_CALL_ID_PREFIX,
+    PLAN_APPROVAL_TOOL_NAME,
+    hash_plan,
+    is_plan_approval_call_id,
+)
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.repositories import billing as billing_repo
@@ -261,13 +266,18 @@ async def test_plan_approval_pauses_before_fanout(
     tool_calls = [d for n, d in frames if n == "tool_call"]
     assert len(tool_calls) == 1
     plan_call = tool_calls[0]
-    assert plan_call["id"] == PLAN_APPROVAL_CALL_ID
+    plan_call_id = str(plan_call["id"])
+    assert is_plan_approval_call_id(plan_call_id)
+    assert plan_call_id.startswith(PLAN_APPROVAL_CALL_ID_PREFIX)
     assert plan_call["name"] == PLAN_APPROVAL_TOOL_NAME
     assert plan_call["status"] == "awaiting_approval"
     assert plan_call["approvalState"] == "pending"
     plan_input = plan_call["input"]
     assert isinstance(plan_input, dict)
     assert plan_input["plan"] == ["causes of inflation", "effects on housing"]
+    assert plan_input["planHash"] == hash_plan(
+        ["causes of inflation", "effects on housing"]
+    )
     assert float(plan_input["estimatedCostUsd"]) > 0.0
 
     # The live cost meter carries the estimate against the cap.
@@ -289,7 +299,7 @@ async def test_plan_approval_pauses_before_fanout(
     assert assistant[0].status == "awaiting_approval"
     parts = [p for p in assistant[0].parts if isinstance(p, dict)]
     plan_part = next(
-        p for p in parts if p.get("type") == "tool_call" and p.get("id") == PLAN_APPROVAL_CALL_ID
+        p for p in parts if p.get("type") == "tool_call" and p.get("id") == plan_call_id
     )
     assert plan_part["status"] == "awaiting_approval"
     assert plan_part["approvalState"] == "pending"
@@ -302,7 +312,10 @@ async def test_plan_approval_approve_resumes_fanout(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    conv_id, _ = await _pause_on_plan(agentic_client, session_factory)
+    conv_id, pause_frames = await _pause_on_plan(agentic_client, session_factory)
+    plan_call_id = next(
+        str(d["id"]) for n, d in pause_frames if n == "tool_call"
+    )
 
     frames = await _collect_sse(
         agentic_client,
@@ -313,7 +326,7 @@ async def test_plan_approval_approve_resumes_fanout(
             "text": "",
             "agenticMode": "deep_research",
             "toolApproval": {
-                "toolCallId": PLAN_APPROVAL_CALL_ID,
+                "toolCallId": plan_call_id,
                 "decision": "approve",
             },
         },
@@ -346,7 +359,10 @@ async def test_plan_approval_deny_declines_run(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    conv_id, _ = await _pause_on_plan(agentic_client, session_factory)
+    conv_id, pause_frames = await _pause_on_plan(agentic_client, session_factory)
+    plan_call_id = next(
+        str(d["id"]) for n, d in pause_frames if n == "tool_call"
+    )
 
     frames = await _collect_sse(
         agentic_client,
@@ -357,7 +373,7 @@ async def test_plan_approval_deny_declines_run(
             "text": "",
             "agenticMode": "deep_research",
             "toolApproval": {
-                "toolCallId": PLAN_APPROVAL_CALL_ID,
+                "toolCallId": plan_call_id,
                 "decision": "deny",
             },
         },

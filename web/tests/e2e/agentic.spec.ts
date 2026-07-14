@@ -442,6 +442,11 @@ test.describe("agentic mode (deep research)", () => {
     // "Deep research" (which only worker/aggregator roles claim).
     await expect(panel).toContainText("Agent activity");
 
+    // Entitlement coerce callout (FE-013): server disclosed the downgrade.
+    await expect(
+      resumed.getByTestId("agentic-coercion-callout"),
+    ).toBeVisible({ timeout: 15_000 });
+
     const answerText = "Both current times were retrieved by the tools.";
     await expect(resumed.getByTestId("assistant-answer")).toContainText(answerText);
     await expect(resumed.getByTestId("assistant-empty-fallback")).toHaveCount(0);

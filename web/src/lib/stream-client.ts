@@ -56,6 +56,7 @@ import type {
   ReasoningEffortId,
   SourceItem,
   StreamStatus,
+  SubagentOutcome,
 } from "@/lib/types";
 
 // --- Types -----------------------------------------------------------------
@@ -78,9 +79,14 @@ export interface SubagentActivity {
   label: string;
   role: string;
   status: "running" | "done";
+  outcome?: SubagentOutcome;
   costUsd?: number;
+  attribution?: ModelAttribution;
   reasoning: string;
   answer: string;
+  searchStatus?: SearchStatus | null;
+  sources?: SourceItem[];
+  sourcesRequested?: boolean;
 }
 
 // Running run-cost subtotal vs the configured per-run cap, from the agentic
@@ -89,6 +95,18 @@ export interface SubagentActivity {
 export interface RunCostState {
   subtotalUsd: number;
   capUsd: number;
+  confidence?: "estimate" | "exact";
+  phase?: "plan" | "progress" | "final";
+  partial?: boolean;
+  budgetHalted?: boolean;
+  failedWorkerCount?: number;
+}
+
+/** Entitlement coerce disclosure from the `submitted` SSE frame. */
+export interface AgenticCoercionState {
+  requestedMode: "single" | "deep_research";
+  effectiveMode: "single" | "deep_research";
+  reason: "entitlement";
 }
 
 export interface ApiStreamState {
@@ -116,14 +134,17 @@ export interface ApiStreamState {
   // Agentic mode: latest run-cost subtotal vs cap; null until the BE emits one
   // (non-agentic turns never do).
   runCost: RunCostState | null;
+  // Entitlement coerce callout (FE-013); null unless submitted disclosed it.
+  agenticCoercion: AgenticCoercionState | null;
 }
 
 export interface TerminalResult {
   // `awaiting_approval` is a server terminal (HITL pause): the turn ended
   // pending a tool-approval decision. The bubble is committed in place (with
   // its tool parts) and shows the approve/deny card. Like `done` it carries
-  // the assistant message id, but never an `attribution` (the cost lands on
-  // the resumed turn).
+  // the assistant message id. Plan-approval pauses also carry estimated
+  // `attribution` (`costConfidence: "estimate"`); ordinary tool pauses may omit
+  // it until the resumed turn.
   status: "done" | "stopped" | "error" | "awaiting_approval";
   reasoning: string;
   reasoningDurationSec: number;
@@ -145,6 +166,8 @@ export interface TerminalResult {
   subagents: SubagentActivity[];
   // Agentic mode: final run-cost subtotal vs cap. Null on non-agentic turns.
   runCost: RunCostState | null;
+  // Entitlement coerce disclosure from `submitted` (FE-013).
+  agenticCoercion: AgenticCoercionState | null;
   // From `submitted` — always present once the server sent the first frame.
   serverUserMessageId?: string;
   // From `terminal` — present on `done` only (never on stopped/error).
@@ -222,6 +245,7 @@ const INITIAL: ApiStreamState = {
   toolParts: [],
   subagents: [],
   runCost: null,
+  agenticCoercion: null,
 };
 
 type ToolTranscriptPart = Extract<
@@ -316,8 +340,8 @@ function isErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
 // `terminal` payload narrows to `{ status?, messageId, attribution? }`. `status`
 // widens from the original `"done"`-only to also carry `"awaiting_approval"`
 // (the HITL pause), defaulting to `"done"` when the field is absent (older
-// backends). On the `awaiting_approval` pause there's no `attribution` yet — the
-// cost lands on the resumed turn — so attribution is optional here.
+// backends). Plan-approval pauses send estimated `attribution`; ordinary tool
+// pauses may omit it. Attribution is optional on the wire frame.
 type TerminalFrameStatus = "done" | "awaiting_approval";
 
 interface TerminalPayload {
@@ -339,8 +363,8 @@ function parseTerminal(value: unknown): TerminalPayload | null {
   // We don't deep-validate ModelAttribution here — the BE owns its wire
   // shape via Pydantic, and the FE renders it through `AttributionRow`
   // which tolerates partial shapes. A bad attribution is a contract bug,
-  // not a recoverable client-side error. On the `awaiting_approval` pause the
-  // BE sends no attribution, so it stays undefined there.
+  // not a recoverable client-side error. Plan-approval pauses include
+  // estimated attribution; tool pauses may leave it undefined.
   return {
     status,
     messageId,
@@ -350,16 +374,23 @@ function parseTerminal(value: unknown): TerminalPayload | null {
   };
 }
 
-// `status` payload narrows to `{ label, state }`. `state` is constrained to
-// "active" | "done"; anything else (or a missing field) yields null and the
-// frame is skipped.
-function parseStatus(value: unknown): SearchStatus | null {
+// `status` payload narrows to `{ label, state, subagentId? }`. `state` is
+// constrained to "active" | "done"; anything else (or a missing field) yields
+// null and the frame is skipped.
+function parseStatus(
+  value: unknown,
+): (SearchStatus & { subagentId?: string }) | null {
   if (!isRecord(value)) return null;
   const label = readStringField(value, "label");
   const state = readStringField(value, "state");
   if (label === null) return null;
   if (state !== "active" && state !== "done") return null;
-  return { label, state };
+  const subagentId = readStringField(value, "subagentId");
+  return {
+    label,
+    state,
+    ...(subagentId !== null ? { subagentId } : {}),
+  };
 }
 
 function readProvenance(value: unknown): SourceItem["provenance"] | undefined {
@@ -377,6 +408,7 @@ function readProvenance(value: unknown): SourceItem["provenance"] | undefined {
 interface ParsedSources {
   items: SourceItem[];
   requested: boolean;
+  subagentId?: string;
 }
 
 function parseSources(value: unknown): ParsedSources | null {
@@ -402,7 +434,12 @@ function parseSources(value: unknown): ParsedSources | null {
       ...(provenance ? { provenance } : {}),
     });
   }
-  return { items: out, requested: value.requested === true };
+  const subagentId = readStringField(value, "subagentId");
+  return {
+    items: out,
+    requested: value.requested === true,
+    ...(subagentId !== null ? { subagentId } : {}),
+  };
 }
 
 function readToolStatus(value: unknown): ToolTranscriptPart["status"] | undefined {
@@ -500,12 +537,32 @@ function parseSubagentStarted(value: unknown): ParsedSubagentStarted | null {
   return { subagentId, label, role };
 }
 
-// `subagent_done` payload narrows to `{ subagentId, label?, role?, costUsd? }`.
+// `subagent_done` payload: id + optional label/role/cost/outcome/attribution
+// and live substitution fields (FE-002 / FE-003 / FE-004).
 interface ParsedSubagentDone {
   subagentId: string;
   label?: string;
   role?: string;
   costUsd?: number;
+  outcome?: SubagentOutcome;
+  attribution?: ModelAttribution;
+  substitution?: ModelAttribution["substitution"];
+  substitutedProvider?: string;
+  substitutedModel?: string;
+  substitutedDisplayLabel?: string;
+}
+
+function readSubagentOutcome(value: unknown): SubagentOutcome | undefined {
+  if (
+    value === "succeeded" ||
+    value === "failed" ||
+    value === "cancelled" ||
+    value === "budget_cancelled" ||
+    value === "stopped"
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function parseSubagentDone(value: unknown): ParsedSubagentDone | null {
@@ -515,22 +572,101 @@ function parseSubagentDone(value: unknown): ParsedSubagentDone | null {
   const label = readStringField(value, "label");
   const role = readStringField(value, "role");
   const costUsd = value.costUsd;
+  const outcome = readSubagentOutcome(value.outcome);
+  const attribution = isRecord(value.attribution)
+    ? (value.attribution as unknown as ModelAttribution)
+    : undefined;
+  const substitutedProvider = readStringField(value, "substitutedProvider");
+  const substitutedModel = readStringField(value, "substitutedModel");
+  const substitutedDisplayLabel = readStringField(
+    value,
+    "substitutedDisplayLabel",
+  );
+  const subReason = readStringField(value, "substitution");
+  let substitution: ModelAttribution["substitution"] | undefined;
+  if (
+    subReason === "auto_downgrade" ||
+    subReason === "provider_fallback" ||
+    subReason === "rate_limited" ||
+    subReason === "capacity_reroute" ||
+    subReason === "deprecated_model" ||
+    subReason === "gateway_route"
+  ) {
+    substitution = {
+      reasonCode: subReason,
+      reasonText:
+        typeof value.substitutedDisplayLabel === "string"
+          ? `Rerouted to ${value.substitutedDisplayLabel}`
+          : "Substituted.",
+    };
+  }
   return {
     subagentId,
     ...(label !== null ? { label } : {}),
     ...(role !== null ? { role } : {}),
     ...(typeof costUsd === "number" ? { costUsd } : {}),
+    ...(outcome !== undefined ? { outcome } : {}),
+    ...(attribution !== undefined ? { attribution } : {}),
+    ...(substitution !== undefined ? { substitution } : {}),
+    ...(substitutedProvider !== null ? { substitutedProvider } : {}),
+    ...(substitutedModel !== null ? { substitutedModel } : {}),
+    ...(substitutedDisplayLabel !== null ? { substitutedDisplayLabel } : {}),
   };
 }
 
-// `run_cost` payload narrows to `{ subtotalUsd, capUsd }` — both required
-// numbers on the wire (RunCostEvent).
+// `run_cost` payload: subtotal/cap plus honesty + partial flags (FE-012/015).
 function parseRunCost(value: unknown): RunCostState | null {
   if (!isRecord(value)) return null;
   const subtotalUsd = value.subtotalUsd;
   const capUsd = value.capUsd;
   if (typeof subtotalUsd !== "number" || typeof capUsd !== "number") return null;
-  return { subtotalUsd, capUsd };
+  if (!Number.isFinite(subtotalUsd) || !Number.isFinite(capUsd)) return null;
+  if (subtotalUsd < 0 || capUsd < 0) return null;
+  const confidence =
+    value.confidence === "estimate" || value.confidence === "exact"
+      ? value.confidence
+      : undefined;
+  const phase =
+    value.phase === "plan" ||
+    value.phase === "progress" ||
+    value.phase === "final"
+      ? value.phase
+      : undefined;
+  const failedWorkerCount =
+    typeof value.failedWorkerCount === "number"
+      ? value.failedWorkerCount
+      : undefined;
+  return {
+    subtotalUsd,
+    capUsd,
+    ...(confidence !== undefined ? { confidence } : {}),
+    ...(phase !== undefined ? { phase } : {}),
+    ...(value.partial === true ? { partial: true } : {}),
+    ...(value.budgetHalted === true ? { budgetHalted: true } : {}),
+    ...(failedWorkerCount !== undefined ? { failedWorkerCount } : {}),
+  };
+}
+
+function parseAgenticCoercion(
+  value: unknown,
+): AgenticCoercionState | null {
+  if (!isRecord(value)) return null;
+  const requested = readStringField(value, "requestedAgenticMode");
+  const effective = readStringField(value, "effectiveAgenticMode");
+  const reason = readStringField(value, "agenticCoercionReason");
+  if (
+    (requested !== "single" && requested !== "deep_research") ||
+    (effective !== "single" && effective !== "deep_research") ||
+    reason !== "entitlement"
+  ) {
+    return null;
+  }
+  if (requested === effective) return null;
+  return {
+    requestedMode: requested,
+    effectiveMode: effective,
+    reason: "entitlement",
+  };
 }
 
 // --- Hook ------------------------------------------------------------------
@@ -628,6 +764,7 @@ export function useApiStream(
   // can flow into React state via `queueState` without aliasing.
   const subagentsRef = useRef<SubagentActivity[]>([]);
   const runCostRef = useRef<RunCostState | null>(null);
+  const agenticCoercionRef = useRef<AgenticCoercionState | null>(null);
   const reasoningStartedAtRef = useRef<number | null>(null);
   // `submitted` lands the user message id; we keep it for the terminal so the
   // FE can replace its local `local-…` user id with the server uuid.
@@ -719,6 +856,7 @@ export function useApiStream(
         toolParts: toolPartsRef.current,
         subagents: subagentsRef.current,
         runCost: runCostRef.current,
+        agenticCoercion: agenticCoercionRef.current,
         serverUserMessageId: serverUserIdRef.current,
         ...extras,
       });
@@ -737,6 +875,7 @@ export function useApiStream(
     toolPartsRef.current = [];
     subagentsRef.current = [];
     runCostRef.current = null;
+    agenticCoercionRef.current = null;
     serverUserIdRef.current = undefined;
     streamIdRef.current = undefined;
     terminalEmittedRef.current = false;
@@ -755,6 +894,7 @@ export function useApiStream(
     toolPartsRef.current = [];
     subagentsRef.current = [];
     runCostRef.current = null;
+    agenticCoercionRef.current = null;
     serverUserIdRef.current = undefined;
     streamIdRef.current = streamId;
     droppedAnswerDeltaRef.current = 0;
@@ -797,6 +937,15 @@ export function useApiStream(
             if (id) serverUserIdRef.current = id;
             const streamId = readStringField(payload, "streamId");
             if (streamId) streamIdRef.current = streamId;
+            const coercion = parseAgenticCoercion(payload);
+            if (coercion !== null) {
+              agenticCoercionRef.current = coercion;
+              queueState({
+                status: "streaming",
+                agenticCoercion: coercion,
+              });
+              return false;
+            }
           }
           queueState({ status: "streaming" });
           return false;
@@ -914,10 +1063,9 @@ export function useApiStream(
             return true;
           }
           // Surface the frame's status (default "done"). On the HITL pause the
-          // BE sends `status: "awaiting_approval"` and no attribution — the
-          // bubble settles into the approval card and the cost lands on the
-          // resumed turn. Flush synchronously so the final answer is committed
-          // to state before the terminal callback fires.
+          // BE sends `status: "awaiting_approval"`; plan-approval pauses also
+          // carry estimated attribution. Flush synchronously so the final
+          // answer is committed to state before the terminal callback fires.
           queueState({
             status: parsed.status,
             reasoningStreaming: false,
@@ -953,10 +1101,20 @@ export function useApiStream(
         case "status": {
           // Web-search status line ("Searching the web…" → "Searched the web").
           // Last write wins; the BE flips `state` to "done" when search ends.
+          // Agentic: tagged frames accumulate per-subagent (FE-001).
           const parsed = parseStatus(payload);
           if (!parsed) return false;
-          searchStatusRef.current = parsed;
-          queueState({ searchStatus: parsed });
+          const { subagentId, ...status } = parsed;
+          if (subagentId) {
+            const next = updateSubagent(subagentId, (s) => ({
+              ...s,
+              searchStatus: status,
+            }));
+            queueState({ subagents: next });
+            return false;
+          }
+          searchStatusRef.current = status;
+          queueState({ searchStatus: status });
           return false;
         }
         case "sources": {
@@ -964,8 +1122,18 @@ export function useApiStream(
           // we replace (not append) so a re-emit can't duplicate cards.
           // `requested` is sticky: once the turn is marked grounded-or-not it
           // stays so even if a later frame's items differ.
+          // Agentic: tagged frames accumulate per-subagent (FE-001).
           const parsed = parseSources(payload);
           if (parsed === null) return false;
+          if (parsed.subagentId) {
+            const next = updateSubagent(parsed.subagentId, (s) => ({
+              ...s,
+              sources: parsed.items,
+              sourcesRequested: parsed.requested || s.sourcesRequested === true,
+            }));
+            queueState({ subagents: next });
+            return false;
+          }
           sourcesRef.current = parsed.items;
           if (parsed.requested) sourcesRequestedRef.current = true;
           const requested = sourcesRequestedRef.current;
@@ -1015,16 +1183,70 @@ export function useApiStream(
           return false;
         }
         case "subagent_done": {
-          // Agentic mode: settle the subagent's row with its per-subagent cost.
+          // Agentic mode: settle the subagent's row with cost, outcome, and
+          // live attribution / substitution (FE-002 / FE-003 / FE-004).
           const parsed = parseSubagentDone(payload);
           if (parsed === null) return false;
-          const next = updateSubagent(parsed.subagentId, (s) => ({
-            ...s,
-            ...(parsed.label !== undefined ? { label: parsed.label } : {}),
-            ...(parsed.role !== undefined ? { role: parsed.role } : {}),
-            ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } : {}),
-            status: "done" as const,
-          }));
+          const next = updateSubagent(parsed.subagentId, (s) => {
+            let attribution = parsed.attribution ?? s.attribution;
+            if (
+              attribution === undefined &&
+              (parsed.substitution !== undefined ||
+                parsed.substitutedDisplayLabel !== undefined)
+            ) {
+              // Bridge split substitution fields into a minimal attribution
+              // so the live panel can show reroute + served model without
+              // waiting for a reload.
+              attribution = {
+                requestedTierId: "auto",
+                servedTierId: "auto",
+                servedModelLabel:
+                  parsed.substitutedDisplayLabel ??
+                  parsed.substitutedModel ??
+                  "Substituted model",
+                providerId: parsed.substitutedProvider,
+                isByok: false,
+                costUsd: parsed.costUsd ?? 0,
+                costConfidence: "exact",
+                breakdown: {
+                  currency: "USD",
+                  listPriceInPerM: 0,
+                  listPriceOutPerM: 0,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  reasoningTokens: 0,
+                  cachedInputTokens: 0,
+                  longContext: { flat: true },
+                  promoApplied: false,
+                  subtotalUsd: parsed.costUsd ?? 0,
+                  sessionSurchargeUsd: 0,
+                },
+                ...(parsed.substitution
+                  ? { substitution: parsed.substitution }
+                  : {}),
+              };
+            } else if (
+              attribution !== undefined &&
+              parsed.substitution !== undefined &&
+              attribution.substitution === undefined
+            ) {
+              attribution = {
+                ...attribution,
+                substitution: parsed.substitution,
+              };
+            }
+            return {
+              ...s,
+              ...(parsed.label !== undefined ? { label: parsed.label } : {}),
+              ...(parsed.role !== undefined ? { role: parsed.role } : {}),
+              ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } : {}),
+              ...(parsed.outcome !== undefined
+                ? { outcome: parsed.outcome }
+                : { outcome: "succeeded" as const }),
+              ...(attribution !== undefined ? { attribution } : {}),
+              status: "done" as const,
+            };
+          });
           queueState({ subagents: next });
           return false;
         }

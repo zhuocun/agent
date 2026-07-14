@@ -35,8 +35,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel, MessageRole, ModelTierId
+from app.schemas.common import CamelModel, MessageRole, ModelTierId, SubagentOutcome
 from app.schemas.message import (
+    AgenticRunSummaryPart,
     AttachmentPart,
     ReasoningPart,
     SourcesPart,
@@ -46,36 +47,6 @@ from app.schemas.message import (
     ToolCallPart,
     ToolResultPart,
 )
-
-
-class PublicSubagentPart(CamelModel):
-    """Cost-stripped agentic subagent marker for the public share view.
-
-    Unlike `SubagentPart`, this shape deliberately has nowhere to put
-    `cost_usd` or a nested `attribution` block — the strip is structural, not a
-    runtime filter, so a future refactor can't silently leak per-section spend.
-    """
-
-    type: Literal["subagent"] = "subagent"
-    subagent_id: str
-    label: str
-    role: str
-
-
-# Same content parts as `MessagePart`, but with the cost-stripped
-# `PublicSubagentPart` swapped in for `SubagentPart` so the public parts tree
-# structurally cannot carry per-section cost / attribution.
-PublicMessagePart = Annotated[
-    TextPart
-    | ReasoningPart
-    | StatusPart
-    | SourcesPart
-    | AttachmentPart
-    | ToolCallPart
-    | ToolResultPart
-    | PublicSubagentPart,
-    Field(discriminator="type"),
-]
 
 
 class PublicAttribution(CamelModel):
@@ -88,6 +59,39 @@ class PublicAttribution(CamelModel):
     provider_label: str | None = None
     is_byok: bool
     substitution: Substitution | None = None
+
+
+class PublicSubagentPart(CamelModel):
+    """Cost-stripped agentic subagent marker for the public share view.
+
+    Keeps model identity / substitution via nested `PublicAttribution` (FE-007)
+    and worker `outcome` (FE-002) while structurally omitting `cost_usd` and the
+    private cost-bearing `ModelAttribution` breakdown.
+    """
+
+    type: Literal["subagent"] = "subagent"
+    subagent_id: str
+    label: str
+    role: str
+    attribution: PublicAttribution | None = None
+    outcome: SubagentOutcome = "succeeded"
+
+
+# Same content parts as `MessagePart`, but with the cost-stripped
+# `PublicSubagentPart` swapped in for `SubagentPart` so the public parts tree
+# structurally cannot carry per-section cost.
+PublicMessagePart = Annotated[
+    TextPart
+    | ReasoningPart
+    | StatusPart
+    | SourcesPart
+    | AttachmentPart
+    | ToolCallPart
+    | ToolResultPart
+    | PublicSubagentPart
+    | AgenticRunSummaryPart,
+    Field(discriminator="type"),
+]
 
 
 class PublicMessage(CamelModel):

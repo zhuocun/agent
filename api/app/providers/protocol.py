@@ -293,6 +293,8 @@ class SubagentDone:
     handler can attribute per-subagent cost and the FE can render a per-subagent
     spend chip. `label` / `role` echo the matching `SubagentStarted` so a late
     subscriber that missed the start can still render the section.
+    `outcome` distinguishes success from failed/cancelled/budget-cancelled/
+    stopped workers (FE-002).
     """
 
     subagent_id: str
@@ -300,6 +302,9 @@ class SubagentDone:
     role: str | None = None
     usage: UsageUpdate = field(default_factory=UsageUpdate)
     cost_usd: float | None = None
+    outcome: Literal[
+        "succeeded", "failed", "cancelled", "budget_cancelled", "stopped"
+    ] = "succeeded"
     substitution: SubstitutionReasonCode | None = None
     substituted_provider: str | None = None
     substituted_model: str | None = None
@@ -314,11 +319,17 @@ class RunCost:
     `subtotal_usd` is the sum of every subagent's cost so far; `cap_usd` is the
     configured per-run budget (`AGENTIC_RUN_BUDGET_USD`). The orchestrator
     enforces the cap via admission + mid-flight kill; this event surfaces live
-    subtotal vs cap to the FE.
+    subtotal vs cap to the FE. `confidence` / `phase` label estimates honestly
+    (FE-012); `partial` flags degraded synthesis (FE-015).
     """
 
     subtotal_usd: float
     cap_usd: float
+    confidence: Literal["estimate", "exact"] = "exact"
+    phase: Literal["plan", "progress", "final"] = "final"
+    partial: bool = False
+    budget_halted: bool = False
+    failed_worker_count: int = 0
     type: Literal["run_cost"] = "run_cost"
 
 

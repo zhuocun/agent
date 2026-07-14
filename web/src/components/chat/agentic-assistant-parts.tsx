@@ -16,6 +16,8 @@ import {
   buildAgenticPanelLayout,
   buildSubagentRoleById,
   buildSubagentSectionsFromParts,
+  deriveAgenticRunSummary,
+  deriveRunCostFromParts,
   hasToolOrSubagentActivity,
   isNestedToolGroup,
   isNestedWebSearchGroup,
@@ -23,6 +25,7 @@ import {
   shouldRenderTextInMainBubble,
 } from "@/lib/agentic-layout";
 import type { MessagePart } from "@/lib/types";
+import { AlertTriangle } from "lucide-react";
 
 export function AgenticAssistantParts({
   parts,
@@ -47,6 +50,8 @@ export function AgenticAssistantParts({
     toolLayout,
   } = layout;
   const subagentSections = buildSubagentSectionsFromParts(parts);
+  const runCost = deriveRunCostFromParts(parts);
+  const partialSummary = deriveAgenticRunSummary(parts);
   const subagentRoleById = useMemo(() => buildSubagentRoleById(parts), [parts]);
   const { effectiveAnswerText } = useMemo(
     () => resolveMainBubbleText(parts),
@@ -59,6 +64,22 @@ export function AgenticAssistantParts({
 
   return (
     <>
+      {partialSummary ? (
+        <p
+          role="status"
+          data-testid="partial-synthesis-warning"
+          className="mb-2 inline-flex max-w-full items-center gap-1.5 rounded-full border border-warning-foreground/20 bg-warning px-2.5 py-1 ui-caption text-warning-foreground"
+        >
+          <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+          {partialSummary.budgetHalted
+            ? "Partial answer — stopped early to stay within the run budget."
+            : partialSummary.failedWorkers > 0
+              ? `Partial answer — ${partialSummary.failedWorkers} worker${
+                  partialSummary.failedWorkers === 1 ? "" : "s"
+                } failed.`
+              : "Partial answer — some research steps did not finish."}
+        </p>
+      ) : null}
       {renderedParts.map((part, idx) => {
         if (part.type === "web_search_group") {
           if (isNestedWebSearchGroup(part, nestInPanel)) return null;
@@ -73,6 +94,7 @@ export function AgenticAssistantParts({
             <SubagentPanel
               key={idx}
               sections={subagentSections}
+              runCost={runCost}
               panelWebSearchGroups={webSearchLayout.panelLevel}
               webSearchBySubagentId={webSearchLayout.bySubagentId}
               panelToolGroups={toolLayout.panelLevel}
@@ -113,7 +135,12 @@ export function AgenticAssistantParts({
             </div>
           ) : null;
         }
+        if (part.type === "status") {
+          if (part.subagentId) return null;
+          return null;
+        }
         if (part.type === "sources") {
+          if (part.subagentId) return null;
           if (part.items.length === 0) return null;
           return (
             <SourcesPanel key={idx} ref={sourcesPanelRef} items={part.items} />
@@ -122,6 +149,9 @@ export function AgenticAssistantParts({
         if (part.type === "tool_call" || part.type === "tool_result") {
           if (toolLayout.nestedParts.has(part)) return null;
           return <ToolPartView key={idx} part={part} />;
+        }
+        if (part.type === "agentic_run_summary" || part.type === "attachment") {
+          return null;
         }
         return null;
       })}

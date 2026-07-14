@@ -40,7 +40,48 @@ export function deriveRunCostFromParts(
       break;
     }
   }
-  return { subtotalUsd, capUsd };
+  const summary = parts.find(
+    (p): p is Extract<MessagePart, { type: "agentic_run_summary" }> =>
+      p.type === "agentic_run_summary",
+  );
+  return {
+    subtotalUsd,
+    capUsd,
+    confidence: "exact",
+    phase: "final",
+    ...(summary?.outcome === "partial" ? { partial: true } : {}),
+    ...(summary?.budgetHalted ? { budgetHalted: true } : {}),
+    ...(typeof summary?.failedWorkers === "number"
+      ? { failedWorkerCount: summary.failedWorkers }
+      : {}),
+  };
+}
+
+export function deriveAgenticRunSummary(
+  parts: readonly MessagePart[],
+  liveRunCost?: RunCostState | null,
+): {
+  partial: boolean;
+  budgetHalted: boolean;
+  failedWorkers: number;
+} | null {
+  if (liveRunCost?.partial || liveRunCost?.budgetHalted) {
+    return {
+      partial: true,
+      budgetHalted: liveRunCost.budgetHalted === true,
+      failedWorkers: liveRunCost.failedWorkerCount ?? 0,
+    };
+  }
+  const summary = parts.find(
+    (p): p is Extract<MessagePart, { type: "agentic_run_summary" }> =>
+      p.type === "agentic_run_summary",
+  );
+  if (!summary || summary.outcome !== "partial") return null;
+  return {
+    partial: true,
+    budgetHalted: summary.budgetHalted === true,
+    failedWorkers: summary.failedWorkers ?? 0,
+  };
 }
 
 export function buildSubagentSectionsFromParts(
@@ -55,6 +96,7 @@ export function buildSubagentSectionsFromParts(
         label: part.label,
         role: part.role,
         status: "done",
+        outcome: part.outcome ?? "succeeded",
         ...(part.costUsd !== undefined ? { costUsd: part.costUsd } : {}),
         ...(part.attribution !== undefined ? { attribution: part.attribution } : {}),
         reasoning: "",

@@ -25,11 +25,13 @@ the call instead of the turn.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import jsonschema
 
 from app.config import get_settings
 from app.tools.protocol import (
@@ -283,7 +285,10 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
 }
 
 
-def advertised_tool_specs() -> list[ToolSpec]:
+def advertised_tool_specs(
+    *,
+    allowed_names: Collection[str] | None = None,
+) -> list[ToolSpec]:
     """ToolSpecs safe to advertise NATIVELY to a real provider.
 
     The full ``TOOL_REGISTRY`` still backs the agent loop, the FAKE provider's
@@ -291,22 +296,71 @@ def advertised_tool_specs() -> list[ToolSpec]:
     this filtered view is ONLY what the handler hands a real provider as native
     tool definitions. Stub / fake-only fixtures (``prod_safe=False``) are
     withheld so a live model is never offered a tool that performs no real work.
+
+    ``allowed_names`` further scopes the advertise set (least-privilege for
+    deep-research workers). ``None`` = all prod_safe tools; an empty collection
+    advertises nothing (provider-internal ``web_search`` is unaffected).
     """
-    return [spec for spec in TOOL_REGISTRY.values() if spec.prod_safe]
+    specs = [spec for spec in TOOL_REGISTRY.values() if spec.prod_safe]
+    if allowed_names is not None:
+        allowed = set(allowed_names)
+        specs = [spec for spec in specs if spec.name in allowed]
+    return specs
 
 
-async def execute_tool(call: ToolCallRequest) -> ToolExecutionResult:
+async def execute_tool(
+    call: ToolCallRequest,
+    *,
+    timeout_seconds: float | None = None,
+) -> ToolExecutionResult:
     """Execute one tool call by name, bounded by the per-tool timeout.
 
-    Unknown tool → failed result (never raises). The executor itself is wrapped
-    in ``asyncio.wait_for(...)`` using ``settings.tool_timeout_seconds`` so a
-    hung tool is cancelled and reported as a failed result rather than stalling
-    the turn.
+    Unknown tool → failed result (never raises). Approval-gated tools require
+    ``approval_state == "approved"`` at this boundary (defense in depth — the
+    agent loop also gates); otherwise returns a failed result and does not
+    invoke the executor. Arguments are validated against the tool's advertised
+    JSON Schema before dispatch (BE-009). Ordinary executor exceptions become
+    failed results; ``CancelledError`` / ``asyncio.CancelledError`` always
+    propagate.
+
+    ``timeout_seconds`` overrides the process settings when the agent loop
+    passes its configured timeout explicitly.
     """
     spec = TOOL_REGISTRY.get(call.name)
     if spec is None:
         return _failed_result(call, name=call.name, error=f"Unknown tool {call.name!r}.")
-    timeout = get_settings().tool_timeout_seconds
+    if spec.needs_approval and call.approval_state != "approved":
+        return _failed_result(
+            call,
+            name=spec.name,
+            error="Tool requires approval before execution.",
+            approval_state=(
+                "pending" if call.approval_state != "rejected" else "rejected"
+            ),
+        )
+    # Central JSON Schema gate (BE-009) — before any executor runs.
+    if spec.schema:
+        try:
+            jsonschema.validate(instance=call.input or {}, schema=spec.schema)
+        except jsonschema.ValidationError as exc:
+            return _failed_result(
+                call,
+                name=spec.name,
+                error=f"Invalid tool input: {exc.message}",
+                approval_state=call.approval_state,
+            )
+        except jsonschema.SchemaError:
+            return _failed_result(
+                call,
+                name=spec.name,
+                error="Tool schema is invalid.",
+                approval_state=call.approval_state,
+            )
+    timeout = (
+        timeout_seconds
+        if timeout_seconds is not None
+        else get_settings().tool_timeout_seconds
+    )
     try:
         return await asyncio.wait_for(spec.executor(call), timeout=timeout)
     except TimeoutError:
@@ -314,5 +368,14 @@ async def execute_tool(call: ToolCallRequest) -> ToolExecutionResult:
             call,
             name=spec.name,
             error="Tool execution timed out.",
+            approval_state=call.approval_state,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return _failed_result(
+            call,
+            name=spec.name,
+            error="Tool execution failed.",
             approval_state=call.approval_state,
         )

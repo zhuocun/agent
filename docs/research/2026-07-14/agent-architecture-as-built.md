@@ -59,7 +59,7 @@ _build_agentic_parts → Message.parts (subagent markers + tagged children)
 Neon Postgres (assistant message + attribution roll-up)
 ```
 
-**FE (flag-gated):** bootstrap `agenticEnabled` → Deep Research toggle → `agenticMode:"deep_research"`; `SubagentPanel` + `RunCostMeter` on `run_cost` frames (estimate + final; not per-worker mid-fan-out).
+**FE (flag-gated):** bootstrap `agenticEnabled` → Deep Research toggle → `agenticMode:"deep_research"`; `SubagentPanel` + `RunCostMeter` on `run_cost` frames (orchestrator: estimate + mid progress + final; confirm FE confidence labeling).
 
 ---
 
@@ -73,8 +73,8 @@ Neon Postgres (assistant message + attribution roll-up)
 | `api/app/agentic/orchestrator.py` | `run_orchestrator`: single wrap + deep_research plan/fan-out/aggregate/verify |
 | `api/app/agentic/planner.py` | Deterministic `DEEP_RESEARCH:` decompose + real-provider plan prompt/parse + worker prompts |
 | `api/app/agentic/aggregate.py` | Deterministic synthesis + real-provider synthesis prompt (untrusted DATA framing) |
-| `api/app/agentic/verifier.py` | Deterministic N-pass stub: appends verification note, no provider call |
-| `api/app/agentic/budget.py` | Worst-case estimate, `admit`, `exceeds_cap`, headroom composition |
+| `api/app/agentic/verifier.py` | Deterministic honest no-op stub when flag on (no provider call; no "Verified…" claim); N reserved |
+| `api/app/agentic/budget.py` | Worst-case estimate, `admit`, `exceeds_cap`, headroom composition (stub verifier adds 0 calls) |
 | `api/app/agentic/retry.py` | `RATE_LIMITED` / `PROVIDER_UPSTREAM` retry predicate |
 | `api/app/streaming/handler.py` | Seam `_build_provider_iter`; subagent accumulators; SSE encode; persist |
 | `api/app/routes/conversations.py` | Entitlement coerce, headroom, resumable sizing, plan-approval resume short-circuit |
@@ -85,14 +85,14 @@ Neon Postgres (assistant message + attribution roll-up)
 | `api/app/schemas/bootstrap.py` | `agentic_enabled` flag |
 | `api/app/schemas/share.py` | Cost-stripped `PublicSubagentPart` |
 | `api/app/providers/protocol.py` | Internal `ProviderEvent` union incl. Subagent*/RunCost |
-| `api/app/observability/tracing.py` | `invoke_agent_span` (wired); `execute_tool_span` (defined, unwired in loop) |
+| `api/app/observability/tracing.py` | `invoke_agent_span` (wired in orchestrator); `execute_tool_span` (wired in `agent_loop`) |
 | `api/app/config.py` | All `AGENTIC_*` / `TOOLS_*` + boot validation |
 | `web/src/components/chat/model-mode-picker.tsx` | Deep Research toggle |
 | `web/src/components/chat/subagent-panel.tsx` | Per-worker activity + run-cost meter + substitution callout |
 | `web/src/components/chat/agentic-assistant-parts.tsx` | Share-view renderer via `SubagentPanel`; chat uses `assistant-message.tsx`; shared layout in `agentic-layout.ts` |
 | `web/src/lib/stream-client.ts` | Parses `subagent_*` / `run_cost` |
 | `web/src/lib/agentic-layout.ts` | Parts → sections / main-bubble rules |
-| `docs/plans/01-agentic-mode.md` | Build plan + gap table (some entries drift vs code) |
+| `docs/plans/01-agentic-mode.md` | Build plan + remaining-gaps table (aligned to as-built / plan 02 intent) |
 | `docs/plans/02-agent-architecture.md` | Normative target architecture (this audit grounds it) |
 
 ---
@@ -107,8 +107,8 @@ From `_run_deep_research` (`orchestrator.py:412–712`):
 4. **Fan-out** — concurrent workers under Semaphore; each `run_agent_loop`; events tagged
 5. **Mid-flight budget** — on SubagentDone, exceeds_cap → cancel unfinished
 6. **Aggregate** — synthesize (fake string or streamed model)
-7. **Verify?** — if AGENTIC_VERIFIER, append stub note
-8. **Finalize** — aggregator SubagentDone, untagged summed Complete, RunCost
+7. **Verify?** — if AGENTIC_VERIFIER, honest no-op stub (unchanged answer)
+8. **Finalize** — aggregator SubagentDone, untagged summed Complete, RunCost (final)
 
 `single` skips plan/fan-out: one `primary` loop.
 
@@ -147,7 +147,7 @@ Flag-off byte-identical. Untrusted worker outputs framed as DATA. Tool HITL insi
 
 ## 7. Shipped vs remaining gaps
 
-Shipped: flag-off identity, M1–M3 fake, per-worker degrade/fallback, attribution persist, buffer×N, real planner/synthesis (no-network). NOT: live E2E, real verifier, tool subsets, execute_tool OTel wired, mid-run run_cost ticks as planned, high-cost composer hint, PRD08 warning chip. Plan drift: share-view SubagentPanel now exists (cost-stripped).
+Shipped: flag-off identity, M1–M3 fake, per-worker degrade/fallback, attribution persist, buffer×N, real planner/synthesis (no-network), share-view `SubagentPanel` (cost-stripped; `PublicAttribution` on public subagent parts when projection is current), substitution callout on reload, `execute_tool` OTel in loop, orchestrator mid-run `run_cost` progress ticks, honest verifier stub. NOT: live E2E, real verifier, tool subsets (unless allowlist lands), high-cost composer hint, full FE live attribution/always-on model, worker HITL resume, approval idempotency. Confirm handler encode forwards `run_cost` confidence/phase and `subagent_done` outcome/attribution before calling those end-to-end shipped.
 
 ---
 
@@ -170,4 +170,4 @@ Shipped: flag-off identity, M1–M3 fake, per-worker degrade/fallback, attributi
 
 ## 9. Open design tensions
 
-Stub verifier; full tools for every worker; run_cost vs mid-fanout meter; attribution UX partial; fake vs real dual contracts; quiet planner billing without SubagentStarted; depth knob inert; silent entitlement coerce; prod enablement gated on live E2E.
+Honest no-op verifier stub (`AGENTIC_VERIFIER_N` reserved, not majority vote / not N provider samples / not billed); full tools for every worker unless subsets land; run_cost mid ticks vs FE confidence labeling; attribution UX partial (persist + reload callout yes; live/always-on partial); fake vs real dual contracts; quiet planner billing; depth knob inert; silent entitlement coerce; prod enablement gated on live E2E; **worker tool-HITL resume** and **approval idempotency** deferred hard gaps (plan 02 open questions 13–14).

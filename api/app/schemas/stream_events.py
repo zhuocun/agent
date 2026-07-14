@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from app.schemas.common import CamelModel, SubstitutionReasonCode
+from app.schemas.common import (
+    CamelModel,
+    RunCostConfidence,
+    RunCostPhase,
+    SubagentOutcome,
+    SubstitutionReasonCode,
+)
 from app.schemas.message import ModelAttribution, ToolCallPart, ToolResultPart
 from app.search.protocol import SourceItem
 
@@ -17,6 +23,12 @@ from app.search.protocol import SourceItem
 class SubmittedEvent(CamelModel):
     message_id: str
     stream_id: str | None = None
+    # Entitlement coerce disclosure (FE-013): when the client asked for
+    # `deep_research` but the server ran `single`, both modes + a reason are
+    # set so the FE can show a non-error callout. Omitted on every other turn.
+    requested_agentic_mode: Literal["single", "deep_research"] | None = None
+    effective_agentic_mode: Literal["single", "deep_research"] | None = None
+    agentic_coercion_reason: Literal["entitlement"] | None = None
 
 
 class ReasoningDeltaEvent(CamelModel):
@@ -95,6 +107,10 @@ class SubagentDoneEvent(CamelModel):
     label: str | None = None
     role: str | None = None
     cost_usd: float | None = None
+    outcome: SubagentOutcome = "succeeded"
+    # Full per-worker attribution when available (FE-003). Cost-bearing on the
+    # private stream; public shares project via PublicAttribution (FE-007).
+    attribution: ModelAttribution | None = None
     substitution: SubstitutionReasonCode | None = None
     substituted_provider: str | None = None
     substituted_model: str | None = None
@@ -106,3 +122,11 @@ class RunCostEvent(CamelModel):
 
     subtotal_usd: float
     cap_usd: float
+    # Honesty labels (FE-012): plan pause is an estimate; mid/final are exact.
+    confidence: RunCostConfidence = "exact"
+    phase: RunCostPhase = "final"
+    # Partial-synthesis signal (FE-015): set on the final tick when the run
+    # answered with fewer workers than planned (budget halt and/or failures).
+    partial: bool = False
+    budget_halted: bool = False
+    failed_worker_count: int = 0

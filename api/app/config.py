@@ -397,11 +397,16 @@ class Settings(BaseSettings):
     # `awaiting_approval`) on an approval-gated tool until a follow-up
     # `toolApproval` resume POST applies the decision.
     tools_enabled: bool = Field(default=False, alias="TOOLS_ENABLED")
-    # Hard upper bound on agent-loop rounds (one round = one model turn that may
-    # request tool calls). Mirrors the web_search loop's `_MAX_SEARCH_ROUNDS`.
-    # Guarantees the loop terminates even if the model never stops requesting
-    # tools.
+    # Hard upper bound on TOTAL agent-loop provider invocations (one round = one
+    # model turn), INCLUDING the compelled suppress-tools final pass. With N>1
+    # the loop runs at most N-1 action rounds (tools advertised) and reserves
+    # the last slot for a suppress-tools final answer when tools were still
+    # requested; with N=1 there is no reserved final pass. Guarantees the loop
+    # terminates even if the model never stops requesting tools.
     tool_max_rounds: int = Field(default=4, alias="TOOL_MAX_ROUNDS")
+    # Hard upper bound on tool executions per provider round (BE-012). Excess
+    # calls become failed ToolResults without executing; the model can recover.
+    tool_max_calls_per_round: int = Field(default=8, alias="TOOL_MAX_CALLS_PER_ROUND")
     # Per-tool execution timeout (seconds). A tool whose executor exceeds this is
     # cancelled and reported as a failed result rather than hanging the turn.
     tool_timeout_seconds: float = Field(default=10.0, alias="TOOL_TIMEOUT_SECONDS")
@@ -425,8 +430,10 @@ class Settings(BaseSettings):
     # width). Keeps in-flight provider calls per turn bounded independently of the
     # total worker count.
     agentic_max_concurrency: int = Field(default=3, alias="AGENTIC_MAX_CONCURRENCY")
-    # Max orchestration depth (a worker spawning its own sub-workers). M1/M2 run a
-    # single level; reserved for deeper recursion in a later milestone.
+    # Max orchestration depth (a worker spawning its own sub-workers). Shipped
+    # topology is flat (depth == 1): workers call `run_agent_loop` only and never
+    # recurse into the orchestrator. Values other than 1 are rejected at boot
+    # until recursive orchestration exists and is evaluated (SAF-015 / BE-050).
     agentic_max_depth: int = Field(default=1, alias="AGENTIC_MAX_DEPTH")
     # Per-run cost budget (USD) surfaced on the `run_cost` wire event as the cap.
     # Enforced via pre-spawn admission + mid-flight kill (`agentic/budget.py`).
@@ -455,8 +462,12 @@ class Settings(BaseSettings):
     # Plan-approval gate (M3). When True, a deep-research plan pauses for human
     # approval before fan-out (`agentic_plan_approval` pseudo-tool). Default-off.
     agentic_plan_approval: bool = Field(default=False, alias="AGENTIC_PLAN_APPROVAL")
-    # Answer verifier (M3). When True, the synthesized answer is cross-checked by
-    # `AGENTIC_VERIFIER_N` passes (deterministic stub in v1). Default-off.
+    # Answer verifier (M3). When True, the deterministic stub is an honest
+    # no-op (returns synthesis unchanged; no provider call; no "Verified…"
+    # claim). `AGENTIC_VERIFIER_N` is a reserved sample-count for a future
+    # closed-form / fresh-context judge path — not free-form majority vote
+    # over whole reports, and must not be billed as N phantom model calls
+    # while the stub is active. Default-off.
     agentic_verifier: bool = Field(default=False, alias="AGENTIC_VERIFIER")
     agentic_verifier_n: int = Field(default=3, alias="AGENTIC_VERIFIER_N")
 
@@ -563,8 +574,10 @@ class Settings(BaseSettings):
             raise RuntimeError("AGENTIC_MAX_WORKERS must be >= 1")
         if self.agentic_max_concurrency < 1:
             raise RuntimeError("AGENTIC_MAX_CONCURRENCY must be >= 1")
-        if self.agentic_max_depth < 1:
-            raise RuntimeError("AGENTIC_MAX_DEPTH must be >= 1")
+        if self.agentic_max_depth != 1:
+            raise RuntimeError(
+                "AGENTIC_MAX_DEPTH must be 1 until recursive orchestration ships"
+            )
         if self.agentic_run_budget_usd <= 0:
             raise RuntimeError("AGENTIC_RUN_BUDGET_USD must be > 0")
         if self.agentic_reasoning_token_multiplier <= 0:

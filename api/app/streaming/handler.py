@@ -33,7 +33,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -81,11 +81,14 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.tiers import TierBinding, get_binding
-from app.schemas.common import ModelTierId, SubstitutionReasonCode
+from app.schemas.common import ModelTierId, SubagentOutcome, SubstitutionReasonCode
 from app.schemas.conversation import ToolApprovalDecision
 from app.schemas.message import (
+    AgenticRunSummaryPart,
     ModelAttribution,
     ReasoningPart,
+    SourcesPart,
+    StatusPart,
     SubagentPart,
     TextPart,
     ToolCallPart,
@@ -204,6 +207,9 @@ class ResumeToolSeed:
     # orchestrator with `plan_approved=(decision == "approve")` instead of
     # emitting a seeded `tool_result`.
     is_plan: bool = False
+    # Immutable sub-questions from the paused plan tool input (BE-039). Only set
+    # when ``is_plan`` and the pending part carried a ``plan`` list.
+    approved_plan: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -223,10 +229,34 @@ class _SubagentAccumulator:
     tool_parts: list[dict[str, Any]] = field(default_factory=list)
     cost_usd: float | None = None
     usage: UsageUpdate = field(default_factory=UsageUpdate)
+    outcome: SubagentOutcome = "succeeded"
+    # True once a `SubagentDone` has been folded in. Stop/disconnect uses this to
+    # distinguish finished workers from ones that were still in flight when the
+    # pump was cancelled (orchestrator may have enqueued SubagentDone(stopped)
+    # on its internal queue, but those events never reach the handler).
+    terminal: bool = False
     substitution: SubstitutionReasonCode | None = None
     substituted_provider: str | None = None
     substituted_model: str | None = None
     substituted_display_label: str | None = None
+    # Per-worker web-search status/sources (FE-001).
+    latest_status: tuple[str, str] | None = None
+    search_items: list[Any] = field(default_factory=list)
+    saw_sources: bool = False
+
+
+def mark_unfinished_subagents_stopped(
+    subagents: dict[str, _SubagentAccumulator],
+) -> None:
+    """Rewrite in-flight subagent outcomes to ``stopped`` on stop/disconnect.
+
+    Pump cancel acloses the orchestrator before worker ``SubagentDone(stopped)``
+    events can be yielded onto the handler queue. Accumulators that never
+    received a Done would otherwise persist with the default ``succeeded``.
+    """
+    for acc in subagents.values():
+        if not acc.terminal:
+            acc.outcome = "stopped"
 
 
 @dataclass(frozen=True)
@@ -558,6 +588,8 @@ async def stream_and_persist(
     resume_seed: ResumeToolSeed | None = None,
     agentic_mode: Literal["single", "deep_research"] | None = None,
     budget_headroom_usd: float | None = None,
+    requested_agentic_mode: Literal["single", "deep_research"] | None = None,
+    agentic_coercion_reason: Literal["entitlement"] | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -623,6 +655,9 @@ async def stream_and_persist(
         SubmittedEvent(
             message_id=str(user_message_id),
             stream_id=str(stream_id) if stream_id is not None else None,
+            requested_agentic_mode=requested_agentic_mode,
+            effective_agentic_mode=agentic_mode,
+            agentic_coercion_reason=agentic_coercion_reason,
         )
     )
     turn_started_at = time.monotonic()
@@ -675,11 +710,18 @@ async def stream_and_persist(
     plan_approved: bool | None = (
         (resume_seed.decision == "approve") if plan_resume and resume_seed is not None else None
     )
+    approved_plan: list[str] | None = (
+        list(resume_seed.approved_plan)
+        if plan_resume and resume_seed is not None and resume_seed.approved_plan is not None
+        else None
+    )
     # Per-subagent accumulation for an agentic turn (T3). Ordered by first-seen
     # `SubagentStarted` so the persisted transcript groups subagents in emission
     # order. Empty (and unused) on every non-agentic turn.
     agentic_order: list[str] = []
     agentic_subagents: dict[str, _SubagentAccumulator] = {}
+    # Populated from the final `RunCost(partial=...)` tick for persistence (FE-015).
+    agentic_run_summary: AgenticRunSummaryPart | None = None
 
     def _sub(subagent_id: str) -> _SubagentAccumulator:
         """Fetch (or defensively create) the accumulator for `subagent_id`.
@@ -763,21 +805,35 @@ async def stream_and_persist(
     # never shown a stub like `calendar_create_event` that resolves to nothing —
     # the fake provider/e2e still exercises that tool's approval gate via its
     # `TOOL_APPROVE:` marker. None when tools are off ⇒ no tools advertised,
-    # provider stream unchanged.
-    turn_tool_definitions = (
-        [
+    # provider stream unchanged. Worker streams further filter via
+    # `allowed_tools` (empty ⇒ advertise nothing).
+    def _tool_definitions_for(
+        allowed_tools: Collection[str] | None = None,
+    ) -> list[ToolDefinition] | None:
+        if not tools_active:
+            return None
+        specs = advertised_tool_specs(allowed_names=allowed_tools)
+        if not specs:
+            return None
+        return [
             ToolDefinition(name=spec.name, label=spec.label, parameters=spec.schema)
-            for spec in advertised_tool_specs()
+            for spec in specs
         ]
-        if tools_active
-        else None
-    )
+
+    turn_tool_definitions = _tool_definitions_for()
 
     def _build_raw_stream(
         tool_feedback: list[ToolResult],
         suppress_tools: bool = False,
         user_text_override: str | None = None,
+        *,
+        tool_definitions: list[ToolDefinition] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        advertised = (
+            None
+            if suppress_tools
+            else (turn_tool_definitions if tool_definitions is None else tool_definitions)
+        )
         round_history = history + tool_feedback_to_history(tool_feedback)
         return active_provider.stream(
             model_id=binding.model_id,
@@ -816,30 +872,42 @@ async def stream_and_persist(
             # Always non-None — the datetime block is always present.
             system_prefix=turn_system_prefix,
             # Agent-loop tools advertised to a real provider (None when tools are
-            # off). The fake provider ignores this; the OpenAI/Anthropic adapters
-            # advertise them natively and emit `ToolCall`s the agent loop fulfils.
-            # On the loop's compelled final pass (`suppress_tools=True`) we
-            # advertise NO tools so a greedy provider is forced to answer instead
-            # of requesting yet another tool and returning a blank turn.
-            tools=None if suppress_tools else turn_tool_definitions,
+            # off or the caller scoped an empty allowlist). The fake provider
+            # ignores this; the OpenAI/Anthropic adapters advertise them natively
+            # and emit `ToolCall`s the agent loop fulfils. On the loop's compelled
+            # final pass (`suppress_tools=True`) we advertise NO tools so a greedy
+            # provider is forced to answer instead of requesting yet another tool
+            # and returning a blank turn.
+            tools=advertised,
         )
 
     def _agentic_make_stream(
         worker_user_text: str,
+        *,
+        allowed_tools: Collection[str] | None = None,
     ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
         """Build a per-subagent `MakeStream` over the active route (agentic only).
 
         Captures the same route/binding/history/hints `_build_raw_stream` uses;
         only the user text varies per subagent (the orchestrator hands each worker
-        its sub-question prompt). The returned callable is the `MakeStream` the
-        agent loop drives for that subagent — including the loop's `suppress_tools`
-        final-pass signal, threaded straight to `_build_raw_stream`.
+        its sub-question prompt). ``allowed_tools`` scopes both advertise and
+        (via the orchestrator) execute for workers — empty ⇒ no registry tools.
         """
+        scoped_tools = (
+            _tool_definitions_for(allowed_tools)
+            if allowed_tools is not None
+            else turn_tool_definitions
+        )
 
         def _make(
             tool_feedback: list[ToolResult], suppress_tools: bool = False
         ) -> AsyncIterator[ProviderEvent]:
-            return _build_raw_stream(tool_feedback, suppress_tools, worker_user_text)
+            return _build_raw_stream(
+                tool_feedback,
+                suppress_tools,
+                worker_user_text,
+                tool_definitions=scoped_tools,
+            )
 
         return _make
 
@@ -847,6 +915,8 @@ async def stream_and_persist(
 
     def _agentic_fallback_make_stream(
         worker_user_text: str,
+        *,
+        allowed_tools: Collection[str] | None = None,
     ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
         """Per-subagent stream factory over the fallback route (agentic only)."""
         assert fallback_binding is not None
@@ -860,6 +930,11 @@ async def stream_and_persist(
         fb_provider = _cached_fb_provider[0]
         assert fb_provider is not None
         fb_api_key = fallback_api_key
+        scoped_tools = (
+            _tool_definitions_for(allowed_tools)
+            if allowed_tools is not None
+            else turn_tool_definitions
+        )
 
         def _make(
             tool_feedback: list[ToolResult], suppress_tools: bool = False
@@ -883,7 +958,7 @@ async def stream_and_persist(
                 response_format=response_format,
                 supports_vision=fb_binding.supports_vision,
                 system_prefix=turn_system_prefix,
-                tools=None if suppress_tools else turn_tool_definitions,
+                tools=None if suppress_tools else scoped_tools,
             )
 
         return _make
@@ -893,6 +968,16 @@ async def stream_and_persist(
         breakdown = compute_cost_breakdown(
             usage=usage,
             binding=binding,
+            image_count=image_attachment_count,
+        )
+        return breakdown.subtotal_usd + breakdown.session_surcharge_usd
+
+    def _fallback_cost_for_usage(usage: UsageUpdate) -> float:
+        """Price usage against the fallback binding (FE-009)."""
+        assert fallback_binding is not None
+        breakdown = compute_cost_breakdown(
+            usage=usage,
+            binding=fallback_binding,
             image_count=image_attachment_count,
         )
         return breakdown.subtotal_usd + breakdown.session_surcharge_usd
@@ -931,8 +1016,25 @@ async def stream_and_persist(
                 estimate_cost=_estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,
                 plan_approved=plan_approved,
+                approved_plan=approved_plan,
                 fallback_make_stream_for=(
                     _agentic_fallback_make_stream if fallback_binding is not None else None
+                ),
+                fallback_cost_for_usage=(
+                    _fallback_cost_for_usage if fallback_binding is not None else None
+                ),
+                fallback_provider_id=(
+                    (fallback_provider_id or fallback_binding.provider_id)
+                    if fallback_binding is not None
+                    else None
+                ),
+                fallback_model_id=(
+                    fallback_binding.model_id if fallback_binding is not None else None
+                ),
+                fallback_display_label=(
+                    (fallback_binding.model_label or fallback_binding.model_id)
+                    if fallback_binding is not None
+                    else None
                 ),
                 is_retryable=_is_retryable,
             )
@@ -1036,6 +1138,32 @@ async def stream_and_persist(
             answer_buf.append(EMPTY_REPLY_FALLBACK)
         return True, target_subagent
 
+    def _agentic_sum_cost_usd() -> float:
+        """Monetary run total = sum of per-subagent receipts (BE-022 / BE-028).
+
+        Prefer each accumulator's ``cost_usd`` from ``SubagentDone``. For an
+        in-flight subagent that reported usage but not yet Done (stop drain),
+        price the latest usage against the binding that served it.
+        """
+        total = 0.0
+        for acc in agentic_subagents.values():
+            if acc.cost_usd is not None:
+                total += acc.cost_usd
+                continue
+            has_tokens = bool(
+                acc.usage.input_tokens
+                or acc.usage.output_tokens
+                or acc.usage.reasoning_tokens
+                or acc.usage.cached_input_tokens
+            )
+            if not has_tokens:
+                continue
+            if acc.substitution is not None and fallback_binding is not None:
+                total += _fallback_cost_for_usage(acc.usage)
+            else:
+                total += _cost_for_usage(acc.usage)
+        return total
+
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
 
@@ -1104,24 +1232,31 @@ async def stream_and_persist(
         """Assemble persisted parts for an agentic turn, grouped by subagent (T3).
 
         For each subagent in first-seen order: a `subagent` marker part (carrying
-        its role + per-subagent cost), then its reasoning (if any), its tool
-        transcript, and its answer text — every part tagged with `subagentId`.
-        The FE renders one collapsible section per subagent from this shape; a
-        reload rehydrates the same grouping.
+        its role + per-subagent cost + outcome), then its reasoning (if any), its
+        tool transcript, status/sources (FE-001), and its answer text — every
+        part tagged with `subagentId`. Optionally appends an
+        `agentic_run_summary` when the run was partial (FE-015).
         """
         parts: list[dict[str, Any]] = []
         for subagent_id in agentic_order:
             acc = agentic_subagents[subagent_id]
             part_attribution: ModelAttribution | None = None
             if acc.usage.input_tokens or acc.usage.output_tokens or acc.cost_usd:
+                # Price/attribute on the binding that actually served (FE-009).
+                attr_binding = binding
+                if (
+                    acc.substitution is not None
+                    and fallback_binding is not None
+                ):
+                    attr_binding = fallback_binding
                 breakdown = compute_cost_breakdown(
                     usage=acc.usage,
-                    binding=binding,
+                    binding=attr_binding,
                     image_count=image_attachment_count,
                 )
                 part_attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
-                    binding=binding,
+                    binding=attr_binding,
                     breakdown=breakdown,
                     cost_confidence="exact",
                     is_byok=is_byok_turn,
@@ -1137,6 +1272,7 @@ async def stream_and_persist(
                     role=acc.role,
                     cost_usd=acc.cost_usd,
                     attribution=part_attribution,
+                    outcome=acc.outcome,
                 ).model_dump(by_alias=True, exclude_none=True)
             )
             if acc.reasoning:
@@ -1146,10 +1282,31 @@ async def stream_and_persist(
                     ).model_dump(by_alias=True, exclude_none=True)
                 )
             parts.extend(acc.tool_parts)
+            if acc.latest_status is not None:
+                status_label, _status_state = acc.latest_status
+                parts.append(
+                    StatusPart(
+                        label=status_label,
+                        state="done",
+                        subagent_id=subagent_id,
+                    ).model_dump(by_alias=True, exclude_none=True)
+                )
+            if acc.saw_sources or (web_search and acc.search_items):
+                parts.append(
+                    SourcesPart(
+                        items=list(acc.search_items),
+                        requested=web_search or acc.saw_sources,
+                        subagent_id=subagent_id,
+                    ).model_dump(by_alias=True, exclude_none=True)
+                )
             parts.append(
                 TextPart(
                     text="".join(acc.answer), subagent_id=subagent_id
                 ).model_dump(by_alias=True, exclude_none=True)
+            )
+        if agentic_run_summary is not None:
+            parts.append(
+                agentic_run_summary.model_dump(by_alias=True, exclude_none=True)
             )
         return parts
 
@@ -1191,12 +1348,98 @@ async def stream_and_persist(
     def _apply_event(ev: ProviderEvent) -> None:
         """Fold a queue event into accumulators (no yields).
 
-        Used to drain any remaining UsageUpdate / Complete events after
-        cancelling the pump on disconnect, so `final_usage` reflects the
-        latest cumulative usage even on stopped turns.
+        Used to drain any remaining events after cancelling the pump on
+        disconnect/stop, so persisted parts + usage reflect work already queued
+        (BE-027). Agentic drains use the same subagent-aware fold as the live
+        path so queued partials are not dropped into flat buffers.
         """
         nonlocal final_usage, first_answer_ms, sub_code, sub_provider, sub_model, sub_label
-        nonlocal latest_status, search_items, saw_sources_event
+        nonlocal latest_status, search_items, saw_sources_event, agentic_run_summary
+
+        if agentic_active:
+            if isinstance(ev, SubagentStarted):
+                if ev.subagent_id not in agentic_subagents:
+                    agentic_subagents[ev.subagent_id] = _SubagentAccumulator(
+                        label=ev.label or ev.subagent_id,
+                        role=ev.role or "subagent",
+                    )
+                    agentic_order.append(ev.subagent_id)
+                return
+            if isinstance(ev, SubagentDone):
+                done_acc = agentic_subagents.get(ev.subagent_id)
+                if done_acc is None:
+                    done_acc = _SubagentAccumulator(
+                        label=ev.label or ev.subagent_id,
+                        role=ev.role or "subagent",
+                    )
+                    agentic_subagents[ev.subagent_id] = done_acc
+                    agentic_order.append(ev.subagent_id)
+                done_acc.cost_usd = ev.cost_usd
+                done_acc.usage = ev.usage
+                done_acc.outcome = ev.outcome
+                done_acc.terminal = True
+                done_acc.substitution = ev.substitution
+                done_acc.substituted_provider = ev.substituted_provider
+                done_acc.substituted_model = ev.substituted_model
+                done_acc.substituted_display_label = ev.substituted_display_label
+                return
+            if isinstance(ev, RunCost):
+                if ev.partial or ev.budget_halted or ev.failed_worker_count > 0:
+                    agentic_run_summary = AgenticRunSummaryPart(
+                        outcome="partial",
+                        budget_halted=ev.budget_halted,
+                        failed_workers=ev.failed_worker_count,
+                    )
+                return
+            sid = getattr(ev, "subagent_id", None)
+            if isinstance(ev, ReasoningDelta) and sid is not None:
+                _sub(sid).reasoning.append(ev.text)
+                return
+            if isinstance(ev, AnswerDelta) and sid is not None:
+                if first_answer_ms is None:
+                    first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
+                _sub(sid).answer.append(ev.text)
+                return
+            if isinstance(ev, StatusUpdate) and sid is not None:
+                _sub(sid).latest_status = (ev.label, ev.state)
+                return
+            if isinstance(ev, Sources) and sid is not None:
+                acc = _sub(sid)
+                acc.search_items = list(ev.items)
+                acc.saw_sources = True
+                return
+            if isinstance(ev, ToolCall) and sid is not None:
+                _sub(sid).tool_parts.append(
+                    _tool_call_part(ev).model_dump(by_alias=True, exclude_none=True)
+                )
+                return
+            if isinstance(ev, ToolResult) and sid is not None:
+                target = _sub(sid).tool_parts
+                for part in target:
+                    if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
+                        part["status"] = ev.status
+                        break
+                target.append(
+                    _tool_result_part(ev).model_dump(by_alias=True, exclude_none=True)
+                )
+                return
+            if isinstance(ev, UsageUpdate):
+                if sid is not None:
+                    _sub(sid).usage = ev
+                else:
+                    final_usage = ev
+                return
+            if isinstance(ev, Complete):
+                if sid is not None:
+                    _sub(sid).usage = ev.usage
+                else:
+                    final_usage = ev.usage
+                    sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
+                        ev, (sub_code, sub_provider, sub_model, sub_label)
+                    )
+                return
+            # Untagged agentic content (rare): fall through to flat buffers.
+
         if isinstance(ev, ReasoningDelta):
             reasoning_buf.append(ev.text)
         elif isinstance(ev, AnswerDelta):
@@ -1327,16 +1570,35 @@ async def stream_and_persist(
                         # a forwarded `_PumpError` is dropped here.
                         continue
                     _apply_event(drained)
+                # Pump cancel acloses the orchestrator before in-flight workers'
+                # SubagentDone(stopped) can be yielded onto this queue. Mark any
+                # accumulator that never received Done as stopped so persist does
+                # not default them to succeeded.
+                if agentic_active:
+                    mark_unfinished_subagents_stopped(agentic_subagents)
                 # Flush accumulators, persist with status=stopped + estimate.
-                breakdown = compute_cost_breakdown(
-                    usage=final_usage,
-                    binding=binding,
-                    image_count=image_attachment_count,
-                )
-                # Per-turn cost: matches what build_attribution exposes as
-                # `attribution.costUsd` (pricing.py) so the ledger and the
-                # wire stay consistent.
-                turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+                # Agentic: sum completed/partial subagent receipts (BE-022 /
+                # BE-028) rather than repricing an arbitrary last UsageUpdate.
+                if agentic_active and agentic_subagents:
+                    turn_cost = _agentic_sum_cost_usd()
+                    breakdown = compute_cost_breakdown(
+                        usage=final_usage,
+                        binding=binding,
+                        image_count=image_attachment_count,
+                    )
+                    breakdown = breakdown.model_copy(
+                        update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
+                    )
+                else:
+                    breakdown = compute_cost_breakdown(
+                        usage=final_usage,
+                        binding=binding,
+                        image_count=image_attachment_count,
+                    )
+                    # Per-turn cost: matches what build_attribution exposes as
+                    # `attribution.costUsd` (pricing.py) so the ledger and the
+                    # wire stay consistent.
+                    turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
@@ -1526,7 +1788,11 @@ async def stream_and_persist(
                 # Web-search status line (reuses the existing `status` SSE
                 # event). Emit live and remember the latest (label, state) so
                 # the persisted `status` part records the final, `done` line.
-                latest_status = (ev.label, ev.state)
+                # Agentic: stash per-subagent when tagged (FE-001).
+                if agentic_active and ev.subagent_id is not None:
+                    _sub(ev.subagent_id).latest_status = (ev.label, ev.state)
+                else:
+                    latest_status = (ev.label, ev.state)
                 yield encode_status(
                     StatusEvent(label=ev.label, state=ev.state, subagent_id=ev.subagent_id)
                 )
@@ -1536,8 +1802,13 @@ async def stream_and_persist(
                 # text part at the persist sites). `requested` mirrors whether
                 # web search was effective for the turn (it is, here) so the FE
                 # can tell grounded from ungrounded on the live stream.
-                search_items = list(ev.items)
-                saw_sources_event = True
+                if agentic_active and ev.subagent_id is not None:
+                    acc = _sub(ev.subagent_id)
+                    acc.search_items = list(ev.items)
+                    acc.saw_sources = True
+                else:
+                    search_items = list(ev.items)
+                    saw_sources_event = True
                 yield encode_sources(
                     SourcesEvent(
                         items=list(ev.items),
@@ -1617,20 +1888,52 @@ async def stream_and_persist(
                     )
                 )
             elif isinstance(ev, SubagentDone):
-                acc = agentic_subagents.get(ev.subagent_id)
-                if acc is not None:
-                    acc.cost_usd = ev.cost_usd
-                    acc.usage = ev.usage
-                    acc.substitution = ev.substitution
-                    acc.substituted_provider = ev.substituted_provider
-                    acc.substituted_model = ev.substituted_model
-                    acc.substituted_display_label = ev.substituted_display_label
+                done_acc = agentic_subagents.get(ev.subagent_id)
+                done_attribution: ModelAttribution | None = None
+                if done_acc is not None:
+                    done_acc.cost_usd = ev.cost_usd
+                    done_acc.usage = ev.usage
+                    done_acc.outcome = ev.outcome
+                    done_acc.terminal = True
+                    done_acc.substitution = ev.substitution
+                    done_acc.substituted_provider = ev.substituted_provider
+                    done_acc.substituted_model = ev.substituted_model
+                    done_acc.substituted_display_label = ev.substituted_display_label
+                    if (
+                        ev.usage.input_tokens
+                        or ev.usage.output_tokens
+                        or (ev.cost_usd is not None and ev.cost_usd > 0)
+                    ):
+                        attr_binding = binding
+                        if (
+                            ev.substitution is not None
+                            and fallback_binding is not None
+                        ):
+                            attr_binding = fallback_binding
+                        breakdown = compute_cost_breakdown(
+                            usage=ev.usage,
+                            binding=attr_binding,
+                            image_count=image_attachment_count,
+                        )
+                        done_attribution = build_attribution(
+                            requested_tier_id=requested_tier_id,
+                            binding=attr_binding,
+                            breakdown=breakdown,
+                            cost_confidence="exact",
+                            is_byok=is_byok_turn,
+                            substitution=ev.substitution,
+                            substituted_provider=ev.substituted_provider,
+                            substituted_model=ev.substituted_model,
+                            substituted_display_label=ev.substituted_display_label,
+                        )
                 yield encode_subagent_done(
                     SubagentDoneEvent(
                         subagent_id=ev.subagent_id,
                         label=ev.label,
                         role=ev.role,
                         cost_usd=ev.cost_usd,
+                        outcome=ev.outcome,
+                        attribution=done_attribution,
                         substitution=ev.substitution,
                         substituted_provider=ev.substituted_provider,
                         substituted_model=ev.substituted_model,
@@ -1639,20 +1942,40 @@ async def stream_and_persist(
                 )
             elif isinstance(ev, RunCost):
                 # Running run-cost subtotal vs the configured cap (M3 scaffold).
+                if ev.partial or ev.budget_halted or ev.failed_worker_count > 0:
+                    agentic_run_summary = AgenticRunSummaryPart(
+                        outcome="partial",
+                        budget_halted=ev.budget_halted,
+                        failed_workers=ev.failed_worker_count,
+                    )
                 yield encode_run_cost(
-                    RunCostEvent(subtotal_usd=ev.subtotal_usd, cap_usd=ev.cap_usd)
+                    RunCostEvent(
+                        subtotal_usd=ev.subtotal_usd,
+                        cap_usd=ev.cap_usd,
+                        confidence=ev.confidence,
+                        phase=ev.phase,
+                        partial=ev.partial,
+                        budget_halted=ev.budget_halted,
+                        failed_worker_count=ev.failed_worker_count,
+                    )
                 )
             elif isinstance(ev, UsageUpdate):
-                final_usage = ev
+                if agentic_active and ev.subagent_id is not None:
+                    _sub(ev.subagent_id).usage = ev
+                else:
+                    final_usage = ev
             elif isinstance(ev, Complete):
-                final_usage = ev.usage
-                # Provider-side fallback wins over the router-side seed, but
-                # only when the provider ACTUALLY substituted; a `None` here
-                # must not clobber a router-side `auto_downgrade` seed. Shared
-                # with the drain branch via `_fold_complete_substitution`.
-                sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
-                    ev, (sub_code, sub_provider, sub_model, sub_label)
-                )
+                if agentic_active and ev.subagent_id is not None:
+                    _sub(ev.subagent_id).usage = ev.usage
+                else:
+                    final_usage = ev.usage
+                    # Provider-side fallback wins over the router-side seed, but
+                    # only when the provider ACTUALLY substituted; a `None` here
+                    # must not clobber a router-side `auto_downgrade` seed. Shared
+                    # with the drain branch via `_fold_complete_substitution`.
+                    sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
+                        ev, (sub_code, sub_provider, sub_model, sub_label)
+                    )
 
         # HITL pause terminal. The agent loop hit an approval-gated tool and
         # emitted `AwaitingApproval`; end the turn in the NEW terminal state
@@ -1668,7 +1991,13 @@ async def stream_and_persist(
                 binding=binding,
                 image_count=image_attachment_count,
             )
-            turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+            if agentic_active and agentic_subagents:
+                turn_cost = _agentic_sum_cost_usd()
+                breakdown = breakdown.model_copy(
+                    update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
+                )
+            else:
+                turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
             attribution = build_attribution(
                 requested_tier_id=requested_tier_id,
                 binding=binding,
@@ -1765,8 +2094,17 @@ async def stream_and_persist(
         )
         # Per-turn cost: matches what build_attribution exposes as
         # `attribution.costUsd` (pricing.py) so the cost ledger row and the
-        # wire attribution agree.
-        turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+        # wire attribution agree. Agentic heterogeneous routes (BE-022): sum
+        # per-subagent monetary costs rather than repricing the summed tokens
+        # once against the original binding.
+        if agentic_active and agentic_subagents:
+            turn_cost = _agentic_sum_cost_usd()
+            # Keep breakdown for structure, but override the displayed total.
+            breakdown = breakdown.model_copy(
+                update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
+            )
+        else:
+            turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
         attribution = build_attribution(
             requested_tier_id=requested_tier_id,
             binding=binding,
@@ -2099,6 +2437,8 @@ async def run_detached_producer(
     resume_seed: ResumeToolSeed | None = None,
     agentic_mode: Literal["single", "deep_research"] | None = None,
     budget_headroom_usd: float | None = None,
+    requested_agentic_mode: Literal["single", "deep_research"] | None = None,
+    agentic_coercion_reason: Literal["entitlement"] | None = None,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 
@@ -2162,6 +2502,8 @@ async def run_detached_producer(
                 resume_seed=resume_seed,
                 agentic_mode=agentic_mode,
                 budget_headroom_usd=budget_headroom_usd,
+                requested_agentic_mode=requested_agentic_mode,
+                agentic_coercion_reason=agentic_coercion_reason,
             ):
                 # Mirror the last frame kind so the buffer's terminal_kind is
                 # observable. `terminal`/`error` are the only closing frames;

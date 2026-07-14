@@ -30,7 +30,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
-from app.agentic import PLAN_APPROVAL_CALL_ID, PLAN_APPROVAL_TOOL_NAME
+from app.agentic import (
+    PLAN_APPROVAL_TOOL_NAME,
+    hash_plan,
+    is_plan_approval_call_id,
+)
+from app.agentic.budget import compose_headroom
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -2255,28 +2260,41 @@ async def send_message(
     # refused, so the request still streams a useful answer (graceful degrade,
     # never a hard error). `single` and the flag-off path are unaffected.
     effective_agentic_mode = body.agentic_mode
+    agentic_coercion_reason: Literal["entitlement"] | None = None
     if effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
         db, user=user, api_key=resolved_api_key
     ):
         effective_agentic_mode = "single"
+        agentic_coercion_reason = "entitlement"
 
-    # Per-run budget headroom (M3, T5). The deep-research budget composes the
-    # per-run cap (`AGENTIC_RUN_BUDGET_USD`) with the caller's REMAINING
-    # platform allowance so a run can never overshoot the monthly quota. Only
-    # platform-key turns are constrained (BYOK pays their own provider, so the
-    # platform cap does not apply → None = "cap only"); `get_platform_remaining_usd`
-    # already returns None when no positive quota is enforced.
+    # Per-run budget headroom (M3, T5 / BE-019). Compose the caller's REMAINING
+    # platform allowance with any per-conversation remaining so a deep-research
+    # (or agentic single) run can never overshoot either cap. Only platform-key
+    # turns are constrained (BYOK → None = "cap only"). Numeric 0.0 means no
+    # money remains (SAF-003); None means unconstrained.
     budget_headroom_usd: float | None = None
-    if (
-        effective_agentic_mode == "deep_research"
-        and resolved_api_key is None
-        and effective_quota_usd > 0
-    ):
-        budget_headroom_usd = await usage_repo.get_platform_remaining_usd(
-            db,
-            user_id=user.id,
-            monthly_quota_usd=effective_quota_usd,
-        )
+    if effective_agentic_mode is not None and resolved_api_key is None:
+        headroom_parts: list[float | None] = []
+        if effective_quota_usd > 0:
+            headroom_parts.append(
+                await usage_repo.get_platform_remaining_usd(
+                    db,
+                    user_id=user.id,
+                    monthly_quota_usd=effective_quota_usd,
+                )
+            )
+        if (
+            conversation_project is not None
+            and conversation_project.per_conversation_budget_usd is not None
+        ):
+            conv_cap = conversation_project.per_conversation_budget_usd
+        else:
+            conv_cap = user_prefs.per_conversation_budget_usd or 0.0
+        if conv_cap > 0 and not is_temp:
+            conv_spent = await usage_repo.get_conversation_cost(db, conversation_id)
+            headroom_parts.append(max(0.0, conv_cap - conv_spent))
+        if headroom_parts:
+            budget_headroom_usd = compose_headroom(*headroom_parts)
 
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
@@ -2339,6 +2357,8 @@ async def send_message(
             resume_seed=resume_seed,
             agentic_mode=effective_agentic_mode,
             budget_headroom_usd=budget_headroom_usd,
+            requested_agentic_mode=body.agentic_mode,
+            agentic_coercion_reason=agentic_coercion_reason,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -2393,6 +2413,8 @@ async def send_message(
             resume_seed=resume_seed,
             agentic_mode=effective_agentic_mode,
             budget_headroom_usd=budget_headroom_usd,
+            requested_agentic_mode=body.agentic_mode,
+            agentic_coercion_reason=agentic_coercion_reason,
         ):
             yield sse_event
 
@@ -2718,11 +2740,12 @@ async def _prepare_resume_tool(
     # Plan-approval HITL resume (agentic, T6). The orchestrator pauses on a
     # PSEUDO `agentic_plan_approval` tool that is NOT in `TOOL_REGISTRY`, so it
     # must bypass the registry/`needs_approval` gate and the tool-input
-    # allowlist below. We re-run the orchestrator with `plan_approved` derived
-    # from the decision (the handler reads `is_plan` and skips seeding a
-    # `tool_result`), re-decomposing the ORIGINAL prompt — so `provider_user_text`
-    # is the original user turn, not the approve/deny continuation instruction.
-    if decision.tool_call_id == PLAN_APPROVAL_CALL_ID and tool_name == PLAN_APPROVAL_TOOL_NAME:
+    # allowlist below. Approve reuses the immutable plan stored on the pending
+    # tool input (BE-039) — never re-decomposes. Call id must be a server-minted
+    # plan-approval id bound to this pending row (BE-040 / SAF-010).
+    if tool_name == PLAN_APPROVAL_TOOL_NAME and is_plan_approval_call_id(
+        decision.tool_call_id
+    ):
         user_message_id = last_assistant.responds_to_message_id
         if user_message_id is None:
             last_user = await messages_repo.get_last_user_message(db, conversation_id)
@@ -2743,6 +2766,25 @@ async def _prepare_resume_tool(
         await conversations_repo.touch_updated_at(db, conversation_id)
         await db.commit()
         plan_label = pending.get("label")
+        raw_input = pending.get("input")
+        plan_input = raw_input if isinstance(raw_input, dict) else {}
+        raw_plan = plan_input.get("plan")
+        approved_plan: tuple[str, ...] | None = None
+        if isinstance(raw_plan, list):
+            approved_plan = tuple(
+                str(item) for item in raw_plan if isinstance(item, str) and item.strip()
+            )
+        stored_hash = plan_input.get("planHash")
+        if (
+            isinstance(stored_hash, str)
+            and stored_hash
+            and approved_plan is not None
+            and hash_plan(list(approved_plan)) != stored_hash
+        ):
+            raise _invalid_input(
+                "INVALID_INPUT",
+                "Persisted plan hash does not match the approved plan.",
+            )
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
@@ -2750,6 +2792,7 @@ async def _prepare_resume_tool(
             decision=decision.decision,
             input=None,
             is_plan=True,
+            approved_plan=approved_plan,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed

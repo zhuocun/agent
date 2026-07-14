@@ -28,7 +28,10 @@ gates (admission / plan-approval pause / verifier), each gated by its setting.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import secrets
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -78,11 +81,10 @@ _TAGGABLE = (
 
 AgenticMode = Literal["single", "deep_research"]
 
-# Given a per-subagent user prompt, build the `MakeStream` the agent loop drives
-# for that subagent. The handler supplies this so the orchestrator stays
-# provider-agnostic: it captures the active route/binding/history and only varies
-# the user text per worker.
-StreamFactory = Callable[[str], MakeStream]
+# Build a per-subagent `MakeStream` for the given user prompt. Optional keyword
+# ``allowed_tools`` scopes which registry tools are advertised (and should match
+# the agent-loop execute allowlist). ``None`` = full turn set; empty = none.
+StreamFactory = Callable[..., MakeStream]
 
 # Computes the USD cost of an accumulated usage for the active binding.
 CostForUsage = Callable[[UsageUpdate], float]
@@ -96,15 +98,43 @@ _AGGREGATOR_LABEL = "Synthesis"
 _PLANNER_ID = "planner"
 _PLANNER_LABEL = "Planner"
 
+# Deep-research workers are flat (AGENTIC_MAX_DEPTH == 1 by construction): each
+# worker runs one `run_agent_loop` and never re-enters the orchestrator. No
+# registry tools are advertised or executed on workers (least privilege);
+# provider-internal web_search remains available via the handler flag.
+_WORKER_ALLOWED_TOOLS: frozenset[str] = frozenset()
+
 # Plan-approval HITL (M3). The plan pause reuses the shipped tool-approval
 # terminal: the orchestrator emits a pseudo `tool_call` whose name is this
 # sentinel (NOT a real registry tool) plus the standard `AwaitingApproval`
 # pause. The resume route (`_prepare_resume_tool`) recognizes this name and
 # short-circuits the registry/`needs_approval` checks, threading the decision
-# back as `plan_approved` instead of executing a tool. `PLAN_APPROVAL_CALL_ID`
-# is the stable id the resume `toolApproval.toolCallId` must match.
+# back as `plan_approved` + the immutable approved plan instead of executing a
+# tool. Each pause mints a unique call id under ``PLAN_APPROVAL_CALL_ID_PREFIX``
+# so a stale approve cannot authorize a later plan (BE-040 / SAF-010).
 PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval"
+PLAN_APPROVAL_CALL_ID_PREFIX = "plan-approval-"
+# Legacy constant kept for importers; new pauses never reuse this exact id.
 PLAN_APPROVAL_CALL_ID = "plan-approval"
+
+
+def mint_plan_approval_call_id() -> str:
+    """Opaque per-pause plan-approval tool-call id (server-issued)."""
+    return f"{PLAN_APPROVAL_CALL_ID_PREFIX}{secrets.token_urlsafe(12)}"
+
+
+def is_plan_approval_call_id(tool_call_id: str) -> bool:
+    """True when ``tool_call_id`` is a (legacy or minted) plan-approval id."""
+    return (
+        tool_call_id == PLAN_APPROVAL_CALL_ID
+        or tool_call_id.startswith(PLAN_APPROVAL_CALL_ID_PREFIX)
+    )
+
+
+def hash_plan(sub_questions: list[str]) -> str:
+    """Stable SHA-256 of the normalized plan list (BE-040 identity bind)."""
+    canonical = json.dumps(list(sub_questions), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -159,6 +189,57 @@ def _fold_usage(event: ProviderEvent, current: UsageUpdate) -> UsageUpdate:
 CostEstimator = Callable[[int], float]
 
 
+async def _emit_planner_receipt(
+    *,
+    planner_usage: UsageUpdate,
+    cost_for_usage: CostForUsage,
+    cap_usd: float,
+    ledger_usd: float,
+    open_bracket: bool = False,
+) -> AsyncIterator[ProviderEvent]:
+    """Surface planner spend as a planner SubagentDone + mid-run RunCost tick.
+
+    Used on pause / decline / admit-reject / post-plan so planner tokens are
+    never discarded from the run ledger (BE-015 / BE-014). ``ledger_usd`` is the
+    run subtotal *including* ``planner_usage``.
+
+    ``open_bracket`` forces a ``SubagentStarted`` even when usage is empty (plan-
+    approval pause needs the planner section for the HITL tool). Otherwise the
+    bracket opens only when there is real planner usage (fake/scaffolded path
+    stays quiet).
+    """
+    planner_cost = cost_for_usage(planner_usage)
+    has_usage = bool(
+        planner_usage.input_tokens
+        or planner_usage.output_tokens
+        or planner_usage.reasoning_tokens
+        or planner_usage.cached_input_tokens
+    )
+    if open_bracket or has_usage:
+        yield SubagentStarted(
+            subagent_id=_PLANNER_ID, label=_PLANNER_LABEL, role="orchestrator"
+        )
+    if has_usage:
+        yield Complete(usage=planner_usage, subagent_id=_PLANNER_ID)
+        yield SubagentDone(
+            subagent_id=_PLANNER_ID,
+            label=_PLANNER_LABEL,
+            role="orchestrator",
+            usage=planner_usage,
+            cost_usd=planner_cost,
+            outcome="succeeded",
+        )
+    # Skip a zero progress tick so plan-approval's estimate RunCost remains the
+    # first meter event the FE/tests see on a scaffolded pause.
+    if has_usage or ledger_usd > 0:
+        yield RunCost(
+            subtotal_usd=ledger_usd,
+            cap_usd=cap_usd,
+            confidence="exact",
+            phase="progress",
+        )
+
+
 # --- M3 hooks: budget admission, plan approval, verifier ----------------------
 
 
@@ -187,44 +268,60 @@ async def _maybe_plan_approval(
     *,
     estimate_usd: float,
     cap_usd: float,
+    skip_started: bool = False,
+    call_id: str | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan-approval HITL gate (M3) — async generator of pause events.
 
     When `AGENTIC_PLAN_APPROVAL` is on, surfaces the plan decomposition + the
     estimated cost as a `planner` subagent and PAUSES the run with the shipped
     `awaiting_approval` terminal (a pseudo `tool_call` + `AwaitingApproval`)
-    BEFORE any fan-out. A `toolApproval` resume carrying `PLAN_APPROVAL_CALL_ID`
+    BEFORE any fan-out. A `toolApproval` resume matching the minted call id
     continues (approve) or declines (deny) the run. Yields nothing when the flag
     is off, so the caller falls straight through to admission + fan-out.
+
+    ``skip_started`` is True when the caller already opened the planner bracket
+    (e.g. after emitting a planner usage receipt) so we do not double-start.
     """
     if not settings.agentic_plan_approval:
         return
-    yield SubagentStarted(subagent_id=_PLANNER_ID, label=_PLANNER_LABEL, role="orchestrator")
+    if not skip_started:
+        yield SubagentStarted(
+            subagent_id=_PLANNER_ID, label=_PLANNER_LABEL, role="orchestrator"
+        )
     # Surface the estimate on the live cost meter so the FE can render it in the
     # pause card alongside the plan.
-    yield RunCost(subtotal_usd=estimate_usd, cap_usd=cap_usd)
+    yield RunCost(
+        subtotal_usd=estimate_usd,
+        cap_usd=cap_usd,
+        confidence="estimate",
+        phase="plan",
+    )
+    plan_call_id = call_id or mint_plan_approval_call_id()
+    plan_list = list(sub_questions)
     yield ToolCall(
-        id=PLAN_APPROVAL_CALL_ID,
+        id=plan_call_id,
         name=PLAN_APPROVAL_TOOL_NAME,
         label="Review research plan",
         status="awaiting_approval",
         approval_state="pending",
         input={
-            "plan": list(sub_questions),
+            "plan": plan_list,
+            "planHash": hash_plan(plan_list),
             "estimatedCostUsd": estimate_usd,
             "capUsd": cap_usd,
         },
         subagent_id=_PLANNER_ID,
     )
-    yield AwaitingApproval(tool_call_id=PLAN_APPROVAL_CALL_ID, subagent_id=_PLANNER_ID)
+    yield AwaitingApproval(tool_call_id=plan_call_id, subagent_id=_PLANNER_ID)
 
 
 async def _maybe_verify(settings: Settings, answer: str) -> str:
     """Answer verifier (M3): bounded N-pass self-consistency review.
 
-    No-op (returns the answer unchanged) unless `AGENTIC_VERIFIER` is on; then it
-    runs `AGENTIC_VERIFIER_N` passes and appends a content-free verification note
-    (see `app/agentic/verifier.py`).
+    No-op (returns the answer unchanged) unless `AGENTIC_VERIFIER` is on; the
+    shipped stub is an honest no-op that does not claim verification (see
+    `app/agentic/verifier.py`).
     """
     if not settings.agentic_verifier:
         return answer
@@ -241,6 +338,10 @@ async def _finalize_synthesis(
     worker_total_cost: float,
     cost_for_usage: CostForUsage,
     cap_usd: float,
+    budget_halted: bool = False,
+    failed_worker_count: int = 0,
+    planned_workers: int = 0,
+    completed_workers: int = 0,
 ) -> AsyncIterator[ProviderEvent]:
     """Emit the `aggregator` subagent + the run's summed totals.
 
@@ -261,6 +362,7 @@ async def _finalize_synthesis(
         role="aggregator",
         usage=aggregator_usage,
         cost_usd=aggregator_cost,
+        outcome="succeeded",
     )
     total_usage = _sum_usages([*worker_usages, aggregator_usage])
     total_cost = worker_total_cost + aggregator_cost
@@ -268,7 +370,20 @@ async def _finalize_synthesis(
     # this the turn's terminal usage, so the terminal attribution cost is the SUM
     # of every subagent's cost.
     yield Complete(usage=total_usage)
-    yield RunCost(subtotal_usd=total_cost, cap_usd=cap_usd)
+    partial = budget_halted or failed_worker_count > 0
+    yield RunCost(
+        subtotal_usd=total_cost,
+        cap_usd=cap_usd,
+        confidence="exact",
+        phase="final",
+        partial=partial,
+        budget_halted=budget_halted,
+        failed_worker_count=failed_worker_count,
+    )
+    # planned/completed are unused on the wire today but kept in the signature
+    # so call sites can pass them for future persistence without another signature
+    # churn; reference to keep linters quiet.
+    _ = (planned_workers, completed_workers)
 
 
 async def _finalize_synthesis_streamed(
@@ -284,6 +399,7 @@ async def _finalize_synthesis_streamed(
     cap_usd: float,
     budget_halted: bool,
     failed: int = 0,
+    budget_headroom_usd: float | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
@@ -295,6 +411,9 @@ async def _finalize_synthesis_streamed(
     model streams nothing, so the turn never ends with an empty aggregator answer.
     The graceful-degrade (budget) + verifier notes the deterministic path appends
     are re-applied here as trailing deltas so behavior is consistent across paths.
+
+    Mid-aggregator (BE-014): if accumulated aggregator spend pushes the run over
+    the cap, stop the stream early and label the partial.
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
@@ -302,11 +421,21 @@ async def _finalize_synthesis_streamed(
     prompt = aggregate.build_synthesis_prompt(user_text, outputs)
     aggregator_usage = UsageUpdate()
     answer_parts: list[str] = []
+    agg_budget_halted = False
     async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
         if isinstance(event, AnswerDelta):
             answer_parts.append(event.text)
         aggregator_usage = _fold_usage(event, aggregator_usage)
         yield _tag(event, _AGGREGATOR_ID)
+        if not agg_budget_halted and budget.exceeds_cap(
+            actual_usd=worker_total_cost + cost_for_usage(aggregator_usage),
+            cap_usd=cap_usd,
+            headroom_usd=budget_headroom_usd,
+        ):
+            agg_budget_halted = True
+            break
+    if agg_budget_halted:
+        budget_halted = True
     streamed = "".join(answer_parts)
     if not streamed.strip():
         # Model produced no usable synthesis — fall back to the deterministic
@@ -342,11 +471,21 @@ async def _finalize_synthesis_streamed(
         role="aggregator",
         usage=aggregator_usage,
         cost_usd=aggregator_cost,
+        outcome="budget_cancelled" if agg_budget_halted else "succeeded",
     )
     total_usage = _sum_usages([*worker_usages, aggregator_usage])
     total_cost = worker_total_cost + aggregator_cost
     yield Complete(usage=total_usage)
-    yield RunCost(subtotal_usd=total_cost, cap_usd=cap_usd)
+    partial = budget_halted or failed > 0
+    yield RunCost(
+        subtotal_usd=total_cost,
+        cap_usd=cap_usd,
+        confidence="exact",
+        phase="final",
+        partial=partial,
+        budget_halted=budget_halted,
+        failed_worker_count=failed,
+    )
 
 
 async def _collect_answer(
@@ -357,16 +496,23 @@ async def _collect_answer(
     """Run a bounded agent loop QUIETLY and return its (answer_text, usage).
 
     Used for the real-provider planner pass: the planner's reply is parsed into
-    sub-questions, so its events are NOT surfaced as a subagent — only the answer
-    text and accumulated usage matter. Tool output (if the planner calls a tool)
-    stays untrusted DATA carried back through the loop's feedback channel.
+    sub-questions, so its events are NOT surfaced as a subagent during the pass —
+    only the answer text and accumulated usage matter. A later
+    ``_emit_planner_receipt`` folds the usage into the run ledger. Tool output
+    (if the planner calls a tool) stays untrusted DATA carried back through the
+    loop's feedback channel.
     """
     answer_parts: list[str] = []
     usage = UsageUpdate()
-    async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
-        if isinstance(event, AnswerDelta):
-            answer_parts.append(event.text)
-        usage = _fold_usage(event, usage)
+    with invoke_agent_span(
+        subagent_id=_PLANNER_ID, role="orchestrator", label=_PLANNER_LABEL
+    ):
+        async for event in run_agent_loop(
+            make_stream=make_stream_for(prompt), settings=settings
+        ):
+            if isinstance(event, AnswerDelta):
+                answer_parts.append(event.text)
+            usage = _fold_usage(event, usage)
     return "".join(answer_parts), usage
 
 
@@ -379,12 +525,64 @@ async def _run_single(
     settings: Settings,
     user_text: str,
     cost_for_usage: CostForUsage,
+    budget_headroom_usd: float | None = None,
 ) -> AsyncIterator[ProviderEvent]:
-    """One agent loop wrapped as the `primary` subagent."""
+    """One agent loop wrapped as the `primary` subagent.
+
+    Enforces the same per-run cap as deep research (BE-020): pre-admit against a
+    one-primary worst-case estimate, and mid-flight check against the effective
+    cap composed with headroom.
+    """
     subagent_id = "primary"
+    cap = settings.agentic_run_budget_usd
+    expected = budget._expected_subagent_usage(settings)
+    estimate = (
+        cost_for_usage(expected)
+        * settings.agentic_reasoning_token_multiplier
+        * settings.agentic_fanout_token_multiplier
+    )
+    decision = _admit(
+        estimate_usd=estimate, settings=settings, budget_headroom_usd=budget_headroom_usd
+    )
+    if not decision.admitted:
+        yield SubagentStarted(subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary")
+        msg = (
+            "The run was not started — estimated cost "
+            f"${estimate:.4f} exceeds the ${decision.effective_cap_usd:.4f} run "
+            "budget."
+        )
+        yield AnswerDelta(text=msg, subagent_id=subagent_id)
+        empty = UsageUpdate()
+        yield Complete(usage=empty, subagent_id=subagent_id)
+        yield SubagentDone(
+            subagent_id=subagent_id,
+            label=_PRIMARY_LABEL,
+            role="primary",
+            usage=empty,
+            cost_usd=0.0,
+            outcome="failed",
+        )
+        yield Complete(usage=empty)
+        yield RunCost(
+            subtotal_usd=0.0,
+            cap_usd=cap,
+            confidence="exact",
+            phase="final",
+            partial=True,
+            budget_halted=True,
+        )
+        return
+
     yield SubagentStarted(subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary")
+    yield RunCost(
+        subtotal_usd=0.0,
+        cap_usd=cap,
+        confidence="estimate",
+        phase="plan",
+    )
     usage = UsageUpdate()
     answer_parts: list[str] = []
+    budget_halted = False
     with invoke_agent_span(subagent_id=subagent_id, role="primary", label=_PRIMARY_LABEL):
         async for event in run_agent_loop(
             make_stream=make_stream_for(user_text), settings=settings
@@ -392,9 +590,24 @@ async def _run_single(
             if isinstance(event, AnswerDelta):
                 answer_parts.append(event.text)
             usage = _fold_usage(event, usage)
+            if not budget_halted and budget.exceeds_cap(
+                actual_usd=cost_for_usage(usage),
+                cap_usd=cap,
+                headroom_usd=budget_headroom_usd,
+            ):
+                budget_halted = True
             yield _tag(event, subagent_id)
+            if budget_halted and isinstance(event, (Complete, UsageUpdate)):
+                break
     if not "".join(answer_parts).strip():
         yield AnswerDelta(text=EMPTY_REPLY_FALLBACK, subagent_id=subagent_id)
+    elif budget_halted:
+        yield AnswerDelta(
+            text=(
+                "\n\n[Partial answer: stopped early to stay within the run budget.]"
+            ),
+            subagent_id=subagent_id,
+        )
     cost = cost_for_usage(usage)
     yield SubagentDone(
         subagent_id=subagent_id,
@@ -402,8 +615,16 @@ async def _run_single(
         role="primary",
         usage=usage,
         cost_usd=cost,
+        outcome="budget_cancelled" if budget_halted else "succeeded",
     )
-    yield RunCost(subtotal_usd=cost, cap_usd=settings.agentic_run_budget_usd)
+    yield RunCost(
+        subtotal_usd=cost,
+        cap_usd=cap,
+        confidence="exact",
+        phase="final",
+        partial=budget_halted,
+        budget_halted=budget_halted,
+    )
 
 
 # --- deep_research mode (M2 + M3 budget/approval/verify) ----------------------
@@ -418,15 +639,21 @@ async def _run_deep_research(
     estimate_cost: CostEstimator | None = None,
     budget_headroom_usd: float | None = None,
     plan_approved: bool | None = None,
+    approved_plan: list[str] | None = None,
     fallback_make_stream_for: StreamFactory | None = None,
+    fallback_cost_for_usage: CostForUsage | None = None,
+    fallback_provider_id: str | None = None,
+    fallback_model_id: str | None = None,
+    fallback_display_label: str | None = None,
     is_retryable: IsRetryable = is_retryable_provider_error,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan → (approve) → admit → parallel fan-out → (verify) → synthesis.
 
     `plan_approved` carries the plan-approval HITL decision across the resume:
     None on a fresh run (pause if the flag is on), True/False on the resume
-    (fan out / decline). `estimate_cost` + `budget_headroom_usd` drive the
-    pre-spawn reservation and the mid-flight kill.
+    (fan out / decline). When True, ``approved_plan`` is the immutable plan the
+    user approved (BE-039) — never re-planned. `estimate_cost` +
+    `budget_headroom_usd` drive the pre-spawn reservation and the mid-flight kill.
     """
     # Provider-backend split: the FAKE provider keys on the deterministic
     # `DEEP_RESEARCH_WORKER:`/`DEEP_RESEARCH:` scaffolding (the test contract), so
@@ -436,7 +663,16 @@ async def _run_deep_research(
     # prompts, then a streamed model-written synthesis.
     scaffolded = settings.provider_backend == "fake"
     planner_usage = UsageUpdate()
-    if (
+    max_workers = settings.agentic_max_workers
+    if plan_approved is True and approved_plan is not None:
+        # Resume after approve: execute the exact persisted plan (BE-039).
+        # Planner spend was already billed on the pause turn — do not re-plan.
+        sub_questions = [q for q in approved_plan if isinstance(q, str) and q.strip()][
+            :max_workers
+        ]
+        if not sub_questions:
+            sub_questions = [user_text]
+    elif (
         scaffolded
         or user_text.startswith(planner.DEEP_RESEARCH_PREFIX)
         or plan_approved is False
@@ -444,7 +680,7 @@ async def _run_deep_research(
         # Deterministic decomposition: the fake provider, an explicit
         # `DEEP_RESEARCH:` opt-in, or a decline (sub-questions go unused — no
         # fan-out — so skip the model planner call entirely).
-        sub_questions = planner.decompose(user_text, max_workers=settings.agentic_max_workers)
+        sub_questions = planner.decompose(user_text, max_workers=max_workers)
     else:
         # Real-provider planner: a bounded model pass decomposes the prompt into
         # sub-questions so a plain request fans out without the user typing the
@@ -453,32 +689,54 @@ async def _run_deep_research(
         plan_reply, planner_usage = await _collect_answer(
             make_stream_for,
             settings,
-            planner.build_planner_prompt(user_text, max_workers=settings.agentic_max_workers),
+            planner.build_planner_prompt(user_text, max_workers=max_workers),
         )
         sub_questions = planner.parse_plan(
-            plan_reply, max_workers=settings.agentic_max_workers, fallback=user_text
+            plan_reply, max_workers=max_workers, fallback=user_text
         )
     cap = settings.agentic_run_budget_usd
     estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
 
     # Plan-approval HITL gate (T6). On a fresh run with the flag on, pause for a
     # human decision BEFORE any fan-out. The resume re-enters here with
-    # `plan_approved` set.
+    # `plan_approved` set. Fold real planner spend BEFORE AwaitingApproval so the
+    # handler persists it when the pause terminal stops the stream (BE-015).
+    planner_cost = cost_for_usage(planner_usage)
     if plan_approved is None:
-        async for event in _maybe_plan_approval(
-            settings, sub_questions, estimate_usd=estimate, cap_usd=cap
-        ):
-            yield event
         if settings.agentic_plan_approval:
+            async for event in _emit_planner_receipt(
+                planner_usage=planner_usage,
+                cost_for_usage=cost_for_usage,
+                cap_usd=cap,
+                ledger_usd=planner_cost,
+                open_bracket=True,
+            ):
+                yield event
+            async for event in _maybe_plan_approval(
+                settings,
+                sub_questions,
+                estimate_usd=estimate,
+                cap_usd=cap,
+                skip_started=True,
+            ):
+                yield event
             return
     elif plan_approved is False:
         # Declined on resume: no fan-out, a labeled (non-error) synthesis.
+        # Include any planner usage from a prior real-provider plan pass.
+        async for event in _emit_planner_receipt(
+            planner_usage=planner_usage,
+            cost_for_usage=cost_for_usage,
+            cap_usd=cap,
+            ledger_usd=planner_cost,
+        ):
+            yield event
         async for event in _finalize_synthesis(
             synthesis=(
                 "Synthesis: the research plan was declined; no sub-agents were run."
             ),
-            worker_usages=[],
-            worker_total_cost=0.0,
+            worker_usages=[planner_usage],
+            worker_total_cost=planner_cost,
             cost_for_usage=cost_for_usage,
             cap_usd=cap,
         ):
@@ -488,21 +746,54 @@ async def _run_deep_research(
     # Pre-spawn admission (T5). If the worst-case estimate already exceeds the
     # effective cap (run cap composed with user/platform headroom), don't spawn —
     # degrade gracefully to a labeled, explained synthesis (never a silent
-    # overrun, never an error).
+    # overrun, never an error). Fold planner spend into the reject exit (BE-015).
     decision = _admit(
         estimate_usd=estimate, settings=settings, budget_headroom_usd=budget_headroom_usd
     )
     if not decision.admitted:
+        async for event in _emit_planner_receipt(
+            planner_usage=planner_usage,
+            cost_for_usage=cost_for_usage,
+            cap_usd=cap,
+            ledger_usd=planner_cost,
+        ):
+            yield event
         async for event in _finalize_synthesis(
             synthesis=(
                 "Synthesis: the run was not started — estimated cost "
                 f"${estimate:.4f} exceeds the ${decision.effective_cap_usd:.4f} run "
                 "budget. No sub-agents were spawned."
             ),
-            worker_usages=[],
-            worker_total_cost=0.0,
+            worker_usages=[planner_usage],
+            worker_total_cost=planner_cost,
             cost_for_usage=cost_for_usage,
             cap_usd=cap,
+        ):
+            yield event
+        return
+
+    # Seed the run ledger with planner actuals before fan-out (BE-014 / SAF-004).
+    async for event in _emit_planner_receipt(
+        planner_usage=planner_usage,
+        cost_for_usage=cost_for_usage,
+        cap_usd=cap,
+        ledger_usd=planner_cost,
+    ):
+        yield event
+    if budget.exceeds_cap(
+        actual_usd=planner_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
+    ):
+        async for event in _finalize_synthesis(
+            synthesis=(
+                "Synthesis: the run was not started — planner spend already "
+                f"exceeds the ${decision.effective_cap_usd:.4f} run budget. "
+                "No sub-agents were spawned."
+            ),
+            worker_usages=[planner_usage],
+            worker_total_cost=planner_cost,
+            cost_for_usage=cost_for_usage,
+            cap_usd=cap,
+            budget_halted=True,
         ):
             yield event
         return
@@ -526,14 +817,42 @@ async def _run_deep_research(
         answer_parts: list[str] = []
         usage = UsageUpdate()
         worker_failed = False
+        worker_started = False
+        used_fallback = False
         sub_code: SubstitutionReasonCode | None = None
         sub_provider: str | None = None
         sub_model: str | None = None
         sub_label: str | None = None
 
+        def _has_usage(u: UsageUpdate) -> bool:
+            return bool(
+                u.input_tokens
+                or u.output_tokens
+                or u.reasoning_tokens
+                or u.cached_input_tokens
+            )
+
+        def _price(u: UsageUpdate) -> float:
+            if used_fallback and fallback_cost_for_usage is not None:
+                return fallback_cost_for_usage(u)
+            return cost_for_usage(u)
+
+        def _stamp_fallback_route() -> None:
+            nonlocal sub_provider, sub_model, sub_label
+            if sub_provider is None and fallback_provider_id is not None:
+                sub_provider = fallback_provider_id
+            if sub_model is None and fallback_model_id is not None:
+                sub_model = fallback_model_id
+            if sub_label is None and fallback_display_label is not None:
+                sub_label = fallback_display_label
+
         async def _consume(make_stream: MakeStream) -> None:
             nonlocal usage, sub_code, sub_provider, sub_model, sub_label
-            async for event in run_agent_loop(make_stream=make_stream, settings=settings):
+            async for event in run_agent_loop(
+                make_stream=make_stream,
+                settings=settings,
+                allowed_tools=_WORKER_ALLOWED_TOOLS,
+            ):
                 if isinstance(event, AnswerDelta):
                     answer_parts.append(event.text)
                 if isinstance(event, Complete) and event.substitution is not None:
@@ -550,22 +869,37 @@ async def _run_deep_research(
                     await queue.put(
                         SubagentStarted(subagent_id=subagent_id, label=label, role="worker")
                     )
+                    worker_started = True
                     prompt = planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
                     try:
-                        await _consume(make_stream_for(prompt))
+                        await _consume(
+                            make_stream_for(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS)
+                        )
                     except asyncio.CancelledError:
                         raise
                     except BaseException as exc:
+                        # SAF-008 / BE-024: never retry after visible partial
+                        # output or usage — that concatenates two attempts and
+                        # drops primary spend from the roll-up.
+                        had_partial = bool(answer_parts) or _has_usage(usage)
                         if (
-                            fallback_make_stream_for is not None
+                            not had_partial
+                            and fallback_make_stream_for is not None
                             and is_retryable(exc)
                         ):
                             if isinstance(exc, AppError) and exc.envelope.code == "RATE_LIMITED":
                                 sub_code = "rate_limited"
                             else:
                                 sub_code = "provider_fallback"
+                            used_fallback = True
+                            _stamp_fallback_route()
                             try:
-                                await _consume(fallback_make_stream_for(prompt))
+                                await _consume(
+                                    fallback_make_stream_for(
+                                        prompt, allowed_tools=_WORKER_ALLOWED_TOOLS
+                                    )
+                                )
+                                _stamp_fallback_route()
                             except asyncio.CancelledError:
                                 raise
                             except BaseException as retry_exc:
@@ -585,17 +919,31 @@ async def _run_deep_research(
                             worker_failed = True
                     if worker_failed:
                         failed_workers += 1
+                        # Bill any partial primary/fallback usage even when the
+                        # worker fails (or when post-partial retry is refused).
+                        failed_cost = _price(usage)
                         await queue.put(
                             SubagentDone(
                                 subagent_id=subagent_id,
                                 label=label,
                                 role="worker",
-                                usage=UsageUpdate(),
-                                cost_usd=0.0,
+                                usage=usage,
+                                cost_usd=failed_cost,
+                                outcome="failed",
+                                substitution=sub_code,
+                                substituted_provider=sub_provider,
+                                substituted_model=sub_model,
+                                substituted_display_label=sub_label,
                             )
                         )
+                        # Always record usage for the final Complete roll-up
+                        # (SAF-005) — even a zero-token failure is a closed row.
+                        usages[subagent_id] = usage
+                        costs[subagent_id] = failed_cost
                     else:
-                        cost = cost_for_usage(usage)
+                        # Price on the binding that actually served (FE-009 /
+                        # BE-023 / SAF-006).
+                        cost = _price(usage)
                         await queue.put(
                             SubagentDone(
                                 subagent_id=subagent_id,
@@ -603,6 +951,7 @@ async def _run_deep_research(
                                 role="worker",
                                 usage=usage,
                                 cost_usd=cost,
+                                outcome="succeeded",
                                 substitution=sub_code,
                                 substituted_provider=sub_provider,
                                 substituted_model=sub_model,
@@ -616,6 +965,34 @@ async def _run_deep_research(
                         )
                         usages[subagent_id] = usage
                         costs[subagent_id] = cost
+        except asyncio.CancelledError:
+            # Budget mid-flight kill (or outer teardown): emit a terminal done
+            # for every started worker so the FE never shows a green check for
+            # a cancelled row (FE-002). Snapshot usage into the run ledger so
+            # already-reported spend survives into the final Complete (SAF-005).
+            # Non-budget cancels (stop/disconnect/teardown) use outcome="stopped"
+            # so failures stay distinguishable from budget_cancelled.
+            if worker_started:
+                cancel_cost = _price(usage) if _has_usage(usage) else 0.0
+                await queue.put(
+                    SubagentDone(
+                        subagent_id=subagent_id,
+                        label=label,
+                        role="worker",
+                        usage=usage,
+                        cost_usd=cancel_cost,
+                        outcome=(
+                            "budget_cancelled" if budget_halted else "stopped"
+                        ),
+                        substitution=sub_code,
+                        substituted_provider=sub_provider,
+                        substituted_model=sub_model,
+                        substituted_display_label=sub_label,
+                    )
+                )
+                usages[subagent_id] = usage
+                costs[subagent_id] = cancel_cost
+            raise
         finally:
             await queue.put(_WorkerSentinel(subagent_id))
 
@@ -623,11 +1000,11 @@ async def _run_deep_research(
         asyncio.create_task(_run_worker(index, subagent_id, label, sub_question))
         for index, subagent_id, label, sub_question in worker_meta
     ]
-    # Mid-flight kill (T5): accumulate ACTUAL per-worker cost as each
-    # `SubagentDone` lands; on a cap breach, cancel the remaining (un-started AND
-    # in-flight) workers and aggregate whatever completed — a labeled partial
+    # Mid-flight kill (T5): ledger starts with planner actuals (BE-014), then
+    # accumulates each worker's `SubagentDone` cost; on a cap breach, cancel the
+    # remaining workers and aggregate whatever completed — a labeled partial
     # synthesis rather than a silent overrun.
-    actual_cost = 0.0
+    actual_cost = planner_cost
     budget_halted = False
     try:
         remaining = len(tasks)
@@ -639,6 +1016,13 @@ async def _run_deep_research(
             yield item
             if isinstance(item, SubagentDone) and item.role == "worker":
                 actual_cost += item.cost_usd or 0.0
+                # Mid-run meter tick (estimate + mid + final; FE-011 / FE-012).
+                yield RunCost(
+                    subtotal_usd=actual_cost,
+                    cap_usd=cap,
+                    confidence="exact",
+                    phase="progress",
+                )
                 if not budget_halted and budget.exceeds_cap(
                     actual_usd=actual_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
                 ):
@@ -658,9 +1042,15 @@ async def _run_deep_research(
                     exc_info=outcome,
                 )
     finally:
+        # BE-025: cancel AND join so workers cannot outlive the turn.
+        # Note: on stop/disconnect the pump acloses this generator (GeneratorExit),
+        # so SubagentDone(stopped) enqueued by cancelled workers here cannot be
+        # yielded — the handler stop path marks unfinished accumulators stopped.
         for task in tasks:
             if not task.done():
                 task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
     # Fold the (real-provider) planner pass into the run totals so its tokens are
@@ -671,13 +1061,35 @@ async def _run_deep_research(
     worker_total_cost = sum(
         costs.get(sid, 0.0) for _, sid, _, _ in worker_meta
     ) + cost_for_usage(planner_usage)
+    completed_count = len(ordered_outputs)
+
+    # BE-014 residual: before starting the aggregator, refuse a model synthesis
+    # call when the ledger already exceeds the cap or the next phase estimate
+    # cannot fit. Degrade to deterministic (zero-token) synthesis instead.
+    expected_agg = budget._expected_subagent_usage(settings)
+    aggregator_estimate = (
+        cost_for_usage(expected_agg)
+        * settings.agentic_reasoning_token_multiplier
+    )
+    cannot_fund_aggregator = budget.exceeds_cap(
+        actual_usd=worker_total_cost + aggregator_estimate,
+        cap_usd=cap,
+        headroom_usd=budget_headroom_usd,
+    ) or budget.exceeds_cap(
+        actual_usd=worker_total_cost,
+        cap_usd=cap,
+        headroom_usd=budget_headroom_usd,
+    )
+    if cannot_fund_aggregator:
+        budget_halted = True
+
     with invoke_agent_span(
         subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
     ):
-        if scaffolded or not ordered_outputs:
-            # Deterministic synthesis: the fake-provider / test contract, and the
-            # safety fallback when no worker produced output (a streamed synthesis
-            # over zero findings would be meaningless).
+        if scaffolded or not ordered_outputs or cannot_fund_aggregator:
+            # Deterministic synthesis: the fake-provider / test contract, the
+            # safety fallback when no worker produced output, and the
+            # budget-degrade path when the aggregator model call cannot fit.
             synthesis = aggregate.synthesize(
                 ordered_outputs,
                 planned=len(sub_questions),
@@ -691,6 +1103,10 @@ async def _run_deep_research(
                 worker_total_cost=worker_total_cost,
                 cost_for_usage=cost_for_usage,
                 cap_usd=cap,
+                budget_halted=budget_halted,
+                failed_worker_count=failed_workers,
+                planned_workers=len(sub_questions),
+                completed_workers=completed_count,
             ):
                 yield event
         else:
@@ -708,6 +1124,7 @@ async def _run_deep_research(
                 cap_usd=cap,
                 budget_halted=budget_halted,
                 failed=failed_workers,
+                budget_headroom_usd=budget_headroom_usd,
             ):
                 yield event
 
@@ -725,7 +1142,12 @@ async def run_orchestrator(
     estimate_cost: CostEstimator | None = None,
     budget_headroom_usd: float | None = None,
     plan_approved: bool | None = None,
+    approved_plan: list[str] | None = None,
     fallback_make_stream_for: StreamFactory | None = None,
+    fallback_cost_for_usage: CostForUsage | None = None,
+    fallback_provider_id: str | None = None,
+    fallback_model_id: str | None = None,
+    fallback_display_label: str | None = None,
     is_retryable: IsRetryable = is_retryable_provider_error,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive an agentic turn, yielding the handler's `ProviderEvent` union.
@@ -735,12 +1157,20 @@ async def run_orchestrator(
     binding. The handler routes here ONLY when agentic mode is active, so the
     flag-off path never constructs this generator.
 
-    M3 params (all optional; inert for `single` mode):
-    - `estimate_cost` — prices the worst-case run for pre-spawn admission.
-    - `budget_headroom_usd` — the caller's remaining user/platform budget,
-      composed with the per-run cap.
+    M3 params (all optional):
+    - `estimate_cost` — prices the worst-case run for pre-spawn admission
+      (deep_research).
+    - `budget_headroom_usd` — the caller's remaining user/platform (and
+      per-conversation) budget, composed with the per-run cap for both
+      `single` and `deep_research`.
     - `plan_approved` — the plan-approval HITL decision carried across a resume
       (None = fresh run, True = approved, False = declined).
+    - `approved_plan` — immutable sub-questions from the paused tool input when
+      `plan_approved` is True (BE-039); ignored otherwise.
+    - `fallback_make_stream_for` / `fallback_cost_for_usage` — per-worker
+      fallback route + pricer when the primary binding fails retryably (FE-009).
+    - `fallback_provider_id` / `fallback_model_id` / `fallback_display_label` —
+      served-route identity stamped onto substituted workers (BE-023 / SAF-006).
     """
     if mode == "deep_research":
         async for event in _run_deep_research(
@@ -751,7 +1181,12 @@ async def run_orchestrator(
             estimate_cost=estimate_cost,
             budget_headroom_usd=budget_headroom_usd,
             plan_approved=plan_approved,
+            approved_plan=approved_plan,
             fallback_make_stream_for=fallback_make_stream_for,
+            fallback_cost_for_usage=fallback_cost_for_usage,
+            fallback_provider_id=fallback_provider_id,
+            fallback_model_id=fallback_model_id,
+            fallback_display_label=fallback_display_label,
             is_retryable=is_retryable,
         ):
             yield event
@@ -761,5 +1196,6 @@ async def run_orchestrator(
             settings=settings,
             user_text=user_text,
             cost_for_usage=cost_for_usage,
+            budget_headroom_usd=budget_headroom_usd,
         ):
             yield event

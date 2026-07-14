@@ -25,15 +25,21 @@ For each round:
   usage / complete) straight through. Usage/Complete from every provider
   invocation are SUMMED into one cumulative terminal ``Complete``.
 - For each ``ToolCall`` the provider requests:
-  - UNKNOWN / not-in-allowlist tool → synthesize a failed ``ToolResult`` and
-    feed it back (the model can recover next round); never execute.
+  - Provider-internal / unknown name (not in ``TOOL_REGISTRY``, e.g.
+    ``web_search``) → relay the ``ToolCall`` immediately so the FE can form
+    live panels before later ``StatusUpdate`` / ``ToolResult`` frames, then
+    either accept the provider's own ``ToolResult`` or synthesize a failed
+    result for true unknowns.
   - APPROVAL-GATED and not yet approved → emit a server-normalized
     ``ToolCall(status="awaiting_approval", approval_state="pending")`` then an
     ``AwaitingApproval`` sentinel and STOP. The handler turns this into the
-    paused terminal; a resume POST applies the decision.
+    paused terminal; a resume POST applies the decision. (Registry ToolCalls
+    are NOT relayed raw — only the normalized pending/running shapes.)
   - Otherwise (auto / already-approved) → emit ``ToolCall(status="running")``,
     execute it (``execute_tool`` is timeout-wrapped), emit the ``ToolResult``,
     feed it back, and continue to the next round.
+  - Not-in-allowlist registry tool → synthesize a failed ``ToolResult`` and
+    feed it back (the model can recover next round); never execute.
 - A round that requests NO tool calls is terminal: its content was the final
   answer; relay it and stop.
 
@@ -296,6 +302,13 @@ async def run_agent_loop(
         async for event in stream:
             if isinstance(event, ToolCall):
                 pending_calls.append(event)
+                # Provider-internal tools (not in TOOL_REGISTRY) self-resolve
+                # in the same stream — typically ToolCall → StatusUpdate →
+                # ToolResult. Relay immediately so the FE can show live
+                # web-search status; registry tools are emitted later in
+                # server-normalized running / awaiting_approval form (BE-004).
+                if event.name not in TOOL_REGISTRY:
+                    yield event
                 continue
             if isinstance(event, ReasoningDelta):
                 round_reasoning_parts.append(event.text)

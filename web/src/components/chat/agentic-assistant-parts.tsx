@@ -71,7 +71,13 @@ export function AgenticAssistantParts({
           className="mb-2 inline-flex max-w-full items-center gap-1.5 rounded-full border border-warning-foreground/20 bg-warning px-2.5 py-1 ui-caption text-warning-foreground"
         >
           <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
-          Partial answer — some research steps did not finish.
+          {partialSummary.budgetHalted
+            ? "Partial answer — stopped early to stay within the run budget."
+            : partialSummary.failedWorkers > 0
+              ? `Partial answer — ${partialSummary.failedWorkers} worker${
+                  partialSummary.failedWorkers === 1 ? "" : "s"
+                } failed.`
+              : "Partial answer — some research steps did not finish."}
         </p>
       ) : null}
       {renderedParts.map((part, idx) => {

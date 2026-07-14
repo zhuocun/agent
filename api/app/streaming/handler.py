@@ -33,7 +33,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -786,21 +786,35 @@ async def stream_and_persist(
     # never shown a stub like `calendar_create_event` that resolves to nothing —
     # the fake provider/e2e still exercises that tool's approval gate via its
     # `TOOL_APPROVE:` marker. None when tools are off ⇒ no tools advertised,
-    # provider stream unchanged.
-    turn_tool_definitions = (
-        [
+    # provider stream unchanged. Worker streams further filter via
+    # `allowed_tools` (empty ⇒ advertise nothing).
+    def _tool_definitions_for(
+        allowed_tools: Collection[str] | None = None,
+    ) -> list[ToolDefinition] | None:
+        if not tools_active:
+            return None
+        specs = advertised_tool_specs(allowed_names=allowed_tools)
+        if not specs:
+            return None
+        return [
             ToolDefinition(name=spec.name, label=spec.label, parameters=spec.schema)
-            for spec in advertised_tool_specs()
+            for spec in specs
         ]
-        if tools_active
-        else None
-    )
+
+    turn_tool_definitions = _tool_definitions_for()
 
     def _build_raw_stream(
         tool_feedback: list[ToolResult],
         suppress_tools: bool = False,
         user_text_override: str | None = None,
+        *,
+        tool_definitions: list[ToolDefinition] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
+        advertised = (
+            None
+            if suppress_tools
+            else (turn_tool_definitions if tool_definitions is None else tool_definitions)
+        )
         round_history = history + tool_feedback_to_history(tool_feedback)
         return active_provider.stream(
             model_id=binding.model_id,
@@ -839,30 +853,42 @@ async def stream_and_persist(
             # Always non-None — the datetime block is always present.
             system_prefix=turn_system_prefix,
             # Agent-loop tools advertised to a real provider (None when tools are
-            # off). The fake provider ignores this; the OpenAI/Anthropic adapters
-            # advertise them natively and emit `ToolCall`s the agent loop fulfils.
-            # On the loop's compelled final pass (`suppress_tools=True`) we
-            # advertise NO tools so a greedy provider is forced to answer instead
-            # of requesting yet another tool and returning a blank turn.
-            tools=None if suppress_tools else turn_tool_definitions,
+            # off or the caller scoped an empty allowlist). The fake provider
+            # ignores this; the OpenAI/Anthropic adapters advertise them natively
+            # and emit `ToolCall`s the agent loop fulfils. On the loop's compelled
+            # final pass (`suppress_tools=True`) we advertise NO tools so a greedy
+            # provider is forced to answer instead of requesting yet another tool
+            # and returning a blank turn.
+            tools=advertised,
         )
 
     def _agentic_make_stream(
         worker_user_text: str,
+        *,
+        allowed_tools: Collection[str] | None = None,
     ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
         """Build a per-subagent `MakeStream` over the active route (agentic only).
 
         Captures the same route/binding/history/hints `_build_raw_stream` uses;
         only the user text varies per subagent (the orchestrator hands each worker
-        its sub-question prompt). The returned callable is the `MakeStream` the
-        agent loop drives for that subagent — including the loop's `suppress_tools`
-        final-pass signal, threaded straight to `_build_raw_stream`.
+        its sub-question prompt). ``allowed_tools`` scopes both advertise and
+        (via the orchestrator) execute for workers — empty ⇒ no registry tools.
         """
+        scoped_tools = (
+            _tool_definitions_for(allowed_tools)
+            if allowed_tools is not None
+            else turn_tool_definitions
+        )
 
         def _make(
             tool_feedback: list[ToolResult], suppress_tools: bool = False
         ) -> AsyncIterator[ProviderEvent]:
-            return _build_raw_stream(tool_feedback, suppress_tools, worker_user_text)
+            return _build_raw_stream(
+                tool_feedback,
+                suppress_tools,
+                worker_user_text,
+                tool_definitions=scoped_tools,
+            )
 
         return _make
 
@@ -870,6 +896,8 @@ async def stream_and_persist(
 
     def _agentic_fallback_make_stream(
         worker_user_text: str,
+        *,
+        allowed_tools: Collection[str] | None = None,
     ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
         """Per-subagent stream factory over the fallback route (agentic only)."""
         assert fallback_binding is not None
@@ -883,6 +911,11 @@ async def stream_and_persist(
         fb_provider = _cached_fb_provider[0]
         assert fb_provider is not None
         fb_api_key = fallback_api_key
+        scoped_tools = (
+            _tool_definitions_for(allowed_tools)
+            if allowed_tools is not None
+            else turn_tool_definitions
+        )
 
         def _make(
             tool_feedback: list[ToolResult], suppress_tools: bool = False
@@ -906,7 +939,7 @@ async def stream_and_persist(
                 response_format=response_format,
                 supports_vision=fb_binding.supports_vision,
                 system_prefix=turn_system_prefix,
-                tools=None if suppress_tools else turn_tool_definitions,
+                tools=None if suppress_tools else scoped_tools,
             )
 
         return _make

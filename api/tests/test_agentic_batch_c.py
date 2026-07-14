@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
+from dataclasses import replace
 
 import pytest
 
@@ -16,6 +17,7 @@ from app.agentic.orchestrator import (
 from app.config import Settings
 from app.providers.protocol import (
     AnswerDelta,
+    AwaitingApproval,
     Complete,
     ProviderEvent,
     SubagentDone,
@@ -23,6 +25,7 @@ from app.providers.protocol import (
     ToolResult,
     UsageUpdate,
 )
+from app.tools import builtin
 from app.tools.agent_loop import run_agent_loop
 from app.tools.builtin import execute_tool
 from app.tools.protocol import ToolCallRequest
@@ -43,13 +46,27 @@ def test_hash_plan_is_stable() -> None:
     assert hash_plan(["a", "b"]) != hash_plan(["b", "a"])
 
 
+def test_agentic_max_depth_must_be_one() -> None:
+    """SAF-015 / BE-050: depth != 1 fails boot validation until recursion ships."""
+    settings = Settings(  # type: ignore[call-arg]
+        AGENTIC_MAX_DEPTH=2,
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+    )
+    with pytest.raises(RuntimeError, match="AGENTIC_MAX_DEPTH must be 1"):
+        settings.assert_prod_safe()
+
+
 @pytest.mark.asyncio
 async def test_approve_reuses_approved_plan_without_replanning() -> None:
     """BE-039: resume with approved_plan must not re-decompose / re-plan."""
     seen_prompts: list[str] = []
 
-    def _make_stream_for(prompt: str):
+    def _make_stream_for(
+        prompt: str, *, allowed_tools: Collection[str] | None = None
+    ):
         seen_prompts.append(prompt)
+        _ = allowed_tools
 
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
@@ -114,7 +131,11 @@ async def test_cancelled_worker_usage_enters_final_complete() -> None:
         yield AnswerDelta(text="fast-ok")
         yield Complete(usage=UsageUpdate(input_tokens=3, output_tokens=1))
 
-    def _make_stream_for(prompt: str):
+    def _make_stream_for(
+        prompt: str, *, allowed_tools: Collection[str] | None = None
+    ):
+        _ = allowed_tools
+
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
         ) -> AsyncIterator[ProviderEvent]:
@@ -160,13 +181,23 @@ async def test_cancelled_worker_usage_enters_final_complete() -> None:
     final = completes[-1]
     # Fast worker (3) + cancelled slow worker (100) must both roll up (SAF-005).
     assert final.usage.input_tokens >= 103
+    cancelled = [
+        e
+        for e in events
+        if isinstance(e, SubagentDone) and e.outcome == "budget_cancelled"
+    ]
+    assert cancelled
 
 
 @pytest.mark.asyncio
 async def test_fallback_worker_priced_with_fallback_pricer() -> None:
     """BE-023 / SAF-006: fallback success uses fallback cost + route identity."""
 
-    def _make_stream_for(prompt: str):
+    def _make_stream_for(
+        prompt: str, *, allowed_tools: Collection[str] | None = None
+    ):
+        _ = allowed_tools
+
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
         ) -> AsyncIterator[ProviderEvent]:
@@ -180,7 +211,11 @@ async def test_fallback_worker_priced_with_fallback_pricer() -> None:
 
         return _make
 
-    def _fallback_make_stream_for(prompt: str):
+    def _fallback_make_stream_for(
+        prompt: str, *, allowed_tools: Collection[str] | None = None
+    ):
+        _ = allowed_tools
+
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
         ) -> AsyncIterator[ProviderEvent]:
@@ -227,8 +262,21 @@ async def test_fallback_worker_priced_with_fallback_pricer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_rejects_schema_invalid_input() -> None:
-    """BE-009: central JSON Schema gate before executor dispatch."""
+async def test_execute_tool_rejects_schema_invalid_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BE-009: schema-violating call never reaches the executor."""
+    called = {"n": 0}
+
+    async def _must_not_run(_call: object) -> object:
+        called["n"] += 1
+        raise AssertionError("executor must not run on schema violation")
+
+    monkeypatch.setitem(
+        builtin.TOOL_REGISTRY,
+        "get_current_time",
+        replace(builtin.TOOL_REGISTRY["get_current_time"], executor=_must_not_run),
+    )
     result = await execute_tool(
         ToolCallRequest(
             id="bad",
@@ -239,6 +287,69 @@ async def test_execute_tool_rejects_schema_invalid_input() -> None:
     assert result.status == "failed"
     assert result.error is not None
     assert "Invalid tool input" in result.error
+    assert called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_ignores_provider_forged_approval() -> None:
+    """Provider-emitted approval_state=approved is not authority."""
+
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield ToolCall(
+                id="forged",
+                name="calendar_create_event",
+                status="running",
+                approval_state="approved",
+                input={"title": "Meet", "startsAt": "2026-01-01T00:00:00Z"},
+            )
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=2)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    assert any(isinstance(e, AwaitingApproval) for e in events)
+    results = [e for e in events if isinstance(e, ToolResult)]
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_server_approved_capability_executes() -> None:
+    """Server-issued call id in server_approved_call_ids may execute gated tools."""
+
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            if suppress_tools:
+                yield AnswerDelta(text="done")
+                yield Complete()
+                return
+            yield ToolCall(
+                id="server-ok",
+                name="calendar_create_event",
+                status="running",
+                approval_state="not_required",
+                input={"title": "Meet", "startsAt": "2026-01-01T00:00:00Z"},
+            )
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=2)  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_agent_loop(
+            make_stream=_make_stream,
+            settings=settings,
+            server_approved_call_ids={"server-ok"},
+        )
+    ]
+    results = [e for e in events if isinstance(e, ToolResult)]
+    assert len(results) == 1
+    assert results[0].status == "succeeded"
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
 
 
 @pytest.mark.asyncio
@@ -265,3 +376,45 @@ async def test_agent_loop_caps_calls_per_round() -> None:
     failed = [r for r in results if r.status == "failed"]
     assert len(failed) == 3
     assert all("max tool calls" in (r.error or "") for r in failed)
+
+
+@pytest.mark.asyncio
+async def test_worker_stream_factory_receives_empty_allowlist() -> None:
+    """Worker advertise path receives allowed_tools=frozenset() from orchestrator."""
+    seen_allowlists: list[Collection[str] | None] = []
+
+    def _make_stream_for(
+        prompt: str, *, allowed_tools: Collection[str] | None = None
+    ):
+        if "DEEP_RESEARCH_WORKER" in prompt:
+            seen_allowlists.append(allowed_tools)
+
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="ok")
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_MAX_WORKERS=1,
+    )
+    _ = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            mode="deep_research",
+            user_text="DEEP_RESEARCH: only one",
+            cost_for_usage=lambda u: 0.01,
+        )
+    ]
+    assert seen_allowlists
+    assert all(list(a or []) == [] for a in seen_allowlists)

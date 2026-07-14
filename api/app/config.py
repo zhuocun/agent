@@ -430,8 +430,10 @@ class Settings(BaseSettings):
     # width). Keeps in-flight provider calls per turn bounded independently of the
     # total worker count.
     agentic_max_concurrency: int = Field(default=3, alias="AGENTIC_MAX_CONCURRENCY")
-    # Max orchestration depth (a worker spawning its own sub-workers). M1/M2 run a
-    # single level; reserved for deeper recursion in a later milestone.
+    # Max orchestration depth (a worker spawning its own sub-workers). Shipped
+    # topology is flat (depth == 1): workers call `run_agent_loop` only and never
+    # recurse into the orchestrator. Values other than 1 are rejected at boot
+    # until recursive orchestration exists and is evaluated (SAF-015 / BE-050).
     agentic_max_depth: int = Field(default=1, alias="AGENTIC_MAX_DEPTH")
     # Per-run cost budget (USD) surfaced on the `run_cost` wire event as the cap.
     # Enforced via pre-spawn admission + mid-flight kill (`agentic/budget.py`).
@@ -572,8 +574,10 @@ class Settings(BaseSettings):
             raise RuntimeError("AGENTIC_MAX_WORKERS must be >= 1")
         if self.agentic_max_concurrency < 1:
             raise RuntimeError("AGENTIC_MAX_CONCURRENCY must be >= 1")
-        if self.agentic_max_depth < 1:
-            raise RuntimeError("AGENTIC_MAX_DEPTH must be >= 1")
+        if self.agentic_max_depth != 1:
+            raise RuntimeError(
+                "AGENTIC_MAX_DEPTH must be 1 until recursive orchestration ships"
+            )
         if self.agentic_run_budget_usd <= 0:
             raise RuntimeError("AGENTIC_RUN_BUDGET_USD must be > 0")
         if self.agentic_reasoning_token_multiplier <= 0:

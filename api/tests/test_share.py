@@ -333,3 +333,71 @@ async def test_mint_is_idempotent(
     second = (await client.post(f"/api/conversations/{conv_id}/share")).json()
     # No rotation: re-minting returns the SAME token so existing links survive.
     assert first["shareToken"] == second["shareToken"]
+
+
+async def test_public_get_strips_plan_approval_cost_fields(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Plan-approval tool_call estimatedCostUsd/capUsd must not leak on share."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    async with session_factory() as session:
+        conversation = Conversation(
+            user_id=user_id,
+            title="Plan approval shared",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(conversation)
+        await session.flush()
+        session.add(
+            Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                parts=[
+                    {
+                        "type": "tool_call",
+                        "id": "plan-approval-abc",
+                        "name": "agentic_plan_approval",
+                        "label": "Review research plan",
+                        "status": "awaiting_approval",
+                        "approvalState": "pending",
+                        "input": {
+                            "plan": ["alpha", "beta"],
+                            "planHash": "deadbeef",
+                            "estimatedCostUsd": 0.42,
+                            "capUsd": 1.0,
+                        },
+                        "subagentId": "planner",
+                    },
+                    {
+                        "type": "text",
+                        "text": "Awaiting plan approval.",
+                        "subagentId": "planner",
+                    },
+                ],
+                status="awaiting_approval",
+                attribution=None,
+                created_at=datetime(2026, 1, 1, 12, 0, 5, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+        conv_id = str(conversation.id)
+
+    token = (
+        await client.post(f"/api/conversations/{conv_id}/share")
+    ).json()["shareToken"]
+    public = await client.get(f"/api/share/{token}")
+    assert public.status_code == 200
+    body = public.json()
+    keys = _all_keys(body)
+    leaked = keys & _FORBIDDEN_COST_KEYS
+    assert not leaked, f"public share leaked cost keys: {leaked}"
+    tool_part = next(
+        p for p in body["messages"][0]["parts"] if p.get("type") == "tool_call"
+    )
+    assert tool_part["name"] == "agentic_plan_approval"
+    assert "estimatedCostUsd" not in tool_part.get("input", {})
+    assert "capUsd" not in tool_part.get("input", {})
+    assert tool_part["input"]["plan"] == ["alpha", "beta"]

@@ -31,8 +31,9 @@ def deepseek_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[Settings]:
 def _make_stream_factory() -> tuple[object, list[str]]:
     prompts: list[str] = []
 
-    def _factory(prompt: str) -> MakeStream:
+    def _factory(prompt: str, *, allowed_tools: object = None) -> MakeStream:
         prompts.append(prompt)
+        _ = allowed_tools
 
         async def _stream(
             _tool_feedback: list[object], _suppress_tools: bool = False

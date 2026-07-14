@@ -32,7 +32,7 @@ import hashlib
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -81,11 +81,10 @@ _TAGGABLE = (
 
 AgenticMode = Literal["single", "deep_research"]
 
-# Given a per-subagent user prompt, build the `MakeStream` the agent loop drives
-# for that subagent. The handler supplies this so the orchestrator stays
-# provider-agnostic: it captures the active route/binding/history and only varies
-# the user text per worker.
-StreamFactory = Callable[[str], MakeStream]
+# Build a per-subagent `MakeStream` for the given user prompt. Optional keyword
+# ``allowed_tools`` scopes which registry tools are advertised (and should match
+# the agent-loop execute allowlist). ``None`` = full turn set; empty = none.
+StreamFactory = Callable[..., MakeStream]
 
 # Computes the USD cost of an accumulated usage for the active binding.
 CostForUsage = Callable[[UsageUpdate], float]
@@ -98,6 +97,12 @@ _AGGREGATOR_ID = "aggregator"
 _AGGREGATOR_LABEL = "Synthesis"
 _PLANNER_ID = "planner"
 _PLANNER_LABEL = "Planner"
+
+# Deep-research workers are flat (AGENTIC_MAX_DEPTH == 1 by construction): each
+# worker runs one `run_agent_loop` and never re-enters the orchestrator. No
+# registry tools are advertised or executed on workers (least privilege);
+# provider-internal web_search remains available via the handler flag.
+_WORKER_ALLOWED_TOOLS: frozenset[str] = frozenset()
 
 # Plan-approval HITL (M3). The plan pause reuses the shipped tool-approval
 # terminal: the orchestrator emits a pseudo `tool_call` whose name is this
@@ -182,12 +187,6 @@ def _fold_usage(event: ProviderEvent, current: UsageUpdate) -> UsageUpdate:
 # the orchestrator never reaches into pricing/tiers directly. None disables the
 # pre-spawn reservation (estimate treated as 0 ⇒ always admitted).
 CostEstimator = Callable[[int], float]
-
-
-# Deep-research workers: no registry tools (least privilege). Provider-internal
-# web_search remains available via the handler's web_search flag; the agent loop
-# deny-lists registry tools when this empty frozenset is passed.
-_WORKER_ALLOWED_TOOLS: frozenset[str] = frozenset()
 
 
 async def _emit_planner_receipt(
@@ -400,6 +399,7 @@ async def _finalize_synthesis_streamed(
     cap_usd: float,
     budget_halted: bool,
     failed: int = 0,
+    budget_headroom_usd: float | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
@@ -411,6 +411,9 @@ async def _finalize_synthesis_streamed(
     model streams nothing, so the turn never ends with an empty aggregator answer.
     The graceful-degrade (budget) + verifier notes the deterministic path appends
     are re-applied here as trailing deltas so behavior is consistent across paths.
+
+    Mid-aggregator (BE-014): if accumulated aggregator spend pushes the run over
+    the cap, stop the stream early and label the partial.
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
@@ -418,11 +421,21 @@ async def _finalize_synthesis_streamed(
     prompt = aggregate.build_synthesis_prompt(user_text, outputs)
     aggregator_usage = UsageUpdate()
     answer_parts: list[str] = []
+    agg_budget_halted = False
     async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
         if isinstance(event, AnswerDelta):
             answer_parts.append(event.text)
         aggregator_usage = _fold_usage(event, aggregator_usage)
         yield _tag(event, _AGGREGATOR_ID)
+        if not agg_budget_halted and budget.exceeds_cap(
+            actual_usd=worker_total_cost + cost_for_usage(aggregator_usage),
+            cap_usd=cap_usd,
+            headroom_usd=budget_headroom_usd,
+        ):
+            agg_budget_halted = True
+            break
+    if agg_budget_halted:
+        budget_halted = True
     streamed = "".join(answer_parts)
     if not streamed.strip():
         # Model produced no usable synthesis — fall back to the deterministic
@@ -458,7 +471,7 @@ async def _finalize_synthesis_streamed(
         role="aggregator",
         usage=aggregator_usage,
         cost_usd=aggregator_cost,
-        outcome="succeeded",
+        outcome="budget_cancelled" if agg_budget_halted else "succeeded",
     )
     total_usage = _sum_usages([*worker_usages, aggregator_usage])
     total_cost = worker_total_cost + aggregator_cost
@@ -859,7 +872,9 @@ async def _run_deep_research(
                     worker_started = True
                     prompt = planner.worker_prompt(index, sub_question, scaffolded=scaffolded)
                     try:
-                        await _consume(make_stream_for(prompt))
+                        await _consume(
+                            make_stream_for(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS)
+                        )
                     except asyncio.CancelledError:
                         raise
                     except BaseException as exc:
@@ -879,7 +894,11 @@ async def _run_deep_research(
                             used_fallback = True
                             _stamp_fallback_route()
                             try:
-                                await _consume(fallback_make_stream_for(prompt))
+                                await _consume(
+                                    fallback_make_stream_for(
+                                        prompt, allowed_tools=_WORKER_ALLOWED_TOOLS
+                                    )
+                                )
                                 _stamp_fallback_route()
                             except asyncio.CancelledError:
                                 raise
@@ -951,6 +970,8 @@ async def _run_deep_research(
             # for every started worker so the FE never shows a green check for
             # a cancelled row (FE-002). Snapshot usage into the run ledger so
             # already-reported spend survives into the final Complete (SAF-005).
+            # Non-budget cancels (stop/disconnect/teardown) use outcome="stopped"
+            # so failures stay distinguishable from budget_cancelled.
             if worker_started:
                 cancel_cost = _price(usage) if _has_usage(usage) else 0.0
                 await queue.put(
@@ -960,7 +981,9 @@ async def _run_deep_research(
                         role="worker",
                         usage=usage,
                         cost_usd=cancel_cost,
-                        outcome="budget_cancelled",
+                        outcome=(
+                            "budget_cancelled" if budget_halted else "stopped"
+                        ),
                         substitution=sub_code,
                         substituted_provider=sub_provider,
                         substituted_model=sub_model,
@@ -1036,13 +1059,34 @@ async def _run_deep_research(
         costs.get(sid, 0.0) for _, sid, _, _ in worker_meta
     ) + cost_for_usage(planner_usage)
     completed_count = len(ordered_outputs)
+
+    # BE-014 residual: before starting the aggregator, refuse a model synthesis
+    # call when the ledger already exceeds the cap or the next phase estimate
+    # cannot fit. Degrade to deterministic (zero-token) synthesis instead.
+    expected_agg = budget._expected_subagent_usage(settings)
+    aggregator_estimate = (
+        cost_for_usage(expected_agg)
+        * settings.agentic_reasoning_token_multiplier
+    )
+    cannot_fund_aggregator = budget.exceeds_cap(
+        actual_usd=worker_total_cost + aggregator_estimate,
+        cap_usd=cap,
+        headroom_usd=budget_headroom_usd,
+    ) or budget.exceeds_cap(
+        actual_usd=worker_total_cost,
+        cap_usd=cap,
+        headroom_usd=budget_headroom_usd,
+    )
+    if cannot_fund_aggregator:
+        budget_halted = True
+
     with invoke_agent_span(
         subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
     ):
-        if scaffolded or not ordered_outputs:
-            # Deterministic synthesis: the fake-provider / test contract, and the
-            # safety fallback when no worker produced output (a streamed synthesis
-            # over zero findings would be meaningless).
+        if scaffolded or not ordered_outputs or cannot_fund_aggregator:
+            # Deterministic synthesis: the fake-provider / test contract, the
+            # safety fallback when no worker produced output, and the
+            # budget-degrade path when the aggregator model call cannot fit.
             synthesis = aggregate.synthesize(
                 ordered_outputs,
                 planned=len(sub_questions),
@@ -1077,6 +1121,7 @@ async def _run_deep_research(
                 cap_usd=cap,
                 budget_halted=budget_halted,
                 failed=failed_workers,
+                budget_headroom_usd=budget_headroom_usd,
             ):
                 yield event
 

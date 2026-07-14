@@ -215,6 +215,7 @@ async def run_agent_loop(
     make_stream: MakeStream,
     settings: Settings,
     allowed_tools: Collection[str] | None = None,
+    server_approved_call_ids: Collection[str] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive a bounded tool-calling loop over a provider event stream.
 
@@ -228,6 +229,10 @@ async def run_agent_loop(
     others fail closed as unknown. ``None`` = full registry. Deep-research
     workers pass an empty collection (registry tools denied; provider-internal
     ``web_search`` is unaffected).
+
+    ``server_approved_call_ids``: opaque call ids the *server* has authorized
+    for gated-tool execution (resume capability). Provider-emitted
+    ``approval_state="approved"`` is never trusted on its own.
     """
     tool_feedback: list[ToolResult] = []
     max_rounds = max(1, settings.tool_max_rounds)
@@ -239,6 +244,9 @@ async def run_agent_loop(
     tools_ran = False
     accumulated_usage = UsageUpdate()
     allowed: set[str] | None = None if allowed_tools is None else set(allowed_tools)
+    approved_ids: set[str] = (
+        set(server_approved_call_ids) if server_approved_call_ids is not None else set()
+    )
 
     def _note_answer(delta: AnswerDelta) -> None:
         nonlocal answer_emitted
@@ -380,14 +388,11 @@ async def run_agent_loop(
                 continue
 
             # Server-validated approval only. Provider-emitted
-            # approval_state="approved" is NOT trusted here for execution —
-            # execute_tool re-checks needs_approval. For the HITL pause path we
-            # only treat an already-approved call as approved when the *server*
-            # resume path seeded it; the loop still accepts the field for the
-            # approved-resume seam, while execute_tool fails closed on gated
-            # tools without approval_state="approved".
-            already_approved = call.approval_state == "approved"
-            if spec.needs_approval and not already_approved:
+            # approval_state="approved" is NEVER authority — only a server-
+            # issued capability (`server_approved_call_ids`, e.g. resume seed)
+            # authorizes a gated tool. Otherwise pause for HITL.
+            server_approved = call.id in approved_ids
+            if spec.needs_approval and not server_approved:
                 # Emit exactly one server-normalized pending call, then pause
                 # (BE-004). Do not relay the provider's running/not_required
                 # shape — resume requires awaiting_approval + pending.
@@ -400,12 +405,12 @@ async def run_agent_loop(
                 name=call.name,
                 label=call.label or spec.label,
                 status="running",
-                approval_state="not_required" if not already_approved else "approved",
+                approval_state="approved" if server_approved else "not_required",
                 input=dict(call.input or {}),
                 subagent_id=call.subagent_id,
             )
             approval_state: ToolApprovalState = (
-                "approved" if already_approved else "not_required"
+                "approved" if server_approved else "not_required"
             )
             with execute_tool_span(tool_name=call.name):
                 exec_result = await execute_tool(

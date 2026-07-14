@@ -58,6 +58,31 @@ Tests use a per-test SQLite database — no Postgres needed. Current count:
 mid-stream disconnect to the server side, so we can't exercise that branch
 end-to-end in-process).
 
+### Live Deep Research E2E gate
+
+Before enabling agentic mode in prod (`flyctl secrets set --stage TOOLS_ENABLED=true
+AGENTIC_ENABLED=true`), run the opt-in live-provider gate once against a real
+key. Default CI never sets the flag, so the module skips cleanly without keys:
+
+```
+# Skips unless AGENTIC_LIVE_E2E=1 AND DEEPSEEK_API_KEY or OPENAI_API_KEY
+cd api && uv run pytest tests/test_agentic_live_e2e.py -v
+
+# Rehearsal (DeepSeek):
+AGENTIC_LIVE_E2E=1 DEEPSEEK_API_KEY=... \
+  uv run pytest tests/test_agentic_live_e2e.py -v
+
+# Or OpenAI-compatible:
+AGENTIC_LIVE_E2E=1 PROVIDER_BACKEND=openai OPENAI_API_KEY=... \
+  uv run pytest tests/test_agentic_live_e2e.py -v
+```
+
+The gate boots `TOOLS_ENABLED` + `AGENTIC_ENABLED` with
+`PROVIDER_BACKEND=deepseek` (or `openai`), sends a tiny single-worker
+`deep_research` turn, and asserts subagent SSE events, a `terminal`/`done`, and
+nonzero usage. Keep `SEARCH_BACKEND=fake` for this gate — it proves the
+orchestrator + real model path, not Tavily.
+
 ## Lint and types
 
 ```

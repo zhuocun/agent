@@ -281,7 +281,7 @@ No cross-turn orchestrator memory. No background agent state store.
 | High-cost composer hint | Surface before spend (partial-synthesis chip shipped; pre-send composer hint still open) |
 | Clarify-before-plan | Optional HITL before plan/admit |
 | Structured worker artifacts | Refs over full-text telephone into lead |
-| Live E2E | True live-provider Deep Research E2E **before** prod `AGENTIC_ENABLED=true` |
+| Live E2E | **Gate shipped** — `api/tests/test_agentic_live_e2e.py` (opt-in `AGENTIC_LIVE_E2E=1` + real provider key). Run before prod `AGENTIC_ENABLED=true`; default CI skips cleanly. See `api/README.md` / `.env.example`. |
 | Depth runtime check | **Shipped** boot pin `AGENTIC_MAX_DEPTH == 1`; runtime nesting counter only if recursion ever lands |
 
 ### Out of scope (do not grow into)
@@ -347,7 +347,8 @@ status; this section owns **target** decisions and **deferred hard gaps**.
 4. **Mid-run `run_cost` ticks** — **closed** (estimate / mid / final + FE Est.).
 5. **`execute_tool` OTel** — **closed**; quiet planner spanned; real-verifier
    spans remain when a real verifier ships.
-6. **Live-network E2E** — hard gate before prod enablement of `AGENTIC_ENABLED`.
+6. **Live-network E2E** — **gate shipped** (`test_agentic_live_e2e.py`); still a hard
+   ops checklist item before flipping Fly `AGENTIC_ENABLED` (not auto-run in CI).
 7. **Clarify-before-plan** — latency vs budget-control trade; product call.
 8. **Artifact store vs inline worker text** — direction high confidence;
    implementation open (inline DATA framing is the shipped minimum).

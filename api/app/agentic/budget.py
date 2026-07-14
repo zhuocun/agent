@@ -47,16 +47,19 @@ class BudgetDecision:
 
 
 def _subagent_count(sub_question_count: int, settings: Settings) -> int:
-    """Planner + workers + aggregator (+ real verifier model calls when metered).
+    """Planner + workers + aggregator (+ verifier judge samples when enabled).
 
-    The shipped verifier stub performs zero provider calls, so enabling
-    ``AGENTIC_VERIFIER`` does NOT inflate the estimate with phantom
-    ``AGENTIC_VERIFIER_N`` subagents. When a real metered verifier lands, count
-    its actual topology here rather than blindly multiplying N.
+    When ``AGENTIC_VERIFIER`` is off, the verifier adds 0 model calls.
+    When on, reserve ``AGENTIC_VERIFIER_N`` judge samples (each one expected
+    subagent usage) — not N phantom full workers beyond that. ``N`` is the
+    independent-sample count for closed-form verdict consensus only.
     """
     workers = max(1, sub_question_count)
-    # +1 planner + workers +1 aggregator. Stub verifier adds 0 model calls.
-    return 1 + workers + 1
+    # +1 planner + workers +1 aggregator.
+    count = 1 + workers + 1
+    if settings.agentic_verifier:
+        count += max(1, settings.agentic_verifier_n)
+    return count
 
 
 def _expected_subagent_usage(settings: Settings) -> UsageUpdate:

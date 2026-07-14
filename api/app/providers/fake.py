@@ -255,6 +255,22 @@ class FakeProvider:
                     ),
                     status_code=429,
                 )
+            # BE-005: mid-worker tool HITL. Sub-question containing TOOL_APPROVE
+            # pauses for calendar approval on the first pass; after tool feedback
+            # (HITL resume) the worker emits its finding so synthesis can include it.
+            if tools_on and "TOOL_APPROVE" in sub_question and not has_tool_feedback:
+                await asyncio.sleep(self._delay)
+                call_id = f"fake_worker_cal_{worker_index}"
+                yield ToolCall(
+                    id=call_id,
+                    name="calendar_create_event",
+                    label="Create calendar event",
+                    status="awaiting_approval",
+                    approval_state="pending",
+                    input={"title": f"Worker {worker_index} research event"},
+                )
+                yield AwaitingApproval(tool_call_id=call_id)
+                return
             worker_search_items: list[SourceItem] = []
             if web_search:
                 # Agentic workers can opt into web search on the same turn; emit
@@ -302,6 +318,29 @@ class FakeProvider:
                 input_tokens=50,
                 output_tokens=100,
                 reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        # Agentic deep-research verifier (fresh-context judge). Scaffolded prompts
+        # are prefixed `DEEP_RESEARCH_VERIFIER:` so the fake returns a stable
+        # VERDICT/REPORT shape. Injection payloads inside DATA must not change
+        # this contract — the judge reply is fixed, not derived from findings.
+        if user_text.startswith("DEEP_RESEARCH_VERIFIER:"):
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(
+                text=(
+                    "VERDICT: pass\n"
+                    "REPORT: Findings support the draft; no unsupported claims "
+                    "detected in the provided data."
+                )
+            )
+            usage = UsageUpdate(
+                input_tokens=40,
+                output_tokens=60,
+                reasoning_tokens=5,
                 cached_input_tokens=0,
             )
             yield usage

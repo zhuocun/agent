@@ -13,7 +13,7 @@ import type { ToolRun, WebSearchGroup } from "@/lib/tool-groups";
 
 interface WebSearchPanelProps {
   group: WebSearchGroup;
-  onDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  onDecision?: (d: { toolCallId: string; decision: "approve" | "deny"; editedInput?: Record<string, unknown> }) => void;
   /** When nested inside agent activity, drop the outer card chrome. */
   embedded?: boolean;
 }

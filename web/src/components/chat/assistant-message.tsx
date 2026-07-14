@@ -93,6 +93,7 @@ interface AssistantMessageProps {
   onToolDecision?: (d: {
     toolCallId: string;
     decision: "approve" | "deny";
+    editedInput?: Record<string, unknown>;
   }) => void;
   onFeedback?: (next: Feedback) => void;
   // Prefill the composer with a heuristic follow-up suggestion (T11). When

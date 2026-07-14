@@ -240,11 +240,17 @@ class AwaitingApproval:
     row as `awaiting_approval` and frees the active-stream guard so a follow-up
     resume POST can open its own stream. `tool_call_id` identifies the gated call
     the resume must decide.
+
+    ``continuation`` (BE-005): optional agentic fan-out snapshot the handler
+    embeds onto the pending tool_call.input under ``_agenticContinuation`` so a
+    later ``toolApproval`` resume continues the paused subagent rather than
+    re-planning. Absent on non-agentic / plan-approval pauses.
     """
 
     tool_call_id: str
     type: Literal["awaiting_approval"] = "awaiting_approval"
     subagent_id: str | None = None
+    continuation: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

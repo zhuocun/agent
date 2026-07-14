@@ -18,6 +18,7 @@ type StatusPart = Extract<MessagePart, { type: "status" }>;
 export const WEB_SEARCH_TOOL_NAME = "web_search";
 
 const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
+const PLAN_CLARIFY_TOOL_NAME = "agentic_plan_clarify";
 
 const TERMINAL_STATUSES: ReadonlySet<ToolRunStatus> = new Set([
   "succeeded",
@@ -70,6 +71,7 @@ function isGroupablePart(
 ): part is ToolCallPart | ToolResultPart {
   if (part.type !== "tool_call" && part.type !== "tool_result") return false;
   if (part.name === PLAN_APPROVAL_TOOL_NAME) return false;
+  if (part.name === PLAN_CLARIFY_TOOL_NAME) return false;
   if (part.name === WEB_SEARCH_TOOL_NAME) return false;
   return TERMINAL_STATUSES.has(effectiveStatus(part));
 }
@@ -79,6 +81,7 @@ function isLiveNestableToolPart(
 ): part is ToolCallPart | ToolResultPart {
   if (part.type !== "tool_call" && part.type !== "tool_result") return false;
   if (part.name === PLAN_APPROVAL_TOOL_NAME) return false;
+  if (part.name === PLAN_CLARIFY_TOOL_NAME) return false;
   if (part.name === WEB_SEARCH_TOOL_NAME) return false;
   return !TERMINAL_STATUSES.has(effectiveStatus(part));
 }

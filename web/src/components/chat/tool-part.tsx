@@ -36,6 +36,7 @@ type ToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
 // UI does not render), which deserve a structured rendering instead of the
 // generic one-line JSON preview.
 const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
+const PLAN_CLARIFY_TOOL_NAME = "agentic_plan_clarify";
 
 // Narrowed view of the plan-approval tool input:
 // `{ plan: string[], estimatedCostUsd?: number, capUsd?: number }`. Null when
@@ -61,12 +62,31 @@ function parsePlanApprovalInput(
   };
 }
 
+interface PlanClarifyInput {
+  questions: string[];
+}
+
+function parsePlanClarifyInput(
+  input: Record<string, JsonValue> | undefined,
+): PlanClarifyInput | null {
+  if (!input || !Array.isArray(input.questions)) return null;
+  const questions = input.questions.filter(
+    (q): q is string => typeof q === "string" && q.trim().length > 0,
+  );
+  if (questions.length === 0) return null;
+  return { questions };
+}
+
 interface ToolPartViewProps {
   part: ToolPart;
   // HITL: invoked when the user approves/denies a tool call awaiting their
   // decision. Only wired (and the buttons only shown) for the LAST assistant
   // message whose turn is paused on this call — the parent gates it.
-  onDecision?: (d: { toolCallId: string; decision: "approve" | "deny" }) => void;
+  onDecision?: (d: {
+    toolCallId: string;
+    decision: "approve" | "deny";
+    editedInput?: Record<string, unknown>;
+  }) => void;
   /** When nested inside a search/tool list, drop per-result card chrome. */
   embedded?: boolean;
 }
@@ -76,18 +96,22 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
   const status = part.status ?? (isResult ? "succeeded" : "pending");
   const approvalState = part.approvalState ?? "not_required";
   const label = part.label ?? humanizeName(part.name);
-  // Plan-approval pseudo tool (agentic): render the research plan structurally
-  // instead of the generic JSON preview. Falls back to the preview when the
-  // input doesn't match the expected shape.
+  // Plan-approval / clarify pseudo tools (agentic): render structurally instead
+  // of the generic JSON preview.
   const planApproval =
     part.type === "tool_call" && part.name === PLAN_APPROVAL_TOOL_NAME
       ? parsePlanApprovalInput(part.input)
       : null;
-  const detail = planApproval
-    ? null
-    : part.type === "tool_call"
-      ? previewJson(part.input)
-      : part.error ?? part.summary ?? previewJson(part.output);
+  const planClarify =
+    part.type === "tool_call" && part.name === PLAN_CLARIFY_TOOL_NAME
+      ? parsePlanClarifyInput(part.input)
+      : null;
+  const detail =
+    planApproval || planClarify
+      ? null
+      : part.type === "tool_call"
+        ? previewJson(part.input)
+        : part.error ?? part.summary ?? previewJson(part.output);
   const destructive = status === "failed" || approvalState === "rejected";
   // Show the approve/deny controls only on a tool_call still pending the user's
   // decision, and only when the parent supplied a handler (it gates this to the
@@ -113,6 +137,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
     isTerminal &&
     status === "succeeded" &&
     planApproval == null &&
+    planClarify == null &&
     !showApprovalControls;
 
   const outerClassName = cn(
@@ -130,9 +155,9 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
   // The summary line (icon + label + role + status word) is shared between the
   // always-expanded layout and the collapsible trigger so the resting row reads
   // identically in both modes.
-  // Plan-approval is a user-facing gate, not a generic tool — drop the "tool
-  // call" suffix. When paused on approval, StatusPill ("Needs approval") and
-  // ApprovalPill ("Approval pending") say the same thing; keep one.
+  // Plan-approval / clarify are user-facing gates, not generic tools — drop the
+  // "tool call" suffix. When paused on approval, StatusPill ("Needs approval")
+  // and ApprovalPill ("Approval pending") say the same thing; keep one.
   const showApprovalPill =
     approvalState !== "not_required" &&
     !(status === "awaiting_approval" && approvalState === "pending");
@@ -142,7 +167,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
   const summaryRow = (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
       <span className="truncate font-medium text-foreground">{label}</span>
-      {planApproval || compactEmbedded ? null : (
+      {planApproval || planClarify || compactEmbedded ? null : (
         <span className="ui-caption text-muted-foreground">
           {isResult ? "result" : "tool call"}
         </span>
@@ -155,6 +180,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
   const detailBody = (
     <>
       {planApproval ? <PlanApprovalDetail input={planApproval} /> : null}
+      {planClarify ? <PlanClarifyDetail input={planClarify} /> : null}
       {detail ? (
         <p className="mt-1 line-clamp-2 break-words ui-caption leading-snug text-muted-foreground">
           {detail}
@@ -165,12 +191,20 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
           <Button
             type="button"
             size="sm"
-            onClick={() => onDecision({ toolCallId, decision: "approve" })}
+            onClick={() =>
+              onDecision({
+                toolCallId,
+                decision: "approve",
+                ...(planClarify
+                  ? { editedInput: { answers: planClarify.questions.map(() => "") } }
+                  : {}),
+              })
+            }
             data-testid="tool-approve"
             className="min-h-11 rounded-full bg-brand px-4 text-brand-foreground hover:bg-brand/90 md:min-h-0"
           >
             <Check aria-hidden />
-            <span>Approve</span>
+            <span>{planClarify ? "Continue" : "Approve"}</span>
           </Button>
           <Button
             type="button"
@@ -181,7 +215,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
             className="min-h-11 rounded-full px-4 md:min-h-0"
           >
             <X aria-hidden />
-            <span>Deny</span>
+            <span>{planClarify ? "Skip research" : "Deny"}</span>
           </Button>
         </div>
       ) : null}
@@ -275,6 +309,23 @@ function PlanApprovalDetail({ input }: { input: PlanApprovalInput }) {
         {input.plan.map((step, idx) => (
           <li key={idx} className="break-words">
             {step}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function PlanClarifyDetail({ input }: { input: PlanClarifyInput }) {
+  return (
+    <div className="mt-2 space-y-2" data-testid="plan-clarify-detail">
+      <p className="ui-caption text-muted-foreground">
+        A few questions before starting the research run:
+      </p>
+      <ol className="list-decimal space-y-1 pl-5 ui-caption leading-snug text-muted-foreground">
+        {input.questions.map((question, idx) => (
+          <li key={idx} className="break-words">
+            {question}
           </li>
         ))}
       </ol>

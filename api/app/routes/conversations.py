@@ -32,8 +32,10 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.agentic import (
     PLAN_APPROVAL_TOOL_NAME,
+    PLAN_CLARIFY_TOOL_NAME,
     hash_plan,
     is_plan_approval_call_id,
+    is_plan_clarify_call_id,
 )
 from app.agentic.budget import compose_headroom
 from app.auth.dependency import current_user
@@ -2793,6 +2795,72 @@ async def _prepare_resume_tool(
             input=None,
             is_plan=True,
             approved_plan=approved_plan,
+        )
+        original_text = _text_from_parts(user_row.parts)
+        return user_message_id, history, original_text, attachments, seed
+
+    # Clarify-before-plan HITL resume (plan 02). Same pseudo-tool bypass as plan
+    # approval. Approve may carry `edited_input.answers` (1–3 strings); deny
+    # declines the research run without planning.
+    if tool_name == PLAN_CLARIFY_TOOL_NAME and is_plan_clarify_call_id(
+        decision.tool_call_id
+    ):
+        user_message_id = last_assistant.responds_to_message_id
+        if user_message_id is None:
+            last_user = await messages_repo.get_last_user_message(db, conversation_id)
+            if last_user is None:
+                raise _nothing_to_resume()
+            user_message_id = last_user.id
+        user_row = await messages_repo.get_by_id(db, user_message_id)
+        if user_row is None:
+            raise _nothing_to_resume()
+        attachments = _attachment_payloads_from_parts(user_row.parts)
+        if attachments and not supports_attachments:
+            raise _attachments_unsupported()
+        if not supports_vision and any(
+            attachment.media_type == "image" for attachment in attachments
+        ):
+            raise _vision_unsupported()
+        clarify_label = pending.get("label")
+        clarify_answers: tuple[str, ...] | None = None
+        if decision.decision == "approve" and decision.edited_input is not None:
+            raw_answers = decision.edited_input.get("answers")
+            if isinstance(raw_answers, list):
+                clarify_answers = tuple(
+                    str(item).strip()
+                    for item in raw_answers
+                    if isinstance(item, (str, int, float)) and str(item).strip()
+                )[:3]
+            # Re-run safety on free-text answers (user-influenced content).
+            if clarify_answers:
+                answers_text = " ".join(clarify_answers)
+                safety_decision = check_user_turn(
+                    settings,
+                    text=answers_text,
+                    attachments=[],
+                    custom_instructions=custom_instructions,
+                )
+                if not safety_decision.allowed:
+                    await _record_moderation_blocked(
+                        db,
+                        user=user,
+                        decision=safety_decision,
+                        conversation_id=conversation_id,
+                    )
+                    raise _safety_blocked(safety_decision)
+        elif decision.decision == "approve":
+            clarify_answers = ()
+        history = await messages_repo.load_history(db, conversation_id)
+        await conversations_repo.touch_updated_at(db, conversation_id)
+        await db.commit()
+        seed = ResumeToolSeed(
+            tool_call_id=decision.tool_call_id,
+            name=tool_name,
+            label=str(clarify_label) if isinstance(clarify_label, str) else None,
+            decision=decision.decision,
+            input=None,
+            is_clarify=True,
+            clarify_answers=clarify_answers,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed

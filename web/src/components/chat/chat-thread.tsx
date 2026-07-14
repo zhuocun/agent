@@ -1877,7 +1877,11 @@ export function ChatThread() {
   // the signature to match the per-message handler shape.
   const handleToolDecision = (
     _messageId: string,
-    decision: { toolCallId: string; decision: "approve" | "deny" },
+    decision: {
+      toolCallId: string;
+      decision: "approve" | "deny";
+      editedInput?: Record<string, unknown>;
+    },
   ) => {
     if (isStreaming) return;
     // Trailing user text satisfies the wire schema's required `text`; the BE
@@ -1890,20 +1894,19 @@ export function ChatThread() {
       }
       return "";
     })();
-    // An agentic plan-approval resume MUST re-carry `deep_research`: the BE
-    // re-runs the orchestrator only when the resume body has the mode (the
-    // handler's agentic gate reads it per-request, not from the paused turn).
-    // Detect it from the paused tool call itself — the pseudo
-    // `agentic_plan_approval` tool — so the resume works even if the user has
-    // since flipped the composer toggle off.
-    const isPlanApproval = messages.some(
+    // An agentic plan-approval / clarify resume MUST re-carry `deep_research`:
+    // the BE re-runs the orchestrator only when the resume body has the mode
+    // (the handler's agentic gate reads it per-request, not from the paused
+    // turn). Detect it from the paused tool call itself.
+    const isAgenticHitl = messages.some(
       (m) =>
         m.role === "assistant" &&
         m.parts.some(
           (p) =>
             p.type === "tool_call" &&
             p.id === decision.toolCallId &&
-            p.name === "agentic_plan_approval",
+            (p.name === "agentic_plan_approval" ||
+              p.name === "agentic_plan_clarify"),
         ),
     );
     const resumeId = localId();
@@ -1914,7 +1917,7 @@ export function ChatThread() {
     searchAtSendRef.current = effectiveSearchEnabled;
     effortAtSendRef.current = effectiveReasoningEffort;
     jsonModeAtSendRef.current = jsonModeEnabled;
-    deepResearchAtSendRef.current = isPlanApproval || effectiveDeepResearch;
+    deepResearchAtSendRef.current = isAgenticHitl || effectiveDeepResearch;
     setPendingId(resumeId);
     setLiveMessage(
       decision.decision === "approve"
@@ -1928,6 +1931,9 @@ export function ChatThread() {
       toolApproval: {
         toolCallId: decision.toolCallId,
         decision: decision.decision,
+        ...(decision.editedInput
+          ? { editedInput: decision.editedInput }
+          : {}),
       },
       webSearch: searchAtSendRef.current || undefined,
       reasoningEffort: effortAtSendRef.current,

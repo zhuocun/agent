@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from app.agentic import PLAN_APPROVAL_CALL_ID, PLAN_APPROVAL_TOOL_NAME
+from app.agentic.budget import compose_headroom
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -2255,28 +2256,41 @@ async def send_message(
     # refused, so the request still streams a useful answer (graceful degrade,
     # never a hard error). `single` and the flag-off path are unaffected.
     effective_agentic_mode = body.agentic_mode
+    agentic_coercion_reason: Literal["entitlement"] | None = None
     if effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
         db, user=user, api_key=resolved_api_key
     ):
         effective_agentic_mode = "single"
+        agentic_coercion_reason = "entitlement"
 
-    # Per-run budget headroom (M3, T5). The deep-research budget composes the
-    # per-run cap (`AGENTIC_RUN_BUDGET_USD`) with the caller's REMAINING
-    # platform allowance so a run can never overshoot the monthly quota. Only
-    # platform-key turns are constrained (BYOK pays their own provider, so the
-    # platform cap does not apply → None = "cap only"); `get_platform_remaining_usd`
-    # already returns None when no positive quota is enforced.
+    # Per-run budget headroom (M3, T5 / BE-019). Compose the caller's REMAINING
+    # platform allowance with any per-conversation remaining so a deep-research
+    # (or agentic single) run can never overshoot either cap. Only platform-key
+    # turns are constrained (BYOK → None = "cap only"). Numeric 0.0 means no
+    # money remains (SAF-003); None means unconstrained.
     budget_headroom_usd: float | None = None
-    if (
-        effective_agentic_mode == "deep_research"
-        and resolved_api_key is None
-        and effective_quota_usd > 0
-    ):
-        budget_headroom_usd = await usage_repo.get_platform_remaining_usd(
-            db,
-            user_id=user.id,
-            monthly_quota_usd=effective_quota_usd,
-        )
+    if effective_agentic_mode is not None and resolved_api_key is None:
+        headroom_parts: list[float | None] = []
+        if effective_quota_usd > 0:
+            headroom_parts.append(
+                await usage_repo.get_platform_remaining_usd(
+                    db,
+                    user_id=user.id,
+                    monthly_quota_usd=effective_quota_usd,
+                )
+            )
+        if (
+            conversation_project is not None
+            and conversation_project.per_conversation_budget_usd is not None
+        ):
+            conv_cap = conversation_project.per_conversation_budget_usd
+        else:
+            conv_cap = user_prefs.per_conversation_budget_usd or 0.0
+        if conv_cap > 0 and not is_temp:
+            conv_spent = await usage_repo.get_conversation_cost(db, conversation_id)
+            headroom_parts.append(max(0.0, conv_cap - conv_spent))
+        if headroom_parts:
+            budget_headroom_usd = compose_headroom(*headroom_parts)
 
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
@@ -2339,6 +2353,8 @@ async def send_message(
             resume_seed=resume_seed,
             agentic_mode=effective_agentic_mode,
             budget_headroom_usd=budget_headroom_usd,
+            requested_agentic_mode=body.agentic_mode,
+            agentic_coercion_reason=agentic_coercion_reason,
         )
 
         async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -2393,6 +2409,8 @@ async def send_message(
             resume_seed=resume_seed,
             agentic_mode=effective_agentic_mode,
             budget_headroom_usd=budget_headroom_usd,
+            requested_agentic_mode=body.agentic_mode,
+            agentic_coercion_reason=agentic_coercion_reason,
         ):
             yield sse_event
 

@@ -11,7 +11,7 @@ budget is enforced at two gates (PRD 01 §"Cost & budget"):
   empty/partial synthesis instead of silently overrunning.
 - **Mid-flight kill** (`exceeds_cap`). Because the reservation is only an
   estimate, the orchestrator also checks the ACTUAL accumulated cost (from
-  `pricing.py`, summed as each worker's `SubagentDone` lands) against the cap.
+  `pricing.py`, summed as each phase/`SubagentDone` lands) against the cap.
   On breach it stops spawning, cancels in-flight workers, and aggregates the
   workers that completed (a labeled partial synthesis).
 
@@ -47,12 +47,16 @@ class BudgetDecision:
 
 
 def _subagent_count(sub_question_count: int, settings: Settings) -> int:
-    """Worker count + aggregator (+ verifier passes when enabled)."""
+    """Planner + workers + aggregator (+ real verifier model calls when metered).
+
+    The shipped verifier stub performs zero provider calls, so enabling
+    ``AGENTIC_VERIFIER`` does NOT inflate the estimate with phantom
+    ``AGENTIC_VERIFIER_N`` subagents. When a real metered verifier lands, count
+    its actual topology here rather than blindly multiplying N.
+    """
     workers = max(1, sub_question_count)
-    count = workers + 1  # + aggregator
-    if settings.agentic_verifier:
-        count += max(0, settings.agentic_verifier_n)
-    return count
+    # +1 planner + workers +1 aggregator. Stub verifier adds 0 model calls.
+    return 1 + workers + 1
 
 
 def _expected_subagent_usage(settings: Settings) -> UsageUpdate:
@@ -97,14 +101,20 @@ def estimate_run_cost(
 def effective_cap(*, cap_usd: float, headroom_usd: float | None) -> float:
     """Compose the per-run cap with the caller's remaining headroom.
 
-    The run must fit BOTH the per-run cap and whatever user/platform budget the
-    caller has left, so the effective cap is the minimum. A non-positive / None
-    headroom means "no extra constraint" (cap only) — e.g. BYOK turns that are
-    exempt from platform caps but still capped per-run.
+    The run must fit BOTH the per-run cap and whatever user/platform (and
+    per-conversation) budget the caller has left, so the effective cap is the
+    minimum.
+
+    Semantics:
+    - ``None`` — no extra constraint (cap only); e.g. BYOK turns exempt from
+      platform quotas.
+    - a finite number (including ``0.0``) — remaining allowance; ``0`` means
+      *no money remains* and rejects any positive estimate/actual. Never treat
+      numeric zero as unlimited.
     """
-    if headroom_usd is None or headroom_usd <= 0:
+    if headroom_usd is None:
         return cap_usd
-    return min(cap_usd, headroom_usd)
+    return min(cap_usd, max(0.0, headroom_usd))
 
 
 def admit(
@@ -131,3 +141,16 @@ def exceeds_cap(
 ) -> bool:
     """Mid-flight check: has the ACTUAL accumulated cost breached the cap?"""
     return actual_usd > effective_cap(cap_usd=cap_usd, headroom_usd=headroom_usd)
+
+
+def compose_headroom(*values: float | None) -> float | None:
+    """Compose multiple headroom sources into one effective remaining allowance.
+
+    ``None`` entries are ignored (no constraint from that source). An empty /
+    all-None list yields ``None`` (unconstrained). Any finite value — including
+    ``0.0`` — participates in the min.
+    """
+    finite = [max(0.0, v) for v in values if v is not None]
+    if not finite:
+        return None
+    return min(finite)

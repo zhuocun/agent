@@ -211,6 +211,22 @@ def test_effective_cap_composes_headroom() -> None:
     assert budget.effective_cap(cap_usd=0.25, headroom_usd=1.0) == 0.25
     # BYOK / unlimited headroom: cap only.
     assert budget.effective_cap(cap_usd=1.0, headroom_usd=None) == 1.0
+    # SAF-003 / BE-018: numeric 0 means ZERO remaining, not unlimited.
+    assert budget.effective_cap(cap_usd=1.0, headroom_usd=0.0) == 0.0
+    assert budget.effective_cap(cap_usd=1.0, headroom_usd=-5.0) == 0.0
+
+
+def test_admit_rejects_zero_headroom() -> None:
+    decision = budget.admit(estimated_usd=0.01, cap_usd=1.0, headroom_usd=0.0)
+    assert decision.admitted is False
+    assert decision.effective_cap_usd == 0.0
+
+
+def test_compose_headroom_mins_finite_sources() -> None:
+    assert budget.compose_headroom(None, None) is None
+    assert budget.compose_headroom(1.0, None) == 1.0
+    assert budget.compose_headroom(1.0, 0.25) == 0.25
+    assert budget.compose_headroom(0.0, 5.0) == 0.0
 
 
 def test_admit_rejects_over_estimate() -> None:
@@ -320,7 +336,8 @@ def test_estimate_cost_defaults_unchanged() -> None:
     per_subagent = budget._expected_subagent_usage(settings)
     breakdown = compute_cost_breakdown(usage=per_subagent, binding=binding)
     base = breakdown.subtotal_usd + breakdown.session_surcharge_usd
-    subagents = 2 + 1  # workers + aggregator
+    # BE-016: planner + workers + aggregator (stub verifier adds 0).
+    subagents = 1 + 2 + 1
     expected = (
         base
         * subagents
@@ -328,6 +345,18 @@ def test_estimate_cost_defaults_unchanged() -> None:
         * settings.agentic_fanout_token_multiplier
     )
     assert estimate == pytest.approx(expected)
+
+
+def test_subagent_count_includes_planner_not_stub_verifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "5")
+    get_settings.cache_clear()
+    settings = get_settings()
+    # Stub verifier reserves 0 model calls (BE-017 / SAF-001).
+    assert budget._subagent_count(2, settings) == 1 + 2 + 1
+    get_settings.cache_clear()
 
 
 def test_assert_prod_safe_rejects_nonpositive_multiplier(monkeypatch: pytest.MonkeyPatch) -> None:

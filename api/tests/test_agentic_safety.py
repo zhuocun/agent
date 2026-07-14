@@ -9,8 +9,8 @@ Covers the deep-research safety envelope:
   regardless of how many sub-questions the planner produced.
 - DEPTH BOUND: `AGENTIC_MAX_DEPTH` defaults to 1 — workers run a flat agent
   loop and never spawn nested subagents.
-- VERIFIER: with `AGENTIC_VERIFIER` on, the synthesis carries the bounded
-  N-pass self-consistency note.
+- VERIFIER: with `AGENTIC_VERIFIER` on, the shipped stub is an honest no-op
+  (no "Verified…" claim, no text mutation).
 - OBSERVABILITY: `invoke_agent_span` / `execute_tool_span` emit manual OTel
   spans (ids + role/tool only, never content) captured by an in-memory exporter.
 """
@@ -32,6 +32,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agentic.verifier import verify
 from app.config import get_settings
 from app.db.models import Conversation, User
 from app.db.repositories import billing as billing_repo
@@ -323,11 +324,12 @@ async def test_depth_bound_no_nested_subagents(
 # 4. Verifier appends the self-consistency note --------------------------------
 
 
-async def test_verifier_appends_consistency_note(
+async def test_verifier_stub_is_honest_noop(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """SAF-001 / BE-017: stub must not claim 'Verified' and must not change text."""
     monkeypatch.setenv("AGENTIC_VERIFIER", "true")
     monkeypatch.setenv("AGENTIC_VERIFIER_N", "3")
     get_settings.cache_clear()
@@ -351,7 +353,8 @@ async def test_verifier_appends_consistency_note(
     assert frames[-1][1]["status"] == "done"
     full_answer = _answer(frames)
     assert "Synthesis of 2 findings" in full_answer
-    assert "[Verified by 3-pass self-consistency review.]" in full_answer
+    assert "Verified" not in full_answer
+    assert verify("hello", n=3) == "hello"
 
 
 # 5. OTel manual spans ---------------------------------------------------------

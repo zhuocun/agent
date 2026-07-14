@@ -397,10 +397,12 @@ class Settings(BaseSettings):
     # `awaiting_approval`) on an approval-gated tool until a follow-up
     # `toolApproval` resume POST applies the decision.
     tools_enabled: bool = Field(default=False, alias="TOOLS_ENABLED")
-    # Hard upper bound on agent-loop rounds (one round = one model turn that may
-    # request tool calls). Mirrors the web_search loop's `_MAX_SEARCH_ROUNDS`.
-    # Guarantees the loop terminates even if the model never stops requesting
-    # tools.
+    # Hard upper bound on TOTAL agent-loop provider invocations (one round = one
+    # model turn), INCLUDING the compelled suppress-tools final pass. With N>1
+    # the loop runs at most N-1 action rounds (tools advertised) and reserves
+    # the last slot for a suppress-tools final answer when tools were still
+    # requested; with N=1 there is no reserved final pass. Guarantees the loop
+    # terminates even if the model never stops requesting tools.
     tool_max_rounds: int = Field(default=4, alias="TOOL_MAX_ROUNDS")
     # Per-tool execution timeout (seconds). A tool whose executor exceeds this is
     # cancelled and reported as a failed result rather than hanging the turn.

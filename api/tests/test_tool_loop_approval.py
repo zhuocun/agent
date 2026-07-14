@@ -540,8 +540,9 @@ async def test_agent_loop_is_bounded_by_max_rounds() -> None:
 
     settings = Settings(TOOL_MAX_ROUNDS=2)  # type: ignore[call-arg]
     events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
-    # Bounded by max_rounds + the single compelled (suppressed) final pass.
-    assert rounds_seen <= settings.tool_max_rounds + 1
+    # TOOL_MAX_ROUNDS is a hard cap on TOTAL provider invocations including the
+    # compelled suppress-tools final pass (BE-011).
+    assert rounds_seen <= settings.tool_max_rounds
     # The final pass suppressed tools exactly once.
     assert suppressed_seen == 1
     # The turn terminated with a non-empty answer and a Complete (never blank).

@@ -115,6 +115,10 @@ _VERIFIER_LABEL = verifier.VERIFIER_LABEL
 # stay denied (least privilege).
 _WORKER_ALLOWED_TOOLS: frozenset[str] = frozenset({"calendar_create_event"})
 
+# Quiet aggregator collect before verify: no registry tools. Synthesis must not
+# emit AwaitingApproval that quiet-collect would swallow (verify_after path).
+_AGGREGATOR_QUIET_ALLOWED_TOOLS: frozenset[str] = frozenset()
+
 # Plan-approval HITL (M3). The plan pause reuses the shipped tool-approval
 # terminal: the orchestrator emits a pseudo `tool_call` whose name is this
 # sentinel (NOT a real registry tool) plus the standard `AwaitingApproval`
@@ -654,7 +658,27 @@ async def _finalize_synthesis_streamed(
     verify_after = settings.agentic_verifier
     judge_factory = verifier_make_stream_for or make_stream_for
 
-    async for event in run_agent_loop(make_stream=make_stream_for(prompt), settings=settings):
+    # When verify_after is on we quiet-collect the draft, so advertise+execute
+    # an empty tool allowlist — otherwise an approval-gated ToolCall would be
+    # dropped (non-AnswerDelta) and the turn would finish as done instead of
+    # pausing. Defense in depth: if AwaitingApproval still appears, yield it
+    # and return without verifying.
+    agg_allowed = (
+        _AGGREGATOR_QUIET_ALLOWED_TOOLS if verify_after else None
+    )
+    agg_make = (
+        make_stream_for(prompt, allowed_tools=agg_allowed)
+        if verify_after
+        else make_stream_for(prompt)
+    )
+    async for event in run_agent_loop(
+        make_stream=agg_make,
+        settings=settings,
+        allowed_tools=agg_allowed,
+    ):
+        if verify_after and isinstance(event, AwaitingApproval):
+            yield _tag(event, _AGGREGATOR_ID)
+            return
         if isinstance(event, AnswerDelta):
             answer_parts.append(event.text)
             if not verify_after:
@@ -662,9 +686,6 @@ async def _finalize_synthesis_streamed(
         elif not verify_after:
             yield _tag(event, _AGGREGATOR_ID)
         aggregator_usage = _fold_usage(event, aggregator_usage)
-        if verify_after and isinstance(event, (UsageUpdate, Complete)):
-            # Quiet collect still needs usage folded; non-answer events stay off-wire.
-            pass
         if not agg_budget_halted and budget.exceeds_cap(
             actual_usd=worker_total_cost + cost_for_usage(aggregator_usage),
             cap_usd=cap_usd,

@@ -519,7 +519,6 @@ async def test_verifier_skips_when_budget_blocks_first_sample(
 ) -> None:
     from app.agentic.aggregate import WorkerOutput
     from app.agentic.orchestrator import _run_verifier_if_enabled
-    from app.config import Settings
     from app.providers.protocol import UsageUpdate
 
     monkeypatch.setenv("AGENTIC_VERIFIER", "true")
@@ -554,6 +553,152 @@ async def test_verifier_skips_when_budget_blocks_first_sample(
     )
     assert result is None
     assert calls["n"] == 0
+    get_settings.cache_clear()
+
+
+async def test_verify_after_aggregator_uses_empty_tool_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quiet-collect before verify must not advertise turn tools (HITL swallow)."""
+    from collections.abc import AsyncIterator, Collection
+
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import (
+        AnswerDelta,
+        AwaitingApproval,
+        Complete,
+        ProviderEvent,
+        UsageUpdate,
+    )
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    seen_allowlists: list[Collection[str] | None] = []
+
+    def make_stream_for(prompt: str, *, allowed_tools: Collection[str] | None = None):
+        seen_allowlists.append(allowed_tools)
+
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                # If tools were advertised, a gated call would pause — that must
+                # not happen on the quiet-collect path.
+                if allowed_tools is None or (
+                    allowed_tools and "calendar_create_event" in set(allowed_tools)
+                ):
+                    yield AwaitingApproval(tool_call_id="should-not-fire")
+                    return
+                yield AnswerDelta(text="model synthesis draft")
+                usage = UsageUpdate(input_tokens=2, output_tokens=3)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    def judge_factory(prompt: str, *, allowed_tools: Collection[str] | None = None):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="VERDICT: pass\nREPORT: none")
+                usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=make_stream_for,
+            verifier_make_stream_for=judge_factory,
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    assert seen_allowlists
+    assert all(list(a or []) == [] for a in seen_allowlists)
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    assert any(isinstance(e, AnswerDelta) and "Verification: pass" in e.text for e in events)
+    get_settings.cache_clear()
+
+
+async def test_verify_after_preserves_awaiting_approval_if_emitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defense: if quiet-collect still sees AwaitingApproval, yield and stop."""
+    from collections.abc import AsyncIterator, Collection
+
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import (
+        AnswerDelta,
+        AwaitingApproval,
+        Complete,
+        ProviderEvent,
+        SubagentDone,
+        UsageUpdate,
+    )
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def make_stream_for(prompt: str, *, allowed_tools: Collection[str] | None = None):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AwaitingApproval(tool_call_id="agg-hitl")
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=make_stream_for,
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    assert any(isinstance(e, AwaitingApproval) for e in events)
+    # Must not continue into verify / final aggregator Done after the pause.
+    assert not any(isinstance(e, SubagentDone) and e.role == "aggregator" for e in events)
+    assert not any(
+        isinstance(e, AnswerDelta) and "Verification:" in e.text for e in events
+    )
     get_settings.cache_clear()
 
 

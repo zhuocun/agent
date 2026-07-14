@@ -68,7 +68,7 @@ flowchart TD
   ADMIT --> FAN[Bounded asyncio workers]
   FAN --> AGG[Aggregator]
   AGG --> VER{Verifier?}
-  VER -->|on| JUDGE[Fresh-context judge / CitationAgent]
+  VER -->|on / target| JUDGE["Verifier (TARGET: fresh-context judge / CitationAgent; SHIPPED: deterministic stub)"]
   VER -->|off| DONE[Untagged Complete + RunCost]
   JUDGE --> DONE
   PRIM --> DONE

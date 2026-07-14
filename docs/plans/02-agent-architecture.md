@@ -357,7 +357,9 @@ status; this section owns **target** decisions and **deferred hard gaps**.
 11. **Partial-synthesis chip** — PRD 08 warning chip vs prose-only labeling.
 12. **FE attribution display** — always-on per-worker served model (+ fuller
     callouts); substitution callout already shipped on reload from persisted
-    parts; live-stream attribution and public per-worker identity remain open.
+    parts; live-stream attribution parse remains open. Public per-worker
+    identity via `PublicAttribution` on `PublicSubagentPart` when share
+    projection is current.
 13. **Worker HITL resume (BE-005)** — tool `awaiting_approval` inside a worker /
     aggregator does not suspend and resume that subagent; the handler stops on
     the first pause and a later `toolApproval` starts a new whole orchestrator

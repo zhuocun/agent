@@ -32,7 +32,7 @@ import hashlib
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator, Callable, Collection
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -1043,6 +1043,9 @@ async def _run_deep_research(
                 )
     finally:
         # BE-025: cancel AND join so workers cannot outlive the turn.
+        # Note: on stop/disconnect the pump acloses this generator (GeneratorExit),
+        # so SubagentDone(stopped) enqueued by cancelled workers here cannot be
+        # yielded — the handler stop path marks unfinished accumulators stopped.
         for task in tasks:
             if not task.done():
                 task.cancel()

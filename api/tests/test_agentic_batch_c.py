@@ -21,6 +21,7 @@ from app.providers.protocol import (
     Complete,
     ProviderEvent,
     SubagentDone,
+    SubagentStarted,
     ToolCall,
     ToolResult,
     UsageUpdate,
@@ -418,3 +419,144 @@ async def test_worker_stream_factory_receives_empty_allowlist() -> None:
     ]
     assert seen_allowlists
     assert all(list(a or []) == [] for a in seen_allowlists)
+
+
+def test_mark_unfinished_subagents_stopped_on_pump_cancel() -> None:
+    """Stop/disconnect: in-flight workers become stopped, not succeeded/budget_cancelled."""
+    from app.streaming.handler import (
+        _SubagentAccumulator,
+        mark_unfinished_subagents_stopped,
+    )
+
+    subagents = {
+        "worker-0": _SubagentAccumulator(
+            label="Worker 1",
+            role="worker",
+            terminal=True,
+            outcome="succeeded",
+            cost_usd=0.01,
+        ),
+        "worker-1": _SubagentAccumulator(
+            label="Worker 2",
+            role="worker",
+            # Mimic pump cancel after SubagentStarted + UsageUpdate only.
+            usage=UsageUpdate(input_tokens=50, output_tokens=0),
+        ),
+        "aggregator": _SubagentAccumulator(label="Synthesis", role="aggregator"),
+    }
+    mark_unfinished_subagents_stopped(subagents)
+    assert subagents["worker-0"].outcome == "succeeded"
+    assert subagents["worker-1"].outcome == "stopped"
+    assert subagents["worker-1"].outcome != "budget_cancelled"
+    assert subagents["aggregator"].outcome == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_aclose_mid_fanout_leaves_handler_to_mark_stopped() -> None:
+    """Cancel the consumer mid-fan-out: started workers never get Done yielded.
+
+    Mirrors stop/disconnect: pump aclose drops orchestrator-queue SubagentDones.
+    The handler must mark unfinished accumulators stopped before persist.
+    """
+    from app.streaming.handler import (
+        _SubagentAccumulator,
+        mark_unfinished_subagents_stopped,
+    )
+
+    started = asyncio.Event()
+
+    async def _slow(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        yield UsageUpdate(input_tokens=40, output_tokens=0)
+        started.set()
+        await asyncio.sleep(60)
+        yield AnswerDelta(text="late")
+        yield Complete(usage=UsageUpdate(input_tokens=40, output_tokens=1))
+
+    async def _fast(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        await started.wait()
+        await asyncio.sleep(60)  # both hang until aclose cancels
+        yield AnswerDelta(text="fast")
+        yield Complete(usage=UsageUpdate(input_tokens=3, output_tokens=1))
+
+    def _make_stream_for(
+        prompt: str, *, allowed_tools: Collection[str] | None = None
+    ):
+        _ = allowed_tools
+
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            if "DEEP_RESEARCH_WORKER:0:" in prompt:
+                return _fast(_feedback, suppress_tools)
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                return _slow(_feedback, suppress_tools)
+
+            async def _agg() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="agg")
+                yield Complete()
+
+            return _agg()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_MAX_WORKERS=2,
+        AGENTIC_MAX_CONCURRENCY=2,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+
+    agen = run_orchestrator(
+        make_stream_for=_make_stream_for,
+        settings=settings,
+        mode="deep_research",
+        user_text="DEEP_RESEARCH: alpha | beta",
+        cost_for_usage=lambda u: 0.01,
+        estimate_cost=lambda _n: 0.01,
+    )
+
+    # Consume until both workers have started (and at least one UsageUpdate).
+    seen_started: set[str] = set()
+    accs: dict[str, _SubagentAccumulator] = {}
+    async for ev in agen:
+        if isinstance(ev, SubagentStarted) and ev.role == "worker":
+            seen_started.add(ev.subagent_id)
+            accs[ev.subagent_id] = _SubagentAccumulator(
+                label=ev.label or ev.subagent_id, role=ev.role
+            )
+        if isinstance(ev, UsageUpdate) and ev.subagent_id:
+            if ev.subagent_id not in accs:
+                accs[ev.subagent_id] = _SubagentAccumulator(
+                    label=ev.subagent_id, role="worker"
+                )
+            accs[ev.subagent_id].usage = ev
+        if isinstance(ev, SubagentDone):
+            # Should not happen before we aclose in this hang setup.
+            accs.setdefault(
+                ev.subagent_id,
+                _SubagentAccumulator(label=ev.label or ev.subagent_id, role=ev.role or "worker"),
+            )
+            accs[ev.subagent_id].outcome = ev.outcome
+            accs[ev.subagent_id].terminal = True
+        if len(seen_started) >= 2 and any(
+            a.usage.input_tokens for a in accs.values()
+        ):
+            break
+
+    # Pump cancel equivalent: aclose drops any SubagentDone(stopped) still on
+    # the orchestrator queue — they never reach the consumer.
+    await agen.aclose()
+
+    assert not any(a.terminal for a in accs.values()), (
+        "aclose mid-fan-out must not deliver SubagentDone to the consumer"
+    )
+    mark_unfinished_subagents_stopped(accs)
+    assert all(a.outcome == "stopped" for a in accs.values())
+    assert all(a.outcome != "budget_cancelled" for a in accs.values())
+    assert all(a.outcome != "succeeded" or a.terminal for a in accs.values())

@@ -230,6 +230,11 @@ class _SubagentAccumulator:
     cost_usd: float | None = None
     usage: UsageUpdate = field(default_factory=UsageUpdate)
     outcome: SubagentOutcome = "succeeded"
+    # True once a `SubagentDone` has been folded in. Stop/disconnect uses this to
+    # distinguish finished workers from ones that were still in flight when the
+    # pump was cancelled (orchestrator may have enqueued SubagentDone(stopped)
+    # on its internal queue, but those events never reach the handler).
+    terminal: bool = False
     substitution: SubstitutionReasonCode | None = None
     substituted_provider: str | None = None
     substituted_model: str | None = None
@@ -238,6 +243,20 @@ class _SubagentAccumulator:
     latest_status: tuple[str, str] | None = None
     search_items: list[Any] = field(default_factory=list)
     saw_sources: bool = False
+
+
+def mark_unfinished_subagents_stopped(
+    subagents: dict[str, _SubagentAccumulator],
+) -> None:
+    """Rewrite in-flight subagent outcomes to ``stopped`` on stop/disconnect.
+
+    Pump cancel acloses the orchestrator before worker ``SubagentDone(stopped)``
+    events can be yielded onto the handler queue. Accumulators that never
+    received a Done would otherwise persist with the default ``succeeded``.
+    """
+    for acc in subagents.values():
+        if not acc.terminal:
+            acc.outcome = "stopped"
 
 
 @dataclass(frozen=True)
@@ -1358,6 +1377,7 @@ async def stream_and_persist(
                 done_acc.cost_usd = ev.cost_usd
                 done_acc.usage = ev.usage
                 done_acc.outcome = ev.outcome
+                done_acc.terminal = True
                 done_acc.substitution = ev.substitution
                 done_acc.substituted_provider = ev.substituted_provider
                 done_acc.substituted_model = ev.substituted_model
@@ -1550,6 +1570,12 @@ async def stream_and_persist(
                         # a forwarded `_PumpError` is dropped here.
                         continue
                     _apply_event(drained)
+                # Pump cancel acloses the orchestrator before in-flight workers'
+                # SubagentDone(stopped) can be yielded onto this queue. Mark any
+                # accumulator that never received Done as stopped so persist does
+                # not default them to succeeded.
+                if agentic_active:
+                    mark_unfinished_subagents_stopped(agentic_subagents)
                 # Flush accumulators, persist with status=stopped + estimate.
                 # Agentic: sum completed/partial subagent receipts (BE-022 /
                 # BE-028) rather than repricing an arbitrary last UsageUpdate.
@@ -1868,6 +1894,7 @@ async def stream_and_persist(
                     done_acc.cost_usd = ev.cost_usd
                     done_acc.usage = ev.usage
                     done_acc.outcome = ev.outcome
+                    done_acc.terminal = True
                     done_acc.substitution = ev.substitution
                     done_acc.substituted_provider = ev.substituted_provider
                     done_acc.substituted_model = ev.substituted_model

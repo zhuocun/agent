@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Check,
   CheckCircle2,
@@ -354,10 +354,40 @@ function PlanClarifyForm({
   }) => void;
 }) {
   const [answers, setAnswers] = useState<string[]>(() => questions.map(() => ""));
+  const maxAnswerChars = 2000;
+  const firstAnswerRef = useRef<HTMLTextAreaElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  // C-007: move focus to the first clarify field when the form appears, and
+  // restore the prior focus target after the user decides.
+  useEffect(() => {
+    const active = document.activeElement;
+    previousFocusRef.current =
+      active instanceof HTMLElement ? active : null;
+    const frame = requestAnimationFrame(() => {
+      firstAnswerRef.current?.focus();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      const prior = previousFocusRef.current;
+      if (prior && typeof prior.focus === "function") {
+        prior.focus();
+      }
+    };
+  }, []);
 
   return (
-    <div className="mt-2 space-y-3" data-testid="plan-clarify-detail">
-      <p className="ui-caption text-muted-foreground">
+    <div
+      className="mt-2 space-y-3"
+      data-testid="plan-clarify-detail"
+      role="group"
+      aria-labelledby="plan-clarify-heading"
+    >
+      <p
+        id="plan-clarify-heading"
+        className="ui-caption text-muted-foreground"
+        tabIndex={-1}
+      >
         A few questions before starting the research run:
       </p>
       <ol className="list-none space-y-3 p-0">
@@ -371,15 +401,17 @@ function PlanClarifyForm({
               {question}
             </label>
             <textarea
+              ref={idx === 0 ? firstAnswerRef : undefined}
               id={`plan-clarify-answer-${idx}`}
               data-testid={`plan-clarify-answer-${idx}`}
               value={answers[idx] ?? ""}
               onChange={(e) => {
                 const next = [...answers];
-                next[idx] = e.target.value;
+                next[idx] = e.target.value.slice(0, maxAnswerChars);
                 setAnswers(next);
               }}
               rows={2}
+              maxLength={maxAnswerChars}
               className={cn(
                 "w-full resize-y rounded-lg border border-foreground/10 bg-background px-2.5 py-2",
                 "ui-caption leading-snug text-foreground placeholder:text-muted-foreground/70",
@@ -398,7 +430,13 @@ function PlanClarifyForm({
             onDecision({
               toolCallId,
               decision: "approve",
-              editedInput: { answers },
+              editedInput: {
+                answers: questions.map((question, idx) => ({
+                  questionId: String(idx),
+                  question,
+                  answer: answers[idx] ?? "",
+                })),
+              },
             })
           }
           data-testid="tool-approve"

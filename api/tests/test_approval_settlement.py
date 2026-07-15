@@ -297,3 +297,187 @@ async def test_concurrent_claims_only_one_executes(
     assert first.status == "succeeded"
     assert second.status == "failed"
     assert "refusing to re-execute" in (second.error or "")
+
+
+async def test_simultaneous_preloaded_claims_only_one_executes(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H-005: truly simultaneous SQLite claims — only one executor runs."""
+    tool_call_id = "cal_simultaneous"
+    msg = await _seed_paused_message(
+        session_factory, parts=_pending_calendar_parts(tool_call_id=tool_call_id)
+    )
+
+    exec_count = {"n": 0}
+    real = TOOL_REGISTRY["calendar_create_event"].executor
+    gate = asyncio.Event()
+    both_ready = asyncio.Event()
+    ready_count = {"n": 0}
+
+    async def _counting(call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        return await real(call)
+
+    original = TOOL_REGISTRY["calendar_create_event"]
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "calendar_create_event",
+        ToolSpec(
+            name=original.name,
+            label=original.label,
+            needs_approval=True,
+            schema=original.schema,
+            executor=_counting,
+            prod_safe=original.prod_safe,
+        ),
+    )
+
+    async def _approve(claim: str) -> ToolExecutionResult:
+        async with session_factory() as session:
+            row = await session.get(Message, msg.id)
+            assert row is not None
+            ready_count["n"] += 1
+            if ready_count["n"] >= 2:
+                both_ready.set()
+            await both_ready.wait()
+            await gate.wait()
+            return await claim_and_settle_approval(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="approve",
+                effective_input={"title": "Planning review"},
+                label="Create calendar event",
+                claim_id=claim,
+            )
+
+    t1 = asyncio.create_task(_approve("claim-a"))
+    t2 = asyncio.create_task(_approve("claim-b"))
+    await asyncio.wait_for(both_ready.wait(), timeout=5.0)
+    gate.set()
+    results = await asyncio.gather(t1, t2)
+    assert exec_count["n"] == 1
+    assert any(r.status == "succeeded" for r in results)
+    # Loser may be failed (claimed-without-result during race) or succeeded
+    # (replay of settled result after winner finished). Never double-execute.
+    assert all(r.status in ("succeeded", "failed") for r in results)
+
+
+async def test_settled_decision_conflict_raises(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H-006: retrying with the opposite decision must not rewrite settlement."""
+    from app.tools.approval_settlement import (
+        ApprovalDecisionConflict,
+        claim_and_settle_approval_outcome,
+    )
+
+    tool_call_id = "cal_conflict"
+    msg = await _seed_paused_message(
+        session_factory, parts=_pending_calendar_parts(tool_call_id=tool_call_id)
+    )
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        denied = await claim_and_settle_approval_outcome(
+            session,
+            paused_message=row,
+            tool_call_id=tool_call_id,
+            decision="deny",
+            effective_input={"title": "Planning review"},
+            label="Create calendar event",
+        )
+    assert denied.decision == "deny"
+    assert denied.result.status == "cancelled"
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        with pytest.raises(ApprovalDecisionConflict):
+            await claim_and_settle_approval_outcome(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="approve",
+                effective_input={"title": "Planning review"},
+                label="Create calendar event",
+            )
+
+
+async def test_replace_tool_call_is_subagent_scoped() -> None:
+    """H-004: colliding provider ids across workers do not cross-replace."""
+    from app.tools.approval_settlement import _replace_tool_call
+
+    parts = [
+        {
+            "type": "tool_call",
+            "id": "same",
+            "name": "calendar_create_event",
+            "subagentId": "worker-0",
+            "approvalState": "pending",
+            "status": "awaiting_approval",
+        },
+        {
+            "type": "tool_call",
+            "id": "same",
+            "name": "calendar_create_event",
+            "subagentId": "worker-1",
+            "approvalState": "pending",
+            "status": "awaiting_approval",
+        },
+    ]
+    replacement = {
+        **parts[0],
+        "approvalState": "approved",
+        "status": "running",
+    }
+    out = _replace_tool_call(parts, "same", replacement, subagent_id="worker-0")
+    assert out[0]["approvalState"] == "approved"
+    assert out[1]["approvalState"] == "pending"
+
+
+async def test_load_paused_assistant_skips_later_stopped(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H-008: resume lookup finds awaiting_approval behind a later stopped row."""
+    from app.tools.approval_settlement import load_paused_assistant_for_resume
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True)
+        session.add(user)
+        await session.flush()
+        convo = Conversation(
+            user_id=user.id,
+            title="shadow test",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.flush()
+        paused = Message(
+            conversation_id=convo.id,
+            role="assistant",
+            parts=_pending_calendar_parts(tool_call_id="cal_shadow"),
+            status="awaiting_approval",
+            attribution={},
+        )
+        session.add(paused)
+        await session.flush()
+        stopped = Message(
+            conversation_id=convo.id,
+            role="assistant",
+            parts=[{"type": "text", "text": "partial"}],
+            status="stopped",
+            attribution={},
+        )
+        session.add(stopped)
+        await session.commit()
+        conv_id = convo.id
+        paused_id = paused.id
+
+    async with session_factory() as session:
+        found = await load_paused_assistant_for_resume(session, conv_id)
+        assert found is not None
+        assert found.id == paused_id
+        assert found.status == "awaiting_approval"

@@ -64,10 +64,9 @@ async def test_approve_reuses_approved_plan_without_replanning() -> None:
     seen_prompts: list[str] = []
 
     def _make_stream_for(
-        prompt: str, *, allowed_tools: Collection[str] | None = None
+        prompt: str, **_kwargs: object
     ):
         seen_prompts.append(prompt)
-        _ = allowed_tools
 
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
@@ -133,9 +132,8 @@ async def test_cancelled_worker_usage_enters_final_complete() -> None:
         yield Complete(usage=UsageUpdate(input_tokens=3, output_tokens=1))
 
     def _make_stream_for(
-        prompt: str, *, allowed_tools: Collection[str] | None = None
+        prompt: str, **_kwargs: object
     ):
-        _ = allowed_tools
 
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
@@ -195,9 +193,8 @@ async def test_fallback_worker_priced_with_fallback_pricer() -> None:
     """BE-023 / SAF-006: fallback success uses fallback cost + route identity."""
 
     def _make_stream_for(
-        prompt: str, *, allowed_tools: Collection[str] | None = None
+        prompt: str, **_kwargs: object
     ):
-        _ = allowed_tools
 
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
@@ -213,9 +210,8 @@ async def test_fallback_worker_priced_with_fallback_pricer() -> None:
         return _make
 
     def _fallback_make_stream_for(
-        prompt: str, *, allowed_tools: Collection[str] | None = None
+        prompt: str, **_kwargs: object
     ):
-        _ = allowed_tools
 
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
@@ -389,10 +385,10 @@ async def test_worker_stream_factory_receives_scoped_allowlist() -> None:
     seen_allowlists: list[Collection[str] | None] = []
 
     def _make_stream_for(
-        prompt: str, *, allowed_tools: Collection[str] | None = None
+        prompt: str, **kwargs: object
     ):
         if "DEEP_RESEARCH_WORKER" in prompt:
-            seen_allowlists.append(allowed_tools)
+            seen_allowlists.append(kwargs.get("allowed_tools"))  # type: ignore[arg-type]
 
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False
@@ -487,9 +483,8 @@ async def test_aclose_mid_fanout_leaves_handler_to_mark_stopped() -> None:
         yield Complete(usage=UsageUpdate(input_tokens=3, output_tokens=1))
 
     def _make_stream_for(
-        prompt: str, *, allowed_tools: Collection[str] | None = None
+        prompt: str, **_kwargs: object
     ):
-        _ = allowed_tools
 
         def _make(
             _feedback: list[ToolResult], suppress_tools: bool = False

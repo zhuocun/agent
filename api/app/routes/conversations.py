@@ -38,7 +38,19 @@ from app.agentic import (
     is_plan_clarify_call_id,
 )
 from app.agentic.budget import compose_headroom
-from app.agentic.continuation import extract_continuation_from_tool_input
+from app.agentic.clarify import (
+    ClarificationRecord,
+    ClarifyInputError,
+    nonblank_answers,
+    parse_clarification_records,
+    parse_clarify_edited_input,
+    serialize_clarification_records,
+)
+from app.agentic.continuation import (
+    CONTINUATION_INPUT_KEY,
+    extract_continuation_from_tool_input,
+    parse_continuation,
+)
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -138,7 +150,12 @@ from app.streaming.sse import (
     encode_tool_result,
 )
 from app.streaming.stop_registry import request_stop_async
-from app.tools.approval_settlement import claim_and_settle_approval
+from app.tools.approval_settlement import (
+    ApprovalDecisionConflict,
+    claim_and_settle_approval_outcome,
+    find_settled_tool_result,
+    settle_pseudo_tool_approval,
+)
 from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
 from app.uploads import extract_attachment_text, is_supported_attachment_type
 
@@ -419,6 +436,32 @@ def _stream_in_progress() -> AppError:
     )
 
 
+async def _abandon_unstarted_stream_claim(
+    db: AsyncSession, stream_id: UUID | None
+) -> None:
+    """Release an active stream after a pre-SSE ``AppError`` (H-003).
+
+    ``AppError`` is converted to a JSON response by the exception handler, so
+    ``get_db`` commits instead of rolling back. An uncommitted ``create_stream``
+    would otherwise become a durable ``active`` row and block the next turn with
+    ``STREAM_IN_PROGRESS`` (sibling deny before winner resume). Rollback undoes
+    an uncommitted claim; if prepare already committed the row, mark it
+    terminal to release the single-active guard.
+    """
+    if stream_id is None:
+        return
+    await db.rollback()
+    row = await streams_repo.get_by_id(db, stream_id=stream_id)
+    if row is not None and row.status == "active":
+        await streams_repo.mark_status(
+            db,
+            stream_id=stream_id,
+            status="error",
+            release_active_guard=True,
+        )
+        await db.commit()
+
+
 def _duplicate_in_flight() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -485,6 +528,23 @@ def _nothing_to_continue() -> AppError:
             title="Nothing to continue",
             body="This conversation has no stopped response to continue. "
             "Send a new message or regenerate instead.",
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _agentic_checkpoint_pending() -> AppError:
+    """H-008: continueTurn cannot recover an agentic tool-HITL checkpoint."""
+    return AppError(
+        ErrorEnvelope(
+            code="AGENTIC_CHECKPOINT_PENDING",
+            severity="warning",
+            title="Agentic approval pending",
+            body=(
+                "This conversation has an agentic run paused for tool approval. "
+                "Use toolApproval to resume that checkpoint; continueTurn cannot "
+                "recover it."
+            ),
         ),
         status.HTTP_400_BAD_REQUEST,
     )
@@ -1891,10 +1951,41 @@ async def send_message(
         api_key=resolved_api_key,
     )
 
+    # Resume seed for an approval-gated tool (HITL). None on every non-resume
+    # path; set by `_prepare_resume_tool` so the handler emits the seeded
+    # `tool_result` before the post-approval provider pass.
+    resume_seed: ResumeToolSeed | None = None
+    user_message_id: UUID
+    history: list[ProviderChatMessage]
+    provider_user_text: str
+
+    # H-003: validate/prepare toolApproval BEFORE claiming the active stream.
+    # AppError is handled by the exception middleware without rolling back
+    # get_db, so a post-claim INVALID_INPUT (e.g. sibling deny) would otherwise
+    # leave status=active and block the real continuation with STREAM_IN_PROGRESS.
+    if body.tool_approval is not None:
+        (
+            user_message_id,
+            history,
+            provider_user_text,
+            provider_attachments,
+            resume_seed,
+        ) = await _prepare_resume_tool(
+            db=db,
+            user=user,
+            conversation_id=conversation_id,
+            decision=body.tool_approval,
+            settings=settings,
+            custom_instructions=effective_instructions,
+            supports_attachments=binding.supports_attachments,
+            supports_vision=binding.supports_vision,
+        )
+
     # Claim the single active stream BEFORE mutating message history. The row is
     # still in the current transaction, so later validation/insert failures roll
     # it back; successful non-temporary branches commit it together with the user
-    # message/history mutation below.
+    # message/history mutation below. (toolApproval is validated above so a
+    # rejected sibling cannot strand this claim.)
     stream_id: UUID | None = None
     if not is_temp:
         existing_active = await streams_repo.get_active_for_conversation(
@@ -1925,108 +2016,93 @@ async def send_message(
     #                   message, replay the partial as the trailing assistant
     #                   turn and send the continuation instruction as the turn
     #   editMessageId -> truncate from that user message inclusive, insert new
+    #   toolApproval -> already prepared before claim (H-003)
     #   default -> existing M1 path
-    user_message_id: UUID
-    history: list[ProviderChatMessage]
-    provider_user_text: str
-    # Resume seed for an approval-gated tool (HITL). None on every non-resume
-    # path; set by `_prepare_resume_tool` so the handler emits the seeded
-    # `tool_result` before the post-approval provider pass.
-    resume_seed: ResumeToolSeed | None = None
-
-    if body.regenerate:
-        (
-            user_message_id,
-            history,
-            provider_user_text,
-            provider_attachments,
-        ) = await _prepare_regenerate(
-            db=db,
-            conversation_id=conversation_id,
-            supports_attachments=binding.supports_attachments,
-            supports_vision=binding.supports_vision,
-        )
-    elif body.continue_turn:
-        (
-            user_message_id,
-            history,
-            provider_user_text,
-            provider_attachments,
-        ) = await _prepare_continue(
-            db=db,
-            conversation_id=conversation_id,
-            supports_attachments=binding.supports_attachments,
-            supports_vision=binding.supports_vision,
-        )
-    elif body.tool_approval is not None:
-        (
-            user_message_id,
-            history,
-            provider_user_text,
-            provider_attachments,
-            resume_seed,
-        ) = await _prepare_resume_tool(
-            db=db,
-            user=user,
-            conversation_id=conversation_id,
-            decision=body.tool_approval,
-            settings=settings,
-            custom_instructions=effective_instructions,
-            supports_attachments=binding.supports_attachments,
-            supports_vision=binding.supports_vision,
-        )
-    elif body.edit_message_id is not None:
-        user_message_id, history, provider_user_text = await _prepare_edit(
-            db=db,
-            conversation_id=conversation_id,
-            edit_message_id_str=body.edit_message_id,
-            client_uuid=client_uuid,
-            new_text=body.text,
-            attachments=body.attachments,
-            request_fingerprint=request_fingerprint,
-        )
-    elif is_temp:
-        user_message_id = uuid4()
-        history = []
-        provider_user_text = body.text
-    else:
-        history = await messages_repo.load_history(db, conversation_id)
-        try:
-            user_msg_row = await messages_repo.create_user_message(
+    try:
+        if body.regenerate:
+            (
+                user_message_id,
+                history,
+                provider_user_text,
+                provider_attachments,
+            ) = await _prepare_regenerate(
                 db=db,
                 conversation_id=conversation_id,
-                client_message_id=client_uuid,
-                text=body.text,
+                supports_attachments=binding.supports_attachments,
+                supports_vision=binding.supports_vision,
+            )
+        elif body.continue_turn:
+            (
+                user_message_id,
+                history,
+                provider_user_text,
+                provider_attachments,
+            ) = await _prepare_continue(
+                db=db,
+                conversation_id=conversation_id,
+                supports_attachments=binding.supports_attachments,
+                supports_vision=binding.supports_vision,
+            )
+        elif body.tool_approval is not None:
+            # Prepared before create_stream (H-003).
+            pass
+        elif body.edit_message_id is not None:
+            user_message_id, history, provider_user_text = await _prepare_edit(
+                db=db,
+                conversation_id=conversation_id,
+                edit_message_id_str=body.edit_message_id,
+                client_uuid=client_uuid,
+                new_text=body.text,
                 attachments=body.attachments,
                 request_fingerprint=request_fingerprint,
             )
-            # A new turn was accepted — bump the conversation so it rises in
-            # the sidebar. Same session/transaction as the user message, so it
-            # commits atomically with the turn below (not on idempotent replay,
-            # which returns earlier without reaching this insert).
-            await conversations_repo.touch_updated_at(db, conversation_id)
-            # Commit so the user message is durable before we stream — the
-            # EventSourceResponse will reuse this session, so flush+commit now.
-            await db.commit()
-        except IntegrityError:
-            # Concurrent POSTs with the same clientMessageId can both pass the
-            # idempotency check above and race on INSERT; one will lose to the
-            # `message_client_msg_uniq` unique constraint. Roll back and retry
-            # the replay path — if the winner has already produced an assistant
-            # row, we replay it; otherwise return 409 DUPLICATE_IN_FLIGHT.
-            await db.rollback()
-            replay = await _maybe_replay(
-                db,
-                conversation_id,
-                client_uuid,
-                request_fingerprint,
-                request,
-            )
-            if replay is not None:
-                return replay
-            raise _duplicate_in_flight() from None
-        user_message_id = user_msg_row.id
-        provider_user_text = body.text
+        elif is_temp:
+            user_message_id = uuid4()
+            history = []
+            provider_user_text = body.text
+        else:
+            history = await messages_repo.load_history(db, conversation_id)
+            try:
+                user_msg_row = await messages_repo.create_user_message(
+                    db=db,
+                    conversation_id=conversation_id,
+                    client_message_id=client_uuid,
+                    text=body.text,
+                    attachments=body.attachments,
+                    request_fingerprint=request_fingerprint,
+                )
+                # A new turn was accepted — bump the conversation so it rises in
+                # the sidebar. Same session/transaction as the user message, so it
+                # commits atomically with the turn below (not on idempotent replay,
+                # which returns earlier without reaching this insert).
+                await conversations_repo.touch_updated_at(db, conversation_id)
+                # Commit so the user message is durable before we stream — the
+                # EventSourceResponse will reuse this session, so flush+commit now.
+                await db.commit()
+            except IntegrityError:
+                # Concurrent POSTs with the same clientMessageId can both pass the
+                # idempotency check above and race on INSERT; one will lose to the
+                # `message_client_msg_uniq` unique constraint. Roll back and retry
+                # the replay path — if the winner has already produced an assistant
+                # row, we replay it; otherwise return 409 DUPLICATE_IN_FLIGHT.
+                await db.rollback()
+                replay = await _maybe_replay(
+                    db,
+                    conversation_id,
+                    client_uuid,
+                    request_fingerprint,
+                    request,
+                )
+                if replay is not None:
+                    return replay
+                raise _duplicate_in_flight() from None
+            user_message_id = user_msg_row.id
+            provider_user_text = body.text
+    except AppError:
+        # continueTurn / regenerate / edit can still raise after claim; release
+        # so get_db's commit cannot strand an active row.
+        await _abandon_unstarted_stream_claim(db, stream_id)
+        raise
 
     # Auto-tier routing. When the user picked `auto`, run the v0 complexity
     # heuristic (providers/router.py) to choose the concrete tier that actually
@@ -2263,9 +2339,51 @@ async def send_message(
     # entitlement. A non-entitled caller is COERCED down to `single` rather than
     # refused, so the request still streams a useful answer (graceful degrade,
     # never a hard error). `single` and the flag-off path are unaffected.
+    #
+    # H-002 / O-003: a durable worker continuation pins orchestration mode (and
+    # optionally tier/provider). Resume must derive from that checkpoint — never
+    # silently coerce away from an already-settled continuation contract.
     effective_agentic_mode = body.agentic_mode
+    if resume_seed is not None and resume_seed.agentic_continuation is not None:
+        pinned_mode = getattr(
+            resume_seed.agentic_continuation, "orchestration_mode", None
+        )
+        if pinned_mode in ("single", "deep_research"):
+            effective_agentic_mode = pinned_mode
+        elif effective_agentic_mode is None:
+            effective_agentic_mode = "deep_research"
+        pinned_tier = getattr(resume_seed.agentic_continuation, "tier_id", None)
+        if (
+            isinstance(pinned_tier, str)
+            and pinned_tier
+            and pinned_tier != body.tier_id
+        ):
+            raise _invalid_input(
+                "INVALID_INPUT",
+                "Resume tierId does not match the paused run checkpoint.",
+            )
+        pinned_provider = getattr(
+            resume_seed.agentic_continuation, "provider_id", None
+        )
+        if (
+            isinstance(pinned_provider, str)
+            and pinned_provider
+            and body.provider_id is not None
+            and pinned_provider != body.provider_id
+        ):
+            raise _invalid_input(
+                "INVALID_INPUT",
+                "Resume providerId does not match the paused run checkpoint.",
+            )
     agentic_coercion_reason: Literal["entitlement"] | None = None
-    if effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
+    if (
+        effective_agentic_mode == "deep_research"
+        and resume_seed is not None
+        and resume_seed.agentic_continuation is not None
+    ):
+        # Do not coerce a pinned deep_research continuation after settle.
+        pass
+    elif effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
         db, user=user, api_key=resolved_api_key
     ):
         effective_agentic_mode = "single"
@@ -2632,6 +2750,22 @@ async def _prepare_continue(
     conversation whose persisted user attachments are incompatible with the
     served binding, matching the regenerate guard.
     """
+    # H-008: if an agentic tool-HITL checkpoint is still awaiting approval
+    # (possibly shadowed by a newer stopped row, or still the trailing turn),
+    # refuse continueTurn — recovery is toolApproval-only.
+    paused = await messages_repo.get_latest_assistant_with_status(
+        db, conversation_id, status="awaiting_approval"
+    )
+    if paused is not None and isinstance(paused.parts, list):
+        for part in paused.parts:
+            if not isinstance(part, dict) or part.get("type") != "tool_call":
+                continue
+            raw_input = part.get("input")
+            if isinstance(raw_input, dict) and parse_continuation(
+                raw_input.get(CONTINUATION_INPUT_KEY)
+            ) is not None:
+                raise _agentic_checkpoint_pending()
+
     # Must have a trailing assistant turn, and it must be `status="stopped"` —
     # only a stopped (interrupted) turn can be continued. A `done` / `error`
     # trailing turn has nothing partial to extend.
@@ -2698,7 +2832,13 @@ def _find_resumable_tool_call(
     parts: object,
     tool_call_id: str,
 ) -> dict[str, object] | None:
-    """Find a tool_call for resume: pending OR already settled (BE-007 retry)."""
+    """Find a tool_call for resume: pending OR already settled (BE-007 retry).
+
+    H-003: a worker call cancelled as a concurrent-pause sibling is
+    ``approvalState=rejected`` without an ``_agenticContinuation``. Those are
+    not resumable — only the continuation-bearing pause (or a primary HITL
+    call) may be approved/denied.
+    """
     pending = _find_pending_tool_call(parts, tool_call_id)
     if pending is not None:
         return pending
@@ -2711,6 +2851,15 @@ def _find_resumable_tool_call(
             and part.get("id") == tool_call_id
             and part.get("approvalState") in ("approved", "rejected")
         ):
+            # Superseded worker pauses: rejected, no continuation → not resumable.
+            subagent = part.get("subagentId")
+            if isinstance(subagent, str) and subagent.startswith("worker-"):
+                raw_input = part.get("input")
+                cont = None
+                if isinstance(raw_input, dict):
+                    cont = parse_continuation(raw_input.get(CONTINUATION_INPUT_KEY))
+                if cont is None and part.get("approvalState") == "rejected":
+                    return None
             return part
     return None
 
@@ -2749,8 +2898,10 @@ async def _prepare_resume_tool(
     emits the seeded `tool_result` before that turn streams. `attachments` is
     empty (the original user attachments already live in the replayed history).
     """
-    last_assistant = await messages_repo.get_last_assistant_message(db, conversation_id)
-    if last_assistant is None or last_assistant.status != "awaiting_approval":
+    last_assistant = await messages_repo.get_latest_assistant_with_status(
+        db, conversation_id, status="awaiting_approval"
+    )
+    if last_assistant is None:
         raise _nothing_to_resume()
 
     pending = _find_resumable_tool_call(last_assistant.parts, decision.tool_call_id)
@@ -2810,6 +2961,11 @@ async def _prepare_resume_tool(
                 "INVALID_INPUT",
                 "Persisted plan hash does not match the approved plan.",
             )
+        plan_clarifications = (
+            parse_clarification_records(plan_input["clarifications"])
+            if isinstance(plan_input.get("clarifications"), list)
+            else None
+        )
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
@@ -2818,13 +2974,12 @@ async def _prepare_resume_tool(
             input=None,
             is_plan=True,
             approved_plan=approved_plan,
+            clarify_records=(
+                tuple(plan_clarifications) if plan_clarifications is not None else None
+            ),
             clarify_answers=(
-                tuple(
-                    str(item).strip()
-                    for item in plan_input["clarifications"]
-                    if isinstance(item, (str, int, float)) and str(item).strip()
-                )[:3]
-                if isinstance(plan_input.get("clarifications"), list)
+                tuple(nonblank_answers(plan_clarifications))
+                if plan_clarifications is not None
                 else None
             ),
         )
@@ -2832,8 +2987,8 @@ async def _prepare_resume_tool(
         return user_message_id, history, original_text, attachments, seed
 
     # Clarify-before-plan HITL resume (plan 02). Same pseudo-tool bypass as plan
-    # approval. Approve may carry `edited_input.answers` (1-3 strings); deny
-    # declines the research run without planning.
+    # approval. Approve may carry `edited_input.answers` (bound Q&A records);
+    # deny declines the research run without planning.
     if tool_name == PLAN_CLARIFY_TOOL_NAME and is_plan_clarify_call_id(
         decision.tool_call_id
     ):
@@ -2854,18 +3009,35 @@ async def _prepare_resume_tool(
         ):
             raise _vision_unsupported()
         clarify_label = pending.get("label")
+        clarify_label_str = (
+            str(clarify_label) if isinstance(clarify_label, str) else None
+        )
+        raw_input = pending.get("input")
+        clarify_input = raw_input if isinstance(raw_input, dict) else {}
+        raw_questions = clarify_input.get("questions")
+        questions = (
+            [q for q in raw_questions if isinstance(q, str) and q.strip()]
+            if isinstance(raw_questions, list)
+            else []
+        )
         clarify_answers: tuple[str, ...] | None = None
-        if decision.decision == "approve" and decision.edited_input is not None:
-            raw_answers = decision.edited_input.get("answers")
-            if isinstance(raw_answers, list):
-                clarify_answers = tuple(
-                    str(item).strip()
-                    for item in raw_answers
-                    if isinstance(item, (str, int, float)) and str(item).strip()
-                )[:3]
-            # Re-run safety on free-text answers (user-influenced content).
-            if clarify_answers:
-                answers_text = " ".join(clarify_answers)
+        clarify_records_tuple: tuple[ClarificationRecord, ...] | None = None
+        settle_output: dict[str, object] = {"decision": decision.decision}
+        if decision.decision == "approve":
+            try:
+                records = parse_clarify_edited_input(
+                    decision.edited_input,
+                    questions=questions,
+                )
+            except ClarifyInputError as exc:
+                raise _invalid_input("INVALID_INPUT", str(exc)) from exc
+            # C-002: seed full Q&A records so question text reaches orchestrator
+            # prompts / plan-approval / continuation (not answer-only tuples).
+            clarify_records_tuple = tuple(records)
+            clarify_answers = tuple(r.answer for r in records)
+            settle_output["clarifications"] = serialize_clarification_records(records)
+            answers_text = " ".join(nonblank_answers(records))
+            if answers_text:
                 safety_decision = check_user_turn(
                     settings,
                     text=answers_text,
@@ -2880,18 +3052,37 @@ async def _prepare_resume_tool(
                         conversation_id=conversation_id,
                     )
                     raise _safety_blocked(safety_decision)
-        elif decision.decision == "approve":
-            clarify_answers = ()
         history = await messages_repo.load_history(db, conversation_id)
         await conversations_repo.touch_updated_at(db, conversation_id)
-        await db.commit()
+        # C-001: settle the pseudo-tool on the paused row so reload does not
+        # keep a permanently pending "Needs approval" card.
+        try:
+            await settle_pseudo_tool_approval(
+                db,
+                paused_message=last_assistant,
+                tool_call_id=decision.tool_call_id,
+                decision=decision.decision,
+                output=settle_output,
+                label=clarify_label_str,
+                summary=(
+                    "Clarifications recorded."
+                    if decision.decision == "approve"
+                    else "User skipped clarifying questions."
+                ),
+            )
+        except ApprovalDecisionConflict as exc:
+            raise _invalid_input(
+                "INVALID_INPUT",
+                str(exc),
+            ) from exc
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
-            label=str(clarify_label) if isinstance(clarify_label, str) else None,
+            label=clarify_label_str,
             decision=decision.decision,
             input=None,
             is_clarify=True,
+            clarify_records=clarify_records_tuple,
             clarify_answers=clarify_answers,
         )
         original_text = _text_from_parts(user_row.parts)
@@ -2960,32 +3151,71 @@ async def _prepare_resume_tool(
 
     history = await messages_repo.load_history(db, conversation_id)
     await conversations_repo.touch_updated_at(db, conversation_id)
+    await db.commit()
 
     label = pending.get("label")
     label_str = str(label) if isinstance(label, str) else None
 
-    # BE-007: claim + execute + settle on the paused row before the model stream.
-    # A retry after post-execution stream failure reuses the settled result.
-    settled = await claim_and_settle_approval(
-        db,
-        paused_message=last_assistant,
-        tool_call_id=decision.tool_call_id,
-        decision=decision.decision,
-        effective_input=dict(effective_input),
-        label=label_str,
+    # H-006: if already settled, enforce decision match in the route (409) so
+    # the client never starts an SSE stream with a contradictory instruction.
+    # H-007: pending approvals defer claim/execute until the producer owns the
+    # stream lifecycle.
+    existing_result = find_settled_tool_result(
+        last_assistant.parts, decision.tool_call_id
     )
+    settled_result = None
+    pending_settle = True
+    authoritative_decision: str = decision.decision
+    if existing_result is not None:
+        try:
+            outcome = await claim_and_settle_approval_outcome(
+                db,
+                paused_message=last_assistant,
+                tool_call_id=decision.tool_call_id,
+                decision=decision.decision,
+                effective_input=dict(effective_input),
+                label=label_str,
+            )
+        except ApprovalDecisionConflict as exc:
+            raise AppError(
+                ErrorEnvelope(
+                    code="APPROVAL_DECISION_CONFLICT",
+                    severity="error",
+                    title="Approval decision conflict",
+                    body=str(exc),
+                ),
+                status.HTTP_409_CONFLICT,
+            ) from exc
+        settled_result = outcome.result
+        authoritative_decision = outcome.decision
+        pending_settle = False
+    elif str(pending.get("approvalState") or "") != "pending":
+        # Claimed-without-result: fail closed via settlement (no re-execute).
+        outcome = await claim_and_settle_approval_outcome(
+            db,
+            paused_message=last_assistant,
+            tool_call_id=decision.tool_call_id,
+            decision=decision.decision,
+            effective_input=dict(effective_input),
+            label=label_str,
+        )
+        settled_result = outcome.result
+        authoritative_decision = outcome.decision
+        pending_settle = False
 
     seed = ResumeToolSeed(
         tool_call_id=decision.tool_call_id,
         name=tool_name,
         label=label_str,
-        decision=decision.decision,
+        decision=authoritative_decision,
         input=dict(effective_input),
-        settled_result=settled,
+        settled_result=settled_result,
         agentic_continuation=agentic_continuation,
         resume_user_text=(
             agentic_continuation.user_text if agentic_continuation is not None else None
         ),
+        paused_message_id=last_assistant.id,
+        pending_settle=pending_settle,
     )
     # Worker/aggregator continuation resumes with the original user text (the
     # orchestrator continues that subagent). Non-agentic / primary HITL keeps the
@@ -2995,7 +3225,7 @@ async def _prepare_resume_tool(
     else:
         instruction = (
             _RESUME_APPROVE_INSTRUCTION
-            if decision.decision == "approve"
+            if authoritative_decision == "approve"
             else _RESUME_DENY_INSTRUCTION
         )
     return user_message_id, history, instruction, [], seed

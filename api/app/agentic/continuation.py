@@ -20,6 +20,11 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.agentic.aggregate import WorkerOutput
+from app.agentic.clarify import (
+    ClarificationRecord,
+    parse_clarification_records,
+    serialize_clarification_records,
+)
 from app.providers.protocol import UsageUpdate
 
 # Reserved key on pending tool_call.input. Must not collide with any tool's
@@ -60,6 +65,18 @@ class AgenticContinuation:
     paused_sub_question: str | None = None
     # Pre-tool worker text accumulated before the HITL pause (BE-005).
     partial_answer: str = ""
+    # Structured clarify-before-plan answers (C-003): never recover these by
+    # reparsing numbered prompt text — multiline answers are not line-safe.
+    clarifications: tuple[ClarificationRecord, ...] = ()
+    # H-002 / O-003: pin orchestration routing so resume cannot bypass agentic
+    # continuation via client re-selection of mode/tier/provider.
+    orchestration_mode: Literal["single", "deep_research"] | None = None
+    tier_id: str | None = None
+    provider_id: str | None = None
+    model_id: str | None = None
+    # Pre-pause usage for the paused worker (O-002 / H-009) — restored on resume.
+    paused_worker_usage: UsageUpdate | None = None
+    paused_worker_cost_usd: float = 0.0
     version: int = 1
 
 
@@ -115,6 +132,17 @@ def serialize_continuation(state: AgenticContinuation) -> dict[str, Any]:
         "pausedWorkerIndex": state.paused_worker_index,
         "pausedSubQuestion": state.paused_sub_question,
         "partialAnswer": state.partial_answer,
+        "clarifications": serialize_clarification_records(state.clarifications),
+        "orchestrationMode": state.orchestration_mode,
+        "tierId": state.tier_id,
+        "providerId": state.provider_id,
+        "modelId": state.model_id,
+        "pausedWorkerUsage": (
+            _usage_to_dict(state.paused_worker_usage)
+            if state.paused_worker_usage is not None
+            else None
+        ),
+        "pausedWorkerCostUsd": state.paused_worker_cost_usd,
     }
 
 
@@ -165,6 +193,22 @@ def parse_continuation(raw: object) -> AgenticContinuation | None:
     paused_index = int(idx_raw) if isinstance(idx_raw, int) else None
     paused_sq = raw.get("pausedSubQuestion") or raw.get("paused_sub_question")
     partial_raw = raw.get("partialAnswer") or raw.get("partial_answer") or ""
+    clarifications = tuple(
+        parse_clarification_records(
+            raw.get("clarifications") or raw.get("clarification_records") or []
+        )
+    )
+    mode_raw = raw.get("orchestrationMode") or raw.get("orchestration_mode")
+    orchestration_mode: Literal["single", "deep_research"] | None = (
+        mode_raw if mode_raw in ("single", "deep_research") else None
+    )
+    tier_raw = raw.get("tierId") or raw.get("tier_id")
+    provider_raw = raw.get("providerId") or raw.get("provider_id")
+    model_raw = raw.get("modelId") or raw.get("model_id")
+    paused_usage_raw = raw.get("pausedWorkerUsage") or raw.get("paused_worker_usage")
+    paused_cost_raw = raw.get("pausedWorkerCostUsd") or raw.get(
+        "paused_worker_cost_usd"
+    )
     return AgenticContinuation(
         version=int(raw.get("version") or 1),
         phase=phase,
@@ -186,6 +230,17 @@ def parse_continuation(raw: object) -> AgenticContinuation | None:
         paused_worker_index=paused_index,
         paused_sub_question=str(paused_sq) if isinstance(paused_sq, str) else None,
         partial_answer=str(partial_raw) if partial_raw is not None else "",
+        clarifications=clarifications,
+        orchestration_mode=orchestration_mode,
+        tier_id=str(tier_raw) if isinstance(tier_raw, str) else None,
+        provider_id=str(provider_raw) if isinstance(provider_raw, str) else None,
+        model_id=str(model_raw) if isinstance(model_raw, str) else None,
+        paused_worker_usage=(
+            _usage_from_dict(paused_usage_raw)
+            if isinstance(paused_usage_raw, dict)
+            else None
+        ),
+        paused_worker_cost_usd=float(paused_cost_raw or 0.0),
     )
 
 

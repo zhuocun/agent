@@ -278,10 +278,11 @@ export function AssistantMessage({
   const isDone = status === "done";
   const isStopped = status === "stopped";
   const isErrored = status === "error";
-  // Final-as-in-non-streaming: done | stopped | error all surface footer
-  // controls (actions for done/stopped, Retry for error). aria-busy still
-  // tracks the same set so AT users hear the bubble settle on any terminal.
-  const isFinal = isDone || isStopped || isErrored;
+  // Final-as-in-non-streaming: done | stopped | error | awaiting_approval all
+  // surface interactive chrome. awaiting_approval is a HITL pause — streaming
+  // has stopped and controls are ready, so aria-busy must be false (C-007).
+  const isFinal =
+    isDone || isStopped || isErrored || status === "awaiting_approval";
 
   // Tap-to-activate the message toolbar on touch surfaces. On hover-capable
   // pointers we leave the desktop hover idiom alone (group-hover/msg reveals

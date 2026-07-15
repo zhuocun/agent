@@ -339,17 +339,29 @@ class FakeProvider:
 
         # Agentic deep-research verifier (fresh-context judge). Scaffolded prompts
         # are prefixed `DEEP_RESEARCH_VERIFIER:` so the fake returns a stable
-        # VERDICT/REPORT shape. Injection payloads inside DATA must not change
-        # this contract — the judge reply is fixed, not derived from findings.
-        if user_text.startswith("DEEP_RESEARCH_VERIFIER:"):
+        # JSON verdict. Injection payloads inside DATA must not change this
+        # contract — the judge reply is fixed, not derived from findings.
+        if user_text.startswith("DEEP_RESEARCH_VERIFIER:") or (
+            isinstance(system_prefix, str) and "olune.verifier.v1" in system_prefix
+        ):
             await asyncio.sleep(self._delay)
-            yield AnswerDelta(
-                text=(
-                    "VERDICT: pass\n"
-                    "REPORT: Findings support the draft; no unsupported claims "
-                    "detected in the provided data."
+            # Prefer structured JSON when the verifier requested a schema; keep
+            # a legacy VERDICT/REPORT body only when no response_format is set.
+            if response_format is not None:
+                yield AnswerDelta(
+                    text=(
+                        '{"verdict":"pass","report":"Findings support the draft; '
+                        'no unsupported claims detected in the provided data."}'
+                    )
                 )
-            )
+            else:
+                yield AnswerDelta(
+                    text=(
+                        "VERDICT: pass\n"
+                        "REPORT: Findings support the draft; no unsupported claims "
+                        "detected in the provided data."
+                    )
+                )
             usage = UsageUpdate(
                 input_tokens=40,
                 output_tokens=60,

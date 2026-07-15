@@ -117,7 +117,12 @@ _WORKER_ALLOWED_TOOLS: frozenset[str] = frozenset({"calendar_create_event"})
 
 # Quiet aggregator collect before verify: no registry tools. Synthesis must not
 # emit AwaitingApproval that quiet-collect would swallow (verify_after path).
+# Provider-native web_search is also forced off on this path (O-006).
 _AGGREGATOR_QUIET_ALLOWED_TOOLS: frozenset[str] = frozenset()
+
+# Quiet planner: judgment/decomposition only — empty registry allowlist so a
+# planner ToolCall/HITL pause cannot be swallowed into an empty plan (O-009).
+_PLANNER_ALLOWED_TOOLS: frozenset[str] = frozenset()
 
 # Plan-approval HITL (M3). The plan pause reuses the shipped tool-approval
 # terminal: the orchestrator emits a pseudo `tool_call` whose name is this
@@ -185,20 +190,44 @@ class _WorkerSentinel:
     subagent_id: str
 
 
+_TOOL_CALL_NS_SEP = "::"
+
+
+def namespace_tool_call_id(subagent_id: str, call_id: str) -> str:
+    """Bind a provider-issued call id to a subagent (H-004).
+
+    Independent provider sessions can reuse call ids; namespacing prevents
+    cross-worker confused-deputy approve/replace.
+    """
+    if not subagent_id or not call_id:
+        return call_id
+    prefix = f"{subagent_id}{_TOOL_CALL_NS_SEP}"
+    if call_id.startswith(prefix):
+        return call_id
+    # Already namespaced under another subagent — leave untouched.
+    if _TOOL_CALL_NS_SEP in call_id:
+        return call_id
+    return f"{prefix}{call_id}"
+
+
 @dataclass(frozen=True)
 class _WorkerPause:
     """Internal: a worker paused for tool HITL (BE-005).
 
     Sibling policy: wait for other workers to finish, then surface
     ``AwaitingApproval`` with a continuation blob. NOT a ProviderEvent.
+    Concurrent extra pauses are cancelled (H-003 / O-007) so they are not
+    left pending without a continuation.
     """
 
     subagent_id: str
     index: int
     sub_question: str
     tool_call_id: str
+    tool_name: str
     usage: UsageUpdate
     partial_answer: str
+    tool_label: str | None = None
 
 
 def _tag(event: ProviderEvent, subagent_id: str) -> ProviderEvent:
@@ -207,7 +236,28 @@ def _tag(event: ProviderEvent, subagent_id: str) -> ProviderEvent:
     `ReasoningDone` carries no `subagent_id` field (it has no payload to
     attribute), so it relays unchanged; every other event the agent loop can emit
     has the optional field and is rewritten via `dataclasses.replace`.
+
+    ToolCall / ToolResult / AwaitingApproval ids are namespaced per subagent
+    (H-004) so colliding provider-issued ids cannot cross workers.
     """
+    if isinstance(event, ToolCall):
+        return replace(
+            event,
+            subagent_id=subagent_id,
+            id=namespace_tool_call_id(subagent_id, event.id),
+        )
+    if isinstance(event, ToolResult):
+        return replace(
+            event,
+            subagent_id=subagent_id,
+            tool_call_id=namespace_tool_call_id(subagent_id, event.tool_call_id),
+        )
+    if isinstance(event, AwaitingApproval):
+        return replace(
+            event,
+            subagent_id=subagent_id,
+            tool_call_id=namespace_tool_call_id(subagent_id, event.tool_call_id),
+        )
     if isinstance(event, _TAGGABLE):
         return replace(event, subagent_id=subagent_id)
     return event
@@ -361,7 +411,7 @@ async def _maybe_plan_approval(
     cap_usd: float,
     skip_started: bool = False,
     call_id: str | None = None,
-    clarifications: list[str] | None = None,
+    clarifications: list[str] | list[clarify.ClarificationRecord] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan-approval HITL gate (M3) — async generator of pause events.
 
@@ -399,9 +449,20 @@ async def _maybe_plan_approval(
         "estimatedCostUsd": estimate_usd,
         "capUsd": cap_usd,
     }
-    cleaned_clarifications = clarify.clean_answers(clarifications)
-    if cleaned_clarifications:
-        plan_input["clarifications"] = cleaned_clarifications
+    if clarifications:
+        if isinstance(clarifications[0], clarify.ClarificationRecord):
+            cleaned_records = [
+                r for r in clarifications if isinstance(r, clarify.ClarificationRecord)
+            ]
+        else:
+            cleaned_records = clarify.records_from_questions_and_answers(
+                [],
+                [a for a in clarifications if isinstance(a, str)],
+            )
+        if any(r.answer.strip() for r in cleaned_records):
+            plan_input["clarifications"] = clarify.serialize_clarification_records(
+                cleaned_records
+            )
     yield ToolCall(
         id=plan_call_id,
         name=PLAN_APPROVAL_TOOL_NAME,
@@ -420,7 +481,10 @@ def _verifier_phase_estimate(
     cost_for_usage: CostForUsage,
     sample_count: int | None = None,
 ) -> float:
-    """USD estimate for ``sample_count`` judge samples (default: configured N)."""
+    """USD estimate for ``sample_count`` judge samples (default: configured N).
+
+    Matches admission methodology: reasoning x fan-out multipliers (FR-26g).
+    """
     if not settings.agentic_verifier:
         return 0.0
     n = max(1, sample_count if sample_count is not None else settings.agentic_verifier_n)
@@ -428,6 +492,7 @@ def _verifier_phase_estimate(
     return (
         cost_for_usage(expected)
         * settings.agentic_reasoning_token_multiplier
+        * settings.agentic_fanout_token_multiplier
         * n
     )
 
@@ -473,6 +538,10 @@ async def _run_verifier_if_enabled(
 
     Returns ``None`` when the flag is off or the first judge sample cannot fit
     the remaining run cap (skip / degrade without a Verification claim).
+
+    Post-sample actual-cost is enforced inside ``run_verifier`` via
+    ``actual_within_cap`` so an over-estimate overrun cannot finish as a
+    successful verified pass while erasing the budget-halted signal.
     """
     if not settings.agentic_verifier:
         return None
@@ -499,6 +568,16 @@ async def _run_verifier_if_enabled(
             sample_count=1,
         )
 
+    def _actual_within_cap(usage_so_far: UsageUpdate) -> bool:
+        if cost_for_usage is None:
+            return True
+        spent = cost_for_usage(usage_so_far)
+        return not budget.exceeds_cap(
+            actual_usd=ledger_usd + spent,
+            cap_usd=cap_usd,
+            headroom_usd=budget_headroom_usd,
+        )
+
     return await verifier.run_verifier(
         make_stream_for=make_stream_for,
         settings=settings,
@@ -507,6 +586,7 @@ async def _run_verifier_if_enabled(
         outputs=outputs,
         scaffolded=scaffolded,
         can_afford_next_sample=_can_afford_next if cost_for_usage is not None else None,
+        actual_within_cap=_actual_within_cap if cost_for_usage is not None else None,
     )
 
 
@@ -518,11 +598,32 @@ async def _emit_verifier_receipt(
     cap_usd: float,
     outcome: Literal["succeeded", "failed"] = "succeeded",
 ) -> AsyncIterator[ProviderEvent]:
-    """Emit verifier SubagentStarted/Done + mid-run RunCost for attribution."""
+    """Emit verifier SubagentStarted/Done + mid-run RunCost for attribution.
+
+    Always bills ``result.usage`` when present — including failed / partial /
+    budget-halted outcomes so already-consumed judge tokens are never erased.
+    """
     if result is None and outcome == "succeeded":
         return
     usage = result.usage if result is not None else UsageUpdate()
     cost = cost_for_usage(usage) if result is not None else 0.0
+    wire_outcome: Literal["succeeded", "failed"] = (
+        "succeeded" if outcome == "succeeded" and result is not None
+        and result.outcome == "succeeded"
+        else "failed"
+        if outcome == "failed"
+        or (result is not None and result.outcome in {"failed", "unavailable"})
+        else "succeeded"
+    )
+    # Partial / budget_halted still surface as succeeded bracket with usage —
+    # the final RunCost carries partial/budget_halted. Only hard failures use
+    # failed.
+    if (
+        result is not None
+        and result.outcome in {"partial", "budget_halted"}
+        and outcome != "failed"
+    ):
+        wire_outcome = "succeeded"
     yield SubagentStarted(
         subagent_id=_VERIFIER_ID, label=_VERIFIER_LABEL, role="verifier"
     )
@@ -533,7 +634,7 @@ async def _emit_verifier_receipt(
         role="verifier",
         usage=usage,
         cost_usd=cost,
-        outcome=outcome,
+        outcome=wire_outcome,
     )
     yield RunCost(
         subtotal_usd=ledger_usd + cost,
@@ -541,6 +642,29 @@ async def _emit_verifier_receipt(
         confidence="exact",
         phase="progress",
     )
+
+
+def _apply_verifier_result(
+    draft: str,
+    result: verifier.VerifyResult | None,
+) -> tuple[str, Literal["succeeded", "failed"], bool]:
+    """Map a VerifyResult onto (final_answer, wire_outcome, budget_halted).
+
+    Only a full successful verification may rewrite the draft with a pass/fail
+    note. Failed / unavailable / partial results preserve the draft body (the
+    result.answer already carries an honest caveat when applicable) and keep
+    billable usage on the result object for the receipt.
+    """
+    if result is None:
+        return draft, "succeeded", False
+    budget_halted = result.budget_halted
+    if result.outcome == "succeeded":
+        return result.answer, "succeeded", budget_halted
+    if result.outcome in {"partial", "budget_halted", "unavailable"}:
+        # answer already has incomplete/unavailable caveat when samples existed
+        return result.answer if result.answer else draft, "succeeded", budget_halted
+    # failed — keep caveat answer if present, else draft; wire as failed
+    return (result.answer if result.answer else draft), "failed", budget_halted
 
 
 # --- shared finalize ----------------------------------------------------------
@@ -584,6 +708,7 @@ async def _finalize_synthesis(
     )
     verifier_cost = 0.0
     v_usage = UsageUpdate()
+    verifier_budget_halted = False
     if emit_verifier_bracket:
         async for event in _emit_verifier_receipt(
             result=verifier_result,
@@ -596,20 +721,22 @@ async def _finalize_synthesis(
         if verifier_result is not None:
             v_usage = verifier_result.usage
             verifier_cost = cost_for_usage(v_usage)
+            verifier_budget_halted = verifier_result.budget_halted
     total_usage = _sum_usages([*worker_usages, aggregator_usage, v_usage])
     total_cost = worker_total_cost + aggregator_cost + verifier_cost
     # Final untagged `Complete`: the handler's "last Complete wins" fold makes
     # this the turn's terminal usage, so the terminal attribution cost is the SUM
     # of every subagent's cost.
     yield Complete(usage=total_usage)
-    partial = budget_halted or failed_worker_count > 0
+    effective_budget_halted = budget_halted or verifier_budget_halted
+    partial = effective_budget_halted or failed_worker_count > 0
     yield RunCost(
         subtotal_usd=total_cost,
         cap_usd=cap_usd,
         confidence="exact",
         phase="final",
         partial=partial,
-        budget_halted=budget_halted,
+        budget_halted=effective_budget_halted,
         failed_worker_count=failed_worker_count,
     )
     # planned/completed are unused on the wire today but kept in the signature
@@ -659,18 +786,22 @@ async def _finalize_synthesis_streamed(
     judge_factory = verifier_make_stream_for or make_stream_for
 
     # When verify_after is on we quiet-collect the draft, so advertise+execute
-    # an empty tool allowlist — otherwise an approval-gated ToolCall would be
-    # dropped (non-AnswerDelta) and the turn would finish as done instead of
-    # pausing. Defense in depth: if AwaitingApproval still appears, yield it
-    # and return without verifying.
+    # an empty tool allowlist and force web_search=False — otherwise an
+    # approval-gated ToolCall or hidden provider search would be dropped
+    # (non-AnswerDelta) while still influencing the draft. Defense in depth: if
+    # AwaitingApproval / ToolCall / Sources / StatusUpdate still appear, yield
+    # them and do not run the verifier (never silently discard provenance).
     agg_allowed = (
         _AGGREGATOR_QUIET_ALLOWED_TOOLS if verify_after else None
     )
     agg_make = (
-        make_stream_for(prompt, allowed_tools=agg_allowed)
+        make_stream_for(
+            prompt, allowed_tools=agg_allowed, web_search=False
+        )
         if verify_after
         else make_stream_for(prompt)
     )
+    quiet_provenance = False
     async for event in run_agent_loop(
         make_stream=agg_make,
         settings=settings,
@@ -679,6 +810,13 @@ async def _finalize_synthesis_streamed(
         if verify_after and isinstance(event, AwaitingApproval):
             yield _tag(event, _AGGREGATOR_ID)
             return
+        if verify_after and isinstance(
+            event, (ToolCall, ToolResult, Sources, StatusUpdate)
+        ):
+            yield _tag(event, _AGGREGATOR_ID)
+            quiet_provenance = True
+            aggregator_usage = _fold_usage(event, aggregator_usage)
+            continue
         if isinstance(event, AnswerDelta):
             answer_parts.append(event.text)
             if not verify_after:
@@ -717,7 +855,10 @@ async def _finalize_synthesis_streamed(
     verifier_result: verifier.VerifyResult | None = None
     verifier_outcome: Literal["succeeded", "failed"] = "succeeded"
     final_answer = draft
-    if verify_after:
+    verifier_budget_halted = False
+    # Skip verify when quiet-collect saw tool/search provenance — the draft may
+    # incorporate hidden work; surface events already yielded above.
+    if verify_after and not quiet_provenance:
         aggregator_cost_so_far = cost_for_usage(aggregator_usage)
         try:
             verifier_result = await _run_verifier_if_enabled(
@@ -736,11 +877,13 @@ async def _finalize_synthesis_streamed(
             _log.exception("agentic.verifier_failed")
             verifier_outcome = "failed"
             verifier_result = None
-        if verifier_result is not None and verifier_result.samples:
-            final_answer = verifier_result.answer
-        # Emit the post-verify answer once (no draft+rewrite duplication).
+            final_answer = draft
+        else:
+            final_answer, verifier_outcome, verifier_budget_halted = (
+                _apply_verifier_result(draft, verifier_result)
+            )
         yield AnswerDelta(text=final_answer, subagent_id=_AGGREGATOR_ID)
-    elif not streamed.strip():
+    elif (verify_after and quiet_provenance) or not streamed.strip():
         yield AnswerDelta(text=draft, subagent_id=_AGGREGATOR_ID)
     elif suffix:
         yield AnswerDelta(text=suffix, subagent_id=_AGGREGATOR_ID)
@@ -757,34 +900,31 @@ async def _finalize_synthesis_streamed(
     )
     verifier_cost = 0.0
     v_usage = UsageUpdate()
-    ran_verifier = verifier_result is not None and bool(verifier_result.samples)
+    ran_verifier = verifier_result is not None
     if ran_verifier or verifier_outcome == "failed":
         async for event in _emit_verifier_receipt(
-            result=verifier_result if ran_verifier else None,
+            result=verifier_result,
             cost_for_usage=cost_for_usage,
             ledger_usd=worker_total_cost + aggregator_cost,
             cap_usd=cap_usd,
-            outcome=(
-                verifier_outcome
-                if ran_verifier or verifier_outcome == "failed"
-                else "succeeded"
-            ),
+            outcome=verifier_outcome,
         ):
             yield event
-        if ran_verifier and verifier_result is not None:
+        if verifier_result is not None:
             v_usage = verifier_result.usage
             verifier_cost = cost_for_usage(v_usage)
     total_usage = _sum_usages([*worker_usages, aggregator_usage, v_usage])
     total_cost = worker_total_cost + aggregator_cost + verifier_cost
     yield Complete(usage=total_usage)
-    partial = budget_halted or failed > 0
+    effective_budget_halted = budget_halted or verifier_budget_halted
+    partial = effective_budget_halted or failed > 0
     yield RunCost(
         subtotal_usd=total_cost,
         cap_usd=cap_usd,
         confidence="exact",
         phase="final",
         partial=partial,
-        budget_halted=budget_halted,
+        budget_halted=effective_budget_halted,
         failed_worker_count=failed,
     )
 
@@ -799,9 +939,12 @@ async def _collect_answer(
     Used for the real-provider planner pass: the planner's reply is parsed into
     sub-questions, so its events are NOT surfaced as a subagent during the pass —
     only the answer text and accumulated usage matter. A later
-    ``_emit_planner_receipt`` folds the usage into the run ledger. Tool output
-    (if the planner calls a tool) stays untrusted DATA carried back through the
-    loop's feedback channel.
+    ``_emit_planner_receipt`` folds the usage into the run ledger.
+
+    Least privilege (O-009): empty registry allowlist + ``web_search=False`` so
+    the planner cannot execute turn tools or hidden provider search. An
+    unexpected ``AwaitingApproval`` / tool / sources event raises rather than
+    being reduced to empty plan text.
     """
     answer_parts: list[str] = []
     usage = UsageUpdate()
@@ -809,8 +952,20 @@ async def _collect_answer(
         subagent_id=_PLANNER_ID, role="orchestrator", label=_PLANNER_LABEL
     ):
         async for event in run_agent_loop(
-            make_stream=make_stream_for(prompt), settings=settings
+            make_stream=make_stream_for(
+                prompt,
+                allowed_tools=_PLANNER_ALLOWED_TOOLS,
+                web_search=False,
+            ),
+            settings=settings,
+            allowed_tools=_PLANNER_ALLOWED_TOOLS,
         ):
+            if isinstance(
+                event, (AwaitingApproval, ToolCall, ToolResult, Sources, StatusUpdate)
+            ):
+                raise RuntimeError(
+                    f"planner quiet-collect saw unexpected {type(event).__name__}"
+                )
             if isinstance(event, AnswerDelta):
                 answer_parts.append(event.text)
             usage = _fold_usage(event, usage)
@@ -959,15 +1114,11 @@ async def _resume_worker_continuation(
     Restores completed sibling results from the continuation blob, re-runs only
     the paused worker with validated tool feedback / server-approved call ids,
     then runs the normal aggregator path.
+
+    H-009 / O-002: restores the pre-pause ledger and refuses further provider
+    spend when already budget-halted or over cap. O-008: uses the same fallback
+    path as fresh workers on retryable primary failure.
     """
-    _ = (
-        fallback_make_stream_for,
-        fallback_cost_for_usage,
-        fallback_provider_id,
-        fallback_model_id,
-        fallback_display_label,
-        is_retryable,
-    )
     scaffolded = settings.provider_backend == "fake"
     cap = settings.agentic_run_budget_usd
     sub_questions = list(continuation.plan)
@@ -997,27 +1148,173 @@ async def _resume_worker_continuation(
     failed_workers = continuation.failed_workers
     budget_halted = continuation.budget_halted
     planner_usage = continuation.planner_usage
+    # Prefer durable planner cost from the checkpoint (H-009).
     planner_cost = continuation.planner_cost_usd
+    ledger_usd = float(continuation.actual_cost_usd or 0.0)
+    if ledger_usd <= 0.0:
+        ledger_usd = (
+            sum(costs.values())
+            + planner_cost
+            + float(continuation.paused_worker_cost_usd or 0.0)
+        )
 
-    # Re-open the paused worker bracket and continue its agent loop.
-    # Seed any pre-tool partial answer so synthesis keeps text emitted before HITL.
+    worker_meta = [
+        (i, f"worker-{i}", f"Worker {i + 1}", sq)
+        for i, sq in enumerate(sub_questions)
+    ]
+    if continuation.clarifications:
+        # C-002: keep full Q&A records — do not collapse to non-blank answers
+        # (that drops question text and re-shifts blank positions).
+        resume_records = list(continuation.clarifications)
+    else:
+        # Legacy blobs: recover answers from prompt text only.
+        parsed = clarify.parse_clarification_answers(effective_user_text)
+        resume_records = clarify.records_from_questions_and_answers([], parsed)
+    resume_clarification_answers = clarify.nonblank_answers(resume_records)
+
+    async def _emit_synthesis(*, halted: bool) -> AsyncIterator[ProviderEvent]:
+        ordered_outputs = [
+            results[sid] for _, sid, _, _ in worker_meta if sid in results
+        ]
+        ordered_artifacts = aggregate.build_artifacts(ordered_outputs)
+        ordered_usages = [usages[sid] for _, sid, _, _ in worker_meta if sid in usages]
+        ordered_usages.append(planner_usage)
+        worker_total_cost = max(
+            sum(costs.get(sid, 0.0) for _, sid, _, _ in worker_meta) + planner_cost,
+            ledger_usd,
+        )
+        completed_count = len(ordered_outputs)
+        with invoke_agent_span(
+            subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
+        ):
+            synthesis = aggregate.synthesize(
+                ordered_outputs,
+                planned=len(sub_questions),
+                budget_halted=halted,
+                failed=failed_workers,
+                clarifications=resume_clarification_answers,
+            )
+            if not scaffolded and ordered_outputs and not halted:
+                async for event in _finalize_synthesis_streamed(
+                    make_stream_for=make_stream_for,
+                    verifier_make_stream_for=verifier_make_stream_for,
+                    settings=settings,
+                    user_text=effective_user_text,
+                    outputs=ordered_outputs,
+                    planned=len(sub_questions),
+                    worker_usages=ordered_usages,
+                    worker_total_cost=worker_total_cost,
+                    cost_for_usage=cost_for_usage,
+                    cap_usd=cap,
+                    budget_halted=halted,
+                    failed=failed_workers,
+                    budget_headroom_usd=budget_headroom_usd,
+                    scaffolded=scaffolded,
+                    artifacts=ordered_artifacts,
+                ):
+                    yield event
+                return
+            async for event in _finalize_synthesis(
+                synthesis=synthesis,
+                worker_usages=ordered_usages,
+                worker_total_cost=worker_total_cost,
+                cost_for_usage=cost_for_usage,
+                cap_usd=cap,
+                budget_halted=halted,
+                failed_worker_count=failed_workers,
+                planned_workers=len(sub_questions),
+                completed_workers=completed_count,
+            ):
+                yield event
+
+    # H-009: halt without another provider call when the durable ledger is
+    # already exhausted / flagged budget_halted.
+    if budget_halted or budget.exceeds_cap(
+        actual_usd=ledger_usd, cap_usd=cap, headroom_usd=budget_headroom_usd
+    ):
+        budget_halted = True
+        yield RunCost(
+            subtotal_usd=ledger_usd,
+            cap_usd=cap,
+            confidence="exact",
+            phase="progress",
+            partial=True,
+            budget_halted=True,
+        )
+        async for event in _emit_synthesis(halted=True):
+            yield event
+        return
+
     answer_parts: list[str] = []
     source_ids: list[str] = []
-    usage = UsageUpdate()
+    # O-002: restore pre-pause usage so finals include pause spend.
+    usage = continuation.paused_worker_usage or UsageUpdate()
+    pre_pause_cost = float(continuation.paused_worker_cost_usd or 0.0)
+    if pre_pause_cost <= 0.0 and continuation.paused_worker_usage is not None:
+        pre_pause_cost = cost_for_usage(continuation.paused_worker_usage)
     initial = [resume_tool_result] if resume_tool_result is not None else []
     prompt = clarify.with_clarifications(
         planner.worker_prompt(index, sub_question, scaffolded=scaffolded),
-        clarify.parse_clarification_answers(effective_user_text),
+        resume_records,
     )
-    with invoke_agent_span(subagent_id=paused_id, role="worker", label=label):
-        yield SubagentStarted(subagent_id=paused_id, label=label, role="worker")
-        if continuation.partial_answer:
-            answer_parts.append(continuation.partial_answer)
-            yield AnswerDelta(
-                text=continuation.partial_answer, subagent_id=paused_id
-            )
+
+    used_fallback = False
+    sub_code: SubstitutionReasonCode | None = None
+    sub_provider: str | None = None
+    sub_model: str | None = None
+    sub_label: str | None = None
+    worker_failed = False
+
+    def _has_usage(u: UsageUpdate) -> bool:
+        return bool(
+            u.input_tokens
+            or u.output_tokens
+            or u.reasoning_tokens
+            or u.cached_input_tokens
+        )
+
+    def _price(u: UsageUpdate) -> float:
+        if used_fallback and fallback_cost_for_usage is not None:
+            return fallback_cost_for_usage(u)
+        return cost_for_usage(u)
+
+    def _stamp_fallback_route() -> None:
+        nonlocal sub_provider, sub_model, sub_label
+        if sub_provider is None and fallback_provider_id is not None:
+            sub_provider = fallback_provider_id
+        if sub_model is None and fallback_model_id is not None:
+            sub_model = fallback_model_id
+        if sub_label is None and fallback_display_label is not None:
+            sub_label = fallback_display_label
+
+    def _nested_continuation() -> AgenticContinuation:
+        return AgenticContinuation(
+            phase="worker",
+            paused_subagent_id=paused_id,
+            user_text=effective_user_text,
+            plan=tuple(sub_questions),
+            completed_workers=tuple(continuation.completed_workers),
+            planner_usage=planner_usage,
+            planner_cost_usd=planner_cost,
+            budget_halted=budget_halted,
+            failed_workers=failed_workers,
+            actual_cost_usd=ledger_usd,
+            paused_worker_index=index,
+            paused_sub_question=sub_question,
+            partial_answer="".join(answer_parts),
+            clarifications=continuation.clarifications,
+            orchestration_mode=continuation.orchestration_mode,
+            tier_id=continuation.tier_id,
+            provider_id=continuation.provider_id,
+            model_id=continuation.model_id,
+            paused_worker_usage=usage,
+            paused_worker_cost_usd=_price(usage),
+        )
+
+    async def _drain(make_stream: MakeStream) -> AsyncIterator[ProviderEvent | Literal["paused"]]:
+        nonlocal usage, budget_halted, sub_code, sub_provider, sub_model, sub_label
         async for event in run_agent_loop(
-            make_stream=make_stream_for(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS),
+            make_stream=make_stream,
             settings=settings,
             allowed_tools=_WORKER_ALLOWED_TOOLS,
             server_approved_call_ids=server_approved_call_ids,
@@ -1030,106 +1327,147 @@ async def _resume_worker_continuation(
                     sid = getattr(item, "id", None)
                     if sid is not None:
                         source_ids.append(str(sid))
+            if isinstance(event, Complete) and event.substitution is not None:
+                sub_code = event.substitution
+                sub_provider = event.substituted_provider
+                sub_model = event.substituted_model
+                sub_label = event.substituted_display_label
             usage = _fold_usage(event, usage)
             if isinstance(event, AwaitingApproval):
-                # Nested pause: re-persist continuation with current siblings.
-                completed_states = list(continuation.completed_workers)
-                cont = AgenticContinuation(
-                    phase="worker",
-                    paused_subagent_id=paused_id,
-                    user_text=effective_user_text,
-                    plan=tuple(sub_questions),
-                    completed_workers=tuple(completed_states),
-                    planner_usage=planner_usage,
-                    planner_cost_usd=planner_cost,
-                    budget_halted=budget_halted,
-                    failed_workers=failed_workers,
-                    actual_cost_usd=continuation.actual_cost_usd,
-                    paused_worker_index=index,
-                    paused_sub_question=sub_question,
-                    partial_answer="".join(answer_parts),
-                )
                 yield _tag(
-                    replace(event, continuation=serialize_continuation(cont)),
+                    replace(
+                        event, continuation=serialize_continuation(_nested_continuation())
+                    ),
                     paused_id,
                 )
+                yield "paused"
                 return
-            yield _tag(event, paused_id)
-        cost = cost_for_usage(usage)
-        yield SubagentDone(
-            subagent_id=paused_id,
-            label=label,
-            role="worker",
-            usage=usage,
-            cost_usd=cost,
-            outcome="succeeded",
-        )
-        results[paused_id] = WorkerOutput(
-            subagent_id=paused_id,
-            sub_question=sub_question,
-            answer="".join(answer_parts),
-            source_ids=tuple(source_ids),
-        )
-        usages[paused_id] = usage
-        costs[paused_id] = cost
-
-    worker_meta = [
-        (i, f"worker-{i}", f"Worker {i + 1}", sq)
-        for i, sq in enumerate(sub_questions)
-    ]
-    ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
-    ordered_artifacts = aggregate.build_artifacts(ordered_outputs)
-    ordered_usages = [usages[sid] for _, sid, _, _ in worker_meta if sid in usages]
-    ordered_usages.append(planner_usage)
-    worker_total_cost = sum(
-        costs.get(sid, 0.0) for _, sid, _, _ in worker_meta
-    ) + cost_for_usage(planner_usage)
-    completed_count = len(ordered_outputs)
-    resume_clarifications = clarify.parse_clarification_answers(effective_user_text)
-
-    with invoke_agent_span(
-        subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
-    ):
-        synthesis = aggregate.synthesize(
-            ordered_outputs,
-            planned=len(sub_questions),
-            budget_halted=budget_halted,
-            failed=failed_workers,
-            clarifications=resume_clarifications,
-        )
-        # Prefer deterministic synthesis on resume for both fake and empty-safe paths.
-        if not scaffolded and ordered_outputs:
-            async for event in _finalize_synthesis_streamed(
-                make_stream_for=make_stream_for,
-                verifier_make_stream_for=verifier_make_stream_for,
-                settings=settings,
-                user_text=effective_user_text,
-                outputs=ordered_outputs,
-                planned=len(sub_questions),
-                worker_usages=ordered_usages,
-                worker_total_cost=worker_total_cost,
-                cost_for_usage=cost_for_usage,
+            if not budget_halted and budget.exceeds_cap(
+                actual_usd=ledger_usd - pre_pause_cost + _price(usage),
                 cap_usd=cap,
-                budget_halted=budget_halted,
-                failed=failed_workers,
-                budget_headroom_usd=budget_headroom_usd,
-                scaffolded=scaffolded,
-                artifacts=ordered_artifacts,
+                headroom_usd=budget_headroom_usd,
             ):
-                yield event
+                budget_halted = True
+            yield _tag(event, paused_id)
+
+    with invoke_agent_span(subagent_id=paused_id, role="worker", label=label):
+        yield SubagentStarted(subagent_id=paused_id, label=label, role="worker")
+        if continuation.partial_answer:
+            answer_parts.append(continuation.partial_answer)
+            yield AnswerDelta(
+                text=continuation.partial_answer, subagent_id=paused_id
+            )
+
+        nested_paused = False
+        try:
+            async for item in _drain(
+                make_stream_for(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS)
+            ):
+                if item == "paused":
+                    nested_paused = True
+                    break
+                yield item
+        except BaseException as exc:
+            prior_partial = (
+                [continuation.partial_answer] if continuation.partial_answer else []
+            )
+            had_partial = (
+                bool(answer_parts) and answer_parts != prior_partial
+            ) or _has_usage(usage)
+            # Treat only newly streamed text/usage as partial for fallback gate.
+            streamed_new = (
+                ("".join(answer_parts) != (continuation.partial_answer or ""))
+                or (
+                    _has_usage(usage)
+                    and usage != (continuation.paused_worker_usage or UsageUpdate())
+                )
+            )
+            if (
+                not streamed_new
+                and fallback_make_stream_for is not None
+                and is_retryable(exc)
+            ):
+                if isinstance(exc, AppError) and exc.envelope.code == "RATE_LIMITED":
+                    sub_code = "rate_limited"
+                else:
+                    sub_code = "provider_fallback"
+                used_fallback = True
+                _stamp_fallback_route()
+                try:
+                    async for item in _drain(
+                        fallback_make_stream_for(
+                            prompt, allowed_tools=_WORKER_ALLOWED_TOOLS
+                        )
+                    ):
+                        if item == "paused":
+                            nested_paused = True
+                            break
+                        yield item
+                    _stamp_fallback_route()
+                except BaseException as retry_exc:
+                    _log.warning(
+                        "agentic.resume_worker_fallback_failed",
+                        extra={"subagent_id": paused_id, "error": str(retry_exc)},
+                    )
+                    worker_failed = True
+            else:
+                _ = had_partial
+                _log.warning(
+                    "agentic.resume_worker_failed",
+                    extra={"subagent_id": paused_id, "error": str(exc)},
+                )
+                worker_failed = True
+
+        if nested_paused:
             return
-        async for event in _finalize_synthesis(
-            synthesis=synthesis,
-            worker_usages=ordered_usages,
-            worker_total_cost=worker_total_cost,
-            cost_for_usage=cost_for_usage,
-            cap_usd=cap,
-            budget_halted=budget_halted,
-            failed_worker_count=failed_workers,
-            planned_workers=len(sub_questions),
-            completed_workers=completed_count,
-        ):
-            yield event
+
+        if worker_failed:
+            failed_workers += 1
+            failed_cost = _price(usage)
+            yield SubagentDone(
+                subagent_id=paused_id,
+                label=label,
+                role="worker",
+                usage=usage,
+                cost_usd=failed_cost,
+                outcome="failed",
+                substitution=sub_code,
+                substituted_provider=sub_provider,
+                substituted_model=sub_model,
+                substituted_display_label=sub_label,
+            )
+            usages[paused_id] = usage
+            costs[paused_id] = failed_cost
+            ledger_usd = ledger_usd - pre_pause_cost + failed_cost
+        else:
+            cost = _price(usage)
+            post_delta = max(0.0, cost - pre_pause_cost)
+            ledger_usd = ledger_usd + post_delta
+            yield SubagentDone(
+                subagent_id=paused_id,
+                label=label,
+                role="worker",
+                usage=usage,
+                cost_usd=cost,
+                outcome="budget_cancelled" if budget_halted else "succeeded",
+                substitution=sub_code,
+                substituted_provider=sub_provider,
+                substituted_model=sub_model,
+                substituted_display_label=sub_label,
+            )
+            results[paused_id] = WorkerOutput(
+                subagent_id=paused_id,
+                sub_question=sub_question,
+                answer="".join(answer_parts),
+                source_ids=tuple(source_ids),
+            )
+            usages[paused_id] = usage
+            costs[paused_id] = cost
+
+    async for event in _emit_synthesis(halted=budget_halted):
+        yield event
+
+
 
 
 # --- deep_research mode (M2 + M3 budget/approval/verify) ----------------------
@@ -1147,6 +1485,7 @@ async def _run_deep_research(
     approved_plan: list[str] | None = None,
     clarify_answered: bool | None = None,
     clarify_answers: list[str] | None = None,
+    clarify_records: list[clarify.ClarificationRecord] | None = None,
     agentic_continuation: AgenticContinuation | None = None,
     resume_tool_result: ToolResult | None = None,
     server_approved_call_ids: set[str] | None = None,
@@ -1227,12 +1566,24 @@ async def _run_deep_research(
         return
 
     # Fold clarifications as SEPARATE DATA — never into the DEEP_RESEARCH
-    # scaffold that ``decompose`` pipe-splits. Strip the CLARIFY: marker first
-    # so leftover marker text cannot land in the last sub-question.
-    plan_text = clarify.strip_clarify_marker(user_text)
-    answers = clarify.clean_answers(clarify_answers)
+    # scaffold that ``decompose`` pipe-splits. Strip the CLARIFY: marker only
+    # when the clarify flag is on AND the path is scaffolded (C-004) so real
+    # requests and flag-off paths stay byte-preserving.
+    plan_text = clarify.strip_clarify_marker(
+        user_text,
+        allow_strip=scaffolded and settings.agentic_clarify_before_plan,
+    )
+    # Prefer full Q&A records from the resume seed (C-002). Falling back to
+    # answer-only lists loses question text — only for legacy callers.
+    if clarify_records is not None:
+        bound_records = list(clarify_records)
+    else:
+        bound_records = clarify.records_from_questions_and_answers(
+            [], list(clarify_answers) if clarify_answers is not None else None
+        )
+    answers = clarify.nonblank_answers(bound_records)
     # Context for planner / workers / synthesis: plan text + clarification DATA.
-    effective_user_text = clarify.with_clarifications(plan_text, answers)
+    effective_user_text = clarify.with_clarifications(plan_text, bound_records)
 
     planner_usage = UsageUpdate()
     max_workers = settings.agentic_max_workers
@@ -1290,7 +1641,7 @@ async def _run_deep_research(
                 estimate_usd=estimate,
                 cap_usd=cap,
                 skip_started=True,
-                clarifications=answers,
+                clarifications=bound_records,
             ):
                 yield event
             return
@@ -1423,6 +1774,8 @@ async def _run_deep_research(
         async def _consume(make_stream: MakeStream) -> bool:
             """Drain one worker loop. Returns True when paused for tool HITL."""
             nonlocal usage, sub_code, sub_provider, sub_model, sub_label
+            last_tool_name = "unknown"
+            last_tool_label: str | None = None
             async for event in run_agent_loop(
                 make_stream=make_stream,
                 settings=settings,
@@ -1440,18 +1793,27 @@ async def _run_deep_research(
                     sub_provider = event.substituted_provider
                     sub_model = event.substituted_model
                     sub_label = event.substituted_display_label
+                if isinstance(event, ToolCall):
+                    last_tool_name = event.name
+                    last_tool_label = event.label
                 usage = _fold_usage(event, usage)
                 if isinstance(event, AwaitingApproval):
                     # BE-005: relay was already done for the pending ToolCall.
                     # Stash pause; siblings keep running (wait policy).
+                    # H-004: namespace call id to this subagent before pause.
+                    namespaced_id = namespace_tool_call_id(
+                        subagent_id, event.tool_call_id
+                    )
                     await queue.put(
                         _WorkerPause(
                             subagent_id=subagent_id,
                             index=index,
                             sub_question=sub_question,
-                            tool_call_id=event.tool_call_id,
+                            tool_call_id=namespaced_id,
+                            tool_name=last_tool_name,
                             usage=usage,
                             partial_answer="".join(answer_parts),
+                            tool_label=last_tool_label,
                         )
                     )
                     return True
@@ -1469,7 +1831,7 @@ async def _run_deep_research(
                         planner.worker_prompt(
                             index, sub_question, scaffolded=scaffolded
                         ),
-                        answers,
+                        bound_records,
                     )
                     try:
                         paused = await _consume(
@@ -1630,6 +1992,29 @@ async def _run_deep_research(
                     usages[item.subagent_id] = item.usage
                     costs[item.subagent_id] = cost_for_usage(item.usage)
                     actual_cost += costs[item.subagent_id]
+                else:
+                    # H-003 / O-007: cancel orphaned sibling pauses so they are
+                    # not left pending without a continuation. The handler flips
+                    # the matching tool_call's approvalState to rejected when it
+                    # applies this result (never leave pending+cancelled).
+                    yield ToolResult(
+                        tool_call_id=item.tool_call_id,
+                        name=item.tool_name,
+                        label=item.tool_label,
+                        status="cancelled",
+                        approval_state="rejected",
+                        summary="Superseded by another worker's pending approval.",
+                        error=(
+                            "Concurrent worker pause cancelled; only one "
+                            "HITL continuation is kept per fan-out."
+                        ),
+                        subagent_id=item.subagent_id,
+                    )
+                    # Bill partial usage for the cancelled pause.
+                    usages[item.subagent_id] = item.usage
+                    costs[item.subagent_id] = cost_for_usage(item.usage)
+                    actual_cost += costs[item.subagent_id]
+                    failed_workers += 1
                 continue
             yield item
             if isinstance(item, SubagentDone) and item.role == "worker":
@@ -1702,6 +2087,12 @@ async def _run_deep_research(
             paused_worker_index=worker_pause.index,
             paused_sub_question=worker_pause.sub_question,
             partial_answer=worker_pause.partial_answer,
+            clarifications=tuple(bound_records),
+            orchestration_mode="deep_research",
+            paused_worker_usage=worker_pause.usage,
+            paused_worker_cost_usd=costs.get(
+                worker_pause.subagent_id, cost_for_usage(worker_pause.usage)
+            ),
         )
         yield AwaitingApproval(
             tool_call_id=worker_pause.tool_call_id,
@@ -1782,11 +2173,13 @@ async def _run_deep_research(
                     _log.exception("agentic.verifier_failed")
                     verifier_outcome = "failed"
                     verifier_result = None
-                if verifier_result is not None and verifier_result.samples:
-                    synthesis = verifier_result.answer
-            ran_verifier = (
-                verifier_result is not None and bool(verifier_result.samples)
-            )
+                else:
+                    synthesis, verifier_outcome, v_budget_halted = (
+                        _apply_verifier_result(synthesis, verifier_result)
+                    )
+                    if v_budget_halted:
+                        budget_halted = True
+            ran_verifier = verifier_result is not None
             async for event in _finalize_synthesis(
                 synthesis=synthesis,
                 worker_usages=ordered_usages,
@@ -1797,7 +2190,7 @@ async def _run_deep_research(
                 failed_worker_count=failed_workers,
                 planned_workers=len(sub_questions),
                 completed_workers=completed_count,
-                verifier_result=verifier_result if ran_verifier else None,
+                verifier_result=verifier_result,
                 verifier_outcome=verifier_outcome,
                 emit_verifier_bracket=ran_verifier or verifier_outcome == "failed",
             ):
@@ -1841,6 +2234,7 @@ async def run_orchestrator(
     approved_plan: list[str] | None = None,
     clarify_answered: bool | None = None,
     clarify_answers: list[str] | None = None,
+    clarify_records: list[clarify.ClarificationRecord] | None = None,
     agentic_continuation: AgenticContinuation | None = None,
     resume_tool_result: ToolResult | None = None,
     server_approved_call_ids: set[str] | None = None,
@@ -1869,8 +2263,10 @@ async def run_orchestrator(
       (None = fresh run, True = approved, False = declined).
     - `approved_plan` — immutable sub-questions from the paused tool input when
       `plan_approved` is True (BE-039); ignored otherwise.
-    - `clarify_answered` / `clarify_answers` — clarify-before-plan HITL resume
-      (None = fresh; True + answers = proceed to plan; False = decline).
+    - `clarify_answered` / `clarify_records` / `clarify_answers` — clarify-before-plan
+      HITL resume (None = fresh; True + records = proceed to plan with bound Q&A;
+      False = decline). ``clarify_records`` carries question text; ``clarify_answers``
+      is a legacy answer-only fallback.
     - `verifier_make_stream_for` — fresh-context factory for the verifier judge
       (empty history / no memory / no web_search). Falls back to
       ``make_stream_for`` when omitted (tests).
@@ -1891,6 +2287,7 @@ async def run_orchestrator(
             approved_plan=approved_plan,
             clarify_answered=clarify_answered,
             clarify_answers=clarify_answers,
+            clarify_records=clarify_records,
             agentic_continuation=agentic_continuation,
             resume_tool_result=resume_tool_result,
             server_approved_call_ids=server_approved_call_ids,

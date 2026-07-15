@@ -1134,11 +1134,18 @@ export function ChatThread() {
         })();
       }
     } else if (result.status === "stopped") setLiveMessage("Generation stopped");
-    else if (result.status === "awaiting_approval")
-      // HITL pause: the turn committed in place (with its tool parts) and the
-      // bubble now shows the approve/deny card. Not "ready" — it's waiting on us.
-      setLiveMessage("Action needs your approval");
-    else setLiveMessage("Generation failed");
+    else if (result.status === "awaiting_approval") {
+      // HITL pause: specialize clarify vs generic tool approval for AT.
+      const isClarifyPause = parts.some(
+        (p) =>
+          p.type === "tool_call" && p.name === "agentic_plan_clarify",
+      );
+      setLiveMessage(
+        isClarifyPause
+          ? "Clarifying questions need your answers"
+          : "Action needs your approval",
+      );
+    } else setLiveMessage("Generation failed");
 
     setPendingId(null);
     assistantIdRef.current = null;

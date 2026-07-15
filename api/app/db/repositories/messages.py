@@ -417,6 +417,31 @@ async def get_last_assistant_message(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def get_latest_assistant_with_status(
+    db: AsyncSession,
+    conversation_id: UUID,
+    *,
+    status: str,
+) -> Message | None:
+    """Return the newest assistant row with ``status``, even if later rows exist.
+
+    HITL resume (H-008): a stop/disconnect after an approval resume may leave a
+    newer ``stopped`` assistant that shadows the original ``awaiting_approval``
+    checkpoint. Lookup must walk past those rows.
+    """
+    stmt = (
+        select(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.role == "assistant",
+            Message.status == status,
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 async def count_assistant_messages(
     db: AsyncSession,
     conversation_id: UUID,

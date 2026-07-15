@@ -4,26 +4,41 @@ Approved tool side effects must not re-run when a resume stream fails after
 execution. The pending ``tool_call`` on the paused assistant row is the claim
 record:
 
-1. **Claim (CAS)** — only if ``approvalState == "pending"``, flip to
+1. **Claim** — only if ``approvalState == "pending"``, flip to
    ``approved``/``rejected`` + ``running``/``cancelled``, stamp a unique
    ``_approvalClaimId``, and **commit** before any executor call.
 2. **Execute** (approve only) — run the tool once under that claim.
 3. **Settle** — append a ``tool_result`` part and mark the tool_call terminal,
    then commit — independent of whether the post-approval model stream
-   completes.
+   completes. Settlement is a **claim-owner conditional write**: it re-locks,
+   requires matching ``_approvalClaimId``, and refuses to overwrite unless the
+   call is still in the claimed ``approved``/``rejected`` +
+   ``running``/``cancelled`` window.
 
 Retry / crash recovery:
-- Settled ``tool_result`` present → return it (no re-execute).
+- Settled ``tool_result`` present → return it (no re-execute) when the client
+  decision matches the durable approval; conflicting decisions raise
+  ``ApprovalDecisionConflict``.
 - Claimed (``approved``/``running``) **without** ``tool_result`` → do **not**
   re-execute; return a failed replay so the side effect is not doubled
   (covers kill between execute and settle, and stop/disconnect after claim).
-- Second concurrent claim loses the CAS and takes the same paths above.
+- Second concurrent claim in the **same process** loses under the in-process
+  lock and takes the same paths above.
+
+Concurrency note (H-005): the in-process ``asyncio`` lock +
+``populate_existing`` + claim-owner settle is a **process-local mitigation**,
+not a true cross-process CAS. SQLite ignores ``SELECT FOR UPDATE``; another
+API worker process can still race. A normalized approval row with
+``UPDATE ... WHERE state='pending' RETURNING`` (and claim-id settle) remains
+the durable fix.
 """
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -39,25 +54,87 @@ from app.tools.protocol import ToolCallRequest, ToolExecutionResult
 # Reserved key on the tool_call part (not tool input) identifying the claim.
 APPROVAL_CLAIM_ID_KEY = "_approvalClaimId"
 
+# In-process claim locks: SQLite ignores SELECT FOR UPDATE, so concurrent
+# sessions in the same process must serialize the pending→claimed transition.
+_claim_locks: dict[tuple[str, str], asyncio.Lock] = {}
+_claim_locks_guard = asyncio.Lock()
+
+
+class ApprovalDecisionConflict(Exception):  # noqa: N818
+    """Client decision contradicts a durable settled approval."""
+
+    def __init__(self, *, stored_decision: str, requested_decision: str):
+        self.stored_decision = stored_decision
+        self.requested_decision = requested_decision
+        super().__init__(
+            f"Approval already settled as {stored_decision!r}; "
+            f"cannot retry with {requested_decision!r}."
+        )
+
+
+@dataclass(frozen=True)
+class SettlementOutcome:
+    """Authoritative settlement plus the durable human decision."""
+
+    result: ToolExecutionResult
+    decision: str  # "approve" | "deny"
+    claim_id: str | None = None
+    already_settled: bool = False
+
+
+def _decision_from_approval_state(approval_state: str) -> str:
+    if approval_state == "rejected":
+        return "deny"
+    return "approve"
+
+
+def _lock_key(message_id: UUID, tool_call_id: str) -> tuple[str, str]:
+    return (str(message_id), tool_call_id)
+
+
+async def _get_claim_lock(message_id: UUID, tool_call_id: str) -> asyncio.Lock:
+    key = _lock_key(message_id, tool_call_id)
+    async with _claim_locks_guard:
+        lock = _claim_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _claim_locks[key] = lock
+        return lock
+
 
 def find_tool_call_part(
-    parts: object, tool_call_id: str
+    parts: object,
+    tool_call_id: str,
+    *,
+    subagent_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Locate a ``tool_call`` part by id (any approval/status)."""
+    """Locate a ``tool_call`` part by id (and optional subagent).
+
+    When ``subagent_id`` is set, only that worker's call matches — prevents
+    cross-worker confused-deputy replacement on colliding provider ids.
+    """
     if not isinstance(parts, list):
         return None
+    matches: list[dict[str, Any]] = []
     for part in parts:
         if (
             isinstance(part, dict)
             and part.get("type") == "tool_call"
             and part.get("id") == tool_call_id
         ):
-            return part
-    return None
+            if subagent_id is not None and part.get("subagentId") != subagent_id:
+                continue
+            matches.append(part)
+    if not matches:
+        return None
+    return matches[0]
 
 
 def find_settled_tool_result(
-    parts: object, tool_call_id: str
+    parts: object,
+    tool_call_id: str,
+    *,
+    subagent_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Return a persisted ``tool_result`` for ``tool_call_id`` when present."""
     if not isinstance(parts, list):
@@ -68,6 +145,8 @@ def find_settled_tool_result(
             and part.get("type") == "tool_result"
             and part.get("toolCallId") == tool_call_id
         ):
+            if subagent_id is not None and part.get("subagentId") != subagent_id:
+                continue
             return part
     return None
 
@@ -122,20 +201,28 @@ def execution_to_tool_result_part(
 
 
 def _replace_tool_call(
-    parts: list[Any], tool_call_id: str, replacement: dict[str, Any]
+    parts: list[Any],
+    tool_call_id: str,
+    replacement: dict[str, Any],
+    *,
+    subagent_id: str | None = None,
 ) -> list[Any]:
-    return [
-        (
-            replacement
-            if (
-                isinstance(p, dict)
-                and p.get("type") == "tool_call"
-                and p.get("id") == tool_call_id
-            )
-            else p
-        )
-        for p in parts
-    ]
+    """Replace exactly one matching tool_call (id + optional subagent)."""
+    replaced = False
+    out: list[Any] = []
+    for p in parts:
+        if (
+            not replaced
+            and isinstance(p, dict)
+            and p.get("type") == "tool_call"
+            and p.get("id") == tool_call_id
+            and (subagent_id is None or p.get("subagentId") == subagent_id)
+        ):
+            out.append(replacement)
+            replaced = True
+        else:
+            out.append(p)
+    return out
 
 
 def _claimed_without_result_failure(
@@ -165,6 +252,149 @@ async def _persist_parts(db: AsyncSession, message: Message, parts: list[Any]) -
     await db.refresh(message)
 
 
+async def _lock_message(db: AsyncSession, message_id: UUID) -> Message:
+    """Row-lock with populate_existing so identity-map stale parts cannot win."""
+    locked = (
+        await db.execute(
+            select(Message)
+            .where(Message.id == message_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    await db.refresh(locked)
+    return locked
+
+
+async def settle_pseudo_tool_approval(
+    db: AsyncSession,
+    *,
+    paused_message: Message,
+    tool_call_id: str,
+    decision: str,
+    output: dict[str, Any] | None = None,
+    label: str | None = None,
+    summary: str | None = None,
+    claim_id: str | None = None,
+) -> ToolExecutionResult:
+    """Claim + settle a non-registry pseudo-tool (plan clarify / plan approval).
+
+    Unlike ``claim_and_settle_approval``, this never invokes ``execute_tool``.
+    It flips the paused ``tool_call`` to a terminal approval state and appends a
+    ``tool_result`` carrying a bounded decision payload so reload no longer
+    shows a permanently pending HITL card.
+    """
+    message_id = paused_message.id
+    lock = await _get_claim_lock(message_id, tool_call_id)
+    async with lock:
+        locked = await _lock_message(db, message_id)
+        parts: list[Any] = list(locked.parts or [])
+        existing = find_settled_tool_result(parts, tool_call_id)
+        call_part = find_tool_call_part(parts, tool_call_id)
+        tool_name = str((call_part or {}).get("name") or "")
+
+        if existing is not None:
+            stored = _decision_from_approval_state(
+                str(existing.get("approvalState") or existing.get("approval_state") or "")
+            )
+            if stored and stored != decision:
+                raise ApprovalDecisionConflict(
+                    stored_decision=stored, requested_decision=decision
+                )
+            return tool_result_dict_to_execution(
+                existing, tool_call_id=tool_call_id, name=tool_name
+            )
+
+        if call_part is None:
+            return ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                name=tool_name or "unknown",
+                status="failed",
+                error="No matching tool call to settle.",
+                approval_state="rejected",
+            )
+
+        approval_state = str(call_part.get("approvalState") or "")
+        if approval_state != "pending":
+            return _claimed_without_result_failure(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                approval_state=approval_state,
+            )
+
+        minted_claim = claim_id or f"claim-{secrets.token_urlsafe(12)}"
+        claimed = deepcopy(call_part)
+        if decision == "approve":
+            claimed["approvalState"] = "approved"
+            claimed["status"] = "running"
+        else:
+            claimed["approvalState"] = "rejected"
+            claimed["status"] = "cancelled"
+        claimed[APPROVAL_CLAIM_ID_KEY] = minted_claim
+        await _persist_parts(
+            db, locked, _replace_tool_call(parts, tool_call_id, claimed)
+        )
+
+        locked = await _lock_message(db, message_id)
+        parts_after = list(locked.parts or [])
+        call_after = find_tool_call_part(parts_after, tool_call_id)
+        settled_after = find_settled_tool_result(parts_after, tool_call_id)
+        if settled_after is not None:
+            return tool_result_dict_to_execution(
+                settled_after, tool_call_id=tool_call_id, name=tool_name
+            )
+        if call_after is None:
+            return ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                name=tool_name or "unknown",
+                status="failed",
+                error="Tool call disappeared after claim.",
+                approval_state="rejected",
+            )
+        if call_after.get(APPROVAL_CLAIM_ID_KEY) != minted_claim:
+            return _claimed_without_result_failure(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                approval_state=str(call_after.get("approvalState") or "approved"),
+            )
+
+        subagent_id = call_after.get("subagentId")
+        subagent_str = str(subagent_id) if isinstance(subagent_id, str) else None
+        safe_output = dict(output or {})
+        if decision == "approve":
+            result = ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                status="succeeded",
+                output=safe_output,
+                summary=summary or "Clarifications recorded.",
+                approval_state="approved",
+            )
+        else:
+            result = ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                status="cancelled",
+                output=safe_output,
+                summary=summary or "User skipped clarifying questions.",
+                error="User denied the clarification pause.",
+                approval_state="rejected",
+            )
+
+        settled_call = deepcopy(call_after)
+        settled_call["status"] = result.status
+        settled_call["approvalState"] = result.approval_state
+        settled_call[APPROVAL_CLAIM_ID_KEY] = minted_claim
+        settled_parts = _replace_tool_call(parts_after, tool_call_id, settled_call)
+        settled_parts.append(
+            execution_to_tool_result_part(
+                result, label=label, subagent_id=subagent_str
+            )
+        )
+        await _persist_parts(db, locked, settled_parts)
+        return result
+
+
 async def claim_and_settle_approval(
     db: AsyncSession,
     *,
@@ -174,57 +404,215 @@ async def claim_and_settle_approval(
     effective_input: dict[str, Any],
     label: str | None,
     claim_id: str | None = None,
+    subagent_id: str | None = None,
 ) -> ToolExecutionResult:
     """Claim the pending approval (CAS), execute (if approve), settle on the row.
 
-    ``claim_id`` is an optional caller-supplied idempotency key; when omitted a
-    server token is minted. Same ``claim_id`` against an already-settled row
-    returns the stored result. A claim without a settled result never re-runs
-    the executor.
+    See module docstring. Prefer ``claim_and_settle_approval_outcome`` when the
+    caller needs the authoritative durable decision (H-006).
+    """
+    outcome = await claim_and_settle_approval_outcome(
+        db,
+        paused_message=paused_message,
+        tool_call_id=tool_call_id,
+        decision=decision,
+        effective_input=effective_input,
+        label=label,
+        claim_id=claim_id,
+        subagent_id=subagent_id,
+    )
+    return outcome.result
 
-    Claim uses ``SELECT … FOR UPDATE`` so concurrent approve requests serialize:
-    only the first pending→approved/rejected transition wins; losers see
-    settled-or-claimed-without-result and never double-execute.
+
+async def claim_and_settle_approval_outcome(
+    db: AsyncSession,
+    *,
+    paused_message: Message,
+    tool_call_id: str,
+    decision: str,
+    effective_input: dict[str, Any],
+    label: str | None,
+    claim_id: str | None = None,
+    subagent_id: str | None = None,
+) -> SettlementOutcome:
+    """CAS claim/settle returning the durable decision for resume wiring.
+
+    The in-process lock covers only the pending→claimed transition (and the
+    final settle write). Execute runs *outside* the lock so concurrent losers
+    can observe the committed claim without deadlocking behind a slow tool.
     """
     message_id = paused_message.id
-    # Row lock serializes concurrent claims on the same paused assistant.
-    locked = (
-        await db.execute(
-            select(Message).where(Message.id == message_id).with_for_update()
+    lock = await _get_claim_lock(message_id, tool_call_id)
+    async with lock:
+        claimed = await _claim_pending_locked(
+            db,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            decision=decision,
+            claim_id=claim_id,
+            subagent_id=subagent_id,
         )
-    ).scalar_one()
+        if isinstance(claimed, SettlementOutcome):
+            return claimed
+        minted_claim, tool_name, part_subagent = claimed
+
+    # Execute outside the claim lock (H-007 cancel cleanup still settles).
+    try:
+        if decision != "approve":
+            result = ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                status="cancelled",
+                output={},
+                summary="User denied the tool call.",
+                error="User denied the tool call.",
+                approval_state="rejected",
+            )
+        else:
+            spec = TOOL_REGISTRY.get(tool_name)
+            if spec is None or not spec.needs_approval:
+                result = ToolExecutionResult(
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    status="failed",
+                    output={},
+                    error="Approved tool is not an approval-gated tool.",
+                    approval_state="approved",
+                )
+            else:
+                result = await execute_tool(
+                    ToolCallRequest(
+                        id=tool_call_id,
+                        name=tool_name,
+                        input=effective_input,
+                        approval_state="approved",
+                    )
+                )
+                result = ToolExecutionResult(
+                    tool_call_id=result.tool_call_id,
+                    name=result.name,
+                    status=result.status,
+                    output=result.output,
+                    summary=result.summary,
+                    error=result.error,
+                    approval_state="approved",
+                )
+    except asyncio.CancelledError:
+        cancel_result = ToolExecutionResult(
+            tool_call_id=tool_call_id,
+            name=tool_name,
+            status="cancelled",
+            output={},
+            summary="Approval execution cancelled before settle.",
+            error="Approval execution was cancelled; side effect not settled.",
+            approval_state="approved" if decision == "approve" else "rejected",
+        )
+        async with lock:
+            await _settle_under_claim(
+                db,
+                message_id=message_id,
+                tool_call_id=tool_call_id,
+                minted_claim=minted_claim,
+                result=cancel_result,
+                label=label,
+                subagent_id=part_subagent,
+            )
+        raise
+
+    async with lock:
+        await _settle_under_claim(
+            db,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            minted_claim=minted_claim,
+            result=result,
+            label=label,
+            subagent_id=part_subagent,
+        )
+    return SettlementOutcome(
+        result=result,
+        decision=decision,
+        claim_id=minted_claim,
+        already_settled=False,
+    )
+
+
+async def _claim_pending_locked(
+    db: AsyncSession,
+    *,
+    message_id: UUID,
+    tool_call_id: str,
+    decision: str,
+    claim_id: str | None,
+    subagent_id: str | None,
+) -> SettlementOutcome | tuple[str, str, str | None]:
+    locked = await _lock_message(db, message_id)
     parts: list[Any] = list(locked.parts or [])
-    existing = find_settled_tool_result(parts, tool_call_id)
-    call_part = find_tool_call_part(parts, tool_call_id)
+    existing = find_settled_tool_result(
+        parts, tool_call_id, subagent_id=subagent_id
+    )
+    call_part = find_tool_call_part(parts, tool_call_id, subagent_id=subagent_id)
     tool_name = str((call_part or {}).get("name") or "")
+    part_subagent = (
+        str(call_part.get("subagentId"))
+        if isinstance(call_part, dict) and isinstance(call_part.get("subagentId"), str)
+        else subagent_id
+    )
 
     if existing is not None:
-        return tool_result_dict_to_execution(
+        stored_decision = _decision_from_approval_state(
+            str(existing.get("approvalState") or existing.get("approval_state") or "")
+        )
+        if stored_decision != decision:
+            raise ApprovalDecisionConflict(
+                stored_decision=stored_decision,
+                requested_decision=decision,
+            )
+        result = tool_result_dict_to_execution(
             existing, tool_call_id=tool_call_id, name=tool_name
+        )
+        return SettlementOutcome(
+            result=result,
+            decision=stored_decision,
+            claim_id=(
+                str(call_part.get(APPROVAL_CLAIM_ID_KEY))
+                if isinstance(call_part, dict)
+                and call_part.get(APPROVAL_CLAIM_ID_KEY) is not None
+                else None
+            ),
+            already_settled=True,
         )
 
     if call_part is None:
-        return ToolExecutionResult(
+        result = ToolExecutionResult(
             tool_call_id=tool_call_id,
             name=tool_name or "unknown",
             status="failed",
             error="No matching tool call to settle.",
             approval_state="rejected",
         )
+        return SettlementOutcome(result=result, decision="deny", already_settled=False)
 
     approval_state = str(call_part.get("approvalState") or "")
-    # Already claimed (or settled status without a result row yet): never
-    # re-execute. Prefer returning a stored result; otherwise fail closed.
     if approval_state != "pending":
-        return _claimed_without_result_failure(
+        # Already claimed without a result: fail closed (never re-execute).
+        result = _claimed_without_result_failure(
             tool_call_id=tool_call_id,
             name=tool_name,
             approval_state=approval_state,
         )
+        return SettlementOutcome(
+            result=result,
+            decision=_decision_from_approval_state(result.approval_state),
+            claim_id=(
+                str(call_part.get(APPROVAL_CLAIM_ID_KEY))
+                if call_part.get(APPROVAL_CLAIM_ID_KEY) is not None
+                else None
+            ),
+            already_settled=False,
+        )
 
-    # CAS claim: only pending → approved/rejected. Commit BEFORE execute so a
-    # crash after side-effect-start cannot leave the row re-claimable, and so
-    # the row lock is released before the (potentially slow) executor runs.
+    # CAS claim: only pending → approved/rejected. Commit BEFORE execute.
     minted_claim = claim_id or f"claim-{secrets.token_urlsafe(12)}"
     claimed = deepcopy(call_part)
     if decision == "approve":
@@ -234,98 +622,126 @@ async def claim_and_settle_approval(
         claimed["approvalState"] = "rejected"
         claimed["status"] = "cancelled"
     claimed[APPROVAL_CLAIM_ID_KEY] = minted_claim
-    claimed_parts = _replace_tool_call(parts, tool_call_id, claimed)
+    claimed_parts = _replace_tool_call(
+        parts, tool_call_id, claimed, subagent_id=part_subagent
+    )
     await _persist_parts(db, locked, claimed_parts)
 
-    # Re-read after commit (lock released). Confirm we still own the claim.
-    await db.refresh(locked)
+    # Re-lock after commit; confirm we still own the claim (true CAS).
+    locked = await _lock_message(db, message_id)
     parts_after = list(locked.parts or [])
-    call_after = find_tool_call_part(parts_after, tool_call_id)
-    settled_after = find_settled_tool_result(parts_after, tool_call_id)
+    call_after = find_tool_call_part(
+        parts_after, tool_call_id, subagent_id=part_subagent
+    )
+    settled_after = find_settled_tool_result(
+        parts_after, tool_call_id, subagent_id=part_subagent
+    )
     if settled_after is not None:
-        return tool_result_dict_to_execution(
+        stored_decision = _decision_from_approval_state(
+            str(
+                settled_after.get("approvalState")
+                or settled_after.get("approval_state")
+                or ""
+            )
+        )
+        if stored_decision != decision:
+            raise ApprovalDecisionConflict(
+                stored_decision=stored_decision,
+                requested_decision=decision,
+            )
+        result = tool_result_dict_to_execution(
             settled_after, tool_call_id=tool_call_id, name=tool_name
         )
+        return SettlementOutcome(
+            result=result,
+            decision=stored_decision,
+            claim_id=minted_claim,
+            already_settled=True,
+        )
     if call_after is None:
-        return ToolExecutionResult(
+        result = ToolExecutionResult(
             tool_call_id=tool_call_id,
             name=tool_name or "unknown",
             status="failed",
             error="Tool call disappeared after claim.",
             approval_state="rejected",
         )
+        return SettlementOutcome(result=result, decision="deny", claim_id=minted_claim)
+
     winner_claim = call_after.get(APPROVAL_CLAIM_ID_KEY)
     if winner_claim != minted_claim:
-        # Lost CAS — do not execute; return settled if present else fail closed.
-        return _claimed_without_result_failure(
+        result = _claimed_without_result_failure(
             tool_call_id=tool_call_id,
             name=tool_name,
             approval_state=str(call_after.get("approvalState") or "approved"),
         )
-
-    subagent_id = call_after.get("subagentId")
-    subagent_str = str(subagent_id) if isinstance(subagent_id, str) else None
-
-    if decision != "approve":
-        result = ToolExecutionResult(
-            tool_call_id=tool_call_id,
-            name=tool_name,
-            status="cancelled",
-            output={},
-            summary="User denied the tool call.",
-            error="User denied the tool call.",
-            approval_state="rejected",
+        return SettlementOutcome(
+            result=result,
+            decision=_decision_from_approval_state(result.approval_state),
+            claim_id=str(winner_claim) if winner_claim is not None else None,
         )
-    else:
-        spec = TOOL_REGISTRY.get(tool_name)
-        if spec is None or not spec.needs_approval:
-            result = ToolExecutionResult(
-                tool_call_id=tool_call_id,
-                name=tool_name,
-                status="failed",
-                output={},
-                error="Approved tool is not an approval-gated tool.",
-                approval_state="approved",
-            )
-        else:
-            result = await execute_tool(
-                ToolCallRequest(
-                    id=tool_call_id,
-                    name=tool_name,
-                    input=effective_input,
-                    approval_state="approved",
-                )
-            )
-            result = ToolExecutionResult(
-                tool_call_id=result.tool_call_id,
-                name=result.name,
-                status=result.status,
-                output=result.output,
-                summary=result.summary,
-                error=result.error,
-                approval_state="approved",
-            )
 
-    # Settle under the same claim id.
-    settled_call = deepcopy(call_after)
+    return minted_claim, tool_name, part_subagent
+
+
+
+async def _settle_under_claim(
+    db: AsyncSession,
+    *,
+    message_id: UUID,
+    tool_call_id: str,
+    minted_claim: str,
+    result: ToolExecutionResult,
+    label: str | None,
+    subagent_id: str | None,
+) -> None:
+    """Settle only when this claim still owns the running/rejected call.
+
+    Claim-owner conditional write (H-005): refuse unless ``_approvalClaimId``
+    matches **and** the call is still in the claimed approval/status window.
+    """
+    locked = await _lock_message(db, message_id)
+    fresh_parts = list(locked.parts or [])
+    if find_settled_tool_result(fresh_parts, tool_call_id, subagent_id=subagent_id):
+        return
+    call_fresh = find_tool_call_part(
+        fresh_parts, tool_call_id, subagent_id=subagent_id
+    )
+    if call_fresh is None:
+        return
+    if call_fresh.get(APPROVAL_CLAIM_ID_KEY) != minted_claim:
+        return
+    approval = str(
+        call_fresh.get("approvalState") or call_fresh.get("approval_state") or ""
+    )
+    status = str(call_fresh.get("status") or "")
+    if approval not in ("approved", "rejected"):
+        return
+    if status not in ("running", "cancelled"):
+        return
+    settled_call = deepcopy(call_fresh)
     settled_call["status"] = result.status
     settled_call["approvalState"] = result.approval_state
     settled_call[APPROVAL_CLAIM_ID_KEY] = minted_claim
-    settled_parts = _replace_tool_call(parts_after, tool_call_id, settled_call)
+    settled_parts = _replace_tool_call(
+        fresh_parts, tool_call_id, settled_call, subagent_id=subagent_id
+    )
     settled_parts.append(
         execution_to_tool_result_part(
-            result, label=label, subagent_id=subagent_str
+            result, label=label, subagent_id=subagent_id
         )
     )
     await _persist_parts(db, locked, settled_parts)
-    return result
 
 
 async def load_paused_assistant_for_resume(
     db: AsyncSession, conversation_id: UUID
 ) -> Message | None:
-    """Return the trailing awaiting_approval assistant, if any."""
-    last = await messages_repo.get_last_assistant_message(db, conversation_id)
-    if last is None or last.status != "awaiting_approval":
-        return None
-    return last
+    """Return the latest awaiting_approval assistant, skipping later stopped rows.
+
+    H-008: a stop/disconnect after resume persists a newer ``stopped`` assistant;
+    resume must still find the original ``awaiting_approval`` checkpoint.
+    """
+    return await messages_repo.get_latest_assistant_with_status(
+        db, conversation_id, status="awaiting_approval"
+    )

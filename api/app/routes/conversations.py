@@ -147,6 +147,8 @@ from app.streaming.sse import (
 from app.streaming.stop_registry import request_stop_async
 from app.tools.approval_settlement import (
     ApprovalDecisionConflict,
+    claim_and_settle_approval_outcome,
+    find_settled_tool_result,
     settle_pseudo_tool_approval,
 )
 from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
@@ -3052,22 +3054,66 @@ async def _prepare_resume_tool(
     label = pending.get("label")
     label_str = str(label) if isinstance(label, str) else None
 
-    # H-007: defer claim/execute/settle until the SSE producer owns stream
-    # lifecycle (stream_and_persist). Route only validates + builds the seed.
-    # H-006 decision conflicts are enforced at settle time (409).
+    # H-006: if already settled, enforce decision match in the route (409) so
+    # the client never starts an SSE stream with a contradictory instruction.
+    # H-007: pending approvals defer claim/execute until the producer owns the
+    # stream lifecycle.
+    existing_result = find_settled_tool_result(
+        last_assistant.parts, decision.tool_call_id
+    )
+    settled_result = None
+    pending_settle = True
+    authoritative_decision = decision.decision
+    if existing_result is not None:
+        try:
+            outcome = await claim_and_settle_approval_outcome(
+                db,
+                paused_message=last_assistant,
+                tool_call_id=decision.tool_call_id,
+                decision=decision.decision,
+                effective_input=dict(effective_input),
+                label=label_str,
+            )
+        except ApprovalDecisionConflict as exc:
+            raise AppError(
+                ErrorEnvelope(
+                    code="APPROVAL_DECISION_CONFLICT",
+                    severity="error",
+                    title="Approval decision conflict",
+                    body=str(exc),
+                ),
+                status.HTTP_409_CONFLICT,
+            ) from exc
+        settled_result = outcome.result
+        authoritative_decision = outcome.decision
+        pending_settle = False
+    elif str(pending.get("approvalState") or "") != "pending":
+        # Claimed-without-result: fail closed via settlement (no re-execute).
+        outcome = await claim_and_settle_approval_outcome(
+            db,
+            paused_message=last_assistant,
+            tool_call_id=decision.tool_call_id,
+            decision=decision.decision,
+            effective_input=dict(effective_input),
+            label=label_str,
+        )
+        settled_result = outcome.result
+        authoritative_decision = outcome.decision
+        pending_settle = False
+
     seed = ResumeToolSeed(
         tool_call_id=decision.tool_call_id,
         name=tool_name,
         label=label_str,
-        decision=decision.decision,
+        decision=authoritative_decision,
         input=dict(effective_input),
-        settled_result=None,
+        settled_result=settled_result,
         agentic_continuation=agentic_continuation,
         resume_user_text=(
             agentic_continuation.user_text if agentic_continuation is not None else None
         ),
         paused_message_id=last_assistant.id,
-        pending_settle=True,
+        pending_settle=pending_settle,
     )
     # Worker/aggregator continuation resumes with the original user text (the
     # orchestrator continues that subagent). Non-agentic / primary HITL keeps the
@@ -3077,7 +3123,7 @@ async def _prepare_resume_tool(
     else:
         instruction = (
             _RESUME_APPROVE_INSTRUCTION
-            if decision.decision == "approve"
+            if authoritative_decision == "approve"
             else _RESUME_DENY_INSTRUCTION
         )
     return user_message_id, history, instruction, [], seed

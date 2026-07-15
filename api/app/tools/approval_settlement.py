@@ -54,7 +54,7 @@ _claim_locks: dict[tuple[str, str], asyncio.Lock] = {}
 _claim_locks_guard = asyncio.Lock()
 
 
-class ApprovalDecisionConflict(Exception):
+class ApprovalDecisionConflict(Exception):  # noqa: N818
     """Client decision contradicts a durable settled approval."""
 
     def __init__(self, *, stored_decision: str, requested_decision: str):
@@ -429,33 +429,117 @@ async def claim_and_settle_approval_outcome(
     claim_id: str | None = None,
     subagent_id: str | None = None,
 ) -> SettlementOutcome:
-    """CAS claim/settle returning the durable decision for resume wiring."""
+    """CAS claim/settle returning the durable decision for resume wiring.
+
+    The in-process lock covers only the pending→claimed transition (and the
+    final settle write). Execute runs *outside* the lock so concurrent losers
+    can observe the committed claim without deadlocking behind a slow tool.
+    """
     message_id = paused_message.id
     lock = await _get_claim_lock(message_id, tool_call_id)
     async with lock:
-        return await _claim_and_settle_locked(
+        claimed = await _claim_pending_locked(
             db,
             message_id=message_id,
             tool_call_id=tool_call_id,
             decision=decision,
-            effective_input=effective_input,
-            label=label,
             claim_id=claim_id,
             subagent_id=subagent_id,
         )
+        if isinstance(claimed, SettlementOutcome):
+            return claimed
+        minted_claim, tool_name, part_subagent = claimed
+
+    # Execute outside the claim lock (H-007 cancel cleanup still settles).
+    try:
+        if decision != "approve":
+            result = ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                status="cancelled",
+                output={},
+                summary="User denied the tool call.",
+                error="User denied the tool call.",
+                approval_state="rejected",
+            )
+        else:
+            spec = TOOL_REGISTRY.get(tool_name)
+            if spec is None or not spec.needs_approval:
+                result = ToolExecutionResult(
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    status="failed",
+                    output={},
+                    error="Approved tool is not an approval-gated tool.",
+                    approval_state="approved",
+                )
+            else:
+                result = await execute_tool(
+                    ToolCallRequest(
+                        id=tool_call_id,
+                        name=tool_name,
+                        input=effective_input,
+                        approval_state="approved",
+                    )
+                )
+                result = ToolExecutionResult(
+                    tool_call_id=result.tool_call_id,
+                    name=result.name,
+                    status=result.status,
+                    output=result.output,
+                    summary=result.summary,
+                    error=result.error,
+                    approval_state="approved",
+                )
+    except asyncio.CancelledError:
+        cancel_result = ToolExecutionResult(
+            tool_call_id=tool_call_id,
+            name=tool_name,
+            status="cancelled",
+            output={},
+            summary="Approval execution cancelled before settle.",
+            error="Approval execution was cancelled; side effect not settled.",
+            approval_state="approved" if decision == "approve" else "rejected",
+        )
+        async with lock:
+            await _settle_under_claim(
+                db,
+                message_id=message_id,
+                tool_call_id=tool_call_id,
+                minted_claim=minted_claim,
+                result=cancel_result,
+                label=label,
+                subagent_id=part_subagent,
+            )
+        raise
+
+    async with lock:
+        await _settle_under_claim(
+            db,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            minted_claim=minted_claim,
+            result=result,
+            label=label,
+            subagent_id=part_subagent,
+        )
+    return SettlementOutcome(
+        result=result,
+        decision=decision,
+        claim_id=minted_claim,
+        already_settled=False,
+    )
 
 
-async def _claim_and_settle_locked(
+async def _claim_pending_locked(
     db: AsyncSession,
     *,
     message_id: UUID,
     tool_call_id: str,
     decision: str,
-    effective_input: dict[str, Any],
-    label: str | None,
     claim_id: str | None,
     subagent_id: str | None,
-) -> SettlementOutcome:
+) -> SettlementOutcome | tuple[str, str, str | None]:
     locked = await _lock_message(db, message_id)
     parts: list[Any] = list(locked.parts or [])
     existing = find_settled_tool_result(
@@ -591,90 +675,8 @@ async def _claim_and_settle_locked(
             claim_id=str(winner_claim) if winner_claim is not None else None,
         )
 
-    subagent_str = (
-        str(call_after.get("subagentId"))
-        if isinstance(call_after.get("subagentId"), str)
-        else part_subagent
-    )
+    return minted_claim, tool_name, part_subagent
 
-    try:
-        if decision != "approve":
-            result = ToolExecutionResult(
-                tool_call_id=tool_call_id,
-                name=tool_name,
-                status="cancelled",
-                output={},
-                summary="User denied the tool call.",
-                error="User denied the tool call.",
-                approval_state="rejected",
-            )
-        else:
-            spec = TOOL_REGISTRY.get(tool_name)
-            if spec is None or not spec.needs_approval:
-                result = ToolExecutionResult(
-                    tool_call_id=tool_call_id,
-                    name=tool_name,
-                    status="failed",
-                    output={},
-                    error="Approved tool is not an approval-gated tool.",
-                    approval_state="approved",
-                )
-            else:
-                result = await execute_tool(
-                    ToolCallRequest(
-                        id=tool_call_id,
-                        name=tool_name,
-                        input=effective_input,
-                        approval_state="approved",
-                    )
-                )
-                result = ToolExecutionResult(
-                    tool_call_id=result.tool_call_id,
-                    name=result.name,
-                    status=result.status,
-                    output=result.output,
-                    summary=result.summary,
-                    error=result.error,
-                    approval_state="approved",
-                )
-    except asyncio.CancelledError:
-        # H-007: cancellation after claim must terminalize the claim so retries
-        # fail closed instead of leaving running+no-result forever.
-        cancel_result = ToolExecutionResult(
-            tool_call_id=tool_call_id,
-            name=tool_name,
-            status="cancelled",
-            output={},
-            summary="Approval execution cancelled before settle.",
-            error="Approval execution was cancelled; side effect not settled.",
-            approval_state="approved" if decision == "approve" else "rejected",
-        )
-        await _settle_under_claim(
-            db,
-            message_id=message_id,
-            tool_call_id=tool_call_id,
-            minted_claim=minted_claim,
-            result=cancel_result,
-            label=label,
-            subagent_id=subagent_str,
-        )
-        raise
-
-    await _settle_under_claim(
-        db,
-        message_id=message_id,
-        tool_call_id=tool_call_id,
-        minted_claim=minted_claim,
-        result=result,
-        label=label,
-        subagent_id=subagent_str,
-    )
-    return SettlementOutcome(
-        result=result,
-        decision=decision,
-        claim_id=minted_claim,
-        already_settled=False,
-    )
 
 
 async def _settle_under_claim(

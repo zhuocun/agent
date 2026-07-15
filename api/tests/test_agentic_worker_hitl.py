@@ -381,3 +381,164 @@ async def test_approval_idempotent_double_resume_does_not_reexecute(
     settled2 = approval_settlement.find_settled_tool_result(paused2.parts, "fake_cal_1")
     assert settled2 is not None
     assert settled2.get("output") == first_output
+
+
+async def test_settled_id_reissue_does_not_reexecute(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H-001 / O-001: provider repeating a settled call id must not re-run."""
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "d0000000-0000-0000-0000-000000000001",
+            "tierId": "smart",
+            "text": "TOOL_APPROVE: schedule a meeting",
+        },
+    )
+
+    from app.tools import builtin
+
+    exec_count = {"n": 0}
+    real_exec = builtin._execute_calendar_create_event
+
+    async def _counting_exec(call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        return await real_exec(call)
+
+    original_spec = builtin.TOOL_REGISTRY["calendar_create_event"]
+    monkeypatch.setitem(
+        builtin.TOOL_REGISTRY,
+        "calendar_create_event",
+        builtin.ToolSpec(
+            name=original_spec.name,
+            label=original_spec.label,
+            needs_approval=original_spec.needs_approval,
+            schema=original_spec.schema,
+            executor=_counting_exec,
+            prod_safe=original_spec.prod_safe,
+        ),
+    )
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "d0000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+        },
+    )
+    assert frames[-1][1]["status"] == "done"
+    assert exec_count["n"] == 1
+
+    # Deny-then-reissue path: seed a denied settlement and ensure a model
+    # reissue cannot authorize via the old id (unit-level via agent_loop).
+    from app.config import get_settings
+    from app.providers.protocol import ToolCall, ToolResult, UsageUpdate, Complete
+    from app.tools.agent_loop import run_agent_loop
+
+    settings = get_settings()
+    events: list[object] = []
+    round_n = {"n": 0}
+
+    async def _make_stream(feedback, suppress_tools=False):  # type: ignore[no-untyped-def]
+        round_n["n"] += 1
+        if round_n["n"] == 1:
+            # First provider pass after seeding: reissue the settled id.
+            yield ToolCall(
+                id="fake_cal_1",
+                name="calendar_create_event",
+                status="running",
+                approval_state="approved",
+                input={"title": "replay"},
+            )
+            yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+            return
+        yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+    async for ev in run_agent_loop(
+        make_stream=_make_stream,
+        settings=settings,
+        server_approved_call_ids={"fake_cal_1"},  # adversarial: capability still listed
+        initial_tool_results=[
+            ToolResult(
+                tool_call_id="fake_cal_1",
+                name="calendar_create_event",
+                status="cancelled",
+                approval_state="rejected",
+                summary="User denied the tool call.",
+                error="User denied the tool call.",
+            )
+        ],
+    ):
+        events.append(ev)
+
+    assert exec_count["n"] == 1
+    results = [e for e in events if isinstance(e, ToolResult)]
+    assert results
+    assert results[0].status == "failed"
+    assert "already settled" in (results[0].error or "").lower() or "Duplicate" in (
+        results[0].summary or ""
+    )
+
+
+async def test_conflicting_decision_returns_409(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H-006: approve after a durable deny is rejected with 409."""
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "e0000000-0000-0000-0000-000000000001",
+            "tierId": "smart",
+            "text": "TOOL_APPROVE: schedule a meeting",
+        },
+    )
+    deny_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "e0000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": "fake_cal_1", "decision": "deny"},
+        },
+    )
+    assert deny_frames[-1][1]["status"] == "done"
+
+    # Remove the post-deny assistant so resume can target the paused row again.
+    msgs = await _load_messages(session_factory, conv_id)
+    done_rows = [m for m in msgs if m.role == "assistant" and m.status == "done"]
+    async with session_factory() as session:
+        for row in done_rows:
+            db_row = await session.get(Message, row.id)
+            if db_row is not None:
+                await session.delete(db_row)
+        await session.commit()
+
+    resp = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "e0000000-0000-0000-0000-000000000003",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+        },
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["error"]["code"] == "APPROVAL_DECISION_CONFLICT"

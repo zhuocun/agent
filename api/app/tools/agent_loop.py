@@ -238,12 +238,16 @@ async def run_agent_loop(
     ``web_search`` is unaffected).
 
     ``server_approved_call_ids``: opaque call ids the *server* has authorized
-    for gated-tool execution (resume capability). Provider-emitted
-    ``approval_state="approved"`` is never trusted on its own.
+    for gated-tool execution (pre-settlement resume capability). Each id is
+    **single-use**: consuming it to execute removes it from the set. Provider-
+    emitted ``approval_state="approved"`` is never trusted on its own.
 
     ``initial_tool_results`` (BE-005): pre-seeded results from a HITL resume so
     the loop continues the same subagent with validated tool feedback instead of
-    re-requesting the gated tool. Empty/None on every fresh run.
+    re-requesting the gated tool. Empty/None on every fresh run. Call ids that
+    already appear here are treated as **consumed** (H-001 / O-001): a later
+    provider reissue of the same id is rejected as a duplicate and never
+    re-executed, even if also listed in ``server_approved_call_ids``.
     """
     tool_feedback: list[ToolResult] = list(initial_tool_results or [])
     max_rounds = max(1, settings.tool_max_rounds)
@@ -258,6 +262,9 @@ async def run_agent_loop(
     approved_ids: set[str] = (
         set(server_approved_call_ids) if server_approved_call_ids is not None else set()
     )
+    # Settled / seeded results consume their call ids permanently for this loop.
+    consumed_ids: set[str] = {r.tool_call_id for r in tool_feedback if r.tool_call_id}
+    approved_ids -= consumed_ids
 
     def _note_answer(delta: AnswerDelta) -> None:
         nonlocal answer_emitted
@@ -407,8 +414,29 @@ async def run_agent_loop(
 
             # Server-validated approval only. Provider-emitted
             # approval_state="approved" is NEVER authority — only a server-
-            # issued capability (`server_approved_call_ids`, e.g. resume seed)
-            # authorizes a gated tool. Otherwise pause for HITL.
+            # issued capability (`server_approved_call_ids`) authorizes a gated
+            # tool, and only once. Already-settled ids (initial_tool_results)
+            # are never re-executable (H-001 / O-001).
+            if call.id in consumed_ids and spec.needs_approval:
+                exec_result = ToolExecutionResult(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    status="failed",
+                    output={},
+                    summary="Duplicate tool call after settlement.",
+                    error=(
+                        "This tool call id was already settled and cannot be "
+                        "executed again; refusing duplicate side effect."
+                    ),
+                    approval_state="rejected",
+                )
+                result_event = _to_result_event(call=call, exec_result=exec_result)
+                if i == 0 and round_reasoning is not None:
+                    result_event = replace(result_event, round_reasoning=round_reasoning)
+                yield result_event
+                round_results.append(result_event)
+                continue
+
             server_approved = call.id in approved_ids
             if spec.needs_approval and not server_approved:
                 # Emit exactly one server-normalized pending call, then pause
@@ -417,6 +445,12 @@ async def run_agent_loop(
                 yield _pending_approval_call(call)
                 yield AwaitingApproval(tool_call_id=call.id)
                 return
+
+            if server_approved:
+                # Single-use capability: consume before execute so a later
+                # provider reissue in this loop cannot re-run the side effect.
+                approved_ids.discard(call.id)
+                consumed_ids.add(call.id)
 
             yield ToolCall(
                 id=call.id,
@@ -445,6 +479,8 @@ async def run_agent_loop(
                 result_event = replace(result_event, round_reasoning=round_reasoning)
             yield result_event
             round_results.append(result_event)
+            if spec.needs_approval:
+                consumed_ids.add(call.id)
 
         tool_feedback.extend(round_results)
         tools_ran = True

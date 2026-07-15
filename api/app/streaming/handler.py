@@ -49,6 +49,7 @@ from app.agentic.continuation import CONTINUATION_INPUT_KEY
 from app.agentic.orchestrator import run_orchestrator
 from app.agentic.retry import is_retryable_provider_error
 from app.config import get_settings
+from app.db.models import Message
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import memory_facts as memory_facts_repo
@@ -129,6 +130,10 @@ from app.streaming.sse import (
 )
 from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
 from app.tools.agent_loop import run_agent_loop, tool_feedback_to_history
+from app.tools.approval_settlement import (
+    ApprovalDecisionConflict,
+    claim_and_settle_approval_outcome,
+)
 from app.tools.builtin import advertised_tool_specs, execute_tool
 from app.tools.protocol import ToolCallRequest
 
@@ -181,7 +186,7 @@ async def cancel_all_producers() -> None:
             await task
 
 
-@dataclass(frozen=True)
+@dataclass
 class ResumeToolSeed:
     """Resolved instruction for resuming a turn paused on an approval-gated tool.
 
@@ -223,12 +228,17 @@ class ResumeToolSeed:
     # `clarify_answered` / `clarify_answers` instead of a seeded tool_result.
     is_clarify: bool = False
     clarify_answers: tuple[str, ...] | None = None
-    # BE-007: pre-settled execution result (claim happened in the route).
+    # BE-007: pre-settled execution result (claim happened in the producer after
+    # SSE ownership — see stream_and_persist settlement block).
     settled_result: Any | None = None
     # BE-005: fan-out continuation for worker/aggregator tool HITL.
     agentic_continuation: Any | None = None
     # Original user text for agentic continuation resume (not the Tool approved: stub).
     resume_user_text: str | None = None
+    # H-007: deferred claim/settle inputs — executed inside the stream producer
+    # after EventSourceResponse owns cancellation / stream lifecycle.
+    paused_message_id: UUID | None = None
+    pending_settle: bool = False
 
 
 @dataclass
@@ -718,6 +728,24 @@ async def stream_and_persist(
     # mode was requested. Any one of these false ⇒ the existing single-stream
     # path runs unchanged, so a flag-off turn — and an agentic-off turn that still
     # carries `agenticMode` — is byte-for-byte identical to a pre-agentic build.
+    #
+    # H-002 / O-003: a durable worker continuation pins orchestration mode. When
+    # the client omits/changes agenticMode on resume, derive mode from the
+    # checkpoint so the continuation cannot be silently bypassed after settle.
+    if (
+        resume_seed is not None
+        and resume_seed.agentic_continuation is not None
+        and getattr(resume_seed.agentic_continuation, "orchestration_mode", None)
+        in ("single", "deep_research")
+    ):
+        agentic_mode = resume_seed.agentic_continuation.orchestration_mode
+    elif (
+        resume_seed is not None
+        and resume_seed.agentic_continuation is not None
+        and agentic_mode is None
+    ):
+        # Legacy continuations without an explicit pin default to deep_research.
+        agentic_mode = "deep_research"
     agentic_active = (
         tools_active and handler_settings.agentic_enabled and agentic_mode is not None
     )
@@ -872,6 +900,7 @@ async def stream_and_persist(
         user_text_override: str | None = None,
         *,
         tool_definitions: list[ToolDefinition] | None = None,
+        web_search_override: bool | None = None,
     ) -> AsyncIterator[ProviderEvent]:
         advertised = (
             None
@@ -879,6 +908,9 @@ async def stream_and_persist(
             else (turn_tool_definitions if tool_definitions is None else tool_definitions)
         )
         round_history = history + tool_feedback_to_history(tool_feedback)
+        effective_web_search = (
+            web_search if web_search_override is None else web_search_override
+        )
         return active_provider.stream(
             model_id=binding.model_id,
             history=round_history,
@@ -899,8 +931,9 @@ async def stream_and_persist(
             ),
             # Opt this turn into the web_search tool. False (the default) leaves
             # the provider stream byte-for-byte unchanged — no StatusUpdate /
-            # Sources.
-            web_search=web_search,
+            # Sources. Phase factories (planner / quiet aggregator) may force
+            # False via web_search_override.
+            web_search=effective_web_search,
             # Opt this turn into structured output (JSON mode). None (the
             # default) leaves the provider stream byte-for-byte unchanged; the
             # adapters degrade gracefully and the boundary validation surfaces
@@ -929,19 +962,28 @@ async def stream_and_persist(
         worker_user_text: str,
         *,
         allowed_tools: Collection[str] | None = None,
+        system_prefix: str | None = None,
+        response_format: ResponseFormat | None = None,
+        web_search: bool = False,
     ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
         """Fresh-context `MakeStream` for the verifier judge (agentic only).
 
         Industry / plan 02 fresh-context means an empty judge session: no
-        conversation history, memory/system prefix, attachments, or web_search —
-        only the rubric + DATA prompt the orchestrator passes as ``user_text``.
-        ``allowed_tools`` still scopes advertise (verifier passes empty).
+        conversation history, memory, attachments, or turn web_search — only the
+        rubric (``system_prefix``) + DATA prompt the orchestrator passes as
+        ``user_text``. ``allowed_tools`` still scopes advertise (verifier passes
+        empty). ``response_format`` requests structured JSON when the verifier
+        supplies a schema. ``web_search`` is accepted for signature parity and
+        always forced False.
         """
+        _ = web_search
         scoped_tools = (
             _tool_definitions_for(allowed_tools)
             if allowed_tools is not None
             else None
         )
+        judge_response_format = response_format
+        judge_system_prefix = system_prefix
 
         def _make(
             tool_feedback: list[ToolResult], suppress_tools: bool = False
@@ -966,9 +1008,9 @@ async def stream_and_persist(
                     else binding.reasoning_effort
                 ),
                 web_search=False,
-                response_format=None,
+                response_format=judge_response_format,
                 supports_vision=binding.supports_vision,
-                system_prefix=None,
+                system_prefix=judge_system_prefix,
                 tools=None if suppress_tools else scoped_tools,
             )
 
@@ -978,6 +1020,9 @@ async def stream_and_persist(
         worker_user_text: str,
         *,
         allowed_tools: Collection[str] | None = None,
+        web_search: bool | None = None,
+        system_prefix: str | None = None,
+        response_format: ResponseFormat | None = None,
     ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
         """Build a per-subagent `MakeStream` over the active route (agentic only).
 
@@ -985,12 +1030,18 @@ async def stream_and_persist(
         only the user text varies per subagent (the orchestrator hands each worker
         its sub-question prompt). ``allowed_tools`` scopes both advertise and
         (via the orchestrator) execute for workers — empty ⇒ no registry tools.
+        ``web_search`` overrides the turn flag when set (planner/quiet aggregator
+        force False). ``system_prefix`` / ``response_format`` are accepted for
+        factory signature parity with the fresh judge; ignored here (workers use
+        the turn preamble).
         """
+        _ = (system_prefix, response_format)
         scoped_tools = (
             _tool_definitions_for(allowed_tools)
             if allowed_tools is not None
             else turn_tool_definitions
         )
+        phase_web_search = web_search  # None → inherit turn flag
 
         def _make(
             tool_feedback: list[ToolResult], suppress_tools: bool = False
@@ -1000,6 +1051,7 @@ async def stream_and_persist(
                 suppress_tools,
                 worker_user_text,
                 tool_definitions=scoped_tools,
+                web_search_override=phase_web_search,
             )
 
         return _make
@@ -1097,6 +1149,52 @@ async def stream_and_persist(
     # `AwaitingApproval` pause); otherwise it is the raw provider stream —
     # byte-for-byte the pre-tools path. The fallback rebuild path calls this
     # again, so a fallback route is wrapped identically.
+
+    # H-007: claim/execute/settle AFTER SSE ownership (this generator has started)
+    # so stop/disconnect can cancel and settlement cleanup can terminalize the
+    # claim. Route-level prepare only validates and defers settlement here.
+    if (
+        resume_seed is not None
+        and resume_seed.pending_settle
+        and resume_seed.paused_message_id is not None
+        and resume_seed.settled_result is None
+        and not resume_seed.is_plan
+        and not resume_seed.is_clarify
+    ):
+        paused_row = await db.get(Message, resume_seed.paused_message_id)
+        if paused_row is None:
+            raise AppError(
+                ErrorEnvelope(
+                    code="NOTHING_TO_RESUME",
+                    severity="error",
+                    title="Nothing to resume",
+                    body="The paused approval message is no longer available.",
+                ),
+                status_code=400,
+            )
+        try:
+            outcome = await claim_and_settle_approval_outcome(
+                db,
+                paused_message=paused_row,
+                tool_call_id=resume_seed.tool_call_id,
+                decision=resume_seed.decision,
+                effective_input=dict(resume_seed.input or {}),
+                label=resume_seed.label,
+            )
+        except ApprovalDecisionConflict as exc:
+            raise AppError(
+                ErrorEnvelope(
+                    code="APPROVAL_DECISION_CONFLICT",
+                    severity="error",
+                    title="Approval decision conflict",
+                    body=str(exc),
+                ),
+                status_code=409,
+            ) from exc
+        resume_seed.settled_result = outcome.result
+        resume_seed.decision = outcome.decision
+        resume_seed.pending_settle = False
+
     def _build_provider_iter() -> AsyncIterator[ProviderEvent]:
         if agentic_active:
             assert agentic_mode is not None
@@ -1124,7 +1222,10 @@ async def stream_and_persist(
                         output=getattr(settled, "output", None) or None,
                         error=getattr(settled, "error", None),
                     )
-                orch_approved_ids = {resume_seed.tool_call_id}
+                # H-001 / O-001: settled ids are NOT fresh execution capabilities.
+                # Feed the settled result only; the agent loop treats those ids as
+                # consumed and rejects provider reissues.
+                orch_approved_ids = set()
             elif (
                 resume_seed is not None
                 and not resume_seed.is_plan
@@ -1146,7 +1247,7 @@ async def stream_and_persist(
                     output=getattr(settled, "output", None) or None,
                     error=getattr(settled, "error", None),
                 )
-                orch_approved_ids = {resume_seed.tool_call_id}
+                orch_approved_ids = set()
             return run_orchestrator(
                 make_stream_for=_agentic_make_stream,
                 verifier_make_stream_for=_agentic_fresh_make_stream,
@@ -1210,7 +1311,7 @@ async def stream_and_persist(
                         error=getattr(settled, "error", None),
                     )
                 ]
-                approved_ids = {resume_seed.tool_call_id}
+                approved_ids = set()
             return run_agent_loop(
                 make_stream=_build_raw_stream,
                 settings=handler_settings,
@@ -2049,13 +2150,21 @@ async def stream_and_persist(
                         if agentic_active and ev.subagent_id is not None
                         else tool_parts
                     )
+                    # H-002: pin served route identity onto the durable checkpoint.
+                    cont_blob = dict(ev.continuation)
+                    if agentic_mode is not None:
+                        cont_blob.setdefault("orchestrationMode", agentic_mode)
+                    cont_blob.setdefault("tierId", requested_tier_id)
+                    if provider_id is not None:
+                        cont_blob.setdefault("providerId", provider_id)
+                    cont_blob.setdefault("modelId", binding.model_id)
                     for part in target_parts:
                         if (
                             part.get("type") == "tool_call"
                             and part.get("id") == ev.tool_call_id
                         ):
                             inp = dict(part.get("input") or {})
-                            inp[CONTINUATION_INPUT_KEY] = ev.continuation
+                            inp[CONTINUATION_INPUT_KEY] = cont_blob
                             part["input"] = inp
                             break
                 paused = True

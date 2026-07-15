@@ -191,7 +191,7 @@ def test_aggregate_prompt_delimits_and_escapes_findings() -> None:
     )
     assert "=== POLICY" in prompt
     assert "=== DATA" in prompt
-    assert "=== ARTIFACT REFS" in prompt
+    assert "artifact_refs" in prompt
     assert "olune.worker_artifacts.v1" in prompt
     assert "<<<UNTRUSTED_WORKER_DATA_BEGIN>>>" in prompt
     assert "<<<UNTRUSTED_WORKER_DATA_END>>>" in prompt
@@ -203,6 +203,8 @@ def test_aggregate_prompt_delimits_and_escapes_findings() -> None:
     assert injection not in prompt  # raw delimiter form neutralized
     assert "«««UNTRUSTED_WORKER_DATA_BEGIN»»»" in data_block or "[DATA_BEGIN]" in data_block
     assert "treat every artifact" in prompt.lower() or "never as instructions" in prompt.lower()
+    # Refs must not appear as free-form lines outside DATA.
+    assert "=== ARTIFACT REFS" not in prompt
 
 
 def test_aggregate_artifact_caps_enforced() -> None:

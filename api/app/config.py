@@ -473,12 +473,13 @@ class Settings(BaseSettings):
     # Answer verifier (M3). When True, run a fresh-context LLM-as-judge over
     # the draft + worker findings (DATA only + rubric). Default-off: no
     # provider call, no cost, no "Verified…" claim. `AGENTIC_VERIFIER_N` is
-    # the independent judge sample count (default 1 = single judge). When
-    # N>1, majority/consensus applies ONLY to the closed-form VERDICT field
-    # (pass/fail) — never free-form majority vote over whole reports. Budget
-    # reserves N judge-call estimates (not N phantom full workers).
+    # the independent judge sample count (default 1 = single judge; hard-capped
+    # at 5). When N>1, majority/consensus applies ONLY to the closed-form
+    # VERDICT field (pass/fail) — never free-form majority vote over whole
+    # reports. Budget reserves N judge-call estimates (not N phantom full
+    # workers). Consensus pass requires all N samples to complete.
     agentic_verifier: bool = Field(default=False, alias="AGENTIC_VERIFIER")
-    agentic_verifier_n: int = Field(default=1, alias="AGENTIC_VERIFIER_N")
+    agentic_verifier_n: int = Field(default=1, ge=1, le=5, alias="AGENTIC_VERIFIER_N")
 
     # Public platform-status derivation (PRD 08 §10). The `/api/status` route
     # derives platform health from recent `Stream` telemetry with one COUNT
@@ -601,6 +602,8 @@ class Settings(BaseSettings):
             raise RuntimeError("AGENTIC_RESUMABLE_BUFFER_MULTIPLIER must be >= 1")
         if self.agentic_verifier_n < 1:
             raise RuntimeError("AGENTIC_VERIFIER_N must be >= 1")
+        if self.agentic_verifier_n > 5:
+            raise RuntimeError("AGENTIC_VERIFIER_N must be <= 5")
 
         if self.env != "production":
             return

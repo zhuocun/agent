@@ -235,19 +235,22 @@ async def test_worker_hitl_pause_waits_for_siblings_then_approves(
     tool_calls = [d for n, d in pause_frames if n == "tool_call"]
     cal = next(c for c in tool_calls if c.get("name") == "calendar_create_event")
     assert cal["status"] == "awaiting_approval"
-    assert cal["id"] == "fake_worker_cal_0"
+    assert cal["id"] == "worker-0::fake_worker_cal_0"
     assert cal.get("subagentId") == "worker-0"
 
     msgs = await _load_messages(session_factory, conv_id)
     paused = next(m for m in msgs if m.role == "assistant")
     parts = [p for p in (paused.parts or []) if isinstance(p, dict)]
     cal_part = next(
-        p for p in parts if p.get("type") == "tool_call" and p.get("id") == "fake_worker_cal_0"
+        p
+        for p in parts
+        if p.get("type") == "tool_call" and p.get("id") == "worker-0::fake_worker_cal_0"
     )
     cont = (cal_part.get("input") or {}).get("_agenticContinuation")
     assert isinstance(cont, dict)
     assert cont["phase"] == "worker"
     assert cont["pausedSubagentId"] == "worker-0"
+    assert cont.get("orchestrationMode") == "deep_research"
     assert any(w["subagentId"] == "worker-1" for w in cont["completedWorkers"])
 
     resume_frames = await _collect_sse(
@@ -257,9 +260,9 @@ async def test_worker_hitl_pause_waits_for_siblings_then_approves(
             "clientMessageId": "b0000000-0000-0000-0000-000000000002",
             "tierId": "smart",
             "text": "",
-            "agenticMode": "deep_research",
+            # H-002: omit agenticMode — resume must pin deep_research from checkpoint.
             "toolApproval": {
-                "toolCallId": "fake_worker_cal_0",
+                "toolCallId": "worker-0::fake_worker_cal_0",
                 "decision": "approve",
             },
         },

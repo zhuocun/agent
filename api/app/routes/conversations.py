@@ -38,6 +38,13 @@ from app.agentic import (
     is_plan_clarify_call_id,
 )
 from app.agentic.budget import compose_headroom
+from app.agentic.clarify import (
+    ClarifyInputError,
+    nonblank_answers,
+    parse_clarification_records,
+    parse_clarify_edited_input,
+    serialize_clarification_records,
+)
 from app.agentic.continuation import extract_continuation_from_tool_input
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
@@ -138,7 +145,10 @@ from app.streaming.sse import (
     encode_tool_result,
 )
 from app.streaming.stop_registry import request_stop_async
-from app.tools.approval_settlement import claim_and_settle_approval
+from app.tools.approval_settlement import (
+    ApprovalDecisionConflict,
+    settle_pseudo_tool_approval,
+)
 from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
 from app.uploads import extract_attachment_text, is_supported_attachment_type
 
@@ -2263,9 +2273,51 @@ async def send_message(
     # entitlement. A non-entitled caller is COERCED down to `single` rather than
     # refused, so the request still streams a useful answer (graceful degrade,
     # never a hard error). `single` and the flag-off path are unaffected.
+    #
+    # H-002 / O-003: a durable worker continuation pins orchestration mode (and
+    # optionally tier/provider). Resume must derive from that checkpoint — never
+    # silently coerce away from an already-settled continuation contract.
     effective_agentic_mode = body.agentic_mode
+    if resume_seed is not None and resume_seed.agentic_continuation is not None:
+        pinned_mode = getattr(
+            resume_seed.agentic_continuation, "orchestration_mode", None
+        )
+        if pinned_mode in ("single", "deep_research"):
+            effective_agentic_mode = pinned_mode
+        elif effective_agentic_mode is None:
+            effective_agentic_mode = "deep_research"
+        pinned_tier = getattr(resume_seed.agentic_continuation, "tier_id", None)
+        if (
+            isinstance(pinned_tier, str)
+            and pinned_tier
+            and pinned_tier != body.tier_id
+        ):
+            raise _invalid_input(
+                "INVALID_INPUT",
+                "Resume tierId does not match the paused run checkpoint.",
+            )
+        pinned_provider = getattr(
+            resume_seed.agentic_continuation, "provider_id", None
+        )
+        if (
+            isinstance(pinned_provider, str)
+            and pinned_provider
+            and body.provider_id is not None
+            and pinned_provider != body.provider_id
+        ):
+            raise _invalid_input(
+                "INVALID_INPUT",
+                "Resume providerId does not match the paused run checkpoint.",
+            )
     agentic_coercion_reason: Literal["entitlement"] | None = None
-    if effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
+    if (
+        effective_agentic_mode == "deep_research"
+        and resume_seed is not None
+        and resume_seed.agentic_continuation is not None
+    ):
+        # Do not coerce a pinned deep_research continuation after settle.
+        pass
+    elif effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
         db, user=user, api_key=resolved_api_key
     ):
         effective_agentic_mode = "single"
@@ -2749,8 +2801,10 @@ async def _prepare_resume_tool(
     emits the seeded `tool_result` before that turn streams. `attachments` is
     empty (the original user attachments already live in the replayed history).
     """
-    last_assistant = await messages_repo.get_last_assistant_message(db, conversation_id)
-    if last_assistant is None or last_assistant.status != "awaiting_approval":
+    last_assistant = await messages_repo.get_latest_assistant_with_status(
+        db, conversation_id, status="awaiting_approval"
+    )
+    if last_assistant is None:
         raise _nothing_to_resume()
 
     pending = _find_resumable_tool_call(last_assistant.parts, decision.tool_call_id)
@@ -2820,10 +2874,10 @@ async def _prepare_resume_tool(
             approved_plan=approved_plan,
             clarify_answers=(
                 tuple(
-                    str(item).strip()
-                    for item in plan_input["clarifications"]
-                    if isinstance(item, (str, int, float)) and str(item).strip()
-                )[:3]
+                    nonblank_answers(
+                        parse_clarification_records(plan_input["clarifications"])
+                    )
+                )
                 if isinstance(plan_input.get("clarifications"), list)
                 else None
             ),
@@ -2832,8 +2886,8 @@ async def _prepare_resume_tool(
         return user_message_id, history, original_text, attachments, seed
 
     # Clarify-before-plan HITL resume (plan 02). Same pseudo-tool bypass as plan
-    # approval. Approve may carry `edited_input.answers` (1-3 strings); deny
-    # declines the research run without planning.
+    # approval. Approve may carry `edited_input.answers` (bound Q&A records);
+    # deny declines the research run without planning.
     if tool_name == PLAN_CLARIFY_TOOL_NAME and is_plan_clarify_call_id(
         decision.tool_call_id
     ):
@@ -2854,18 +2908,33 @@ async def _prepare_resume_tool(
         ):
             raise _vision_unsupported()
         clarify_label = pending.get("label")
+        clarify_label_str = (
+            str(clarify_label) if isinstance(clarify_label, str) else None
+        )
+        raw_input = pending.get("input")
+        clarify_input = raw_input if isinstance(raw_input, dict) else {}
+        raw_questions = clarify_input.get("questions")
+        questions = (
+            [q for q in raw_questions if isinstance(q, str) and q.strip()]
+            if isinstance(raw_questions, list)
+            else []
+        )
         clarify_answers: tuple[str, ...] | None = None
-        if decision.decision == "approve" and decision.edited_input is not None:
-            raw_answers = decision.edited_input.get("answers")
-            if isinstance(raw_answers, list):
-                clarify_answers = tuple(
-                    str(item).strip()
-                    for item in raw_answers
-                    if isinstance(item, (str, int, float)) and str(item).strip()
-                )[:3]
-            # Re-run safety on free-text answers (user-influenced content).
-            if clarify_answers:
-                answers_text = " ".join(clarify_answers)
+        settle_output: dict[str, object] = {"decision": decision.decision}
+        if decision.decision == "approve":
+            try:
+                records = parse_clarify_edited_input(
+                    decision.edited_input,
+                    questions=questions,
+                )
+            except ClarifyInputError as exc:
+                raise _invalid_input("INVALID_INPUT", str(exc)) from exc
+            # Preserve blank positions in the seed (C-002); consumers that want
+            # non-blank-only lists call nonblank_answers themselves.
+            clarify_answers = tuple(r.answer for r in records)
+            settle_output["clarifications"] = serialize_clarification_records(records)
+            answers_text = " ".join(nonblank_answers(records))
+            if answers_text:
                 safety_decision = check_user_turn(
                     settings,
                     text=answers_text,
@@ -2880,15 +2949,33 @@ async def _prepare_resume_tool(
                         conversation_id=conversation_id,
                     )
                     raise _safety_blocked(safety_decision)
-        elif decision.decision == "approve":
-            clarify_answers = ()
         history = await messages_repo.load_history(db, conversation_id)
         await conversations_repo.touch_updated_at(db, conversation_id)
-        await db.commit()
+        # C-001: settle the pseudo-tool on the paused row so reload does not
+        # keep a permanently pending "Needs approval" card.
+        try:
+            await settle_pseudo_tool_approval(
+                db,
+                paused_message=last_assistant,
+                tool_call_id=decision.tool_call_id,
+                decision=decision.decision,
+                output=settle_output,
+                label=clarify_label_str,
+                summary=(
+                    "Clarifications recorded."
+                    if decision.decision == "approve"
+                    else "User skipped clarifying questions."
+                ),
+            )
+        except ApprovalDecisionConflict as exc:
+            raise _invalid_input(
+                "INVALID_INPUT",
+                str(exc),
+            ) from exc
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
-            label=str(clarify_label) if isinstance(clarify_label, str) else None,
+            label=clarify_label_str,
             decision=decision.decision,
             input=None,
             is_clarify=True,
@@ -2960,32 +3047,27 @@ async def _prepare_resume_tool(
 
     history = await messages_repo.load_history(db, conversation_id)
     await conversations_repo.touch_updated_at(db, conversation_id)
+    await db.commit()
 
     label = pending.get("label")
     label_str = str(label) if isinstance(label, str) else None
 
-    # BE-007: claim + execute + settle on the paused row before the model stream.
-    # A retry after post-execution stream failure reuses the settled result.
-    settled = await claim_and_settle_approval(
-        db,
-        paused_message=last_assistant,
-        tool_call_id=decision.tool_call_id,
-        decision=decision.decision,
-        effective_input=dict(effective_input),
-        label=label_str,
-    )
-
+    # H-007: defer claim/execute/settle until the SSE producer owns stream
+    # lifecycle (stream_and_persist). Route only validates + builds the seed.
+    # H-006 decision conflicts are enforced at settle time (409).
     seed = ResumeToolSeed(
         tool_call_id=decision.tool_call_id,
         name=tool_name,
         label=label_str,
         decision=decision.decision,
         input=dict(effective_input),
-        settled_result=settled,
+        settled_result=None,
         agentic_continuation=agentic_continuation,
         resume_user_text=(
             agentic_continuation.user_text if agentic_continuation is not None else None
         ),
+        paused_message_id=last_assistant.id,
+        pending_settle=True,
     )
     # Worker/aggregator continuation resumes with the original user text (the
     # orchestrator continues that subagent). Non-agentic / primary HITL keeps the

@@ -354,6 +354,7 @@ function PlanClarifyForm({
   }) => void;
 }) {
   const [answers, setAnswers] = useState<string[]>(() => questions.map(() => ""));
+  const maxAnswerChars = 2000;
 
   return (
     <div className="mt-2 space-y-3" data-testid="plan-clarify-detail">
@@ -376,10 +377,11 @@ function PlanClarifyForm({
               value={answers[idx] ?? ""}
               onChange={(e) => {
                 const next = [...answers];
-                next[idx] = e.target.value;
+                next[idx] = e.target.value.slice(0, maxAnswerChars);
                 setAnswers(next);
               }}
               rows={2}
+              maxLength={maxAnswerChars}
               className={cn(
                 "w-full resize-y rounded-lg border border-foreground/10 bg-background px-2.5 py-2",
                 "ui-caption leading-snug text-foreground placeholder:text-muted-foreground/70",
@@ -398,7 +400,13 @@ function PlanClarifyForm({
             onDecision({
               toolCallId,
               decision: "approve",
-              editedInput: { answers },
+              editedInput: {
+                answers: questions.map((question, idx) => ({
+                  questionId: String(idx),
+                  question,
+                  answer: answers[idx] ?? "",
+                })),
+              },
             })
           }
           data-testid="tool-approve"

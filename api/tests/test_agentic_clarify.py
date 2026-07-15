@@ -33,6 +33,12 @@ from app.agentic import (
 )
 from app.agentic.clarify import (
     CLARIFICATIONS_HEADER,
+    MAX_CLARIFY_ANSWER_CHARS,
+    ClarifyInputError,
+    format_clarification_data,
+    parse_clarification_answers,
+    parse_clarify_edited_input,
+    records_from_questions_and_answers,
     strip_clarify_marker,
     with_clarifications,
 )
@@ -347,7 +353,7 @@ async def _pause_on_clarify(
 
 async def test_strip_clarify_keeps_deep_research_scaffold_intact() -> None:
     """Answers / CLARIFY tails must not enter decompose's pipe-split."""
-    cleaned = strip_clarify_marker(_CLARIFY_PROMPT)
+    cleaned = strip_clarify_marker(_CLARIFY_PROMPT, allow_strip=True)
     assert "CLARIFY:" not in cleaned
     assert cleaned.startswith("DEEP_RESEARCH:")
     parts = decompose(cleaned, max_workers=4)
@@ -358,7 +364,9 @@ async def test_strip_clarify_keeps_deep_research_scaffold_intact() -> None:
         "DEEP_RESEARCH: causes of inflation | effects on housing\n"
         "CLARIFY: prioritize housing | US only"
     )
-    assert decompose(strip_clarify_marker(with_custom), max_workers=4) == [
+    assert decompose(
+        strip_clarify_marker(with_custom, allow_strip=True), max_workers=4
+    ) == [
         "causes of inflation",
         "effects on housing",
     ]
@@ -372,6 +380,13 @@ async def test_strip_clarify_keeps_deep_research_scaffold_intact() -> None:
         "effects on housing",
     ]
     assert "Focus on housing affordability" in with_answers
+
+
+async def test_strip_clarify_marker_gated_off_preserves_literal() -> None:
+    """C-004: real/non-scaffolded paths must not truncate at CLARIFY:."""
+    text = "Compare the literal CLARIFY: token with ordinary text"
+    assert strip_clarify_marker(text, allow_strip=False) == text
+    assert strip_clarify_marker(text, allow_strip=True) == "Compare the literal"
 
 
 async def test_clarify_flag_off_skips_pause(
@@ -435,12 +450,103 @@ async def test_clarify_flag_on_pauses_before_plan(
     assert assistant[0].status == "awaiting_approval"
 
 
+async def test_blank_answers_preserve_question_association() -> None:
+    """C-002: blank slots must not shift later answers onto earlier questions."""
+    questions = ["Q1?", "Q2?", "Q3?"]
+    records = records_from_questions_and_answers(questions, ["", "answer to q2", ""])
+    assert [r.answer for r in records] == ["", "answer to q2", ""]
+    assert records[1].question == "Q2?"
+
+
+async def test_multiline_clarifications_round_trip_via_json_block() -> None:
+    """C-003: multiline answers must not be re-parsed as extra numbered lines."""
+    answers = [
+        "Priority one\n2. nested constraint",
+        "Actual second answer",
+        "Actual third answer",
+    ]
+    encoded = format_clarification_data(answers)
+    decoded = parse_clarification_answers(encoded)
+    assert decoded == answers
+
+
+async def test_parse_clarify_edited_input_rejects_malformed_and_oversize() -> None:
+    """C-005 / C-006: wrong shapes and oversized answers are INVALID_INPUT."""
+    questions = ["Q1?", "Q2?"]
+    # Omitted edited_input → explicit blank continue.
+    blanks = parse_clarify_edited_input(None, questions=questions)
+    assert [r.answer for r in blanks] == ["", ""]
+
+    with pytest.raises(ClarifyInputError, match="must be a list"):
+        parse_clarify_edited_input({"answers": "nope"}, questions=questions)
+
+    with pytest.raises(ClarifyInputError, match="exactly 2"):
+        parse_clarify_edited_input({"answers": ["only-one"]}, questions=questions)
+
+    with pytest.raises(ClarifyInputError, match="must be a string or object"):
+        parse_clarify_edited_input(
+            {"answers": ["ok", 123]}, questions=questions
+        )
+
+    with pytest.raises(ClarifyInputError, match="unknown fields"):
+        parse_clarify_edited_input({"answers": ["a", "b"], "extra": 1}, questions=questions)
+
+    huge = "x" * (MAX_CLARIFY_ANSWER_CHARS + 1)
+    with pytest.raises(ClarifyInputError, match="exceeds"):
+        parse_clarify_edited_input(
+            {
+                "answers": [
+                    {"questionId": "0", "question": "Q1?", "answer": huge},
+                    {"questionId": "1", "question": "Q2?", "answer": "ok"},
+                ]
+            },
+            questions=questions,
+        )
+
+    bound = parse_clarify_edited_input(
+        {
+            "answers": [
+                {"questionId": "0", "question": "Q1?", "answer": ""},
+                {"questionId": "1", "question": "Q2?", "answer": "yes"},
+            ]
+        },
+        questions=questions,
+    )
+    assert [r.answer for r in bound] == ["", "yes"]
+    assert bound[1].question == "Q2?"
+
+
+def _settled_clarify_parts(parts: object) -> tuple[dict, dict | None]:
+    assert isinstance(parts, list)
+    call = next(
+        p
+        for p in parts
+        if isinstance(p, dict)
+        and p.get("type") == "tool_call"
+        and p.get("name") == PLAN_CLARIFY_TOOL_NAME
+    )
+    result = next(
+        (
+            p
+            for p in parts
+            if isinstance(p, dict)
+            and p.get("type") == "tool_result"
+            and p.get("toolCallId") == call.get("id")
+        ),
+        None,
+    )
+    return call, result
+
+
 async def test_clarify_approve_resumes_fanout_with_answers_in_context(
     clarify_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     conv_id, pause_frames = await _pause_on_clarify(clarify_client, session_factory)
     call_id = next(str(d["id"]) for n, d in pause_frames if n == "tool_call")
+    questions = next(
+        d["input"]["questions"] for n, d in pause_frames if n == "tool_call"
+    )
 
     frames = await _collect_sse(
         clarify_client,
@@ -453,7 +559,16 @@ async def test_clarify_approve_resumes_fanout_with_answers_in_context(
             "toolApproval": {
                 "toolCallId": call_id,
                 "decision": "approve",
-                "editedInput": {"answers": list(_CLARIFY_ANSWERS)},
+                "editedInput": {
+                    "answers": [
+                        {
+                            "questionId": str(i),
+                            "question": q,
+                            "answer": _CLARIFY_ANSWERS[i],
+                        }
+                        for i, q in enumerate(questions)
+                    ]
+                },
             },
         },
     )
@@ -479,7 +594,12 @@ async def test_clarify_approve_resumes_fanout_with_answers_in_context(
     msgs = await _load_messages(session_factory, conv_id)
     assistant = [m for m in msgs if m.role == "assistant"]
     assert len(assistant) == 2
-    assert assistant[0].status == "awaiting_approval"
+    # C-001: paused clarify pseudo-tool is settled on the original row.
+    call, result = _settled_clarify_parts(assistant[0].parts)
+    assert call.get("approvalState") == "approved"
+    assert call.get("status") == "succeeded"
+    assert result is not None
+    assert result.get("approvalState") == "approved"
     assert assistant[1].status == "done"
 
 
@@ -518,8 +638,39 @@ async def test_clarify_deny_declines_run(
     msgs = await _load_messages(session_factory, conv_id)
     assistant = [m for m in msgs if m.role == "assistant"]
     assert len(assistant) == 2
-    assert assistant[0].status == "awaiting_approval"
+    call, result = _settled_clarify_parts(assistant[0].parts)
+    assert call.get("approvalState") == "rejected"
+    assert call.get("status") == "cancelled"
+    assert result is not None
+    assert result.get("approvalState") == "rejected"
     assert assistant[1].status == "done"
+
+
+async def test_clarify_malformed_answers_rejected(
+    clarify_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """C-006: wrong-shaped editedInput.answers must not silently continue."""
+    conv_id, pause_frames = await _pause_on_clarify(clarify_client, session_factory)
+    call_id = next(str(d["id"]) for n, d in pause_frames if n == "tool_call")
+
+    resp = await clarify_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "c0000000-0000-0000-0000-000000000020",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": call_id,
+                "decision": "approve",
+                "editedInput": {"answers": "not-a-list"},
+            },
+        },
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "INVALID_INPUT"
 
 
 async def test_clarify_then_plan_approval_keeps_answers(
@@ -533,9 +684,9 @@ async def test_clarify_then_plan_approval_keeps_answers(
     conv_id, clarify_frames = await _pause_on_clarify(
         clarify_and_plan_client, session_factory
     )
-    clarify_call_id = next(
-        str(d["id"]) for n, d in clarify_frames if n == "tool_call"
-    )
+    clarify_call = next(d for n, d in clarify_frames if n == "tool_call")
+    clarify_call_id = str(clarify_call["id"])
+    questions = clarify_call["input"]["questions"]
 
     plan_pause = await _collect_sse(
         clarify_and_plan_client,
@@ -548,7 +699,16 @@ async def test_clarify_then_plan_approval_keeps_answers(
             "toolApproval": {
                 "toolCallId": clarify_call_id,
                 "decision": "approve",
-                "editedInput": {"answers": list(_CLARIFY_ANSWERS)},
+                "editedInput": {
+                    "answers": [
+                        {
+                            "questionId": str(i),
+                            "question": q,
+                            "answer": _CLARIFY_ANSWERS[i],
+                        }
+                        for i, q in enumerate(questions)
+                    ]
+                },
             },
         },
     )
@@ -565,10 +725,29 @@ async def test_clarify_then_plan_approval_keeps_answers(
         "causes of inflation",
         "effects on housing",
     ]
-    assert plan_call["input"]["clarifications"] == list(_CLARIFY_ANSWERS)
+    clarifications = plan_call["input"]["clarifications"]
+    assert isinstance(clarifications, list)
+    assert [c["answer"] for c in clarifications] == list(_CLARIFY_ANSWERS)
     # Still no workers until the plan is approved.
     started_ids = {str(d["subagentId"]) for n, d in plan_pause if n == "subagent_started"}
     assert not any(sid.startswith("worker-") for sid in started_ids)
+
+    # C-001: clarify row settled even after dual-HITL advance.
+    msgs_mid = await _load_messages(session_factory, conv_id)
+    clarify_row = next(
+        m
+        for m in msgs_mid
+        if m.role == "assistant"
+        and any(
+            isinstance(p, dict)
+            and p.get("type") == "tool_call"
+            and p.get("name") == PLAN_CLARIFY_TOOL_NAME
+            for p in (m.parts or [])
+        )
+    )
+    call, result = _settled_clarify_parts(clarify_row.parts)
+    assert call.get("approvalState") == "approved"
+    assert result is not None
 
     final = await _collect_sse(
         clarify_and_plan_client,

@@ -4,13 +4,16 @@ Approved tool side effects must not re-run when a resume stream fails after
 execution. The pending ``tool_call`` on the paused assistant row is the claim
 record:
 
-1. **Claim (CAS)** — only if ``approvalState == "pending"``, flip to
+1. **Claim** — only if ``approvalState == "pending"``, flip to
    ``approved``/``rejected`` + ``running``/``cancelled``, stamp a unique
    ``_approvalClaimId``, and **commit** before any executor call.
 2. **Execute** (approve only) — run the tool once under that claim.
 3. **Settle** — append a ``tool_result`` part and mark the tool_call terminal,
    then commit — independent of whether the post-approval model stream
-   completes.
+   completes. Settlement is a **claim-owner conditional write**: it re-locks,
+   requires matching ``_approvalClaimId``, and refuses to overwrite unless the
+   call is still in the claimed ``approved``/``rejected`` +
+   ``running``/``cancelled`` window.
 
 Retry / crash recovery:
 - Settled ``tool_result`` present → return it (no re-execute) when the client
@@ -19,12 +22,15 @@ Retry / crash recovery:
 - Claimed (``approved``/``running``) **without** ``tool_result`` → do **not**
   re-execute; return a failed replay so the side effect is not doubled
   (covers kill between execute and settle, and stop/disconnect after claim).
-- Second concurrent claim loses the CAS and takes the same paths above.
+- Second concurrent claim in the **same process** loses under the in-process
+  lock and takes the same paths above.
 
-CAS is SQLite-safe: an in-process lock serializes claims for the same
-``(message_id, tool_call_id)``, the locked SELECT uses ``populate_existing``,
-and settlement re-locks and verifies ``_approvalClaimId`` ownership before
-writing (never overwrites from a stale whole-parts snapshot).
+Concurrency note (H-005): the in-process ``asyncio`` lock +
+``populate_existing`` + claim-owner settle is a **process-local mitigation**,
+not a true cross-process CAS. SQLite ignores ``SELECT FOR UPDATE``; another
+API worker process can still race. A normalized approval row with
+``UPDATE ... WHERE state='pending' RETURNING`` (and claim-id settle) remains
+the durable fix.
 """
 
 from __future__ import annotations
@@ -689,7 +695,11 @@ async def _settle_under_claim(
     label: str | None,
     subagent_id: str | None,
 ) -> None:
-    """Settle only when this claim still owns the running/rejected call."""
+    """Settle only when this claim still owns the running/rejected call.
+
+    Claim-owner conditional write (H-005): refuse unless ``_approvalClaimId``
+    matches **and** the call is still in the claimed approval/status window.
+    """
     locked = await _lock_message(db, message_id)
     fresh_parts = list(locked.parts or [])
     if find_settled_tool_result(fresh_parts, tool_call_id, subagent_id=subagent_id):
@@ -700,6 +710,14 @@ async def _settle_under_claim(
     if call_fresh is None:
         return
     if call_fresh.get(APPROVAL_CLAIM_ID_KEY) != minted_claim:
+        return
+    approval = str(
+        call_fresh.get("approvalState") or call_fresh.get("approval_state") or ""
+    )
+    status = str(call_fresh.get("status") or "")
+    if approval not in ("approved", "rejected"):
+        return
+    if status not in ("running", "cancelled"):
         return
     settled_call = deepcopy(call_fresh)
     settled_call["status"] = result.status

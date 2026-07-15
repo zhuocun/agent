@@ -1179,6 +1179,8 @@ async def stream_and_persist(
     # H-007: claim/execute/settle AFTER SSE ownership (this generator has started)
     # so stop/disconnect can cancel and settlement cleanup can terminalize the
     # claim. Route-level prepare only validates and defers settlement here.
+    # Poll stop/disconnect while execute runs so a mid-execute stop cancels the
+    # executor task (settlement catches CancelledError and terminalizes).
     if (
         resume_seed is not None
         and resume_seed.pending_settle
@@ -1187,6 +1189,18 @@ async def stream_and_persist(
         and not resume_seed.is_plan
         and not resume_seed.is_clarify
     ):
+        if (
+            stream_id is not None and await is_stop_requested_async(stream_id)
+        ) or await request.is_disconnected():
+            raise AppError(
+                ErrorEnvelope(
+                    code="STREAM_STOPPED",
+                    severity="warning",
+                    title="Stream stopped",
+                    body="The approval resume was stopped before tool execution.",
+                ),
+                status_code=409,
+            )
         paused_row = await db.get(Message, resume_seed.paused_message_id)
         if paused_row is None:
             raise AppError(
@@ -1198,8 +1212,9 @@ async def stream_and_persist(
                 ),
                 status_code=400,
             )
-        try:
-            outcome = await claim_and_settle_approval_outcome(
+
+        async def _settle() -> Any:
+            return await claim_and_settle_approval_outcome(
                 db,
                 paused_message=paused_row,
                 tool_call_id=resume_seed.tool_call_id,
@@ -1207,6 +1222,53 @@ async def stream_and_persist(
                 effective_input=dict(resume_seed.input or {}),
                 label=resume_seed.label,
             )
+
+        async def _watch_stop() -> str:
+            while True:
+                if (
+                    stream_id is not None and await is_stop_requested_async(stream_id)
+                ) or await request.is_disconnected():
+                    return "stop"
+                await asyncio.sleep(0.05)
+
+        settle_task = asyncio.create_task(_settle())
+        watch_task = asyncio.create_task(_watch_stop())
+        try:
+            done, _pending = await asyncio.wait(
+                {settle_task, watch_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if watch_task in done and settle_task not in done:
+                settle_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await settle_task
+                raise AppError(
+                    ErrorEnvelope(
+                        code="STREAM_STOPPED",
+                        severity="warning",
+                        title="Stream stopped",
+                        body=(
+                            "The approval resume was stopped during tool "
+                            "execution; the claim was terminalized."
+                        ),
+                    ),
+                    status_code=409,
+                )
+            watch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watch_task
+            try:
+                outcome = settle_task.result()
+            except ApprovalDecisionConflict as exc:
+                raise AppError(
+                    ErrorEnvelope(
+                        code="APPROVAL_DECISION_CONFLICT",
+                        severity="error",
+                        title="Approval decision conflict",
+                        body=str(exc),
+                    ),
+                    status_code=409,
+                ) from exc
         except ApprovalDecisionConflict as exc:
             raise AppError(
                 ErrorEnvelope(
@@ -2153,7 +2215,12 @@ async def stream_and_persist(
                 )
                 for part in target_tool_parts:
                     if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
+                        # Keep tool_call approvalState in sync with the result
+                        # (H-003: sibling cancels must flip pending → rejected,
+                        # not leave pending+cancelled).
                         part["status"] = ev.status
+                        if ev.approval_state is not None:
+                            part["approvalState"] = ev.approval_state
                         break
                 target_tool_parts.append(
                     result_part.model_dump(by_alias=True, exclude_none=True)

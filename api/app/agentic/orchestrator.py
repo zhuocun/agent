@@ -1991,7 +1991,9 @@ async def _run_deep_research(
                     actual_cost += costs[item.subagent_id]
                 else:
                     # H-003 / O-007: cancel orphaned sibling pauses so they are
-                    # not left pending without a continuation.
+                    # not left pending without a continuation. The handler flips
+                    # the matching tool_call's approvalState to rejected when it
+                    # applies this result (never leave pending+cancelled).
                     yield ToolResult(
                         tool_call_id=item.tool_call_id,
                         name=item.tool_name,

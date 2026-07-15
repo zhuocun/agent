@@ -46,7 +46,11 @@ from app.agentic.clarify import (
     parse_clarify_edited_input,
     serialize_clarification_records,
 )
-from app.agentic.continuation import extract_continuation_from_tool_input
+from app.agentic.continuation import (
+    CONTINUATION_INPUT_KEY,
+    extract_continuation_from_tool_input,
+    parse_continuation,
+)
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -498,6 +502,23 @@ def _nothing_to_continue() -> AppError:
             title="Nothing to continue",
             body="This conversation has no stopped response to continue. "
             "Send a new message or regenerate instead.",
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _agentic_checkpoint_pending() -> AppError:
+    """H-008: continueTurn cannot recover an agentic tool-HITL checkpoint."""
+    return AppError(
+        ErrorEnvelope(
+            code="AGENTIC_CHECKPOINT_PENDING",
+            severity="warning",
+            title="Agentic approval pending",
+            body=(
+                "This conversation has an agentic run paused for tool approval. "
+                "Use toolApproval to resume that checkpoint; continueTurn cannot "
+                "recover it."
+            ),
         ),
         status.HTTP_400_BAD_REQUEST,
     )
@@ -2687,6 +2708,22 @@ async def _prepare_continue(
     conversation whose persisted user attachments are incompatible with the
     served binding, matching the regenerate guard.
     """
+    # H-008: if an agentic tool-HITL checkpoint is still awaiting approval
+    # (possibly shadowed by a newer stopped row, or still the trailing turn),
+    # refuse continueTurn — recovery is toolApproval-only.
+    paused = await messages_repo.get_latest_assistant_with_status(
+        db, conversation_id, status="awaiting_approval"
+    )
+    if paused is not None and isinstance(paused.parts, list):
+        for part in paused.parts:
+            if not isinstance(part, dict) or part.get("type") != "tool_call":
+                continue
+            raw_input = part.get("input")
+            if isinstance(raw_input, dict) and parse_continuation(
+                raw_input.get(CONTINUATION_INPUT_KEY)
+            ) is not None:
+                raise _agentic_checkpoint_pending()
+
     # Must have a trailing assistant turn, and it must be `status="stopped"` —
     # only a stopped (interrupted) turn can be continued. A `done` / `error`
     # trailing turn has nothing partial to extend.
@@ -2753,7 +2790,13 @@ def _find_resumable_tool_call(
     parts: object,
     tool_call_id: str,
 ) -> dict[str, object] | None:
-    """Find a tool_call for resume: pending OR already settled (BE-007 retry)."""
+    """Find a tool_call for resume: pending OR already settled (BE-007 retry).
+
+    H-003: a worker call cancelled as a concurrent-pause sibling is
+    ``approvalState=rejected`` without an ``_agenticContinuation``. Those are
+    not resumable — only the continuation-bearing pause (or a primary HITL
+    call) may be approved/denied.
+    """
     pending = _find_pending_tool_call(parts, tool_call_id)
     if pending is not None:
         return pending
@@ -2766,6 +2809,15 @@ def _find_resumable_tool_call(
             and part.get("id") == tool_call_id
             and part.get("approvalState") in ("approved", "rejected")
         ):
+            # Superseded worker pauses: rejected, no continuation → not resumable.
+            subagent = part.get("subagentId")
+            if isinstance(subagent, str) and subagent.startswith("worker-"):
+                raw_input = part.get("input")
+                cont = None
+                if isinstance(raw_input, dict):
+                    cont = parse_continuation(raw_input.get(CONTINUATION_INPUT_KEY))
+                if cont is None and part.get("approvalState") == "rejected":
+                    return None
             return part
     return None
 

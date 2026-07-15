@@ -342,9 +342,6 @@ def parse_clarify_edited_input(
 
     allowed = {"answers"}
     unknown = set(edited_input.keys()) - allowed
-    # Accept camelCase only on the wire; CamelModel already normalized keys for
-    # ToolApprovalDecision, but edited_input itself is a raw dict.
-    unknown -= set()  # placeholder clarity
     if unknown:
         raise ClarifyInputError(
             f"editedInput has unknown fields: {', '.join(sorted(unknown))}."

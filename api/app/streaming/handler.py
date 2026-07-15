@@ -1422,7 +1422,7 @@ async def stream_and_persist(
                         error=getattr(settled, "error", None),
                     )
                 ]
-                approved_ids: set[str] = set()
+                approved_ids = set()
             return run_agent_loop(
                 make_stream=_build_raw_stream,
                 settings=handler_settings,

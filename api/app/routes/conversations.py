@@ -3165,7 +3165,7 @@ async def _prepare_resume_tool(
     )
     settled_result = None
     pending_settle = True
-    authoritative_decision = decision.decision
+    authoritative_decision: str = decision.decision
     if existing_result is not None:
         try:
             outcome = await claim_and_settle_approval_outcome(

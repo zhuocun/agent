@@ -1397,7 +1397,7 @@ async def stream_and_persist(
                 is_retryable=_is_retryable,
             )
         if tools_active:
-            approved_ids = None
+            approved_ids: set[str] | None = None
             initial_results = None
             if (
                 resume_seed is not None

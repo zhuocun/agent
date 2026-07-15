@@ -45,6 +45,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
 
 from app.agentic import budget
+from app.agentic.clarify import (
+    ClarificationRecord,
+    nonblank_answers,
+    parse_clarification_records,
+)
 from app.agentic.continuation import CONTINUATION_INPUT_KEY
 from app.agentic.orchestrator import run_orchestrator
 from app.agentic.retry import is_retryable_provider_error
@@ -225,8 +230,13 @@ class ResumeToolSeed:
     approved_plan: tuple[str, ...] | None = None
     # Clarify-before-plan resume (plan 02): True when this seed resumes an
     # `agentic_plan_clarify` pause. Handler re-runs orchestrator with
-    # `clarify_answered` / `clarify_answers` instead of a seeded tool_result.
+    # `clarify_answered` / full Q&A records instead of a seeded tool_result.
     is_clarify: bool = False
+    # Bound question/answer pairs (C-002). Prefer this over answer-only tuples so
+    # question text reaches planner / workers / continuation / plan-approval.
+    clarify_records: tuple[ClarificationRecord, ...] | None = None
+    # Legacy answer-only list kept for callers that only need non-blank texts;
+    # when ``clarify_records`` is set, answers are derived from it.
     clarify_answers: tuple[str, ...] | None = None
     # BE-007: pre-settled execution result (claim happened in the producer after
     # SSE ownership — see stream_and_persist settlement block).
@@ -768,25 +778,41 @@ async def stream_and_persist(
     clarify_resume = resume_seed is not None and resume_seed.is_clarify
     clarify_answered: bool | None
     clarify_answers: list[str] | None
+    clarify_records: list[ClarificationRecord] | None
+
+    def _records_from_seed(seed: ResumeToolSeed) -> list[ClarificationRecord] | None:
+        if seed.clarify_records is not None:
+            return list(seed.clarify_records)
+        if seed.clarify_answers is not None:
+            # Legacy answer-only seed — questions unknown.
+            return parse_clarification_records(
+                [
+                    {"questionId": str(i), "question": "", "answer": a}
+                    for i, a in enumerate(seed.clarify_answers)
+                ]
+            )
+        return None
+
     if plan_resume and resume_seed is not None:
         # Past the clarify gate; re-attach any clarifications stored on the plan
         # tool input so workers/synthesis still see them.
         clarify_answered = True
+        clarify_records = _records_from_seed(resume_seed)
         clarify_answers = (
-            list(resume_seed.clarify_answers)
-            if resume_seed.clarify_answers is not None
-            else []
+            nonblank_answers(clarify_records) if clarify_records is not None else []
         )
     elif clarify_resume and resume_seed is not None:
         clarify_answered = resume_seed.decision == "approve"
+        clarify_records = _records_from_seed(resume_seed)
         clarify_answers = (
-            list(resume_seed.clarify_answers)
-            if resume_seed.clarify_answers is not None
+            list(r.answer for r in clarify_records)
+            if clarify_records is not None
             else None
         )
     else:
         clarify_answered = None
         clarify_answers = None
+        clarify_records = None
     # Per-subagent accumulation for an agentic turn (T3). Ordered by first-seen
     # `SubagentStarted` so the persisted transcript groups subagents in emission
     # order. Empty (and unused) on every non-agentic turn.
@@ -1261,6 +1287,7 @@ async def stream_and_persist(
                 approved_plan=approved_plan,
                 clarify_answered=clarify_answered,
                 clarify_answers=clarify_answers,
+                clarify_records=clarify_records,
                 agentic_continuation=orch_continuation,
                 resume_tool_result=orch_resume_result,
                 server_approved_call_ids=orch_approved_ids,

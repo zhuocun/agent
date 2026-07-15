@@ -1482,6 +1482,7 @@ async def _run_deep_research(
     approved_plan: list[str] | None = None,
     clarify_answered: bool | None = None,
     clarify_answers: list[str] | None = None,
+    clarify_records: list[clarify.ClarificationRecord] | None = None,
     agentic_continuation: AgenticContinuation | None = None,
     resume_tool_result: ToolResult | None = None,
     server_approved_call_ids: set[str] | None = None,
@@ -1562,17 +1563,24 @@ async def _run_deep_research(
         return
 
     # Fold clarifications as SEPARATE DATA — never into the DEEP_RESEARCH
-    # scaffold that ``decompose`` pipe-splits. Strip the CLARIFY: marker only on
-    # the scaffolded fake/test path (C-004) so real requests stay byte-preserving.
-    plan_text = clarify.strip_clarify_marker(user_text, allow_strip=scaffolded)
-    # Preserve blank positions when answers are index-aligned (C-002). Dropping
-    # blanks here would silently shift later answers onto earlier questions.
-    clarify_records = clarify.records_from_questions_and_answers(
-        [], list(clarify_answers) if clarify_answers is not None else None
+    # scaffold that ``decompose`` pipe-splits. Strip the CLARIFY: marker only
+    # when the clarify flag is on AND the path is scaffolded (C-004) so real
+    # requests and flag-off paths stay byte-preserving.
+    plan_text = clarify.strip_clarify_marker(
+        user_text,
+        allow_strip=scaffolded and settings.agentic_clarify_before_plan,
     )
-    answers = clarify.nonblank_answers(clarify_records)
+    # Prefer full Q&A records from the resume seed (C-002). Falling back to
+    # answer-only lists loses question text — only for legacy callers.
+    if clarify_records is not None:
+        bound_records = list(clarify_records)
+    else:
+        bound_records = clarify.records_from_questions_and_answers(
+            [], list(clarify_answers) if clarify_answers is not None else None
+        )
+    answers = clarify.nonblank_answers(bound_records)
     # Context for planner / workers / synthesis: plan text + clarification DATA.
-    effective_user_text = clarify.with_clarifications(plan_text, clarify_records)
+    effective_user_text = clarify.with_clarifications(plan_text, bound_records)
 
     planner_usage = UsageUpdate()
     max_workers = settings.agentic_max_workers
@@ -1630,7 +1638,7 @@ async def _run_deep_research(
                 estimate_usd=estimate,
                 cap_usd=cap,
                 skip_started=True,
-                clarifications=clarify_records,
+                clarifications=bound_records,
             ):
                 yield event
             return
@@ -1820,7 +1828,7 @@ async def _run_deep_research(
                         planner.worker_prompt(
                             index, sub_question, scaffolded=scaffolded
                         ),
-                        clarify_records,
+                        bound_records,
                     )
                     try:
                         paused = await _consume(
@@ -2074,7 +2082,7 @@ async def _run_deep_research(
             paused_worker_index=worker_pause.index,
             paused_sub_question=worker_pause.sub_question,
             partial_answer=worker_pause.partial_answer,
-            clarifications=tuple(clarify_records),
+            clarifications=tuple(bound_records),
             orchestration_mode="deep_research",
             paused_worker_usage=worker_pause.usage,
             paused_worker_cost_usd=costs.get(
@@ -2221,6 +2229,7 @@ async def run_orchestrator(
     approved_plan: list[str] | None = None,
     clarify_answered: bool | None = None,
     clarify_answers: list[str] | None = None,
+    clarify_records: list[clarify.ClarificationRecord] | None = None,
     agentic_continuation: AgenticContinuation | None = None,
     resume_tool_result: ToolResult | None = None,
     server_approved_call_ids: set[str] | None = None,
@@ -2249,8 +2258,10 @@ async def run_orchestrator(
       (None = fresh run, True = approved, False = declined).
     - `approved_plan` — immutable sub-questions from the paused tool input when
       `plan_approved` is True (BE-039); ignored otherwise.
-    - `clarify_answered` / `clarify_answers` — clarify-before-plan HITL resume
-      (None = fresh; True + answers = proceed to plan; False = decline).
+    - `clarify_answered` / `clarify_records` / `clarify_answers` — clarify-before-plan
+      HITL resume (None = fresh; True + records = proceed to plan with bound Q&A;
+      False = decline). ``clarify_records`` carries question text; ``clarify_answers``
+      is a legacy answer-only fallback.
     - `verifier_make_stream_for` — fresh-context factory for the verifier judge
       (empty history / no memory / no web_search). Falls back to
       ``make_stream_for`` when omitted (tests).
@@ -2271,6 +2282,7 @@ async def run_orchestrator(
             approved_plan=approved_plan,
             clarify_answered=clarify_answered,
             clarify_answers=clarify_answers,
+            clarify_records=clarify_records,
             agentic_continuation=agentic_continuation,
             resume_tool_result=resume_tool_result,
             server_approved_call_ids=server_approved_call_ids,

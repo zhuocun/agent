@@ -387,6 +387,9 @@ async def test_strip_clarify_marker_gated_off_preserves_literal() -> None:
     text = "Compare the literal CLARIFY: token with ordinary text"
     assert strip_clarify_marker(text, allow_strip=False) == text
     assert strip_clarify_marker(text, allow_strip=True) == "Compare the literal"
+    # Flag-off + scaffolded still must not strip when allow_strip is False
+    # (orchestrator gates on scaffolded AND agentic_clarify_before_plan).
+    assert strip_clarify_marker(_CLARIFY_PROMPT, allow_strip=False) == _CLARIFY_PROMPT
 
 
 async def test_clarify_flag_off_skips_pause(
@@ -456,6 +459,10 @@ async def test_blank_answers_preserve_question_association() -> None:
     records = records_from_questions_and_answers(questions, ["", "answer to q2", ""])
     assert [r.answer for r in records] == ["", "answer to q2", ""]
     assert records[1].question == "Q2?"
+    # Question text must appear in the DATA block fed to planner/workers.
+    encoded = format_clarification_data(records)
+    assert "Q2?" in encoded
+    assert '"question": "Q1?"' in encoded or '"question":"Q1?"' in encoded
 
 
 async def test_multiline_clarifications_round_trip_via_json_block() -> None:
@@ -728,6 +735,9 @@ async def test_clarify_then_plan_approval_keeps_answers(
     clarifications = plan_call["input"]["clarifications"]
     assert isinstance(clarifications, list)
     assert [c["answer"] for c in clarifications] == list(_CLARIFY_ANSWERS)
+    # C-002: question text must survive into plan-approval input (not blank).
+    assert [c["question"] for c in clarifications] == list(questions)
+    assert all(c["question"].strip() for c in clarifications)
     # Still no workers until the plan is approved.
     started_ids = {str(d["subagentId"]) for n, d in plan_pause if n == "subagent_started"}
     assert not any(sid.startswith("worker-") for sid in started_ids)

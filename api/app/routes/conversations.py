@@ -39,6 +39,7 @@ from app.agentic import (
 )
 from app.agentic.budget import compose_headroom
 from app.agentic.clarify import (
+    ClarificationRecord,
     ClarifyInputError,
     nonblank_answers,
     parse_clarification_records,
@@ -2866,6 +2867,11 @@ async def _prepare_resume_tool(
                 "INVALID_INPUT",
                 "Persisted plan hash does not match the approved plan.",
             )
+        plan_clarifications = (
+            parse_clarification_records(plan_input["clarifications"])
+            if isinstance(plan_input.get("clarifications"), list)
+            else None
+        )
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
@@ -2874,13 +2880,12 @@ async def _prepare_resume_tool(
             input=None,
             is_plan=True,
             approved_plan=approved_plan,
+            clarify_records=(
+                tuple(plan_clarifications) if plan_clarifications is not None else None
+            ),
             clarify_answers=(
-                tuple(
-                    nonblank_answers(
-                        parse_clarification_records(plan_input["clarifications"])
-                    )
-                )
-                if isinstance(plan_input.get("clarifications"), list)
+                tuple(nonblank_answers(plan_clarifications))
+                if plan_clarifications is not None
                 else None
             ),
         )
@@ -2922,6 +2927,7 @@ async def _prepare_resume_tool(
             else []
         )
         clarify_answers: tuple[str, ...] | None = None
+        clarify_records_tuple: tuple[ClarificationRecord, ...] | None = None
         settle_output: dict[str, object] = {"decision": decision.decision}
         if decision.decision == "approve":
             try:
@@ -2931,8 +2937,9 @@ async def _prepare_resume_tool(
                 )
             except ClarifyInputError as exc:
                 raise _invalid_input("INVALID_INPUT", str(exc)) from exc
-            # Preserve blank positions in the seed (C-002); consumers that want
-            # non-blank-only lists call nonblank_answers themselves.
+            # C-002: seed full Q&A records so question text reaches orchestrator
+            # prompts / plan-approval / continuation (not answer-only tuples).
+            clarify_records_tuple = tuple(records)
             clarify_answers = tuple(r.answer for r in records)
             settle_output["clarifications"] = serialize_clarification_records(records)
             answers_text = " ".join(nonblank_answers(records))
@@ -2981,6 +2988,7 @@ async def _prepare_resume_tool(
             decision=decision.decision,
             input=None,
             is_clarify=True,
+            clarify_records=clarify_records_tuple,
             clarify_answers=clarify_answers,
         )
         original_text = _text_from_parts(user_row.parts)

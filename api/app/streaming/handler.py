@@ -1181,6 +1181,45 @@ async def stream_and_persist(
     # claim. Route-level prepare only validates and defers settlement here.
     # Poll stop/disconnect while execute runs so a mid-execute stop cancels the
     # executor task (settlement catches CancelledError and terminalizes).
+    async def _release_stream_after_approval_stop() -> None:
+        """Close durable stream bookkeeping after stop around deferred settle.
+
+        SSE has already started, so raising ``AppError(STREAM_STOPPED)`` would
+        hit "response already started". Mirror the hard-cancel path: mark the
+        stream terminal and clear the live stop signal, then return from the
+        generator without a provider pass.
+
+        Mark on the request ``db`` session (not only a fresh one) so ``get_db``'s
+        final commit cannot resurrect the in-memory ``active`` identity from
+        ``create_stream``.
+        """
+        if stream_id is not None:
+            with contextlib.suppress(Exception):
+                await streams_repo.mark_status(
+                    db,
+                    stream_id=stream_id,
+                    status="stopped",
+                    release_active_guard=True,
+                )
+                await db.commit()
+            with contextlib.suppress(Exception):
+                await clear_stop_async(stream_id)
+        _struct_log.warning(
+            "turn.stopped",
+            status="stopped",
+            conversation_id=str(conversation_id) if conversation_id else None,
+            turn_ms=int((time.monotonic() - turn_started_at) * 1000),
+            prompt_tokens=0,
+            completion_tokens=0,
+            reasoning_tokens=0,
+            cost_usd=0.0,
+            cost_confidence="estimate",
+            is_byok=False,
+            tier_id=binding.tier.id,
+            provider_id=binding.provider_id,
+            reason="approval_settle_stopped",
+        )
+
     if (
         resume_seed is not None
         and resume_seed.pending_settle
@@ -1192,15 +1231,8 @@ async def stream_and_persist(
         if (
             stream_id is not None and await is_stop_requested_async(stream_id)
         ) or await request.is_disconnected():
-            raise AppError(
-                ErrorEnvelope(
-                    code="STREAM_STOPPED",
-                    severity="warning",
-                    title="Stream stopped",
-                    body="The approval resume was stopped before tool execution.",
-                ),
-                status_code=409,
-            )
+            await _release_stream_after_approval_stop()
+            return
         paused_row = await db.get(Message, resume_seed.paused_message_id)
         if paused_row is None:
             raise AppError(
@@ -1242,18 +1274,8 @@ async def stream_and_persist(
                 settle_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await settle_task
-                raise AppError(
-                    ErrorEnvelope(
-                        code="STREAM_STOPPED",
-                        severity="warning",
-                        title="Stream stopped",
-                        body=(
-                            "The approval resume was stopped during tool "
-                            "execution; the claim was terminalized."
-                        ),
-                    ),
-                    status_code=409,
-                )
+                await _release_stream_after_approval_stop()
+                return
             watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await watch_task

@@ -436,6 +436,32 @@ def _stream_in_progress() -> AppError:
     )
 
 
+async def _abandon_unstarted_stream_claim(
+    db: AsyncSession, stream_id: UUID | None
+) -> None:
+    """Release an active stream after a pre-SSE ``AppError`` (H-003).
+
+    ``AppError`` is converted to a JSON response by the exception handler, so
+    ``get_db`` commits instead of rolling back. An uncommitted ``create_stream``
+    would otherwise become a durable ``active`` row and block the next turn with
+    ``STREAM_IN_PROGRESS`` (sibling deny before winner resume). Rollback undoes
+    an uncommitted claim; if prepare already committed the row, mark it
+    terminal to release the single-active guard.
+    """
+    if stream_id is None:
+        return
+    await db.rollback()
+    row = await streams_repo.get_by_id(db, stream_id=stream_id)
+    if row is not None and row.status == "active":
+        await streams_repo.mark_status(
+            db,
+            stream_id=stream_id,
+            status="error",
+            release_active_guard=True,
+        )
+        await db.commit()
+
+
 def _duplicate_in_flight() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -1925,10 +1951,41 @@ async def send_message(
         api_key=resolved_api_key,
     )
 
+    # Resume seed for an approval-gated tool (HITL). None on every non-resume
+    # path; set by `_prepare_resume_tool` so the handler emits the seeded
+    # `tool_result` before the post-approval provider pass.
+    resume_seed: ResumeToolSeed | None = None
+    user_message_id: UUID
+    history: list[ProviderChatMessage]
+    provider_user_text: str
+
+    # H-003: validate/prepare toolApproval BEFORE claiming the active stream.
+    # AppError is handled by the exception middleware without rolling back
+    # get_db, so a post-claim INVALID_INPUT (e.g. sibling deny) would otherwise
+    # leave status=active and block the real continuation with STREAM_IN_PROGRESS.
+    if body.tool_approval is not None:
+        (
+            user_message_id,
+            history,
+            provider_user_text,
+            provider_attachments,
+            resume_seed,
+        ) = await _prepare_resume_tool(
+            db=db,
+            user=user,
+            conversation_id=conversation_id,
+            decision=body.tool_approval,
+            settings=settings,
+            custom_instructions=effective_instructions,
+            supports_attachments=binding.supports_attachments,
+            supports_vision=binding.supports_vision,
+        )
+
     # Claim the single active stream BEFORE mutating message history. The row is
     # still in the current transaction, so later validation/insert failures roll
     # it back; successful non-temporary branches commit it together with the user
-    # message/history mutation below.
+    # message/history mutation below. (toolApproval is validated above so a
+    # rejected sibling cannot strand this claim.)
     stream_id: UUID | None = None
     if not is_temp:
         existing_active = await streams_repo.get_active_for_conversation(
@@ -1959,108 +2016,93 @@ async def send_message(
     #                   message, replay the partial as the trailing assistant
     #                   turn and send the continuation instruction as the turn
     #   editMessageId -> truncate from that user message inclusive, insert new
+    #   toolApproval -> already prepared before claim (H-003)
     #   default -> existing M1 path
-    user_message_id: UUID
-    history: list[ProviderChatMessage]
-    provider_user_text: str
-    # Resume seed for an approval-gated tool (HITL). None on every non-resume
-    # path; set by `_prepare_resume_tool` so the handler emits the seeded
-    # `tool_result` before the post-approval provider pass.
-    resume_seed: ResumeToolSeed | None = None
-
-    if body.regenerate:
-        (
-            user_message_id,
-            history,
-            provider_user_text,
-            provider_attachments,
-        ) = await _prepare_regenerate(
-            db=db,
-            conversation_id=conversation_id,
-            supports_attachments=binding.supports_attachments,
-            supports_vision=binding.supports_vision,
-        )
-    elif body.continue_turn:
-        (
-            user_message_id,
-            history,
-            provider_user_text,
-            provider_attachments,
-        ) = await _prepare_continue(
-            db=db,
-            conversation_id=conversation_id,
-            supports_attachments=binding.supports_attachments,
-            supports_vision=binding.supports_vision,
-        )
-    elif body.tool_approval is not None:
-        (
-            user_message_id,
-            history,
-            provider_user_text,
-            provider_attachments,
-            resume_seed,
-        ) = await _prepare_resume_tool(
-            db=db,
-            user=user,
-            conversation_id=conversation_id,
-            decision=body.tool_approval,
-            settings=settings,
-            custom_instructions=effective_instructions,
-            supports_attachments=binding.supports_attachments,
-            supports_vision=binding.supports_vision,
-        )
-    elif body.edit_message_id is not None:
-        user_message_id, history, provider_user_text = await _prepare_edit(
-            db=db,
-            conversation_id=conversation_id,
-            edit_message_id_str=body.edit_message_id,
-            client_uuid=client_uuid,
-            new_text=body.text,
-            attachments=body.attachments,
-            request_fingerprint=request_fingerprint,
-        )
-    elif is_temp:
-        user_message_id = uuid4()
-        history = []
-        provider_user_text = body.text
-    else:
-        history = await messages_repo.load_history(db, conversation_id)
-        try:
-            user_msg_row = await messages_repo.create_user_message(
+    try:
+        if body.regenerate:
+            (
+                user_message_id,
+                history,
+                provider_user_text,
+                provider_attachments,
+            ) = await _prepare_regenerate(
                 db=db,
                 conversation_id=conversation_id,
-                client_message_id=client_uuid,
-                text=body.text,
+                supports_attachments=binding.supports_attachments,
+                supports_vision=binding.supports_vision,
+            )
+        elif body.continue_turn:
+            (
+                user_message_id,
+                history,
+                provider_user_text,
+                provider_attachments,
+            ) = await _prepare_continue(
+                db=db,
+                conversation_id=conversation_id,
+                supports_attachments=binding.supports_attachments,
+                supports_vision=binding.supports_vision,
+            )
+        elif body.tool_approval is not None:
+            # Prepared before create_stream (H-003).
+            pass
+        elif body.edit_message_id is not None:
+            user_message_id, history, provider_user_text = await _prepare_edit(
+                db=db,
+                conversation_id=conversation_id,
+                edit_message_id_str=body.edit_message_id,
+                client_uuid=client_uuid,
+                new_text=body.text,
                 attachments=body.attachments,
                 request_fingerprint=request_fingerprint,
             )
-            # A new turn was accepted — bump the conversation so it rises in
-            # the sidebar. Same session/transaction as the user message, so it
-            # commits atomically with the turn below (not on idempotent replay,
-            # which returns earlier without reaching this insert).
-            await conversations_repo.touch_updated_at(db, conversation_id)
-            # Commit so the user message is durable before we stream — the
-            # EventSourceResponse will reuse this session, so flush+commit now.
-            await db.commit()
-        except IntegrityError:
-            # Concurrent POSTs with the same clientMessageId can both pass the
-            # idempotency check above and race on INSERT; one will lose to the
-            # `message_client_msg_uniq` unique constraint. Roll back and retry
-            # the replay path — if the winner has already produced an assistant
-            # row, we replay it; otherwise return 409 DUPLICATE_IN_FLIGHT.
-            await db.rollback()
-            replay = await _maybe_replay(
-                db,
-                conversation_id,
-                client_uuid,
-                request_fingerprint,
-                request,
-            )
-            if replay is not None:
-                return replay
-            raise _duplicate_in_flight() from None
-        user_message_id = user_msg_row.id
-        provider_user_text = body.text
+        elif is_temp:
+            user_message_id = uuid4()
+            history = []
+            provider_user_text = body.text
+        else:
+            history = await messages_repo.load_history(db, conversation_id)
+            try:
+                user_msg_row = await messages_repo.create_user_message(
+                    db=db,
+                    conversation_id=conversation_id,
+                    client_message_id=client_uuid,
+                    text=body.text,
+                    attachments=body.attachments,
+                    request_fingerprint=request_fingerprint,
+                )
+                # A new turn was accepted — bump the conversation so it rises in
+                # the sidebar. Same session/transaction as the user message, so it
+                # commits atomically with the turn below (not on idempotent replay,
+                # which returns earlier without reaching this insert).
+                await conversations_repo.touch_updated_at(db, conversation_id)
+                # Commit so the user message is durable before we stream — the
+                # EventSourceResponse will reuse this session, so flush+commit now.
+                await db.commit()
+            except IntegrityError:
+                # Concurrent POSTs with the same clientMessageId can both pass the
+                # idempotency check above and race on INSERT; one will lose to the
+                # `message_client_msg_uniq` unique constraint. Roll back and retry
+                # the replay path — if the winner has already produced an assistant
+                # row, we replay it; otherwise return 409 DUPLICATE_IN_FLIGHT.
+                await db.rollback()
+                replay = await _maybe_replay(
+                    db,
+                    conversation_id,
+                    client_uuid,
+                    request_fingerprint,
+                    request,
+                )
+                if replay is not None:
+                    return replay
+                raise _duplicate_in_flight() from None
+            user_message_id = user_msg_row.id
+            provider_user_text = body.text
+    except AppError:
+        # continueTurn / regenerate / edit can still raise after claim; release
+        # so get_db's commit cannot strand an active row.
+        await _abandon_unstarted_stream_claim(db, stream_id)
+        raise
 
     # Auto-tier routing. When the user picked `auto`, run the v0 complexity
     # heuristic (providers/router.py) to choose the concrete tier that actually

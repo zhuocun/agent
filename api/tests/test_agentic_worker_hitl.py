@@ -661,19 +661,19 @@ async def test_h003_concurrent_worker_pauses_reject_sibling(
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "INVALID_INPUT"
 
-    # A failed resume attempt may leave the active-stream claim committed
-    # (AppError is handled without rolling back the dependency session). Clear
-    # it so the continuation-bearing winner can still resume.
+    # Sibling deny must not leave an active stream claim (H-003 re-review).
     from app.db.models import Stream
 
     async with session_factory() as session:
-        for row in (
+        active = (
             await session.execute(
-                select(Stream).where(Stream.conversation_id == UUID(conv_id))
+                select(Stream).where(
+                    Stream.conversation_id == UUID(conv_id),
+                    Stream.status == "active",
+                )
             )
-        ).scalars():
-            await session.delete(row)
-        await session.commit()
+        ).scalars().all()
+    assert active == []
 
     winner_id = str(with_cont[0]["id"])
     resume_frames = await _collect_sse(
@@ -921,7 +921,7 @@ async def test_c002_resume_worker_prompt_keeps_clarification_questions() -> None
     Collapsing ``continuation.clarifications`` to non-blank answer strings drops
     question text and re-shifts blank positions before ``with_clarifications``.
     """
-    from app.agentic.clarify import ClarificationRecord, CLARIFICATIONS_HEADER
+    from app.agentic.clarify import CLARIFICATIONS_HEADER, ClarificationRecord
     from app.agentic.continuation import AgenticContinuation, CompletedWorkerState
     from app.agentic.orchestrator import _resume_worker_continuation
     from app.config import Settings
@@ -1015,3 +1015,180 @@ async def test_c002_resume_worker_prompt_keeps_clarification_questions() -> None
         getattr(e, "text", "") for e in events if getattr(e, "text", None)
     )
     assert "alpha finding" in texts or "synthesis" in texts.lower() or texts
+
+
+
+async def test_h007_stop_before_deferred_execute(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H-007: stop observed before deferred settle must not execute the tool."""
+    from app.db.models import Stream
+    from app.tools import builtin
+
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000031",
+            "tierId": "smart",
+            "text": "TOOL_APPROVE: schedule a meeting",
+        },
+    )
+
+    exec_count = {"n": 0}
+    real_exec = builtin._execute_calendar_create_event
+
+    async def _counting_exec(call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        return await real_exec(call)
+
+    original_spec = builtin.TOOL_REGISTRY["calendar_create_event"]
+    monkeypatch.setitem(
+        builtin.TOOL_REGISTRY,
+        "calendar_create_event",
+        builtin.ToolSpec(
+            name=original_spec.name,
+            label=original_spec.label,
+            needs_approval=original_spec.needs_approval,
+            schema=original_spec.schema,
+            executor=_counting_exec,
+            prod_safe=original_spec.prod_safe,
+        ),
+    )
+
+    async def _always_stop(_stream_id: object) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "app.streaming.handler.is_stop_requested_async",
+        _always_stop,
+    )
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000032",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+        },
+    )
+    assert exec_count["n"] == 0
+    # Stream ends without a provider pass; no active claim left behind.
+    async with session_factory() as session:
+        active = (
+            await session.execute(
+                select(Stream).where(
+                    Stream.conversation_id == UUID(conv_id),
+                    Stream.status == "active",
+                )
+            )
+        ).scalars().all()
+    assert active == []
+    # No done terminal from a successful resume.
+    terminals = [d for n, d in frames if n == "terminal"]
+    assert not any(t.get("status") == "done" for t in terminals)
+
+
+async def test_h007_stop_cancels_in_flight_execute(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H-007: mid-execute stop cancels settle and does not leave a succeeded result."""
+    import asyncio
+
+    from app.db.models import Stream
+    from app.tools import builtin
+
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000041",
+            "tierId": "smart",
+            "text": "TOOL_APPROVE: schedule a meeting",
+        },
+    )
+
+    entered = asyncio.Event()
+    exec_count = {"n": 0}
+
+    async def _blocking_exec(call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        entered.set()
+        # Block until the settle task is cancelled by the stop watcher.
+        await asyncio.sleep(30)
+        raise AssertionError("execute should have been cancelled")
+
+    original_spec = builtin.TOOL_REGISTRY["calendar_create_event"]
+    monkeypatch.setitem(
+        builtin.TOOL_REGISTRY,
+        "calendar_create_event",
+        builtin.ToolSpec(
+            name=original_spec.name,
+            label=original_spec.label,
+            needs_approval=original_spec.needs_approval,
+            schema=original_spec.schema,
+            executor=_blocking_exec,
+            prod_safe=original_spec.prod_safe,
+        ),
+    )
+
+    async def _resume() -> list[tuple[str, dict[str, object]]]:
+        return await _collect_sse(
+            agentic_client,
+            f"/api/conversations/{conv_id}/messages",
+            {
+                "clientMessageId": "f0000000-0000-0000-0000-000000000042",
+                "tierId": "smart",
+                "text": "",
+                "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+            },
+        )
+
+    resume_task = asyncio.create_task(_resume())
+    await asyncio.wait_for(entered.wait(), timeout=5.0)
+
+    stop_resp = await agentic_client.post(f"/api/conversations/{conv_id}/stop")
+    assert stop_resp.status_code == 204
+
+    frames = await asyncio.wait_for(resume_task, timeout=5.0)
+    assert exec_count["n"] == 1
+    terminals = [d for n, d in frames if n == "terminal"]
+    assert not any(t.get("status") == "done" for t in terminals)
+
+    async with session_factory() as session:
+        active = (
+            await session.execute(
+                select(Stream).where(
+                    Stream.conversation_id == UUID(conv_id),
+                    Stream.status == "active",
+                )
+            )
+        ).scalars().all()
+    assert active == []
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused = next(
+        m for m in msgs if m.role == "assistant" and m.status == "awaiting_approval"
+    )
+    parts = [p for p in (paused.parts or []) if isinstance(p, dict)]
+    results = [
+        p
+        for p in parts
+        if p.get("type") == "tool_result" and p.get("toolCallId") == "fake_cal_1"
+    ]
+    if results:
+        assert results[-1].get("status") != "succeeded"

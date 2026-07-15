@@ -1163,11 +1163,14 @@ async def _resume_worker_continuation(
         for i, sq in enumerate(sub_questions)
     ]
     if continuation.clarifications:
-        resume_clarifications = [
-            c.answer for c in continuation.clarifications if c.answer
-        ]
+        # C-002: keep full Q&A records — do not collapse to non-blank answers
+        # (that drops question text and re-shifts blank positions).
+        resume_records = list(continuation.clarifications)
     else:
-        resume_clarifications = clarify.parse_clarification_answers(effective_user_text)
+        # Legacy blobs: recover answers from prompt text only.
+        parsed = clarify.parse_clarification_answers(effective_user_text)
+        resume_records = clarify.records_from_questions_and_answers([], parsed)
+    resume_clarification_answers = clarify.nonblank_answers(resume_records)
 
     async def _emit_synthesis(*, halted: bool) -> AsyncIterator[ProviderEvent]:
         ordered_outputs = [
@@ -1189,7 +1192,7 @@ async def _resume_worker_continuation(
                 planned=len(sub_questions),
                 budget_halted=halted,
                 failed=failed_workers,
-                clarifications=resume_clarifications,
+                clarifications=resume_clarification_answers,
             )
             if not scaffolded and ordered_outputs and not halted:
                 async for event in _finalize_synthesis_streamed(
@@ -1252,7 +1255,7 @@ async def _resume_worker_continuation(
     initial = [resume_tool_result] if resume_tool_result is not None else []
     prompt = clarify.with_clarifications(
         planner.worker_prompt(index, sub_question, scaffolded=scaffolded),
-        resume_clarifications,
+        resume_records,
     )
 
     used_fallback = False

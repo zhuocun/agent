@@ -913,3 +913,105 @@ async def test_o008_resume_uses_fallback_on_retryable_failure() -> None:
     )
     assert done.substitution in {"provider_fallback", "rate_limited"}
     assert done.substituted_provider == "openai"
+
+
+async def test_c002_resume_worker_prompt_keeps_clarification_questions() -> None:
+    """C-002: worker-HITL resume must pass full Q&A records into the prompt.
+
+    Collapsing ``continuation.clarifications`` to non-blank answer strings drops
+    question text and re-shifts blank positions before ``with_clarifications``.
+    """
+    from app.agentic.clarify import ClarificationRecord, CLARIFICATIONS_HEADER
+    from app.agentic.continuation import AgenticContinuation, CompletedWorkerState
+    from app.agentic.orchestrator import _resume_worker_continuation
+    from app.config import Settings
+    from app.providers.protocol import AnswerDelta, Complete, ToolResult, UsageUpdate
+
+    captured: list[str] = []
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        captured.append(prompt)
+
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[object]:
+            async def _gen() -> AsyncIterator[object]:
+                yield AnswerDelta(text="alpha finding")
+                yield Complete(usage=UsageUpdate(input_tokens=2, output_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    question_text = "What specific aspect should the research prioritize?"
+    cont = AgenticContinuation(
+        phase="worker",
+        paused_subagent_id="worker-0",
+        user_text="DEEP_RESEARCH: alpha | beta",
+        plan=("alpha", "beta"),
+        completed_workers=(
+            CompletedWorkerState(
+                subagent_id="worker-1",
+                sub_question="beta",
+                answer="beta ok",
+                usage=UsageUpdate(input_tokens=2, output_tokens=1),
+                cost_usd=0.2,
+            ),
+        ),
+        planner_usage=UsageUpdate(input_tokens=1, output_tokens=1),
+        planner_cost_usd=0.1,
+        budget_halted=False,
+        actual_cost_usd=0.3,
+        paused_worker_index=0,
+        paused_sub_question="alpha",
+        partial_answer="",
+        clarifications=(
+            ClarificationRecord(
+                question_id="0",
+                question=question_text,
+                answer="",
+            ),
+            ClarificationRecord(
+                question_id="1",
+                question="Any constraints to apply?",
+                answer="US, last 5 years",
+            ),
+        ),
+        orchestration_mode="deep_research",
+    )
+    seed = ToolResult(
+        tool_call_id="worker-0::x",
+        name="calendar_create_event",
+        status="succeeded",
+        approval_state="approved",
+        summary="ok",
+    )
+    events = [
+        ev
+        async for ev in _resume_worker_continuation(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            cost_for_usage=lambda u: 0.01,
+            continuation=cont,
+            resume_tool_result=seed,
+            server_approved_call_ids=set(),
+        )
+    ]
+    assert captured, "resumed worker must invoke the provider with a prompt"
+    prompt = captured[0]
+    assert CLARIFICATIONS_HEADER in prompt
+    assert question_text in prompt
+    assert "Any constraints to apply?" in prompt
+    # Blank first answer must not shift the second answer onto question 0.
+    assert '"questionId": "0"' in prompt or '"questionId":"0"' in prompt
+    assert "US, last 5 years" in prompt
+    texts = "".join(
+        getattr(e, "text", "") for e in events if getattr(e, "text", None)
+    )
+    assert "alpha finding" in texts or "synthesis" in texts.lower() or texts

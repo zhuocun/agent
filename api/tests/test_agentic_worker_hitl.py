@@ -442,7 +442,7 @@ async def test_settled_id_reissue_does_not_reexecute(
     # Deny-then-reissue path: seed a denied settlement and ensure a model
     # reissue cannot authorize via the old id (unit-level via agent_loop).
     from app.config import get_settings
-    from app.providers.protocol import ToolCall, ToolResult, UsageUpdate, Complete
+    from app.providers.protocol import Complete, ToolCall, ToolResult, UsageUpdate
     from app.tools.agent_loop import run_agent_loop
 
     settings = get_settings()

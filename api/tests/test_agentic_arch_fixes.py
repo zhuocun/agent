@@ -28,7 +28,9 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     RunCost,
+    Sources,
     SubagentDone,
+    SubagentStarted,
     ToolCall,
     ToolResult,
     UsageUpdate,
@@ -540,7 +542,7 @@ async def test_b16_reasoning_delta_blocks_transparent_fallback() -> None:
 
 
 def test_b12_remap_worker_source_ids_globally() -> None:
-    """B12: worker-local citation ordinals are remapped across workers."""
+    """B12 offline helper: worker-local citation ordinals remapped in list order."""
     outputs = [
         WorkerOutput(
             subagent_id="worker-0",
@@ -567,3 +569,169 @@ def test_b12_source_item_type_still_int() -> None:
     """SourceItem.id remains int — remapper must keep wire-compatible ints."""
     item = SourceItem(id=1, title="t", url="https://example.com")
     assert isinstance(item.id, int)
+
+
+def test_b12_midstream_remapper_arrival_order_and_catalog() -> None:
+    """B12: mid-stream remapper assigns globals in event order and builds catalog."""
+    from app.agentic.orchestrator import _SourceIdRemapper
+
+    remapper = _SourceIdRemapper()
+    # worker-1 finishes first (out of plan order) with local [1].
+    s1 = remapper.remap_sources(
+        Sources(
+            items=[SourceItem(id=1, title="B", url="https://b.example")],
+        ),
+        "worker-1",
+    )
+    assert s1.items[0].id == 1
+    # worker-0 finishes second with local [1, 2].
+    s0 = remapper.remap_sources(
+        Sources(
+            items=[
+                SourceItem(id=1, title="A1", url="https://a1.example"),
+                SourceItem(id=2, title="A2", url="https://a2.example"),
+            ],
+        ),
+        "worker-0",
+    )
+    assert [i.id for i in s0.items] == [2, 3]
+    assert remapper.rewrite_answer_text("See [1] and [2].", "worker-0") == "See [2] and [3]."
+    assert remapper.rewrite_answer_text("Also [1].", "worker-1") == "Also [1]."
+    catalog = remapper.merged_items()
+    assert [i.id for i in catalog] == [1, 2, 3]
+    assert catalog[0].title == "B"
+    assert catalog[1].title == "A1"
+
+
+def test_b12_resume_remapper_seeds_catalog_without_collision() -> None:
+    """B12: resume remapper continues after seeded catalog ids."""
+    from app.agentic.orchestrator import _SourceIdRemapper
+
+    prior = [
+        SourceItem(id=1, title="old", url="https://old.example"),
+        SourceItem(id=2, title="old2", url="https://old2.example"),
+    ]
+    remapper = _SourceIdRemapper()
+    remapper.seed_catalog(prior)
+    # Resume-session local id 1 must become global 3, not collide with 1.
+    remapped = remapper.remap_sources(
+        Sources(items=[SourceItem(id=1, title="new", url="https://new.example")]),
+        "worker-0",
+    )
+    assert remapped.items[0].id == 3
+    assert [i.id for i in remapper.merged_items()] == [1, 2, 3]
+
+
+def test_b12_continuation_roundtrips_source_catalog() -> None:
+    """B12: pause continuation persists the merged source catalog."""
+    catalog = (
+        SourceItem(id=1, title="one", url="https://one.example"),
+        SourceItem(id=2, title="two", url="https://two.example"),
+    )
+    cont = AgenticContinuation(
+        phase="worker",
+        paused_subagent_id="worker-0",
+        user_text="q",
+        plan=("a", "b"),
+        completed_workers=(),
+        planner_usage=UsageUpdate(),
+        planner_cost_usd=0.0,
+        source_catalog=catalog,
+    )
+    blob = serialize_continuation(cont)
+    assert "sourceCatalog" in blob
+    assert len(blob["sourceCatalog"]) == 2
+    parsed = parse_continuation(blob)
+    assert parsed is not None
+    assert len(parsed.source_catalog) == 2
+    assert parsed.source_catalog[0].id == 1
+    assert parsed.source_catalog[1].title == "two"
+
+
+@pytest.mark.asyncio
+async def test_b12_fanout_emits_aggregator_merged_sources() -> None:
+    """B12: synthesis emits one aggregator-tagged Sources before AnswerDelta."""
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                # Workers: emit local Sources then answer.
+                if "DEEP_RESEARCH_WORKER:" in prompt:
+                    suffix = "w0" if "alpha" in prompt else "w1"
+                    yield Sources(
+                        items=[
+                            SourceItem(
+                                id=1,
+                                title=f"t-{suffix}",
+                                url=f"https://{suffix}.example",
+                            )
+                        ]
+                    )
+                    yield AnswerDelta(text=f"finding [{1}] from {suffix}")
+                else:
+                    yield AnswerDelta(text="ok")
+                usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=_settings(),
+            mode="deep_research",
+            user_text="DEEP_RESEARCH: alpha | beta",
+            cost_for_usage=lambda u: 0.01,
+        )
+    ]
+    agg_started = next(
+        i
+        for i, e in enumerate(events)
+        if isinstance(e, SubagentStarted) and e.subagent_id == "aggregator"
+    )
+    agg_sources = [
+        (i, e)
+        for i, e in enumerate(events)
+        if isinstance(e, Sources) and e.subagent_id == "aggregator"
+    ]
+    assert agg_sources, "expected merged Sources tagged aggregator"
+    src_idx, src_ev = agg_sources[0]
+    assert src_idx > agg_started
+    first_agg_answer = next(
+        i
+        for i, e in enumerate(events)
+        if isinstance(e, AnswerDelta) and e.subagent_id == "aggregator"
+    )
+    assert src_idx < first_agg_answer
+    assert len(src_ev.items) == 2
+    assert [item.id for item in src_ev.items] == [1, 2]
+    titles = {item.title for item in src_ev.items}
+    assert titles == {"t-w0", "t-w1"}
+
+
+def test_b23_fanout_queue_bound_is_documented() -> None:
+    from app.agentic.orchestrator import _FANOUT_QUEUE_MAXSIZE
+
+    assert _FANOUT_QUEUE_MAXSIZE == 256
+
+
+def test_b23_queue_put_nowait_drop_oldest() -> None:
+    """B23: teardown put drops oldest events instead of blocking."""
+    import asyncio
+
+    from app.agentic.orchestrator import _queue_put_nowait_drop_oldest
+
+    queue: asyncio.Queue[int] = asyncio.Queue(maxsize=2)
+    queue.put_nowait(1)
+    queue.put_nowait(2)
+    _queue_put_nowait_drop_oldest(queue, 3)
+    assert queue.qsize() == 2
+    assert queue.get_nowait() == 2
+    assert queue.get_nowait() == 3
+

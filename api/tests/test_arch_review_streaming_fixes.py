@@ -83,6 +83,13 @@ def test_provider_queue_bound_is_documented() -> None:
     assert _PROVIDER_QUEUE_MAXSIZE == 256
 
 
+def test_fanout_queue_bound_matches_provider_bound() -> None:
+    from app.agentic.orchestrator import _FANOUT_QUEUE_MAXSIZE
+
+    assert _FANOUT_QUEUE_MAXSIZE == 256
+    assert _FANOUT_QUEUE_MAXSIZE == _PROVIDER_QUEUE_MAXSIZE
+
+
 def test_mark_unfinished_subagents_paused_sets_non_success() -> None:
     subagents = {
         "primary": _SubagentAccumulator(label="Primary", role="primary"),

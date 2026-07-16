@@ -16,6 +16,7 @@ import {
   buildAgenticPanelLayout,
   buildSubagentRoleById,
   buildSubagentSectionsFromParts,
+  collectGlobalSourceItems,
   deriveAgenticRunSummary,
   deriveRunCostFromParts,
   hasToolOrSubagentActivity,
@@ -32,14 +33,13 @@ import { AlertTriangle } from "lucide-react";
 export function AgenticAssistantParts({
   parts,
   sourcesPanelRef,
-  sourceItems: _legacySourceItems,
   answerTestId = "assistant-answer",
   showEmptyFallback = false,
 }: {
   parts: readonly MessagePart[];
   sourcesPanelRef: RefObject<SourcesPanelHandle | null>;
-  /** @deprecated Prefer per-text resolveSourcesForTextPart; kept for call-site compat. */
-  sourceItems: Extract<MessagePart, { type: "sources" }>["items"];
+  /** @deprecated Unused — citations resolve via resolveSourcesForTextPart. */
+  sourceItems?: Extract<MessagePart, { type: "sources" }>["items"];
   answerTestId?: string;
   /** When true, show the calm empty-reply note on tool/subagent turns with no main answer. */
   showEmptyFallback?: boolean;
@@ -178,13 +178,14 @@ export function AgenticAssistantParts({
 export function useSourcesFromParts(parts: readonly MessagePart[]) {
   const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
   const subagentRoleById = useMemo(() => buildSubagentRoleById(parts), [parts]);
-  // Prefer main-answer / untagged sources over the first worker's list (B12).
+  // Prefer main-answer / untagged sources; else merge all by global id (B12).
   const sourceItems = useMemo(() => {
     const main = parts.find(
       (p): p is Extract<MessagePart, { type: "sources" }> =>
         p.type === "sources" && shouldShowSourcesInMainPanel(p, subagentRoleById),
     );
-    return main?.items ?? [];
+    if (main && main.items.length > 0) return main.items;
+    return collectGlobalSourceItems(parts);
   }, [parts, subagentRoleById]);
   return { sourcesPanelRef, sourceItems };
 }

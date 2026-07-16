@@ -45,6 +45,7 @@ import {
   buildAgenticPanelLayout,
   buildSubagentSectionsFromParts,
   buildSubagentRoleById,
+  collectGlobalSourceItems,
   deriveAgenticRunSummary,
   deriveRunCostFromParts,
   hasToolOrSubagentActivity,
@@ -243,16 +244,16 @@ export function AssistantMessage({
     [message.parts],
   );
 
-  // Source list for citation chips: prefer main-answer / untagged sources
-  // over the first worker's sources part (B12). Per-text remapping below
-  // still resolves against the matching subagent when available.
+  // Source list for citation chips: prefer main-answer / untagged sources,
+  // else merge all source parts by global id (B12).
   const sourceItems = useMemo(() => {
     const roles = buildSubagentRoleById(message.parts);
     const main = message.parts.find(
       (p): p is Extract<MessagePart, { type: "sources" }> =>
         p.type === "sources" && shouldShowSourcesInMainPanel(p, roles),
     );
-    return main?.items ?? [];
+    if (main && main.items.length > 0) return main.items;
+    return collectGlobalSourceItems(message.parts);
   }, [message.parts]);
   const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
 

@@ -123,13 +123,12 @@ def remap_worker_source_ids(
     *,
     start: int = 1,
 ) -> list[WorkerOutput]:
-    """Globally renumber worker-local source ordinals (B12).
+    """Offline helper: renumber worker-local source ordinals in list order.
 
-    Independent workers each emit 1-based citation ids; without remapping those
-    collide in synthesis. Returns new ``WorkerOutput`` rows whose ``source_ids``
-    are unique across the run and whose answer text ``[n]`` markers are rewritten
-    to the global ordinals. Mapping is stable in worker list order, then local
-    source-id order.
+    The live orchestrator path uses mid-stream ``_SourceIdRemapper`` only (B12)
+    and must not call this at the synthesis sink — a second remap in worker-plan
+    order diverges from event-arrival globals. Kept for unit tests and any
+    offline tooling that starts from local-only ``WorkerOutput`` rows.
     """
     next_id = max(1, start)
     remapped: list[WorkerOutput] = []

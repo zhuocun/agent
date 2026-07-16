@@ -29,11 +29,12 @@ gated by its setting.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
 import secrets
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -278,12 +279,38 @@ def _event_shows_external_progress(event: ProviderEvent) -> bool:
     )
 
 
+# Bound the worker fan-out → consumer queue so a slow drain cannot buffer an
+# unbounded number of worker events in process memory (B23). ``await put``
+# applies backpressure; teardown uses non-blocking put with drop-oldest.
+_FANOUT_QUEUE_MAXSIZE = 256
+
+
 class _SourceIdRemapper:
-    """Globally renumber worker-local ``Sources`` ordinals mid-fan-out (B12)."""
+    """Globally renumber worker-local ``Sources`` ordinals mid-fan-out (B12).
+
+    A single remapper instance owns the run's global citation space. Mid-stream
+    remapping is the only mapping step — do not call
+    ``aggregate.remap_worker_source_ids`` again at the synthesis sink (that
+    reordered by worker-plan order and diverged from event-arrival globals).
+    """
 
     def __init__(self, *, start: int = 1) -> None:
         self._next = max(1, start)
         self._map: dict[tuple[str, int], int] = {}
+        # Global-id → remapped SourceItem (merged catalog for the aggregator).
+        self._catalog: dict[int, SourceItem] = {}
+
+    def seed_catalog(self, items: Sequence[SourceItem]) -> None:
+        """Pre-load a persisted catalog (resume) and advance the next id."""
+        for item in items:
+            gid = int(item.id)
+            self._catalog[gid] = item
+            if gid >= self._next:
+                self._next = gid + 1
+
+    def merged_items(self) -> list[SourceItem]:
+        """Return the merged global catalog in ascending citation id order."""
+        return [self._catalog[i] for i in sorted(self._catalog)]
 
     def remap_sources(self, event: Sources, subagent_id: str) -> Sources:
         new_items: list[SourceItem] = []
@@ -292,7 +319,10 @@ class _SourceIdRemapper:
             if key not in self._map:
                 self._map[key] = self._next
                 self._next += 1
-            new_items.append(item.model_copy(update={"id": self._map[key]}))
+            gid = self._map[key]
+            remapped = item.model_copy(update={"id": gid})
+            self._catalog[gid] = remapped
+            new_items.append(remapped)
         return replace(event, items=new_items)
 
     def rewrite_answer_text(self, text: str, subagent_id: str) -> str:
@@ -331,6 +361,34 @@ class _SourceIdRemapper:
                 out.append(token)
                 seen.add(token)
         return tuple(out)
+
+
+def _max_source_id(ids: Iterable[str]) -> int:
+    """Largest integer citation id in ``ids`` (non-numeric ignored)."""
+    max_id = 0
+    for sid in ids:
+        try:
+            max_id = max(max_id, int(sid))
+        except (TypeError, ValueError):
+            continue
+    return max_id
+
+
+def _queue_put_nowait_drop_oldest(
+    queue: asyncio.Queue[Any], item: object
+) -> None:
+    """Enqueue ``item`` without awaiting; drop oldest if the queue is full (B23).
+
+    Used on cancellation / sentinel paths so teardown cannot block forever on a
+    full fan-out queue when the consumer has already stopped draining.
+    """
+    while True:
+        try:
+            queue.put_nowait(item)
+            return
+        except asyncio.QueueFull:
+            with contextlib.suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
 
 
 def _tag(event: ProviderEvent, subagent_id: str) -> ProviderEvent:
@@ -815,16 +873,23 @@ async def _finalize_synthesis(
     verifier_result: verifier.VerifyResult | None = None,
     verifier_outcome: Literal["succeeded", "failed"] = "succeeded",
     emit_verifier_bracket: bool = False,
+    merged_sources: Sequence[SourceItem] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Emit the `aggregator` subagent + optional verifier receipt + run totals.
 
     Shared by the normal fan-out tail AND the early-exit paths (over-budget,
     plan-declined) so they all persist a clean `done` turn with the same shape:
     aggregator subagent → (verifier) → run-total `Complete` → `run_cost`.
+
+    When ``merged_sources`` is provided, emit a single aggregator-tagged
+    ``Sources`` event before the synthesis answer so main-answer ``[n]``
+    citations resolve against the global catalog (B12).
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
     )
+    if merged_sources:
+        yield Sources(items=list(merged_sources), subagent_id=_AGGREGATOR_ID)
     yield AnswerDelta(text=synthesis, subagent_id=_AGGREGATOR_ID)
     aggregator_usage = UsageUpdate()
     aggregator_cost = cost_for_usage(aggregator_usage)
@@ -898,6 +963,7 @@ async def _finalize_synthesis_streamed(
     artifacts: list[aggregate.WorkerArtifact] | None = None,
     verifier_cost_for_usage: CostForUsage | None = None,
     clarifications: list[dict[str, str]] | None = None,
+    merged_sources: Sequence[SourceItem] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
@@ -909,10 +975,15 @@ async def _finalize_synthesis_streamed(
 
     Mid-aggregator (BE-014): if accumulated aggregator spend pushes the run over
     the cap, stop the stream early and label the partial.
+
+    ``merged_sources`` (B12): global catalog emitted after Started and before
+    any synthesis AnswerDelta so main-answer citations resolve.
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
     )
+    if merged_sources:
+        yield Sources(items=list(merged_sources), subagent_id=_AGGREGATOR_ID)
     prompt = aggregate.build_synthesis_prompt(
         user_text,
         outputs,
@@ -1371,6 +1442,19 @@ async def _resume_worker_continuation(
         (i, f"worker-{i}", f"Worker {i + 1}", sq)
         for i, sq in enumerate(sub_questions)
     ]
+    # B12: one remapper for the resume session. Seed from the pause-turn catalog
+    # (and max known ids) so new local ordinals cannot collide with pre-pause
+    # globals; mid-stream remap is the only mapping step.
+    source_remapper = _SourceIdRemapper()
+    if continuation.source_catalog:
+        source_remapper.seed_catalog(continuation.source_catalog)
+    else:
+        seed_max = _max_source_id(continuation.source_ids)
+        for out in results.values():
+            seed_max = max(seed_max, _max_source_id(out.source_ids))
+        if seed_max > 0:
+            source_remapper = _SourceIdRemapper(start=seed_max + 1)
+
     if continuation.clarifications:
         # C-002: keep full Q&A records — do not collapse to non-blank answers
         # (that drops question text and re-shifts blank positions).
@@ -1403,6 +1487,7 @@ async def _resume_worker_continuation(
             failed=failed_workers,
             clarifications=resume_clarification_answers,
         )
+        merged_sources = source_remapper.merged_items()
         # Streamed finalize owns aggregator (+ sibling verifier) spans — do not
         # nest them under an outer resume aggregator span (V-009 / Sol).
         if not scaffolded and ordered_outputs and not halted:
@@ -1427,6 +1512,7 @@ async def _resume_worker_continuation(
                 scaffolded=scaffolded,
                 artifacts=ordered_artifacts,
                 clarifications=synth_clarify,
+                merged_sources=merged_sources or None,
             ):
                 yield event
             return
@@ -1443,6 +1529,7 @@ async def _resume_worker_continuation(
                 failed_worker_count=failed_workers,
                 planned_workers=len(sub_questions),
                 completed_workers=completed_count,
+                merged_sources=merged_sources or None,
             ):
                 yield event
 
@@ -1599,6 +1686,7 @@ async def _resume_worker_continuation(
             partial_answer=partial,
             partial_reasoning="".join(reasoning_parts),
             source_ids=tuple(source_ids),
+            source_catalog=tuple(source_remapper.merged_items()),
             tool_transcript=tuple(tool_transcript),
             emitted_answer_chars=max(
                 continuation.emitted_answer_chars, len(partial)
@@ -1626,12 +1714,14 @@ async def _resume_worker_continuation(
             if _event_shows_external_progress(event):
                 visible_progress = True
             if isinstance(event, AnswerDelta):
-                answer_parts.append(event.text)
+                text = source_remapper.rewrite_answer_text(event.text, paused_id)
+                answer_parts.append(text)
+                if text != event.text:
+                    event = replace(event, text=text)
             if isinstance(event, Sources):
+                event = source_remapper.remap_sources(event, paused_id)
                 for item in event.items:
-                    sid = getattr(item, "id", None)
-                    if sid is not None:
-                        source_ids.append(str(sid))
+                    source_ids.append(str(item.id))
             if isinstance(event, Complete) and event.substitution is not None:
                 sub_code = event.substitution
                 sub_provider = event.substituted_provider
@@ -1801,13 +1891,7 @@ async def _resume_worker_continuation(
             usages[paused_id] = cumulative_usage
             costs[paused_id] = cumulative_cost
 
-    # B12: globally remap citation ordinals before synthesis.
-    remapped = aggregate.remap_worker_source_ids(
-        [results[sid] for _, sid, _, _ in worker_meta if sid in results]
-    )
-    for out in remapped:
-        results[out.subagent_id] = out
-
+    # Mid-stream remapper already assigned global ids — do not remap again.
     async for event in _emit_synthesis(halted=budget_halted):
         yield event
 
@@ -2101,7 +2185,9 @@ async def _run_deep_research(
         return
 
     semaphore = asyncio.Semaphore(max(1, settings.agentic_max_concurrency))
-    queue: asyncio.Queue[ProviderEvent | _WorkerSentinel | _WorkerPause] = asyncio.Queue()
+    queue: asyncio.Queue[ProviderEvent | _WorkerSentinel | _WorkerPause] = (
+        asyncio.Queue(maxsize=_FANOUT_QUEUE_MAXSIZE)
+    )
     # Worker bookkeeping, keyed by subagent_id and ordered by `worker_meta` so the
     # synthesis (and per-subagent totals) preserve sub-question order regardless
     # of the nondeterministic completion order of the parallel workers.
@@ -2358,9 +2444,11 @@ async def _run_deep_research(
             # already-reported spend survives into the final Complete (SAF-005).
             # Non-budget cancels (stop/disconnect/teardown) use outcome="stopped"
             # so failures stay distinguishable from budget_cancelled.
+            # B23: non-blocking put — consumer may have stopped draining.
             if worker_started:
                 cancel_cost = _price(usage) if _has_nonzero_usage(usage) else 0.0
-                await queue.put(
+                _queue_put_nowait_drop_oldest(
+                    queue,
                     SubagentDone(
                         subagent_id=subagent_id,
                         label=label,
@@ -2374,13 +2462,14 @@ async def _run_deep_research(
                         substituted_provider=sub_provider,
                         substituted_model=sub_model,
                         substituted_display_label=sub_label,
-                    )
+                    ),
                 )
                 usages[subagent_id] = usage
                 costs[subagent_id] = cancel_cost
             raise
         finally:
-            await queue.put(_WorkerSentinel(subagent_id))
+            # B23: sentinel must not block teardown on a full queue.
+            _queue_put_nowait_drop_oldest(queue, _WorkerSentinel(subagent_id))
 
     tasks = [
         asyncio.create_task(_run_worker(index, subagent_id, label, sub_question))
@@ -2563,6 +2652,7 @@ async def _run_deep_research(
             partial_answer=worker_pause.partial_answer,
             partial_reasoning=worker_pause.partial_reasoning,
             source_ids=worker_pause.source_ids,
+            source_catalog=tuple(source_remapper.merged_items()),
             tool_transcript=worker_pause.tool_transcript,
             emitted_answer_chars=worker_pause.emitted_answer_chars,
             clarifications=tuple(bound_records),
@@ -2581,8 +2671,9 @@ async def _run_deep_research(
         return
 
     ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
-    # B12: defense-in-depth remapping at the synthesis sink.
-    ordered_outputs = aggregate.remap_worker_source_ids(ordered_outputs)
+    # Mid-stream remapper already assigned global citation ids (B12) — do not
+    # remap again in worker-plan order (that swapped ownership vs live markers).
+    merged_sources = source_remapper.merged_items()
     # In-turn structured artifact refs (plan 02) — handed to the aggregator as
     # schema-shaped DATA rather than raw telephone stuffing.
     ordered_artifacts = aggregate.build_artifacts(
@@ -2647,6 +2738,8 @@ async def _run_deep_research(
         yield SubagentStarted(
             subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
         )
+        if merged_sources:
+            yield Sources(items=list(merged_sources), subagent_id=_AGGREGATOR_ID)
         if settings.agentic_verifier and _can_fund_verifier(
             ledger_usd=worker_total_cost,
             settings=settings,
@@ -2756,6 +2849,7 @@ async def _run_deep_research(
             scaffolded=scaffolded,
             artifacts=ordered_artifacts,
             clarifications=synth_clarify,
+            merged_sources=merged_sources or None,
         ):
             yield event
 

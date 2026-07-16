@@ -156,11 +156,35 @@ export function buildSubagentRoleById(
 }
 
 /**
+ * Merge all sources parts into one catalog keyed by global citation id (B12).
+ *
+ * After mid-stream remapping, ids are unique across workers; unioning every
+ * sources part lets aggregator text resolve citations that span workers even
+ * when a dedicated aggregator catalog is missing.
+ */
+export function collectGlobalSourceItems(
+  parts: readonly MessagePart[],
+): Extract<MessagePart, { type: "sources" }>["items"] {
+  const byId = new Map<
+    number,
+    Extract<MessagePart, { type: "sources" }>["items"][number]
+  >();
+  for (const part of parts) {
+    if (part.type !== "sources") continue;
+    for (const item of part.items) {
+      if (!byId.has(item.id)) byId.set(item.id, item);
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+/**
  * Resolve citation sources for a text part (B12).
  *
- * Agentic turns persist per-subagent `sources` parts. Prefer the sources part
- * tagged with the same `subagentId` as the text; fall back to an untagged
- * sources part, then to the first sources part only as a last resort.
+ * Prefer the sources part tagged with the same `subagentId` as the text
+ * (worker or aggregator catalog). Fall back to an untagged sources part, then
+ * to the full global merge across all source parts so multi-worker citations
+ * still resolve when only per-worker catalogs exist.
  */
 export function resolveSourcesForTextPart(
   parts: readonly MessagePart[],
@@ -172,18 +196,14 @@ export function resolveSourcesForTextPart(
       (p): p is Extract<MessagePart, { type: "sources" }> =>
         p.type === "sources" && p.subagentId === sid,
     );
-    if (matching) return matching.items;
+    if (matching && matching.items.length > 0) return matching.items;
   }
   const untagged = parts.find(
     (p): p is Extract<MessagePart, { type: "sources" }> =>
       p.type === "sources" && p.subagentId == null,
   );
-  if (untagged) return untagged.items;
-  return (
-    parts.find(
-      (p): p is Extract<MessagePart, { type: "sources" }> => p.type === "sources",
-    )?.items ?? []
-  );
+  if (untagged && untagged.items.length > 0) return untagged.items;
+  return collectGlobalSourceItems(parts);
 }
 
 /** Whether a sources part should render as the main SourcesPanel (B12). */

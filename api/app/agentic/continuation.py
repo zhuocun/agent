@@ -34,6 +34,7 @@ from app.agentic.clarify import (
     serialize_clarification_records,
 )
 from app.providers.protocol import UsageUpdate
+from app.search.protocol import SourceItem
 
 # Reserved key on pending tool_call.input (legacy). Must not collide with any
 # tool's advertised JSON Schema properties.
@@ -70,8 +71,13 @@ RESERVED_CONTROL_KEYS: frozenset[str] = frozenset(
 # a full resume path ships.
 ContinuationPhase = Literal["worker"]
 
-# server_state JSON shape: {"continuations": {toolCallId: <blob>}}
+# server_state JSON shape: {"continuations": {toolCallId: <blob>}, ...ledger}
 SERVER_STATE_CONTINUATIONS_KEY = "continuations"
+# B4/B5: pause-turn run-cap ledger seeds (survive sanitize_message_parts_for_api).
+SERVER_STATE_PLANNER_COST_KEY = "plannerCostUsd"
+SERVER_STATE_PLANNER_USAGE_KEY = "plannerUsage"
+SERVER_STATE_PRIOR_RUN_COST_KEY = "priorRunCostUsd"
+SERVER_STATE_PRIOR_RUN_USAGE_KEY = "priorRunUsage"
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,10 @@ class AgenticContinuation:
     # H-010: worker-local checkpoint fidelity.
     partial_reasoning: str = ""
     source_ids: tuple[str, ...] = ()
+    # B12: merged global source catalog at pause time (remapped SourceItems) so
+    # resume can re-emit aggregator Sources and continue allocating ids without
+    # colliding with pre-pause globals.
+    source_catalog: tuple[SourceItem, ...] = ()
     # Wire-shaped tool_call / tool_result dicts from before the pause.
     tool_transcript: tuple[dict[str, Any], ...] = ()
     # Cursor: number of answer chars already streamed to the client.
@@ -190,6 +200,9 @@ def serialize_continuation(state: AgenticContinuation) -> dict[str, Any]:
         "partialAnswer": state.partial_answer,
         "partialReasoning": state.partial_reasoning,
         "sourceIds": list(state.source_ids),
+        "sourceCatalog": [
+            item.model_dump(exclude_none=True) for item in state.source_catalog
+        ],
         "toolTranscript": [dict(p) for p in state.tool_transcript],
         "emittedAnswerChars": state.emitted_answer_chars,
         "clarifications": serialize_clarification_records(state.clarifications),
@@ -263,6 +276,16 @@ def parse_continuation(raw: object) -> AgenticContinuation | None:
     self_sources: tuple[str, ...] = ()
     if isinstance(self_sources_raw, list):
         self_sources = tuple(str(s) for s in self_sources_raw if s is not None)
+    catalog_raw = raw.get("sourceCatalog") or raw.get("source_catalog") or []
+    source_catalog: list[SourceItem] = []
+    if isinstance(catalog_raw, list):
+        for item in catalog_raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                source_catalog.append(SourceItem.model_validate(item))
+            except Exception:
+                continue
     transcript_raw = raw.get("toolTranscript") or raw.get("tool_transcript") or []
     tool_transcript: list[dict[str, Any]] = []
     if isinstance(transcript_raw, list):
@@ -316,6 +339,7 @@ def parse_continuation(raw: object) -> AgenticContinuation | None:
         partial_answer=str(partial_raw) if partial_raw is not None else "",
         partial_reasoning=str(reasoning_raw) if reasoning_raw is not None else "",
         source_ids=self_sources,
+        source_catalog=tuple(source_catalog),
         tool_transcript=tuple(tool_transcript),
         emitted_answer_chars=emitted_chars,
         clarifications=clarifications,
@@ -393,6 +417,91 @@ def get_continuation_from_server_state(
     if not isinstance(conts, dict):
         return None
     return parse_continuation(conts.get(tool_call_id))
+
+
+@dataclass(frozen=True)
+class RunLedgerSeeds:
+    """B4/B5 pause-turn ledger seeds stored beside continuations in server_state."""
+
+    planner_cost_usd: float = 0.0
+    planner_usage: UsageUpdate | None = None
+    prior_run_cost_usd: float = 0.0
+    prior_run_usage: UsageUpdate | None = None
+
+
+def put_run_ledger_in_server_state(
+    server_state: dict[str, Any] | None,
+    *,
+    planner_cost_usd: float | None = None,
+    planner_usage: UsageUpdate | dict[str, Any] | None = None,
+    prior_run_cost_usd: float | None = None,
+    prior_run_usage: UsageUpdate | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge B4/B5 run-cap ledger seeds into Message.server_state (H-012).
+
+    These keys must NOT live only on tool_call.input — sanitize-on-persist strips
+    ``RESERVED_CONTROL_KEYS`` before the durable row is written.
+    """
+    out = dict(server_state or {})
+    if planner_cost_usd is not None and float(planner_cost_usd) > 0.0:
+        out[SERVER_STATE_PLANNER_COST_KEY] = float(planner_cost_usd)
+    if planner_usage is not None:
+        if isinstance(planner_usage, UsageUpdate):
+            if (
+                planner_usage.input_tokens
+                or planner_usage.output_tokens
+                or planner_usage.reasoning_tokens
+                or planner_usage.cached_input_tokens
+            ):
+                out[SERVER_STATE_PLANNER_USAGE_KEY] = usage_to_wire(planner_usage)
+        elif isinstance(planner_usage, dict):
+            out[SERVER_STATE_PLANNER_USAGE_KEY] = dict(planner_usage)
+    if prior_run_cost_usd is not None and float(prior_run_cost_usd) > 0.0:
+        out[SERVER_STATE_PRIOR_RUN_COST_KEY] = float(prior_run_cost_usd)
+    if prior_run_usage is not None:
+        if isinstance(prior_run_usage, UsageUpdate):
+            if (
+                prior_run_usage.input_tokens
+                or prior_run_usage.output_tokens
+                or prior_run_usage.reasoning_tokens
+                or prior_run_usage.cached_input_tokens
+            ):
+                out[SERVER_STATE_PRIOR_RUN_USAGE_KEY] = usage_to_wire(prior_run_usage)
+        elif isinstance(prior_run_usage, dict):
+            out[SERVER_STATE_PRIOR_RUN_USAGE_KEY] = dict(prior_run_usage)
+    return out
+
+
+def get_run_ledger_from_server_state(server_state: object) -> RunLedgerSeeds:
+    """Parse B4/B5 ledger seeds from Message.server_state (missing → zeros)."""
+    if not isinstance(server_state, dict):
+        return RunLedgerSeeds()
+    planner_usage_raw = server_state.get(SERVER_STATE_PLANNER_USAGE_KEY)
+    if planner_usage_raw is None:
+        planner_usage_raw = server_state.get("planner_usage")
+    prior_usage_raw = server_state.get(SERVER_STATE_PRIOR_RUN_USAGE_KEY)
+    if prior_usage_raw is None:
+        prior_usage_raw = server_state.get("prior_run_usage")
+    planner_cost_raw = server_state.get(SERVER_STATE_PLANNER_COST_KEY)
+    if planner_cost_raw is None:
+        planner_cost_raw = server_state.get("planner_cost_usd")
+    prior_cost_raw = server_state.get(SERVER_STATE_PRIOR_RUN_COST_KEY)
+    if prior_cost_raw is None:
+        prior_cost_raw = server_state.get("prior_run_cost_usd")
+    planner_usage = (
+        usage_from_wire(planner_usage_raw)
+        if isinstance(planner_usage_raw, dict)
+        else None
+    )
+    prior_run_usage = (
+        usage_from_wire(prior_usage_raw) if isinstance(prior_usage_raw, dict) else None
+    )
+    return RunLedgerSeeds(
+        planner_cost_usd=float(planner_cost_raw or 0.0),
+        planner_usage=planner_usage,
+        prior_run_cost_usd=float(prior_cost_raw or 0.0),
+        prior_run_usage=prior_run_usage,
+    )
 
 
 def resolve_continuation(

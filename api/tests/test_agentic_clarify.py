@@ -13,6 +13,7 @@ and `AGENTIC_CLARIFY_BEFORE_PLAN=true`. Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -781,3 +782,96 @@ async def test_clarify_then_plan_approval_keeps_answers(
     assert "Clarifications applied:" in full_answer
     assert "Focus on housing affordability" in full_answer
     assert "US, last 5 years" in full_answer
+
+
+async def test_clarify_concurrent_opposite_decisions_one_wins(
+    clarify_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Route-level race: approve vs deny — durable settle wins; loser 409s."""
+    conv_id, pause_frames = await _pause_on_clarify(clarify_client, session_factory)
+    call_id = next(str(d["id"]) for n, d in pause_frames if n == "tool_call")
+    questions = next(
+        d["input"]["questions"] for n, d in pause_frames if n == "tool_call"
+    )
+    url = f"/api/conversations/{conv_id}/messages"
+    approve_body: dict[str, object] = {
+        "clientMessageId": "c0000000-0000-0000-0000-000000000030",
+        "tierId": "smart",
+        "text": "",
+        "agenticMode": "deep_research",
+        "toolApproval": {
+            "toolCallId": call_id,
+            "decision": "approve",
+            "editedInput": {
+                "answers": [
+                    {
+                        "questionId": str(i),
+                        "question": q,
+                        "answer": _CLARIFY_ANSWERS[i],
+                    }
+                    for i, q in enumerate(questions)
+                ]
+            },
+        },
+    }
+    deny_body: dict[str, object] = {
+        "clientMessageId": "c0000000-0000-0000-0000-000000000031",
+        "tierId": "smart",
+        "text": "",
+        "agenticMode": "deep_research",
+        "toolApproval": {
+            "toolCallId": call_id,
+            "decision": "deny",
+        },
+    }
+
+    r_approve, r_deny = await asyncio.gather(
+        clarify_client.post(url, json=approve_body, timeout=30.0),
+        clarify_client.post(url, json=deny_body, timeout=30.0),
+    )
+    codes = {r_approve.status_code, r_deny.status_code}
+    assert 200 in codes
+    assert 409 in codes
+    winner_is_approve = r_approve.status_code == 200
+    loser = r_deny if winner_is_approve else r_approve
+    err = loser.json()["error"]["code"]
+    assert err in (
+        "APPROVAL_DECISION_CONFLICT",
+        "APPROVAL_SETTLEMENT_INCOMPLETE",
+        "STREAM_IN_PROGRESS",
+    )
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused = next(
+        m
+        for m in msgs
+        if m.role == "assistant"
+        and any(
+            isinstance(p, dict)
+            and p.get("type") == "tool_call"
+            and p.get("name") == PLAN_CLARIFY_TOOL_NAME
+            for p in (m.parts or [])
+        )
+    )
+    call, result = _settled_clarify_parts(paused.parts)
+    assert result is not None
+    durable = str(result.get("approvalState") or "")
+    if winner_is_approve:
+        assert durable == "approved"
+        assert call.get("approvalState") == "approved"
+        frames = _parse_sse(r_approve.text)
+        assert frames[-1][1]["status"] == "done"
+        started_ids = {
+            str(d["subagentId"]) for n, d in frames if n == "subagent_started"
+        }
+        assert any(sid.startswith("worker-") for sid in started_ids)
+    else:
+        assert durable == "rejected"
+        assert call.get("approvalState") == "rejected"
+        frames = _parse_sse(r_deny.text)
+        assert frames[-1][1]["status"] == "done"
+        started_ids = {
+            str(d["subagentId"]) for n, d in frames if n == "subagent_started"
+        }
+        assert not any(sid.startswith("worker-") for sid in started_ids)

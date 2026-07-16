@@ -148,9 +148,10 @@ from app.streaming.sse import (
 from app.streaming.stop_registry import request_stop_async
 from app.tools.approval_settlement import (
     ApprovalDecisionConflict,
+    ApprovalSettlementIncomplete,
     claim_and_settle_approval_outcome,
     find_settled_tool_result,
-    settle_pseudo_tool_approval,
+    settle_pseudo_tool_approval_outcome,
 )
 from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
 from app.uploads import extract_attachment_text, is_supported_attachment_type
@@ -556,6 +557,30 @@ def _nothing_to_resume() -> AppError:
             "Send a new message instead.",
         ),
         status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _approval_decision_conflict(exc: ApprovalDecisionConflict) -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="APPROVAL_DECISION_CONFLICT",
+            severity="error",
+            title="Approval decision conflict",
+            body=str(exc),
+        ),
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def _approval_settlement_incomplete(exc: ApprovalSettlementIncomplete) -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="APPROVAL_SETTLEMENT_INCOMPLETE",
+            severity="error",
+            title="Approval settlement incomplete",
+            body=str(exc),
+        ),
+        status.HTTP_409_CONFLICT,
     )
 
 
@@ -2932,6 +2957,8 @@ async def _prepare_resume_tool(
     # allowlist below. Approve reuses the immutable plan stored on the pending
     # tool input (BE-039) — never re-decomposes. Call id must be a server-minted
     # plan-approval id bound to this pending row (BE-040 / SAF-010).
+    # Settlement uses the same CAS claim/settle path as clarify (durable
+    # tool_result required before ResumeToolSeed).
     if tool_name == PLAN_APPROVAL_TOOL_NAME and is_plan_approval_call_id(
         decision.tool_call_id
     ):
@@ -2955,6 +2982,7 @@ async def _prepare_resume_tool(
         await conversations_repo.touch_updated_at(db, conversation_id)
         await db.commit()
         plan_label = pending.get("label")
+        plan_label_str = str(plan_label) if isinstance(plan_label, str) else None
         raw_input = pending.get("input")
         plan_input = raw_input if isinstance(raw_input, dict) else {}
         raw_plan = plan_input.get("plan")
@@ -2979,11 +3007,30 @@ async def _prepare_resume_tool(
             if isinstance(plan_input.get("clarifications"), list)
             else None
         )
+        settle_output: dict[str, object] = {"decision": decision.decision}
+        try:
+            outcome = await settle_pseudo_tool_approval_outcome(
+                db,
+                paused_message=last_assistant,
+                tool_call_id=decision.tool_call_id,
+                decision=decision.decision,
+                output=settle_output,
+                label=plan_label_str,
+                summary=(
+                    "Plan approved."
+                    if decision.decision == "approve"
+                    else "User declined the research plan."
+                ),
+            )
+        except ApprovalDecisionConflict as exc:
+            raise _approval_decision_conflict(exc) from exc
+        except ApprovalSettlementIncomplete as exc:
+            raise _approval_settlement_incomplete(exc) from exc
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
-            label=str(plan_label) if isinstance(plan_label, str) else None,
-            decision=decision.decision,
+            label=plan_label_str,
+            decision=outcome.decision,
             input=None,
             is_plan=True,
             approved_plan=approved_plan,
@@ -2995,6 +3042,7 @@ async def _prepare_resume_tool(
                 if plan_clarifications is not None
                 else None
             ),
+            settled_result=outcome.result,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3035,7 +3083,7 @@ async def _prepare_resume_tool(
         )
         clarify_answers: tuple[str, ...] | None = None
         clarify_records_tuple: tuple[ClarificationRecord, ...] | None = None
-        settle_output: dict[str, object] = {"decision": decision.decision}
+        settle_output = {"decision": decision.decision}
         if decision.decision == "approve":
             try:
                 records = parse_clarify_edited_input(
@@ -3067,10 +3115,12 @@ async def _prepare_resume_tool(
                     raise _safety_blocked(safety_decision)
         history = await messages_repo.load_history(db, conversation_id)
         await conversations_repo.touch_updated_at(db, conversation_id)
+        await db.commit()
         # C-001: settle the pseudo-tool on the paused row so reload does not
-        # keep a permanently pending "Needs approval" card.
+        # keep a permanently pending "Needs approval" card. Durable settlement
+        # is required before ResumeToolSeed — stored decision is authoritative.
         try:
-            await settle_pseudo_tool_approval(
+            outcome = await settle_pseudo_tool_approval_outcome(
                 db,
                 paused_message=last_assistant,
                 tool_call_id=decision.tool_call_id,
@@ -3084,19 +3134,29 @@ async def _prepare_resume_tool(
                 ),
             )
         except ApprovalDecisionConflict as exc:
-            raise _invalid_input(
-                "INVALID_INPUT",
-                str(exc),
-            ) from exc
+            raise _approval_decision_conflict(exc) from exc
+        except ApprovalSettlementIncomplete as exc:
+            raise _approval_settlement_incomplete(exc) from exc
+        if outcome.decision == "approve":
+            stored_out = outcome.result.output or {}
+            raw_stored = stored_out.get("clarifications")
+            if isinstance(raw_stored, list):
+                stored_records = parse_clarification_records(raw_stored)
+                clarify_records_tuple = tuple(stored_records)
+                clarify_answers = tuple(r.answer for r in stored_records)
+        else:
+            clarify_records_tuple = None
+            clarify_answers = None
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
             label=clarify_label_str,
-            decision=decision.decision,
+            decision=outcome.decision,
             input=None,
             is_clarify=True,
             clarify_records=clarify_records_tuple,
             clarify_answers=clarify_answers,
+            settled_result=outcome.result,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3195,15 +3255,7 @@ async def _prepare_resume_tool(
                 label=label_str,
             )
         except ApprovalDecisionConflict as exc:
-            raise AppError(
-                ErrorEnvelope(
-                    code="APPROVAL_DECISION_CONFLICT",
-                    severity="error",
-                    title="Approval decision conflict",
-                    body=str(exc),
-                ),
-                status.HTTP_409_CONFLICT,
-            ) from exc
+            raise _approval_decision_conflict(exc) from exc
         settled_result = outcome.result
         authoritative_decision = outcome.decision
         pending_settle = False

@@ -678,6 +678,8 @@ async def test_pseudo_tool_claim_cas_loss_does_not_stale_overwrite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pseudo-tool claim CAS loss re-reads; never unconditionally overwrites."""
+    from app.tools.approval_settlement import ApprovalSettlementIncomplete
+
     tool_call_id = "plan_clarify_1"
     parts = [
         {
@@ -708,16 +710,16 @@ async def test_pseudo_tool_claim_cas_loss_does_not_stale_overwrite(
     async with session_factory() as session:
         row = await session.get(Message, msg.id)
         assert row is not None
-        result = await settle_pseudo_tool_approval(
-            session,
-            paused_message=row,
-            tool_call_id=tool_call_id,
-            decision="approve",
-            output={"answers": ["narrow"]},
-            claim_id="claim-loser",
-        )
+        with pytest.raises(ApprovalSettlementIncomplete):
+            await settle_pseudo_tool_approval(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="approve",
+                output={"answers": ["narrow"]},
+                claim_id="claim-loser",
+            )
 
-    assert result.status == "failed"
     async with session_factory() as session:
         row = await session.get(Message, msg.id)
         assert row is not None
@@ -729,3 +731,123 @@ async def test_pseudo_tool_claim_cas_loss_does_not_stale_overwrite(
         assert not any(
             isinstance(p, dict) and p.get("type") == "tool_result" for p in (row.parts or [])
         )
+
+
+async def test_pseudo_tool_settle_cas_loss_raises_incomplete(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Settle CAS loss with no durable result must not return a resume-ready result."""
+    from app.tools.approval_settlement import (
+        ApprovalSettlementIncomplete,
+        settle_pseudo_tool_approval_outcome,
+    )
+
+    tool_call_id = "plan_clarify_settle_fail"
+    parts = [
+        {
+            "type": "tool_call",
+            "id": tool_call_id,
+            "name": "agentic_plan_clarify",
+            "label": "Clarify plan",
+            "status": "awaiting_approval",
+            "approvalState": "pending",
+            "input": {"questions": ["Scope?"]},
+        }
+    ]
+    msg = await _seed_paused_message(session_factory, parts=parts)
+    real_cas = approval_settlement._cas_persist_parts
+    claim_writes = {"n": 0}
+
+    async def _cas_fail_settle(
+        db: Any,
+        *,
+        message_id: Any,
+        parts: list[Any],
+        expected_version: int,
+    ) -> bool:
+        has_result = any(
+            isinstance(p, dict) and p.get("type") == "tool_result" for p in parts
+        )
+        if has_result:
+            await db.rollback()
+            return False
+        claim_writes["n"] += 1
+        return await real_cas(
+            db,
+            message_id=message_id,
+            parts=parts,
+            expected_version=expected_version,
+        )
+
+    monkeypatch.setattr(approval_settlement, "_cas_persist_parts", _cas_fail_settle)
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        with pytest.raises(ApprovalSettlementIncomplete):
+            await settle_pseudo_tool_approval_outcome(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="approve",
+                output={"decision": "approve"},
+                claim_id="claim-settle-fail",
+            )
+
+    assert claim_writes["n"] == 1
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "tool_result" for p in (row.parts or [])
+        )
+
+
+async def test_pseudo_tool_opposite_decision_after_settle_conflicts(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Durable settle decision is authoritative; opposite retry conflicts."""
+    from app.tools.approval_settlement import (
+        ApprovalDecisionConflict,
+        settle_pseudo_tool_approval_outcome,
+    )
+
+    tool_call_id = "plan_approval_conflict"
+    parts = [
+        {
+            "type": "tool_call",
+            "id": tool_call_id,
+            "name": "agentic_plan_approval",
+            "label": "Approve plan",
+            "status": "awaiting_approval",
+            "approvalState": "pending",
+            "input": {"plan": ["a", "b"]},
+        }
+    ]
+    msg = await _seed_paused_message(session_factory, parts=parts)
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        first = await settle_pseudo_tool_approval_outcome(
+            session,
+            paused_message=row,
+            tool_call_id=tool_call_id,
+            decision="deny",
+            output={"decision": "deny"},
+        )
+    assert first.decision == "deny"
+    assert first.result.status == "cancelled"
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        with pytest.raises(ApprovalDecisionConflict):
+            await settle_pseudo_tool_approval_outcome(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="approve",
+                output={"decision": "approve"},
+            )

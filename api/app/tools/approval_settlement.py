@@ -71,6 +71,20 @@ class ApprovalDecisionConflict(Exception):  # noqa: N818
         )
 
 
+class ApprovalSettlementIncomplete(Exception):  # noqa: N818
+    """Claim exists but no durable tool_result — caller must not resume."""
+
+    def __init__(self, *, tool_call_id: str, detail: str | None = None):
+        self.tool_call_id = tool_call_id
+        super().__init__(
+            detail
+            or (
+                "Tool approval claim has no durable settled result yet; "
+                "retry after the winning settlement commits."
+            )
+        )
+
+
 @dataclass(frozen=True)
 class SettlementOutcome:
     """Authoritative settlement plus the durable human decision."""
@@ -317,6 +331,53 @@ def _pseudo_settled_result(
     )
 
 
+def _outcome_from_settled_part(
+    existing: dict[str, Any],
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    decision: str,
+    call_part: dict[str, Any] | None,
+    already_settled: bool,
+) -> SettlementOutcome:
+    """Build an outcome from a durable tool_result, enforcing decision match."""
+    stored = _decision_from_approval_state(
+        str(existing.get("approvalState") or existing.get("approval_state") or "")
+    )
+    if stored and stored != decision:
+        raise ApprovalDecisionConflict(
+            stored_decision=stored, requested_decision=decision
+        )
+    result = tool_result_dict_to_execution(
+        existing, tool_call_id=tool_call_id, name=tool_name
+    )
+    claim = None
+    if isinstance(call_part, dict) and call_part.get(APPROVAL_CLAIM_ID_KEY) is not None:
+        claim = str(call_part.get(APPROVAL_CLAIM_ID_KEY))
+    return SettlementOutcome(
+        result=result,
+        decision=stored or decision,
+        claim_id=claim,
+        already_settled=already_settled,
+    )
+
+
+def _raise_incomplete_or_conflict(
+    *,
+    tool_call_id: str,
+    decision: str,
+    approval_state: str,
+) -> None:
+    """Claimed-without-result: conflict on opposite decision, else incomplete."""
+    if approval_state in ("approved", "rejected"):
+        claimed_decision = _decision_from_approval_state(approval_state)
+        if claimed_decision != decision:
+            raise ApprovalDecisionConflict(
+                stored_decision=claimed_decision, requested_decision=decision
+            )
+    raise ApprovalSettlementIncomplete(tool_call_id=tool_call_id)
+
+
 async def settle_pseudo_tool_approval(
     db: AsyncSession,
     *,
@@ -328,6 +389,31 @@ async def settle_pseudo_tool_approval(
     summary: str | None = None,
     claim_id: str | None = None,
 ) -> ToolExecutionResult:
+    """Claim + settle a pseudo-tool; prefer ``settle_pseudo_tool_approval_outcome``."""
+    outcome = await settle_pseudo_tool_approval_outcome(
+        db,
+        paused_message=paused_message,
+        tool_call_id=tool_call_id,
+        decision=decision,
+        output=output,
+        label=label,
+        summary=summary,
+        claim_id=claim_id,
+    )
+    return outcome.result
+
+
+async def settle_pseudo_tool_approval_outcome(
+    db: AsyncSession,
+    *,
+    paused_message: Message,
+    tool_call_id: str,
+    decision: str,
+    output: dict[str, Any] | None = None,
+    label: str | None = None,
+    summary: str | None = None,
+    claim_id: str | None = None,
+) -> SettlementOutcome:
     """Claim + settle a non-registry pseudo-tool (plan clarify / plan approval).
 
     Unlike ``claim_and_settle_approval``, this never invokes ``execute_tool``.
@@ -336,7 +422,10 @@ async def settle_pseudo_tool_approval(
     shows a permanently pending HITL card.
 
     Uses parts_version CAS for claim and settle — never an unconditional
-    overwrite on CAS loss (H-005).
+    overwrite on CAS loss (H-005). Returns only after a durable ``tool_result``
+    exists; the stored decision is authoritative. Callers must not build a
+    resume seed from the request decision when this raises
+    ``ApprovalSettlementIncomplete`` or ``ApprovalDecisionConflict``.
     """
     message_id = paused_message.id
     lock = await _get_claim_lock(message_id, tool_call_id)
@@ -348,31 +437,26 @@ async def settle_pseudo_tool_approval(
         tool_name = str((call_part or {}).get("name") or "")
 
         if existing is not None:
-            stored = _decision_from_approval_state(
-                str(existing.get("approvalState") or existing.get("approval_state") or "")
-            )
-            if stored and stored != decision:
-                raise ApprovalDecisionConflict(
-                    stored_decision=stored, requested_decision=decision
-                )
-            return tool_result_dict_to_execution(
-                existing, tool_call_id=tool_call_id, name=tool_name
+            return _outcome_from_settled_part(
+                existing,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                decision=decision,
+                call_part=call_part,
+                already_settled=True,
             )
 
         if call_part is None:
-            return ToolExecutionResult(
+            raise ApprovalSettlementIncomplete(
                 tool_call_id=tool_call_id,
-                name=tool_name or "unknown",
-                status="failed",
-                error="No matching tool call to settle.",
-                approval_state="rejected",
+                detail="No matching tool call to settle.",
             )
 
         approval_state = str(call_part.get("approvalState") or "")
         if approval_state != "pending":
-            return _claimed_without_result_failure(
+            _raise_incomplete_or_conflict(
                 tool_call_id=tool_call_id,
-                name=tool_name,
+                decision=decision,
                 approval_state=approval_state,
             )
 
@@ -400,31 +484,22 @@ async def settle_pseudo_tool_approval(
             call_part = find_tool_call_part(parts, tool_call_id)
             tool_name = str((call_part or {}).get("name") or tool_name)
             if existing is not None:
-                stored = _decision_from_approval_state(
-                    str(
-                        existing.get("approvalState")
-                        or existing.get("approval_state")
-                        or ""
-                    )
-                )
-                if stored and stored != decision:
-                    raise ApprovalDecisionConflict(
-                        stored_decision=stored, requested_decision=decision
-                    )
-                return tool_result_dict_to_execution(
-                    existing, tool_call_id=tool_call_id, name=tool_name
+                return _outcome_from_settled_part(
+                    existing,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    decision=decision,
+                    call_part=call_part,
+                    already_settled=True,
                 )
             if call_part is None:
-                return ToolExecutionResult(
+                raise ApprovalSettlementIncomplete(
                     tool_call_id=tool_call_id,
-                    name=tool_name or "unknown",
-                    status="failed",
-                    error="No matching tool call to settle.",
-                    approval_state="rejected",
+                    detail="No matching tool call to settle.",
                 )
-            return _claimed_without_result_failure(
+            _raise_incomplete_or_conflict(
                 tool_call_id=tool_call_id,
-                name=tool_name,
+                decision=decision,
                 approval_state=str(call_part.get("approvalState") or "approved"),
             )
 
@@ -433,21 +508,23 @@ async def settle_pseudo_tool_approval(
         call_after = find_tool_call_part(parts_after, tool_call_id)
         settled_after = find_settled_tool_result(parts_after, tool_call_id)
         if settled_after is not None:
-            return tool_result_dict_to_execution(
-                settled_after, tool_call_id=tool_call_id, name=tool_name
+            return _outcome_from_settled_part(
+                settled_after,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                decision=decision,
+                call_part=call_after,
+                already_settled=True,
             )
         if call_after is None:
-            return ToolExecutionResult(
+            raise ApprovalSettlementIncomplete(
                 tool_call_id=tool_call_id,
-                name=tool_name or "unknown",
-                status="failed",
-                error="Tool call disappeared after claim.",
-                approval_state="rejected",
+                detail="Tool call disappeared after claim.",
             )
         if call_after.get(APPROVAL_CLAIM_ID_KEY) != minted_claim:
-            return _claimed_without_result_failure(
+            _raise_incomplete_or_conflict(
                 tool_call_id=tool_call_id,
-                name=tool_name,
+                decision=decision,
                 approval_state=str(call_after.get("approvalState") or "approved"),
             )
 
@@ -470,14 +547,30 @@ async def settle_pseudo_tool_approval(
             label=label,
             subagent_id=subagent_str,
         )
-        if not settled:
-            # Settle CAS lost and no durable result — fail closed.
-            return _claimed_without_result_failure(
-                tool_call_id=tool_call_id,
-                name=tool_name,
-                approval_state="approved" if decision == "approve" else "rejected",
-            )
-        return result
+        # Re-read durable state — never resume from the request decision alone.
+        locked = await _lock_message(db, message_id)
+        parts_final = list(locked.parts or [])
+        durable = find_settled_tool_result(parts_final, tool_call_id)
+        call_final = find_tool_call_part(parts_final, tool_call_id)
+        tool_name = str((call_final or {}).get("name") or tool_name)
+        if durable is None:
+            if not settled:
+                _raise_incomplete_or_conflict(
+                    tool_call_id=tool_call_id,
+                    decision=decision,
+                    approval_state=(
+                        "approved" if decision == "approve" else "rejected"
+                    ),
+                )
+            raise ApprovalSettlementIncomplete(tool_call_id=tool_call_id)
+        return _outcome_from_settled_part(
+            durable,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            decision=decision,
+            call_part=call_final,
+            already_settled=False,
+        )
 
 
 async def claim_and_settle_approval(

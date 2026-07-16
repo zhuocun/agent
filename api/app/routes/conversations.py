@@ -2220,13 +2220,18 @@ async def send_message(
     # gets its older prefix replaced by a provider-written summary, falling back
     # to a pure sliding window if summarization is unavailable. Applied to the
     # `history` threaded into BOTH the detached-producer and inline stream paths.
-    history = await context_compaction.compact_history(
+    # HANDOFF (B13): `compaction.usage` carries summarizer meters when a
+    # complete() call ran. Bill/surface that usage on the turn attribution —
+    # currently returned but not yet folded into the route ledger here.
+    compaction = await context_compaction.compact_history(
         history,
         binding,
         provider=provider,
         model_id=binding.model_id,
         api_key=resolved_api_key,
     )
+    history = compaction.history
+    _ = compaction.usage  # reserved for billing hook (see HANDOFF above)
 
     # Durable stream lifecycle (PRD 04 §5.1). The active row was claimed before
     # message-history mutation and committed by the accepted branch above. The id

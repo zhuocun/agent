@@ -54,6 +54,7 @@ from app.providers.protocol import (
     AttachmentPayload,
     ChatMessage,
     Complete,
+    CompleteResult,
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
@@ -1022,13 +1023,13 @@ class OpenAIProvider:
         user_text: str,
         api_key: str | None = None,
         system_prefix: str | None = None,
-    ) -> str:
-        """Non-streaming variant. One `chat.completions.create` call, text out.
+    ) -> CompleteResult:
+        """Non-streaming variant. One `chat.completions.create` call, text + usage.
 
-        Used by title autogen — small/fast tier, short max tokens. Returns the
-        first choice's message content stripped. Returns empty string on a
-        response without a choice / text (defensive — the caller swallows empty
-        titles).
+        Used by title autogen, memory extraction, and compaction summarization.
+        Returns the first choice's message content stripped plus usage meters.
+        Empty text on a response without a choice / text (defensive — the
+        caller swallows empty titles).
         """
         messages: list[dict[str, Any]] = [{"role": m.role, "content": m.text} for m in history]
         messages.append({"role": "user", "content": user_text})
@@ -1045,8 +1046,14 @@ class OpenAIProvider:
             )
         except openai.APIError as exc:
             raise _map_sdk_error(exc) from exc
+        usage_acc = _UsageAccumulator()
+        usage_obj = getattr(response, "usage", None)
+        if usage_obj is not None:
+            usage_acc.add(usage_obj)
+        usage = usage_acc.to_usage_update()
         choices = getattr(response, "choices", None) or []
         if not choices:
-            return ""
+            return CompleteResult(text="", usage=usage)
         content = getattr(choices[0].message, "content", None)
-        return content.strip() if isinstance(content, str) else ""
+        text = content.strip() if isinstance(content, str) else ""
+        return CompleteResult(text=text, usage=usage)

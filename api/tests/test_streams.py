@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, Message, Stream, User
 from app.db.repositories import streams as streams_repo
-from app.providers.protocol import AnswerDelta, ChatMessage, ProviderEvent
+from app.providers.protocol import AnswerDelta, ChatMessage, ProviderEvent, CompleteResult
 from app.streaming.stop_registry import (
     clear_stop,
     is_stop_requested,
@@ -367,8 +367,8 @@ class _BlockingProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
-    ) -> str:
-        return "unused"
+    ) -> CompleteResult:
+        return CompleteResult(text="unused")
 
 
 async def test_handler_hard_cancel_closes_stream_and_clears_signal(

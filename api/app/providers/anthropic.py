@@ -33,6 +33,7 @@ from app.providers.protocol import (
     AttachmentPayload,
     ChatMessage,
     Complete,
+    CompleteResult,
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
@@ -666,13 +667,13 @@ class AnthropicProvider:
         user_text: str,
         api_key: str | None = None,
         system_prefix: str | None = None,
-    ) -> str:
-        """Non-streaming variant. One `messages.create` call, collected text.
+    ) -> CompleteResult:
+        """Non-streaming variant. One `messages.create` call, text + usage.
 
-        Used by title autogen — small/fast tier, short max_tokens. Concatenates
-        any `text` blocks in the SDK response and returns the joined string.
-        Returns empty string on a response without a text block (defensive —
-        the caller will swallow empty titles).
+        Used by title autogen, memory extraction, and compaction summarization.
+        Concatenates any `text` blocks in the SDK response. Empty text on a
+        response without a text block (defensive — the caller swallows empty
+        titles).
         """
         # Title-autogen calls are short; cap output tokens tightly at 64 so a
         # runaway model can't burn a full max_tokens budget on a 5-word title.
@@ -705,4 +706,19 @@ class AnthropicProvider:
                 text_val = getattr(block, "text", "")
                 if isinstance(text_val, str):
                     texts.append(text_val)
-        return "".join(texts).strip()
+        usage_obj = getattr(response, "usage", None)
+        usage = UsageUpdate(
+            input_tokens=_safe_int(getattr(usage_obj, "input_tokens", None))
+            if usage_obj is not None
+            else 0,
+            output_tokens=_safe_int(getattr(usage_obj, "output_tokens", None))
+            if usage_obj is not None
+            else 0,
+            reasoning_tokens=0,
+            cached_input_tokens=_safe_int(
+                getattr(usage_obj, "cache_read_input_tokens", None)
+            )
+            if usage_obj is not None
+            else 0,
+        )
+        return CompleteResult(text="".join(texts).strip(), usage=usage)

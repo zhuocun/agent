@@ -32,6 +32,7 @@ from app.providers.protocol import (
     AnswerDelta,
     ChatMessage,
     Complete,
+    CompleteResult,
     ProviderEvent,
     ReasoningDone,
     UsageUpdate,
@@ -145,8 +146,8 @@ class _CaptureProvider:
         user_text: str,
         api_key: str | None = None,
         system_prefix: str | None = None,
-    ) -> str:
-        return "Memory Test"
+    ) -> CompleteResult:
+        return CompleteResult(text="Memory Test")
 
 
 async def _collect_sse(

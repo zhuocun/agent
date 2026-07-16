@@ -2,8 +2,9 @@
 
 Covers the cheap token estimate, the `should_compact` budget gate, and the
 `compact_history` behavior: no-op under budget, provider summary + sliding
-window over budget, and the pure sliding-window fallback when no provider is
-available or the summary call fails.
+window over budget, the pure sliding-window fallback when no provider is
+available or the summary call fails, usage metering, cache hits, and fit
+guarantee when the recent window alone overflows.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from app.context.compaction import (
     estimate_tokens,
     should_compact,
 )
-from app.providers.protocol import ChatMessage, ProviderEvent
+from app.providers.protocol import ChatMessage, CompleteResult, ProviderEvent, UsageUpdate
 from app.providers.tiers import get_binding
 
 
@@ -46,6 +47,7 @@ class _SummaryProvider:
     def __init__(self, summary: str = "Earlier they discussed the project plan.") -> None:
         self.summary = summary
         self.calls: list[str] = []
+        self.usage = UsageUpdate(input_tokens=11, output_tokens=7)
 
     def stream(self, **_kwargs: object) -> AsyncIterator[ProviderEvent]:  # pragma: no cover
         raise NotImplementedError
@@ -58,13 +60,13 @@ class _SummaryProvider:
         user_text: str,
         api_key: str | None = None,
         system_prefix: str | None = None,
-    ) -> str:
+    ) -> CompleteResult:
         self.calls.append(user_text)
-        return self.summary
+        return CompleteResult(text=self.summary, usage=self.usage)
 
 
 class _RaisingProvider(_SummaryProvider):
-    async def complete(self, **_kwargs: object) -> str:
+    async def complete(self, **_kwargs: object) -> CompleteResult:
         raise RuntimeError("summarizer unavailable")
 
 
@@ -101,13 +103,16 @@ def test_should_compact_when_history_exceeds_budget() -> None:
 async def test_compact_history_noop_under_budget() -> None:
     history = _history(4)
     result = await compact_history(history, _binding())
-    assert result is history
+    assert result.history is history
+    assert result.usage is None
+    assert result.compacted is False
 
 
 async def test_compact_history_summarizes_older_and_keeps_recent() -> None:
     binding = _binding(context_window=200, max_output_tokens=50)
     history = _history(40)
     provider = _SummaryProvider()
+    compaction._summary_cache.clear()
 
     result = await compact_history(
         history,
@@ -116,12 +121,14 @@ async def test_compact_history_summarizes_older_and_keeps_recent() -> None:
         model_id="model-x",
     )
 
-    # A summary message is prepended; the last KEEP_LAST_N turns are kept.
-    assert len(result) == KEEP_LAST_N + 1
-    assert result[0].role == "assistant"
-    assert "Earlier they discussed the project plan." in result[0].text
-    assert result[1:] == history[-KEEP_LAST_N:]
-    # The summarizer was asked to summarize only the older prefix.
+    # A summary message is prepended; the last KEEP_LAST_N turns are kept
+    # (subject to fit-to-budget shrinking on tiny windows).
+    assert result.compacted is True
+    assert result.usage == provider.usage
+    assert result.history[0].role == "assistant"
+    assert "Earlier they discussed the project plan." in result.history[0].text
+    # Fitted result must aim to fit the budget.
+    assert estimate_tokens(result.history) <= compaction._compaction_budget(binding)
     assert provider.calls
 
 
@@ -131,13 +138,17 @@ async def test_compact_history_sliding_window_without_provider() -> None:
 
     result = await compact_history(history, binding)
 
-    # No provider ⇒ pure sliding window: just the last KEEP_LAST_N, no summary.
-    assert result == history[-KEEP_LAST_N:]
+    # No provider ⇒ pure sliding window, then fit-to-budget.
+    assert result.compacted is True
+    assert result.usage is None
+    assert estimate_tokens(result.history) <= compaction._compaction_budget(binding)
+    assert len(result.history) <= KEEP_LAST_N
 
 
 async def test_compact_history_falls_back_when_summary_raises() -> None:
     binding = _binding(context_window=200, max_output_tokens=50)
     history = _history(40)
+    compaction._summary_cache.clear()
 
     result = await compact_history(
         history,
@@ -146,13 +157,14 @@ async def test_compact_history_falls_back_when_summary_raises() -> None:
         model_id="model-x",
     )
 
-    # Summary failed ⇒ fall back to the sliding window (older prefix dropped).
-    assert result == history[-KEEP_LAST_N:]
+    assert result.compacted is True
+    assert estimate_tokens(result.history) <= compaction._compaction_budget(binding)
 
 
 async def test_compact_history_blank_summary_falls_back() -> None:
     binding = _binding(context_window=200, max_output_tokens=50)
     history = _history(40)
+    compaction._summary_cache.clear()
 
     result = await compact_history(
         history,
@@ -161,7 +173,39 @@ async def test_compact_history_blank_summary_falls_back() -> None:
         model_id="model-x",
     )
 
-    assert result == history[-KEEP_LAST_N:]
+    assert result.compacted is True
+    assert estimate_tokens(result.history) <= compaction._compaction_budget(binding)
+
+
+async def test_compact_history_caches_summary_by_boundary() -> None:
+    binding = _binding(context_window=200, max_output_tokens=50)
+    history = _history(40)
+    provider = _SummaryProvider()
+    compaction._summary_cache.clear()
+
+    first = await compact_history(
+        history, binding, provider=provider, model_id="model-x"
+    )
+    second = await compact_history(
+        history, binding, provider=provider, model_id="model-x"
+    )
+
+    assert first.cache_hit is False
+    assert second.cache_hit is True
+    assert len(provider.calls) == 1
+    assert first.history[0].text == second.history[0].text
+
+
+async def test_compact_history_fits_when_recent_alone_overflows() -> None:
+    # Tiny budget where even KEEP_LAST_N short messages overflow; no older
+    # prefix to summarize — must truncate rather than pass-through.
+    binding = _binding(context_window=40, max_output_tokens=20)
+    history = _history(8, text="x" * 200)
+    assert should_compact(binding, history) is True
+
+    result = await compact_history(history, binding)
+    assert result.compacted is True
+    assert estimate_tokens(result.history) <= compaction._compaction_budget(binding)
 
 
 def test_default_binding_carries_window_budget() -> None:

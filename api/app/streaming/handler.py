@@ -460,7 +460,7 @@ async def _autogen_title(
             log.warning("autogen_title.no_fast_binding", extra={"provider_id": provider_id})
             return
         provider = build_provider(settings, provider_id=provider_id, api_key=api_key)
-        title = await provider.complete(
+        title_result = await provider.complete(
             model_id=binding.model_id,
             history=[],
             user_text=_TITLE_AUTOGEN_PROMPT + user_text,
@@ -468,7 +468,7 @@ async def _autogen_title(
         )
         # Strip surrounding whitespace/quotes/trailing period defensively —
         # providers sometimes ignore "no quotes" instructions.
-        cleaned = title.strip().strip('"').strip("'").rstrip(".")
+        cleaned = title_result.text.strip().strip('"').strip("'").rstrip(".")
         if not cleaned:
             log.warning("autogen_title.empty_response")
             return
@@ -568,13 +568,13 @@ async def _extract_memory_facts(
         transcript = f"User: {user_text}\nAssistant: {answer_text}".strip()
         if not transcript:
             return
-        reply = await provider.complete(
+        reply_result = await provider.complete(
             model_id=model_id,
             history=[],
             user_text=_MEMORY_EXTRACTION_PROMPT + transcript,
             api_key=api_key,
         )
-        facts = _parse_extracted_facts(reply)
+        facts = _parse_extracted_facts(reply_result.text)
         if not facts:
             return
         async with session_factory() as session:
@@ -2220,12 +2220,16 @@ async def stream_and_persist(
             elif isinstance(ev, ReasoningDone):
                 # Agentic turns interleave multiple subagents, each with its own
                 # reasoning block, so the single-shot global gate doesn't apply —
-                # relay every `reasoning_done`. The non-agentic path keeps the
-                # exactly-one invariant.
+                # relay every `reasoning_done` (tagged with subagent_id when set).
+                # The non-agentic path keeps the exactly-one invariant.
                 if agentic_active:
-                    yield encode_reasoning_done(ReasoningDoneEvent())
+                    yield encode_reasoning_done(
+                        ReasoningDoneEvent(subagent_id=ev.subagent_id)
+                    )
                 elif not emitted_reasoning_done:
-                    yield encode_reasoning_done(ReasoningDoneEvent())
+                    yield encode_reasoning_done(
+                        ReasoningDoneEvent(subagent_id=ev.subagent_id)
+                    )
                     emitted_reasoning_done = True
             elif isinstance(ev, StatusUpdate):
                 # Web-search status line (reuses the existing `status` SSE

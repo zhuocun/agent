@@ -155,6 +155,47 @@ export function buildSubagentRoleById(
   return roles;
 }
 
+/**
+ * Resolve citation sources for a text part (B12).
+ *
+ * Agentic turns persist per-subagent `sources` parts. Prefer the sources part
+ * tagged with the same `subagentId` as the text; fall back to an untagged
+ * sources part, then to the first sources part only as a last resort.
+ */
+export function resolveSourcesForTextPart(
+  parts: readonly MessagePart[],
+  textPart: Extract<MessagePart, { type: "text" }>,
+): Extract<MessagePart, { type: "sources" }>["items"] {
+  const sid = textPart.subagentId;
+  if (sid != null) {
+    const matching = parts.find(
+      (p): p is Extract<MessagePart, { type: "sources" }> =>
+        p.type === "sources" && p.subagentId === sid,
+    );
+    if (matching) return matching.items;
+  }
+  const untagged = parts.find(
+    (p): p is Extract<MessagePart, { type: "sources" }> =>
+      p.type === "sources" && p.subagentId == null,
+  );
+  if (untagged) return untagged.items;
+  return (
+    parts.find(
+      (p): p is Extract<MessagePart, { type: "sources" }> => p.type === "sources",
+    )?.items ?? []
+  );
+}
+
+/** Whether a sources part should render as the main SourcesPanel (B12). */
+export function shouldShowSourcesInMainPanel(
+  part: Extract<MessagePart, { type: "sources" }>,
+  subagentRoleById: ReadonlyMap<string, string>,
+): boolean {
+  if (part.subagentId == null) return true;
+  const role = subagentRoleById.get(part.subagentId) ?? "subagent";
+  return isMainAnswerSubagent(part.subagentId, role);
+}
+
 /** Whether a text part belongs in the main bubble (not panel-only worker text). */
 export function shouldRenderTextInMainBubble(
   part: Extract<MessagePart, { type: "text" }>,

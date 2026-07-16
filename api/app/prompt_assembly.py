@@ -21,6 +21,10 @@ The memory/instructions blocks are phrased as preferences/background context
 that NEVER override safety, system, or developer rules — the same framing the
 legacy user-turn wrappers used, so moving them to the system prefix doesn't
 change their intent.
+
+User-derived content inside `<custom_instructions>` / `<memory>` is delimiter-
+escaped (B17) so a saved instruction or fact cannot close those tags early and
+smuggle trusted-looking policy text past the wrapper.
 """
 
 from __future__ import annotations
@@ -46,6 +50,53 @@ _MEMORY_BLOCK = (
     "fact if it is irrelevant.\n\n"
     "<memory>\n{facts}\n</memory>"
 )
+
+# Closing (and opening) tag forms that must not appear verbatim in user-derived
+# payload so they cannot terminate the wrapper early. We use a reversible
+# entity-style escape so the model still sees the user's intent.
+_TAG_ESCAPES: tuple[tuple[str, str], ...] = (
+    ("</custom_instructions>", "&lt;/custom_instructions&gt;"),
+    ("<custom_instructions>", "&lt;custom_instructions&gt;"),
+    ("</memory>", "&lt;/memory&gt;"),
+    ("<memory>", "&lt;memory&gt;"),
+)
+
+
+def escape_prompt_delimiters(text: str) -> str:
+    """Neutralize wrapper tag delimiters in user-derived prompt content.
+
+    Case-insensitive replacement so ``</Custom_Instructions>`` etc. cannot
+    close the trusted blocks. Trusted policy / framing strings are never passed
+    through this helper — only custom_instructions and memory fact bodies.
+    """
+    if not text:
+        return text
+    lowered = text.lower()
+    # Fast path: no delimiter substrings at all.
+    if (
+        "</custom_instructions>" not in lowered
+        and "<custom_instructions>" not in lowered
+        and "</memory>" not in lowered
+        and "<memory>" not in lowered
+    ):
+        return text
+
+    # Walk the original string and rewrite case-insensitively matched spans.
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        matched = False
+        for raw, escaped in _TAG_ESCAPES:
+            n = len(raw)
+            if text[i : i + n].lower() == raw:
+                out.append(escaped)
+                i += n
+                matched = True
+                break
+        if not matched:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
 
 
 def build_system_prefix(
@@ -79,11 +130,17 @@ def build_system_prefix(
     blocks: list[str] = [_DATETIME_BLOCK.format(dt=now.strftime("%A, %Y-%m-%d %H:%M UTC"))]
     cleaned_facts = [fact.strip() for fact in (memory_facts or []) if fact and fact.strip()]
     if cleaned_facts:
-        rendered = "\n".join(f"- {fact}" for fact in cleaned_facts)
+        rendered = "\n".join(
+            f"- {escape_prompt_delimiters(fact)}" for fact in cleaned_facts
+        )
         blocks.append(_MEMORY_BLOCK.format(facts=rendered))
     instructions = (custom_instructions or "").strip()
     if instructions:
-        blocks.append(_CUSTOM_INSTRUCTIONS_BLOCK.format(instructions=instructions))
+        blocks.append(
+            _CUSTOM_INSTRUCTIONS_BLOCK.format(
+                instructions=escape_prompt_delimiters(instructions)
+            )
+        )
     return "\n\n".join(blocks)
 
 

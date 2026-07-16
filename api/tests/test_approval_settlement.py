@@ -851,3 +851,33 @@ async def test_pseudo_tool_opposite_decision_after_settle_conflicts(
                 decision="approve",
                 output={"decision": "approve"},
             )
+
+
+async def test_claim_locks_do_not_grow_unbounded_across_settlements(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B19: idle in-process claim locks are pruned after terminal settlement."""
+    # Ensure we exercise the shared map (not the bypass path used by race tests).
+    monkeypatch.setattr(approval_settlement, "_bypass_claim_locks", False)
+    approval_settlement._claim_locks.clear()
+
+    for i in range(40):
+        tool_call_id = f"cal_lock_{i}"
+        msg = await _seed_paused_message(
+            session_factory, parts=_pending_calendar_parts(tool_call_id=tool_call_id)
+        )
+        async with session_factory() as session:
+            row = await session.get(Message, msg.id)
+            assert row is not None
+            await claim_and_settle_approval(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="deny",
+                effective_input={"title": "x"},
+                label=None,
+            )
+
+    # After each settlement the idle lock entry is dropped — map stays tiny.
+    assert len(approval_settlement._claim_locks) == 0

@@ -11,7 +11,7 @@
 //
 //   event: submitted          data: { messageId, streamId? }
 //   event: reasoning_delta    data: { text }
-//   event: reasoning_done     data: {}
+//   event: reasoning_done     data: { subagentId? }
 //   event: status             data: { label, state }
 //   event: sources            data: { items }
 //   event: tool_call          data: tool-call part
@@ -83,6 +83,8 @@ export interface SubagentActivity {
   costUsd?: number;
   attribution?: ModelAttribution;
   reasoning: string;
+  /** True while this subagent's reasoning_delta stream is open (B20). */
+  reasoningStreaming?: boolean;
   answer: string;
   searchStatus?: SearchStatus | null;
   sources?: SourceItem[];
@@ -964,6 +966,7 @@ export function useApiStream(
             const next = updateSubagent(subagentId, (s) => ({
               ...s,
               reasoning: s.reasoning + text,
+              reasoningStreaming: true,
             }));
             queueState({ subagents: next });
             return false;
@@ -983,6 +986,21 @@ export function useApiStream(
         case "reasoning_done": {
           freezeReasoningDuration();
           const dur = durationRef.current;
+          // B20: per-subagent reasoning_done clears that worker's streaming flag.
+          if (isRecord(payload)) {
+            const subagentId = readStringField(payload, "subagentId");
+            if (subagentId !== null) {
+              const next = updateSubagent(subagentId, (s) => ({
+                ...s,
+                reasoningStreaming: false,
+              }));
+              queueState({
+                subagents: next,
+                reasoningDurationSec: dur,
+              });
+              return false;
+            }
+          }
           queueState({
             reasoningStreaming: false,
             reasoningDurationSec: dur,
@@ -1196,7 +1214,8 @@ export function useApiStream(
             ) {
               // Bridge split substitution fields into a minimal attribution
               // so the live panel can show reroute + served model without
-              // waiting for a reload.
+              // waiting for a reload. B21: do NOT claim costConfidence:"exact"
+              // with fabricated zero-token meters — mark as estimate.
               attribution = {
                 requestedTierId: "auto",
                 servedTierId: "auto",
@@ -1207,7 +1226,7 @@ export function useApiStream(
                 providerId: parsed.substitutedProvider,
                 isByok: false,
                 costUsd: parsed.costUsd ?? 0,
-                costConfidence: "exact",
+                costConfidence: "estimate",
                 breakdown: {
                   currency: "USD",
                   listPriceInPerM: 0,

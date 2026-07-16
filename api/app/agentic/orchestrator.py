@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
+import structlog
 import secrets
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
@@ -54,6 +54,7 @@ from app.providers.protocol import (
     Complete,
     ProviderEvent,
     ReasoningDelta,
+    ReasoningDone,
     RunCost,
     Sources,
     StatusUpdate,
@@ -67,14 +68,14 @@ from app.schemas.common import SubstitutionReasonCode
 from app.streaming.constants import EMPTY_REPLY_FALLBACK
 from app.tools.agent_loop import MakeStream, run_agent_loop
 
-_log = logging.getLogger(__name__)
+_log = structlog.get_logger(__name__)
 
 # Event types that carry an optional `subagent_id` and so can be stamped by
-# `_tag`. `ReasoningDone` (no payload) and the orchestrator-only
-# `SubagentStarted` / `SubagentDone` / `RunCost` are deliberately absent — the
-# agent loop never emits the latter, and `ReasoningDone` relays unchanged.
+# `_tag`. Orchestrator-only `SubagentStarted` / `SubagentDone` / `RunCost` are
+# deliberately absent — the agent loop never emits those.
 _TAGGABLE = (
     ReasoningDelta,
+    ReasoningDone,
     AnswerDelta,
     StatusUpdate,
     Sources,
@@ -243,11 +244,7 @@ class _WorkerPause:
 
 
 def _tag(event: ProviderEvent, subagent_id: str) -> ProviderEvent:
-    """Stamp `subagent_id` onto a subagent's event (no-op for `ReasoningDone`).
-
-    `ReasoningDone` carries no `subagent_id` field (it has no payload to
-    attribute), so it relays unchanged; every other event the agent loop can emit
-    has the optional field and is rewritten via `dataclasses.replace`.
+    """Stamp `subagent_id` onto a subagent's event.
 
     ToolCall / ToolResult / AwaitingApproval ids are namespaced per subagent
     (H-004) so colliding provider-issued ids cannot cross workers.
@@ -1581,14 +1578,16 @@ async def _resume_worker_continuation(
                 except BaseException as retry_exc:
                     _log.warning(
                         "agentic.resume_worker_fallback_failed",
-                        extra={"subagent_id": paused_id, "error": str(retry_exc)},
+                        subagent_id=paused_id,
+                        error=str(retry_exc),
                     )
                     worker_failed = True
             else:
                 _ = had_partial
                 _log.warning(
                     "agentic.resume_worker_failed",
-                    extra={"subagent_id": paused_id, "error": str(exc)},
+                    subagent_id=paused_id,
+                    error=str(exc),
                 )
                 worker_failed = True
 
@@ -2102,16 +2101,15 @@ async def _run_deep_research(
                             except BaseException as retry_exc:
                                 _log.warning(
                                     "agentic.worker_fallback_failed",
-                                    extra={
-                                        "subagent_id": subagent_id,
-                                        "error": str(retry_exc),
-                                    },
+                                    subagent_id=subagent_id,
+                                    error=str(retry_exc),
                                 )
                                 worker_failed = True
                         else:
                             _log.warning(
                                 "agentic.worker_failed",
-                                extra={"subagent_id": subagent_id, "error": str(exc)},
+                                subagent_id=subagent_id,
+                                error=str(exc),
                             )
                             worker_failed = True
                     if worker_failed:
@@ -2272,6 +2270,7 @@ async def _run_deep_research(
             ):
                 _log.error(
                     "agentic.unexpected_worker_task_error",
+                    error=str(outcome),
                     exc_info=outcome,
                 )
     finally:

@@ -34,7 +34,7 @@ from app.db.models import Conversation, Message, Stream, User
 from app.db.repositories import streams as streams_repo
 from app.db.session import get_db
 from app.providers.fake import FakeProvider
-from app.providers.protocol import AnswerDelta, ChatMessage, ProviderEvent
+from app.providers.protocol import AnswerDelta, ChatMessage, ProviderEvent, CompleteResult
 from app.providers.tiers import get_binding
 from app.schemas.stream_events import AnswerDeltaEvent, SubmittedEvent
 from app.streaming import replay_registry
@@ -316,8 +316,8 @@ async def test_stop_during_resumable_persists_stopped_and_marks_done(
             history: list[ChatMessage],
             user_text: str,
             api_key: str | None = None,
-        ) -> str:
-            return "unused"
+        ) -> CompleteResult:
+            return CompleteResult(text="unused")
 
     user_id, conv_id = await _seed_user_and_conversation(session_factory)
     stream_id = await _seed_stream(session_factory, conversation_id=conv_id)

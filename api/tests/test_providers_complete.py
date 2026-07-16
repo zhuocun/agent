@@ -59,9 +59,9 @@ async def test_fake_provider_complete_returns_deterministic_title() -> None:
     title_a2 = await provider.complete(model_id="ignored", history=[], user_text="hello world")
 
     # Determinism.
-    assert title_a == title_a2
+    assert title_a.text == title_a2.text
     # Non-empty 4-6 word title.
-    words = title_a.split()
+    words = title_a.text.split()
     assert len(words) >= 4
     assert len(words) <= 6
     # Differentiation: scan several distinct inputs and confirm at least one
@@ -71,7 +71,7 @@ async def test_fake_provider_complete_returns_deterministic_title() -> None:
     distinct_seen = False
     for sample in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta"):
         candidate = await provider.complete(model_id="ignored", history=[], user_text=sample)
-        if candidate != title_a:
+        if candidate.text != title_a.text:
             distinct_seen = True
             break
     assert distinct_seen, "fake provider should not always return the same title"
@@ -109,7 +109,7 @@ async def test_anthropic_provider_complete_joins_text_blocks() -> None:
     )
 
     assert route.called
-    assert title == "Concise five word title here"
+    assert title.text == "Concise five word title here"
 
 
 @respx.mock
@@ -137,7 +137,7 @@ async def test_anthropic_provider_complete_handles_multi_block_response() -> Non
 
     provider = AnthropicProvider(api_key="sk-test")
     title = await provider.complete(model_id="test-model", history=[], user_text="hi")
-    assert title == "Part one part two"
+    assert title.text == "Part one part two"
 
 
 @respx.mock
@@ -161,7 +161,7 @@ async def test_anthropic_provider_complete_returns_empty_on_no_text_block() -> N
 
     provider = AnthropicProvider(api_key="sk-test")
     title = await provider.complete(model_id="test-model", history=[], user_text="hi")
-    assert title == ""
+    assert title.text == ""
 
 
 # OpenAIProvider ---------------------------------------------------------------
@@ -186,7 +186,7 @@ async def test_openai_provider_complete_returns_stripped_text() -> None:
     )
 
     assert route.called
-    assert title == "Concise five word title here"
+    assert title.text == "Concise five word title here"
 
 
 @respx.mock
@@ -198,7 +198,7 @@ async def test_openai_provider_complete_empty_on_no_choices() -> None:
 
     provider = _openai_provider()
     title = await provider.complete(model_id="gpt-4o-mini", history=[], user_text="hi")
-    assert title == ""
+    assert title.text == ""
 
 
 @respx.mock
@@ -210,7 +210,7 @@ async def test_openai_provider_complete_empty_on_null_content() -> None:
 
     provider = _openai_provider()
     title = await provider.complete(model_id="gpt-4o-mini", history=[], user_text="hi")
-    assert title == ""
+    assert title.text == ""
 
 
 @respx.mock

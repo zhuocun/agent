@@ -40,7 +40,9 @@ class ReasoningDeltaEvent(CamelModel):
 
 
 class ReasoningDoneEvent(CamelModel):
-    pass
+    # Agentic mode: which subagent finished reasoning. Omitted (exclude_none)
+    # on every non-agentic turn so the wire stays `{}` for single-stream turns.
+    subagent_id: str | None = None
 
 
 class StatusEvent(CamelModel):

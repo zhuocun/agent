@@ -478,18 +478,27 @@ async def test_live_deep_research_with_verifier(
     started = {
         str(d["subagentId"]) for n, d in frames if n == "subagent_started"
     }
-    done = {
-        str(d["subagentId"]) for n, d in frames if n == "subagent_done"
-    }
     assert "worker-0" in started
     assert "aggregator" in started
-    # O-012 / V-010: verifier must appear in both Started and Done brackets.
-    assert "verifier" in started
-    assert "verifier" in done
+    # O-012 / V-010: verifier must start AND succeed with billable judge usage.
+    # Started+Done alone is insufficient — exceptions still emit Done with
+    # outcome="failed", so assert succeeded + costUsd + Verification: note.
+    verifier_started = [
+        d for n, d in frames if n == "subagent_started" and d.get("role") == "verifier"
+    ]
+    assert len(verifier_started) == 1
+    assert verifier_started[0].get("subagentId") == "verifier"
+    verifier_done = [
+        d for n, d in frames if n == "subagent_done" and d.get("role") == "verifier"
+    ]
+    assert len(verifier_done) == 1
+    assert verifier_done[0].get("outcome") == "succeeded"
+    assert (verifier_done[0].get("costUsd") or 0) > 0
     answer = "".join(
         str(d.get("text", "")) for n, d in frames if n == "answer_delta"
     )
     assert answer.strip()
+    assert "Verification:" in answer
     run_costs = [d for n, d in frames if n == "run_cost"]
     assert run_costs
     assert float(run_costs[-1]["subtotalUsd"]) >= 0.0

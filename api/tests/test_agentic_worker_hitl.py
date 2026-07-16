@@ -18,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agentic.continuation import CONTINUATION_INPUT_KEY, get_continuation_from_server_state
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.repositories import billing as billing_repo
@@ -246,12 +247,28 @@ async def test_worker_hitl_pause_waits_for_siblings_then_approves(
         for p in parts
         if p.get("type") == "tool_call" and p.get("id") == "worker-0::fake_worker_cal_0"
     )
-    cont = (cal_part.get("input") or {}).get("_agenticContinuation")
-    assert isinstance(cont, dict)
+    # H-012: continuation is server-only — not in tool input.
+    assert CONTINUATION_INPUT_KEY not in (cal_part.get("input") or {})
+    cont_obj = get_continuation_from_server_state(
+        paused.server_state, "worker-0::fake_worker_cal_0"
+    )
+    assert cont_obj is not None
+    cont = {
+        "phase": cont_obj.phase,
+        "pausedSubagentId": cont_obj.paused_subagent_id,
+        "orchestrationMode": cont_obj.orchestration_mode,
+        "completedWorkers": [
+            {"subagentId": w.subagent_id} for w in cont_obj.completed_workers
+        ],
+        "partialAnswer": cont_obj.partial_answer,
+        "sourceIds": list(cont_obj.source_ids),
+    }
     assert cont["phase"] == "worker"
     assert cont["pausedSubagentId"] == "worker-0"
     assert cont.get("orchestrationMode") == "deep_research"
     assert any(w["subagentId"] == "worker-1" for w in cont["completedWorkers"])
+    # H-010: pre-pause draft text captured; sources restored when web_search on.
+    assert "drafting calendar pause" in (cont.get("partialAnswer") or "")
 
     resume_frames = await _collect_sse(
         agentic_client,
@@ -288,6 +305,17 @@ async def test_worker_hitl_pause_waits_for_siblings_then_approves(
     )
     assert "Worker 1" in answer or "housing" in answer.lower()
     assert "Synthesis" in answer or "finding" in answer.lower()
+    # H-010: pre-pause draft must not be re-emitted as worker AnswerDelta on resume.
+    # (Synthesis may still include it in the composed worker answer — that is correct.)
+    draft = "drafting calendar pause"
+    pause_answer = _answer(pause_frames)
+    assert draft in pause_answer
+    resume_worker0 = "".join(
+        str(d.get("text", ""))
+        for n, d in resume_frames
+        if n == "answer_delta" and d.get("subagentId") == "worker-0"
+    )
+    assert draft not in resume_worker0
 
 
 async def test_approval_idempotent_double_resume_does_not_reexecute(
@@ -629,16 +657,17 @@ async def test_h003_concurrent_worker_pauses_reject_sibling(
         for p in parts
         if p.get("type") == "tool_call" and p.get("name") == "calendar_create_event"
     ]
-    with_cont = [
-        p
-        for p in worker_calls
-        if isinstance((p.get("input") or {}).get("_agenticContinuation"), dict)
-    ]
-    without_cont = [
-        p
-        for p in worker_calls
-        if not isinstance((p.get("input") or {}).get("_agenticContinuation"), dict)
-    ]
+    with_cont = []
+    without_cont = []
+    for p in worker_calls:
+        # H-012: continuation lives in server_state, not tool input.
+        assert CONTINUATION_INPUT_KEY not in (p.get("input") or {})
+        cid = str(p.get("id") or "")
+        cont = get_continuation_from_server_state(paused.server_state, cid)
+        if cont is not None:
+            with_cont.append(p)
+        else:
+            without_cont.append(p)
     assert len(with_cont) == 1
     assert len(without_cont) >= 1
     sibling = without_cont[0]
@@ -1192,3 +1221,225 @@ async def test_h007_stop_cancels_in_flight_execute(
     ]
     if results:
         assert results[-1].get("status") != "succeeded"
+
+
+async def test_h010_resume_does_not_reemit_partial_answer() -> None:
+    """H-010: structured checkpoint restores text without AnswerDelta replay."""
+    from app.agentic.continuation import AgenticContinuation, CompletedWorkerState
+    from app.agentic.orchestrator import _resume_worker_continuation
+    from app.config import Settings
+    from app.providers.protocol import AnswerDelta, Complete, ToolResult, UsageUpdate
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[object]:
+            async def _gen() -> AsyncIterator[object]:
+                yield AnswerDelta(text=" post-resume finding")
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    cont = AgenticContinuation(
+        phase="worker",
+        paused_subagent_id="worker-0",
+        user_text="DEEP_RESEARCH: alpha | beta",
+        plan=("alpha", "beta"),
+        completed_workers=(
+            CompletedWorkerState(
+                subagent_id="worker-1",
+                sub_question="beta",
+                answer="beta ok",
+                usage=UsageUpdate(input_tokens=2, output_tokens=1),
+                cost_usd=0.2,
+                source_ids=("s1",),
+            ),
+        ),
+        planner_usage=UsageUpdate(input_tokens=1, output_tokens=1),
+        planner_cost_usd=0.1,
+        actual_cost_usd=0.3,
+        paused_worker_index=0,
+        paused_sub_question="alpha",
+        partial_answer="already delivered draft",
+        source_ids=("src-pre",),
+        emitted_answer_chars=len("already delivered draft"),
+        orchestration_mode="deep_research",
+        paused_worker_usage=UsageUpdate(input_tokens=3, output_tokens=2),
+        paused_worker_cost_usd=0.05,
+    )
+    seed = ToolResult(
+        tool_call_id="worker-0::x",
+        name="calendar_create_event",
+        status="succeeded",
+        approval_state="approved",
+        output={"ok": True},
+    )
+    events: list[object] = []
+    async for ev in _resume_worker_continuation(
+        make_stream_for=_make_stream_for,
+        settings=settings,
+        cost_for_usage=lambda u: 0.01,
+        continuation=cont,
+        resume_tool_result=seed,
+        server_approved_call_ids=set(),
+    ):
+        events.append(ev)
+
+    answer_deltas = [
+        e
+        for e in events
+        if isinstance(e, AnswerDelta) and getattr(e, "subagent_id", None) == "worker-0"
+    ]
+    texts = [e.text for e in answer_deltas]
+    assert "already delivered draft" not in "".join(texts)
+    assert any("post-resume" in t for t in texts)
+
+
+async def test_h013_conflicting_decision_on_worker_resume(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H-013: deny then approve on the same settled call is refused (409)."""
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    pause_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000031",
+            "tierId": "smart",
+            "text": _WORKER_HITL_PROMPT,
+            "agenticMode": "deep_research",
+        },
+    )
+    assert pause_frames[-1][1]["status"] == "awaiting_approval"
+    call_id = "worker-0::fake_worker_cal_0"
+
+    deny_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000032",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": call_id, "decision": "deny"},
+        },
+    )
+    assert deny_frames[-1][0] == "terminal"
+
+    conflict = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "f0000000-0000-0000-0000-000000000033",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": call_id, "decision": "approve"},
+        },
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "APPROVAL_DECISION_CONFLICT"
+
+
+_WORKER_HITL_TWICE_PROMPT = (
+    "DEEP_RESEARCH: TOOL_APPROVE_TWICE schedule kickoff | sibling housing effects"
+)
+
+
+async def test_h010_two_consecutive_worker_approvals_keep_transcript(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H-010: second nested worker pause retains reasoning + prior tool transcript."""
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    pause1 = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000041",
+            "tierId": "smart",
+            "text": _WORKER_HITL_TWICE_PROMPT,
+            "agenticMode": "deep_research",
+        },
+    )
+    assert pause1[-1][1]["status"] == "awaiting_approval"
+    call1 = next(
+        d
+        for n, d in pause1
+        if n == "tool_call" and d.get("name") == "calendar_create_event"
+    )
+    call1_id = str(call1["id"])
+    assert call1_id.endswith("_0")
+
+    resume1 = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000042",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": call1_id, "decision": "approve"},
+        },
+    )
+    assert resume1[-1][1]["status"] == "awaiting_approval"
+    call2 = next(
+        d
+        for n, d in resume1
+        if n == "tool_call" and d.get("name") == "calendar_create_event"
+    )
+    call2_id = str(call2["id"])
+    assert call2_id != call1_id
+    assert call2_id.endswith("_1")
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused_rows = [
+        m for m in msgs if m.role == "assistant" and m.status == "awaiting_approval"
+    ]
+    assert paused_rows
+    paused = paused_rows[-1]
+    cont = get_continuation_from_server_state(paused.server_state, call2_id)
+    assert cont is not None
+    # First-pass reasoning plus nested-pause reasoning must both survive.
+    assert "Let me think" in cont.partial_reasoning
+    assert "second approval" in cont.partial_reasoning
+    transcript_types = [p.get("type") for p in cont.tool_transcript]
+    assert "tool_call" in transcript_types
+    assert "tool_result" in transcript_types
+    # Settled first approval + pending second call.
+    result_ids = {
+        str(p.get("toolCallId"))
+        for p in cont.tool_transcript
+        if p.get("type") == "tool_result"
+    }
+    call_ids = {
+        str(p.get("id")) for p in cont.tool_transcript if p.get("type") == "tool_call"
+    }
+    assert call1_id in result_ids or any(call1_id in rid for rid in result_ids)
+    assert call2_id in call_ids
+
+    resume2 = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000043",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": call2_id, "decision": "approve"},
+        },
+    )
+    assert resume2[-1][0] == "terminal"
+    assert resume2[-1][1]["status"] == "done"

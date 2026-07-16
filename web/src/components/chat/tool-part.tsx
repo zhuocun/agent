@@ -567,8 +567,36 @@ function humanizeName(name: string): string {
 
 function previewJson(value: unknown): string | null {
   if (value === undefined || value === null) return null;
+  const cleaned = stripReservedToolKeys(value);
   const rendered =
-    typeof value === "string" ? value : JSON.stringify(value, null, 0);
+    typeof cleaned === "string" ? cleaned : JSON.stringify(cleaned, null, 0);
   if (!rendered) return null;
   return rendered.length > 180 ? `${rendered.slice(0, 177)}...` : rendered;
+}
+
+/** H-012: never render server control / ledger keys as tool input. */
+const RESERVED_TOOL_KEYS = new Set([
+  "_agenticContinuation",
+  "_approvalClaimId",
+  "plannerCostUsd",
+  "planner_cost_usd",
+  "actualCostUsd",
+  "actual_cost_usd",
+  "pausedWorkerCostUsd",
+  "paused_worker_cost_usd",
+]);
+
+function stripReservedToolKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripReservedToolKeys);
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (RESERVED_TOOL_KEYS.has(key)) continue;
+      out[key] = stripReservedToolKeys(child);
+    }
+    return out;
+  }
+  return value;
 }

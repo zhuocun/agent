@@ -50,7 +50,12 @@ from app.agentic.clarify import (
     nonblank_answers,
     parse_clarification_records,
 )
-from app.agentic.continuation import CONTINUATION_INPUT_KEY
+from app.agentic.continuation import (
+    CONTINUATION_INPUT_KEY,
+    put_continuation_in_server_state,
+    sanitize_message_parts_for_api,
+    strip_reserved_keys,
+)
 from app.agentic.orchestrator import run_orchestrator
 from app.agentic.retry import is_retryable_provider_error
 from app.config import get_settings
@@ -210,8 +215,9 @@ class ResumeToolSeed:
     side effect on the paused row — the handler must emit that result and must
     NOT re-execute.
 
-    BE-005: ``agentic_continuation`` resumes a paused worker/aggregator in place
-    (no re-plan) when present.
+    BE-005: ``agentic_continuation`` resumes a paused worker in place
+    (no re-plan) when present. Aggregator continuation is not supported
+    (O-011); aggregators run without gated tools.
     """
 
     tool_call_id: str
@@ -241,7 +247,8 @@ class ResumeToolSeed:
     # BE-007: pre-settled execution result (claim happened in the producer after
     # SSE ownership — see stream_and_persist settlement block).
     settled_result: Any | None = None
-    # BE-005: fan-out continuation for worker/aggregator tool HITL.
+    # BE-005: fan-out continuation for worker tool HITL (O-011: aggregator
+    # continuation is not supported).
     agentic_continuation: Any | None = None
     # Original user text for agentic continuation resume (not the Tool approved: stub).
     resume_user_text: str | None = None
@@ -729,6 +736,9 @@ async def stream_and_persist(
     # `awaiting_approval` rather than `done`. Stays False on every non-tool path.
     paused = False
     paused_tool_call_id: str | None = None
+    # H-012: continuation blobs keyed by tool_call_id — written to
+    # Message.server_state, never into client-visible tool_call.input.
+    pending_server_continuations: dict[str, dict[str, Any]] = {}
     # Captured once so the per-turn tools gate + agent-loop wrapping read a
     # stable value (and tests can override via a settings cache flush).
     handler_settings = get_settings()
@@ -1143,6 +1153,19 @@ async def stream_and_persist(
         )
         return breakdown.subtotal_usd + breakdown.session_surcharge_usd
 
+    def _verifier_cost_for_usage(usage: UsageUpdate) -> float:
+        """Phase pricer for the fresh-context judge (V-011).
+
+        The verifier sends ``attachments=None``; never inherit the turn's image
+        attachment count into judge pricing.
+        """
+        breakdown = compute_cost_breakdown(
+            usage=usage,
+            binding=binding,
+            image_count=0,
+        )
+        return breakdown.subtotal_usd + breakdown.session_surcharge_usd
+
     def _fallback_cost_for_usage(usage: UsageUpdate) -> float:
         """Price usage against the fallback binding (FE-009)."""
         assert fallback_binding is not None
@@ -1365,6 +1388,7 @@ async def stream_and_persist(
                 mode=agentic_mode,
                 user_text=orch_user_text,
                 cost_for_usage=_cost_for_usage,
+                verifier_cost_for_usage=_verifier_cost_for_usage,
                 estimate_cost=_estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,
                 plan_approved=plan_approved,
@@ -1635,11 +1659,23 @@ async def stream_and_persist(
                     and fallback_binding is not None
                 ):
                     attr_binding = fallback_binding
+                # Verifier is fresh-context (no attachments); never inherit turn
+                # image pricing. Prefer SubagentDone.cost_usd when present.
+                attr_image_count = (
+                    0 if acc.role == "verifier" else image_attachment_count
+                )
                 breakdown = compute_cost_breakdown(
                     usage=acc.usage,
                     binding=attr_binding,
-                    image_count=image_attachment_count,
+                    image_count=attr_image_count,
                 )
+                if acc.role == "verifier" and acc.cost_usd is not None:
+                    breakdown = breakdown.model_copy(
+                        update={
+                            "subtotal_usd": float(acc.cost_usd),
+                            "session_surcharge_usd": 0.0,
+                        }
+                    )
                 part_attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=attr_binding,
@@ -1706,12 +1742,19 @@ async def stream_and_persist(
     ) -> UUID | None:
         if is_temporary or conversation_id is None:
             return None
-        parts = _build_parts()
+        parts = sanitize_message_parts_for_api(_build_parts())
         # Stop-path uses a fresh session (passed via `session=`); terminal-success
         # reuses the request-scoped `db`. Asymmetry: at disconnect the request
         # lifecycle is winding down and the route's get_db cleanup may
         # double-commit, so we decouple by opening a new session for stopped.
         target_session = session if session is not None else db
+        server_state: dict[str, Any] | None = None
+        if pending_server_continuations:
+            server_state = {}
+            for call_id, blob in pending_server_continuations.items():
+                server_state = put_continuation_in_server_state(
+                    server_state, call_id, blob
+                )
         row = await messages_repo.create_assistant_message(
             db=target_session,
             conversation_id=conversation_id,
@@ -1720,6 +1763,7 @@ async def stream_and_persist(
             attribution=attribution.model_dump(by_alias=True, exclude_none=True),
             responds_to_message_id=user_message_id,
             cost_usd=cost_usd,
+            server_state=server_state,
         )
         # When the caller owns the session (stop/fresh-session case, commit=False)
         # we only flush here and let the caller commit AFTER bumping usage, so the
@@ -2258,14 +2302,8 @@ async def stream_and_persist(
                 # the pause and break — this is NOT an error, so it must NOT route
                 # through the fallback / `_PumpError` path. Post-loop branching on
                 # `paused` ends the turn in `awaiting_approval`.
-                # BE-005: embed orchestrator continuation onto the pending tool
-                # call's input so resume can continue that subagent in place.
+                # H-012: store continuation in server_state (not tool input).
                 if ev.continuation is not None:
-                    target_parts = (
-                        _sub(ev.subagent_id).tool_parts
-                        if agentic_active and ev.subagent_id is not None
-                        else tool_parts
-                    )
                     # H-002: pin served route identity onto the durable checkpoint.
                     cont_blob = dict(ev.continuation)
                     if agentic_mode is not None:
@@ -2274,14 +2312,21 @@ async def stream_and_persist(
                     if provider_id is not None:
                         cont_blob.setdefault("providerId", provider_id)
                     cont_blob.setdefault("modelId", binding.model_id)
+                    pending_server_continuations[ev.tool_call_id] = cont_blob
+                    # Strip any legacy embedding from in-memory tool parts.
+                    target_parts = (
+                        _sub(ev.subagent_id).tool_parts
+                        if agentic_active and ev.subagent_id is not None
+                        else tool_parts
+                    )
                     for part in target_parts:
                         if (
                             part.get("type") == "tool_call"
                             and part.get("id") == ev.tool_call_id
                         ):
                             inp = dict(part.get("input") or {})
-                            inp[CONTINUATION_INPUT_KEY] = cont_blob
-                            part["input"] = inp
+                            inp.pop(CONTINUATION_INPUT_KEY, None)
+                            part["input"] = strip_reserved_keys(inp)
                             break
                 paused = True
                 paused_tool_call_id = ev.tool_call_id
@@ -2339,11 +2384,24 @@ async def stream_and_persist(
                             and fallback_binding is not None
                         ):
                             attr_binding = fallback_binding
+                        # Verifier is fresh-context (no attachments); never
+                        # inherit turn image pricing. Prefer authoritative
+                        # SubagentDone.cost_usd when present.
+                        attr_image_count = (
+                            0 if ev.role == "verifier" else image_attachment_count
+                        )
                         breakdown = compute_cost_breakdown(
                             usage=ev.usage,
                             binding=attr_binding,
-                            image_count=image_attachment_count,
+                            image_count=attr_image_count,
                         )
+                        if ev.role == "verifier" and ev.cost_usd is not None:
+                            breakdown = breakdown.model_copy(
+                                update={
+                                    "subtotal_usd": float(ev.cost_usd),
+                                    "session_surcharge_usd": 0.0,
+                                }
+                            )
                         done_attribution = build_attribution(
                             requested_tier_id=requested_tier_id,
                             binding=attr_binding,

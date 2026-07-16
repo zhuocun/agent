@@ -46,11 +46,7 @@ from app.agentic.clarify import (
     parse_clarify_edited_input,
     serialize_clarification_records,
 )
-from app.agentic.continuation import (
-    CONTINUATION_INPUT_KEY,
-    extract_continuation_from_tool_input,
-    parse_continuation,
-)
+from app.agentic.continuation import resolve_continuation, sanitize_message_parts_for_api
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -152,9 +148,10 @@ from app.streaming.sse import (
 from app.streaming.stop_registry import request_stop_async
 from app.tools.approval_settlement import (
     ApprovalDecisionConflict,
+    ApprovalSettlementIncomplete,
     claim_and_settle_approval_outcome,
     find_settled_tool_result,
-    settle_pseudo_tool_approval,
+    settle_pseudo_tool_approval_outcome,
 )
 from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
 from app.uploads import extract_attachment_text, is_supported_attachment_type
@@ -560,6 +557,30 @@ def _nothing_to_resume() -> AppError:
             "Send a new message instead.",
         ),
         status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _approval_decision_conflict(exc: ApprovalDecisionConflict) -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="APPROVAL_DECISION_CONFLICT",
+            severity="error",
+            title="Approval decision conflict",
+            body=str(exc),
+        ),
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def _approval_settlement_incomplete(exc: ApprovalSettlementIncomplete) -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="APPROVAL_SETTLEMENT_INCOMPLETE",
+            severity="error",
+            title="Approval settlement incomplete",
+            body=str(exc),
+        ),
+        status.HTTP_409_CONFLICT,
     )
 
 
@@ -1543,6 +1564,12 @@ async def _maybe_replay(
                 sources_requested = bool(part.get("requested", False))
             elif ptype in ("tool_call", "tool_result"):
                 tool_parts.append(part)
+        # H-012: strip reserved control keys (incl. nested in input/output)
+        # before SSE replay — model_validate alone does not scrub dict payloads.
+        sanitized_tools = cast(
+            list[dict[str, object]],
+            sanitize_message_parts_for_api(tool_parts),
+        )
         return _replay_response(
             user_message_id=prior_user_msg.id,
             assistant_message_id=assistant_row.id,
@@ -1552,7 +1579,7 @@ async def _maybe_replay(
             status_part=status_part,
             sources_items=sources_items,
             sources_requested=sources_requested,
-            tool_parts=tool_parts,
+            tool_parts=sanitized_tools,
         )
     # User message exists but no completed assistant row: prior is in flight
     # (or crashed before persisting). With resumable streams enabled, an
@@ -2760,10 +2787,14 @@ async def _prepare_continue(
         for part in paused.parts:
             if not isinstance(part, dict) or part.get("type") != "tool_call":
                 continue
+            call_id = part.get("id")
             raw_input = part.get("input")
-            if isinstance(raw_input, dict) and parse_continuation(
-                raw_input.get(CONTINUATION_INPUT_KEY)
-            ) is not None:
+            _, cont = resolve_continuation(
+                server_state=paused.server_state,
+                tool_input=raw_input,
+                tool_call_id=str(call_id) if isinstance(call_id, str) else None,
+            )
+            if cont is not None:
                 raise _agentic_checkpoint_pending()
 
     # Must have a trailing assistant turn, and it must be `status="stopped"` —
@@ -2831,12 +2862,14 @@ def _find_pending_tool_call(
 def _find_resumable_tool_call(
     parts: object,
     tool_call_id: str,
+    *,
+    server_state: object = None,
 ) -> dict[str, object] | None:
     """Find a tool_call for resume: pending OR already settled (BE-007 retry).
 
     H-003: a worker call cancelled as a concurrent-pause sibling is
-    ``approvalState=rejected`` without an ``_agenticContinuation``. Those are
-    not resumable — only the continuation-bearing pause (or a primary HITL
+    ``approvalState=rejected`` without a continuation. Those are not
+    resumable — only the continuation-bearing pause (or a primary HITL
     call) may be approved/denied.
     """
     pending = _find_pending_tool_call(parts, tool_call_id)
@@ -2854,10 +2887,11 @@ def _find_resumable_tool_call(
             # Superseded worker pauses: rejected, no continuation → not resumable.
             subagent = part.get("subagentId")
             if isinstance(subagent, str) and subagent.startswith("worker-"):
-                raw_input = part.get("input")
-                cont = None
-                if isinstance(raw_input, dict):
-                    cont = parse_continuation(raw_input.get(CONTINUATION_INPUT_KEY))
+                _, cont = resolve_continuation(
+                    server_state=server_state,
+                    tool_input=part.get("input"),
+                    tool_call_id=tool_call_id,
+                )
                 if cont is None and part.get("approvalState") == "rejected":
                     return None
             return part
@@ -2904,7 +2938,11 @@ async def _prepare_resume_tool(
     if last_assistant is None:
         raise _nothing_to_resume()
 
-    pending = _find_resumable_tool_call(last_assistant.parts, decision.tool_call_id)
+    pending = _find_resumable_tool_call(
+        last_assistant.parts,
+        decision.tool_call_id,
+        server_state=last_assistant.server_state,
+    )
     if pending is None:
         raise _invalid_input(
             "INVALID_INPUT",
@@ -2919,6 +2957,8 @@ async def _prepare_resume_tool(
     # allowlist below. Approve reuses the immutable plan stored on the pending
     # tool input (BE-039) — never re-decomposes. Call id must be a server-minted
     # plan-approval id bound to this pending row (BE-040 / SAF-010).
+    # Settlement uses the same CAS claim/settle path as clarify (durable
+    # tool_result required before ResumeToolSeed).
     if tool_name == PLAN_APPROVAL_TOOL_NAME and is_plan_approval_call_id(
         decision.tool_call_id
     ):
@@ -2942,6 +2982,7 @@ async def _prepare_resume_tool(
         await conversations_repo.touch_updated_at(db, conversation_id)
         await db.commit()
         plan_label = pending.get("label")
+        plan_label_str = str(plan_label) if isinstance(plan_label, str) else None
         raw_input = pending.get("input")
         plan_input = raw_input if isinstance(raw_input, dict) else {}
         raw_plan = plan_input.get("plan")
@@ -2966,11 +3007,30 @@ async def _prepare_resume_tool(
             if isinstance(plan_input.get("clarifications"), list)
             else None
         )
+        settle_output: dict[str, object] = {"decision": decision.decision}
+        try:
+            outcome = await settle_pseudo_tool_approval_outcome(
+                db,
+                paused_message=last_assistant,
+                tool_call_id=decision.tool_call_id,
+                decision=decision.decision,
+                output=settle_output,
+                label=plan_label_str,
+                summary=(
+                    "Plan approved."
+                    if decision.decision == "approve"
+                    else "User declined the research plan."
+                ),
+            )
+        except ApprovalDecisionConflict as exc:
+            raise _approval_decision_conflict(exc) from exc
+        except ApprovalSettlementIncomplete as exc:
+            raise _approval_settlement_incomplete(exc) from exc
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
-            label=str(plan_label) if isinstance(plan_label, str) else None,
-            decision=decision.decision,
+            label=plan_label_str,
+            decision=outcome.decision,
             input=None,
             is_plan=True,
             approved_plan=approved_plan,
@@ -2982,6 +3042,7 @@ async def _prepare_resume_tool(
                 if plan_clarifications is not None
                 else None
             ),
+            settled_result=outcome.result,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3022,7 +3083,7 @@ async def _prepare_resume_tool(
         )
         clarify_answers: tuple[str, ...] | None = None
         clarify_records_tuple: tuple[ClarificationRecord, ...] | None = None
-        settle_output: dict[str, object] = {"decision": decision.decision}
+        settle_output = {"decision": decision.decision}
         if decision.decision == "approve":
             try:
                 records = parse_clarify_edited_input(
@@ -3054,10 +3115,12 @@ async def _prepare_resume_tool(
                     raise _safety_blocked(safety_decision)
         history = await messages_repo.load_history(db, conversation_id)
         await conversations_repo.touch_updated_at(db, conversation_id)
+        await db.commit()
         # C-001: settle the pseudo-tool on the paused row so reload does not
-        # keep a permanently pending "Needs approval" card.
+        # keep a permanently pending "Needs approval" card. Durable settlement
+        # is required before ResumeToolSeed — stored decision is authoritative.
         try:
-            await settle_pseudo_tool_approval(
+            outcome = await settle_pseudo_tool_approval_outcome(
                 db,
                 paused_message=last_assistant,
                 tool_call_id=decision.tool_call_id,
@@ -3071,19 +3134,29 @@ async def _prepare_resume_tool(
                 ),
             )
         except ApprovalDecisionConflict as exc:
-            raise _invalid_input(
-                "INVALID_INPUT",
-                str(exc),
-            ) from exc
+            raise _approval_decision_conflict(exc) from exc
+        except ApprovalSettlementIncomplete as exc:
+            raise _approval_settlement_incomplete(exc) from exc
+        if outcome.decision == "approve":
+            stored_out = outcome.result.output or {}
+            raw_stored = stored_out.get("clarifications")
+            if isinstance(raw_stored, list):
+                stored_records = parse_clarification_records(raw_stored)
+                clarify_records_tuple = tuple(stored_records)
+                clarify_answers = tuple(r.answer for r in stored_records)
+        else:
+            clarify_records_tuple = None
+            clarify_answers = None
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
             label=clarify_label_str,
-            decision=decision.decision,
+            decision=outcome.decision,
             input=None,
             is_clarify=True,
             clarify_records=clarify_records_tuple,
             clarify_answers=clarify_answers,
+            settled_result=outcome.result,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3100,8 +3173,13 @@ async def _prepare_resume_tool(
     # Effective input: a validated `edited_input` overrides the originally
     # requested input; otherwise reuse the pending part's input. Strip the
     # BE-005 continuation blob before schema validation / execution.
+    # H-012: prefer Message.server_state over legacy tool-input embedding.
     raw_input = pending.get("input")
-    cleaned_input, agentic_continuation = extract_continuation_from_tool_input(raw_input)
+    cleaned_input, agentic_continuation = resolve_continuation(
+        server_state=last_assistant.server_state,
+        tool_input=raw_input,
+        tool_call_id=decision.tool_call_id,
+    )
     effective_input: dict[str, object] = cleaned_input
     if decision.edited_input is not None:
         try:
@@ -3177,15 +3255,7 @@ async def _prepare_resume_tool(
                 label=label_str,
             )
         except ApprovalDecisionConflict as exc:
-            raise AppError(
-                ErrorEnvelope(
-                    code="APPROVAL_DECISION_CONFLICT",
-                    severity="error",
-                    title="Approval decision conflict",
-                    body=str(exc),
-                ),
-                status.HTTP_409_CONFLICT,
-            ) from exc
+            raise _approval_decision_conflict(exc) from exc
         settled_result = outcome.result
         authoritative_decision = outcome.decision
         pending_settle = False
@@ -3217,9 +3287,10 @@ async def _prepare_resume_tool(
         paused_message_id=last_assistant.id,
         pending_settle=pending_settle,
     )
-    # Worker/aggregator continuation resumes with the original user text (the
-    # orchestrator continues that subagent). Non-agentic / primary HITL keeps the
-    # Tool approved/denied instruction the fake provider keys on.
+    # Worker continuation resumes with the original user text (the orchestrator
+    # continues that subagent). Aggregator continuation is not supported (O-011).
+    # Non-agentic / primary HITL keeps the Tool approved/denied instruction the
+    # fake provider keys on.
     if agentic_continuation is not None:
         instruction = agentic_continuation.user_text
     else:

@@ -20,6 +20,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from app.config import MAX_WORKER_ARTIFACTS
+
 # Fixed instruction for the real-provider synthesis pass. Kept SEPARATE from
 # the DATA section that carries worker findings. The "treat as data" framing is
 # steering, not a security boundary — delimiters + escaping + length caps below
@@ -39,7 +41,10 @@ _MAX_FINDING_CHARS = 8_000
 _MAX_SUB_QUESTION_CHARS = 2_000
 _MAX_REQUEST_CHARS = 8_000
 _MAX_SOURCE_IDS = 32
-_MAX_ARTIFACTS = 16
+# Hard ceiling on artifact count. Must stay >= AGENTIC_MAX_WORKERS (enforced in
+# Settings.assert_prod_safe) so synthesis never silently drops completed workers
+# (O-013). Re-exported from config (single source of truth).
+_MAX_ARTIFACTS = MAX_WORKER_ARTIFACTS
 
 _DATA_BEGIN = "<<<UNTRUSTED_WORKER_DATA_BEGIN>>>"
 _DATA_END = "<<<UNTRUSTED_WORKER_DATA_END>>>"
@@ -142,15 +147,49 @@ def _normalize_artifact(art: WorkerArtifact, *, index: int) -> WorkerArtifact:
     )
 
 
-def build_artifacts(outputs: list[WorkerOutput]) -> list[WorkerArtifact]:
-    """Convert worker outputs into ordered, capped artifact refs."""
-    capped = outputs[:_MAX_ARTIFACTS]
+def build_artifacts(
+    outputs: list[WorkerOutput],
+    *,
+    max_artifacts: int | None = None,
+) -> list[WorkerArtifact]:
+    """Convert worker outputs into ordered, capped artifact refs.
+
+    ``max_artifacts`` defaults to ``MAX_WORKER_ARTIFACTS``. Callers that know the
+    configured worker cap should pass ``settings.agentic_max_workers`` so the
+    synthesis envelope never disagrees with fan-out (O-013). When truncation
+    still occurs (defense in depth), omitted counts are available via
+    ``omitted_artifact_count``.
+    """
+    limit = _MAX_ARTIFACTS if max_artifacts is None else max(1, min(max_artifacts, _MAX_ARTIFACTS))
+    capped = outputs[:limit]
     return [to_artifact(output, index=i) for i, output in enumerate(capped, start=1)]
 
 
-def artifact_envelope(artifacts: list[WorkerArtifact], *, user_text: str) -> dict[str, Any]:
-    """Schema-shaped JSON object embedded in the aggregator DATA section."""
-    return {
+def omitted_artifact_count(
+    outputs: list[WorkerOutput],
+    *,
+    max_artifacts: int | None = None,
+) -> int:
+    """How many worker outputs would be dropped by ``build_artifacts``."""
+    limit = _MAX_ARTIFACTS if max_artifacts is None else max(1, min(max_artifacts, _MAX_ARTIFACTS))
+    return max(0, len(outputs) - limit)
+
+
+def artifact_envelope(
+    artifacts: list[WorkerArtifact],
+    *,
+    user_text: str,
+    omitted_count: int = 0,
+    clarifications: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Schema-shaped JSON object embedded in the aggregator DATA section.
+
+    Clarifications (when present) are structured fields serialized **once** with
+    this envelope — never a pre-encoded JSON footer stuffed into
+    ``original_request`` (that double-escaped quotes/backslashes and defeated
+    O-014 admission accounting).
+    """
+    envelope: dict[str, Any] = {
         "schema": _ARTIFACT_ENVELOPE_SCHEMA,
         "original_request": _escape_data(_cap(user_text, _MAX_REQUEST_CHARS)),
         "artifacts": [
@@ -164,6 +203,11 @@ def artifact_envelope(artifacts: list[WorkerArtifact], *, user_text: str) -> dic
             for art in artifacts
         ],
     }
+    if clarifications:
+        envelope["clarifications"] = list(clarifications)
+    if omitted_count > 0:
+        envelope["omitted_artifacts"] = omitted_count
+    return envelope
 
 
 def build_synthesis_prompt(
@@ -171,6 +215,7 @@ def build_synthesis_prompt(
     outputs: list[WorkerOutput],
     *,
     artifacts: list[WorkerArtifact] | None = None,
+    clarifications: list[dict[str, str]] | None = None,
 ) -> str:
     """Build the real-provider synthesis prompt from structured worker artifacts.
 
@@ -182,15 +227,26 @@ def build_synthesis_prompt(
 
     ``artifacts`` — when provided, still re-normalized at this sink (caps /
     escaping / source-id flattening) rather than trusted as-is.
+
+    ``clarifications`` — optional structured Q&A dicts (already phase-capped by
+    the caller). Embedded once as an envelope field; do not also append a
+    clarifications text footer to ``user_text``.
     """
     if artifacts is not None:
         arts = [
             _normalize_artifact(art, index=i)
             for i, art in enumerate(artifacts[:_MAX_ARTIFACTS], start=1)
         ]
+        omitted = max(0, len(artifacts) - len(arts))
     else:
         arts = build_artifacts(outputs)
-    envelope = artifact_envelope(arts, user_text=user_text)
+        omitted = omitted_artifact_count(outputs)
+    envelope = artifact_envelope(
+        arts,
+        user_text=user_text,
+        omitted_count=omitted,
+        clarifications=clarifications,
+    )
     # Short refs also inside the envelope so nothing untrusted sits outside DATA.
     envelope["artifact_refs"] = [
         {
@@ -253,10 +309,23 @@ def synthesize(
             answer = output.answer.strip() or "(no answer)"
             lines.append(f"{index}. {output.sub_question}: {answer}")
         base = "\n".join(lines)
-    cleaned = [a.strip() for a in (clarifications or []) if isinstance(a, str) and a.strip()]
+    cleaned = [
+        a.strip() for a in (clarifications or []) if isinstance(a, str) and a.strip()
+    ][:3]
     if cleaned:
+        # Cap footer length so scaffolded synthesis cannot amplify unbounded
+        # clarify answers (O-014). Match clarify.MAX_CLARIFY_* defaults.
+        aggregate = 0
+        bounded: list[str] = []
+        for item in cleaned:
+            room = 4000 - aggregate
+            if room <= 0:
+                break
+            piece = item[: min(len(item), 2000, room)]
+            bounded.append(piece)
+            aggregate += len(piece)
         base += "\n\nClarifications applied:\n" + "\n".join(
-            f"- {a}" for a in cleaned
+            f"- {a}" for a in bounded
         )
     if failed > 0:
         base += (

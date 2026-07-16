@@ -8,6 +8,9 @@ Opt-in only. Skips unless BOTH are true:
 Default CI never sets the opt-in flag, so collection stays fast and the suite
 stays green without live keys. Run manually before flipping Fly
 ``AGENTIC_ENABLED=true`` — see ``api/README.md`` / ``api/.env.example``.
+
+O-012: beyond the connectivity smoke test, this module also covers plan-approval
+resume and verifier-on when opted in (still skip-without-keys).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agentic import is_plan_approval_call_id
 from app.config import get_settings
 from app.db.models import Conversation, User
 from app.db.repositories import billing as billing_repo
@@ -58,11 +62,9 @@ def _provider_backend() -> str:
     return "openai"
 
 
-@pytest.fixture
-def live_agentic_env() -> Iterator[None]:
-    """Boot the app like a prod agentic enablement rehearsal."""
+def _live_overrides(**extra: str) -> dict[str, str]:
     backend = _provider_backend()
-    overrides = {
+    base = {
         "TOOLS_ENABLED": "true",
         "AGENTIC_ENABLED": "true",
         "PROVIDER_BACKEND": backend,
@@ -74,6 +76,14 @@ def live_agentic_env() -> Iterator[None]:
         # Keep search hermetic — this gate proves the provider orchestrator path.
         "SEARCH_BACKEND": "fake",
     }
+    base.update(extra)
+    return base
+
+
+@pytest.fixture
+def live_agentic_env() -> Iterator[None]:
+    """Boot the app like a prod agentic enablement rehearsal (smoke defaults)."""
+    overrides = _live_overrides()
     prior = {key: os.environ.get(key) for key in overrides}
     os.environ.update(overrides)
     get_settings.cache_clear()
@@ -89,10 +99,47 @@ def live_agentic_env() -> Iterator[None]:
 
 
 @pytest.fixture
-def live_agentic_app(
-    live_agentic_env: None,
-    session_factory: async_sessionmaker[AsyncSession],
-):  # type: ignore[no-untyped-def]
+def live_plan_approval_env() -> Iterator[None]:
+    """Live DR with plan-approval HITL enabled (O-012 control path)."""
+    overrides = _live_overrides(AGENTIC_PLAN_APPROVAL="true")
+    prior = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
+
+
+@pytest.fixture
+def live_verifier_env() -> Iterator[None]:
+    """Live DR with verifier judge enabled (O-012 control path)."""
+    # Budget must leave headroom for worker + aggregator + one judge sample.
+    overrides = _live_overrides(
+        AGENTIC_VERIFIER="true",
+        AGENTIC_VERIFIER_N="1",
+        AGENTIC_RUN_BUDGET_USD="5.0",
+    )
+    prior = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
+
+
+def _make_live_app(session_factory: async_sessionmaker[AsyncSession]):  # type: ignore[no-untyped-def]
     from fastapi import FastAPI
 
     from app.main import create_app
@@ -125,6 +172,54 @@ def live_agentic_app(
                 raise
 
     app_.dependency_overrides[get_db] = _get_db_override
+    return app_
+
+
+@pytest.fixture
+def live_agentic_app(
+    live_agentic_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+):  # type: ignore[no-untyped-def]
+    from app.routes.conversations import _TEMP_IDS
+    from app.streaming import replay_registry, stop_registry
+
+    app_ = _make_live_app(session_factory)
+    try:
+        yield app_
+    finally:
+        _TEMP_IDS.clear()
+        stop_registry._STOP_REQUESTS.clear()
+        replay_registry._BUFFERS.clear()
+
+
+@pytest.fixture
+def live_plan_approval_app(
+    live_plan_approval_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+):  # type: ignore[no-untyped-def]
+    from app.routes.conversations import _TEMP_IDS
+    from app.streaming import replay_registry, stop_registry
+
+    app_ = _make_live_app(session_factory)
+    assert get_settings().agentic_plan_approval is True
+    try:
+        yield app_
+    finally:
+        _TEMP_IDS.clear()
+        stop_registry._STOP_REQUESTS.clear()
+        replay_registry._BUFFERS.clear()
+
+
+@pytest.fixture
+def live_verifier_app(
+    live_verifier_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+):  # type: ignore[no-untyped-def]
+    from app.routes.conversations import _TEMP_IDS
+    from app.streaming import replay_registry, stop_registry
+
+    app_ = _make_live_app(session_factory)
+    assert get_settings().agentic_verifier is True
     try:
         yield app_
     finally:
@@ -138,6 +233,24 @@ async def live_agentic_client(
     live_agentic_app,
 ) -> AsyncIterator[AsyncClient]:  # type: ignore[no-untyped-def]
     transport = ASGITransport(app=live_agentic_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client_:
+        yield client_
+
+
+@pytest.fixture
+async def live_plan_approval_client(
+    live_plan_approval_app,
+) -> AsyncIterator[AsyncClient]:  # type: ignore[no-untyped-def]
+    transport = ASGITransport(app=live_plan_approval_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client_:
+        yield client_
+
+
+@pytest.fixture
+async def live_verifier_client(
+    live_verifier_app,
+) -> AsyncIterator[AsyncClient]:  # type: ignore[no-untyped-def]
+    transport = ASGITransport(app=live_verifier_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client_:
         yield client_
 
@@ -167,11 +280,11 @@ def _parse_sse(text: str) -> list[tuple[str, dict[str, object]]]:
 
 
 async def _collect_sse(
-    client: AsyncClient, url: str, body: dict[str, object]
+    client: AsyncClient, url: str, body: dict[str, object], *, timeout: float = 180.0
 ) -> list[tuple[str, dict[str, object]]]:
     # Live provider DR is slow (planner-skipped single worker + aggregator still
     # hits the network twice). Bound far above unit timeouts, not unbounded.
-    async with client.stream("POST", url, json=body, timeout=180.0) as resp:
+    async with client.stream("POST", url, json=body, timeout=timeout) as resp:
         assert resp.status_code == 200, await resp.aread()
         chunks: list[str] = []
         async for chunk in resp.aiter_text():
@@ -221,11 +334,12 @@ async def test_live_deep_research_single_worker_completes(
     live_agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Tiny single-worker Deep Research against a real provider.
+    """Connectivity smoke: tiny single-worker Deep Research against a real provider.
 
     Uses the ``DEEP_RESEARCH:`` marker so decomposition is local (no planner
     round-trip) while worker + aggregator still hit the live model. Asserts
-    subagent framing, a done terminal, and nonzero token usage.
+    subagent framing, a done terminal, and nonzero token usage. Does not claim
+    coverage of plan-approval / verifier / worker-HITL — see sibling tests.
     """
     await live_agentic_client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
@@ -277,3 +391,114 @@ async def test_live_deep_research_single_worker_completes(
     assert run_costs
     assert float(run_costs[-1]["subtotalUsd"]) >= 0.0
     assert run_costs[-1].get("phase") == "final"
+
+
+async def test_live_deep_research_plan_approval_resume(
+    live_plan_approval_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """O-012: live plan-approval pause → approve → fan-out completes."""
+    await live_plan_approval_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    pause_frames = await _collect_sse(
+        live_plan_approval_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a0000000-0000-4000-8000-000000000011",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: In one short sentence, what is 2+2?",
+            "agenticMode": "deep_research",
+        },
+        timeout=120.0,
+    )
+    assert pause_frames[-1][0] == "terminal"
+    assert pause_frames[-1][1]["status"] == "awaiting_approval"
+    tool_calls = [d for n, d in pause_frames if n == "tool_call"]
+    assert tool_calls
+    plan_call = tool_calls[-1]
+    call_id = str(plan_call["id"])
+    assert is_plan_approval_call_id(call_id)
+    assert "worker-0" not in {
+        str(d["subagentId"]) for n, d in pause_frames if n == "subagent_started"
+    }
+
+    resume_frames = await _collect_sse(
+        live_plan_approval_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a0000000-0000-4000-8000-000000000012",
+            "tierId": "smart",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": call_id,
+                "decision": "approve",
+            },
+        },
+        timeout=180.0,
+    )
+    assert resume_frames[-1][0] == "terminal"
+    assert resume_frames[-1][1]["status"] == "done"
+    started = {
+        str(d["subagentId"]) for n, d in resume_frames if n == "subagent_started"
+    }
+    assert "worker-0" in started
+    assert "aggregator" in started
+    answer = "".join(
+        str(d.get("text", "")) for n, d in resume_frames if n == "answer_delta"
+    )
+    assert answer.strip()
+
+
+async def test_live_deep_research_with_verifier(
+    live_verifier_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """O-012: live single-worker DR with verifier judge enabled."""
+    await live_verifier_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        live_verifier_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a0000000-0000-4000-8000-000000000021",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: In one short sentence, what is 2+2?",
+            "agenticMode": "deep_research",
+        },
+        timeout=240.0,
+    )
+    assert frames[-1][0] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+    started = {
+        str(d["subagentId"]) for n, d in frames if n == "subagent_started"
+    }
+    assert "worker-0" in started
+    assert "aggregator" in started
+    # O-012 / V-010: verifier must start AND succeed with billable judge usage.
+    # Started+Done alone is insufficient — exceptions still emit Done with
+    # outcome="failed", so assert succeeded + costUsd + Verification: note.
+    verifier_started = [
+        d for n, d in frames if n == "subagent_started" and d.get("role") == "verifier"
+    ]
+    assert len(verifier_started) == 1
+    assert verifier_started[0].get("subagentId") == "verifier"
+    verifier_done = [
+        d for n, d in frames if n == "subagent_done" and d.get("role") == "verifier"
+    ]
+    assert len(verifier_done) == 1
+    assert verifier_done[0].get("outcome") == "succeeded"
+    assert (verifier_done[0].get("costUsd") or 0) > 0
+    answer = "".join(
+        str(d.get("text", "")) for n, d in frames if n == "answer_delta"
+    )
+    assert answer.strip()
+    assert "Verification:" in answer
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs
+    assert float(run_costs[-1]["subtotalUsd"]) >= 0.0

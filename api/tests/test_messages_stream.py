@@ -2702,7 +2702,142 @@ async def test_web_search_replay_reconstructs_status_and_sources(
     assert replay_status["state"] == "done"
 
 
-# Auto-tier routing ------------------------------------------------------------
+async def test_idempotent_replay_strips_reserved_keys_from_tool_parts(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H-012: done/stopped idempotent SSE replay sanitizes every reserved key."""
+    from datetime import UTC, datetime
+
+    from app.agentic.continuation import RESERVED_CONTROL_KEYS
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    client_msg_id = str(uuid4())
+    reserved_payload = {key: f"leak-{key}" for key in sorted(RESERVED_CONTROL_KEYS)}
+
+    async with session_factory() as session:
+        convo = Conversation(
+            user_id=user_id,
+            title="Replay sanitize",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.flush()
+        user_msg = Message(
+            conversation_id=convo.id,
+            client_message_id=UUID(client_msg_id),
+            role="user",
+            parts=[{"type": "text", "text": "schedule"}],
+            status=None,
+            attribution=None,
+            created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        )
+        session.add(user_msg)
+        await session.flush()
+        session.add(
+            Message(
+                conversation_id=convo.id,
+                role="assistant",
+                parts=[
+                    {
+                        "type": "tool_call",
+                        "id": "cal_1",
+                        "name": "calendar_create_event",
+                        "label": "Create calendar event",
+                        "status": "succeeded",
+                        "approvalState": "approved",
+                        "_approvalClaimId": "claim-secret",
+                        "input": {
+                            "title": "Kickoff",
+                            **reserved_payload,
+                            "_agenticContinuation": {
+                                "phase": "worker",
+                                "pausedSubagentId": "worker-0",
+                                "plannerCostUsd": 0.11,
+                            },
+                        },
+                    },
+                    {
+                        "type": "tool_result",
+                        "toolCallId": "cal_1",
+                        "name": "calendar_create_event",
+                        "label": "Create calendar event",
+                        "status": "succeeded",
+                        "approvalState": "approved",
+                        "_approvalClaimId": "claim-secret",
+                        "summary": "Created",
+                        "output": {
+                            "ok": True,
+                            **reserved_payload,
+                        },
+                    },
+                    {"type": "text", "text": "Event created."},
+                ],
+                status="done",
+                attribution={
+                    "requestedTierId": "smart",
+                    "servedTierId": "smart",
+                    "servedModelLabel": "Fake",
+                    "providerId": "fake",
+                    "providerLabel": "Fake",
+                    "isByok": False,
+                    "costUsd": 0.0,
+                    "costConfidence": "exact",
+                    "breakdown": {
+                        "currency": "USD",
+                        "listPriceInPerM": 0,
+                        "listPriceOutPerM": 0,
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "reasoningTokens": 0,
+                        "cachedInputTokens": 0,
+                        "longContext": {"flat": True, "tokensRepriced": "none"},
+                        "promoApplied": False,
+                        "subtotalUsd": 0,
+                        "sessionSurchargeUsd": 0,
+                    },
+                },
+                responds_to_message_id=user_msg.id,
+                created_at=datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+        conv_id = str(convo.id)
+
+    body = {
+        "clientMessageId": client_msg_id,
+        "tierId": "smart",
+        "text": "schedule",
+    }
+    replay = await _collect_sse(
+        client, f"/api/conversations/{conv_id}/messages", body
+    )
+    assert replay[-1][0] == "terminal"
+    assert replay[-1][1]["status"] == "done"
+
+    def _collect_keys(obj: object) -> set[str]:
+        keys: set[str] = set()
+        if isinstance(obj, dict):
+            for key, child in obj.items():
+                keys.add(str(key))
+                keys |= _collect_keys(child)
+        elif isinstance(obj, list):
+            for item in obj:
+                keys |= _collect_keys(item)
+        return keys
+
+    leaked: set[str] = set()
+    for name, payload in replay:
+        if name in ("tool_call", "tool_result"):
+            leaked |= _collect_keys(payload) & RESERVED_CONTROL_KEYS
+    assert not leaked, f"idempotent replay leaked reserved keys: {leaked}"
+
+    tool_call = next(p for n, p in replay if n == "tool_call")
+    assert tool_call["input"] == {"title": "Kickoff"}
+    tool_result = next(p for n, p in replay if n == "tool_result")
+    assert tool_result["output"] == {"ok": True}
 
 
 async def test_auto_route_downgrade_surfaces_substitution(

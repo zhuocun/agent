@@ -137,6 +137,11 @@ class VerifyResult:
     partial / budget-halted runs. ``answer`` is the manager-owned draft (plus
     an honest verification note/caveat when a valid verdict was reached); the
     verifier never replaces the draft with arbitrary judge prose.
+
+    ``sample_usages`` retains each fresh judge request's usage separately;
+    ``cost_usd`` is the sum of per-sample monetary costs (never a single
+    collapsed re-price of the summed token totals — request-scoped tiers /
+    session multipliers would otherwise mis-bill N independent calls).
     """
 
     answer: str
@@ -148,6 +153,8 @@ class VerifyResult:
     draft_truncated: bool = False
     parse_failed: bool = False
     requested_samples: int = 1
+    sample_usages: tuple[UsageUpdate, ...] = ()
+    cost_usd: float = 0.0
 
 
 class JudgeSampleError(Exception):
@@ -394,28 +401,6 @@ def compose_verified_answer(
     )
 
 
-# Marker retained for older tests / importers. Fail path no longer replaces the
-# draft, so streamed replacement is unused on the live path.
-VERIFIER_REPLACEMENT_MARKER = (
-    "[Verification: fail — corrected synthesis replaces the draft above]"
-)
-
-
-def streamed_verifier_delta(draft: str, verified: str) -> str:
-    """Delta to append after a streamed draft when verification mutates the text.
-
-    Pass / caveat notes start with ``draft`` → return the suffix only.
-    If ``verified`` does not start with ``draft`` (legacy fail-rewrite), emit a
-    clear marker rather than silently concatenating — live path no longer
-    produces rewrites.
-    """
-    if verified == draft:
-        return ""
-    if verified.startswith(draft):
-        return verified[len(draft) :]
-    return f"\n\n{VERIFIER_REPLACEMENT_MARKER}\n\n{verified}"
-
-
 async def _collect_judge_sample(
     make_stream_for: StreamFactory,
     settings: Settings,
@@ -458,6 +443,8 @@ def _finalize_samples(
     draft: str,
     samples: list[JudgeSample],
     total_usage: UsageUpdate,
+    sample_usages: tuple[UsageUpdate, ...],
+    cost_usd: float,
     requested_n: int,
     draft_truncated: bool,
     budget_halted: bool,
@@ -481,6 +468,8 @@ def _finalize_samples(
             budget_halted=budget_halted,
             draft_truncated=draft_truncated,
             requested_samples=requested_n,
+            sample_usages=sample_usages,
+            cost_usd=cost_usd,
         )
 
     parse_ok_samples = [s for s in samples if s.parse_ok]
@@ -497,6 +486,8 @@ def _finalize_samples(
             draft_truncated=draft_truncated,
             parse_failed=True,
             requested_samples=requested_n,
+            sample_usages=sample_usages,
+            cost_usd=cost_usd,
         )
 
     incomplete = len(samples) < requested_n or budget_halted
@@ -517,6 +508,8 @@ def _finalize_samples(
             budget_halted=budget_halted,
             draft_truncated=draft_truncated,
             requested_samples=requested_n,
+            sample_usages=sample_usages,
+            cost_usd=cost_usd,
         )
 
     if draft_truncated:
@@ -531,6 +524,8 @@ def _finalize_samples(
             budget_halted=False,
             draft_truncated=True,
             requested_samples=requested_n,
+            sample_usages=sample_usages,
+            cost_usd=cost_usd,
         )
 
     verdict = majority_verdict(samples)
@@ -545,6 +540,8 @@ def _finalize_samples(
         budget_halted=False,
         draft_truncated=False,
         requested_samples=requested_n,
+        sample_usages=sample_usages,
+        cost_usd=cost_usd,
     )
 
 
@@ -556,17 +553,23 @@ async def run_verifier(
     draft: str,
     outputs: list[WorkerOutput],
     scaffolded: bool = False,
-    can_afford_next_sample: Callable[[UsageUpdate], bool] | None = None,
-    actual_within_cap: Callable[[UsageUpdate], bool] | None = None,
+    can_afford_next_sample: Callable[[UsageUpdate, float], bool] | None = None,
+    actual_within_cap: Callable[[UsageUpdate, float], bool] | None = None,
+    cost_for_usage: Callable[[UsageUpdate], float] | None = None,
 ) -> VerifyResult:
     """Run the fresh-context judge (N independent samples when configured).
 
     Callers must gate on ``settings.agentic_verifier`` — this function always
-    performs provider work. ``can_afford_next_sample(usage_so_far)`` is checked
-    before each sample (estimate gate). ``actual_within_cap(usage_so_far)`` is
-    checked after each sample (hard actual-cost gate). Failures never erase
-    already-observed usage: a typed ``VerifyResult`` always carries billable
-    totals.
+    performs provider work. ``can_afford_next_sample(usage_so_far, spent_usd)``
+    is checked before each sample (estimate gate); ``spent_usd`` is the
+    authoritative sum of per-sample prices so far (not a re-price of collapsed
+    tokens). ``actual_within_cap(usage_so_far, spent_usd)`` is checked after
+    each sample (hard actual-cost gate). Failures never erase already-observed
+    usage: a typed ``VerifyResult`` always carries billable totals.
+
+    When ``cost_for_usage`` is supplied, each sample is priced independently and
+    ``VerifyResult.cost_usd`` is the sum of those per-request costs (not a
+    re-price of the collapsed token totals).
     """
     n = min(MAX_VERIFIER_N, max(1, settings.agentic_verifier_n))
     prompt = build_verifier_prompt(
@@ -577,12 +580,21 @@ async def run_verifier(
     )
     draft_truncated = _inputs_truncated(draft=draft, outputs=outputs)
     samples: list[JudgeSample] = []
+    sample_usages: list[UsageUpdate] = []
     total_usage = UsageUpdate()
+    total_cost = 0.0
     budget_halted = False
+
+    def _bill_sample(usage: UsageUpdate) -> None:
+        nonlocal total_usage, total_cost
+        sample_usages.append(usage)
+        total_usage = _sum_usage(total_usage, usage)
+        if cost_for_usage is not None:
+            total_cost += cost_for_usage(usage)
 
     for _ in range(n):
         if can_afford_next_sample is not None and not can_afford_next_sample(
-            total_usage
+            total_usage, total_cost
         ):
             budget_halted = budget_halted or bool(samples)
             break
@@ -591,7 +603,7 @@ async def run_verifier(
                 make_stream_for, settings, prompt
             )
         except JudgeSampleError as exc:
-            total_usage = _sum_usage(total_usage, exc.usage)
+            _bill_sample(exc.usage)
             # Preserve completed samples + this sample's partial usage; do not
             # claim verification.
             if samples:
@@ -609,6 +621,8 @@ async def run_verifier(
                     budget_halted=False,
                     draft_truncated=draft_truncated,
                     requested_samples=n,
+                    sample_usages=tuple(sample_usages),
+                    cost_usd=total_cost,
                 )
             return VerifyResult(
                 answer=draft,  # no verification claim on hard failure
@@ -619,10 +633,14 @@ async def run_verifier(
                 budget_halted=False,
                 draft_truncated=draft_truncated,
                 requested_samples=n,
+                sample_usages=tuple(sample_usages),
+                cost_usd=total_cost,
             )
         samples.append(parse_judge_output(raw))
-        total_usage = _sum_usage(total_usage, usage)
-        if actual_within_cap is not None and not actual_within_cap(total_usage):
+        _bill_sample(usage)
+        if actual_within_cap is not None and not actual_within_cap(
+            total_usage, total_cost
+        ):
             budget_halted = True
             break
 
@@ -630,17 +648,9 @@ async def run_verifier(
         draft=draft,
         samples=samples,
         total_usage=total_usage,
+        sample_usages=tuple(sample_usages),
+        cost_usd=total_cost,
         requested_n=n,
         draft_truncated=draft_truncated,
         budget_halted=budget_halted,
     )
-
-
-def verify(synthesis: str, *, n: int) -> str:
-    """Backward-compatible sync no-op for unit callers / older imports.
-
-    The real path is ``run_verifier``. This helper still returns ``synthesis``
-    unchanged so accidental sync call sites never claim verification.
-    """
-    _ = max(1, n)
-    return synthesis

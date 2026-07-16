@@ -401,3 +401,80 @@ async def test_public_get_strips_plan_approval_cost_fields(
     assert "estimatedCostUsd" not in tool_part.get("input", {})
     assert "capUsd" not in tool_part.get("input", {})
     assert tool_part["input"]["plan"] == ["alpha", "beta"]
+
+
+async def test_public_get_strips_agentic_continuation_and_claim_keys(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H-012: _agenticContinuation / _approvalClaimId / ledger costs stripped."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    async with session_factory() as session:
+        conversation = Conversation(
+            user_id=user_id,
+            title="HITL control keys shared",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(conversation)
+        await session.flush()
+        session.add(
+            Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                parts=[
+                    {
+                        "type": "tool_call",
+                        "id": "worker-0::cal",
+                        "name": "calendar_create_event",
+                        "label": "Create calendar event",
+                        "status": "awaiting_approval",
+                        "approvalState": "pending",
+                        "_approvalClaimId": "claim-secret",
+                        "input": {
+                            "title": "Kickoff",
+                            "_agenticContinuation": {
+                                "phase": "worker",
+                                "pausedSubagentId": "worker-0",
+                                "userText": "secret",
+                                "plan": ["a"],
+                                "plannerCostUsd": 0.11,
+                                "actualCostUsd": 0.22,
+                            },
+                            "plannerCostUsd": 0.11,
+                            "actualCostUsd": 0.22,
+                        },
+                    }
+                ],
+                status="awaiting_approval",
+                attribution={
+                    "requestedTierId": "smart",
+                    "servedTierId": "smart",
+                    "servedModelLabel": "Smart",
+                    "isByok": False,
+                },
+            )
+        )
+        await session.commit()
+        conv_id = str(conversation.id)
+
+    token = (
+        await client.post(f"/api/conversations/{conv_id}/share")
+    ).json()["shareToken"]
+    public = await client.get(f"/api/share/{token}")
+    assert public.status_code == 200
+    body = public.json()
+    keys = _all_keys(body)
+    leaked = keys & {
+        "_agenticContinuation",
+        "_approvalClaimId",
+        "plannerCostUsd",
+        "actualCostUsd",
+        "pausedWorkerCostUsd",
+    }
+    assert not leaked, f"public share leaked control keys: {leaked}"
+    tool_part = next(
+        p for p in body["messages"][0]["parts"] if p.get("type") == "tool_call"
+    )
+    assert tool_part["input"] == {"title": "Kickoff"}

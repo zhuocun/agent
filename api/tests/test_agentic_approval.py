@@ -13,6 +13,7 @@ and `AGENTIC_PLAN_APPROVAL=true`. Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -390,3 +391,87 @@ async def test_plan_approval_deny_declines_run(
     assert not any(sid.startswith("worker-") for sid in started_ids)
     full_answer = _answer(frames)
     assert "declined" in full_answer.lower()
+
+    # Durable settle on the paused plan-approval pseudo-tool.
+    msgs = await _load_messages(session_factory, conv_id)
+    paused = next(m for m in msgs if m.role == "assistant")
+    parts = [p for p in (paused.parts or []) if isinstance(p, dict)]
+    plan_call = next(
+        p
+        for p in parts
+        if p.get("type") == "tool_call" and p.get("id") == plan_call_id
+    )
+    plan_result = next(
+        p
+        for p in parts
+        if p.get("type") == "tool_result" and p.get("toolCallId") == plan_call_id
+    )
+    assert plan_call.get("approvalState") == "rejected"
+    assert plan_result.get("approvalState") == "rejected"
+
+
+async def test_plan_approval_concurrent_opposite_decisions_one_wins(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Route-level race: approve vs deny — durable settle wins; loser 409s."""
+    conv_id, pause_frames = await _pause_on_plan(agentic_client, session_factory)
+    plan_call_id = next(str(d["id"]) for n, d in pause_frames if n == "tool_call")
+    url = f"/api/conversations/{conv_id}/messages"
+    approve_body: dict[str, object] = {
+        "clientMessageId": "a0000000-0000-0000-0000-000000000010",
+        "tierId": "smart",
+        "text": "",
+        "agenticMode": "deep_research",
+        "toolApproval": {"toolCallId": plan_call_id, "decision": "approve"},
+    }
+    deny_body: dict[str, object] = {
+        "clientMessageId": "a0000000-0000-0000-0000-000000000011",
+        "tierId": "smart",
+        "text": "",
+        "agenticMode": "deep_research",
+        "toolApproval": {"toolCallId": plan_call_id, "decision": "deny"},
+    }
+
+    r_approve, r_deny = await asyncio.gather(
+        agentic_client.post(url, json=approve_body, timeout=30.0),
+        agentic_client.post(url, json=deny_body, timeout=30.0),
+    )
+    codes = {r_approve.status_code, r_deny.status_code}
+    assert 200 in codes
+    assert 409 in codes
+    winner_is_approve = r_approve.status_code == 200
+    loser = r_deny if winner_is_approve else r_approve
+    err = loser.json()["error"]["code"]
+    assert err in (
+        "APPROVAL_DECISION_CONFLICT",
+        "APPROVAL_SETTLEMENT_INCOMPLETE",
+        "STREAM_IN_PROGRESS",
+    )
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused = next(m for m in msgs if m.role == "assistant")
+    parts = [p for p in (paused.parts or []) if isinstance(p, dict)]
+    plan_result = next(
+        p
+        for p in parts
+        if p.get("type") == "tool_result" and p.get("toolCallId") == plan_call_id
+    )
+    durable = str(plan_result.get("approvalState") or "")
+    if winner_is_approve:
+        assert durable == "approved"
+        frames = _parse_sse(r_approve.text)
+        assert frames[-1][1]["status"] == "done"
+        started_ids = {
+            str(d["subagentId"]) for n, d in frames if n == "subagent_started"
+        }
+        assert started_ids == {"worker-0", "worker-1", "aggregator"}
+    else:
+        assert durable == "rejected"
+        frames = _parse_sse(r_deny.text)
+        assert frames[-1][1]["status"] == "done"
+        started_ids = {
+            str(d["subagentId"]) for n, d in frames if n == "subagent_started"
+        }
+        assert started_ids == {"aggregator"}
+        assert not any(sid.startswith("worker-") for sid in started_ids)

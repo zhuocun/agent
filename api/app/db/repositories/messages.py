@@ -148,6 +148,7 @@ async def create_assistant_message(
     attribution: dict[str, Any],
     responds_to_message_id: UUID | None = None,
     cost_usd: float | None = None,
+    server_state: dict[str, Any] | None = None,
 ) -> Message:
     """Persist an assistant turn. `status` is `"done"` or `"stopped"`.
 
@@ -163,6 +164,9 @@ async def create_assistant_message(
     `cost_usd` is the per-turn USD cost (mirrors `attribution.costUsd`). None
     leaves the column NULL (legacy/unmetered rows); the cost ledger only reads
     non-NULL values.
+
+    ``server_state`` (H-012) holds HITL continuations and other server-only
+    metadata that must never appear in API serializers.
     """
     msg = Message(
         conversation_id=conversation_id,
@@ -173,6 +177,7 @@ async def create_assistant_message(
         attribution=attribution,
         responds_to_message_id=responds_to_message_id,
         cost_usd=cost_usd,
+        server_state=server_state,
         created_at=_now(),
     )
     db.add(msg)

@@ -29,6 +29,11 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.agentic.continuation import (
+    RESERVED_CONTROL_KEYS,
+    sanitize_message_parts_for_api,
+    strip_reserved_keys,
+)
 from app.db.models import (
     Conversation,
     ConversationTag,
@@ -570,7 +575,9 @@ async def get_for_user(
     messages: list[ChatMessage] = []
     for m in message_rows:
         # parts and attribution come back as JSON dicts; let Pydantic validate.
-        parts_list = cast(list[MessagePart], m.parts) if m.parts is not None else []
+        # H-012: strip reserved control keys before private API projection.
+        raw_parts = cast(list[MessagePart], m.parts) if m.parts is not None else []
+        parts_list = sanitize_message_parts_for_api(raw_parts)
         chat_message = ChatMessage.model_validate(
             {
                 "id": str(m.id),
@@ -1176,6 +1183,7 @@ async def revoke_share_token(
 
 
 # Cost-bearing keys that must never appear in public share JSON (FE-008).
+# H-012: also strip server control / ledger keys.
 _PUBLIC_COST_KEYS = frozenset(
     {
         "costUsd",
@@ -1204,7 +1212,7 @@ _PUBLIC_COST_KEYS = frozenset(
         "cachedInputTokens",
         "cached_input_tokens",
     }
-)
+) | RESERVED_CONTROL_KEYS
 
 
 def _strip_cost_keys(value: object) -> object:
@@ -1259,6 +1267,10 @@ def _sanitize_public_message_parts(parts: list[MessagePart]) -> list[dict[str, o
                 raw["attribution"] = public_attr
         elif raw.get("type") in {"tool_call", "tool_result"}:
             stripped = cast(dict[str, object], _strip_cost_keys(raw))
+            stripped = cast(dict[str, object], strip_reserved_keys(stripped))
+            for key in list(stripped.keys()):
+                if key in RESERVED_CONTROL_KEYS:
+                    del stripped[key]
             raw = stripped
         sanitized.append(raw)
     return sanitized

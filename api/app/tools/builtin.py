@@ -1,16 +1,17 @@
 """Built-in tool registry for the backend-side agent loop (HITL).
 
-Two tools ship in v1, both driven only by the FAKE provider behind the
-`TOOLS_ENABLED` flag (default OFF):
+Tools ship behind the ``TOOLS_ENABLED`` flag (default OFF):
 
-- ``get_current_time`` — side-effect-free, no secret/dependency,
-  ``needs_approval=False``. Returns the current UTC time (optionally in a named
-  timezone). Auto-executes inside the loop.
-- ``calendar_create_event`` — ``needs_approval=True``. A STUB that performs NO
-  real side effect: it synthesizes a ``{eventId, title, startsAt}`` payload so
-  the human-in-the-loop approval seam can be exercised end-to-end without a real
-  calendar integration. Because it is approval-gated, the agent loop pauses
-  before it runs until a resume POST approves it.
+- ``get_current_time`` — side-effect-free, ``needs_approval=False``,
+  ``prod_safe=True``. Auto-executes inside the loop.
+- ``request_user_confirmation`` — side-effect-free, ``needs_approval=True``,
+  ``prod_safe=True``. Real-path worker HITL: records an approved confirmation
+  payload without external I/O. Advertised to live providers when workers are
+  allowlisted for it (O-010).
+- ``calendar_create_event`` — ``needs_approval=True``, ``prod_safe=False``.
+  Fake-only fixture: synthesizes a calendar payload so FakeProvider
+  ``TOOL_APPROVE`` markers can exercise the approval seam. Never advertised to
+  a real provider.
 
 SECURITY: tool OUTPUT is UNTRUSTED. A tool result is a prompt-injection surface
 (a real calendar/email/web tool can return attacker-influenced content). The
@@ -110,6 +111,7 @@ def _validate_allowlisted_input(
 _INPUT_ALLOWLIST: dict[str, dict[str, type]] = {
     "get_current_time": {"timezone": str},
     "calendar_create_event": {"title": str, "startsAt": str},
+    "request_user_confirmation": {"prompt": str},
 }
 
 
@@ -202,6 +204,40 @@ async def _execute_calendar_create_event(call: ToolCallRequest) -> ToolExecution
     )
 
 
+async def _execute_request_user_confirmation(
+    call: ToolCallRequest,
+) -> ToolExecutionResult:
+    """Record an approved human confirmation. No external side effects.
+
+    Real-path worker HITL (O-010): ``prod_safe=True`` so live providers may be
+    offered this gated tool when workers include it in their allowlist. On
+    approve, returns the confirmed prompt text; denial never reaches this
+    executor.
+    """
+    try:
+        cleaned = _validate_allowlisted_input(
+            call.input,
+            allowed=_INPUT_ALLOWLIST["request_user_confirmation"],
+        )
+    except ToolInputError as exc:
+        return _failed_result(
+            call,
+            name="request_user_confirmation",
+            error=str(exc),
+            approval_state=call.approval_state,
+        )
+
+    prompt = cleaned.get("prompt") or "Please confirm to continue."
+    return ToolExecutionResult(
+        tool_call_id=call.id,
+        name="request_user_confirmation",
+        status="succeeded",
+        output={"confirmed": True, "prompt": prompt},
+        summary=f"Confirmed: {prompt}",
+        approval_state=call.approval_state,
+    )
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """One registered tool the agent loop may run.
@@ -259,6 +295,22 @@ _CALENDAR_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_CONFIRMATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "prompt": {
+            "type": "string",
+            "description": (
+                "Short confirmation request shown to the user before continuing "
+                "(e.g. scope, irreversible choice, or research constraint)."
+            ),
+            "maxLength": _MAX_INPUT_STR_LEN,
+        },
+    },
+    "required": ["prompt"],
+    "additionalProperties": False,
+}
+
 
 TOOL_REGISTRY: dict[str, ToolSpec] = {
     "get_current_time": ToolSpec(
@@ -270,16 +322,24 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         # Side-effect-free and dependency-free — safe to offer a live model.
         prod_safe=True,
     ),
+    "request_user_confirmation": ToolSpec(
+        name="request_user_confirmation",
+        label="Request user confirmation",
+        needs_approval=True,
+        schema=_CONFIRMATION_SCHEMA,
+        executor=_execute_request_user_confirmation,
+        # Side-effect-free gated confirmation — real workers may advertise this
+        # for live HITL (O-010). No external I/O; only records the approve.
+        prod_safe=True,
+    ),
     "calendar_create_event": ToolSpec(
         name="calendar_create_event",
         label="Create calendar event",
         needs_approval=True,
         schema=_CALENDAR_SCHEMA,
         executor=_execute_calendar_create_event,
-        # A STUB with no real calendar integration. Kept in the registry so the
-        # FAKE provider can exercise the HITL approval seam via TOOL_APPROVE
-        # markers, but NOT advertised to a real provider (it would resolve to a
-        # synthesized payload, never a real event).
+        # Fake-only fixture (O-010): FakeProvider TOOL_APPROVE markers drive
+        # this stub. NOT advertised to a real provider (prod_safe=False).
         prod_safe=False,
     ),
 }

@@ -132,6 +132,14 @@ async def test_one_worker_retryable_falls_back(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """RETRYABLE_WORKER: FakeProvider emits ReasoningDelta before the rate-limit.
+
+    B16: any externally visible event (including that preamble reasoning) blocks
+    transparent fallback — so worker-1 fails and synthesis degrades. Fallback
+    still works when the error is pre-visibility (see test_agentic_arch_fixes
+    B16 + unit O-008). HANDLING: FakeProvider should raise RETRYABLE_WORKER
+    before yielding ReasoningDelta if e2e fallback coverage is required.
+    """
     await agentic_client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
     await _grant_pro(session_factory, user_id=user_id)
@@ -154,15 +162,14 @@ async def test_one_worker_retryable_falls_back(
         str(d.get("text", "")) for n, d in frames if n == "answer_delta"
     )
     assert "alpha topic" in full_answer
-    assert "beta topic" in full_answer
+    # B16: no silent fallback after preamble reasoning — beta omitted.
+    assert "failed and were omitted" in full_answer or "beta topic" not in full_answer
 
     done_events = [d for n, d in frames if n == "subagent_done"]
     worker_done = [d for d in done_events if str(d.get("role")) == "worker"]
     assert len(worker_done) == 2
-    fallback_worker = next(
-        d for d in worker_done if str(d.get("subagentId")) == "worker-1"
-    )
-    assert fallback_worker.get("substitution") in {"rate_limited", "provider_fallback"}
+    retryable = next(d for d in worker_done if str(d.get("subagentId")) == "worker-1")
+    assert retryable.get("outcome") == "failed"
 
 
 async def test_all_workers_fail_still_done(

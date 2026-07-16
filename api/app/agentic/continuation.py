@@ -43,16 +43,26 @@ CONTINUATION_INPUT_KEY = "_agenticContinuation"
 APPROVAL_CLAIM_INPUT_KEY = "_approvalClaimId"
 
 # Keys stripped from every outbound tool_call / tool_result projection (H-012).
+# Includes plan-approval server fields (B4) so planner spend can ride on the
+# pause tool input without leaking into private/public API projections.
 RESERVED_CONTROL_KEYS: frozenset[str] = frozenset(
     {
         CONTINUATION_INPUT_KEY,
         APPROVAL_CLAIM_INPUT_KEY,
         "plannerCostUsd",
         "planner_cost_usd",
+        "plannerUsage",
+        "planner_usage",
         "actualCostUsd",
         "actual_cost_usd",
         "pausedWorkerCostUsd",
         "paused_worker_cost_usd",
+        "pausedWorkerUsedFallback",
+        "paused_worker_used_fallback",
+        "priorRunCostUsd",
+        "prior_run_cost_usd",
+        "priorRunUsage",
+        "prior_run_usage",
     }
 )
 
@@ -114,10 +124,13 @@ class AgenticContinuation:
     # Pre-pause usage for the paused worker (O-002 / H-009).
     paused_worker_usage: UsageUpdate | None = None
     paused_worker_cost_usd: float = 0.0
+    # B6: pause was served on the fallback route — resume must pin + price there.
+    paused_worker_used_fallback: bool = False
     version: int = 2
 
 
-def _usage_to_dict(usage: UsageUpdate) -> dict[str, int]:
+def usage_to_wire(usage: UsageUpdate) -> dict[str, int]:
+    """CamelCase usage dict for server_state / reserved tool-input fields."""
     return {
         "inputTokens": usage.input_tokens,
         "outputTokens": usage.output_tokens,
@@ -126,7 +139,8 @@ def _usage_to_dict(usage: UsageUpdate) -> dict[str, int]:
     }
 
 
-def _usage_from_dict(raw: object) -> UsageUpdate:
+def usage_from_wire(raw: object) -> UsageUpdate:
+    """Parse a camelCase or snake_case usage dict (missing → empty)."""
     if not isinstance(raw, dict):
         return UsageUpdate()
     return UsageUpdate(
@@ -139,6 +153,11 @@ def _usage_from_dict(raw: object) -> UsageUpdate:
             raw.get("cachedInputTokens") or raw.get("cached_input_tokens") or 0
         ),
     )
+
+
+# Back-compat private aliases (call sites / tests may still use these names).
+_usage_to_dict = usage_to_wire
+_usage_from_dict = usage_from_wire
 
 
 def serialize_continuation(state: AgenticContinuation) -> dict[str, Any]:
@@ -184,6 +203,7 @@ def serialize_continuation(state: AgenticContinuation) -> dict[str, Any]:
             else None
         ),
         "pausedWorkerCostUsd": state.paused_worker_cost_usd,
+        "pausedWorkerUsedFallback": state.paused_worker_used_fallback,
     }
 
 
@@ -270,6 +290,9 @@ def parse_continuation(raw: object) -> AgenticContinuation | None:
     paused_cost_raw = raw.get("pausedWorkerCostUsd") or raw.get(
         "paused_worker_cost_usd"
     )
+    used_fallback_raw = raw.get("pausedWorkerUsedFallback")
+    if used_fallback_raw is None:
+        used_fallback_raw = raw.get("paused_worker_used_fallback")
     return AgenticContinuation(
         version=int(raw.get("version") or 1),
         phase="worker",
@@ -306,6 +329,7 @@ def parse_continuation(raw: object) -> AgenticContinuation | None:
             else None
         ),
         paused_worker_cost_usd=float(paused_cost_raw or 0.0),
+        paused_worker_used_fallback=bool(used_fallback_raw),
     )
 
 

@@ -119,7 +119,12 @@ def live_plan_approval_env() -> Iterator[None]:
 @pytest.fixture
 def live_verifier_env() -> Iterator[None]:
     """Live DR with verifier judge enabled (O-012 control path)."""
-    overrides = _live_overrides(AGENTIC_VERIFIER="true", AGENTIC_VERIFIER_N="1")
+    # Budget must leave headroom for worker + aggregator + one judge sample.
+    overrides = _live_overrides(
+        AGENTIC_VERIFIER="true",
+        AGENTIC_VERIFIER_N="1",
+        AGENTIC_RUN_BUDGET_USD="5.0",
+    )
     prior = {key: os.environ.get(key) for key in overrides}
     os.environ.update(overrides)
     get_settings.cache_clear()
@@ -473,10 +478,14 @@ async def test_live_deep_research_with_verifier(
     started = {
         str(d["subagentId"]) for n, d in frames if n == "subagent_started"
     }
+    done = {
+        str(d["subagentId"]) for n, d in frames if n == "subagent_done"
+    }
     assert "worker-0" in started
     assert "aggregator" in started
-    # Verifier may succeed or degrade; when it runs it appears as a subagent.
-    # Accept either an explicit verifier bracket or a completed aggregator draft.
+    # O-012 / V-010: verifier must appear in both Started and Done brackets.
+    assert "verifier" in started
+    assert "verifier" in done
     answer = "".join(
         str(d.get("text", "")) for n, d in frames if n == "answer_delta"
     )

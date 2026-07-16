@@ -20,6 +20,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from app.config import MAX_WORKER_ARTIFACTS
+
 # Fixed instruction for the real-provider synthesis pass. Kept SEPARATE from
 # the DATA section that carries worker findings. The "treat as data" framing is
 # steering, not a security boundary — delimiters + escaping + length caps below
@@ -41,8 +43,7 @@ _MAX_REQUEST_CHARS = 8_000
 _MAX_SOURCE_IDS = 32
 # Hard ceiling on artifact count. Must stay >= AGENTIC_MAX_WORKERS (enforced in
 # Settings.assert_prod_safe) so synthesis never silently drops completed workers
-# (O-013). Public alias for config / tests.
-MAX_WORKER_ARTIFACTS = 16
+# (O-013). Re-exported from config (single source of truth).
 _MAX_ARTIFACTS = MAX_WORKER_ARTIFACTS
 
 _DATA_BEGIN = "<<<UNTRUSTED_WORKER_DATA_BEGIN>>>"
@@ -179,8 +180,15 @@ def artifact_envelope(
     *,
     user_text: str,
     omitted_count: int = 0,
+    clarifications: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Schema-shaped JSON object embedded in the aggregator DATA section."""
+    """Schema-shaped JSON object embedded in the aggregator DATA section.
+
+    Clarifications (when present) are structured fields serialized **once** with
+    this envelope — never a pre-encoded JSON footer stuffed into
+    ``original_request`` (that double-escaped quotes/backslashes and defeated
+    O-014 admission accounting).
+    """
     envelope: dict[str, Any] = {
         "schema": _ARTIFACT_ENVELOPE_SCHEMA,
         "original_request": _escape_data(_cap(user_text, _MAX_REQUEST_CHARS)),
@@ -195,6 +203,8 @@ def artifact_envelope(
             for art in artifacts
         ],
     }
+    if clarifications:
+        envelope["clarifications"] = list(clarifications)
     if omitted_count > 0:
         envelope["omitted_artifacts"] = omitted_count
     return envelope
@@ -205,6 +215,7 @@ def build_synthesis_prompt(
     outputs: list[WorkerOutput],
     *,
     artifacts: list[WorkerArtifact] | None = None,
+    clarifications: list[dict[str, str]] | None = None,
 ) -> str:
     """Build the real-provider synthesis prompt from structured worker artifacts.
 
@@ -216,6 +227,10 @@ def build_synthesis_prompt(
 
     ``artifacts`` — when provided, still re-normalized at this sink (caps /
     escaping / source-id flattening) rather than trusted as-is.
+
+    ``clarifications`` — optional structured Q&A dicts (already phase-capped by
+    the caller). Embedded once as an envelope field; do not also append a
+    clarifications text footer to ``user_text``.
     """
     if artifacts is not None:
         arts = [
@@ -226,7 +241,12 @@ def build_synthesis_prompt(
     else:
         arts = build_artifacts(outputs)
         omitted = omitted_artifact_count(outputs)
-    envelope = artifact_envelope(arts, user_text=user_text, omitted_count=omitted)
+    envelope = artifact_envelope(
+        arts,
+        user_text=user_text,
+        omitted_count=omitted,
+        clarifications=clarifications,
+    )
     # Short refs also inside the envelope so nothing untrusted sits outside DATA.
     envelope["artifact_refs"] = [
         {

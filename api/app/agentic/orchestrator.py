@@ -567,25 +567,23 @@ async def _run_verifier_if_enabled(
     ):
         return None
 
-    def _can_afford_next(usage_so_far: UsageUpdate) -> bool:
-        if cost_for_usage is None:
-            return True
-        spent = cost_for_usage(usage_so_far)
+    pricer = cost_for_usage
+
+    def _can_afford_next(_usage_so_far: UsageUpdate, spent_usd: float) -> bool:
+        # Prefer authoritative per-sample sum — never reprice collapsed usage.
+        assert pricer is not None
         return _can_fund_verifier(
-            ledger_usd=ledger_usd + spent,
+            ledger_usd=ledger_usd + spent_usd,
             settings=settings,
-            cost_for_usage=cost_for_usage,
+            cost_for_usage=pricer,
             cap_usd=cap_usd,
             budget_headroom_usd=budget_headroom_usd,
             sample_count=1,
         )
 
-    def _actual_within_cap(usage_so_far: UsageUpdate) -> bool:
-        if cost_for_usage is None:
-            return True
-        spent = cost_for_usage(usage_so_far)
+    def _actual_within_cap(_usage_so_far: UsageUpdate, spent_usd: float) -> bool:
         return not budget.exceeds_cap(
-            actual_usd=ledger_usd + spent,
+            actual_usd=ledger_usd + spent_usd,
             cap_usd=cap_usd,
             headroom_usd=budget_headroom_usd,
         )
@@ -597,9 +595,9 @@ async def _run_verifier_if_enabled(
         draft=draft,
         outputs=outputs,
         scaffolded=scaffolded,
-        can_afford_next_sample=_can_afford_next if cost_for_usage is not None else None,
-        actual_within_cap=_actual_within_cap if cost_for_usage is not None else None,
-        cost_for_usage=cost_for_usage,
+        can_afford_next_sample=_can_afford_next if pricer is not None else None,
+        actual_within_cap=_actual_within_cap if pricer is not None else None,
+        cost_for_usage=pricer,
     )
 
 
@@ -799,6 +797,7 @@ async def _finalize_synthesis_streamed(
     scaffolded: bool = False,
     artifacts: list[aggregate.WorkerArtifact] | None = None,
     verifier_cost_for_usage: CostForUsage | None = None,
+    clarifications: list[dict[str, str]] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
@@ -815,7 +814,10 @@ async def _finalize_synthesis_streamed(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
     )
     prompt = aggregate.build_synthesis_prompt(
-        user_text, outputs, artifacts=artifacts
+        user_text,
+        outputs,
+        artifacts=artifacts,
+        clarifications=clarifications,
     )
     aggregator_usage = UsageUpdate()
     answer_parts: list[str] = []
@@ -1170,6 +1172,7 @@ async def _resume_worker_continuation(
     fallback_display_label: str | None = None,
     is_retryable: IsRetryable = is_retryable_provider_error,
     verifier_make_stream_for: StreamFactory | None = None,
+    verifier_cost_for_usage: CostForUsage | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Continue a paused worker then synthesize (BE-005).
 
@@ -1233,6 +1236,7 @@ async def _resume_worker_continuation(
         parsed = clarify.parse_clarification_answers(effective_user_text)
         resume_records = clarify.records_from_questions_and_answers([], parsed)
     resume_clarification_answers = clarify.nonblank_answers(resume_records)
+    verifier_pricer = verifier_cost_for_usage or cost_for_usage
 
     async def _emit_synthesis(*, halted: bool) -> AsyncIterator[ProviderEvent]:
         ordered_outputs = [
@@ -1248,36 +1252,43 @@ async def _resume_worker_continuation(
             ledger_usd,
         )
         completed_count = len(ordered_outputs)
+        synthesis = aggregate.synthesize(
+            ordered_outputs,
+            planned=len(sub_questions),
+            budget_halted=halted,
+            failed=failed_workers,
+            clarifications=resume_clarification_answers,
+        )
+        # Streamed finalize owns aggregator (+ sibling verifier) spans — do not
+        # nest them under an outer resume aggregator span (V-009 / Sol).
+        if not scaffolded and ordered_outputs and not halted:
+            synth_clarify = clarify.clarification_payload_for_phase(
+                resume_records, phase="synthesis"
+            ) or None
+            async for event in _finalize_synthesis_streamed(
+                make_stream_for=make_stream_for,
+                verifier_make_stream_for=verifier_make_stream_for,
+                settings=settings,
+                user_text=clarify.strip_clarification_footer(effective_user_text),
+                outputs=ordered_outputs,
+                planned=len(sub_questions),
+                worker_usages=ordered_usages,
+                worker_total_cost=worker_total_cost,
+                cost_for_usage=cost_for_usage,
+                verifier_cost_for_usage=verifier_pricer,
+                cap_usd=cap,
+                budget_halted=halted,
+                failed=failed_workers,
+                budget_headroom_usd=budget_headroom_usd,
+                scaffolded=scaffolded,
+                artifacts=ordered_artifacts,
+                clarifications=synth_clarify,
+            ):
+                yield event
+            return
         with invoke_agent_span(
             subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
         ):
-            synthesis = aggregate.synthesize(
-                ordered_outputs,
-                planned=len(sub_questions),
-                budget_halted=halted,
-                failed=failed_workers,
-                clarifications=resume_clarification_answers,
-            )
-            if not scaffolded and ordered_outputs and not halted:
-                async for event in _finalize_synthesis_streamed(
-                    make_stream_for=make_stream_for,
-                    verifier_make_stream_for=verifier_make_stream_for,
-                    settings=settings,
-                    user_text=effective_user_text,
-                    outputs=ordered_outputs,
-                    planned=len(sub_questions),
-                    worker_usages=ordered_usages,
-                    worker_total_cost=worker_total_cost,
-                    cost_for_usage=cost_for_usage,
-                    cap_usd=cap,
-                    budget_halted=halted,
-                    failed=failed_workers,
-                    budget_headroom_usd=budget_headroom_usd,
-                    scaffolded=scaffolded,
-                    artifacts=ordered_artifacts,
-                ):
-                    yield event
-                return
             async for event in _finalize_synthesis(
                 synthesis=synthesis,
                 worker_usages=ordered_usages,
@@ -1311,6 +1322,13 @@ async def _resume_worker_continuation(
 
     answer_parts: list[str] = []
     source_ids: list[str] = list(continuation.source_ids)
+    # H-010: mutable checkpoint state across nested pauses on the same resume.
+    reasoning_parts: list[str] = (
+        [continuation.partial_reasoning] if continuation.partial_reasoning else []
+    )
+    tool_transcript: list[dict[str, Any]] = [
+        dict(part) for part in continuation.tool_transcript
+    ]
     # O-002: restore pre-pause usage so finals include pause spend.
     usage = continuation.paused_worker_usage or UsageUpdate()
     pre_pause_cost = float(continuation.paused_worker_cost_usd or 0.0)
@@ -1351,6 +1369,24 @@ async def _resume_worker_continuation(
     initial = [*prior_results]
     if resume_tool_result is not None:
         initial.append(resume_tool_result)
+        # Include the settled resume result in the durable transcript so a
+        # second nested pause does not drop the first approval's tool_result.
+        tool_transcript.append(
+            {
+                "type": "tool_result",
+                "toolCallId": namespace_tool_call_id(
+                    paused_id, resume_tool_result.tool_call_id
+                ),
+                "name": resume_tool_result.name,
+                "label": resume_tool_result.label,
+                "status": resume_tool_result.status,
+                "approvalState": resume_tool_result.approval_state,
+                "summary": resume_tool_result.summary,
+                "output": dict(resume_tool_result.output or {}),
+                "error": resume_tool_result.error,
+                "subagentId": paused_id,
+            }
+        )
     prompt = clarify.with_clarifications(
         planner.worker_prompt(index, sub_question, scaffolded=scaffolded),
         resume_records,
@@ -1402,9 +1438,9 @@ async def _resume_worker_continuation(
             paused_worker_index=index,
             paused_sub_question=sub_question,
             partial_answer=partial,
-            partial_reasoning=continuation.partial_reasoning,
+            partial_reasoning="".join(reasoning_parts),
             source_ids=tuple(source_ids),
-            tool_transcript=continuation.tool_transcript,
+            tool_transcript=tuple(tool_transcript),
             emitted_answer_chars=max(
                 continuation.emitted_answer_chars, len(partial)
             ),
@@ -1438,6 +1474,38 @@ async def _resume_worker_continuation(
                 sub_provider = event.substituted_provider
                 sub_model = event.substituted_model
                 sub_label = event.substituted_display_label
+            if isinstance(event, ToolCall):
+                tool_transcript.append(
+                    {
+                        "type": "tool_call",
+                        "id": namespace_tool_call_id(paused_id, event.id),
+                        "name": event.name,
+                        "label": event.label,
+                        "status": event.status,
+                        "approvalState": event.approval_state,
+                        "input": dict(event.input or {}),
+                        "subagentId": paused_id,
+                    }
+                )
+            if isinstance(event, ToolResult):
+                tool_transcript.append(
+                    {
+                        "type": "tool_result",
+                        "toolCallId": namespace_tool_call_id(
+                            paused_id, event.tool_call_id
+                        ),
+                        "name": event.name,
+                        "label": event.label,
+                        "status": event.status,
+                        "approvalState": event.approval_state,
+                        "summary": event.summary,
+                        "output": dict(event.output or {}),
+                        "error": event.error,
+                        "subagentId": paused_id,
+                    }
+                )
+            if isinstance(event, ReasoningDelta):
+                reasoning_parts.append(event.text)
             usage = _fold_usage(event, usage)
             if isinstance(event, AwaitingApproval):
                 yield _tag(
@@ -1643,6 +1711,7 @@ async def _run_deep_research(
             fallback_display_label=fallback_display_label,
             is_retryable=is_retryable,
             verifier_make_stream_for=verifier_make_stream_for,
+            verifier_cost_for_usage=verifier_pricer,
         ):
             yield event
         return
@@ -2412,11 +2481,16 @@ async def _run_deep_research(
         # Real provider: stream a model-written synthesis from structured
         # worker artifact refs (untrusted DATA envelope). Aggregator span lives
         # inside `_finalize_synthesis_streamed` around quiet-collect only.
+        # Clarifications ride once as structured envelope fields — not as a
+        # text footer inside original_request (O-014 double-encode fix).
+        synth_clarify = clarify.clarification_payload_for_phase(
+            bound_records, phase="synthesis"
+        ) or None
         async for event in _finalize_synthesis_streamed(
             make_stream_for=make_stream_for,
             verifier_make_stream_for=judge_factory,
             settings=settings,
-            user_text=effective_user_text,
+            user_text=plan_text,
             outputs=ordered_outputs,
             planned=len(sub_questions),
             worker_usages=ordered_usages,
@@ -2429,6 +2503,7 @@ async def _run_deep_research(
             budget_headroom_usd=budget_headroom_usd,
             scaffolded=scaffolded,
             artifacts=ordered_artifacts,
+            clarifications=synth_clarify,
         ):
             yield event
 

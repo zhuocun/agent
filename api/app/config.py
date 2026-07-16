@@ -20,6 +20,12 @@ _DEV_SESSION_SECRET = "dev-only-insecure-session-secret-change-me"
 # this value in production. NEVER reuse this value outside dev/test.
 _DEV_BYOK_KEK_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
+# O-013: synthesis artifact ceiling. Owned here (not imported from
+# ``app.agentic.aggregate``) so ``assert_prod_safe`` can validate
+# AGENTIC_MAX_WORKERS without a config ↔ agentic circular import.
+# ``aggregate`` imports this same value.
+MAX_WORKER_ARTIFACTS = 16
+
 
 class Settings(BaseSettings):
     """Process-wide settings. Use `get_settings()` to access."""
@@ -583,8 +589,6 @@ class Settings(BaseSettings):
         if self.agentic_max_workers < 1:
             raise RuntimeError("AGENTIC_MAX_WORKERS must be >= 1")
         # O-013: artifact truncation ceiling must cover every possible worker.
-        from app.agentic.aggregate import MAX_WORKER_ARTIFACTS
-
         if self.agentic_max_workers > MAX_WORKER_ARTIFACTS:
             raise RuntimeError(
                 f"AGENTIC_MAX_WORKERS must be <= {MAX_WORKER_ARTIFACTS} "

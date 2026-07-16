@@ -9,6 +9,8 @@ questions before planning / admission / fan-out. Reuses the shipped
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -296,32 +298,24 @@ def _phase_block_limit(phase: ClarifyPhase) -> int:
     raise ValueError(f"Unknown clarify phase: {phase!r}")
 
 
-def format_clarification_data(
-    answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
-    *,
-    phase: ClarifyPhase = "planner",
-) -> str:
-    """Build a dedicated DATA block for clarifications (never fed to decompose).
-
-    Uses a single-line JSON array so multiline answers cannot be re-parsed as
-    extra numbered entries. Re-caps per phase so fan-out cannot amplify an
-    unbounded block into every worker (O-014).
-    """
-    records = _bound_records_for_format(answers)
-    if not records:
-        return ""
-    if not any(r.answer.strip() for r in records):
-        return ""
+def _encoded_text_block(records: list[ClarificationRecord]) -> str:
     payload = serialize_clarification_records(records)
-    block = f"{CLARIFICATIONS_HEADER}\n{json.dumps(payload, ensure_ascii=False)}"
-    limit = _phase_block_limit(phase)
-    if len(block) <= limit:
-        return block
-    # Truncate answers until the encoded block fits the phase ceiling.
+    return f"{CLARIFICATIONS_HEADER}\n{json.dumps(payload, ensure_ascii=False)}"
+
+
+def _trim_records_to_limit(
+    records: list[ClarificationRecord],
+    *,
+    limit: int,
+    encoded_len: Callable[[list[ClarificationRecord]], int],
+) -> list[ClarificationRecord]:
+    """Shrink/drop trailing answers until ``encoded_len(trimmed) <= limit``."""
     trimmed = list(records)
-    while trimmed and len(block) > limit:
+    encoded = encoded_len(trimmed)
+    if encoded <= limit:
+        return trimmed
+    while trimmed and encoded > limit:
         last = trimmed[-1]
-        # Shrink the last answer; drop it if already tiny.
         if len(last.answer) > 32:
             shrunk = last.answer[: max(0, len(last.answer) // 2)]
             trimmed[-1] = ClarificationRecord(
@@ -332,9 +326,105 @@ def format_clarification_data(
         else:
             trimmed.pop()
         if not trimmed:
+            return []
+        encoded = encoded_len(trimmed)
+    return trimmed
+
+
+def phase_capped_records(
+    answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
+    *,
+    phase: ClarifyPhase = "planner",
+) -> list[ClarificationRecord]:
+    """Normalize + re-cap records so the phase encoding fits the O-014 ceiling."""
+    records = _bound_records_for_format(answers)
+    if not records:
+        return []
+    if not any(r.answer.strip() for r in records):
+        return []
+    limit = _phase_block_limit(phase)
+    if phase == "synthesis":
+        # Synthesis attaches structured JSON once inside the artifact envelope —
+        # cap on the payload encoding (no text-block header).
+        return _trim_records_to_limit(
+            records,
+            limit=limit,
+            encoded_len=lambda rs: len(
+                json.dumps(
+                    serialize_clarification_records(rs),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ),
+        )
+    return _trim_records_to_limit(
+        records, limit=limit, encoded_len=lambda rs: len(_encoded_text_block(rs))
+    )
+
+
+def clarification_payload_for_phase(
+    answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
+    *,
+    phase: ClarifyPhase = "synthesis",
+) -> list[dict[str, str]]:
+    """Phase-capped clarification dicts for structured envelope attachment."""
+    records = phase_capped_records(answers, phase=phase)
+    if not records:
+        return []
+    return serialize_clarification_records(records)
+
+
+def synthesis_clarification_encoded_chars(
+    answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
+) -> int:
+    """Exact clarification character contribution inside the synthesis envelope.
+
+    Matches ``aggregate.artifact_envelope``: clarifications are a structured
+    JSON field serialized once with the envelope (not a pre-encoded string
+    stuffed into ``original_request``, which double-escaped quotes/backslashes).
+    """
+    payload = clarification_payload_for_phase(answers, phase="synthesis")
+    if not payload:
+        return 0
+    bare = json.dumps({"x": 0}, ensure_ascii=False, separators=(",", ":"))
+    with_c = json.dumps(
+        {"x": 0, "clarifications": payload},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return len(with_c) - len(bare)
+
+
+def format_clarification_data(
+    answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
+    *,
+    phase: ClarifyPhase = "planner",
+) -> str:
+    """Build a dedicated DATA block for clarifications (never fed to decompose).
+
+    Uses a single-line JSON array so multiline answers cannot be re-parsed as
+    extra numbered entries. Re-caps per phase so fan-out cannot amplify an
+    unbounded block into every worker (O-014).
+
+    Prefer ``clarification_payload_for_phase`` for synthesis — the aggregator
+    embeds structured clarifications once inside the JSON envelope.
+    """
+    if phase == "synthesis":
+        # Keep a text-block form for legacy callers / tests; production synthesis
+        # uses the structured envelope path instead.
+        records = phase_capped_records(answers, phase="synthesis")
+        if not records:
             return ""
-        payload = serialize_clarification_records(trimmed)
-        block = f"{CLARIFICATIONS_HEADER}\n{json.dumps(payload, ensure_ascii=False)}"
+        block = _encoded_text_block(records)
+        limit = _phase_block_limit(phase)
+        if len(block) > limit:
+            return block[: max(0, limit - 16)] + "\n…[truncated]"
+        return block
+    records = phase_capped_records(answers, phase=phase)
+    if not records:
+        return ""
+    block = _encoded_text_block(records)
+    limit = _phase_block_limit(phase)
     if len(block) > limit:
         return block[: max(0, limit - 16)] + "\n…[truncated]"
     return block
@@ -353,6 +443,13 @@ def with_clarifications(
     return f"{base}\n\n{block}"
 
 
+def strip_clarification_footer(text: str) -> str:
+    """Remove a trailing clarifications DATA block from a prompt / continuation."""
+    if CLARIFICATIONS_HEADER not in (text or ""):
+        return text
+    return text.split(CLARIFICATIONS_HEADER, 1)[0].rstrip()
+
+
 def clarification_amplified_chars(
     answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
     *,
@@ -361,10 +458,12 @@ def clarification_amplified_chars(
     """Total clarification characters injected across planner + workers + synthesis.
 
     Used to fold clarify amplification into pre-spawn admission estimates (O-014).
+    Synthesis uses the exact once-encoded envelope contribution (not a text
+    footer that would later be JSON-string-escaped again).
     """
     planner = len(format_clarification_data(answers, phase="planner"))
     worker = len(format_clarification_data(answers, phase="worker"))
-    synthesis = len(format_clarification_data(answers, phase="synthesis"))
+    synthesis = synthesis_clarification_encoded_chars(answers)
     workers = max(0, worker_count)
     return planner + (worker * workers) + synthesis
 
@@ -378,7 +477,7 @@ def clarification_extra_input_tokens(
     chars = clarification_amplified_chars(answers, worker_count=worker_count)
     if chars <= 0:
         return 0
-    return max(1, chars // _CLARIFY_CHARS_PER_TOKEN)
+    return max(1, math.ceil(chars / _CLARIFY_CHARS_PER_TOKEN))
 
 
 def parse_clarification_answers(text: str) -> list[str]:

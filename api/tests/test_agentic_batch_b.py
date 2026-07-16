@@ -7,9 +7,9 @@ from collections.abc import AsyncIterator
 import pytest
 
 from app.agentic.aggregate import (
-    MAX_WORKER_ARTIFACTS,
     WorkerOutput,
     build_artifacts,
+    build_synthesis_prompt,
     omitted_artifact_count,
 )
 from app.agentic.clarify import (
@@ -19,7 +19,9 @@ from app.agentic.clarify import (
     ClarificationRecord,
     clarification_amplified_chars,
     clarification_extra_input_tokens,
+    clarification_payload_for_phase,
     format_clarification_data,
+    synthesis_clarification_encoded_chars,
     with_clarifications,
 )
 from app.agentic.continuation import parse_continuation
@@ -28,8 +30,9 @@ from app.agentic.orchestrator import (
     _WORKER_ALLOWED_TOOLS,
     _WORKER_FAKE_HITL_TOOLS,
     _WORKER_PROD_HITL_TOOLS,
+    _finalize_synthesis_streamed,
 )
-from app.config import Settings
+from app.config import MAX_WORKER_ARTIFACTS, Settings
 from app.providers.protocol import (
     AnswerDelta,
     Complete,
@@ -95,9 +98,6 @@ def test_o011_aggregator_tools_forbidden_and_unsupported_phases_rejected() -> No
 @pytest.mark.asyncio
 async def test_o011_aggregator_stream_factory_always_empty_allowlist() -> None:
     """O-011: streamed aggregator always gets empty tools + web_search=False."""
-    from app.agentic.aggregate import WorkerOutput
-    from app.agentic.orchestrator import _finalize_synthesis_streamed
-
     seen: list[dict[str, object]] = []
 
     def _make_stream_for(prompt: str, **kwargs: object):
@@ -203,10 +203,40 @@ def test_o014_clarify_phase_caps_limit_worker_amplification() -> None:
     assert amplified == (
         len(format_clarification_data(records, phase="planner"))
         + 4 * len(format_clarification_data(records, phase="worker"))
-        + len(format_clarification_data(records, phase="synthesis"))
+        + synthesis_clarification_encoded_chars(records)
     )
-    assert clarification_extra_input_tokens(records, worker_count=4) >= 1
+    tokens = clarification_extra_input_tokens(records, worker_count=4)
+    assert tokens >= 1
+    assert tokens == max(1, (amplified + 3) // 4)  # ceil(chars/4)
 
     worker_prompt = with_clarifications("BASE", records, phase="worker")
     assert "BASE" in worker_prompt
     assert len(worker_prompt) <= len("BASE\n\n") + MAX_CLARIFY_BLOCK_CHARS_WORKER
+
+
+def test_o014_synthesis_clarifications_encoded_once_escape_heavy() -> None:
+    """O-014: escape-heavy clarify JSON is priced at once-encoded envelope size."""
+    esc = '\\"' * 500
+    records = [
+        ClarificationRecord(question_id="0", question='Q"1', answer=esc[:2000]),
+        ClarificationRecord(question_id="1", question='Q"2', answer=esc[:2000]),
+    ]
+    payload = clarification_payload_for_phase(records, phase="synthesis")
+    accounted = synthesis_clarification_encoded_chars(records)
+    assert payload
+    assert accounted > 0
+
+    outputs = [WorkerOutput(subagent_id="w0", sub_question="q", answer="a")]
+    plan = "research topic"
+    once = build_synthesis_prompt(plan, outputs, clarifications=payload)
+    plain = build_synthesis_prompt(plan, outputs)
+    actual = len(once) - len(plain)
+    assert actual == accounted
+
+    # Legacy double-encode path (footer inside original_request) inflates ~2x.
+    footer = with_clarifications(plan, records, phase="planner")
+    doubled = build_synthesis_prompt(footer, outputs)
+    double_delta = len(doubled) - len(plain)
+    assert double_delta > actual * 1.5
+    assert "clarifications" in once
+    assert 'Q\\"1' in once or '"question":"Q\\"1"' in once or "Q\\\"1" in once

@@ -42,7 +42,6 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.attributes import flag_modified
 
 from app.db.models import Message
 from app.db.repositories import messages as messages_repo
@@ -247,24 +246,6 @@ def _claimed_without_result_failure(
     )
 
 
-async def _persist_parts(db: AsyncSession, message: Message, parts: list[Any]) -> None:
-    """Unconditional parts write (bumps parts_version). Prefer CAS for claims."""
-    expected = int(getattr(message, "parts_version", 0) or 0)
-    ok = await _cas_persist_parts(
-        db, message_id=message.id, parts=parts, expected_version=expected
-    )
-    if not ok:
-        # Fallback: another writer raced a non-claim path; force latest.
-        message.parts = parts
-        message.parts_version = expected + 1
-        flag_modified(message, "parts")
-        await db.flush()
-        await db.commit()
-        await db.refresh(message)
-        return
-    await db.refresh(message)
-
-
 async def _cas_persist_parts(
     db: AsyncSession,
     *,
@@ -275,6 +256,7 @@ async def _cas_persist_parts(
     """Atomic parts write gated on ``parts_version`` (SQLite + Postgres).
 
     Returns True when this session won the CAS (rowcount == 1).
+    On loss, the session is rolled back — caller must re-read fresh state.
     """
     result = await db.execute(
         update(Message)
@@ -306,6 +288,35 @@ async def _lock_message(db: AsyncSession, message_id: UUID) -> Message:
     return locked
 
 
+def _pseudo_settled_result(
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    decision: str,
+    output: dict[str, Any] | None,
+    summary: str | None,
+) -> ToolExecutionResult:
+    safe_output = dict(output or {})
+    if decision == "approve":
+        return ToolExecutionResult(
+            tool_call_id=tool_call_id,
+            name=tool_name,
+            status="succeeded",
+            output=safe_output,
+            summary=summary or "Clarifications recorded.",
+            approval_state="approved",
+        )
+    return ToolExecutionResult(
+        tool_call_id=tool_call_id,
+        name=tool_name,
+        status="cancelled",
+        output=safe_output,
+        summary=summary or "User skipped clarifying questions.",
+        error="User denied the clarification pause.",
+        approval_state="rejected",
+    )
+
+
 async def settle_pseudo_tool_approval(
     db: AsyncSession,
     *,
@@ -323,6 +334,9 @@ async def settle_pseudo_tool_approval(
     It flips the paused ``tool_call`` to a terminal approval state and appends a
     ``tool_result`` carrying a bounded decision payload so reload no longer
     shows a permanently pending HITL card.
+
+    Uses parts_version CAS for claim and settle — never an unconditional
+    overwrite on CAS loss (H-005).
     """
     message_id = paused_message.id
     lock = await _get_claim_lock(message_id, tool_call_id)
@@ -371,9 +385,48 @@ async def settle_pseudo_tool_approval(
             claimed["approvalState"] = "rejected"
             claimed["status"] = "cancelled"
         claimed[APPROVAL_CLAIM_ID_KEY] = minted_claim
-        await _persist_parts(
-            db, locked, _replace_tool_call(parts, tool_call_id, claimed)
+        expected_version = int(getattr(locked, "parts_version", 0) or 0)
+        won = await _cas_persist_parts(
+            db,
+            message_id=message_id,
+            parts=_replace_tool_call(parts, tool_call_id, claimed),
+            expected_version=expected_version,
         )
+        if not won:
+            # Lost claim CAS — re-read; never stale-overwrite.
+            locked = await _lock_message(db, message_id)
+            parts = list(locked.parts or [])
+            existing = find_settled_tool_result(parts, tool_call_id)
+            call_part = find_tool_call_part(parts, tool_call_id)
+            tool_name = str((call_part or {}).get("name") or tool_name)
+            if existing is not None:
+                stored = _decision_from_approval_state(
+                    str(
+                        existing.get("approvalState")
+                        or existing.get("approval_state")
+                        or ""
+                    )
+                )
+                if stored and stored != decision:
+                    raise ApprovalDecisionConflict(
+                        stored_decision=stored, requested_decision=decision
+                    )
+                return tool_result_dict_to_execution(
+                    existing, tool_call_id=tool_call_id, name=tool_name
+                )
+            if call_part is None:
+                return ToolExecutionResult(
+                    tool_call_id=tool_call_id,
+                    name=tool_name or "unknown",
+                    status="failed",
+                    error="No matching tool call to settle.",
+                    approval_state="rejected",
+                )
+            return _claimed_without_result_failure(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                approval_state=str(call_part.get("approvalState") or "approved"),
+            )
 
         locked = await _lock_message(db, message_id)
         parts_after = list(locked.parts or [])
@@ -400,38 +453,30 @@ async def settle_pseudo_tool_approval(
 
         subagent_id = call_after.get("subagentId")
         subagent_str = str(subagent_id) if isinstance(subagent_id, str) else None
-        safe_output = dict(output or {})
-        if decision == "approve":
-            result = ToolExecutionResult(
-                tool_call_id=tool_call_id,
-                name=tool_name,
-                status="succeeded",
-                output=safe_output,
-                summary=summary or "Clarifications recorded.",
-                approval_state="approved",
-            )
-        else:
-            result = ToolExecutionResult(
-                tool_call_id=tool_call_id,
-                name=tool_name,
-                status="cancelled",
-                output=safe_output,
-                summary=summary or "User skipped clarifying questions.",
-                error="User denied the clarification pause.",
-                approval_state="rejected",
-            )
-
-        settled_call = deepcopy(call_after)
-        settled_call["status"] = result.status
-        settled_call["approvalState"] = result.approval_state
-        settled_call[APPROVAL_CLAIM_ID_KEY] = minted_claim
-        settled_parts = _replace_tool_call(parts_after, tool_call_id, settled_call)
-        settled_parts.append(
-            execution_to_tool_result_part(
-                result, label=label, subagent_id=subagent_str
-            )
+        result = _pseudo_settled_result(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            decision=decision,
+            output=output,
+            summary=summary,
         )
-        await _persist_parts(db, locked, settled_parts)
+
+        settled = await _settle_under_claim(
+            db,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            minted_claim=minted_claim,
+            result=result,
+            label=label,
+            subagent_id=subagent_str,
+        )
+        if not settled:
+            # Settle CAS lost and no durable result — fail closed.
+            return _claimed_without_result_failure(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                approval_state="approved" if decision == "approve" else "rejected",
+            )
         return result
 
 
@@ -560,7 +605,7 @@ async def claim_and_settle_approval_outcome(
         raise
 
     async with lock:
-        await _settle_under_claim(
+        settled_ok = await _settle_under_claim(
             db,
             message_id=message_id,
             tool_call_id=tool_call_id,
@@ -568,6 +613,20 @@ async def claim_and_settle_approval_outcome(
             result=result,
             label=label,
             subagent_id=part_subagent,
+        )
+    if not settled_ok:
+        # Executed but settlement did not land — fail closed so callers do not
+        # treat an unpersisted side effect as durable success.
+        failed = _claimed_without_result_failure(
+            tool_call_id=tool_call_id,
+            name=tool_name,
+            approval_state="approved" if decision == "approve" else "rejected",
+        )
+        return SettlementOutcome(
+            result=failed,
+            decision=_decision_from_approval_state(failed.approval_state),
+            claim_id=minted_claim,
+            already_settled=False,
         )
     return SettlementOutcome(
         result=result,
@@ -803,50 +862,65 @@ async def _settle_under_claim(
     result: ToolExecutionResult,
     label: str | None,
     subagent_id: str | None,
-) -> None:
+) -> bool:
     """Settle only when this claim still owns the running/rejected call.
 
     Claim-owner conditional write (H-005): refuse unless ``_approvalClaimId``
     matches **and** the call is still in the claimed approval/status window.
     Uses parts_version CAS so a concurrent writer cannot clobber settlement.
+
+    Returns True when settlement is durable (already settled or this write won).
+    On CAS loss, retries once from fresh state; never silently reports success
+    after a failed write.
     """
+    for _attempt in range(2):
+        locked = await _lock_message(db, message_id)
+        fresh_parts = list(locked.parts or [])
+        if find_settled_tool_result(fresh_parts, tool_call_id, subagent_id=subagent_id):
+            return True
+        call_fresh = find_tool_call_part(
+            fresh_parts, tool_call_id, subagent_id=subagent_id
+        )
+        if call_fresh is None:
+            return False
+        if call_fresh.get(APPROVAL_CLAIM_ID_KEY) != minted_claim:
+            return False
+        approval = str(
+            call_fresh.get("approvalState") or call_fresh.get("approval_state") or ""
+        )
+        status = str(call_fresh.get("status") or "")
+        if approval not in ("approved", "rejected"):
+            return False
+        if status not in ("running", "cancelled"):
+            return False
+        settled_call = deepcopy(call_fresh)
+        settled_call["status"] = result.status
+        settled_call["approvalState"] = result.approval_state
+        settled_call[APPROVAL_CLAIM_ID_KEY] = minted_claim
+        settled_parts = _replace_tool_call(
+            fresh_parts, tool_call_id, settled_call, subagent_id=subagent_id
+        )
+        settled_parts.append(
+            execution_to_tool_result_part(
+                result, label=label, subagent_id=subagent_id
+            )
+        )
+        expected_version = int(getattr(locked, "parts_version", 0) or 0)
+        won = await _cas_persist_parts(
+            db,
+            message_id=message_id,
+            parts=settled_parts,
+            expected_version=expected_version,
+        )
+        if won:
+            return True
+        # CAS lost — retry from fresh state once; never overwrite unconditionally.
+    # Final check: another writer may have settled while we lost the race.
     locked = await _lock_message(db, message_id)
     fresh_parts = list(locked.parts or [])
-    if find_settled_tool_result(fresh_parts, tool_call_id, subagent_id=subagent_id):
-        return
-    call_fresh = find_tool_call_part(
-        fresh_parts, tool_call_id, subagent_id=subagent_id
-    )
-    if call_fresh is None:
-        return
-    if call_fresh.get(APPROVAL_CLAIM_ID_KEY) != minted_claim:
-        return
-    approval = str(
-        call_fresh.get("approvalState") or call_fresh.get("approval_state") or ""
-    )
-    status = str(call_fresh.get("status") or "")
-    if approval not in ("approved", "rejected"):
-        return
-    if status not in ("running", "cancelled"):
-        return
-    settled_call = deepcopy(call_fresh)
-    settled_call["status"] = result.status
-    settled_call["approvalState"] = result.approval_state
-    settled_call[APPROVAL_CLAIM_ID_KEY] = minted_claim
-    settled_parts = _replace_tool_call(
-        fresh_parts, tool_call_id, settled_call, subagent_id=subagent_id
-    )
-    settled_parts.append(
-        execution_to_tool_result_part(
-            result, label=label, subagent_id=subagent_id
-        )
-    )
-    expected_version = int(getattr(locked, "parts_version", 0) or 0)
-    await _cas_persist_parts(
-        db,
-        message_id=message_id,
-        parts=settled_parts,
-        expected_version=expected_version,
+    return (
+        find_settled_tool_result(fresh_parts, tool_call_id, subagent_id=subagent_id)
+        is not None
     )
 
 

@@ -46,7 +46,7 @@ from app.agentic.clarify import (
     parse_clarify_edited_input,
     serialize_clarification_records,
 )
-from app.agentic.continuation import resolve_continuation
+from app.agentic.continuation import resolve_continuation, sanitize_message_parts_for_api
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -1539,6 +1539,12 @@ async def _maybe_replay(
                 sources_requested = bool(part.get("requested", False))
             elif ptype in ("tool_call", "tool_result"):
                 tool_parts.append(part)
+        # H-012: strip reserved control keys (incl. nested in input/output)
+        # before SSE replay — model_validate alone does not scrub dict payloads.
+        sanitized_tools = cast(
+            list[dict[str, object]],
+            sanitize_message_parts_for_api(tool_parts),
+        )
         return _replay_response(
             user_message_id=prior_user_msg.id,
             assistant_message_id=assistant_row.id,
@@ -1548,7 +1554,7 @@ async def _maybe_replay(
             status_part=status_part,
             sources_items=sources_items,
             sources_requested=sources_requested,
-            tool_parts=tool_parts,
+            tool_parts=sanitized_tools,
         )
     # User message exists but no completed assistant row: prior is in flight
     # (or crashed before persisting). With resumable streams enabled, an

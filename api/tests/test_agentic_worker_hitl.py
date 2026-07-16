@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agentic.continuation import CONTINUATION_INPUT_KEY
+from app.agentic.continuation import CONTINUATION_INPUT_KEY, get_continuation_from_server_state
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.repositories import billing as billing_repo
@@ -249,8 +249,6 @@ async def test_worker_hitl_pause_waits_for_siblings_then_approves(
     )
     # H-012: continuation is server-only — not in tool input.
     assert CONTINUATION_INPUT_KEY not in (cal_part.get("input") or {})
-    from app.agentic.continuation import get_continuation_from_server_state
-
     cont_obj = get_continuation_from_server_state(
         paused.server_state, "worker-0::fake_worker_cal_0"
     )
@@ -659,8 +657,6 @@ async def test_h003_concurrent_worker_pauses_reject_sibling(
         for p in parts
         if p.get("type") == "tool_call" and p.get("name") == "calendar_create_event"
     ]
-    from app.agentic.continuation import get_continuation_from_server_state
-
     with_cont = []
     without_cont = []
     for p in worker_calls:
@@ -1353,3 +1349,97 @@ async def test_h013_conflicting_decision_on_worker_resume(
     )
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "APPROVAL_DECISION_CONFLICT"
+
+
+_WORKER_HITL_TWICE_PROMPT = (
+    "DEEP_RESEARCH: TOOL_APPROVE_TWICE schedule kickoff | sibling housing effects"
+)
+
+
+async def test_h010_two_consecutive_worker_approvals_keep_transcript(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """H-010: second nested worker pause retains reasoning + prior tool transcript."""
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    pause1 = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000041",
+            "tierId": "smart",
+            "text": _WORKER_HITL_TWICE_PROMPT,
+            "agenticMode": "deep_research",
+        },
+    )
+    assert pause1[-1][1]["status"] == "awaiting_approval"
+    call1 = next(
+        d
+        for n, d in pause1
+        if n == "tool_call" and d.get("name") == "calendar_create_event"
+    )
+    call1_id = str(call1["id"])
+    assert call1_id.endswith("_0")
+
+    resume1 = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000042",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": call1_id, "decision": "approve"},
+        },
+    )
+    assert resume1[-1][1]["status"] == "awaiting_approval"
+    call2 = next(
+        d
+        for n, d in resume1
+        if n == "tool_call" and d.get("name") == "calendar_create_event"
+    )
+    call2_id = str(call2["id"])
+    assert call2_id != call1_id
+    assert call2_id.endswith("_1")
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused_rows = [
+        m for m in msgs if m.role == "assistant" and m.status == "awaiting_approval"
+    ]
+    assert paused_rows
+    paused = paused_rows[-1]
+    cont = get_continuation_from_server_state(paused.server_state, call2_id)
+    assert cont is not None
+    # First-pass reasoning plus nested-pause reasoning must both survive.
+    assert "Let me think" in cont.partial_reasoning
+    assert "second approval" in cont.partial_reasoning
+    transcript_types = [p.get("type") for p in cont.tool_transcript]
+    assert "tool_call" in transcript_types
+    assert "tool_result" in transcript_types
+    # Settled first approval + pending second call.
+    result_ids = {
+        str(p.get("toolCallId"))
+        for p in cont.tool_transcript
+        if p.get("type") == "tool_result"
+    }
+    call_ids = {
+        str(p.get("id")) for p in cont.tool_transcript if p.get("type") == "tool_call"
+    }
+    assert call1_id in result_ids or any(call1_id in rid for rid in result_ids)
+    assert call2_id in call_ids
+
+    resume2 = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000043",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": call2_id, "decision": "approve"},
+        },
+    )
+    assert resume2[-1][0] == "terminal"
+    assert resume2[-1][1]["status"] == "done"

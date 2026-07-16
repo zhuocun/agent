@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
@@ -28,9 +29,14 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _jsonb() -> sa.types.TypeEngine[object]:
+    """JSONB on Postgres, JSON on SQLite — mirrors ``app.db.types.JsonVariant``."""
+    return postgresql.JSONB().with_variant(sa.JSON(), "sqlite")
+
+
 def upgrade() -> None:
     with op.batch_alter_table("message") as batch_op:
-        batch_op.add_column(sa.Column("server_state", sa.JSON(), nullable=True))
+        batch_op.add_column(sa.Column("server_state", _jsonb(), nullable=True))
         batch_op.add_column(
             sa.Column(
                 "parts_version",

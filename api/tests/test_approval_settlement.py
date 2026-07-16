@@ -14,6 +14,7 @@ from app.tools import approval_settlement
 from app.tools.approval_settlement import (
     APPROVAL_CLAIM_ID_KEY,
     claim_and_settle_approval,
+    settle_pseudo_tool_approval,
 )
 from app.tools.builtin import TOOL_REGISTRY, ToolSpec
 from app.tools.protocol import ToolCallRequest, ToolExecutionResult
@@ -607,3 +608,124 @@ async def test_consumed_claim_id_replay_does_not_reexecute(
     assert exec_count["n"] == 1
     assert third.status == "succeeded"
     assert third.output == first.output
+
+
+async def test_settle_cas_failure_does_not_report_success(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Settle CAS loss must not return a succeeded result as durable."""
+    tool_call_id = "cal_settle_cas"
+    msg = await _seed_paused_message(
+        session_factory, parts=_pending_calendar_parts(tool_call_id=tool_call_id)
+    )
+
+    real_cas = approval_settlement._cas_persist_parts
+    claim_writes = {"n": 0}
+
+    async def _cas_fail_settle(
+        db: Any,
+        *,
+        message_id: Any,
+        parts: list[Any],
+        expected_version: int,
+    ) -> bool:
+        # Let the claim write succeed; fail subsequent settle writes.
+        has_result = any(
+            isinstance(p, dict) and p.get("type") == "tool_result" for p in parts
+        )
+        if has_result:
+            await db.rollback()
+            return False
+        claim_writes["n"] += 1
+        return await real_cas(
+            db,
+            message_id=message_id,
+            parts=parts,
+            expected_version=expected_version,
+        )
+
+    monkeypatch.setattr(approval_settlement, "_cas_persist_parts", _cas_fail_settle)
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        result = await claim_and_settle_approval(
+            session,
+            paused_message=row,
+            tool_call_id=tool_call_id,
+            decision="approve",
+            effective_input={"title": "Planning review"},
+            label="Create calendar event",
+            claim_id="claim-settle-fail",
+        )
+
+    assert claim_writes["n"] == 1
+    assert result.status == "failed"
+    assert "no settled result" in (result.error or "").lower()
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        parts = list(row.parts or [])
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "tool_result" for p in parts
+        )
+
+
+async def test_pseudo_tool_claim_cas_loss_does_not_stale_overwrite(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pseudo-tool claim CAS loss re-reads; never unconditionally overwrites."""
+    tool_call_id = "plan_clarify_1"
+    parts = [
+        {
+            "type": "tool_call",
+            "id": tool_call_id,
+            "name": "agentic_plan_clarify",
+            "label": "Clarify plan",
+            "status": "awaiting_approval",
+            "approvalState": "pending",
+            "input": {"questions": ["Scope?"]},
+        }
+    ]
+    msg = await _seed_paused_message(session_factory, parts=parts)
+    baseline_version = int(msg.parts_version or 0)
+
+    async def _cas_always_lose(
+        db: Any,
+        *,
+        message_id: Any,
+        parts: list[Any],
+        expected_version: int,
+    ) -> bool:
+        await db.rollback()
+        return False
+
+    monkeypatch.setattr(approval_settlement, "_cas_persist_parts", _cas_always_lose)
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        result = await settle_pseudo_tool_approval(
+            session,
+            paused_message=row,
+            tool_call_id=tool_call_id,
+            decision="approve",
+            output={"answers": ["narrow"]},
+            claim_id="claim-loser",
+        )
+
+    assert result.status == "failed"
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        call = next(p for p in (row.parts or []) if p.get("type") == "tool_call")
+        # Loser must not have force-written its claim onto the row.
+        assert call.get("approvalState") == "pending"
+        assert APPROVAL_CLAIM_ID_KEY not in call
+        assert int(row.parts_version or 0) == baseline_version
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "tool_result" for p in (row.parts or [])
+        )

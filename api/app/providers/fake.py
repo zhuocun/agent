@@ -125,7 +125,7 @@ from app.providers.protocol import (
 )
 from app.search.fake import FakeSearchProvider
 from app.search.protocol import SourceItem
-from app.tools.agent_loop import TOOL_FEEDBACK_SENTINEL
+from app.tools.agent_loop import TOOL_FEEDBACK_SENTINEL, parse_tool_feedback_history
 
 # Small bank of response templates. Hash the input to pick one deterministically.
 _RESPONSE_TEMPLATES: tuple[tuple[str, str, str, str], ...] = (
@@ -268,7 +268,48 @@ class FakeProvider:
             # BE-005: mid-worker tool HITL. Sub-question containing TOOL_APPROVE
             # pauses for calendar approval on the first pass; after tool feedback
             # (HITL resume) the worker emits its finding so synthesis can include it.
-            if tools_on and "TOOL_APPROVE" in sub_question and not has_tool_feedback:
+            # TOOL_APPROVE_TWICE: pause again after the first approval so resume
+            # nested-continuation fidelity (H-010) can be tested.
+            if tools_on and "TOOL_APPROVE_TWICE" in sub_question:
+                # tool_feedback_to_history packs every settled result into ONE
+                # sentinel turn — count calendar results, not sentinel messages.
+                _, feedback_results, _ = parse_tool_feedback_history(list(history))
+                feedback_rounds = sum(
+                    1
+                    for item in feedback_results
+                    if item.get("name") == "calendar_create_event"
+                )
+                if feedback_rounds < 2:
+                    await asyncio.sleep(self._delay)
+                    if feedback_rounds >= 1:
+                        # Nested pause round: emit fresh reasoning so the resume
+                        # path must accumulate it into partial_reasoning.
+                        yield ReasoningDelta(
+                            text=f"…worker {worker_index} needs a second approval"
+                        )
+                    yield AnswerDelta(
+                        text=(
+                            f"Worker {worker_index} drafting calendar pause "
+                            f"#{feedback_rounds + 1}…"
+                        )
+                    )
+                    call_id = f"fake_worker_cal_{worker_index}_{feedback_rounds}"
+                    yield ToolCall(
+                        id=call_id,
+                        name="calendar_create_event",
+                        label="Create calendar event",
+                        status="awaiting_approval",
+                        approval_state="pending",
+                        input={
+                            "title": (
+                                f"Worker {worker_index} research event "
+                                f"pass {feedback_rounds + 1}"
+                            )
+                        },
+                    )
+                    yield AwaitingApproval(tool_call_id=call_id)
+                    return
+            elif tools_on and "TOOL_APPROVE" in sub_question and not has_tool_feedback:
                 await asyncio.sleep(self._delay)
                 # H-010: emit pre-pause answer + sources so resume must not
                 # re-emit them and the checkpoint must restore source_ids.

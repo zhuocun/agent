@@ -196,6 +196,25 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _usage_update_from_anthropic(final_usage: Any) -> UsageUpdate:
+    """Map Anthropic's merged message usage into our disjoint UsageUpdate buckets.
+
+    Only the cache-READ bucket maps to our cache-priced slot. Cache
+    creation/write pricing is out of scope until prompt caching is enabled
+    (no `cache_control` is sent today, so both are 0). Extended thinking isn't
+    enabled here, so reasoning stays 0 on the real provider (reasoning
+    attribution is exercised by the FakeProvider only).
+    """
+    return UsageUpdate(
+        input_tokens=_safe_int(getattr(final_usage, "input_tokens", None)),
+        output_tokens=_safe_int(getattr(final_usage, "output_tokens", None)),
+        reasoning_tokens=0,
+        cached_input_tokens=_safe_int(
+            getattr(final_usage, "cache_read_input_tokens", None)
+        ),
+    )
+
+
 def _domain_of(url: str) -> str | None:
     """Parse the host out of a URL; None when it can't be determined."""
     from urllib.parse import urlparse
@@ -600,9 +619,14 @@ class AnthropicProvider:
                         if tool_use_acc[index].get("name") in registry_names
                     ]
                     if registry_calls:
-                        # Hand off to the external agent loop: emit a ToolCall per
-                        # request and STOP (no usage / Complete). The loop runs the
-                        # tool (HITL gate included) and re-invokes `stream(...)`.
+                        # Hand off to the external agent loop: emit this round's
+                        # UsageUpdate (so the agent loop can fold tokens), then a
+                        # ToolCall per request, and STOP without Complete. The
+                        # loop runs the tool (HITL gate included) and re-invokes
+                        # `stream(...)`. Read merged usage before leaving the
+                        # stream context — otherwise tool-round tokens are lost.
+                        final_usage = (await stream.get_final_message()).usage
+                        yield _usage_update_from_anthropic(final_usage)
                         for i, call in enumerate(registry_calls):
                             name = str(call.get("name") or "")
                             spec = tool_by_name[name]
@@ -630,24 +654,7 @@ class AnthropicProvider:
         except anthropic.APIError as exc:
             raise _map_sdk_error(exc) from exc
 
-        input_tokens = _safe_int(getattr(final_usage, "input_tokens", None))
-        output_tokens = _safe_int(getattr(final_usage, "output_tokens", None))
-        # Only the cache-READ bucket maps to our cache-priced slot. Cache
-        # creation/write pricing is out of scope until prompt caching is
-        # enabled (no `cache_control` is sent today, so both are 0).
-        cached_input_tokens = _safe_int(
-            getattr(final_usage, "cache_read_input_tokens", None)
-        )
-        # Extended thinking isn't enabled here, so reasoning stays 0 on the real
-        # provider (reasoning attribution is exercised by the FakeProvider only).
-        reasoning_tokens = 0
-
-        usage_update = UsageUpdate(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
-            cached_input_tokens=cached_input_tokens,
-        )
+        usage_update = _usage_update_from_anthropic(final_usage)
         yield usage_update
         yield Complete(usage=usage_update)
 

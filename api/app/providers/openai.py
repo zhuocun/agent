@@ -761,8 +761,10 @@ class OpenAIProvider:
                 round_events.append(event)
 
             # Agent-loop registry tools take priority: emit a `ToolCall` request
-            # for each and STOP this stream (no usage / Complete). The external
-            # agent loop executes the tool (applying the HITL approval gate),
+            # for each and STOP this stream (no Complete — the agent loop owns
+            # the final answer round). Still emit this round's `UsageUpdate` so
+            # `run_agent_loop` can fold the tool-call completion's tokens.
+            # The external agent loop executes the tool (HITL approval gate),
             # then re-invokes `stream(...)` with the result threaded back. The
             # pre-tool content this round is provider context, not the answer, so
             # it is discarded (mirrors the web-search pre-tool suppression).
@@ -774,6 +776,9 @@ class OpenAIProvider:
                 for event in round_events:
                     if isinstance(event, (ReasoningDelta, ReasoningDone)):
                         yield event
+                # Fold this stream's accumulated usage (tool-call round, plus any
+                # prior in-stream web_search rounds) before handing off.
+                yield usage_acc.to_usage_update()
                 tool_by_name = {t.name: t for t in registry_tools}
                 for i, call in enumerate(registry_calls):
                     spec = tool_by_name[call.name or ""]

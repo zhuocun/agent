@@ -1659,11 +1659,23 @@ async def stream_and_persist(
                     and fallback_binding is not None
                 ):
                     attr_binding = fallback_binding
+                # Verifier is fresh-context (no attachments); never inherit turn
+                # image pricing. Prefer SubagentDone.cost_usd when present.
+                attr_image_count = (
+                    0 if acc.role == "verifier" else image_attachment_count
+                )
                 breakdown = compute_cost_breakdown(
                     usage=acc.usage,
                     binding=attr_binding,
-                    image_count=image_attachment_count,
+                    image_count=attr_image_count,
                 )
+                if acc.role == "verifier" and acc.cost_usd is not None:
+                    breakdown = breakdown.model_copy(
+                        update={
+                            "subtotal_usd": float(acc.cost_usd),
+                            "session_surcharge_usd": 0.0,
+                        }
+                    )
                 part_attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=attr_binding,
@@ -2372,11 +2384,24 @@ async def stream_and_persist(
                             and fallback_binding is not None
                         ):
                             attr_binding = fallback_binding
+                        # Verifier is fresh-context (no attachments); never
+                        # inherit turn image pricing. Prefer authoritative
+                        # SubagentDone.cost_usd when present.
+                        attr_image_count = (
+                            0 if ev.role == "verifier" else image_attachment_count
+                        )
                         breakdown = compute_cost_breakdown(
                             usage=ev.usage,
                             binding=attr_binding,
-                            image_count=image_attachment_count,
+                            image_count=attr_image_count,
                         )
+                        if ev.role == "verifier" and ev.cost_usd is not None:
+                            breakdown = breakdown.model_copy(
+                                update={
+                                    "subtotal_usd": float(ev.cost_usd),
+                                    "session_surcharge_usd": 0.0,
+                                }
+                            )
                         done_attribution = build_attribution(
                             requested_tier_id=requested_tier_id,
                             binding=attr_binding,

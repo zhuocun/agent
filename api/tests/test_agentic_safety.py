@@ -637,6 +637,263 @@ async def test_verifier_span_is_sibling_of_aggregator_not_child(
     get_settings.cache_clear()
 
 
+async def test_resume_path_verifier_span_is_sibling_not_nested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resume-path streamed synthesis must not nest verifier under aggregator."""
+    from app.agentic.continuation import AgenticContinuation, CompletedWorkerState
+    from app.agentic.orchestrator import _resume_worker_continuation
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        ProviderEvent,
+        SubagentDone,
+        SubagentStarted,
+        UsageUpdate,
+    )
+    from app.tools.agent_loop import ToolResult
+
+    exporter = InMemorySpanExporter()
+    existing = trace.get_tracer_provider()
+    if isinstance(existing, TracerProvider):
+        existing.add_span_processor(SimpleSpanProcessor(exporter))
+    else:
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+
+    # Env wins over Settings() kwargs (pydantic-settings source order) — pin the
+    # non-fake backend so resume takes `_finalize_synthesis_streamed`.
+    monkeypatch.setenv("PROVIDER_BACKEND", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    monkeypatch.setenv("AGENTIC_ENABLED", "true")
+    monkeypatch.setenv("TOOLS_ENABLED", "true")
+    monkeypatch.setenv("AGENTIC_RUN_BUDGET_USD", "10.0")
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.provider_backend == "openai"
+    assert settings.agentic_verifier is True
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                if (
+                    "DEEP_RESEARCH_VERIFIER:" in prompt
+                    or "UNTRUSTED_VERIFIER_DATA" in prompt
+                ):
+                    yield AnswerDelta(text='{"verdict":"pass","report":"none"}')
+                    usage = UsageUpdate(input_tokens=2, output_tokens=2)
+                elif "You are the synthesizer" in prompt:
+                    yield AnswerDelta(text="model synthesis draft")
+                    usage = UsageUpdate(input_tokens=2, output_tokens=3)
+                else:
+                    yield AnswerDelta(text="worker resume finding")
+                    usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    cont = AgenticContinuation(
+        phase="worker",
+        paused_subagent_id="worker-0",
+        user_text="DEEP_RESEARCH: alpha | beta",
+        plan=("alpha", "beta"),
+        completed_workers=(
+            CompletedWorkerState(
+                subagent_id="worker-1",
+                sub_question="beta",
+                answer="beta ok",
+                usage=UsageUpdate(input_tokens=2, output_tokens=1),
+                cost_usd=0.01,
+            ),
+        ),
+        planner_usage=UsageUpdate(input_tokens=1, output_tokens=1),
+        planner_cost_usd=0.01,
+        budget_halted=False,
+        actual_cost_usd=0.02,
+        paused_worker_index=0,
+        paused_sub_question="alpha",
+        partial_answer="",
+        orchestration_mode="deep_research",
+    )
+    seed = ToolResult(
+        tool_call_id="worker-0::x",
+        name="calendar_create_event",
+        status="succeeded",
+        approval_state="approved",
+        summary="ok",
+    )
+    events = [
+        ev
+        async for ev in _resume_worker_continuation(
+            make_stream_for=make_stream_for,
+            settings=settings,
+            cost_for_usage=lambda u: 1e-9 * (u.input_tokens + u.output_tokens),
+            continuation=cont,
+            resume_tool_result=seed,
+            server_approved_call_ids=set(),
+            verifier_make_stream_for=make_stream_for,
+            verifier_cost_for_usage=lambda u: 1e-9
+            * (u.input_tokens + u.output_tokens),
+        )
+    ]
+    started_roles = {
+        e.role for e in events if isinstance(e, SubagentStarted) and e.role
+    }
+    done_roles = {e.role for e in events if isinstance(e, SubagentDone) and e.role}
+    assert "verifier" in started_roles
+    assert "verifier" in done_roles
+    assert "aggregator" in started_roles
+
+    by_role: dict[str, object] = {}
+    for span in exporter.get_finished_spans():
+        if span.name != "invoke_agent":
+            continue
+        attrs = span.attributes or {}
+        role = attrs.get("agentic.role")
+        if isinstance(role, str):
+            by_role[role] = span
+    assert "verifier" in by_role
+    assert "aggregator" in by_role
+    ver = by_role["verifier"]
+    agg = by_role["aggregator"]
+    assert ver.parent is None or ver.parent.span_id != agg.context.span_id
+    get_settings.cache_clear()
+
+
+async def test_verifier_budget_callbacks_use_authoritative_per_sample_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Budget gates must see sum(per-sample USD), not reprice(collapsed usage)."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import run_verifier
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "2")
+    get_settings.cache_clear()
+    settings = get_settings()
+    seen_spent: list[tuple[str, float]] = []
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text='{"verdict":"pass","report":"none"}')
+                usage = UsageUpdate(input_tokens=40, output_tokens=10)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    def tiered_price(usage: UsageUpdate) -> float:
+        tokens = usage.input_tokens + usage.output_tokens
+        if tokens > 50:
+            return tokens * 0.10
+        return tokens * 0.01
+
+    def can_afford(_usage: UsageUpdate, spent_usd: float) -> bool:
+        seen_spent.append(("afford", spent_usd))
+        return True
+
+    def within_cap(_usage: UsageUpdate, spent_usd: float) -> bool:
+        seen_spent.append(("cap", spent_usd))
+        return True
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft="draft",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        can_afford_next_sample=can_afford,
+        actual_within_cap=within_cap,
+        cost_for_usage=tiered_price,
+    )
+    assert len(result.sample_usages) == 2
+    assert result.cost_usd == pytest.approx(1.0)
+    assert tiered_price(result.usage) == pytest.approx(10.0)
+    # Authoritative path: 0.0 pre-1, 0.5 post-1/pre-2, 1.0 post-2.
+    assert ("afford", 0.0) in seen_spent
+    assert any(kind == "cap" and abs(s - 0.5) < 1e-9 for kind, s in seen_spent)
+    assert any(kind == "afford" and abs(s - 0.5) < 1e-9 for kind, s in seen_spent)
+    assert any(kind == "cap" and abs(s - 1.0) < 1e-9 for kind, s in seen_spent)
+    assert all(abs(s - 10.0) > 1e-9 for _, s in seen_spent)
+    get_settings.cache_clear()
+
+
+async def test_orchestrator_verifier_budget_uses_authoritative_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_run_verifier_if_enabled` must not halt on collapsed reprice when sum fits."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _run_verifier_if_enabled
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "2")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text='{"verdict":"pass","report":"none"}')
+                usage = UsageUpdate(input_tokens=40, output_tokens=10)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    def tiered_price(usage: UsageUpdate) -> float:
+        tokens = usage.input_tokens + usage.output_tokens
+        # Collapsed two-sample usage (~100 tokens): expensive — must not drive
+        # post-sample caps when authoritative per-sample sum still fits.
+        if 50 < tokens <= 200:
+            return tokens * 0.10
+        # Per-sample (~50 tokens) at $0.01/token; estimate-sized usage stays
+        # tiny so the pre-flight funding gate still admits the judge.
+        if tokens > 200:
+            return 1e-9 * tokens
+        return tokens * 0.01
+
+    # Cap fits two per-sample prices ($1.00) but not collapsed reprice ($10).
+    result = await _run_verifier_if_enabled(
+        settings=settings,
+        draft="draft",
+        make_stream_for=make_stream_for,
+        user_text="req",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        cost_for_usage=tiered_price,
+        ledger_usd=0.0,
+        cap_usd=2.0,
+        budget_headroom_usd=None,
+    )
+    assert result is not None
+    assert result.budget_halted is False
+    assert len(result.samples) == 2
+    assert result.cost_usd == pytest.approx(1.0)
+    get_settings.cache_clear()
+
+
 async def test_verifier_fresh_context_factory_args(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -827,8 +1084,8 @@ async def test_verifier_post_sample_cap_halts_without_pass_claim(
         draft="draft",
         outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
         scaffolded=True,
-        can_afford_next_sample=lambda _u: True,
-        actual_within_cap=lambda u: (u.input_tokens + u.output_tokens) <= 50,
+        can_afford_next_sample=lambda _u, _spent: True,
+        actual_within_cap=lambda u, _spent: (u.input_tokens + u.output_tokens) <= 50,
     )
     assert result.budget_halted is True
     assert result.outcome == "budget_halted"
@@ -912,7 +1169,7 @@ async def test_verifier_incomplete_n_does_not_claim_pass(
         draft="draft",
         outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
         scaffolded=True,
-        can_afford_next_sample=lambda u: u.input_tokens == 0,
+        can_afford_next_sample=lambda u, _spent: u.input_tokens == 0,
     )
     assert calls["n"] == 1
     assert len(result.samples) == 1

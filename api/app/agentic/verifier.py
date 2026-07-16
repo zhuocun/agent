@@ -553,18 +553,19 @@ async def run_verifier(
     draft: str,
     outputs: list[WorkerOutput],
     scaffolded: bool = False,
-    can_afford_next_sample: Callable[[UsageUpdate], bool] | None = None,
-    actual_within_cap: Callable[[UsageUpdate], bool] | None = None,
+    can_afford_next_sample: Callable[[UsageUpdate, float], bool] | None = None,
+    actual_within_cap: Callable[[UsageUpdate, float], bool] | None = None,
     cost_for_usage: Callable[[UsageUpdate], float] | None = None,
 ) -> VerifyResult:
     """Run the fresh-context judge (N independent samples when configured).
 
     Callers must gate on ``settings.agentic_verifier`` — this function always
-    performs provider work. ``can_afford_next_sample(usage_so_far)`` is checked
-    before each sample (estimate gate). ``actual_within_cap(usage_so_far)`` is
-    checked after each sample (hard actual-cost gate). Failures never erase
-    already-observed usage: a typed ``VerifyResult`` always carries billable
-    totals.
+    performs provider work. ``can_afford_next_sample(usage_so_far, spent_usd)``
+    is checked before each sample (estimate gate); ``spent_usd`` is the
+    authoritative sum of per-sample prices so far (not a re-price of collapsed
+    tokens). ``actual_within_cap(usage_so_far, spent_usd)`` is checked after
+    each sample (hard actual-cost gate). Failures never erase already-observed
+    usage: a typed ``VerifyResult`` always carries billable totals.
 
     When ``cost_for_usage`` is supplied, each sample is priced independently and
     ``VerifyResult.cost_usd`` is the sum of those per-request costs (not a
@@ -593,7 +594,7 @@ async def run_verifier(
 
     for _ in range(n):
         if can_afford_next_sample is not None and not can_afford_next_sample(
-            total_usage
+            total_usage, total_cost
         ):
             budget_halted = budget_halted or bool(samples)
             break
@@ -637,7 +638,9 @@ async def run_verifier(
             )
         samples.append(parse_judge_output(raw))
         _bill_sample(usage)
-        if actual_within_cap is not None and not actual_within_cap(total_usage):
+        if actual_within_cap is not None and not actual_within_cap(
+            total_usage, total_cost
+        ):
             budget_halted = True
             break
 

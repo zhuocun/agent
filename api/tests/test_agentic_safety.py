@@ -581,9 +581,13 @@ async def test_verifier_span_is_sibling_of_aggregator_not_child(
     from app.tools.agent_loop import ToolResult
 
     exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
+    existing = trace.get_tracer_provider()
+    if isinstance(existing, TracerProvider):
+        existing.add_span_processor(SimpleSpanProcessor(exporter))
+    else:
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
 
     monkeypatch.setenv("AGENTIC_VERIFIER", "true")
     monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")

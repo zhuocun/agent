@@ -447,6 +447,42 @@ class UsageRollup(Base):
     __table_args__ = (PrimaryKeyConstraint("user_id", "period_start", name="usage_rollup_pk"),)
 
 
+class PlatformBudgetReservation(Base):
+    """Durable platform-budget hold for an in-flight turn (B9).
+
+    ``get_platform_remaining_usd`` subtracts the sum of active reservations so
+    concurrent conversations cannot jointly overshoot the quota+credits
+    snapshot. One row per stream; released on terminal / pause / error / reap.
+    """
+
+    __tablename__ = "platform_budget_reservation"
+
+    id: Mapped[UUID] = mapped_column(UuidVariant, primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Durable stream that owns the hold. CASCADE when the stream row is purged.
+    stream_id: Mapped[UUID] = mapped_column(
+        UuidVariant,
+        ForeignKey("stream.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    amount_usd: Mapped[float] = mapped_column(
+        Numeric(12, 6, asdecimal=False),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("stream_id", name="uq_platform_budget_reservation_stream"),
+        Index("ix_platform_budget_reservation_user", "user_id"),
+    )
+
+
 class UsageCreditLedger(Base):
     __tablename__ = "usage_credit_ledger"
 

@@ -29,13 +29,16 @@ gated by its setting.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
-import logging
+import re
 import secrets
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
+
+import structlog
 
 from app.agentic import aggregate, budget, clarify, planner, verifier
 from app.agentic.aggregate import WorkerOutput
@@ -43,6 +46,7 @@ from app.agentic.continuation import (
     AgenticContinuation,
     CompletedWorkerState,
     serialize_continuation,
+    usage_to_wire,
 )
 from app.agentic.retry import is_retryable_provider_error
 from app.config import Settings
@@ -54,6 +58,7 @@ from app.providers.protocol import (
     Complete,
     ProviderEvent,
     ReasoningDelta,
+    ReasoningDone,
     RunCost,
     Sources,
     StatusUpdate,
@@ -64,17 +69,18 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.schemas.common import SubstitutionReasonCode
+from app.search.protocol import SourceItem
 from app.streaming.constants import EMPTY_REPLY_FALLBACK
 from app.tools.agent_loop import MakeStream, run_agent_loop
 
-_log = logging.getLogger(__name__)
+_log = structlog.get_logger(__name__)
 
 # Event types that carry an optional `subagent_id` and so can be stamped by
-# `_tag`. `ReasoningDone` (no payload) and the orchestrator-only
-# `SubagentStarted` / `SubagentDone` / `RunCost` are deliberately absent — the
-# agent loop never emits the latter, and `ReasoningDone` relays unchanged.
+# `_tag`. Orchestrator-only `SubagentStarted` / `SubagentDone` / `RunCost` are
+# deliberately absent — the agent loop never emits those.
 _TAGGABLE = (
     ReasoningDelta,
+    ReasoningDone,
     AnswerDelta,
     StatusUpdate,
     Sources,
@@ -240,14 +246,236 @@ class _WorkerPause:
     tool_transcript: tuple[dict[str, Any], ...] = ()
     partial_reasoning: str = ""
     emitted_answer_chars: int = 0
+    # B6: pause served on fallback — price + resume pin on that route.
+    used_fallback: bool = False
+
+
+def _has_nonzero_usage(u: UsageUpdate) -> bool:
+    return bool(
+        u.input_tokens
+        or u.output_tokens
+        or u.reasoning_tokens
+        or u.cached_input_tokens
+    )
+
+
+def _event_shows_external_progress(event: ProviderEvent) -> bool:
+    """True when an event was (or will be) visible outside the worker (B16).
+
+    Transparent fallback is only safe before any client-visible progress —
+    reasoning/status/sources/tools count, not just answer text / usage.
+    """
+    return isinstance(
+        event,
+        (
+            AnswerDelta,
+            ReasoningDelta,
+            StatusUpdate,
+            Sources,
+            ToolCall,
+            ToolResult,
+            AwaitingApproval,
+        ),
+    )
+
+
+# Bound the worker fan-out → consumer queue so a slow drain cannot buffer an
+# unbounded number of worker events in process memory (B23). ``await put``
+# applies backpressure; teardown uses non-blocking put with drop-oldest.
+_FANOUT_QUEUE_MAXSIZE = 256
+
+
+# Trailing incomplete citation opener: `[` or `[` + digits without a closing `]`.
+_INCOMPLETE_CITATION_TAIL_RE = re.compile(r"\[\d*$")
+
+
+class _SourceIdRemapper:
+    """Globally renumber worker-local ``Sources`` ordinals mid-fan-out (B12).
+
+    A single remapper instance owns the run's global citation space. Mid-stream
+    remapping is the only mapping step — do not call
+    ``aggregate.remap_worker_source_ids`` again at the synthesis sink (that
+    reordered by worker-plan order and diverged from event-arrival globals).
+
+    AnswerDelta rewriting is chunk-safe: a marker split across deltas
+    (``"See ["`` + ``"1]."``) is held in a per-subagent carry until complete.
+    """
+
+    def __init__(self, *, start: int = 1) -> None:
+        self._next = max(1, start)
+        self._map: dict[tuple[str, int], int] = {}
+        # Global-id → remapped SourceItem (merged catalog for the aggregator).
+        self._catalog: dict[int, SourceItem] = {}
+        # Per-subagent unfinished citation fragment from the prior AnswerDelta.
+        self._answer_carry: dict[str, str] = {}
+
+    def seed_catalog(self, items: Sequence[SourceItem]) -> None:
+        """Pre-load a persisted catalog (resume) and advance the next id."""
+        for item in items:
+            gid = int(item.id)
+            self._catalog[gid] = item
+            if gid >= self._next:
+                self._next = gid + 1
+
+    def merged_items(self) -> list[SourceItem]:
+        """Return the merged global catalog in ascending citation id order."""
+        return [self._catalog[i] for i in sorted(self._catalog)]
+
+    def remap_sources(self, event: Sources, subagent_id: str) -> Sources:
+        new_items: list[SourceItem] = []
+        for item in event.items:
+            key = (subagent_id, int(item.id))
+            if key not in self._map:
+                self._map[key] = self._next
+                self._next += 1
+            gid = self._map[key]
+            remapped = item.model_copy(update={"id": gid})
+            self._catalog[gid] = remapped
+            new_items.append(remapped)
+        return replace(event, items=new_items)
+
+    def rewrite_answer_text(self, text: str, subagent_id: str) -> str:
+        """Rewrite ``[n]`` markers using this subagent's local→global map.
+
+        Incomplete trailing ``[`` / ``[12`` fragments are held until the next
+        chunk (or ``flush_answer_carry``) so split markers remapped correctly.
+        """
+        combined = self._answer_carry.get(subagent_id, "") + text
+        hold = ""
+        process = combined
+        incomplete = _INCOMPLETE_CITATION_TAIL_RE.search(combined)
+        if incomplete is not None:
+            hold = combined[incomplete.start() :]
+            process = combined[: incomplete.start()]
+        self._answer_carry[subagent_id] = hold
+
+        if not process:
+            return ""
+        if not self._map:
+            return process
+
+        def _sub(match: re.Match[str]) -> str:
+            local = int(match.group(1))
+            global_id = self._map.get((subagent_id, local))
+            if global_id is None:
+                return match.group(0)
+            return f"[{global_id}]"
+
+        return aggregate._CITATION_MARKER_RE.sub(_sub, process)
+
+    def flush_answer_carry(self, subagent_id: str) -> str:
+        """Emit any held fragment at worker end, rewriting complete markers."""
+        hold = self._answer_carry.pop(subagent_id, "")
+        if not hold:
+            return ""
+        if not self._map:
+            return hold
+
+        def _sub(match: re.Match[str]) -> str:
+            local = int(match.group(1))
+            global_id = self._map.get((subagent_id, local))
+            if global_id is None:
+                return match.group(0)
+            return f"[{global_id}]"
+
+        return aggregate._CITATION_MARKER_RE.sub(_sub, hold)
+
+    def mapped_ids_for(self, subagent_id: str, local_ids: list[str]) -> tuple[str, ...]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for sid in local_ids:
+            try:
+                local_int = int(sid)
+            except ValueError:
+                if sid not in seen:
+                    out.append(sid)
+                    seen.add(sid)
+                continue
+            gid = self._map.get((subagent_id, local_int))
+            if gid is None:
+                # Source emitted only via WorkerOutput path — allocate now.
+                self._map[(subagent_id, local_int)] = self._next
+                gid = self._next
+                self._next += 1
+            token = str(gid)
+            if token not in seen:
+                out.append(token)
+                seen.add(token)
+        return tuple(out)
+
+
+def _max_source_id(ids: Iterable[str]) -> int:
+    """Largest integer citation id in ``ids`` (non-numeric ignored)."""
+    max_id = 0
+    for sid in ids:
+        try:
+            max_id = max(max_id, int(sid))
+        except (TypeError, ValueError):
+            continue
+    return max_id
+
+
+def _queue_item_is_protected(item: object) -> bool:
+    """Teardown must not drop completion control messages (B23)."""
+    return isinstance(item, (_WorkerSentinel, SubagentDone, _WorkerPause))
+
+
+def _queue_put_nowait_drop_oldest(
+    queue: asyncio.Queue[Any], item: object
+) -> None:
+    """Enqueue ``item`` without awaiting; drop oldest *unprotected* if full (B23).
+
+    Used on cancellation / sentinel paths so teardown cannot block forever on a
+    full fan-out queue when the consumer has already stopped draining.
+
+    Never drops ``_WorkerSentinel`` / ``SubagentDone`` / ``_WorkerPause`` already
+    queued — losing a sentinel can hang the fan-out consumer forever.
+    """
+    while True:
+        try:
+            queue.put_nowait(item)
+            return
+        except asyncio.QueueFull:
+            held_protected: list[object] = []
+            dropped = False
+            while True:
+                try:
+                    old = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if not dropped and not _queue_item_is_protected(old):
+                    dropped = True
+                    continue
+                held_protected.append(old)
+            for old in held_protected:
+                try:
+                    queue.put_nowait(old)
+                except asyncio.QueueFull:
+                    # Only protected items remain and the queue is saturated.
+                    # maxsize (>=256) exceeds max workers, so this is unreachable
+                    # in production; keep protected items and retry put.
+                    break
+            if not dropped:
+                # Queue holds only protected control messages. If we are
+                # inserting another sentinel that is already present, skip;
+                # otherwise force one unprotected-style slot by refusing to
+                # discard sentinels and relying on maxsize >> worker count.
+                if isinstance(item, _WorkerSentinel):
+                    # Deduplicate: if an identical sentinel is already queued, done.
+                    # (We cannot peek easily after re-queue; treat as success if
+                    # put still fails after a no-drop cycle — consumer will drain.)
+                    with contextlib.suppress(asyncio.QueueFull):
+                        queue.put_nowait(item)
+                    return
+                # Non-sentinel teardown item with a protected-only full queue:
+                # drop nothing further; best-effort put and return.
+                with contextlib.suppress(asyncio.QueueFull):
+                    queue.put_nowait(item)
+                return
 
 
 def _tag(event: ProviderEvent, subagent_id: str) -> ProviderEvent:
-    """Stamp `subagent_id` onto a subagent's event (no-op for `ReasoningDone`).
-
-    `ReasoningDone` carries no `subagent_id` field (it has no payload to
-    attribute), so it relays unchanged; every other event the agent loop can emit
-    has the optional field and is rewritten via `dataclasses.replace`.
+    """Stamp `subagent_id` onto a subagent's event.
 
     ToolCall / ToolResult / AwaitingApproval ids are namespaced per subagent
     (H-004) so colliding provider-issued ids cannot cross workers.
@@ -424,6 +652,8 @@ async def _maybe_plan_approval(
     skip_started: bool = False,
     call_id: str | None = None,
     clarifications: list[str] | list[clarify.ClarificationRecord] | None = None,
+    planner_cost_usd: float = 0.0,
+    planner_usage: UsageUpdate | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan-approval HITL gate (M3) — async generator of pause events.
 
@@ -438,6 +668,10 @@ async def _maybe_plan_approval(
     (e.g. after emitting a planner usage receipt) so we do not double-start.
     ``clarifications`` (optional) are prior clarify-before-plan answers persisted
     on the pause tool input so a later plan-approval resume can re-attach them.
+
+    ``planner_cost_usd`` / ``planner_usage`` (B4) are server-only fields stamped
+    onto the pause tool input (stripped by ``RESERVED_CONTROL_KEYS``) so a
+    plan-approved resume can seed the run-cap ledger without re-billing.
     """
     if not settings.agentic_plan_approval:
         return
@@ -461,6 +695,13 @@ async def _maybe_plan_approval(
         "estimatedCostUsd": estimate_usd,
         "capUsd": cap_usd,
     }
+    # B4: persist actual planner spend for resume ledger seeding (H-012 stripped).
+    if planner_cost_usd > 0.0 or (
+        planner_usage is not None and _has_nonzero_usage(planner_usage)
+    ):
+        plan_input["plannerCostUsd"] = planner_cost_usd
+        if planner_usage is not None:
+            plan_input["plannerUsage"] = usage_to_wire(planner_usage)
     if clarifications:
         if isinstance(clarifications[0], clarify.ClarificationRecord):
             cleaned_records = [
@@ -715,16 +956,23 @@ async def _finalize_synthesis(
     verifier_result: verifier.VerifyResult | None = None,
     verifier_outcome: Literal["succeeded", "failed"] = "succeeded",
     emit_verifier_bracket: bool = False,
+    merged_sources: Sequence[SourceItem] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Emit the `aggregator` subagent + optional verifier receipt + run totals.
 
     Shared by the normal fan-out tail AND the early-exit paths (over-budget,
     plan-declined) so they all persist a clean `done` turn with the same shape:
     aggregator subagent → (verifier) → run-total `Complete` → `run_cost`.
+
+    When ``merged_sources`` is provided, emit a single aggregator-tagged
+    ``Sources`` event before the synthesis answer so main-answer ``[n]``
+    citations resolve against the global catalog (B12).
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
     )
+    if merged_sources:
+        yield Sources(items=list(merged_sources), subagent_id=_AGGREGATOR_ID)
     yield AnswerDelta(text=synthesis, subagent_id=_AGGREGATOR_ID)
     aggregator_usage = UsageUpdate()
     aggregator_cost = cost_for_usage(aggregator_usage)
@@ -798,6 +1046,7 @@ async def _finalize_synthesis_streamed(
     artifacts: list[aggregate.WorkerArtifact] | None = None,
     verifier_cost_for_usage: CostForUsage | None = None,
     clarifications: list[dict[str, str]] | None = None,
+    merged_sources: Sequence[SourceItem] | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
@@ -809,10 +1058,15 @@ async def _finalize_synthesis_streamed(
 
     Mid-aggregator (BE-014): if accumulated aggregator spend pushes the run over
     the cap, stop the stream early and label the partial.
+
+    ``merged_sources`` (B12): global catalog emitted after Started and before
+    any synthesis AnswerDelta so main-answer citations resolve.
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
     )
+    if merged_sources:
+        yield Sources(items=list(merged_sources), subagent_id=_AGGREGATOR_ID)
     prompt = aggregate.build_synthesis_prompt(
         user_text,
         outputs,
@@ -836,45 +1090,53 @@ async def _finalize_synthesis_streamed(
         prompt, allowed_tools=agg_allowed, web_search=False
     )
     quiet_provenance = False
+    aggregator_failed = False
     # Aggregator OTel span covers only aggregator work — never the verifier.
     with invoke_agent_span(
         subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
     ):
-        async for event in run_agent_loop(
-            make_stream=agg_make,
-            settings=settings,
-            allowed_tools=agg_allowed,
-        ):
-            if verify_after and isinstance(event, AwaitingApproval):
-                # Typed failure: no aggregator continuation to attach (O-011).
-                yield _tag(event, _AGGREGATOR_ID)
-                return
-            if verify_after and isinstance(
-                event, (ToolCall, ToolResult, Sources, StatusUpdate)
+        try:
+            async for event in run_agent_loop(
+                make_stream=agg_make,
+                settings=settings,
+                allowed_tools=agg_allowed,
             ):
-                yield _tag(event, _AGGREGATOR_ID)
-                quiet_provenance = True
-                aggregator_usage = _fold_usage(event, aggregator_usage)
-                continue
-            if isinstance(event, AnswerDelta):
-                answer_parts.append(event.text)
-                if not verify_after:
+                if verify_after and isinstance(event, AwaitingApproval):
+                    # Typed failure: no aggregator continuation to attach (O-011).
                     yield _tag(event, _AGGREGATOR_ID)
-            elif isinstance(event, AwaitingApproval):
-                # Non-verify path: also impossible under empty allowlist; treat as
-                # terminal failure rather than a resumable pause without state.
-                yield _tag(event, _AGGREGATOR_ID)
-                return
-            elif not verify_after:
-                yield _tag(event, _AGGREGATOR_ID)
-            aggregator_usage = _fold_usage(event, aggregator_usage)
-            if not agg_budget_halted and budget.exceeds_cap(
-                actual_usd=worker_total_cost + cost_for_usage(aggregator_usage),
-                cap_usd=cap_usd,
-                headroom_usd=budget_headroom_usd,
-            ):
-                agg_budget_halted = True
-                break
+                    return
+                if verify_after and isinstance(
+                    event, (ToolCall, ToolResult, Sources, StatusUpdate)
+                ):
+                    yield _tag(event, _AGGREGATOR_ID)
+                    quiet_provenance = True
+                    aggregator_usage = _fold_usage(event, aggregator_usage)
+                    continue
+                if isinstance(event, AnswerDelta):
+                    answer_parts.append(event.text)
+                    if not verify_after:
+                        yield _tag(event, _AGGREGATOR_ID)
+                elif isinstance(event, AwaitingApproval):
+                    # Non-verify path: also impossible under empty allowlist; treat as
+                    # terminal failure rather than a resumable pause without state.
+                    yield _tag(event, _AGGREGATOR_ID)
+                    return
+                elif not verify_after:
+                    yield _tag(event, _AGGREGATOR_ID)
+                aggregator_usage = _fold_usage(event, aggregator_usage)
+                if not agg_budget_halted and budget.exceeds_cap(
+                    actual_usd=worker_total_cost + cost_for_usage(aggregator_usage),
+                    cap_usd=cap_usd,
+                    headroom_usd=budget_headroom_usd,
+                ):
+                    agg_budget_halted = True
+                    break
+        except Exception:
+            # B8: never raise to the generic handler error path — fall back to
+            # deterministic synthesize() over completed workers and emit a failed
+            # aggregator receipt with whatever usage was observed.
+            _log.exception("agentic.aggregator_failed")
+            aggregator_failed = True
     if agg_budget_halted:
         budget_halted = True
     streamed = "".join(answer_parts)
@@ -889,10 +1151,16 @@ async def _finalize_synthesis_streamed(
         suffix += (
             f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"
         )
-    if not streamed.strip():
+    if aggregator_failed or not streamed.strip():
         draft = aggregate.synthesize(
-            outputs, planned=planned, budget_halted=budget_halted, failed=failed
+            outputs,
+            planned=planned,
+            budget_halted=budget_halted or aggregator_failed,
+            failed=failed,
         )
+        if aggregator_failed and streamed.strip():
+            # Keep any partial model text ahead of the deterministic fallback.
+            draft = streamed + "\n\n" + draft
     elif suffix:
         draft = streamed + suffix
 
@@ -903,7 +1171,8 @@ async def _finalize_synthesis_streamed(
     verifier_started = False
     # Skip verify when quiet-collect saw tool/search provenance — the draft may
     # incorporate hidden work; surface events already yielded above.
-    if verify_after and not quiet_provenance:
+    # Also skip when the aggregator itself failed (B8) — draft is deterministic.
+    if verify_after and not quiet_provenance and not aggregator_failed:
         aggregator_cost_so_far = cost_for_usage(aggregator_usage)
         # Funding gate before opening the verifier bracket so we never emit a
         # Started with no matching Done on a budget skip.
@@ -955,20 +1224,27 @@ async def _finalize_synthesis_streamed(
             ):
                 yield event
         yield AnswerDelta(text=final_answer, subagent_id=_AGGREGATOR_ID)
-    elif (verify_after and quiet_provenance) or not streamed.strip():
+    elif aggregator_failed or (verify_after and quiet_provenance) or not streamed.strip():
         yield AnswerDelta(text=draft, subagent_id=_AGGREGATOR_ID)
     elif suffix:
         yield AnswerDelta(text=suffix, subagent_id=_AGGREGATOR_ID)
 
     aggregator_cost = cost_for_usage(aggregator_usage)
     yield Complete(usage=aggregator_usage, subagent_id=_AGGREGATOR_ID)
+    agg_outcome: Literal["succeeded", "failed", "budget_cancelled"]
+    if aggregator_failed:
+        agg_outcome = "failed"
+    elif agg_budget_halted:
+        agg_outcome = "budget_cancelled"
+    else:
+        agg_outcome = "succeeded"
     yield SubagentDone(
         subagent_id=_AGGREGATOR_ID,
         label=_AGGREGATOR_LABEL,
         role="aggregator",
         usage=aggregator_usage,
         cost_usd=aggregator_cost,
-        outcome="budget_cancelled" if agg_budget_halted else "succeeded",
+        outcome=agg_outcome,
     )
     verifier_cost = 0.0
     v_usage = UsageUpdate()
@@ -981,7 +1257,7 @@ async def _finalize_synthesis_streamed(
     total_cost = worker_total_cost + aggregator_cost + verifier_cost
     yield Complete(usage=total_usage)
     effective_budget_halted = budget_halted or verifier_budget_halted
-    partial = effective_budget_halted or failed > 0
+    partial = effective_budget_halted or failed > 0 or aggregator_failed
     yield RunCost(
         subtotal_usd=total_cost,
         cap_usd=cap_usd,
@@ -1039,7 +1315,7 @@ async def _collect_answer(
 # --- single mode (M1) ---------------------------------------------------------
 
 
-async def _run_single(
+async def run_single(
     *,
     make_stream_for: StreamFactory,
     settings: Settings,
@@ -1048,12 +1324,20 @@ async def _run_single(
     budget_headroom_usd: float | None = None,
     server_approved_call_ids: set[str] | None = None,
     initial_tool_results: list[ToolResult] | None = None,
+    prior_run_cost_usd: float = 0.0,
+    prior_run_usage: UsageUpdate | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """One agent loop wrapped as the `primary` subagent.
 
     Enforces the same per-run cap as deep research (BE-020): pre-admit against a
     one-primary worst-case estimate, and mid-flight check against the effective
     cap composed with headroom.
+
+    H-011: primary HITL continuation phase is not implemented. On tool-approval
+    resume the handler must pass ``prior_run_cost_usd`` / ``prior_run_usage``
+    (B5) so the per-run cap ledger is not reset. Pause-turn user billing stays
+    with the handler; these seeds only affect the orchestrator cap ledger +
+    cumulative attribution.
     """
     subagent_id = "primary"
     cap = settings.agentic_run_budget_usd
@@ -1095,14 +1379,21 @@ async def _run_single(
         )
         return
 
+    prior_usage = prior_run_usage or UsageUpdate()
+    prior_cost = max(0.0, float(prior_run_cost_usd or 0.0))
+    if prior_cost <= 0.0 and _has_nonzero_usage(prior_usage):
+        prior_cost = cost_for_usage(prior_usage)
+
     yield SubagentStarted(subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary")
     yield RunCost(
-        subtotal_usd=0.0,
+        subtotal_usd=prior_cost,
         cap_usd=cap,
-        confidence="estimate",
+        confidence="estimate" if prior_cost <= 0.0 else "exact",
         phase="plan",
     )
-    usage = UsageUpdate()
+    # B5: track this session's usage separately from pre-pause seed so
+    # `_fold_usage` replace semantics cannot erase prior spend from the ledger.
+    session_usage = UsageUpdate()
     answer_parts: list[str] = []
     budget_halted = False
     with invoke_agent_span(subagent_id=subagent_id, role="primary", label=_PRIMARY_LABEL):
@@ -1114,9 +1405,10 @@ async def _run_single(
         ):
             if isinstance(event, AnswerDelta):
                 answer_parts.append(event.text)
-            usage = _fold_usage(event, usage)
+            session_usage = _fold_usage(event, session_usage)
+            session_cost = cost_for_usage(session_usage)
             if not budget_halted and budget.exceeds_cap(
-                actual_usd=cost_for_usage(usage),
+                actual_usd=prior_cost + session_cost,
                 cap_usd=cap,
                 headroom_usd=budget_headroom_usd,
             ):
@@ -1124,6 +1416,8 @@ async def _run_single(
             yield _tag(event, subagent_id)
             if isinstance(event, AwaitingApproval):
                 # Primary tool HITL: end the subagent here; handler parks the turn.
+                # HANDLING: persist session_usage + prior_cost+session_cost and
+                # pass them back as prior_run_* on resume (B5 / H-011).
                 return
             if budget_halted and isinstance(event, (Complete, UsageUpdate)):
                 break
@@ -1136,15 +1430,19 @@ async def _run_single(
             ),
             subagent_id=subagent_id,
         )
-    cost = cost_for_usage(usage)
+    cumulative_usage = _sum_usages([prior_usage, session_usage])
+    cost = prior_cost + cost_for_usage(session_usage)
     yield SubagentDone(
         subagent_id=subagent_id,
         label=_PRIMARY_LABEL,
         role="primary",
-        usage=usage,
+        usage=cumulative_usage,
         cost_usd=cost,
         outcome="budget_cancelled" if budget_halted else "succeeded",
     )
+    # B14: untagged final Complete so the handler's "last Complete wins" fold
+    # captures top-level turn tokens (mirrors deep research).
+    yield Complete(usage=cumulative_usage)
     yield RunCost(
         subtotal_usd=cost,
         cap_usd=cap,
@@ -1227,6 +1525,19 @@ async def _resume_worker_continuation(
         (i, f"worker-{i}", f"Worker {i + 1}", sq)
         for i, sq in enumerate(sub_questions)
     ]
+    # B12: one remapper for the resume session. Seed from the pause-turn catalog
+    # (and max known ids) so new local ordinals cannot collide with pre-pause
+    # globals; mid-stream remap is the only mapping step.
+    source_remapper = _SourceIdRemapper()
+    if continuation.source_catalog:
+        source_remapper.seed_catalog(continuation.source_catalog)
+    else:
+        seed_max = _max_source_id(continuation.source_ids)
+        for out in results.values():
+            seed_max = max(seed_max, _max_source_id(out.source_ids))
+        if seed_max > 0:
+            source_remapper = _SourceIdRemapper(start=seed_max + 1)
+
     if continuation.clarifications:
         # C-002: keep full Q&A records — do not collapse to non-blank answers
         # (that drops question text and re-shifts blank positions).
@@ -1259,6 +1570,7 @@ async def _resume_worker_continuation(
             failed=failed_workers,
             clarifications=resume_clarification_answers,
         )
+        merged_sources = source_remapper.merged_items()
         # Streamed finalize owns aggregator (+ sibling verifier) spans — do not
         # nest them under an outer resume aggregator span (V-009 / Sol).
         if not scaffolded and ordered_outputs and not halted:
@@ -1283,6 +1595,7 @@ async def _resume_worker_continuation(
                 scaffolded=scaffolded,
                 artifacts=ordered_artifacts,
                 clarifications=synth_clarify,
+                merged_sources=merged_sources or None,
             ):
                 yield event
             return
@@ -1299,6 +1612,7 @@ async def _resume_worker_continuation(
                 failed_worker_count=failed_workers,
                 planned_workers=len(sub_questions),
                 completed_workers=completed_count,
+                merged_sources=merged_sources or None,
             ):
                 yield event
 
@@ -1329,11 +1643,19 @@ async def _resume_worker_continuation(
     tool_transcript: list[dict[str, Any]] = [
         dict(part) for part in continuation.tool_transcript
     ]
-    # O-002: restore pre-pause usage so finals include pause spend.
-    usage = continuation.paused_worker_usage or UsageUpdate()
+    # B2: keep pre-pause usage immutable; fold resume-only usage separately so
+    # `_fold_usage` replace semantics cannot erase pause spend from the ledger.
+    pre_pause_usage = continuation.paused_worker_usage or UsageUpdate()
     pre_pause_cost = float(continuation.paused_worker_cost_usd or 0.0)
-    if pre_pause_cost <= 0.0 and continuation.paused_worker_usage is not None:
-        pre_pause_cost = cost_for_usage(continuation.paused_worker_usage)
+    if pre_pause_cost <= 0.0 and _has_nonzero_usage(pre_pause_usage):
+        # Prefer the durable pause pricer: if the pause was on fallback, the
+        # stored paused_worker_cost_usd should already be set; otherwise price
+        # on primary (legacy blobs).
+        if continuation.paused_worker_used_fallback and fallback_cost_for_usage is not None:
+            pre_pause_cost = fallback_cost_for_usage(pre_pause_usage)
+        else:
+            pre_pause_cost = cost_for_usage(pre_pause_usage)
+    resume_usage = UsageUpdate()
     # H-010: seed prior tool results from the checkpoint, then the resume settle.
     prior_results: list[ToolResult] = []
     for part in continuation.tool_transcript:
@@ -1393,20 +1715,17 @@ async def _resume_worker_continuation(
         phase="worker",
     )
 
-    used_fallback = False
-    sub_code: SubstitutionReasonCode | None = None
+    # B6: pin resume onto the served route from the pause turn.
+    used_fallback = bool(continuation.paused_worker_used_fallback)
+    sub_code: SubstitutionReasonCode | None = (
+        "provider_fallback" if used_fallback else None
+    )
     sub_provider: str | None = None
     sub_model: str | None = None
     sub_label: str | None = None
     worker_failed = False
-
-    def _has_usage(u: UsageUpdate) -> bool:
-        return bool(
-            u.input_tokens
-            or u.output_tokens
-            or u.reasoning_tokens
-            or u.cached_input_tokens
-        )
+    # B16: any externally visible progress on this resume attempt.
+    visible_progress = False
 
     def _price(u: UsageUpdate) -> float:
         if used_fallback and fallback_cost_for_usage is not None:
@@ -1422,6 +1741,15 @@ async def _resume_worker_continuation(
         if sub_label is None and fallback_display_label is not None:
             sub_label = fallback_display_label
 
+    if used_fallback:
+        _stamp_fallback_route()
+
+    def _cumulative_usage() -> UsageUpdate:
+        return _sum_usages([pre_pause_usage, resume_usage])
+
+    def _cumulative_cost() -> float:
+        return pre_pause_cost + _price(resume_usage)
+
     def _nested_continuation() -> AgenticContinuation:
         partial = "".join(answer_parts)
         return AgenticContinuation(
@@ -1434,12 +1762,14 @@ async def _resume_worker_continuation(
             planner_cost_usd=planner_cost,
             budget_halted=budget_halted,
             failed_workers=failed_workers,
-            actual_cost_usd=ledger_usd,
+            # Ledger already includes pre_pause; add resume spend only.
+            actual_cost_usd=ledger_usd + _price(resume_usage),
             paused_worker_index=index,
             paused_sub_question=sub_question,
             partial_answer=partial,
             partial_reasoning="".join(reasoning_parts),
             source_ids=tuple(source_ids),
+            source_catalog=tuple(source_remapper.merged_items()),
             tool_transcript=tuple(tool_transcript),
             emitted_answer_chars=max(
                 continuation.emitted_answer_chars, len(partial)
@@ -1449,12 +1779,14 @@ async def _resume_worker_continuation(
             tier_id=continuation.tier_id,
             provider_id=continuation.provider_id,
             model_id=continuation.model_id,
-            paused_worker_usage=usage,
-            paused_worker_cost_usd=_price(usage),
+            paused_worker_usage=_cumulative_usage(),
+            paused_worker_cost_usd=_cumulative_cost(),
+            paused_worker_used_fallback=used_fallback,
         )
 
     async def _drain(make_stream: MakeStream) -> AsyncIterator[ProviderEvent | Literal["paused"]]:
-        nonlocal usage, budget_halted, sub_code, sub_provider, sub_model, sub_label
+        nonlocal resume_usage, budget_halted, sub_code, sub_provider, sub_model, sub_label
+        nonlocal visible_progress
         async for event in run_agent_loop(
             make_stream=make_stream,
             settings=settings,
@@ -1462,13 +1794,17 @@ async def _resume_worker_continuation(
             server_approved_call_ids=server_approved_call_ids,
             initial_tool_results=initial,
         ):
+            if _event_shows_external_progress(event):
+                visible_progress = True
             if isinstance(event, AnswerDelta):
-                answer_parts.append(event.text)
+                text = source_remapper.rewrite_answer_text(event.text, paused_id)
+                answer_parts.append(text)
+                if text != event.text:
+                    event = replace(event, text=text)
             if isinstance(event, Sources):
+                event = source_remapper.remap_sources(event, paused_id)
                 for item in event.items:
-                    sid = getattr(item, "id", None)
-                    if sid is not None:
-                        source_ids.append(str(sid))
+                    source_ids.append(str(item.id))
             if isinstance(event, Complete) and event.substitution is not None:
                 sub_code = event.substitution
                 sub_provider = event.substituted_provider
@@ -1506,8 +1842,12 @@ async def _resume_worker_continuation(
                 )
             if isinstance(event, ReasoningDelta):
                 reasoning_parts.append(event.text)
-            usage = _fold_usage(event, usage)
+            resume_usage = _fold_usage(event, resume_usage)
             if isinstance(event, AwaitingApproval):
+                tail = source_remapper.flush_answer_carry(paused_id)
+                if tail:
+                    answer_parts.append(tail)
+                    yield _tag(AnswerDelta(text=tail, subagent_id=paused_id), paused_id)
                 yield _tag(
                     replace(
                         event, continuation=serialize_continuation(_nested_continuation())
@@ -1516,13 +1856,22 @@ async def _resume_worker_continuation(
                 )
                 yield "paused"
                 return
+            # B2/B3: ledger already holds pre_pause; add full resume cost only.
             if not budget_halted and budget.exceeds_cap(
-                actual_usd=ledger_usd - pre_pause_cost + _price(usage),
+                actual_usd=ledger_usd + _price(resume_usage),
                 cap_usd=cap,
                 headroom_usd=budget_headroom_usd,
             ):
                 budget_halted = True
             yield _tag(event, paused_id)
+            # B3: mirror `run_single` — stop draining once the cap is breached.
+            if budget_halted and isinstance(event, (Complete, UsageUpdate)):
+                break
+        # B12: flush held citation fragment after the resume stream ends.
+        tail = source_remapper.flush_answer_carry(paused_id)
+        if tail:
+            answer_parts.append(tail)
+            yield _tag(AnswerDelta(text=tail, subagent_id=paused_id), paused_id)
 
     with invoke_agent_span(subagent_id=paused_id, role="worker", label=label):
         yield SubagentStarted(subagent_id=paused_id, label=label, role="worker")
@@ -1533,34 +1882,30 @@ async def _resume_worker_continuation(
             answer_parts.append(continuation.partial_answer)
 
         nested_paused = False
+
+        def _primary_make() -> MakeStream:
+            # B6: when the pause was on fallback, skip primary and pin resume.
+            if used_fallback and fallback_make_stream_for is not None:
+                return fallback_make_stream_for(
+                    prompt, allowed_tools=_WORKER_ALLOWED_TOOLS
+                )
+            return make_stream_for(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS)
+
         try:
-            async for item in _drain(
-                make_stream_for(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS)
-            ):
+            async for item in _drain(_primary_make()):
                 if item == "paused":
                     nested_paused = True
                     break
                 yield item
         except BaseException as exc:
-            prior_partial = (
-                [continuation.partial_answer] if continuation.partial_answer else []
-            )
-            had_partial = (
-                bool(answer_parts) and answer_parts != prior_partial
-            ) or _has_usage(usage)
-            # Treat only newly streamed text/usage as partial for fallback gate.
-            streamed_new = (
-                ("".join(answer_parts) != (continuation.partial_answer or ""))
-                or (
-                    _has_usage(usage)
-                    and usage != (continuation.paused_worker_usage or UsageUpdate())
-                )
-            )
+            # B16: refuse transparent fallback after any externally visible event.
             if (
-                not streamed_new
+                not visible_progress
+                and not used_fallback
                 and fallback_make_stream_for is not None
                 and is_retryable(exc)
             ):
+                fb_factory = fallback_make_stream_for
                 if isinstance(exc, AppError) and exc.envelope.code == "RATE_LIMITED":
                     sub_code = "rate_limited"
                 else:
@@ -1569,9 +1914,7 @@ async def _resume_worker_continuation(
                 _stamp_fallback_route()
                 try:
                     async for item in _drain(
-                        fallback_make_stream_for(
-                            prompt, allowed_tools=_WORKER_ALLOWED_TOOLS
-                        )
+                        fb_factory(prompt, allowed_tools=_WORKER_ALLOWED_TOOLS)
                     ):
                         if item == "paused":
                             nested_paused = True
@@ -1581,48 +1924,50 @@ async def _resume_worker_continuation(
                 except BaseException as retry_exc:
                     _log.warning(
                         "agentic.resume_worker_fallback_failed",
-                        extra={"subagent_id": paused_id, "error": str(retry_exc)},
+                        subagent_id=paused_id,
+                        error=str(retry_exc),
                     )
                     worker_failed = True
             else:
-                _ = had_partial
                 _log.warning(
                     "agentic.resume_worker_failed",
-                    extra={"subagent_id": paused_id, "error": str(exc)},
+                    subagent_id=paused_id,
+                    error=str(exc),
                 )
                 worker_failed = True
 
         if nested_paused:
             return
 
+        resume_cost = _price(resume_usage)
+        cumulative_usage = _cumulative_usage()
+        cumulative_cost = pre_pause_cost + resume_cost
+        # B2: add FULL resume cost to the logical ledger (pre_pause already in it).
+        ledger_usd = ledger_usd + resume_cost
+
         if worker_failed:
             failed_workers += 1
-            failed_cost = _price(usage)
             yield SubagentDone(
                 subagent_id=paused_id,
                 label=label,
                 role="worker",
-                usage=usage,
-                cost_usd=failed_cost,
+                usage=cumulative_usage,
+                cost_usd=cumulative_cost,
                 outcome="failed",
                 substitution=sub_code,
                 substituted_provider=sub_provider,
                 substituted_model=sub_model,
                 substituted_display_label=sub_label,
             )
-            usages[paused_id] = usage
-            costs[paused_id] = failed_cost
-            ledger_usd = ledger_usd - pre_pause_cost + failed_cost
+            usages[paused_id] = cumulative_usage
+            costs[paused_id] = cumulative_cost
         else:
-            cost = _price(usage)
-            post_delta = max(0.0, cost - pre_pause_cost)
-            ledger_usd = ledger_usd + post_delta
             yield SubagentDone(
                 subagent_id=paused_id,
                 label=label,
                 role="worker",
-                usage=usage,
-                cost_usd=cost,
+                usage=cumulative_usage,
+                cost_usd=cumulative_cost,
                 outcome="budget_cancelled" if budget_halted else "succeeded",
                 substitution=sub_code,
                 substituted_provider=sub_provider,
@@ -1635,9 +1980,10 @@ async def _resume_worker_continuation(
                 answer="".join(answer_parts),
                 source_ids=tuple(dict.fromkeys(source_ids)),
             )
-            usages[paused_id] = usage
-            costs[paused_id] = cost
+            usages[paused_id] = cumulative_usage
+            costs[paused_id] = cumulative_cost
 
+    # Mid-stream remapper already assigned global ids — do not remap again.
     async for event in _emit_synthesis(halted=budget_halted):
         yield event
 
@@ -1671,6 +2017,8 @@ async def _run_deep_research(
     is_retryable: IsRetryable = is_retryable_provider_error,
     verifier_make_stream_for: StreamFactory | None = None,
     verifier_cost_for_usage: CostForUsage | None = None,
+    prior_planner_cost_usd: float = 0.0,
+    prior_planner_usage: UsageUpdate | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Clarify? → plan → (approve) → admit → parallel fan-out → (verify) → synthesis.
 
@@ -1685,6 +2033,10 @@ async def _run_deep_research(
 
     ``verifier_cost_for_usage`` is the phase pricer for the fresh-context judge
     (attachments=None → image_count=0). Defaults to ``cost_for_usage``.
+
+    ``prior_planner_cost_usd`` / ``prior_planner_usage`` (B4): on plan-approved
+    resume, seed the run-cap ledger with planner spend from the pause turn
+    without re-emitting a planner receipt (handler already billed pause turn).
     """
     verifier_pricer = verifier_cost_for_usage or cost_for_usage
     # Provider-backend split: the FAKE provider keys on the deterministic
@@ -1770,6 +2122,11 @@ async def _run_deep_research(
     )
 
     planner_usage = UsageUpdate()
+    # B4: durable planner spend from the plan-approval pause (resume only).
+    seeded_planner_cost = max(0.0, float(prior_planner_cost_usd or 0.0))
+    seeded_planner_usage = prior_planner_usage or UsageUpdate()
+    if seeded_planner_cost <= 0.0 and _has_nonzero_usage(seeded_planner_usage):
+        seeded_planner_cost = cost_for_usage(seeded_planner_usage)
     max_workers = settings.agentic_max_workers
     if plan_approved is True and approved_plan is not None:
         # Resume after approve: execute the exact persisted plan (BE-039).
@@ -1816,6 +2173,10 @@ async def _run_deep_research(
     # `plan_approved` set. Fold real planner spend BEFORE AwaitingApproval so the
     # handler persists it when the pause terminal stops the stream (BE-015).
     planner_cost = cost_for_usage(planner_usage)
+    if plan_approved is True:
+        # B4: seed ledger with pause-turn planner spend; do not re-bill (keep
+        # live planner_usage empty so `_emit_planner_receipt` stays quiet).
+        planner_cost = seeded_planner_cost
     if plan_approved is None:
         if settings.agentic_plan_approval:
             async for event in _emit_planner_receipt(
@@ -1833,6 +2194,8 @@ async def _run_deep_research(
                 cap_usd=cap,
                 skip_started=True,
                 clarifications=bound_records,
+                planner_cost_usd=planner_cost,
+                planner_usage=planner_usage,
             ):
                 yield event
             return
@@ -1914,7 +2277,9 @@ async def _run_deep_research(
         return
 
     semaphore = asyncio.Semaphore(max(1, settings.agentic_max_concurrency))
-    queue: asyncio.Queue[ProviderEvent | _WorkerSentinel | _WorkerPause] = asyncio.Queue()
+    queue: asyncio.Queue[ProviderEvent | _WorkerSentinel | _WorkerPause] = (
+        asyncio.Queue(maxsize=_FANOUT_QUEUE_MAXSIZE)
+    )
     # Worker bookkeeping, keyed by subagent_id and ordered by `worker_meta` so the
     # synthesis (and per-subagent totals) preserve sub-question order regardless
     # of the nondeterministic completion order of the parallel workers.
@@ -1926,6 +2291,8 @@ async def _run_deep_research(
     usages: dict[str, UsageUpdate] = {}
     costs: dict[str, float] = {}
     failed_workers = 0
+    superseded_workers = 0
+    source_remapper = _SourceIdRemapper()
 
     async def _run_worker(index: int, subagent_id: str, label: str, sub_question: str) -> None:
         nonlocal failed_workers
@@ -1939,14 +2306,8 @@ async def _run_deep_research(
         sub_provider: str | None = None
         sub_model: str | None = None
         sub_label: str | None = None
-
-        def _has_usage(u: UsageUpdate) -> bool:
-            return bool(
-                u.input_tokens
-                or u.output_tokens
-                or u.reasoning_tokens
-                or u.cached_input_tokens
-            )
+        # B16: any externally visible progress blocks transparent fallback.
+        visible_progress = False
 
         def _price(u: UsageUpdate) -> float:
             if used_fallback and fallback_cost_for_usage is not None:
@@ -1965,6 +2326,7 @@ async def _run_deep_research(
         async def _consume(make_stream: MakeStream) -> bool:
             """Drain one worker loop. Returns True when paused for tool HITL."""
             nonlocal usage, sub_code, sub_provider, sub_model, sub_label
+            nonlocal visible_progress
             last_tool_name = "unknown"
             last_tool_label: str | None = None
             reasoning_parts: list[str] = []
@@ -1974,13 +2336,17 @@ async def _run_deep_research(
                 settings=settings,
                 allowed_tools=_WORKER_ALLOWED_TOOLS,
             ):
+                if _event_shows_external_progress(event):
+                    visible_progress = True
                 if isinstance(event, AnswerDelta):
-                    answer_parts.append(event.text)
+                    text = source_remapper.rewrite_answer_text(event.text, subagent_id)
+                    answer_parts.append(text)
+                    if text != event.text:
+                        event = replace(event, text=text)
                 if isinstance(event, Sources):
+                    event = source_remapper.remap_sources(event, subagent_id)
                     for item in event.items:
-                        sid = getattr(item, "id", None)
-                        if sid is not None:
-                            source_ids.append(str(sid))
+                        source_ids.append(str(item.id))
                 if isinstance(event, Complete) and event.substitution is not None:
                     sub_code = event.substitution
                     sub_provider = event.substituted_provider
@@ -2025,6 +2391,13 @@ async def _run_deep_research(
                     # BE-005: relay was already done for the pending ToolCall.
                     # Stash pause; siblings keep running (wait policy).
                     # H-004: namespace call id to this subagent before pause.
+                    # B12: flush any held citation fragment into the partial.
+                    tail = source_remapper.flush_answer_carry(subagent_id)
+                    if tail:
+                        answer_parts.append(tail)
+                        await queue.put(
+                            _tag(AnswerDelta(text=tail, subagent_id=subagent_id), subagent_id)
+                        )
                     namespaced_id = namespace_tool_call_id(
                         subagent_id, event.tool_call_id
                     )
@@ -2043,10 +2416,18 @@ async def _run_deep_research(
                             tool_transcript=tuple(tool_transcript),
                             partial_reasoning="".join(reasoning_parts),
                             emitted_answer_chars=len(partial),
+                            used_fallback=used_fallback,
                         )
                     )
                     return True
                 await queue.put(_tag(event, subagent_id))
+            # B12: flush held citation fragment after the provider stream ends.
+            tail = source_remapper.flush_answer_carry(subagent_id)
+            if tail:
+                answer_parts.append(tail)
+                await queue.put(
+                    _tag(AnswerDelta(text=tail, subagent_id=subagent_id), subagent_id)
+                )
             return False
 
         try:
@@ -2073,12 +2454,11 @@ async def _run_deep_research(
                     except asyncio.CancelledError:
                         raise
                     except BaseException as exc:
-                        # SAF-008 / BE-024: never retry after visible partial
-                        # output or usage — that concatenates two attempts and
+                        # SAF-008 / BE-024 / B16: never retry after any externally
+                        # visible progress — that concatenates two attempts and
                         # drops primary spend from the roll-up.
-                        had_partial = bool(answer_parts) or _has_usage(usage)
                         if (
-                            not had_partial
+                            not visible_progress
                             and fallback_make_stream_for is not None
                             and is_retryable(exc)
                         ):
@@ -2102,16 +2482,15 @@ async def _run_deep_research(
                             except BaseException as retry_exc:
                                 _log.warning(
                                     "agentic.worker_fallback_failed",
-                                    extra={
-                                        "subagent_id": subagent_id,
-                                        "error": str(retry_exc),
-                                    },
+                                    subagent_id=subagent_id,
+                                    error=str(retry_exc),
                                 )
                                 worker_failed = True
                         else:
                             _log.warning(
                                 "agentic.worker_failed",
-                                extra={"subagent_id": subagent_id, "error": str(exc)},
+                                subagent_id=subagent_id,
+                                error=str(exc),
                             )
                             worker_failed = True
                     if worker_failed:
@@ -2171,9 +2550,11 @@ async def _run_deep_research(
             # already-reported spend survives into the final Complete (SAF-005).
             # Non-budget cancels (stop/disconnect/teardown) use outcome="stopped"
             # so failures stay distinguishable from budget_cancelled.
+            # B23: non-blocking put — consumer may have stopped draining.
             if worker_started:
-                cancel_cost = _price(usage) if _has_usage(usage) else 0.0
-                await queue.put(
+                cancel_cost = _price(usage) if _has_nonzero_usage(usage) else 0.0
+                _queue_put_nowait_drop_oldest(
+                    queue,
                     SubagentDone(
                         subagent_id=subagent_id,
                         label=label,
@@ -2187,27 +2568,45 @@ async def _run_deep_research(
                         substituted_provider=sub_provider,
                         substituted_model=sub_model,
                         substituted_display_label=sub_label,
-                    )
+                    ),
                 )
                 usages[subagent_id] = usage
                 costs[subagent_id] = cancel_cost
             raise
         finally:
-            await queue.put(_WorkerSentinel(subagent_id))
+            # B23: sentinel must not block teardown on a full queue.
+            _queue_put_nowait_drop_oldest(queue, _WorkerSentinel(subagent_id))
 
     tasks = [
         asyncio.create_task(_run_worker(index, subagent_id, label, sub_question))
         for index, subagent_id, label, sub_question in worker_meta
     ]
-    # Mid-flight kill (T5): ledger starts with planner actuals (BE-014), then
-    # accumulates each worker's `SubagentDone` cost; on a cap breach, cancel the
-    # remaining workers and aggregate whatever completed — a labeled partial
-    # synthesis rather than a silent overrun.
+    # Mid-flight kill (T5 / B3): ledger starts with planner actuals (BE-014),
+    # accumulates provisional UsageUpdate/Complete mid-flight, and confirms on
+    # each worker's `SubagentDone`; on a cap breach, cancel remaining workers.
     actual_cost = planner_cost
+    provisional_costs: dict[str, float] = {}
     budget_halted = False
     # BE-005: at most one worker tool-HITL pause per fan-out (first wins).
     # Sibling policy = wait for others to finish before surfacing AwaitingApproval.
     worker_pause: _WorkerPause | None = None
+
+    def _price_pause(pause: _WorkerPause) -> float:
+        if pause.used_fallback and fallback_cost_for_usage is not None:
+            return fallback_cost_for_usage(pause.usage)
+        return cost_for_usage(pause.usage)
+
+    def _maybe_budget_kill(ledger: float) -> None:
+        nonlocal budget_halted, actual_cost
+        actual_cost = max(actual_cost, ledger)
+        if not budget_halted and budget.exceeds_cap(
+            actual_usd=actual_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
+        ):
+            budget_halted = True
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+
     try:
         remaining = len(tasks)
         while remaining > 0:
@@ -2216,17 +2615,22 @@ async def _run_deep_research(
                 remaining -= 1
                 continue
             if isinstance(item, _WorkerPause):
+                pause_cost = _price_pause(item)
                 if worker_pause is None:
                     worker_pause = item
                     # Snapshot partial usage into the ledger so pause cost is billed.
                     usages[item.subagent_id] = item.usage
-                    costs[item.subagent_id] = cost_for_usage(item.usage)
-                    actual_cost += costs[item.subagent_id]
+                    costs[item.subagent_id] = pause_cost
+                    provisional_costs.pop(item.subagent_id, None)
+                    _maybe_budget_kill(
+                        planner_cost
+                        + sum(costs.values())
+                        + sum(provisional_costs.values())
+                    )
                 else:
-                    # H-003 / O-007: cancel orphaned sibling pauses so they are
-                    # not left pending without a continuation. The handler flips
-                    # the matching tool_call's approvalState to rejected when it
-                    # applies this result (never leave pending+cancelled).
+                    # H-003 / O-007 / B24: cancel orphaned sibling pauses.
+                    # Track as superseded (not failed) so failed_worker_count
+                    # stays honest; include partial_answer in synthesis.
                     yield ToolResult(
                         tool_call_id=item.tool_call_id,
                         name=item.tool_name,
@@ -2240,29 +2644,59 @@ async def _run_deep_research(
                         ),
                         subagent_id=item.subagent_id,
                     )
-                    # Bill partial usage for the cancelled pause.
                     usages[item.subagent_id] = item.usage
-                    costs[item.subagent_id] = cost_for_usage(item.usage)
-                    actual_cost += costs[item.subagent_id]
-                    failed_workers += 1
+                    costs[item.subagent_id] = pause_cost
+                    provisional_costs.pop(item.subagent_id, None)
+                    superseded_workers += 1
+                    if item.partial_answer.strip():
+                        results[item.subagent_id] = WorkerOutput(
+                            subagent_id=item.subagent_id,
+                            sub_question=item.sub_question,
+                            answer=item.partial_answer,
+                            source_ids=item.source_ids,
+                        )
+                    _maybe_budget_kill(
+                        planner_cost
+                        + sum(costs.values())
+                        + sum(provisional_costs.values())
+                    )
                 continue
+            # B3: provisional mid-flight ledger from tagged usage samples.
+            if isinstance(item, (UsageUpdate, Complete)) and item.subagent_id:
+                sample = item.usage if isinstance(item, Complete) else item
+                provisional_costs[item.subagent_id] = cost_for_usage(sample)
+                # SAF-005: snapshot so a mid-flight kill still rolls usage even if
+                # the worker's CancelledError path loses the race.
+                if item.subagent_id not in costs:
+                    usages[item.subagent_id] = sample
+                _maybe_budget_kill(
+                    planner_cost
+                    + sum(
+                        costs.get(sid, provisional_costs.get(sid, 0.0))
+                        for _, sid, _, _ in worker_meta
+                    )
+                )
             yield item
             if isinstance(item, SubagentDone) and item.role == "worker":
-                actual_cost += item.cost_usd or 0.0
+                provisional_costs.pop(item.subagent_id, None)
+                costs[item.subagent_id] = (
+                    item.cost_usd
+                    if item.cost_usd is not None
+                    else costs.get(item.subagent_id, 0.0)
+                )
+                actual_cost = (
+                    planner_cost
+                    + sum(costs.values())
+                    + sum(provisional_costs.values())
+                )
                 # Mid-run meter tick (estimate + mid + final; FE-011 / FE-012).
                 yield RunCost(
-                    subtotal_usd=actual_cost,
+                    subtotal_usd=planner_cost + sum(costs.values()),
                     cap_usd=cap,
                     confidence="exact",
                     phase="progress",
                 )
-                if not budget_halted and budget.exceeds_cap(
-                    actual_usd=actual_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
-                ):
-                    budget_halted = True
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
+                _maybe_budget_kill(actual_cost)
         # Tolerate task cancellations from the budget kill. Worker failures are
         # degraded inside `_run_worker` and must not fail the whole run.
         gathered = await asyncio.gather(*tasks, return_exceptions=True)
@@ -2272,6 +2706,7 @@ async def _run_deep_research(
             ):
                 _log.error(
                     "agentic.unexpected_worker_task_error",
+                    error=str(outcome),
                     exc_info=outcome,
                 )
     finally:
@@ -2309,7 +2744,11 @@ async def _run_deep_research(
             user_text=effective_user_text,
             plan=tuple(sub_questions),
             completed_workers=tuple(completed_states),
-            planner_usage=planner_usage,
+            planner_usage=(
+                seeded_planner_usage
+                if plan_approved is True and _has_nonzero_usage(seeded_planner_usage)
+                else planner_usage
+            ),
             planner_cost_usd=planner_cost,
             budget_halted=budget_halted,
             failed_workers=failed_workers,
@@ -2319,14 +2758,16 @@ async def _run_deep_research(
             partial_answer=worker_pause.partial_answer,
             partial_reasoning=worker_pause.partial_reasoning,
             source_ids=worker_pause.source_ids,
+            source_catalog=tuple(source_remapper.merged_items()),
             tool_transcript=worker_pause.tool_transcript,
             emitted_answer_chars=worker_pause.emitted_answer_chars,
             clarifications=tuple(bound_records),
             orchestration_mode="deep_research",
             paused_worker_usage=worker_pause.usage,
             paused_worker_cost_usd=costs.get(
-                worker_pause.subagent_id, cost_for_usage(worker_pause.usage)
+                worker_pause.subagent_id, _price_pause(worker_pause)
             ),
+            paused_worker_used_fallback=worker_pause.used_fallback,
         )
         yield AwaitingApproval(
             tool_call_id=worker_pause.tool_call_id,
@@ -2336,19 +2777,26 @@ async def _run_deep_research(
         return
 
     ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
+    # Mid-stream remapper already assigned global citation ids (B12) — do not
+    # remap again in worker-plan order (that swapped ownership vs live markers).
+    merged_sources = source_remapper.merged_items()
     # In-turn structured artifact refs (plan 02) — handed to the aggregator as
     # schema-shaped DATA rather than raw telephone stuffing.
     ordered_artifacts = aggregate.build_artifacts(
         ordered_outputs, max_artifacts=settings.agentic_max_workers
     )
-    # Fold the (real-provider) planner pass into the run totals so its tokens are
-    # billed honestly. `planner_usage` is the zero default on the scaffolded /
-    # explicit-marker path, so the fake-provider totals are unchanged.
+    # Fold planner into run totals. On plan-approved resume, live planner_usage
+    # is empty — fold seeded pause-turn usage for Complete roll-up (B4).
+    ledger_planner_usage = (
+        seeded_planner_usage
+        if plan_approved is True and _has_nonzero_usage(seeded_planner_usage)
+        else planner_usage
+    )
     ordered_usages = [usages[sid] for _, sid, _, _ in worker_meta if sid in usages]
-    ordered_usages.append(planner_usage)
+    ordered_usages.append(ledger_planner_usage)
     worker_total_cost = sum(
         costs.get(sid, 0.0) for _, sid, _, _ in worker_meta
-    ) + cost_for_usage(planner_usage)
+    ) + planner_cost
 
     # BE-014 residual: before starting the aggregator, refuse a model synthesis
     # call when the ledger already exceeds the cap or the aggregator phase
@@ -2373,6 +2821,7 @@ async def _run_deep_research(
         budget_halted = True
 
     judge_factory = verifier_make_stream_for or make_stream_for
+    _ = superseded_workers
 
     if scaffolded or not ordered_outputs or cannot_fund_aggregator:
         # Deterministic synthesis: the fake-provider / test contract, the
@@ -2395,6 +2844,8 @@ async def _run_deep_research(
         yield SubagentStarted(
             subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
         )
+        if merged_sources:
+            yield Sources(items=list(merged_sources), subagent_id=_AGGREGATOR_ID)
         if settings.agentic_verifier and _can_fund_verifier(
             ledger_usd=worker_total_cost,
             settings=settings,
@@ -2504,6 +2955,7 @@ async def _run_deep_research(
             scaffolded=scaffolded,
             artifacts=ordered_artifacts,
             clarifications=synth_clarify,
+            merged_sources=merged_sources or None,
         ):
             yield event
 
@@ -2536,6 +2988,10 @@ async def run_orchestrator(
     is_retryable: IsRetryable = is_retryable_provider_error,
     verifier_make_stream_for: StreamFactory | None = None,
     verifier_cost_for_usage: CostForUsage | None = None,
+    prior_planner_cost_usd: float = 0.0,
+    prior_planner_usage: UsageUpdate | None = None,
+    prior_run_cost_usd: float = 0.0,
+    prior_run_usage: UsageUpdate | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive an agentic turn, yielding the handler's `ProviderEvent` union.
 
@@ -2567,6 +3023,10 @@ async def run_orchestrator(
       fallback route + pricer when the primary binding fails retryably (FE-009).
     - `fallback_provider_id` / `fallback_model_id` / `fallback_display_label` —
       served-route identity stamped onto substituted workers (BE-023 / SAF-006).
+    - `prior_planner_cost_usd` / `prior_planner_usage` — B4 plan-approval resume
+      ledger seed (from reserved pause tool-input fields; do not re-bill).
+    - `prior_run_cost_usd` / `prior_run_usage` — B5 single-mode HITL resume
+      ledger seed (H-011: no primary continuation phase; handler must pass).
     """
     if mode == "deep_research":
         async for event in _run_deep_research(
@@ -2592,10 +3052,12 @@ async def run_orchestrator(
             is_retryable=is_retryable,
             verifier_make_stream_for=verifier_make_stream_for,
             verifier_cost_for_usage=verifier_cost_for_usage,
+            prior_planner_cost_usd=prior_planner_cost_usd,
+            prior_planner_usage=prior_planner_usage,
         ):
             yield event
     else:
-        async for event in _run_single(
+        async for event in run_single(
             make_stream_for=make_stream_for,
             settings=settings,
             user_text=user_text,
@@ -2605,5 +3067,7 @@ async def run_orchestrator(
             initial_tool_results=(
                 [resume_tool_result] if resume_tool_result is not None else None
             ),
+            prior_run_cost_usd=prior_run_cost_usd,
+            prior_run_usage=prior_run_usage,
         ):
             yield event

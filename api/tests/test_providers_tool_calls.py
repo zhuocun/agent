@@ -31,6 +31,7 @@ from app.providers.protocol import (
     ToolCall,
     ToolDefinition,
     ToolResult,
+    UsageUpdate,
 )
 from app.tools.agent_loop import (
     TOOL_FEEDBACK_SENTINEL,
@@ -243,6 +244,39 @@ async def test_openai_advertises_registry_tools_and_emits_tool_call() -> None:
     assert tool_calls[0].name == "get_current_time"
     assert tool_calls[0].status == "running"
     assert tool_calls[0].input == {"timezone": "UTC"}
+    assert not any(isinstance(e, Complete) for e in events)
+
+
+@respx.mock
+async def test_openai_tool_round_emits_usage_before_tool_calls() -> None:
+    """Registry tool-call rounds emit UsageUpdate (with nonzero tokens) before ToolCall.
+
+    Pre-fix the adapter returned after ToolCall without folding the completion's
+    usage, so `run_agent_loop` discarded those tokens. Still no Complete — that
+    belongs to the final answer round.
+    """
+    respx.post(_OPENAI_URL).mock(
+        return_value=_sse_response(
+            _openai_tool_call_body(name="get_current_time", arguments='{"timezone": "UTC"}')
+        )
+    )
+
+    provider = _openai_provider()
+    events: list[ProviderEvent] = []
+    async for ev in provider.stream(
+        model_id="gpt-4o", history=[], user_text="what time is it?", tools=[_time_tool()]
+    ):
+        events.append(ev)
+
+    usage_updates = [e for e in events if isinstance(e, UsageUpdate)]
+    tool_calls = [e for e in events if isinstance(e, ToolCall)]
+    assert len(usage_updates) == 1
+    assert len(tool_calls) == 1
+    assert events.index(usage_updates[0]) < events.index(tool_calls[0])
+    assert usage_updates[0].input_tokens == 10
+    assert usage_updates[0].output_tokens == 5
+    assert usage_updates[0].reasoning_tokens == 0
+    assert usage_updates[0].cached_input_tokens == 0
     assert not any(isinstance(e, Complete) for e in events)
 
 
@@ -524,6 +558,38 @@ async def test_anthropic_advertises_registry_tools_and_emits_tool_call() -> None
     assert len(tool_calls) == 1
     assert tool_calls[0].name == "get_current_time"
     assert tool_calls[0].input == {"timezone": "UTC"}
+    assert not any(isinstance(e, Complete) for e in events)
+
+
+@respx.mock
+async def test_anthropic_tool_round_emits_usage_before_tool_calls() -> None:
+    """Registry tool_use rounds emit UsageUpdate (with nonzero tokens) before ToolCall.
+
+    Pre-fix the adapter returned before `get_final_message().usage`, dropping
+    tool-round tokens. Still no Complete — that belongs to the final answer round.
+    """
+    respx.post(_ANTHROPIC_URL).mock(
+        return_value=_sse_response(
+            _anthropic_tool_use_body(name="get_current_time", args_json='{"timezone": "UTC"}')
+        )
+    )
+    provider = AnthropicProvider(api_key="sk-test")
+    events: list[ProviderEvent] = []
+    async for ev in provider.stream(
+        model_id="test-model", history=[], user_text="what time?", tools=[_time_tool()]
+    ):
+        events.append(ev)
+
+    usage_updates = [e for e in events if isinstance(e, UsageUpdate)]
+    tool_calls = [e for e in events if isinstance(e, ToolCall)]
+    assert len(usage_updates) == 1
+    assert len(tool_calls) == 1
+    assert events.index(usage_updates[0]) < events.index(tool_calls[0])
+    # message_start carries input_tokens=10; message_delta sets output_tokens=6.
+    assert usage_updates[0].input_tokens == 10
+    assert usage_updates[0].output_tokens == 6
+    assert usage_updates[0].reasoning_tokens == 0
+    assert usage_updates[0].cached_input_tokens == 0
     assert not any(isinstance(e, Complete) for e in events)
 
 

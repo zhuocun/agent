@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
 from collections import defaultdict
@@ -37,7 +38,7 @@ from app.agentic import (
     is_plan_approval_call_id,
     is_plan_clarify_call_id,
 )
-from app.agentic.budget import compose_headroom
+from app.agentic.budget import compose_headroom, estimate_run_cost
 from app.agentic.clarify import (
     ClarificationRecord,
     ClarifyInputError,
@@ -46,7 +47,11 @@ from app.agentic.clarify import (
     parse_clarify_edited_input,
     serialize_clarification_records,
 )
-from app.agentic.continuation import resolve_continuation, sanitize_message_parts_for_api
+from app.agentic.continuation import (
+    get_run_ledger_from_server_state,
+    resolve_continuation,
+    sanitize_message_parts_for_api,
+)
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -79,6 +84,7 @@ from app.guest_limits import (
 )
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
+from app.providers.pricing import compute_cost_breakdown
 from app.providers.protocol import (
     AttachmentPayload,
     ResponseFormat,
@@ -132,6 +138,7 @@ from app.streaming.handler import (
     spawn_detached_producer,
     stream_and_persist,
 )
+from app.streaming.reaper import stream_orphaned_envelope
 from app.streaming.replay_registry import ReplayLogBuffer, ReplayLogTruncatedError
 from app.streaming.sse import (
     encode_answer_delta,
@@ -443,7 +450,8 @@ async def _abandon_unstarted_stream_claim(
     would otherwise become a durable ``active`` row and block the next turn with
     ``STREAM_IN_PROGRESS`` (sibling deny before winner resume). Rollback undoes
     an uncommitted claim; if prepare already committed the row, mark it
-    terminal to release the single-active guard.
+    terminal to release the single-active guard. Also drops any B9 platform
+    budget reservation held for the stream.
     """
     if stream_id is None:
         return
@@ -456,7 +464,12 @@ async def _abandon_unstarted_stream_claim(
             status="error",
             release_active_guard=True,
         )
+        await usage_repo.release_platform_budget(db, stream_id=stream_id)
         await db.commit()
+    else:
+        with contextlib.suppress(Exception):
+            await usage_repo.release_platform_budget(db, stream_id=stream_id)
+            await db.commit()
 
 
 def _duplicate_in_flight() -> AppError:
@@ -2220,13 +2233,48 @@ async def send_message(
     # gets its older prefix replaced by a provider-written summary, falling back
     # to a pure sliding window if summarization is unavailable. Applied to the
     # `history` threaded into BOTH the detached-producer and inline stream paths.
-    history = await context_compaction.compact_history(
+    #
+    # B13: fold summarizer usage into durable usage accounting. Bills even when
+    # the summary text is empty and we fall back to a sliding window.
+    compaction = await context_compaction.compact_history(
         history,
         binding,
         provider=provider,
         model_id=binding.model_id,
         api_key=resolved_api_key,
     )
+    history = compaction.history
+    if (
+        compaction.usage is not None
+        and not is_temp
+        and (
+            compaction.usage.input_tokens
+            or compaction.usage.output_tokens
+            or compaction.usage.reasoning_tokens
+            or compaction.usage.cached_input_tokens
+        )
+    ):
+        compaction_breakdown = compute_cost_breakdown(
+            usage=compaction.usage,
+            binding=binding,
+            image_count=0,
+        )
+        compaction_cost = (
+            compaction_breakdown.subtotal_usd
+            + compaction_breakdown.session_surcharge_usd
+        )
+        if compaction_cost > 0:
+            await usage_repo.increment_for_period(
+                db,
+                user_id=user.id,
+                used_delta=0,
+                cost_usd_delta=compaction_cost,
+                is_byok=resolved_api_key is not None,
+                monthly_quota_usd=effective_quota_usd,
+                reference_type="compaction",
+                reference_id=str(stream_id) if stream_id is not None else None,
+            )
+            await db.commit()
 
     # Durable stream lifecycle (PRD 04 §5.1). The active row was claimed before
     # message-history mutation and committed by the accepted branch above. The id
@@ -2421,29 +2469,92 @@ async def send_message(
     # (or agentic single) run can never overshoot either cap. Only platform-key
     # turns are constrained (BYOK → None = "cap only"). Numeric 0.0 means no
     # money remains (SAF-003); None means unconstrained.
+    #
+    # B9: before snapshotting headroom, atomically reserve a worst-case estimate
+    # against platform remaining so concurrent conversations cannot jointly
+    # overshoot. Released by the handler (or reaper) on terminal/pause/error.
+    # The orchestrator's platform headroom is THIS stream's allocated hold (not
+    # global remaining after subtracting that hold). Prior billed pause spend
+    # is compared separately via ResumeToolSeed prior_* ledger seeds (B4/B5).
     budget_headroom_usd: float | None = None
+    reserved_hold_usd: float | None = None
     if effective_agentic_mode is not None and resolved_api_key is None:
-        headroom_parts: list[float | None] = []
-        if effective_quota_usd > 0:
-            headroom_parts.append(
-                await usage_repo.get_platform_remaining_usd(
-                    db,
-                    user_id=user.id,
-                    monthly_quota_usd=effective_quota_usd,
-                )
-            )
         if (
-            conversation_project is not None
-            and conversation_project.per_conversation_budget_usd is not None
+            effective_quota_usd > 0
+            and stream_id is not None
+            and not is_temp
         ):
-            conv_cap = conversation_project.per_conversation_budget_usd
-        else:
-            conv_cap = user_prefs.per_conversation_budget_usd or 0.0
-        if conv_cap > 0 and not is_temp:
-            conv_spent = await usage_repo.get_conversation_cost(db, conversation_id)
-            headroom_parts.append(max(0.0, conv_cap - conv_spent))
-        if headroom_parts:
-            budget_headroom_usd = compose_headroom(*headroom_parts)
+            image_count = sum(
+                1
+                for attachment in provider_attachments
+                if attachment.media_type == "image"
+            )
+            reserve_amount = estimate_run_cost(
+                sub_question_count=(
+                    settings.agentic_max_workers
+                    if effective_agentic_mode == "deep_research"
+                    else 1
+                ),
+                binding=binding,
+                settings=settings,
+                image_count=image_count,
+            )
+            reserved = await usage_repo.reserve_platform_budget(
+                db,
+                user_id=user.id,
+                stream_id=stream_id,
+                amount_usd=reserve_amount,
+                monthly_quota_usd=effective_quota_usd,
+            )
+            if not reserved:
+                await _abandon_unstarted_stream_claim(db, stream_id)
+                async with _derive_session_factory(db)() as event_db:
+                    await analytics_repo.record(
+                        event_db,
+                        user_id=user.id,
+                        event_type="budget.exceeded",
+                        properties={
+                            "conversationId": str(conversation_id),
+                            "requestedTierId": body.tier_id,
+                            "providerId": selected_provider_id,
+                            "scope": "reservation",
+                        },
+                    )
+                    await event_db.commit()
+                raise _budget_exceeded()
+            await db.commit()
+            reserved_hold_usd = float(reserve_amount)
+        try:
+            headroom_parts: list[float | None] = []
+            if reserved_hold_usd is not None:
+                # This stream's allocated hold — do NOT re-query remaining (that
+                # would subtract the hold and cause premature reject).
+                headroom_parts.append(reserved_hold_usd)
+            elif effective_quota_usd > 0:
+                headroom_parts.append(
+                    await usage_repo.get_platform_remaining_usd(
+                        db,
+                        user_id=user.id,
+                        monthly_quota_usd=effective_quota_usd,
+                    )
+                )
+            if (
+                conversation_project is not None
+                and conversation_project.per_conversation_budget_usd is not None
+            ):
+                conv_cap = conversation_project.per_conversation_budget_usd
+            else:
+                conv_cap = user_prefs.per_conversation_budget_usd or 0.0
+            if conv_cap > 0 and not is_temp:
+                conv_spent = await usage_repo.get_conversation_cost(db, conversation_id)
+                headroom_parts.append(max(0.0, conv_cap - conv_spent))
+            if headroom_parts:
+                budget_headroom_usd = compose_headroom(*headroom_parts)
+        except Exception:
+            # B9: post-reservation pre-producer failure must release the hold.
+            if reserved_hold_usd is not None and stream_id is not None:
+                await _abandon_unstarted_stream_claim(db, stream_id)
+            raise
 
     # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
     # provider pump as a DETACHED producer that survives this connection and
@@ -2453,124 +2564,130 @@ async def send_message(
     # `GET .../stream/{stream_id}`. Temporary chats (no `stream_id`, nothing
     # persisted, nothing to reconnect to) always take the legacy inline path,
     # even with the flag on.
-    if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
-        ttl = settings.resumable_buffer_ttl_seconds
-        buffer_max_events: int | None = None
-        buffer_max_bytes: int | None = None
-        if effective_agentic_mode is not None:
-            multiplier = settings.agentic_resumable_buffer_multiplier
-            buffer_max_events = settings.resumable_buffer_max_events * multiplier
-            buffer_max_bytes = settings.resumable_buffer_max_bytes * multiplier
-        buffer = await replay_registry.create_async(
-            stream_id,
-            ttl_seconds=ttl,
-            max_events=buffer_max_events,
-            max_bytes=buffer_max_bytes,
-        )
-        # The detached producer owns a FRESH session derived from THIS request's
-        # engine (the request session closes when the POST returns). Using
-        # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite
-        # file rather than the process-wide env DATABASE_URL factory.
-        spawn_detached_producer(
-            buffer=buffer,
-            session_factory=_derive_session_factory(db),
-            provider=provider,
-            binding=binding,
-            requested_tier_id=body.tier_id,
-            conversation_id=conversation_id,
-            user_message_id=user_message_id,
-            user_text=provider_user_text,
-            history=history,
-            is_temporary=is_temp,
-            is_initial=is_initial,
-            user_id=user.id,
-            api_key=resolved_api_key,
-            provider_id=selected_provider_id,
-            stream_id=stream_id,
-            router_substitution=router_substitution,
-            web_search=effective_web_search,
-            response_format=effective_response_format,
-            attachments=provider_attachments,
-            custom_instructions=effective_instructions,
-            memory_facts=memory_facts,
-            memory_fact_ids=memory_fact_ids,
-            memory_enabled=memory_enabled,
-            reasoning_effort_override=reasoning_effort_override,
-            thinking_override=thinking_override,
-            monthly_quota_usd_override=effective_quota_usd,
-            fallback_binding=fallback_binding,
-            fallback_provider_id=fallback_provider_id,
-            fallback_api_key=fallback_api_key,
-            fallback_substitution="provider_fallback",
-            tool_approval=body.tool_approval,
-            resume_seed=resume_seed,
-            agentic_mode=effective_agentic_mode,
-            budget_headroom_usd=budget_headroom_usd,
-            requested_agentic_mode=body.agentic_mode,
-            agentic_coercion_reason=agentic_coercion_reason,
-        )
-
-        async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
-            # Subscribe at offset 0 and tail. On client disconnect we simply
-            # stop iterating (the generator is GC'd / aclosed) — the producer
-            # keeps running and persisting. Subscribers NEVER persist.
-            async for sse_event in _replay_buffer_events(
-                request=request,
+    # B9: guard producer startup so a failure cannot strand the reservation.
+    try:
+        if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
+            ttl = settings.resumable_buffer_ttl_seconds
+            buffer_max_events: int | None = None
+            buffer_max_bytes: int | None = None
+            if effective_agentic_mode is not None:
+                multiplier = settings.agentic_resumable_buffer_multiplier
+                buffer_max_events = settings.resumable_buffer_max_events * multiplier
+                buffer_max_bytes = settings.resumable_buffer_max_bytes * multiplier
+            buffer = await replay_registry.create_async(
+                stream_id,
+                ttl_seconds=ttl,
+                max_events=buffer_max_events,
+                max_bytes=buffer_max_bytes,
+            )
+            # The detached producer owns a FRESH session derived from THIS request's
+            # engine (the request session closes when the POST returns). Using
+            # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite
+            # file rather than the process-wide env DATABASE_URL factory.
+            spawn_detached_producer(
                 buffer=buffer,
-                expected_user_message_id=user_message_id,
+                session_factory=_derive_session_factory(db),
+                provider=provider,
+                binding=binding,
+                requested_tier_id=body.tier_id,
+                conversation_id=conversation_id,
+                user_message_id=user_message_id,
+                user_text=provider_user_text,
+                history=history,
+                is_temporary=is_temp,
+                is_initial=is_initial,
+                user_id=user.id,
+                api_key=resolved_api_key,
+                provider_id=selected_provider_id,
+                stream_id=stream_id,
+                router_substitution=router_substitution,
+                web_search=effective_web_search,
+                response_format=effective_response_format,
+                attachments=provider_attachments,
+                custom_instructions=effective_instructions,
+                memory_facts=memory_facts,
+                memory_fact_ids=memory_fact_ids,
+                memory_enabled=memory_enabled,
+                reasoning_effort_override=reasoning_effort_override,
+                thinking_override=thinking_override,
+                monthly_quota_usd_override=effective_quota_usd,
+                fallback_binding=fallback_binding,
+                fallback_provider_id=fallback_provider_id,
+                fallback_api_key=fallback_api_key,
+                fallback_substitution="provider_fallback",
+                tool_approval=body.tool_approval,
+                resume_seed=resume_seed,
+                agentic_mode=effective_agentic_mode,
+                budget_headroom_usd=budget_headroom_usd,
+                requested_agentic_mode=body.agentic_mode,
+                agentic_coercion_reason=agentic_coercion_reason,
+            )
+
+            async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
+                # Subscribe at offset 0 and tail. On client disconnect we simply
+                # stop iterating (the generator is GC'd / aclosed) — the producer
+                # keeps running and persisting. Subscribers NEVER persist.
+                async for sse_event in _replay_buffer_events(
+                    request=request,
+                    buffer=buffer,
+                    expected_user_message_id=user_message_id,
+                ):
+                    yield sse_event
+
+            return _eventsource_response(
+                _subscriber_stream(),
+                media_type="text/event-stream",
+            )
+
+        async def _event_stream() -> AsyncIterator[ServerSentEvent]:
+            async for sse_event in stream_and_persist(
+                request=request,
+                db=db,
+                provider=provider,
+                binding=binding,
+                requested_tier_id=body.tier_id,
+                conversation_id=None if is_temp else conversation_id,
+                user_message_id=user_message_id,
+                user_text=provider_user_text,
+                history=history,
+                is_temporary=is_temp,
+                is_initial=is_initial,
+                user_id=user.id,
+                api_key=resolved_api_key,
+                provider_id=selected_provider_id,
+                stream_id=stream_id,
+                router_substitution=router_substitution,
+                web_search=effective_web_search,
+                response_format=effective_response_format,
+                attachments=provider_attachments,
+                custom_instructions=effective_instructions,
+                memory_facts=memory_facts,
+                memory_fact_ids=memory_fact_ids,
+                memory_enabled=memory_enabled,
+                reasoning_effort_override=reasoning_effort_override,
+                thinking_override=thinking_override,
+                monthly_quota_usd_override=effective_quota_usd,
+                fallback_binding=fallback_binding,
+                fallback_provider_id=fallback_provider_id,
+                fallback_api_key=fallback_api_key,
+                fallback_substitution="provider_fallback",
+                tool_approval=body.tool_approval,
+                resume_seed=resume_seed,
+                agentic_mode=effective_agentic_mode,
+                budget_headroom_usd=budget_headroom_usd,
+                requested_agentic_mode=body.agentic_mode,
+                agentic_coercion_reason=agentic_coercion_reason,
             ):
                 yield sse_event
 
         return _eventsource_response(
-            _subscriber_stream(),
+            _event_stream(),
             media_type="text/event-stream",
         )
-
-    async def _event_stream() -> AsyncIterator[ServerSentEvent]:
-        async for sse_event in stream_and_persist(
-            request=request,
-            db=db,
-            provider=provider,
-            binding=binding,
-            requested_tier_id=body.tier_id,
-            conversation_id=None if is_temp else conversation_id,
-            user_message_id=user_message_id,
-            user_text=provider_user_text,
-            history=history,
-            is_temporary=is_temp,
-            is_initial=is_initial,
-            user_id=user.id,
-            api_key=resolved_api_key,
-            provider_id=selected_provider_id,
-            stream_id=stream_id,
-            router_substitution=router_substitution,
-            web_search=effective_web_search,
-            response_format=effective_response_format,
-            attachments=provider_attachments,
-            custom_instructions=effective_instructions,
-            memory_facts=memory_facts,
-            memory_fact_ids=memory_fact_ids,
-            memory_enabled=memory_enabled,
-            reasoning_effort_override=reasoning_effort_override,
-            thinking_override=thinking_override,
-            monthly_quota_usd_override=effective_quota_usd,
-            fallback_binding=fallback_binding,
-            fallback_provider_id=fallback_provider_id,
-            fallback_api_key=fallback_api_key,
-            fallback_substitution="provider_fallback",
-            tool_approval=body.tool_approval,
-            resume_seed=resume_seed,
-            agentic_mode=effective_agentic_mode,
-            budget_headroom_usd=budget_headroom_usd,
-            requested_agentic_mode=body.agentic_mode,
-            agentic_coercion_reason=agentic_coercion_reason,
-        ):
-            yield sse_event
-
-    return _eventsource_response(
-        _event_stream(),
-        media_type="text/event-stream",
-    )
+    except Exception:
+        if reserved_hold_usd is not None and stream_id is not None:
+            await _abandon_unstarted_stream_claim(db, stream_id)
+        raise
 
 
 @router.get("/{conversation_id}/stream/{stream_id}")
@@ -2628,6 +2745,30 @@ async def reconnect_stream(
         )
     except ReplayLogTruncatedError as exc:
         raise _stream_replay_truncated() from exc
+
+    # B11: durable stream already terminal but replay never marked done (hard
+    # crash / reaper raced ahead of Redis). Terminate the reconnect immediately
+    # rather than hanging on an unfinished buffer. Missing buffers still 404
+    # (TTL eviction / wrong worker) — only unfinished live buffers are forced.
+    terminal_stream_statuses = frozenset(
+        {"done", "stopped", "error", "awaiting_approval"}
+    )
+    if (
+        stream_row.status in terminal_stream_statuses
+        and buffer is not None
+        and not buffer.done
+    ):
+        async def _orphaned_stream() -> AsyncIterator[ServerSentEvent]:
+            with contextlib.suppress(Exception):
+                await buffer.append(encode_error(stream_orphaned_envelope()))
+                await buffer.mark_done(terminal_kind="error")
+            yield encode_error(stream_orphaned_envelope())
+
+        return _eventsource_response(
+            _orphaned_stream(),
+            media_type="text/event-stream",
+        )
+
     if buffer is None:
         raise not_found("stream")
 
@@ -3026,6 +3167,8 @@ async def _prepare_resume_tool(
             raise _approval_decision_conflict(exc) from exc
         except ApprovalSettlementIncomplete as exc:
             raise _approval_settlement_incomplete(exc) from exc
+        # B4: planner spend lives in server_state (sanitize strips tool-input).
+        plan_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
@@ -3043,6 +3186,8 @@ async def _prepare_resume_tool(
                 else None
             ),
             settled_result=outcome.result,
+            prior_planner_cost_usd=plan_ledger.planner_cost_usd,
+            prior_planner_usage=plan_ledger.planner_usage,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3273,6 +3418,8 @@ async def _prepare_resume_tool(
         authoritative_decision = outcome.decision
         pending_settle = False
 
+    # B5: single-mode pause ledger from server_state (not tool input).
+    tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
     seed = ResumeToolSeed(
         tool_call_id=decision.tool_call_id,
         name=tool_name,
@@ -3286,6 +3433,10 @@ async def _prepare_resume_tool(
         ),
         paused_message_id=last_assistant.id,
         pending_settle=pending_settle,
+        prior_run_cost_usd=tool_ledger.prior_run_cost_usd,
+        prior_run_usage=tool_ledger.prior_run_usage,
+        prior_planner_cost_usd=tool_ledger.planner_cost_usd,
+        prior_planner_usage=tool_ledger.planner_usage,
     )
     # Worker continuation resumes with the original user text (the orchestrator
     # continues that subagent). Aggregator continuation is not supported (O-011).

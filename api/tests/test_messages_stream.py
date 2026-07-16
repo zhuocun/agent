@@ -25,6 +25,7 @@ from app.providers.protocol import (
     AnswerDelta,
     ChatMessage,
     Complete,
+    CompleteResult,
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
@@ -255,8 +256,8 @@ async def test_custom_instructions_are_provider_only(
             user_text: str,
             api_key: str | None = None,
             system_prefix: str | None = None,
-        ) -> str:
-            return "Custom Instructions Test"
+        ) -> CompleteResult:
+            return CompleteResult(text="Custom Instructions Test")
 
     from app.routes import conversations as conversation_routes
 
@@ -370,8 +371,8 @@ async def test_project_custom_instructions_reach_composed_user_turn(
             user_text: str,
             api_key: str | None = None,
             system_prefix: str | None = None,
-        ) -> str:
-            return "Project Instructions Test"
+        ) -> CompleteResult:
+            return CompleteResult(text="Project Instructions Test")
 
     from app.routes import conversations as conversation_routes
 
@@ -1993,7 +1994,7 @@ async def test_title_autogen_uses_selected_provider_context(
             history: list[ChatMessage],
             user_text: str,
             api_key: str | None = None,
-        ) -> str:
+        ) -> CompleteResult:
             title_calls.append(
                 {
                     "model_id": model_id,
@@ -2001,7 +2002,7 @@ async def test_title_autogen_uses_selected_provider_context(
                     "api_key": api_key,
                 }
             )
-            return "Selected Provider Title"
+            return CompleteResult(text="Selected Provider Title")
 
     def _title_provider(
         settings: object | None = None,
@@ -2961,8 +2962,8 @@ class _NoSubstitutionThenBlockProvider:
         history: list[ChatMessage],
         user_text: str,
         api_key: str | None = None,
-    ) -> str:
-        return "title"
+    ) -> CompleteResult:
+        return CompleteResult(text="title")
 
 
 async def test_stop_path_preserves_auto_downgrade_seed_in_persisted_row(

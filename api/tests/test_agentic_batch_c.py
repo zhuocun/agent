@@ -112,14 +112,24 @@ async def test_approve_reuses_approved_plan_without_replanning() -> None:
 
 @pytest.mark.asyncio
 async def test_cancelled_worker_usage_enters_final_complete() -> None:
-    """SAF-005 / BE-025: cancelled worker usage is joined and rolled into Complete."""
+    """SAF-005 / BE-025: cancelled worker usage is joined and rolled into Complete.
+
+    Cap is high enough that the fast worker's Done does not kill; the slow
+    worker then emits a large mid-flight UsageUpdate (B3) that breaches and
+    cancels itself — its provisional usage must still roll into the final
+    Complete.
+    """
     started = asyncio.Event()
+    fast_done = asyncio.Event()
 
     async def _slow(
         _feedback: list[ToolResult], suppress_tools: bool = False
     ) -> AsyncIterator[ProviderEvent]:
-        yield UsageUpdate(input_tokens=100, output_tokens=0)
+        yield UsageUpdate(input_tokens=1, output_tokens=0)
         started.set()
+        await fast_done.wait()
+        # Breach mid-flight: 100 * 0.001 = 0.1 > $0.05 cap (B3).
+        yield UsageUpdate(input_tokens=100, output_tokens=0)
         await asyncio.sleep(60)
         yield AnswerDelta(text="late")
         yield Complete(usage=UsageUpdate(input_tokens=100, output_tokens=1))
@@ -130,6 +140,7 @@ async def test_cancelled_worker_usage_enters_final_complete() -> None:
         await started.wait()
         yield AnswerDelta(text="fast-ok")
         yield Complete(usage=UsageUpdate(input_tokens=3, output_tokens=1))
+        fast_done.set()
 
     def _make_stream_for(
         prompt: str, **_kwargs: object
@@ -155,7 +166,7 @@ async def test_cancelled_worker_usage_enters_final_complete() -> None:
         PROVIDER_BACKEND="fake",
         AGENTIC_ENABLED=True,
         TOOLS_ENABLED=True,
-        AGENTIC_RUN_BUDGET_USD=0.002,
+        AGENTIC_RUN_BUDGET_USD=0.05,
         AGENTIC_MAX_WORKERS=2,
         AGENTIC_MAX_CONCURRENCY=2,
     )
@@ -163,7 +174,6 @@ async def test_cancelled_worker_usage_enters_final_complete() -> None:
     def _pricey(u: UsageUpdate) -> float:
         return float(u.input_tokens) * 0.001
 
-    # Admit with a low estimate so mid-flight kill (not admission) fires.
     events = [
         ev
         async for ev in run_orchestrator(

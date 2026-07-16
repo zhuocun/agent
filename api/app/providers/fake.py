@@ -112,6 +112,7 @@ from app.providers.protocol import (
     AwaitingApproval,
     ChatMessage,
     Complete,
+    CompleteResult,
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
@@ -826,10 +827,11 @@ class FakeProvider:
         user_text: str,
         api_key: str | None = None,
         system_prefix: str | None = None,
-    ) -> str:
+    ) -> CompleteResult:
         """Non-streaming variant. Deterministic ~5-word title from `user_text`.
 
-        Used by title autogen — must return fast (no sleeps) so the detached
-        `asyncio.create_task(...)` resolves within a polling window in tests.
+        Used by title autogen / memory / compaction — must return fast (no
+        sleeps) so the detached `asyncio.create_task(...)` resolves within a
+        polling window in tests. Usage is a zeroed meter (no real tokens).
         """
-        return _pick_title(user_text)
+        return CompleteResult(text=_pick_title(user_text), usage=UsageUpdate())

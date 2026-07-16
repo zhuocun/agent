@@ -33,6 +33,7 @@ from app.providers.protocol import (
     AttachmentPayload,
     ChatMessage,
     Complete,
+    CompleteResult,
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
@@ -194,6 +195,25 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _usage_update_from_anthropic(final_usage: Any) -> UsageUpdate:
+    """Map Anthropic's merged message usage into our disjoint UsageUpdate buckets.
+
+    Only the cache-READ bucket maps to our cache-priced slot. Cache
+    creation/write pricing is out of scope until prompt caching is enabled
+    (no `cache_control` is sent today, so both are 0). Extended thinking isn't
+    enabled here, so reasoning stays 0 on the real provider (reasoning
+    attribution is exercised by the FakeProvider only).
+    """
+    return UsageUpdate(
+        input_tokens=_safe_int(getattr(final_usage, "input_tokens", None)),
+        output_tokens=_safe_int(getattr(final_usage, "output_tokens", None)),
+        reasoning_tokens=0,
+        cached_input_tokens=_safe_int(
+            getattr(final_usage, "cache_read_input_tokens", None)
+        ),
+    )
 
 
 def _domain_of(url: str) -> str | None:
@@ -600,9 +620,14 @@ class AnthropicProvider:
                         if tool_use_acc[index].get("name") in registry_names
                     ]
                     if registry_calls:
-                        # Hand off to the external agent loop: emit a ToolCall per
-                        # request and STOP (no usage / Complete). The loop runs the
-                        # tool (HITL gate included) and re-invokes `stream(...)`.
+                        # Hand off to the external agent loop: emit this round's
+                        # UsageUpdate (so the agent loop can fold tokens), then a
+                        # ToolCall per request, and STOP without Complete. The
+                        # loop runs the tool (HITL gate included) and re-invokes
+                        # `stream(...)`. Read merged usage before leaving the
+                        # stream context — otherwise tool-round tokens are lost.
+                        final_usage = (await stream.get_final_message()).usage
+                        yield _usage_update_from_anthropic(final_usage)
                         for i, call in enumerate(registry_calls):
                             name = str(call.get("name") or "")
                             spec = tool_by_name[name]
@@ -630,24 +655,7 @@ class AnthropicProvider:
         except anthropic.APIError as exc:
             raise _map_sdk_error(exc) from exc
 
-        input_tokens = _safe_int(getattr(final_usage, "input_tokens", None))
-        output_tokens = _safe_int(getattr(final_usage, "output_tokens", None))
-        # Only the cache-READ bucket maps to our cache-priced slot. Cache
-        # creation/write pricing is out of scope until prompt caching is
-        # enabled (no `cache_control` is sent today, so both are 0).
-        cached_input_tokens = _safe_int(
-            getattr(final_usage, "cache_read_input_tokens", None)
-        )
-        # Extended thinking isn't enabled here, so reasoning stays 0 on the real
-        # provider (reasoning attribution is exercised by the FakeProvider only).
-        reasoning_tokens = 0
-
-        usage_update = UsageUpdate(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
-            cached_input_tokens=cached_input_tokens,
-        )
+        usage_update = _usage_update_from_anthropic(final_usage)
         yield usage_update
         yield Complete(usage=usage_update)
 
@@ -659,13 +667,13 @@ class AnthropicProvider:
         user_text: str,
         api_key: str | None = None,
         system_prefix: str | None = None,
-    ) -> str:
-        """Non-streaming variant. One `messages.create` call, collected text.
+    ) -> CompleteResult:
+        """Non-streaming variant. One `messages.create` call, text + usage.
 
-        Used by title autogen — small/fast tier, short max_tokens. Concatenates
-        any `text` blocks in the SDK response and returns the joined string.
-        Returns empty string on a response without a text block (defensive —
-        the caller will swallow empty titles).
+        Used by title autogen, memory extraction, and compaction summarization.
+        Concatenates any `text` blocks in the SDK response. Empty text on a
+        response without a text block (defensive — the caller swallows empty
+        titles).
         """
         # Title-autogen calls are short; cap output tokens tightly at 64 so a
         # runaway model can't burn a full max_tokens budget on a 5-word title.
@@ -698,4 +706,19 @@ class AnthropicProvider:
                 text_val = getattr(block, "text", "")
                 if isinstance(text_val, str):
                     texts.append(text_val)
-        return "".join(texts).strip()
+        usage_obj = getattr(response, "usage", None)
+        usage = UsageUpdate(
+            input_tokens=_safe_int(getattr(usage_obj, "input_tokens", None))
+            if usage_obj is not None
+            else 0,
+            output_tokens=_safe_int(getattr(usage_obj, "output_tokens", None))
+            if usage_obj is not None
+            else 0,
+            reasoning_tokens=0,
+            cached_input_tokens=_safe_int(
+                getattr(usage_obj, "cache_read_input_tokens", None)
+            )
+            if usage_obj is not None
+            else 0,
+        )
+        return CompleteResult(text="".join(texts).strip(), usage=usage)

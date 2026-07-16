@@ -139,6 +139,8 @@ class ReasoningDelta:
 @dataclass(frozen=True)
 class ReasoningDone:
     type: Literal["reasoning_done"] = "reasoning_done"
+    # Agentic mode: which subagent finished reasoning. None on non-agentic turns.
+    subagent_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -356,6 +358,18 @@ ProviderEvent = (
 )
 
 
+@dataclass(frozen=True)
+class CompleteResult:
+    """Non-streaming `complete(...)` return: assistant text plus usage meters.
+
+    Title autogen / memory extraction / compaction summarization all share this
+    shape so background LLM calls are billable rather than silently discarded.
+    """
+
+    text: str
+    usage: UsageUpdate = field(default_factory=UsageUpdate)
+
+
 class Provider(Protocol):
     """Swappable streaming backend.
 
@@ -369,8 +383,10 @@ class Provider(Protocol):
     emit the wire `reasoning_done` exactly once before any `answer_delta`.
 
     `complete(...)` is a non-streaming variant used for short, fire-and-forget
-    calls (e.g. title autogen). Returns the assistant text as a single string;
-    the implementation may use the streaming API internally but must not yield
+    calls (e.g. title autogen, memory extraction, compaction summarization).
+    Returns a `CompleteResult` with assistant text plus usage so callers can
+    meter background LLM work (compaction must not be silently unbilled).
+    The implementation may use the streaming API internally but must not yield
     intermediate events to any caller.
 
     `api_key` is an optional per-call override for BYOK (M3). When provided,
@@ -460,4 +476,4 @@ class Provider(Protocol):
         user_text: str,
         api_key: str | None = None,
         system_prefix: str | None = None,
-    ) -> str: ...
+    ) -> CompleteResult: ...

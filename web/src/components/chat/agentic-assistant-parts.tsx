@@ -16,13 +16,16 @@ import {
   buildAgenticPanelLayout,
   buildSubagentRoleById,
   buildSubagentSectionsFromParts,
+  collectGlobalSourceItems,
   deriveAgenticRunSummary,
   deriveRunCostFromParts,
   hasToolOrSubagentActivity,
   isNestedToolGroup,
   isNestedWebSearchGroup,
   resolveMainBubbleText,
+  resolveSourcesForTextPart,
   shouldRenderTextInMainBubble,
+  shouldShowSourcesInMainPanel,
 } from "@/lib/agentic-layout";
 import type { MessagePart } from "@/lib/types";
 import { AlertTriangle } from "lucide-react";
@@ -30,13 +33,13 @@ import { AlertTriangle } from "lucide-react";
 export function AgenticAssistantParts({
   parts,
   sourcesPanelRef,
-  sourceItems,
   answerTestId = "assistant-answer",
   showEmptyFallback = false,
 }: {
   parts: readonly MessagePart[];
   sourcesPanelRef: RefObject<SourcesPanelHandle | null>;
-  sourceItems: Extract<MessagePart, { type: "sources" }>["items"];
+  /** @deprecated Unused — citations resolve via resolveSourcesForTextPart. */
+  sourceItems?: Extract<MessagePart, { type: "sources" }>["items"];
   answerTestId?: string;
   /** When true, show the calm empty-reply note on tool/subagent turns with no main answer. */
   showEmptyFallback?: boolean;
@@ -122,10 +125,11 @@ export function AgenticAssistantParts({
           ) {
             return null;
           }
+          const textSources = resolveSourcesForTextPart(parts, part);
           return part.text ? (
             <div key={idx} data-testid={answerTestId}>
               <MarkdownRenderer
-                sources={sourceItems}
+                sources={textSources}
                 onCitationClick={(id) =>
                   sourcesPanelRef.current?.revealSource(id)
                 }
@@ -140,7 +144,11 @@ export function AgenticAssistantParts({
           return null;
         }
         if (part.type === "sources") {
-          if (part.subagentId) return null;
+          // B12: show untagged OR main-answer (primary/aggregator) sources —
+          // not the first worker's sources part.
+          if (!shouldShowSourcesInMainPanel(part, subagentRoleById)) {
+            return null;
+          }
           if (part.items.length === 0) return null;
           return (
             <SourcesPanel key={idx} ref={sourcesPanelRef} items={part.items} />
@@ -169,9 +177,15 @@ export function AgenticAssistantParts({
 
 export function useSourcesFromParts(parts: readonly MessagePart[]) {
   const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
-  const sourceItems =
-    parts.find((p): p is Extract<MessagePart, { type: "sources" }> =>
-      p.type === "sources",
-    )?.items ?? [];
+  const subagentRoleById = useMemo(() => buildSubagentRoleById(parts), [parts]);
+  // Prefer main-answer / untagged sources; else merge all by global id (B12).
+  const sourceItems = useMemo(() => {
+    const main = parts.find(
+      (p): p is Extract<MessagePart, { type: "sources" }> =>
+        p.type === "sources" && shouldShowSourcesInMainPanel(p, subagentRoleById),
+    );
+    if (main && main.items.length > 0) return main.items;
+    return collectGlobalSourceItems(parts);
+  }, [parts, subagentRoleById]);
   return { sourcesPanelRef, sourceItems };
 }

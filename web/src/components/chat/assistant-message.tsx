@@ -45,13 +45,16 @@ import {
   buildAgenticPanelLayout,
   buildSubagentSectionsFromParts,
   buildSubagentRoleById,
+  collectGlobalSourceItems,
   deriveAgenticRunSummary,
   deriveRunCostFromParts,
   hasToolOrSubagentActivity,
   isNestedToolGroup,
   isNestedWebSearchGroup,
   resolveMainBubbleText,
+  resolveSourcesForTextPart,
   shouldRenderTextInMainBubble,
+  shouldShowSourcesInMainPanel,
 } from "@/lib/agentic-layout";
 import { cn } from "@/lib/utils";
 import type {
@@ -241,17 +244,17 @@ export function AssistantMessage({
     [message.parts],
   );
 
-  // Source list for this message (if any) drives the inline `[n]` citation
-  // chips inside the answer markdown. Inline markers reveal the matching card
-  // via the SourcesPanel's imperative handle.
-  const sourceItems = useMemo(
-    () =>
-      message.parts.find(
-        (p): p is Extract<MessagePart, { type: "sources" }> =>
-          p.type === "sources",
-      )?.items ?? [],
-    [message.parts],
-  );
+  // Source list for citation chips: prefer main-answer / untagged sources,
+  // else merge all source parts by global id (B12).
+  const sourceItems = useMemo(() => {
+    const roles = buildSubagentRoleById(message.parts);
+    const main = message.parts.find(
+      (p): p is Extract<MessagePart, { type: "sources" }> =>
+        p.type === "sources" && shouldShowSourcesInMainPanel(p, roles),
+    );
+    if (main && main.items.length > 0) return main.items;
+    return collectGlobalSourceItems(message.parts);
+  }, [message.parts]);
   const sourcesPanelRef = useRef<SourcesPanelHandle>(null);
 
   const hasContent = message.parts.some(
@@ -419,10 +422,11 @@ export function AssistantMessage({
           ) {
             return null;
           }
+          const textSources = resolveSourcesForTextPart(message.parts, part);
           return part.text ? (
             <div key={idx} data-testid="assistant-answer">
               <MarkdownRenderer
-                sources={sourceItems}
+                sources={textSources.length > 0 ? textSources : sourceItems}
                 onCitationClick={(id) =>
                   sourcesPanelRef.current?.revealSource(id)
                 }
@@ -438,9 +442,11 @@ export function AssistantMessage({
           return <StatusLine key={idx} label={part.label} state={part.state} />;
         }
         if (part.type === "sources") {
-          // Per-subagent sources stay with the worker section (FE-001); skip
-          // the global panel when tagged.
-          if (part.subagentId) return null;
+          // B12: show untagged OR main-answer (primary/aggregator) sources —
+          // skip worker-tagged lists (those stay with the panel / FE-001).
+          if (!shouldShowSourcesInMainPanel(part, subagentRoleById)) {
+            return null;
+          }
           // Rendered AFTER the answer text (the part ordering — text then
           // sources — is established upstream in chat-thread.tsx). Honesty rule
           // (PRD 07 §4.3): an empty list with `requested` is the ungrounded

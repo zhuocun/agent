@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, MemoryFact, User
-from app.providers.protocol import ChatMessage, ProviderEvent
+from app.providers.protocol import ChatMessage, CompleteResult, ProviderEvent
 from app.streaming.handler import (
     _MEMORY_EXTRACT_MAX,
     _MEMORY_FACTS_PER_USER_CAP,
@@ -77,9 +77,9 @@ class _FactProvider:
         user_text: str,
         api_key: str | None = None,
         system_prefix: str | None = None,
-    ) -> str:
+    ) -> CompleteResult:
         self.seen.append(user_text)
-        return self.reply
+        return CompleteResult(text=self.reply)
 
 
 async def _bootstrap_user(

@@ -33,7 +33,14 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Message, UsageCreditLedger, UsageRollup, User
+from app.db.models import (
+    Conversation,
+    Message,
+    PlatformBudgetReservation,
+    UsageCreditLedger,
+    UsageRollup,
+    User,
+)
 from app.schemas.account import (
     SpendAnalytics,
     SpendConversationBucket,
@@ -468,6 +475,22 @@ async def get_period_cost(
     return float(row.cost_usd) if row is not None else 0.0
 
 
+async def get_reserved_platform_usd(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+) -> float:
+    """Sum of active platform-budget holds for ``user_id`` (B9)."""
+    total = (
+        await db.execute(
+            select(
+                func.coalesce(func.sum(PlatformBudgetReservation.amount_usd), 0)
+            ).where(PlatformBudgetReservation.user_id == user_id)
+        )
+    ).scalar_one()
+    return max(0.0, _round_usd(float(total)))
+
+
 async def get_platform_remaining_usd(
     db: AsyncSession,
     *,
@@ -479,8 +502,9 @@ async def get_platform_remaining_usd(
 
     `monthly_quota_usd <= 0` preserves the existing "budget disabled" mode and
     returns None. Otherwise the allowance is current quota remainder plus the
-    positive credit balance. The next turn is still post-paid, so enforcement
-    is best-effort just like the existing monthly cap.
+    positive credit balance, minus active reservations (B9) so concurrent turns
+    cannot jointly overshoot the snapshot. The next turn is still post-paid, so
+    enforcement is best-effort just like the existing monthly cap.
     """
     if monthly_quota_usd <= 0:
         return None
@@ -490,8 +514,101 @@ async def get_platform_remaining_usd(
         period_start=period_start,
     )
     credit_balance = await get_credit_balance(db, user_id=user_id)
+    reserved = await get_reserved_platform_usd(db, user_id=user_id)
     quota_remaining = max(0.0, monthly_quota_usd - period_cost)
-    return quota_remaining + credit_balance
+    return max(0.0, quota_remaining + credit_balance - reserved)
+
+
+async def reserve_platform_budget(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    stream_id: UUID,
+    amount_usd: float,
+    monthly_quota_usd: float,
+) -> bool:
+    """Atomically hold ``amount_usd`` against platform remaining (B9).
+
+    Under the per-user usage lock (+ ``FOR UPDATE`` when the dialect supports
+    it): if remaining headroom is insufficient, return False without writing.
+    If a reservation already exists for ``stream_id``, treat as idempotent
+    success (retry / reconnect). ``monthly_quota_usd <= 0`` is budget-disabled
+    — no row is written and True is returned.
+    """
+    amount = _round_usd(amount_usd)
+    if amount <= 0 or monthly_quota_usd <= 0:
+        return True
+    lock = _usage_lock_for(user_id)
+    async with lock:
+        await _lock_user_for_usage_update(db, user_id=user_id)
+        existing = (
+            await db.execute(
+                select(PlatformBudgetReservation).where(
+                    PlatformBudgetReservation.stream_id == stream_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return True
+        remaining = await get_platform_remaining_usd(
+            db,
+            user_id=user_id,
+            monthly_quota_usd=monthly_quota_usd,
+        )
+        if remaining is None:
+            return True
+        if remaining < amount:
+            return False
+        db.add(
+            PlatformBudgetReservation(
+                user_id=user_id,
+                stream_id=stream_id,
+                amount_usd=amount,
+            )
+        )
+        await db.flush()
+        return True
+
+
+async def release_platform_budget(
+    db: AsyncSession,
+    *,
+    stream_id: UUID,
+) -> None:
+    """Drop the platform-budget hold for ``stream_id`` (idempotent)."""
+    row = (
+        await db.execute(
+            select(PlatformBudgetReservation).where(
+                PlatformBudgetReservation.stream_id == stream_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return
+    await db.delete(row)
+    await db.flush()
+
+
+async def release_platform_budget_for_streams(
+    db: AsyncSession,
+    *,
+    stream_ids: Sequence[UUID],
+) -> int:
+    """Bulk-release reservations for reaped / terminal streams. Returns count."""
+    if not stream_ids:
+        return 0
+    rows = (
+        await db.execute(
+            select(PlatformBudgetReservation).where(
+                PlatformBudgetReservation.stream_id.in_(list(stream_ids))
+            )
+        )
+    ).scalars().all()
+    for row in rows:
+        await db.delete(row)
+    if rows:
+        await db.flush()
+    return len(rows)
 
 
 async def has_platform_allowance(
@@ -538,9 +655,12 @@ async def get_current_budget(
     limit = int(row.limit_value) if row is not None else _DEFAULT_LIMIT
     monthly_spend_usd = float(row.cost_usd) if row is not None else 0.0
     credit_balance_usd = await get_credit_balance(db, user_id=user_id)
+    reserved_usd = await get_reserved_platform_usd(db, user_id=user_id)
     effective = _effective_quota_usd(monthly_quota_usd, user_budget_usd)
     platform_remaining_usd = (
-        _round_usd(max(0.0, effective - monthly_spend_usd) + credit_balance_usd)
+        _round_usd(
+            max(0.0, effective - monthly_spend_usd) + credit_balance_usd - reserved_usd
+        )
         if effective > 0
         else None
     )

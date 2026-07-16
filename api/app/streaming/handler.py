@@ -53,10 +53,12 @@ from app.agentic.clarify import (
 from app.agentic.continuation import (
     CONTINUATION_INPUT_KEY,
     put_continuation_in_server_state,
+    put_run_ledger_in_server_state,
     sanitize_message_parts_for_api,
     strip_reserved_keys,
+    usage_from_wire,
 )
-from app.agentic.orchestrator import _run_single, run_orchestrator
+from app.agentic.orchestrator import run_orchestrator, run_single
 from app.agentic.retry import is_retryable_provider_error
 from app.config import get_settings
 from app.db.models import Message
@@ -256,6 +258,12 @@ class ResumeToolSeed:
     # after EventSourceResponse owns cancellation / stream lifecycle.
     paused_message_id: UUID | None = None
     pending_settle: bool = False
+    # B4: plan-approval pause ledger (from Message.server_state, not tool input).
+    prior_planner_cost_usd: float = 0.0
+    prior_planner_usage: UsageUpdate | None = None
+    # B5: single-mode pause ledger (from Message.server_state).
+    prior_run_cost_usd: float = 0.0
+    prior_run_usage: UsageUpdate | None = None
 
 
 @dataclass
@@ -818,6 +826,11 @@ async def stream_and_persist(
     # H-012: continuation blobs keyed by tool_call_id — written to
     # Message.server_state, never into client-visible tool_call.input.
     pending_server_continuations: dict[str, dict[str, Any]] = {}
+    # B4/B5: pause-turn run-cap ledger seeds for Message.server_state (not parts).
+    pending_planner_cost_usd: float = 0.0
+    pending_planner_usage: UsageUpdate | None = None
+    pending_prior_run_cost_usd: float = 0.0
+    pending_prior_run_usage: UsageUpdate | None = None
     # Captured once so the per-turn tools gate + agent-loop wrapping read a
     # stable value (and tests can override via a settings cache flush).
     handler_settings = get_settings()
@@ -1453,58 +1466,111 @@ async def stream_and_persist(
             )
         return prior
 
-    def _build_provider_iter() -> AsyncIterator[ProviderEvent]:
+    # Wrap the provider iteration in a Task so we can cancel on disconnect.
+    # B7 needs an async peek at paused-message parts before the pump starts, so
+    # build the iterator here (after settlement) rather than inside a sync factory.
+    _cached_prior_results: list[ToolResult] | None = None
+
+    def _settled_as_tool_result(seed: ResumeToolSeed) -> ToolResult | None:
+        settled = seed.settled_result
+        if settled is None:
+            return None
+        return ToolResult(
+            tool_call_id=getattr(settled, "tool_call_id", seed.tool_call_id),
+            name=getattr(settled, "name", seed.name),
+            label=seed.label,
+            status=getattr(settled, "status", "succeeded"),
+            approval_state=getattr(settled, "approval_state", "approved"),
+            summary=getattr(settled, "summary", None),
+            output=getattr(settled, "output", None) or None,
+            error=getattr(settled, "error", None),
+        )
+
+    async def _resolve_provider_iter() -> AsyncIterator[ProviderEvent]:
+        """Build the provider / orchestrator iterator for this turn (B7).
+
+        Single function — the former sync ``_build_provider_iter`` tools/single
+        resume branches were unreachable once this async peek owned settlement.
+        """
+        nonlocal _cached_prior_results
+        if _cached_prior_results is None:
+            _cached_prior_results = await _prior_tool_results_for_resume()
+        prior = _cached_prior_results
+
+        # B5: agentic single-mode HITL resume — direct run_single with ledger seeds.
+        if agentic_active and agentic_mode == "single":
+            assert agentic_mode is not None
+            if (
+                resume_seed is not None
+                and not resume_seed.is_plan
+                and not resume_seed.is_clarify
+                and resume_seed.agentic_continuation is None
+                and (prior or resume_seed.settled_result is not None)
+            ):
+                initial = list(prior)
+                if not initial:
+                    settled_tr = _settled_as_tool_result(resume_seed)
+                    if settled_tr is not None:
+                        initial = [settled_tr]
+                return run_single(
+                    make_stream_for=_agentic_make_stream,
+                    settings=handler_settings,
+                    user_text=(
+                        resume_seed.resume_user_text
+                        if resume_seed.resume_user_text
+                        else turn_user_text
+                    ),
+                    cost_for_usage=_cost_for_usage,
+                    budget_headroom_usd=budget_headroom_usd,
+                    server_approved_call_ids=set(),
+                    initial_tool_results=initial or None,
+                    prior_run_cost_usd=resume_seed.prior_run_cost_usd,
+                    prior_run_usage=resume_seed.prior_run_usage,
+                )
+
+        # Non-agentic tools resume (settled result + same-round priors).
+        if tools_active and not agentic_active:
+            approved_ids: set[str] | None = None
+            initial_results: list[ToolResult] | None = None
+            if (
+                resume_seed is not None
+                and not resume_seed.is_plan
+                and not resume_seed.is_clarify
+                and resume_seed.settled_result is not None
+            ):
+                initial_results = list(prior) if prior else None
+                if not initial_results:
+                    settled_tr = _settled_as_tool_result(resume_seed)
+                    if settled_tr is not None:
+                        initial_results = [settled_tr]
+                approved_ids = set()
+            return run_agent_loop(
+                make_stream=_build_raw_stream,
+                settings=handler_settings,
+                server_approved_call_ids=approved_ids,
+                initial_tool_results=initial_results,
+            )
+
         if agentic_active:
             assert agentic_mode is not None
             orch_user_text = turn_user_text
             orch_continuation = None
             orch_resume_result: ToolResult | None = None
             orch_approved_ids: set[str] | None = None
+            prior_planner_cost = 0.0
+            prior_planner_usage: UsageUpdate | None = None
+            prior_run_cost = 0.0
+            prior_run_usage: UsageUpdate | None = None
+            if resume_seed is not None:
+                prior_planner_cost = resume_seed.prior_planner_cost_usd
+                prior_planner_usage = resume_seed.prior_planner_usage
+                prior_run_cost = resume_seed.prior_run_cost_usd
+                prior_run_usage = resume_seed.prior_run_usage
             if resume_seed is not None and resume_seed.agentic_continuation is not None:
                 orch_continuation = resume_seed.agentic_continuation
                 if resume_seed.resume_user_text:
                     orch_user_text = resume_seed.resume_user_text
-                if resume_seed.settled_result is not None:
-                    settled = resume_seed.settled_result
-                    orch_resume_result = ToolResult(
-                        tool_call_id=getattr(
-                            settled, "tool_call_id", resume_seed.tool_call_id
-                        ),
-                        name=getattr(settled, "name", resume_seed.name),
-                        label=resume_seed.label,
-                        status=getattr(settled, "status", "succeeded"),
-                        approval_state=getattr(
-                            settled, "approval_state", "approved"
-                        ),
-                        summary=getattr(settled, "summary", None),
-                        output=getattr(settled, "output", None) or None,
-                        error=getattr(settled, "error", None),
-                    )
-                # H-001 / O-001: settled ids are NOT fresh execution capabilities.
-                # Feed the settled result only; the agent loop treats those ids as
-                # consumed and rejects provider reissues.
-                orch_approved_ids = set()
-            elif (
-                resume_seed is not None
-                and not resume_seed.is_plan
-                and not resume_seed.is_clarify
-                and resume_seed.settled_result is not None
-                and agentic_mode == "single"
-            ):
-                # Primary HITL resume: feed settled result into the primary loop.
-                settled = resume_seed.settled_result
-                orch_resume_result = ToolResult(
-                    tool_call_id=getattr(
-                        settled, "tool_call_id", resume_seed.tool_call_id
-                    ),
-                    name=getattr(settled, "name", resume_seed.name),
-                    label=resume_seed.label,
-                    status=getattr(settled, "status", "succeeded"),
-                    approval_state=getattr(settled, "approval_state", "approved"),
-                    summary=getattr(settled, "summary", None),
-                    output=getattr(settled, "output", None) or None,
-                    error=getattr(settled, "error", None),
-                )
+                orch_resume_result = _settled_as_tool_result(resume_seed)
                 orch_approved_ids = set()
             return run_orchestrator(
                 make_stream_for=_agentic_make_stream,
@@ -1544,132 +1610,13 @@ async def stream_and_persist(
                     else None
                 ),
                 is_retryable=_is_retryable,
+                prior_planner_cost_usd=prior_planner_cost,
+                prior_planner_usage=prior_planner_usage,
+                prior_run_cost_usd=prior_run_cost,
+                prior_run_usage=prior_run_usage,
             )
-        if tools_active:
-            approved_ids: set[str] | None = None
-            initial_results = None
-            if (
-                resume_seed is not None
-                and not resume_seed.is_plan
-                and not resume_seed.is_clarify
-                and resume_seed.settled_result is not None
-            ):
-                settled = resume_seed.settled_result
-                initial_results = [
-                    ToolResult(
-                        tool_call_id=getattr(
-                            settled, "tool_call_id", resume_seed.tool_call_id
-                        ),
-                        name=getattr(settled, "name", resume_seed.name),
-                        label=resume_seed.label,
-                        status=getattr(settled, "status", "succeeded"),
-                        approval_state=getattr(
-                            settled, "approval_state", "approved"
-                        ),
-                        summary=getattr(settled, "summary", None),
-                        output=getattr(settled, "output", None) or None,
-                        error=getattr(settled, "error", None),
-                    )
-                ]
-                approved_ids = set[str]()
-            return run_agent_loop(
-                make_stream=_build_raw_stream,
-                settings=handler_settings,
-                server_approved_call_ids=approved_ids,
-                initial_tool_results=initial_results,
-            )
+
         return _build_raw_stream([])
-
-    # Wrap the provider iteration in a Task so we can cancel on disconnect.
-    # B7 needs an async peek at paused-message parts before the pump starts, so
-    # build the iterator here (after settlement) rather than inside a sync factory.
-    _cached_prior_results: list[ToolResult] | None = None
-
-    async def _resolve_provider_iter() -> AsyncIterator[ProviderEvent]:
-        nonlocal _cached_prior_results
-        if _cached_prior_results is None:
-            _cached_prior_results = await _prior_tool_results_for_resume()
-        prior = _cached_prior_results
-
-        if agentic_active and agentic_mode == "single":
-            assert agentic_mode is not None
-            if (
-                resume_seed is not None
-                and not resume_seed.is_plan
-                and not resume_seed.is_clarify
-                and resume_seed.agentic_continuation is None
-                and (prior or resume_seed.settled_result is not None)
-            ):
-                initial = list(prior)
-                if not initial and resume_seed.settled_result is not None:
-                    settled = resume_seed.settled_result
-                    initial = [
-                        ToolResult(
-                            tool_call_id=getattr(
-                                settled, "tool_call_id", resume_seed.tool_call_id
-                            ),
-                            name=getattr(settled, "name", resume_seed.name),
-                            label=resume_seed.label,
-                            status=getattr(settled, "status", "succeeded"),
-                            approval_state=getattr(
-                                settled, "approval_state", "approved"
-                            ),
-                            summary=getattr(settled, "summary", None),
-                            output=getattr(settled, "output", None) or None,
-                            error=getattr(settled, "error", None),
-                        )
-                    ]
-                return _run_single(
-                    make_stream_for=_agentic_make_stream,
-                    settings=handler_settings,
-                    user_text=(
-                        resume_seed.resume_user_text
-                        if resume_seed.resume_user_text
-                        else turn_user_text
-                    ),
-                    cost_for_usage=_cost_for_usage,
-                    budget_headroom_usd=budget_headroom_usd,
-                    server_approved_call_ids=set(),
-                    initial_tool_results=initial or None,
-                )
-
-        if tools_active and not agentic_active:
-            approved_ids: set[str] | None = None
-            initial_results: list[ToolResult] | None = None
-            if (
-                resume_seed is not None
-                and not resume_seed.is_plan
-                and not resume_seed.is_clarify
-                and resume_seed.settled_result is not None
-            ):
-                initial_results = list(prior) if prior else None
-                if not initial_results:
-                    settled = resume_seed.settled_result
-                    initial_results = [
-                        ToolResult(
-                            tool_call_id=getattr(
-                                settled, "tool_call_id", resume_seed.tool_call_id
-                            ),
-                            name=getattr(settled, "name", resume_seed.name),
-                            label=resume_seed.label,
-                            status=getattr(settled, "status", "succeeded"),
-                            approval_state=getattr(
-                                settled, "approval_state", "approved"
-                            ),
-                            summary=getattr(settled, "summary", None),
-                            output=getattr(settled, "output", None) or None,
-                            error=getattr(settled, "error", None),
-                        )
-                    ]
-                approved_ids = set()
-            return run_agent_loop(
-                make_stream=_build_raw_stream,
-                settings=handler_settings,
-                server_approved_call_ids=approved_ids,
-                initial_tool_results=initial_results,
-            )
-
-        return _build_provider_iter()
 
     provider_iter = await _resolve_provider_iter()
 
@@ -2016,6 +1963,20 @@ async def stream_and_persist(
                 server_state = put_continuation_in_server_state(
                     server_state, call_id, blob
                 )
+        # B4/B5: ledger seeds beside continuations (sanitize strips tool-input).
+        if (
+            pending_planner_cost_usd > 0.0
+            or pending_planner_usage is not None
+            or pending_prior_run_cost_usd > 0.0
+            or pending_prior_run_usage is not None
+        ):
+            server_state = put_run_ledger_in_server_state(
+                server_state,
+                planner_cost_usd=pending_planner_cost_usd or None,
+                planner_usage=pending_planner_usage,
+                prior_run_cost_usd=pending_prior_run_cost_usd or None,
+                prior_run_usage=pending_prior_run_usage,
+            )
         row = await messages_repo.create_assistant_message(
             db=target_session,
             conversation_id=conversation_id,
@@ -2527,6 +2488,25 @@ async def stream_and_persist(
                 )
             elif isinstance(ev, ToolCall):
                 call_part = _tool_call_part(ev)
+                # B4: harvest planner spend from reserved tool-input before
+                # sanitize-on-persist strips RESERVED_CONTROL_KEYS from parts.
+                raw_input = ev.input if isinstance(ev.input, dict) else None
+                if raw_input is not None:
+                    stamped_cost = raw_input.get("plannerCostUsd")
+                    if stamped_cost is None:
+                        stamped_cost = raw_input.get("planner_cost_usd")
+                    if stamped_cost is not None:
+                        try:
+                            cost_val = float(stamped_cost)
+                        except (TypeError, ValueError):
+                            cost_val = 0.0
+                        if cost_val > pending_planner_cost_usd:
+                            pending_planner_cost_usd = cost_val
+                    stamped_usage = raw_input.get("plannerUsage")
+                    if stamped_usage is None:
+                        stamped_usage = raw_input.get("planner_usage")
+                    if isinstance(stamped_usage, dict):
+                        pending_planner_usage = usage_from_wire(stamped_usage)
                 target_tool_parts = (
                     _sub(ev.subagent_id).tool_parts
                     if agentic_active and ev.subagent_id is not None
@@ -2753,6 +2733,44 @@ async def stream_and_persist(
                 )
             else:
                 turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+            # B4: if tool-input stamp was missing, fall back to planner accumulator.
+            if pending_planner_cost_usd <= 0.0 and agentic_active:
+                planner_acc = agentic_subagents.get("planner")
+                if planner_acc is not None:
+                    if planner_acc.cost_usd is not None and planner_acc.cost_usd > 0:
+                        pending_planner_cost_usd = float(planner_acc.cost_usd)
+                    if (
+                        pending_planner_usage is None
+                        and (
+                            planner_acc.usage.input_tokens
+                            or planner_acc.usage.output_tokens
+                            or planner_acc.usage.reasoning_tokens
+                            or planner_acc.usage.cached_input_tokens
+                        )
+                    ):
+                        pending_planner_usage = planner_acc.usage
+            # B5: single-mode pause ledger for resume seeding.
+            if agentic_active and agentic_mode == "single":
+                primary_acc = agentic_subagents.get("primary")
+                pause_usage = (
+                    primary_acc.usage
+                    if primary_acc is not None
+                    and (
+                        primary_acc.usage.input_tokens
+                        or primary_acc.usage.output_tokens
+                        or primary_acc.usage.reasoning_tokens
+                        or primary_acc.usage.cached_input_tokens
+                    )
+                    else final_usage
+                )
+                pending_prior_run_cost_usd = float(turn_cost or 0.0)
+                if (
+                    pause_usage.input_tokens
+                    or pause_usage.output_tokens
+                    or pause_usage.reasoning_tokens
+                    or pause_usage.cached_input_tokens
+                ):
+                    pending_prior_run_usage = pause_usage
             attribution = build_attribution(
                 requested_tier_id=requested_tier_id,
                 binding=binding,

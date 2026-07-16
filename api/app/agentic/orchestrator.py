@@ -1232,7 +1232,7 @@ async def _collect_answer(
 # --- single mode (M1) ---------------------------------------------------------
 
 
-async def _run_single(
+async def run_single(
     *,
     make_stream_for: StreamFactory,
     settings: Settings,
@@ -1777,7 +1777,7 @@ async def _resume_worker_continuation(
             ):
                 budget_halted = True
             yield _tag(event, paused_id)
-            # B3: mirror `_run_single` — stop draining once the cap is breached.
+            # B3: mirror `run_single` — stop draining once the cap is breached.
             if budget_halted and isinstance(event, (Complete, UsageUpdate)):
                 break
 
@@ -2951,7 +2951,7 @@ async def run_orchestrator(
         ):
             yield event
     else:
-        async for event in _run_single(
+        async for event in run_single(
             make_stream_for=make_stream_for,
             settings=settings,
             user_text=user_text,

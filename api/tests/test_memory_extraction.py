@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, MemoryFact, User
-from app.providers.protocol import ChatMessage, ProviderEvent, CompleteResult
+from app.providers.protocol import ChatMessage, CompleteResult, ProviderEvent
 from app.streaming.handler import (
     _MEMORY_EXTRACT_MAX,
     _MEMORY_FACTS_PER_USER_CAP,

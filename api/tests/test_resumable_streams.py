@@ -34,7 +34,7 @@ from app.db.models import Conversation, Message, Stream, User
 from app.db.repositories import streams as streams_repo
 from app.db.session import get_db
 from app.providers.fake import FakeProvider
-from app.providers.protocol import AnswerDelta, ChatMessage, ProviderEvent, CompleteResult
+from app.providers.protocol import AnswerDelta, ChatMessage, CompleteResult, ProviderEvent
 from app.providers.tiers import get_binding
 from app.schemas.stream_events import AnswerDeltaEvent, SubmittedEvent
 from app.streaming import replay_registry

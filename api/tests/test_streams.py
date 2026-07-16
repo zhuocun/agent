@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, Message, Stream, User
 from app.db.repositories import streams as streams_repo
-from app.providers.protocol import AnswerDelta, ChatMessage, ProviderEvent, CompleteResult
+from app.providers.protocol import AnswerDelta, ChatMessage, CompleteResult, ProviderEvent
 from app.streaming.stop_registry import (
     clear_stop,
     is_stop_requested,

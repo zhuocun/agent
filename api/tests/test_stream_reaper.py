@@ -103,7 +103,7 @@ async def test_reap_marks_stale_active_as_error(
         )
         await session.commit()
 
-    assert reaped == 1
+    assert reaped == [stale_id]
     assert await _status_of(session_factory, stale_id) == "error"
 
 
@@ -125,7 +125,7 @@ async def test_reap_spares_fresh_active(
         )
         await session.commit()
 
-    assert reaped == 0
+    assert reaped == []
     assert await _status_of(session_factory, fresh_id) == "active"
 
 
@@ -160,7 +160,7 @@ async def test_reap_ignores_terminal_rows(
         )
         await session.commit()
 
-    assert reaped == 0
+    assert reaped == []
     assert await _status_of(session_factory, done_id) == "done"
     assert await _status_of(session_factory, stopped_id) == "stopped"
     assert await _status_of(session_factory, error_id) == "error"
@@ -210,7 +210,7 @@ async def test_reap_counts_only_stale_active_among_mixed(
         )
         await session.commit()
 
-    assert reaped == 2
+    assert set(reaped) == {stale_a, stale_b}
     assert await _status_of(session_factory, stale_a) == "error"
     assert await _status_of(session_factory, stale_b) == "error"
     assert await _status_of(session_factory, fresh) == "active"

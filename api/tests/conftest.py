@@ -38,6 +38,9 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import get_settings
+
+# Register all ORM tables on Base.metadata before create_all (engine fixture).
+from app.db import models as _models  # noqa: F401
 from app.db.base import Base
 from app.db.session import get_db
 

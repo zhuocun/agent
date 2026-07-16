@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
 from collections import defaultdict
@@ -37,7 +38,7 @@ from app.agentic import (
     is_plan_approval_call_id,
     is_plan_clarify_call_id,
 )
-from app.agentic.budget import compose_headroom
+from app.agentic.budget import compose_headroom, estimate_run_cost
 from app.agentic.clarify import (
     ClarificationRecord,
     ClarifyInputError,
@@ -132,6 +133,7 @@ from app.streaming.handler import (
     spawn_detached_producer,
     stream_and_persist,
 )
+from app.streaming.reaper import stream_orphaned_envelope
 from app.streaming.replay_registry import ReplayLogBuffer, ReplayLogTruncatedError
 from app.streaming.sse import (
     encode_answer_delta,
@@ -443,7 +445,8 @@ async def _abandon_unstarted_stream_claim(
     would otherwise become a durable ``active`` row and block the next turn with
     ``STREAM_IN_PROGRESS`` (sibling deny before winner resume). Rollback undoes
     an uncommitted claim; if prepare already committed the row, mark it
-    terminal to release the single-active guard.
+    terminal to release the single-active guard. Also drops any B9 platform
+    budget reservation held for the stream.
     """
     if stream_id is None:
         return
@@ -456,7 +459,12 @@ async def _abandon_unstarted_stream_claim(
             status="error",
             release_active_guard=True,
         )
+        await usage_repo.release_platform_budget(db, stream_id=stream_id)
         await db.commit()
+    else:
+        with contextlib.suppress(Exception):
+            await usage_repo.release_platform_budget(db, stream_id=stream_id)
+            await db.commit()
 
 
 def _duplicate_in_flight() -> AppError:
@@ -2220,6 +2228,7 @@ async def send_message(
     # gets its older prefix replaced by a provider-written summary, falling back
     # to a pure sliding window if summarization is unavailable. Applied to the
     # `history` threaded into BOTH the detached-producer and inline stream paths.
+    #
     # HANDOFF (B13): `compaction.usage` carries summarizer meters when a
     # complete() call ran. Bill/surface that usage on the turn attribution —
     # currently returned but not yet folded into the route ledger here.
@@ -2426,8 +2435,56 @@ async def send_message(
     # (or agentic single) run can never overshoot either cap. Only platform-key
     # turns are constrained (BYOK → None = "cap only"). Numeric 0.0 means no
     # money remains (SAF-003); None means unconstrained.
+    #
+    # B9: before snapshotting headroom, atomically reserve a worst-case estimate
+    # against platform remaining so concurrent conversations cannot jointly
+    # overshoot. Released by the handler (or reaper) on terminal/pause/error.
     budget_headroom_usd: float | None = None
     if effective_agentic_mode is not None and resolved_api_key is None:
+        if (
+            effective_quota_usd > 0
+            and stream_id is not None
+            and not is_temp
+        ):
+            image_count = sum(
+                1
+                for attachment in provider_attachments
+                if attachment.media_type == "image"
+            )
+            reserve_amount = estimate_run_cost(
+                sub_question_count=(
+                    settings.agentic_max_workers
+                    if effective_agentic_mode == "deep_research"
+                    else 1
+                ),
+                binding=binding,
+                settings=settings,
+                image_count=image_count,
+            )
+            reserved = await usage_repo.reserve_platform_budget(
+                db,
+                user_id=user.id,
+                stream_id=stream_id,
+                amount_usd=reserve_amount,
+                monthly_quota_usd=effective_quota_usd,
+            )
+            if not reserved:
+                await _abandon_unstarted_stream_claim(db, stream_id)
+                async with _derive_session_factory(db)() as event_db:
+                    await analytics_repo.record(
+                        event_db,
+                        user_id=user.id,
+                        event_type="budget.exceeded",
+                        properties={
+                            "conversationId": str(conversation_id),
+                            "requestedTierId": body.tier_id,
+                            "providerId": selected_provider_id,
+                            "scope": "reservation",
+                        },
+                    )
+                    await event_db.commit()
+                raise _budget_exceeded()
+            await db.commit()
         headroom_parts: list[float | None] = []
         if effective_quota_usd > 0:
             headroom_parts.append(
@@ -2633,6 +2690,30 @@ async def reconnect_stream(
         )
     except ReplayLogTruncatedError as exc:
         raise _stream_replay_truncated() from exc
+
+    # B11: durable stream already terminal but replay never marked done (hard
+    # crash / reaper raced ahead of Redis). Terminate the reconnect immediately
+    # rather than hanging on an unfinished buffer. Missing buffers still 404
+    # (TTL eviction / wrong worker) — only unfinished live buffers are forced.
+    terminal_stream_statuses = frozenset(
+        {"done", "stopped", "error", "awaiting_approval"}
+    )
+    if (
+        stream_row.status in terminal_stream_statuses
+        and buffer is not None
+        and not buffer.done
+    ):
+        async def _orphaned_stream() -> AsyncIterator[ServerSentEvent]:
+            with contextlib.suppress(Exception):
+                await buffer.append(encode_error(stream_orphaned_envelope()))
+                await buffer.mark_done(terminal_kind="error")
+            yield encode_error(stream_orphaned_envelope())
+
+        return _eventsource_response(
+            _orphaned_stream(),
+            media_type="text/event-stream",
+        )
+
     if buffer is None:
         raise not_found("stream")
 

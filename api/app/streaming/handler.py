@@ -56,7 +56,7 @@ from app.agentic.continuation import (
     sanitize_message_parts_for_api,
     strip_reserved_keys,
 )
-from app.agentic.orchestrator import run_orchestrator
+from app.agentic.orchestrator import _run_single, run_orchestrator
 from app.agentic.retry import is_retryable_provider_error
 from app.config import get_settings
 from app.db.models import Message
@@ -303,6 +303,85 @@ def mark_unfinished_subagents_stopped(
     for acc in subagents.values():
         if not acc.terminal:
             acc.outcome = "stopped"
+
+
+def mark_unfinished_subagents_paused(
+    subagents: dict[str, _SubagentAccumulator],
+) -> None:
+    """Mark non-terminal accumulators on HITL pause (B15).
+
+    Uses ``stopped`` (already in ``SubagentOutcome`` / FE) rather than a new
+    literal: unknown wire values fall through to a green check on the FE today.
+    ``stopped`` renders as a non-success cancelled state.
+    """
+    mark_unfinished_subagents_stopped(subagents)
+
+
+def tool_results_from_message_parts(
+    parts: list[dict[str, Any]] | None,
+    *,
+    exclude_tool_call_ids: Collection[str] | None = None,
+) -> list[ToolResult]:
+    """Collect durable ``tool_result`` parts for single-mode resume seeding (B7).
+
+    Mirrors worker continuation seeding from ``tool_transcript``: already-executed
+    same-round results must be fed back as ``initial_tool_results`` alongside the
+    settled gated approval result.
+    """
+    if not parts:
+        return []
+    exclude = set(exclude_tool_call_ids or ())
+    out: list[ToolResult] = []
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") != "tool_result":
+            continue
+        call_id = str(part.get("toolCallId") or part.get("tool_call_id") or "")
+        if not call_id or call_id in exclude:
+            continue
+        status_raw = part.get("status")
+        status: Literal[
+            "running", "succeeded", "failed", "cancelled", "awaiting_approval"
+        ] = (
+            status_raw
+            if status_raw
+            in ("running", "succeeded", "failed", "cancelled", "awaiting_approval")
+            else "succeeded"
+        )
+        approval_raw = part.get("approvalState") or part.get("approval_state")
+        approval_state: Literal[
+            "not_required", "pending", "approved", "rejected"
+        ] = (
+            approval_raw
+            if approval_raw in ("not_required", "pending", "approved", "rejected")
+            else "not_required"
+        )
+        out.append(
+            ToolResult(
+                tool_call_id=call_id,
+                name=str(part.get("name") or ""),
+                label=str(part["label"]) if isinstance(part.get("label"), str) else None,
+                status=status,
+                approval_state=approval_state,
+                summary=(
+                    str(part["summary"]) if isinstance(part.get("summary"), str) else None
+                ),
+                output=dict(part.get("output") or {})
+                if isinstance(part.get("output"), dict)
+                else {},
+                error=str(part["error"]) if isinstance(part.get("error"), str) else None,
+            )
+        )
+    return out
+
+
+# Bound the provider→consumer queue so a slow SSE client cannot buffer an
+# unbounded number of deltas in process memory (B23). ``put`` applies
+# backpressure; 256 ≈ a few seconds of high-frequency token deltas.
+_PROVIDER_QUEUE_MAXSIZE = 256
+
+# Heartbeat ``stream.updated_at`` well below the reaper TTL (default 900s) so
+# long agentic runs are not mistaken for crash orphans (B10).
+_STREAM_HEARTBEAT_INTERVAL_S = 60.0
 
 
 @dataclass(frozen=True)
@@ -1224,6 +1303,7 @@ async def stream_and_persist(
                     status="stopped",
                     release_active_guard=True,
                 )
+                await usage_repo.release_platform_budget(db, stream_id=stream_id)
                 await db.commit()
             with contextlib.suppress(Exception):
                 await clear_stop_async(stream_id)
@@ -1327,6 +1407,51 @@ async def stream_and_persist(
         resume_seed.settled_result = outcome.result
         resume_seed.decision = outcome.decision
         resume_seed.pending_settle = False
+
+    async def _prior_tool_results_for_resume() -> list[ToolResult]:
+        """B7: same-round tool_results already on the paused message."""
+        if (
+            resume_seed is None
+            or resume_seed.is_plan
+            or resume_seed.is_clarify
+            or resume_seed.paused_message_id is None
+        ):
+            return []
+        paused = await db.get(Message, resume_seed.paused_message_id)
+        if paused is None:
+            return []
+        parts = paused.parts if isinstance(paused.parts, list) else []
+        settled_id = None
+        if resume_seed.settled_result is not None:
+            settled_id = getattr(
+                resume_seed.settled_result, "tool_call_id", resume_seed.tool_call_id
+            )
+        elif resume_seed.tool_call_id:
+            settled_id = resume_seed.tool_call_id
+        # Include every durable tool_result; the settled gated result is usually
+        # already on the row after claim/settle. Deduplicate by call id below.
+        prior = tool_results_from_message_parts(
+            [p for p in parts if isinstance(p, dict)],
+        )
+        if (
+            settled_id
+            and resume_seed.settled_result is not None
+            and all(r.tool_call_id != settled_id for r in prior)
+        ):
+            settled = resume_seed.settled_result
+            prior.append(
+                ToolResult(
+                    tool_call_id=settled_id,
+                    name=getattr(settled, "name", resume_seed.name),
+                    label=resume_seed.label,
+                    status=getattr(settled, "status", "succeeded"),
+                    approval_state=getattr(settled, "approval_state", "approved"),
+                    summary=getattr(settled, "summary", None),
+                    output=getattr(settled, "output", None) or None,
+                    error=getattr(settled, "error", None),
+                )
+            )
+        return prior
 
     def _build_provider_iter() -> AsyncIterator[ProviderEvent]:
         if agentic_active:
@@ -1456,9 +1581,101 @@ async def stream_and_persist(
         return _build_raw_stream([])
 
     # Wrap the provider iteration in a Task so we can cancel on disconnect.
-    provider_iter = _build_provider_iter()
+    # B7 needs an async peek at paused-message parts before the pump starts, so
+    # build the iterator here (after settlement) rather than inside a sync factory.
+    _cached_prior_results: list[ToolResult] | None = None
 
-    queue: asyncio.Queue[ProviderEvent | _PumpError | None] = asyncio.Queue()
+    async def _resolve_provider_iter() -> AsyncIterator[ProviderEvent]:
+        nonlocal _cached_prior_results
+        if _cached_prior_results is None:
+            _cached_prior_results = await _prior_tool_results_for_resume()
+        prior = _cached_prior_results
+
+        if agentic_active and agentic_mode == "single":
+            assert agentic_mode is not None
+            if (
+                resume_seed is not None
+                and not resume_seed.is_plan
+                and not resume_seed.is_clarify
+                and resume_seed.agentic_continuation is None
+                and (prior or resume_seed.settled_result is not None)
+            ):
+                initial = list(prior)
+                if not initial and resume_seed.settled_result is not None:
+                    settled = resume_seed.settled_result
+                    initial = [
+                        ToolResult(
+                            tool_call_id=getattr(
+                                settled, "tool_call_id", resume_seed.tool_call_id
+                            ),
+                            name=getattr(settled, "name", resume_seed.name),
+                            label=resume_seed.label,
+                            status=getattr(settled, "status", "succeeded"),
+                            approval_state=getattr(
+                                settled, "approval_state", "approved"
+                            ),
+                            summary=getattr(settled, "summary", None),
+                            output=getattr(settled, "output", None) or None,
+                            error=getattr(settled, "error", None),
+                        )
+                    ]
+                return _run_single(
+                    make_stream_for=_agentic_make_stream,
+                    settings=handler_settings,
+                    user_text=(
+                        resume_seed.resume_user_text
+                        if resume_seed.resume_user_text
+                        else turn_user_text
+                    ),
+                    cost_for_usage=_cost_for_usage,
+                    budget_headroom_usd=budget_headroom_usd,
+                    server_approved_call_ids=set(),
+                    initial_tool_results=initial or None,
+                )
+
+        if tools_active and not agentic_active:
+            approved_ids: set[str] | None = None
+            initial_results: list[ToolResult] | None = None
+            if (
+                resume_seed is not None
+                and not resume_seed.is_plan
+                and not resume_seed.is_clarify
+                and resume_seed.settled_result is not None
+            ):
+                initial_results = list(prior) if prior else None
+                if not initial_results:
+                    settled = resume_seed.settled_result
+                    initial_results = [
+                        ToolResult(
+                            tool_call_id=getattr(
+                                settled, "tool_call_id", resume_seed.tool_call_id
+                            ),
+                            name=getattr(settled, "name", resume_seed.name),
+                            label=resume_seed.label,
+                            status=getattr(settled, "status", "succeeded"),
+                            approval_state=getattr(
+                                settled, "approval_state", "approved"
+                            ),
+                            summary=getattr(settled, "summary", None),
+                            output=getattr(settled, "output", None) or None,
+                            error=getattr(settled, "error", None),
+                        )
+                    ]
+                approved_ids = set()
+            return run_agent_loop(
+                make_stream=_build_raw_stream,
+                settings=handler_settings,
+                server_approved_call_ids=approved_ids,
+                initial_tool_results=initial_results,
+            )
+
+        return _build_provider_iter()
+
+    provider_iter = await _resolve_provider_iter()
+
+    queue: asyncio.Queue[ProviderEvent | _PumpError | None] = asyncio.Queue(
+        maxsize=_PROVIDER_QUEUE_MAXSIZE
+    )
 
     async def _pump(iterator: AsyncIterator[ProviderEvent]) -> None:
         """Drain the provider iterator into the queue.
@@ -1468,6 +1685,10 @@ async def stream_and_persist(
         persistence). `CancelledError` (disconnect/cleanup cancel) is NOT
         forwarded — it just ends the pump. The terminal `None` always closes
         the queue so the consumer never blocks.
+
+        The queue is bounded (B23); ``await put`` applies backpressure. The
+        terminal sentinel is cancellation-safe: if the consumer is gone and the
+        queue is full we drop oldest events until ``None`` fits.
         """
         try:
             async for ev in iterator:
@@ -1477,9 +1698,49 @@ async def stream_and_persist(
         except Exception as exc:
             await queue.put(_PumpError(exc))
         finally:
-            await queue.put(None)
+            while True:
+                try:
+                    queue.put_nowait(None)
+                    break
+                except asyncio.QueueFull:
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
 
     pump_task = asyncio.create_task(_pump(provider_iter))
+
+    last_stream_heartbeat_at = time.monotonic()
+
+    async def _maybe_heartbeat_stream() -> None:
+        """B10: keep ``stream.updated_at`` fresh so the reaper spares live runs."""
+        nonlocal last_stream_heartbeat_at
+        if stream_id is None:
+            return
+        now = time.monotonic()
+        if now - last_stream_heartbeat_at < _STREAM_HEARTBEAT_INTERVAL_S:
+            return
+        last_stream_heartbeat_at = now
+        try:
+            factory = get_session_factory()
+            async with factory() as hb_db:
+                await streams_repo.heartbeat(hb_db, stream_id=stream_id)
+                await hb_db.commit()
+        except Exception as hb_exc:  # pragma: no cover - defensive
+            log.warning("stream.heartbeat.failed", exc_info=hb_exc)
+
+    async def _release_budget_reservation(session: AsyncSession | None = None) -> None:
+        """B9: drop the platform headroom hold for this stream (idempotent)."""
+        if stream_id is None or user_id is None:
+            return
+        try:
+            if session is not None:
+                await usage_repo.release_platform_budget(session, stream_id=stream_id)
+                return
+            factory = get_session_factory()
+            async with factory() as rel_db:
+                await usage_repo.release_platform_budget(rel_db, stream_id=stream_id)
+                await rel_db.commit()
+        except Exception as rel_exc:  # pragma: no cover - defensive
+            log.warning("budget.reservation_release.failed", exc_info=rel_exc)
 
     def _no_output_yet() -> bool:
         """True iff NOTHING has been emitted/accumulated for this turn yet.
@@ -2136,6 +2397,7 @@ async def stream_and_persist(
                 return  # No terminal on disconnect (socket closed).
 
             try:
+                await _maybe_heartbeat_stream()
                 ev = await asyncio.wait_for(queue.get(), timeout=0.1)
             except TimeoutError:
                 continue
@@ -2204,7 +2466,7 @@ async def stream_and_persist(
                         fallback_provider_id=runtime_provider_id,
                         reason_code=sub_code,
                     )
-                    provider_iter = _build_provider_iter()
+                    provider_iter = await _resolve_provider_iter()
                     pump_task = asyncio.create_task(_pump(provider_iter))
                     continue
                 raise ev.exc
@@ -2477,6 +2739,8 @@ async def stream_and_persist(
         # the tokens consumed up to the pause, bump usage, and RELEASE the
         # single-active-stream guard so the resume POST can open its own stream.
         if paused:
+            if agentic_active and agentic_subagents:
+                mark_unfinished_subagents_paused(agentic_subagents)
             breakdown = compute_cost_breakdown(
                 usage=final_usage,
                 binding=binding,
@@ -2890,6 +3154,7 @@ async def stream_and_persist(
         # non-None stream_id (temporary turns never register a stream).
         if stream_id is not None:
             await clear_stop_async(stream_id)
+        await _release_budget_reservation()
 
 
 async def run_detached_producer(

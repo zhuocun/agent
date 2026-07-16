@@ -97,11 +97,31 @@ async def mark_status(
     await db.flush()
 
 
+async def heartbeat(
+    db: AsyncSession,
+    *,
+    stream_id: UUID,
+) -> bool:
+    """Bump ``updated_at`` on an still-``active`` stream (B10 liveness).
+
+    Returns True when a row was touched. No-op for missing / already-terminal
+    rows so a late heartbeat after mark_status cannot resurrect an active guard.
+    """
+    stmt = (
+        update(Stream)
+        .where(Stream.id == stream_id, Stream.status == "active")
+        .values(updated_at=datetime.now(UTC))
+    )
+    result = await db.execute(stmt)
+    await db.flush()
+    return cast("CursorResult[Any]", result).rowcount > 0
+
+
 async def reap_stale_active(
     db: AsyncSession,
     *,
     older_than: timedelta,
-) -> int:
+) -> list[UUID]:
     """Transition orphaned `active` stream rows to a terminal state. Flush.
 
     Closes the hard-crash gap (PRD 04 §5.1): a SIGKILL / OOM / power loss kills
@@ -119,34 +139,28 @@ async def reap_stale_active(
     row", which matches an orphan).
 
     Liveness guarantee: the cutoff is keyed on `updated_at`, which
-    `mark_status` bumps on EVERY transition (see above). A genuinely in-flight
-    turn keeps a fresh `updated_at`; only rows untouched for longer than
-    `older_than` are reaped. The caller picks `older_than` (from
-    `settings.stream_reap_after_seconds`) comfortably larger than the longest
-    plausible live turn, so a live stream is never reaped. NOTE: for MVP turns
-    last seconds, so a static TTL with no heartbeating is safe. If a turn could
-    ever plausibly exceed the TTL, the handler should heartbeat `updated_at`
-    mid-stream; we deliberately do NOT add heartbeating now.
+    `mark_status` / `heartbeat` bump. A genuinely in-flight turn keeps a fresh
+    `updated_at` via periodic heartbeats from the producer (B10); only rows
+    untouched for longer than `older_than` are reaped.
 
-    Single bulk `UPDATE` — dialect-safe (Postgres prod + SQLite tests): the
-    cutoff is computed in Python and passed as a bound parameter, and
-    `updated_at` is set to a Python `datetime` rather than a SQL `now()`, so no
-    dialect-specific time function is involved. Returns the number of rows
-    reaped.
+    Returns the list of reaped stream ids so callers (reaper) can terminalize
+    Redis/in-memory replay buffers and release budget reservations (B11 / B9).
     """
     cutoff = datetime.now(UTC) - older_than
+    select_stmt = select(Stream.id).where(
+        Stream.status == "active", Stream.updated_at < cutoff
+    )
+    stale_ids = list((await db.execute(select_stmt)).scalars().all())
+    if not stale_ids:
+        return []
     stmt = (
         update(Stream)
-        .where(Stream.status == "active", Stream.updated_at < cutoff)
+        .where(Stream.id.in_(stale_ids))
         .values(status="error", updated_at=datetime.now(UTC))
     )
-    result = await db.execute(stmt)
+    await db.execute(stmt)
     await db.flush()
-    # `rowcount` is reliable for a bulk UPDATE on both asyncpg and aiosqlite.
-    # `execute()` is typed as returning `Result`, but a DML statement yields a
-    # `CursorResult` at runtime (the only kind that carries `rowcount`); cast so
-    # the attribute is typed without laundering through `Any`.
-    return cast("CursorResult[Any]", result).rowcount
+    return stale_ids
 
 
 async def recent_health(

@@ -336,6 +336,9 @@ every query class.
 
 ## Open questions / remaining gaps
 
+**Batch C closed (V-009..V-013):** verifier lifecycle order + sibling span, failure-semantics tests, per-sample cost accounting / phase pricer, dead helper removal, and plan 01/02 as-built updates for the shipped default-off fresh-context judge.
+
+
 Aligned with the as-built audit. Plan 01's remaining-gaps table tracks build-plan
 status; this section owns **target** decisions and **deferred hard gaps**.
 

@@ -270,6 +270,16 @@ class FakeProvider:
             # (HITL resume) the worker emits its finding so synthesis can include it.
             if tools_on and "TOOL_APPROVE" in sub_question and not has_tool_feedback:
                 await asyncio.sleep(self._delay)
+                # H-010: emit pre-pause answer + sources so resume must not
+                # re-emit them and the checkpoint must restore source_ids.
+                yield AnswerDelta(
+                    text=f"Worker {worker_index} drafting calendar pause…"
+                )
+                if web_search:
+                    draft_sources = await FakeSearchProvider().search(
+                        sub_question, max_results=1
+                    )
+                    yield Sources(items=draft_sources)
                 call_id = f"fake_worker_cal_{worker_index}"
                 yield ToolCall(
                     id=call_id,

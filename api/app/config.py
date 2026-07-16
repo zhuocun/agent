@@ -582,6 +582,14 @@ class Settings(BaseSettings):
         # ill-defined (an empty semaphore, a zero-width plan), so reject them.
         if self.agentic_max_workers < 1:
             raise RuntimeError("AGENTIC_MAX_WORKERS must be >= 1")
+        # O-013: artifact truncation ceiling must cover every possible worker.
+        from app.agentic.aggregate import MAX_WORKER_ARTIFACTS
+
+        if self.agentic_max_workers > MAX_WORKER_ARTIFACTS:
+            raise RuntimeError(
+                f"AGENTIC_MAX_WORKERS must be <= {MAX_WORKER_ARTIFACTS} "
+                "(artifact synthesis ceiling)"
+            )
         if self.agentic_max_concurrency < 1:
             raise RuntimeError("AGENTIC_MAX_CONCURRENCY must be >= 1")
         if self.agentic_max_depth != 1:

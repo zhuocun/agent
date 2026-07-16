@@ -266,6 +266,16 @@ class Message(Base):
     request_fingerprint: Mapped[dict[str, Any] | None] = mapped_column(JsonVariant, nullable=True)
     role: Mapped[str] = mapped_column(String, nullable=False)
     parts: Mapped[list[dict[str, Any]]] = mapped_column(JsonVariant, nullable=False)
+    # H-012: server-only HITL continuation / claim metadata. Never projected
+    # through private or public message serializers.
+    server_state: Mapped[dict[str, Any] | None] = mapped_column(
+        JsonVariant, nullable=True
+    )
+    # H-005: compare-and-swap counter for conditional parts writes. SQLite
+    # ignores SELECT FOR UPDATE; claim/settle use UPDATE … WHERE parts_version.
+    parts_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     status: Mapped[str | None] = mapped_column(String, nullable=True)
     attribution: Mapped[dict[str, Any] | None] = mapped_column(JsonVariant, nullable=True)
     # Per-turn cost in USD. Mirrors `attribution.costUsd` (the breakdown

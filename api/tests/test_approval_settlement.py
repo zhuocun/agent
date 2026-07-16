@@ -481,3 +481,129 @@ async def test_load_paused_assistant_skips_later_stopped(
         assert found is not None
         assert found.id == paused_id
         assert found.status == "awaiting_approval"
+
+
+async def test_cas_race_without_process_lock_only_one_executes(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H-005 / H-013: version CAS wins with in-process locks bypassed."""
+    monkeypatch.setattr(approval_settlement, "_bypass_claim_locks", True)
+    tool_call_id = "cal_cas_nolock"
+    msg = await _seed_paused_message(
+        session_factory, parts=_pending_calendar_parts(tool_call_id=tool_call_id)
+    )
+
+    exec_count = {"n": 0}
+    real = TOOL_REGISTRY["calendar_create_event"].executor
+    both_ready = asyncio.Event()
+    gate = asyncio.Event()
+    ready_count = {"n": 0}
+
+    async def _counting(call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        return await real(call)
+
+    original = TOOL_REGISTRY["calendar_create_event"]
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "calendar_create_event",
+        ToolSpec(
+            name=original.name,
+            label=original.label,
+            needs_approval=True,
+            schema=original.schema,
+            executor=_counting,
+            prod_safe=original.prod_safe,
+        ),
+    )
+
+    async def _approve(claim: str) -> ToolExecutionResult:
+        async with session_factory() as session:
+            row = await session.get(Message, msg.id)
+            assert row is not None
+            ready_count["n"] += 1
+            if ready_count["n"] >= 2:
+                both_ready.set()
+            await both_ready.wait()
+            await gate.wait()
+            return await claim_and_settle_approval(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="approve",
+                effective_input={"title": "Planning review"},
+                label="Create calendar event",
+                claim_id=claim,
+            )
+
+    t1 = asyncio.create_task(_approve("claim-a"))
+    t2 = asyncio.create_task(_approve("claim-b"))
+    await asyncio.wait_for(both_ready.wait(), timeout=5.0)
+    gate.set()
+    results = await asyncio.gather(t1, t2)
+    assert exec_count["n"] == 1
+    assert any(r.status == "succeeded" for r in results)
+    assert all(r.status in ("succeeded", "failed") for r in results)
+
+
+async def test_consumed_claim_id_replay_does_not_reexecute(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H-013: after settle, a third claim with a new claim id still does not exec."""
+    tool_call_id = "cal_consumed"
+    msg = await _seed_paused_message(
+        session_factory, parts=_pending_calendar_parts(tool_call_id=tool_call_id)
+    )
+    exec_count = {"n": 0}
+    real = TOOL_REGISTRY["calendar_create_event"].executor
+
+    async def _counting(call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        return await real(call)
+
+    original = TOOL_REGISTRY["calendar_create_event"]
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "calendar_create_event",
+        ToolSpec(
+            name=original.name,
+            label=original.label,
+            needs_approval=True,
+            schema=original.schema,
+            executor=_counting,
+            prod_safe=original.prod_safe,
+        ),
+    )
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        first = await claim_and_settle_approval(
+            session,
+            paused_message=row,
+            tool_call_id=tool_call_id,
+            decision="approve",
+            effective_input={"title": "Planning review"},
+            label="Create calendar event",
+            claim_id="claim-1",
+        )
+    assert first.status == "succeeded"
+    assert exec_count["n"] == 1
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        third = await claim_and_settle_approval(
+            session,
+            paused_message=row,
+            tool_call_id=tool_call_id,
+            decision="approve",
+            effective_input={"title": "Planning review"},
+            label="Create calendar event",
+            claim_id="claim-fresh-nonce",
+        )
+    assert exec_count["n"] == 1
+    assert third.status == "succeeded"
+    assert third.output == first.output

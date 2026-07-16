@@ -22,15 +22,13 @@ Retry / crash recovery:
 - Claimed (``approved``/``running``) **without** ``tool_result`` → do **not**
   re-execute; return a failed replay so the side effect is not doubled
   (covers kill between execute and settle, and stop/disconnect after claim).
-- Second concurrent claim in the **same process** loses under the in-process
-  lock and takes the same paths above.
 
-Concurrency note (H-005): the in-process ``asyncio`` lock +
-``populate_existing`` + claim-owner settle is a **process-local mitigation**,
-not a true cross-process CAS. SQLite ignores ``SELECT FOR UPDATE``; another
-API worker process can still race. A normalized approval row with
-``UPDATE ... WHERE state='pending' RETURNING`` (and claim-id settle) remains
-the durable fix.
+Concurrency (H-005 / CAS): correctness is a **dialect-safe version CAS** on
+``Message.parts_version`` — ``UPDATE … SET parts=…, parts_version=v+1 WHERE
+id=? AND parts_version=v``. SQLite ignores ``SELECT FOR UPDATE``; the version
+predicate still admits only one winner across sessions/processes. An optional
+in-process ``asyncio`` lock reduces same-process contention but is **not** the
+safety gate (tests race with the lock bypassed).
 """
 
 from __future__ import annotations
@@ -42,7 +40,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -54,10 +52,12 @@ from app.tools.protocol import ToolCallRequest, ToolExecutionResult
 # Reserved key on the tool_call part (not tool input) identifying the claim.
 APPROVAL_CLAIM_ID_KEY = "_approvalClaimId"
 
-# In-process claim locks: SQLite ignores SELECT FOR UPDATE, so concurrent
-# sessions in the same process must serialize the pending→claimed transition.
+# In-process claim locks: optional contention reducer. Correctness is the
+# parts_version CAS below — do not treat this lock as cross-process safety.
 _claim_locks: dict[tuple[str, str], asyncio.Lock] = {}
 _claim_locks_guard = asyncio.Lock()
+# When True, claim/settle skip the in-process lock (tests prove version CAS).
+_bypass_claim_locks: bool = False
 
 
 class ApprovalDecisionConflict(Exception):  # noqa: N818
@@ -93,6 +93,9 @@ def _lock_key(message_id: UUID, tool_call_id: str) -> tuple[str, str]:
 
 
 async def _get_claim_lock(message_id: UUID, tool_call_id: str) -> asyncio.Lock:
+    """Return a shared per-call lock, or a fresh unshared lock when bypassed."""
+    if _bypass_claim_locks:
+        return asyncio.Lock()
     key = _lock_key(message_id, tool_call_id)
     async with _claim_locks_guard:
         lock = _claim_locks.get(key)
@@ -245,11 +248,48 @@ def _claimed_without_result_failure(
 
 
 async def _persist_parts(db: AsyncSession, message: Message, parts: list[Any]) -> None:
-    message.parts = parts
-    flag_modified(message, "parts")
-    await db.flush()
-    await db.commit()
+    """Unconditional parts write (bumps parts_version). Prefer CAS for claims."""
+    expected = int(getattr(message, "parts_version", 0) or 0)
+    ok = await _cas_persist_parts(
+        db, message_id=message.id, parts=parts, expected_version=expected
+    )
+    if not ok:
+        # Fallback: another writer raced a non-claim path; force latest.
+        message.parts = parts
+        message.parts_version = expected + 1
+        flag_modified(message, "parts")
+        await db.flush()
+        await db.commit()
+        await db.refresh(message)
+        return
     await db.refresh(message)
+
+
+async def _cas_persist_parts(
+    db: AsyncSession,
+    *,
+    message_id: UUID,
+    parts: list[Any],
+    expected_version: int,
+) -> bool:
+    """Atomic parts write gated on ``parts_version`` (SQLite + Postgres).
+
+    Returns True when this session won the CAS (rowcount == 1).
+    """
+    result = await db.execute(
+        update(Message)
+        .where(
+            Message.id == message_id,
+            Message.parts_version == expected_version,
+        )
+        .values(parts=parts, parts_version=expected_version + 1)
+    )
+    rowcount = getattr(result, "rowcount", None)
+    if rowcount != 1:
+        await db.rollback()
+        return False
+    await db.commit()
+    return True
 
 
 async def _lock_message(db: AsyncSession, message_id: UUID) -> Message:
@@ -613,6 +653,7 @@ async def _claim_pending_locked(
         )
 
     # CAS claim: only pending → approved/rejected. Commit BEFORE execute.
+    # Dialect-safe: UPDATE … WHERE parts_version=expected (H-005).
     minted_claim = claim_id or f"claim-{secrets.token_urlsafe(12)}"
     claimed = deepcopy(call_part)
     if decision == "approve":
@@ -625,7 +666,75 @@ async def _claim_pending_locked(
     claimed_parts = _replace_tool_call(
         parts, tool_call_id, claimed, subagent_id=part_subagent
     )
-    await _persist_parts(db, locked, claimed_parts)
+    expected_version = int(getattr(locked, "parts_version", 0) or 0)
+    won = await _cas_persist_parts(
+        db,
+        message_id=message_id,
+        parts=claimed_parts,
+        expected_version=expected_version,
+    )
+    if not won:
+        # Lost the version race — re-read and take settled / claimed-without-result.
+        locked = await _lock_message(db, message_id)
+        parts = list(locked.parts or [])
+        existing = find_settled_tool_result(
+            parts, tool_call_id, subagent_id=subagent_id
+        )
+        call_part = find_tool_call_part(parts, tool_call_id, subagent_id=subagent_id)
+        tool_name = str((call_part or {}).get("name") or tool_name)
+        if existing is not None:
+            stored_decision = _decision_from_approval_state(
+                str(
+                    existing.get("approvalState")
+                    or existing.get("approval_state")
+                    or ""
+                )
+            )
+            if stored_decision != decision:
+                raise ApprovalDecisionConflict(
+                    stored_decision=stored_decision,
+                    requested_decision=decision,
+                )
+            result = tool_result_dict_to_execution(
+                existing, tool_call_id=tool_call_id, name=tool_name
+            )
+            return SettlementOutcome(
+                result=result,
+                decision=stored_decision,
+                claim_id=(
+                    str(call_part.get(APPROVAL_CLAIM_ID_KEY))
+                    if isinstance(call_part, dict)
+                    and call_part.get(APPROVAL_CLAIM_ID_KEY) is not None
+                    else None
+                ),
+                already_settled=True,
+            )
+        if call_part is None:
+            result = ToolExecutionResult(
+                tool_call_id=tool_call_id,
+                name=tool_name or "unknown",
+                status="failed",
+                error="No matching tool call to settle.",
+                approval_state="rejected",
+            )
+            return SettlementOutcome(
+                result=result, decision="deny", already_settled=False
+            )
+        result = _claimed_without_result_failure(
+            tool_call_id=tool_call_id,
+            name=tool_name,
+            approval_state=str(call_part.get("approvalState") or "approved"),
+        )
+        return SettlementOutcome(
+            result=result,
+            decision=_decision_from_approval_state(result.approval_state),
+            claim_id=(
+                str(call_part.get(APPROVAL_CLAIM_ID_KEY))
+                if call_part.get(APPROVAL_CLAIM_ID_KEY) is not None
+                else None
+            ),
+            already_settled=False,
+        )
 
     # Re-lock after commit; confirm we still own the claim (true CAS).
     locked = await _lock_message(db, message_id)
@@ -699,6 +808,7 @@ async def _settle_under_claim(
 
     Claim-owner conditional write (H-005): refuse unless ``_approvalClaimId``
     matches **and** the call is still in the claimed approval/status window.
+    Uses parts_version CAS so a concurrent writer cannot clobber settlement.
     """
     locked = await _lock_message(db, message_id)
     fresh_parts = list(locked.parts or [])
@@ -731,7 +841,13 @@ async def _settle_under_claim(
             result, label=label, subagent_id=subagent_id
         )
     )
-    await _persist_parts(db, locked, settled_parts)
+    expected_version = int(getattr(locked, "parts_version", 0) or 0)
+    await _cas_persist_parts(
+        db,
+        message_id=message_id,
+        parts=settled_parts,
+        expected_version=expected_version,
+    )
 
 
 async def load_paused_assistant_for_resume(

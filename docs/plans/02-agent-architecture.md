@@ -68,7 +68,7 @@ flowchart TD
   ADMIT --> FAN[Bounded asyncio workers]
   FAN --> AGG[Aggregator]
   AGG --> VER{Verifier?}
-  VER -->|on / target| JUDGE["Verifier (TARGET: fresh-context judge / CitationAgent; SHIPPED: deterministic stub)"]
+  VER -->|on (default off)| JUDGE["Verifier (SHIPPED: fresh-context judge; TARGET: + CitationAgent)"]
   VER -->|off| DONE[Untagged Complete + RunCost]
   JUDGE --> DONE
   PRIM --> DONE
@@ -99,8 +99,8 @@ streaming/handler.py :: _build_provider_iter
                     each = run_agent_loop(scoped prompt)
               → mid-flight budget kill on SubagentDone
               → aggregate (untrusted DATA framing)
-              → verifier  [TARGET: real fresh-context judge;
-                           SHIPPED: deterministic stub]
+              → verifier  [SHIPPED: fresh-context judge (default off);
+                           TARGET: + CitationAgent]
               → untagged Complete (summed usage) + RunCost
 ```
 
@@ -121,7 +121,7 @@ owner. Handoffs / peer swarm are out of scope for this product.
 | 5 | **Fan-out** | Concurrent workers under concurrency semaphore; each reuses `run_agent_loop` (rounds, timeouts, tool HITL, untrusted feedback). |
 | 6 | **Mid-flight budget** | On each worker `SubagentDone`, true-up cost; on cap breach cancel unfinished work and proceed to partial synthesis. |
 | 7 | **Aggregate** | Compose survivors as **structured / DATA-framed** inputs — never splice into system/safety instructions. |
-| 8 | **Verify** | Prefer CitationAgent and/or **fresh-context** LLM-as-judge. Do **not** treat `AGENTIC_VERIFIER_N` as free-form majority vote over whole reports; reserve N-sample vote for closed-form sub-answers only. |
+| 8 | **Verify** | **Shipped (default off):** fresh-context LLM-as-judge with JSON verdict, per-sample cost, sibling span. CitationAgent remains target. Do **not** treat `AGENTIC_VERIFIER_N` as free-form majority vote; N-sample majority is closed-form ``pass``/``fail`` only and requires all N samples. |
 | 9 | **Finalize** | Untagged summed `Complete` + `RunCost`; persist subagent-grouped parts + per-worker attribution. |
 
 `single` skips 1–8 fan-out: one `primary` loop, still chat-anchored.
@@ -200,11 +200,13 @@ OTel GenAI span tree (env-gated; no-op when unset):
   (planner, worker, aggregator, verifier) → `execute_tool` / `chat` leaves.
 - Spans carry ids, model/tier, token/cost rollups — **never message content**.
 
-**Shipped:** `invoke_agent_span` on worker / primary / aggregator paths in the
-orchestrator. Quiet planner and stub verifier emit **no** `invoke_agent` span.
+**Shipped:** `invoke_agent_span` on worker / primary / aggregator / quiet-planner
+/ verifier paths in the orchestrator (verifier is a **sibling** under the
+workflow, not nested under the aggregator). `execute_tool_span` wired in
+`agent_loop.py`.
 
-**Target:** planner + real-verifier `invoke_agent` spans; wire
-`execute_tool_span` in `agent_loop.py` (helper already defined).
+**Known limitation:** multi-sample (`N>1`) verifier currently opens one
+`invoke_agent` span per sample (same subagent id).
 
 ---
 
@@ -214,7 +216,7 @@ orchestrator. Quiet planner and stub verifier emit **no** `invoke_agent` span.
 | --- | --- |
 | Bootstrap | `agenticEnabled = AGENTIC ∧ TOOLS` |
 | Request | `agenticMode?: "single" \| "deep_research"` |
-| SSE | Additive `subagentId`; `subagent_started` / `subagent_done` / `run_cost`; roles `primary` \| `worker` \| `aggregator` \| `orchestrator` |
+| SSE | Additive `subagentId`; `subagent_started` / `subagent_done` / `run_cost`; roles `primary` \| `worker` \| `aggregator` \| `orchestrator` \| `verifier` |
 | Persist | `SubagentPart` + tagged children; share view cost-stripped |
 | UI | Deep Research toggle; `SubagentPanel`; plan-approval via tool-approval UI; `RunCostMeter` on `run_cost` (**shipped:** estimate @ plan pause + final; **target:** live mid-fan-out ticks) |
 
@@ -249,7 +251,8 @@ No cross-turn orchestrator memory. No background agent state store.
 | Budget breach mid-flight | Cancel unfinished; labeled partial synthesis; `done` |
 | Stop | Cancel remaining workers; flush completed partials |
 | Disconnect (resumable on) | Continue into buffer; not cancel |
-| Verifier off / stub | Skip or append stub note; do not block answer |
+| Verifier off | Skip judge; do not claim verification |
+| Verifier on (fail / budget / parse / truncate) | Preserve manager draft with honest caveat; bill observed usage |
 
 ---
 
@@ -264,19 +267,19 @@ No cross-turn orchestrator memory. No background agent state store.
 - Real-provider planner/synthesis paths (deterministic no-network tests)
 - `invoke_agent` OTel on worker/primary/aggregator/quiet planner; `execute_tool` OTel in `agent_loop`
 - Mid-run `run_cost` ticks with `confidence`/`phase`; FE meter labels estimates
-- Honest verifier stub (no-op; N not billed); workers advertise+execute empty tool allowlist; `AGENTIC_MAX_DEPTH` boot-pinned to 1
+- Fresh-context verifier judge (default off; per-sample billed; fail/budget/quorum semantics); workers advertise+execute empty tool allowlist; `AGENTIC_MAX_DEPTH` boot-pinned to 1
 - Always-on per-worker served model + live substitution; partial-synthesis warning chip; chat-anchored in-turn only; reuse `run_agent_loop`
 
 ### Target (gaps to close)
 
 | Gap | Normative target |
 | --- | --- |
-| Verifier | Replace stub with CitationAgent and/or fresh-context judge; cost in meter; keep flag-gated. Stub today is honest no-op (no false "Verified…"; N not billed). |
-| `AGENTIC_VERIFIER_N` semantics | **Documented** in config / `.env.example` / plan 01: not free-form majority vote; optional closed-form / future judge use only. Stub ignores N as independent samples. |
+| Verifier | **Shipped** fresh-context judge (default off); cost in meter per sample; CitationAgent still open. |
+| `AGENTIC_VERIFIER_N` semantics | **Shipped:** N independent samples (≤5); majority on closed-form verdict only; consensus pass requires all N. |
 | Tool subsets | **Shipped minimum** — workers get empty registry allowlist; expand to per-task scoped tools when tools are re-enabled for workers |
 | Mid-run `run_cost` ticks | **Shipped** — estimate + mid + final with `confidence`/`phase` + FE Est. label |
 | `execute_tool` OTel | **Shipped** — wired in `agent_loop.py` |
-| Planner / verifier `invoke_agent` spans | Quiet planner spanned; real-verifier spans when a real verifier ships (stub has none) |
+| Planner / verifier `invoke_agent` spans | **Shipped** — quiet planner + verifier sibling spans |
 | FE attribution display | **Shipped** always-on served model + live substitution; fuller requested→served reason disclosure still open |
 | High-cost composer hint | Surface before spend (partial-synthesis chip shipped; pre-send composer hint still open) |
 | Clarify-before-plan | **Shipped** (flag-gated, default off) — `agentic_plan_clarify` HITL before plan/admit; fake marker `CLARIFY:`; real always asks 1–3 |
@@ -336,17 +339,14 @@ every query class.
 Aligned with the as-built audit. Plan 01's remaining-gaps table tracks build-plan
 status; this section owns **target** decisions and **deferred hard gaps**.
 
-1. **Real verifier** — CitationAgent vs fresh-context rubric judge vs both;
-   cost accounting; keep `AGENTIC_VERIFIER` default off until proven.
-2. **`AGENTIC_VERIFIER_N`** — documented in `config.py` / `.env.example` / plan 01:
-   not free-form majority vote; reserved for a future closed-form / judge path;
-   stub does not run N provider samples. Redefine the knob when a real verifier
-   ships.
+1. **Verifier enhancements** — CitationAgent (and/or chunked full-draft coverage);
+   keep `AGENTIC_VERIFIER` default off until proven in live E2E.
+2. **`AGENTIC_VERIFIER_N`** — shipped as independent sample count (default 1, ≤5);
+   closed-form majority only; further quorum policy / parallel sampling still open.
 3. **Per-worker tool subsets** — **minimum shipped** (workers: empty allowlist);
    expand to per-task scoped tools when worker tools are re-enabled.
 4. **Mid-run `run_cost` ticks** — **closed** (estimate / mid / final + FE Est.).
-5. **`execute_tool` OTel** — **closed**; quiet planner spanned; real-verifier
-   spans remain when a real verifier ships.
+5. **`execute_tool` OTel** — **closed**; quiet planner + verifier sibling spans shipped.
 6. **Live-network E2E** — **gate shipped** (`test_agentic_live_e2e.py`); still a hard
    ops checklist item before flipping Fly `AGENTIC_ENABLED` (not auto-run in CI).
 7. **Clarify-before-plan** — **shipped** behind `AGENTIC_CLARIFY_BEFORE_PLAN`

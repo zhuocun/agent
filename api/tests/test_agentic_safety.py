@@ -32,7 +32,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agentic.verifier import verify
 from app.config import get_settings
 from app.db.models import Conversation, User
 from app.db.repositories import billing as billing_repo
@@ -353,7 +352,6 @@ async def test_verifier_flag_off_is_noop(
     assert not any(
         d.get("role") == "verifier" for n, d in frames if n == "subagent_started"
     )
-    assert verify("hello", n=3) == "hello"
 
 
 async def test_verifier_flag_on_emits_judge_and_usage(
@@ -525,21 +523,220 @@ async def test_verifier_n_issues_n_provider_calls(
     get_settings.cache_clear()
 
 
-async def test_streamed_verifier_delta_fail_uses_replacement_marker() -> None:
-    from app.agentic.verifier import (
-        VERIFIER_REPLACEMENT_MARKER,
-        streamed_verifier_delta,
+async def test_verifier_lifecycle_started_before_done_and_before_answer(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V-009: verifier SubagentStarted precedes await/Done; not after aggregator Done."""
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+
+    conv_id = await _bootstrap_pro_convo(agentic_client, session_factory)
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "b0000000-0000-0000-0000-000000000019",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: one | two",
+            "agenticMode": "deep_research",
+        },
     )
 
-    draft = "original draft answer"
-    rewrite = "corrected synthesis only"
-    delta = streamed_verifier_delta(draft, rewrite)
-    assert VERIFIER_REPLACEMENT_MARKER in delta
-    assert delta.endswith(rewrite)
-    assert not rewrite.startswith(draft)
-    # Pass note is a suffix only.
-    noted = draft + "\n\n[Verification: pass]"
-    assert streamed_verifier_delta(draft, noted) == "\n\n[Verification: pass]"
+    roles: list[tuple[str, str]] = []
+    for name, data in frames:
+        if name == "subagent_started":
+            roles.append(("started", str(data.get("role"))))
+        elif name == "subagent_done":
+            roles.append(("done", str(data.get("role"))))
+        elif name == "answer_delta" and data.get("subagentId") == "aggregator":
+            roles.append(("answer", "aggregator"))
+
+    assert ("started", "aggregator") in roles
+    assert ("started", "verifier") in roles
+    assert ("done", "verifier") in roles
+    assert ("done", "aggregator") in roles
+
+    agg_started = roles.index(("started", "aggregator"))
+    ver_started = roles.index(("started", "verifier"))
+    ver_done = roles.index(("done", "verifier"))
+    agg_done = roles.index(("done", "aggregator"))
+    assert ver_started < ver_done
+    assert ver_started < agg_done
+    assert agg_started < ver_started
+    answer_idxs = [i for i, r in enumerate(roles) if r == ("answer", "aggregator")]
+    assert answer_idxs
+    assert ver_done < answer_idxs[-1]
+    get_settings.cache_clear()
+
+
+async def test_verifier_span_is_sibling_of_aggregator_not_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V-009: verifier invoke_agent span parent is not the aggregator span."""
+    from app.agentic.orchestrator import run_orchestrator
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                if "DEEP_RESEARCH_VERIFIER:" in prompt or "=== DATA" in prompt:
+                    yield AnswerDelta(text='{"verdict":"pass","report":"none"}')
+                    usage = UsageUpdate(input_tokens=2, output_tokens=2)
+                else:
+                    yield AnswerDelta(text="ok")
+                    usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    _ = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=make_stream_for,
+            settings=settings,
+            mode="deep_research",
+            user_text="DEEP_RESEARCH: alpha | beta",
+            # Tiny unit price so the judge estimate fits the $1 run cap.
+            cost_for_usage=lambda u: 1e-9 * (u.input_tokens + u.output_tokens),
+        )
+    ]
+
+    spans = list(exporter.get_finished_spans())
+    by_role: dict[str, object] = {}
+    for span in spans:
+        if span.name != "invoke_agent":
+            continue
+        attrs = span.attributes or {}
+        role = attrs.get("agentic.role")
+        if isinstance(role, str):
+            by_role[role] = span
+    assert "verifier" in by_role
+    assert "aggregator" in by_role
+    ver = by_role["verifier"]
+    agg = by_role["aggregator"]
+    assert ver.parent is None or ver.parent.span_id != agg.context.span_id
+    get_settings.cache_clear()
+
+
+async def test_verifier_fresh_context_factory_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V-010: judge factory gets empty allowlist, system prefix, no web_search."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import VERIFIER_SYSTEM_PREFIX, run_verifier
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+    seen: dict[str, object] = {}
+
+    def make_stream_for(prompt: str, **kwargs: object):
+        seen["prompt"] = prompt
+        seen["kwargs"] = dict(kwargs)
+
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text='{"verdict":"pass","report":"none"}')
+                usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft="draft",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+    )
+    kwargs = seen["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("allowed_tools") == frozenset()
+    assert kwargs.get("system_prefix") == VERIFIER_SYSTEM_PREFIX
+    assert kwargs.get("web_search") is False
+    assert kwargs.get("response_format") is not None
+    get_settings.cache_clear()
+
+
+async def test_verifier_per_sample_costs_not_collapsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V-011: N samples price independently; sum ≠ reprice(collapsed usage)."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import run_verifier
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "2")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text='{"verdict":"pass","report":"none"}')
+                usage = UsageUpdate(input_tokens=40, output_tokens=10)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    def tiered_price(usage: UsageUpdate) -> float:
+        tokens = usage.input_tokens + usage.output_tokens
+        if tokens > 50:
+            return tokens * 0.10
+        return tokens * 0.01
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft="draft",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        cost_for_usage=tiered_price,
+    )
+    assert len(result.sample_usages) == 2
+    per_sample = sum(tiered_price(u) for u in result.sample_usages)
+    collapsed = tiered_price(result.usage)
+    assert result.cost_usd == pytest.approx(per_sample)
+    assert result.cost_usd == pytest.approx(1.0)
+    assert collapsed == pytest.approx(10.0)
+    assert result.cost_usd < collapsed
+    get_settings.cache_clear()
 
 
 async def test_verifier_preserves_usage_when_later_sample_raises(

@@ -379,8 +379,8 @@ async def test_agent_loop_caps_calls_per_round() -> None:
 async def test_worker_stream_factory_receives_scoped_allowlist() -> None:
     """Worker advertise path receives the orchestrator's scoped allowlist.
 
-    BE-005: workers may run the approval-gated ``calendar_create_event`` stub
-    for in-worker HITL; other registry tools stay denied.
+    O-010: real-path ``request_user_confirmation`` plus fake-only
+    ``calendar_create_event`` for TOOL_APPROVE markers.
     """
     seen_allowlists: list[Collection[str] | None] = []
 
@@ -418,7 +418,8 @@ async def test_worker_stream_factory_receives_scoped_allowlist() -> None:
         )
     ]
     assert seen_allowlists
-    assert all(set(a or []) == {"calendar_create_event"} for a in seen_allowlists)
+    expected = {"request_user_confirmation", "calendar_create_event"}
+    assert all(set(a or []) == expected for a in seen_allowlists)
 
 
 def test_mark_unfinished_subagents_stopped_on_pump_cancel() -> None:

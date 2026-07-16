@@ -46,11 +46,7 @@ from app.agentic.clarify import (
     parse_clarify_edited_input,
     serialize_clarification_records,
 )
-from app.agentic.continuation import (
-    CONTINUATION_INPUT_KEY,
-    extract_continuation_from_tool_input,
-    parse_continuation,
-)
+from app.agentic.continuation import resolve_continuation
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
 from app.context import compaction as context_compaction
@@ -2760,10 +2756,14 @@ async def _prepare_continue(
         for part in paused.parts:
             if not isinstance(part, dict) or part.get("type") != "tool_call":
                 continue
+            call_id = part.get("id")
             raw_input = part.get("input")
-            if isinstance(raw_input, dict) and parse_continuation(
-                raw_input.get(CONTINUATION_INPUT_KEY)
-            ) is not None:
+            _, cont = resolve_continuation(
+                server_state=paused.server_state,
+                tool_input=raw_input,
+                tool_call_id=str(call_id) if isinstance(call_id, str) else None,
+            )
+            if cont is not None:
                 raise _agentic_checkpoint_pending()
 
     # Must have a trailing assistant turn, and it must be `status="stopped"` —
@@ -2831,12 +2831,14 @@ def _find_pending_tool_call(
 def _find_resumable_tool_call(
     parts: object,
     tool_call_id: str,
+    *,
+    server_state: object = None,
 ) -> dict[str, object] | None:
     """Find a tool_call for resume: pending OR already settled (BE-007 retry).
 
     H-003: a worker call cancelled as a concurrent-pause sibling is
-    ``approvalState=rejected`` without an ``_agenticContinuation``. Those are
-    not resumable — only the continuation-bearing pause (or a primary HITL
+    ``approvalState=rejected`` without a continuation. Those are not
+    resumable — only the continuation-bearing pause (or a primary HITL
     call) may be approved/denied.
     """
     pending = _find_pending_tool_call(parts, tool_call_id)
@@ -2854,10 +2856,11 @@ def _find_resumable_tool_call(
             # Superseded worker pauses: rejected, no continuation → not resumable.
             subagent = part.get("subagentId")
             if isinstance(subagent, str) and subagent.startswith("worker-"):
-                raw_input = part.get("input")
-                cont = None
-                if isinstance(raw_input, dict):
-                    cont = parse_continuation(raw_input.get(CONTINUATION_INPUT_KEY))
+                _, cont = resolve_continuation(
+                    server_state=server_state,
+                    tool_input=part.get("input"),
+                    tool_call_id=tool_call_id,
+                )
                 if cont is None and part.get("approvalState") == "rejected":
                     return None
             return part
@@ -2904,7 +2907,11 @@ async def _prepare_resume_tool(
     if last_assistant is None:
         raise _nothing_to_resume()
 
-    pending = _find_resumable_tool_call(last_assistant.parts, decision.tool_call_id)
+    pending = _find_resumable_tool_call(
+        last_assistant.parts,
+        decision.tool_call_id,
+        server_state=last_assistant.server_state,
+    )
     if pending is None:
         raise _invalid_input(
             "INVALID_INPUT",
@@ -3100,8 +3107,13 @@ async def _prepare_resume_tool(
     # Effective input: a validated `edited_input` overrides the originally
     # requested input; otherwise reuse the pending part's input. Strip the
     # BE-005 continuation blob before schema validation / execution.
+    # H-012: prefer Message.server_state over legacy tool-input embedding.
     raw_input = pending.get("input")
-    cleaned_input, agentic_continuation = extract_continuation_from_tool_input(raw_input)
+    cleaned_input, agentic_continuation = resolve_continuation(
+        server_state=last_assistant.server_state,
+        tool_input=raw_input,
+        tool_call_id=decision.tool_call_id,
+    )
     effective_input: dict[str, object] = cleaned_input
     if decision.edited_input is not None:
         try:
@@ -3217,9 +3229,10 @@ async def _prepare_resume_tool(
         paused_message_id=last_assistant.id,
         pending_settle=pending_settle,
     )
-    # Worker/aggregator continuation resumes with the original user text (the
-    # orchestrator continues that subagent). Non-agentic / primary HITL keeps the
-    # Tool approved/denied instruction the fake provider keys on.
+    # Worker continuation resumes with the original user text (the orchestrator
+    # continues that subagent). Aggregator continuation is not supported (O-011).
+    # Non-agentic / primary HITL keeps the Tool approved/denied instruction the
+    # fake provider keys on.
     if agentic_continuation is not None:
         instruction = agentic_continuation.user_text
     else:

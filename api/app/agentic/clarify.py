@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 # Fake-provider deterministic trigger: when this marker appears in the user
 # text, clarify-before-plan pauses (flag must also be on). Real providers use
@@ -26,9 +26,19 @@ CLARIFICATIONS_HEADER = (
 )
 
 # Bounds for clarify answers (persistence + fan-out amplification).
+# Per-answer and aggregate caps stay well under the 32k chat message bound.
 MAX_CLARIFY_ANSWERS = 3
 MAX_CLARIFY_ANSWER_CHARS = 2000
 MAX_CLARIFY_ANSWERS_AGGREGATE_CHARS = 4000
+# Phase-specific attachment ceilings after JSON encoding (O-014). Workers get a
+# tighter copy so a 4k clarify block cannot amplify as 4k x N across fan-out.
+MAX_CLARIFY_BLOCK_CHARS_PLANNER = 4000
+MAX_CLARIFY_BLOCK_CHARS_WORKER = 1200
+MAX_CLARIFY_BLOCK_CHARS_SYNTHESIS = 4000
+# Rough chars→tokens for admission (budget estimate); deliberately coarse.
+_CLARIFY_CHARS_PER_TOKEN = 4
+
+ClarifyPhase = Literal["planner", "worker", "synthesis"]
 
 # Fixed questions for the fake path when the marker is present (stable test
 # contract). Real path uses a small fixed set.
@@ -239,43 +249,136 @@ def parse_clarification_records(raw: object) -> list[ClarificationRecord]:
     return out
 
 
-def format_clarification_data(
+def _bound_records_for_format(
     answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
-) -> str:
-    """Build a dedicated DATA block for clarifications (never fed to decompose).
-
-    Uses a single-line JSON array so multiline answers cannot be re-parsed as
-    extra numbered entries.
-    """
-    records: list[ClarificationRecord]
+) -> list[ClarificationRecord]:
+    """Normalize + re-cap answers before any phase attachment (O-014)."""
     if not answers:
-        return ""
+        return []
     if isinstance(answers[0], ClarificationRecord):
         records = [r for r in answers if isinstance(r, ClarificationRecord)]
     else:
-        # Legacy answer-only list — no questions to bind.
         records = [
             ClarificationRecord(question_id=str(i), question="", answer=_cap_answer(a))
             for i, a in enumerate(answers)
             if isinstance(a, str) and a.strip()
         ][:MAX_CLARIFY_ANSWERS]
+    # Re-apply per-answer + aggregate caps even for already-parsed records.
+    out: list[ClarificationRecord] = []
+    aggregate = 0
+    for record in records[:MAX_CLARIFY_ANSWERS]:
+        capped = _cap_answer(record.answer)
+        if aggregate + len(capped) > MAX_CLARIFY_ANSWERS_AGGREGATE_CHARS:
+            remaining = MAX_CLARIFY_ANSWERS_AGGREGATE_CHARS - aggregate
+            if remaining <= 0:
+                break
+            capped = capped[:remaining]
+        aggregate += len(capped)
+        out.append(
+            ClarificationRecord(
+                question_id=record.question_id,
+                question=record.question,
+                answer=capped,
+            )
+        )
+        if aggregate >= MAX_CLARIFY_ANSWERS_AGGREGATE_CHARS:
+            break
+    return out
+
+
+def _phase_block_limit(phase: ClarifyPhase) -> int:
+    if phase == "planner":
+        return MAX_CLARIFY_BLOCK_CHARS_PLANNER
+    if phase == "worker":
+        return MAX_CLARIFY_BLOCK_CHARS_WORKER
+    if phase == "synthesis":
+        return MAX_CLARIFY_BLOCK_CHARS_SYNTHESIS
+    raise ValueError(f"Unknown clarify phase: {phase!r}")
+
+
+def format_clarification_data(
+    answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
+    *,
+    phase: ClarifyPhase = "planner",
+) -> str:
+    """Build a dedicated DATA block for clarifications (never fed to decompose).
+
+    Uses a single-line JSON array so multiline answers cannot be re-parsed as
+    extra numbered entries. Re-caps per phase so fan-out cannot amplify an
+    unbounded block into every worker (O-014).
+    """
+    records = _bound_records_for_format(answers)
     if not records:
         return ""
     if not any(r.answer.strip() for r in records):
         return ""
     payload = serialize_clarification_records(records)
-    return f"{CLARIFICATIONS_HEADER}\n{json.dumps(payload, ensure_ascii=False)}"
+    block = f"{CLARIFICATIONS_HEADER}\n{json.dumps(payload, ensure_ascii=False)}"
+    limit = _phase_block_limit(phase)
+    if len(block) <= limit:
+        return block
+    # Truncate answers until the encoded block fits the phase ceiling.
+    trimmed = list(records)
+    while trimmed and len(block) > limit:
+        last = trimmed[-1]
+        # Shrink the last answer; drop it if already tiny.
+        if len(last.answer) > 32:
+            shrunk = last.answer[: max(0, len(last.answer) // 2)]
+            trimmed[-1] = ClarificationRecord(
+                question_id=last.question_id,
+                question=last.question,
+                answer=shrunk,
+            )
+        else:
+            trimmed.pop()
+        if not trimmed:
+            return ""
+        payload = serialize_clarification_records(trimmed)
+        block = f"{CLARIFICATIONS_HEADER}\n{json.dumps(payload, ensure_ascii=False)}"
+    if len(block) > limit:
+        return block[: max(0, limit - 16)] + "\n…[truncated]"
+    return block
 
 
 def with_clarifications(
     base: str,
     answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
+    *,
+    phase: ClarifyPhase = "planner",
 ) -> str:
     """Append clarification DATA after an already-shaped planner/worker prompt."""
-    block = format_clarification_data(answers)
+    block = format_clarification_data(answers, phase=phase)
     if not block:
         return base
     return f"{base}\n\n{block}"
+
+
+def clarification_amplified_chars(
+    answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
+    *,
+    worker_count: int,
+) -> int:
+    """Total clarification characters injected across planner + workers + synthesis.
+
+    Used to fold clarify amplification into pre-spawn admission estimates (O-014).
+    """
+    planner = len(format_clarification_data(answers, phase="planner"))
+    worker = len(format_clarification_data(answers, phase="worker"))
+    synthesis = len(format_clarification_data(answers, phase="synthesis"))
+    workers = max(0, worker_count)
+    return planner + (worker * workers) + synthesis
+
+
+def clarification_extra_input_tokens(
+    answers: list[str] | list[ClarificationRecord] | tuple[ClarificationRecord, ...] | None,
+    *,
+    worker_count: int,
+) -> int:
+    """Coarse token uplift for admission when clarifications are attached."""
+    chars = clarification_amplified_chars(answers, worker_count=worker_count)
+    if chars <= 0:
+        return 0
+    return max(1, chars // _CLARIFY_CHARS_PER_TOKEN)
 
 
 def parse_clarification_answers(text: str) -> list[str]:

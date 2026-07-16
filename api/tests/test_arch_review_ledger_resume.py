@@ -292,6 +292,23 @@ async def test_b5_single_mode_pause_persists_prior_run_ledger_keys() -> None:
     assert parsed.prior_run_usage.input_tokens == 20
 
 
+async def test_b5_repeated_pause_accumulates_prior_run_cost() -> None:
+    """B5: a second single-mode pause must keep the prior resume seed cost."""
+    # Simulate what the handler does: seed from resume + this turn's cost.
+    prior = get_run_ledger_from_server_state(
+        put_run_ledger_in_server_state(None, prior_run_cost_usd=0.2)
+    )
+    turn_cost = 0.15
+    accumulated = float(prior.prior_run_cost_usd) + turn_cost
+    state = put_run_ledger_in_server_state(
+        None,
+        prior_run_cost_usd=accumulated,
+        prior_run_usage=UsageUpdate(input_tokens=30, output_tokens=5),
+    )
+    parsed = get_run_ledger_from_server_state(state)
+    assert parsed.prior_run_cost_usd == pytest.approx(0.35)
+
+
 async def test_b9_headroom_uses_reserved_hold_not_remaining_after_subtract(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

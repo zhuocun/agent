@@ -603,6 +603,27 @@ def test_b12_midstream_remapper_arrival_order_and_catalog() -> None:
     assert catalog[1].title == "A1"
 
 
+def test_b12_rewrite_is_chunk_safe_across_answer_deltas() -> None:
+    """B12: markers split across AnswerDelta chunks still remap."""
+    from app.agentic.orchestrator import _SourceIdRemapper
+
+    remapper = _SourceIdRemapper()
+    remapper.remap_sources(
+        Sources(items=[SourceItem(id=1, title="B", url="https://b.example")]),
+        "worker-1",
+    )
+    remapper.remap_sources(
+        Sources(items=[SourceItem(id=1, title="A", url="https://a.example")]),
+        "worker-0",
+    )
+    # worker-0 local [1] → global [2]; split "See [1]." across two deltas.
+    part1 = remapper.rewrite_answer_text("See [", "worker-0")
+    part2 = remapper.rewrite_answer_text("1].", "worker-0")
+    assert part1 == "See "
+    assert part2 == "[2]."
+    assert remapper.flush_answer_carry("worker-0") == ""
+
+
 def test_b12_resume_remapper_seeds_catalog_without_collision() -> None:
     """B12: resume remapper continues after seeded catalog ids."""
     from app.agentic.orchestrator import _SourceIdRemapper
@@ -722,16 +743,38 @@ def test_b23_fanout_queue_bound_is_documented() -> None:
 
 
 def test_b23_queue_put_nowait_drop_oldest() -> None:
-    """B23: teardown put drops oldest events instead of blocking."""
+    """B23: teardown put drops oldest unprotected events instead of blocking."""
     import asyncio
 
     from app.agentic.orchestrator import _queue_put_nowait_drop_oldest
 
-    queue: asyncio.Queue[int] = asyncio.Queue(maxsize=2)
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=2)
     queue.put_nowait(1)
     queue.put_nowait(2)
     _queue_put_nowait_drop_oldest(queue, 3)
     assert queue.qsize() == 2
     assert queue.get_nowait() == 2
     assert queue.get_nowait() == 3
+
+
+def test_b23_queue_put_never_drops_sentinels() -> None:
+    """B23: a queued worker sentinel must survive a full-queue teardown put."""
+    import asyncio
+
+    from app.agentic.orchestrator import (
+        _queue_put_nowait_drop_oldest,
+        _WorkerSentinel,
+    )
+
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=2)
+    queue.put_nowait(_WorkerSentinel(subagent_id="worker-a"))
+    queue.put_nowait("event-1")
+    _queue_put_nowait_drop_oldest(queue, _WorkerSentinel(subagent_id="worker-b"))
+    items = [queue.get_nowait(), queue.get_nowait()]
+    assert any(
+        isinstance(i, _WorkerSentinel) and i.subagent_id == "worker-a" for i in items
+    )
+    assert any(
+        isinstance(i, _WorkerSentinel) and i.subagent_id == "worker-b" for i in items
+    )
 

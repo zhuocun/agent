@@ -285,6 +285,10 @@ def _event_shows_external_progress(event: ProviderEvent) -> bool:
 _FANOUT_QUEUE_MAXSIZE = 256
 
 
+# Trailing incomplete citation opener: `[` or `[` + digits without a closing `]`.
+_INCOMPLETE_CITATION_TAIL_RE = re.compile(r"\[\d*$")
+
+
 class _SourceIdRemapper:
     """Globally renumber worker-local ``Sources`` ordinals mid-fan-out (B12).
 
@@ -292,6 +296,9 @@ class _SourceIdRemapper:
     remapping is the only mapping step — do not call
     ``aggregate.remap_worker_source_ids`` again at the synthesis sink (that
     reordered by worker-plan order and diverged from event-arrival globals).
+
+    AnswerDelta rewriting is chunk-safe: a marker split across deltas
+    (``"See ["`` + ``"1]."``) is held in a per-subagent carry until complete.
     """
 
     def __init__(self, *, start: int = 1) -> None:
@@ -299,6 +306,8 @@ class _SourceIdRemapper:
         self._map: dict[tuple[str, int], int] = {}
         # Global-id → remapped SourceItem (merged catalog for the aggregator).
         self._catalog: dict[int, SourceItem] = {}
+        # Per-subagent unfinished citation fragment from the prior AnswerDelta.
+        self._answer_carry: dict[str, str] = {}
 
     def seed_catalog(self, items: Sequence[SourceItem]) -> None:
         """Pre-load a persisted catalog (resume) and advance the next id."""
@@ -326,9 +335,24 @@ class _SourceIdRemapper:
         return replace(event, items=new_items)
 
     def rewrite_answer_text(self, text: str, subagent_id: str) -> str:
-        """Rewrite ``[n]`` markers using this subagent's local→global map."""
+        """Rewrite ``[n]`` markers using this subagent's local→global map.
+
+        Incomplete trailing ``[`` / ``[12`` fragments are held until the next
+        chunk (or ``flush_answer_carry``) so split markers remapped correctly.
+        """
+        combined = self._answer_carry.get(subagent_id, "") + text
+        hold = ""
+        process = combined
+        incomplete = _INCOMPLETE_CITATION_TAIL_RE.search(combined)
+        if incomplete is not None:
+            hold = combined[incomplete.start() :]
+            process = combined[: incomplete.start()]
+        self._answer_carry[subagent_id] = hold
+
+        if not process:
+            return ""
         if not self._map:
-            return text
+            return process
 
         def _sub(match: re.Match[str]) -> str:
             local = int(match.group(1))
@@ -337,7 +361,24 @@ class _SourceIdRemapper:
                 return match.group(0)
             return f"[{global_id}]"
 
-        return aggregate._CITATION_MARKER_RE.sub(_sub, text)
+        return aggregate._CITATION_MARKER_RE.sub(_sub, process)
+
+    def flush_answer_carry(self, subagent_id: str) -> str:
+        """Emit any held fragment at worker end, rewriting complete markers."""
+        hold = self._answer_carry.pop(subagent_id, "")
+        if not hold:
+            return ""
+        if not self._map:
+            return hold
+
+        def _sub(match: re.Match[str]) -> str:
+            local = int(match.group(1))
+            global_id = self._map.get((subagent_id, local))
+            if global_id is None:
+                return match.group(0)
+            return f"[{global_id}]"
+
+        return aggregate._CITATION_MARKER_RE.sub(_sub, hold)
 
     def mapped_ids_for(self, subagent_id: str, local_ids: list[str]) -> tuple[str, ...]:
         out: list[str] = []
@@ -374,21 +415,63 @@ def _max_source_id(ids: Iterable[str]) -> int:
     return max_id
 
 
+def _queue_item_is_protected(item: object) -> bool:
+    """Teardown must not drop completion control messages (B23)."""
+    return isinstance(item, (_WorkerSentinel, SubagentDone, _WorkerPause))
+
+
 def _queue_put_nowait_drop_oldest(
     queue: asyncio.Queue[Any], item: object
 ) -> None:
-    """Enqueue ``item`` without awaiting; drop oldest if the queue is full (B23).
+    """Enqueue ``item`` without awaiting; drop oldest *unprotected* if full (B23).
 
     Used on cancellation / sentinel paths so teardown cannot block forever on a
     full fan-out queue when the consumer has already stopped draining.
+
+    Never drops ``_WorkerSentinel`` / ``SubagentDone`` / ``_WorkerPause`` already
+    queued — losing a sentinel can hang the fan-out consumer forever.
     """
     while True:
         try:
             queue.put_nowait(item)
             return
         except asyncio.QueueFull:
-            with contextlib.suppress(asyncio.QueueEmpty):
-                queue.get_nowait()
+            held_protected: list[object] = []
+            dropped = False
+            while True:
+                try:
+                    old = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if not dropped and not _queue_item_is_protected(old):
+                    dropped = True
+                    continue
+                held_protected.append(old)
+            for old in held_protected:
+                try:
+                    queue.put_nowait(old)
+                except asyncio.QueueFull:
+                    # Only protected items remain and the queue is saturated.
+                    # maxsize (>=256) exceeds max workers, so this is unreachable
+                    # in production; keep protected items and retry put.
+                    break
+            if not dropped:
+                # Queue holds only protected control messages. If we are
+                # inserting another sentinel that is already present, skip;
+                # otherwise force one unprotected-style slot by refusing to
+                # discard sentinels and relying on maxsize >> worker count.
+                if isinstance(item, _WorkerSentinel):
+                    # Deduplicate: if an identical sentinel is already queued, done.
+                    # (We cannot peek easily after re-queue; treat as success if
+                    # put still fails after a no-drop cycle — consumer will drain.)
+                    with contextlib.suppress(asyncio.QueueFull):
+                        queue.put_nowait(item)
+                    return
+                # Non-sentinel teardown item with a protected-only full queue:
+                # drop nothing further; best-effort put and return.
+                with contextlib.suppress(asyncio.QueueFull):
+                    queue.put_nowait(item)
+                return
 
 
 def _tag(event: ProviderEvent, subagent_id: str) -> ProviderEvent:
@@ -1761,6 +1844,10 @@ async def _resume_worker_continuation(
                 reasoning_parts.append(event.text)
             resume_usage = _fold_usage(event, resume_usage)
             if isinstance(event, AwaitingApproval):
+                tail = source_remapper.flush_answer_carry(paused_id)
+                if tail:
+                    answer_parts.append(tail)
+                    yield _tag(AnswerDelta(text=tail, subagent_id=paused_id), paused_id)
                 yield _tag(
                     replace(
                         event, continuation=serialize_continuation(_nested_continuation())
@@ -1780,6 +1867,11 @@ async def _resume_worker_continuation(
             # B3: mirror `run_single` — stop draining once the cap is breached.
             if budget_halted and isinstance(event, (Complete, UsageUpdate)):
                 break
+        # B12: flush held citation fragment after the resume stream ends.
+        tail = source_remapper.flush_answer_carry(paused_id)
+        if tail:
+            answer_parts.append(tail)
+            yield _tag(AnswerDelta(text=tail, subagent_id=paused_id), paused_id)
 
     with invoke_agent_span(subagent_id=paused_id, role="worker", label=label):
         yield SubagentStarted(subagent_id=paused_id, label=label, role="worker")
@@ -2299,6 +2391,13 @@ async def _run_deep_research(
                     # BE-005: relay was already done for the pending ToolCall.
                     # Stash pause; siblings keep running (wait policy).
                     # H-004: namespace call id to this subagent before pause.
+                    # B12: flush any held citation fragment into the partial.
+                    tail = source_remapper.flush_answer_carry(subagent_id)
+                    if tail:
+                        answer_parts.append(tail)
+                        await queue.put(
+                            _tag(AnswerDelta(text=tail, subagent_id=subagent_id), subagent_id)
+                        )
                     namespaced_id = namespace_tool_call_id(
                         subagent_id, event.tool_call_id
                     )
@@ -2322,6 +2421,13 @@ async def _run_deep_research(
                     )
                     return True
                 await queue.put(_tag(event, subagent_id))
+            # B12: flush held citation fragment after the provider stream ends.
+            tail = source_remapper.flush_answer_carry(subagent_id)
+            if tail:
+                answer_parts.append(tail)
+                await queue.put(
+                    _tag(AnswerDelta(text=tail, subagent_id=subagent_id), subagent_id)
+                )
             return False
 
         try:

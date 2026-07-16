@@ -2750,6 +2750,8 @@ async def stream_and_persist(
                     ):
                         pending_planner_usage = planner_acc.usage
             # B5: single-mode pause ledger for resume seeding.
+            # Accumulate across repeated pause cycles — a second pause must not
+            # discard the prior_run_* already seeded into this resume turn.
             if agentic_active and agentic_mode == "single":
                 primary_acc = agentic_subagents.get("primary")
                 pause_usage = (
@@ -2763,14 +2765,31 @@ async def stream_and_persist(
                     )
                     else final_usage
                 )
-                pending_prior_run_cost_usd = float(turn_cost or 0.0)
+                prior_seed_cost = (
+                    float(resume_seed.prior_run_cost_usd)
+                    if resume_seed is not None
+                    else 0.0
+                )
+                pending_prior_run_cost_usd = prior_seed_cost + float(turn_cost or 0.0)
+                usage_parts: list[UsageUpdate] = []
+                if resume_seed is not None and resume_seed.prior_run_usage is not None:
+                    usage_parts.append(resume_seed.prior_run_usage)
                 if (
                     pause_usage.input_tokens
                     or pause_usage.output_tokens
                     or pause_usage.reasoning_tokens
                     or pause_usage.cached_input_tokens
                 ):
-                    pending_prior_run_usage = pause_usage
+                    usage_parts.append(pause_usage)
+                if usage_parts:
+                    pending_prior_run_usage = UsageUpdate(
+                        input_tokens=sum(u.input_tokens for u in usage_parts),
+                        output_tokens=sum(u.output_tokens for u in usage_parts),
+                        reasoning_tokens=sum(u.reasoning_tokens for u in usage_parts),
+                        cached_input_tokens=sum(
+                            u.cached_input_tokens for u in usage_parts
+                        ),
+                    )
             attribution = build_attribution(
                 requested_tier_id=requested_tier_id,
                 binding=binding,

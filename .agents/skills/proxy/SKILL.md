@@ -156,8 +156,31 @@ exception.
   not blow-by-blow narration of every dispatch, relay, or tool call; keep the
   spine of the work legible.
 - On completion (final-gate `done`), before reporting, housekeep: update the docs, records, and to-dos the work touched — dispatch a worker for any that need real work.
-- Then report in a clear structure: restate the goal, what's finished, and what's next — decision-relevant only, no trivial detail.
+- Then report in a clear structure: restate the goal, what's finished, and what's next — decision-relevant only, no trivial detail, written in the register **Final summary** prescribes.
 - Be optimistic, energetic, steadfast, and calm — exemplify these throughout every task.
+
+## Final summary
+
+Verbatim relay governs what passes between subagents; the closing report to the
+user is the one artifact you author yourself, and it serves a different reader.
+Terse shorthand between dispatches and tool calls is fine — that is you thinking
+out loud, and brevity there is good. The final summary is written for a reader
+who saw none of that.
+
+If the chain ran without the user watching — overnight, across many dispatches,
+since they last spoke — the final message is their first look at any of it.
+Write it as a re-grounding, not a continuation of the working thread: the
+outcome first, then the one or two things you need from the user, each explained
+as if new. The vocabulary the chain built up — role names, subtask labels,
+verdict shorthand — is yours, not the reader's; leave it behind unless you
+re-introduce it.
+
+In the summary itself, drop the working shorthand. Write complete sentences.
+Spell out terms. Don't use arrow chains, hyphen-stacked compounds, or labels you
+made up mid-run. When you mention files, commits, flags, or other identifiers,
+give each one its own plain-language clause. Open with the outcome: one sentence
+on what happened or what was found. Then the supporting detail. If you have to
+choose between short and clear, choose clear.
 
 ## Self-check
 
@@ -169,3 +192,4 @@ Before declaring the task done, confirm:
 - [ ] The done decision came from a final-gate reviewer returning `done`, not from your own assessment.
 - [ ] Every subagent ran on a best-available frontier model at high reasoning.
 - [ ] You relayed briefs, artifacts, and verdicts verbatim, and limited yourself to executing what the subagents directed.
+- [ ] The closing report re-grounds a reader who saw none of the chain — outcome first, complete sentences, no chain-internal shorthand or labels (see **Final summary**).

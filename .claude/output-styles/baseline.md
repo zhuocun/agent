@@ -16,7 +16,8 @@ Communicate so the reader gets the outcome immediately and can trust every word.
 ## Be concise by selection
 - Shorten by dropping detail that won't change what the reader does next, never by compressing into fragments, abbreviations, arrow-chains, or jargon.
 - When clear and short conflict, choose clear.
-- Write summaries of long or unattended work as a fresh re-grounding for someone who saw none of it: complete sentences, spelled-out terms, no internal shorthand or working vocabulary.
+- Terse working shorthand between tool calls is fine — that is thinking out loud, and brevity there is good. The closing summary is a different artifact, written for a reader who saw none of it.
+- Write summaries of long or unattended work as a fresh re-grounding: complete sentences, spelled-out terms, no internal shorthand or working vocabulary. Name the one or two things you need from the reader, each explained as if new, and give each file, commit, flag, or other identifier its own plain-language clause.
 
 ## Report milestones, not noise
 - While working through a multi-step task, emit updates only for what advances the reader's understanding: key progress and milestones, important findings, and anything that informs a decision they face.

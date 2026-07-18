@@ -3194,7 +3194,15 @@ async def stream_and_persist(
             envelope = exc.envelope
         else:
             # Unknown failure: generic upstream error. Never leak the raw
-            # exception text to the client.
+            # exception text to the client. AR-013: still capture the stack for
+            # operators (structured logs / Sentry when configured).
+            _struct_log.error(
+                "turn.provider_unexpected",
+                exc_info=exc,
+                conversation_id=str(conversation_id) if conversation_id else None,
+                stream_id=str(stream_id) if stream_id is not None else None,
+                agentic_mode=agentic_mode,
+            )
             envelope = ErrorEnvelope(
                 code="PROVIDER_UPSTREAM",
                 severity="error",

@@ -1274,6 +1274,9 @@ def _sanitize_public_message_parts(parts: list[MessagePart]) -> list[dict[str, o
                 if key in RESERVED_CONTROL_KEYS:
                     del stripped[key]
             raw = stripped
+        elif raw.get("type") == "agentic_run_summary":
+            # AR-012 receipts are private; public shares must not leak meter fields.
+            raw = cast(dict[str, object], _strip_cost_keys(raw))
         sanitized.append(raw)
     return sanitized
 

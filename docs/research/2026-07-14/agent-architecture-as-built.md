@@ -1,10 +1,16 @@
 # Olune shipped AI agent architecture — as-built audit
 
-**Status:** Research provenance (reviewed pass) for
+**Status:** Research provenance (**ARCHIVAL** as of 2026-07-18) for
 [`docs/plans/02-agent-architecture.md`](../../plans/02-agent-architecture.md)  
 **Pass index:** [README](./README.md)  
 **Scope:** code + [`docs/plans/01-agentic-mode.md`](../../plans/01-agentic-mode.md) as of the 2026-07-14 architecture pass.  
 **Verdict:** M0–M3 shipped behind flags; M4 partially shipped. Default path is still single-stream / single-loop; orchestrator is opt-in.
+
+> **Archival note (2026-07-18):** This snapshot predates PRs #254–#258 and the
+> residual fix pass. Do **not** treat §2/§7 claims about a no-op verifier stub,
+> missing worker HITL resume, or missing approval idempotency as current.
+> Prefer plan 02 + the live code for as-built truth. Kept for provenance of the
+> 2026-07-14 design pass.
 
 ---
 

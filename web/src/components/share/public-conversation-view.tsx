@@ -178,8 +178,15 @@ function ConversationBody({
 
 function PublicMessageItem({ message }: { message: PublicMessage }) {
   const { sourcesPanelRef, sourceItems } = useSourcesFromParts(message.parts);
+  // AR-015: only an empty *main/untagged* sources part is a turn-global
+  // ungrounded signal — worker-local empty catalogs must not brand the
+  // synthesized answer as "Answered without live sources".
   const ungroundedPart = message.parts.find(
-    (p) => p.type === "sources" && p.requested && p.items.length === 0,
+    (p) =>
+      p.type === "sources" &&
+      p.requested &&
+      p.items.length === 0 &&
+      p.subagentId == null,
   );
 
   if (message.role === "user") {

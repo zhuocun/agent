@@ -265,3 +265,47 @@ async def test_ar001_assert_prod_safe_requires_tools_with_agentic() -> None:
             AGENTIC_ENABLED=True,
             TOOLS_ENABLED=False,
         ).assert_prod_safe()
+
+
+def test_ar007_residual_estimate_smaller_than_full_run() -> None:
+    """AR-007: resume reservation must be smaller than a fresh full estimate."""
+    from app.agentic import budget as budget_mod
+    from app.providers.tiers import get_binding
+
+    settings = _settings(AGENTIC_MAX_WORKERS=4, AGENTIC_VERIFIER=False)
+    binding = get_binding("smart")
+    full = budget_mod.estimate_run_cost(
+        sub_question_count=4, binding=binding, settings=settings
+    )
+    residual = budget_mod.estimate_residual_run_cost(
+        remaining_workers=1,
+        binding=binding,
+        settings=settings,
+        include_planner=False,
+    )
+    assert residual < full
+    assert residual > 0
+
+
+def test_a9_parse_ok_quorum_blocks_minority_pass() -> None:
+    """A-9: [garbage, garbage, pass] with N=3 must not claim Verification: pass."""
+    from app.agentic.verifier import JudgeSample, _finalize_samples
+
+    garbage = JudgeSample(
+        verdict="fail", report="", raw="not json", parse_ok=False
+    )
+    ok_pass = JudgeSample(
+        verdict="pass", report="looks good", raw='{"verdict":"pass"}', parse_ok=True
+    )
+    result = _finalize_samples(
+        draft="manager draft",
+        samples=[garbage, garbage, ok_pass],
+        total_usage=UsageUpdate(input_tokens=1, output_tokens=1),
+        sample_usages=(UsageUpdate(), UsageUpdate(), UsageUpdate()),
+        cost_usd=0.01,
+        requested_n=3,
+        budget_halted=False,
+        draft_truncated=False,
+    )
+    assert result.parse_failed is True
+    assert "Verification: pass" not in result.answer

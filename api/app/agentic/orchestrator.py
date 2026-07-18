@@ -2155,14 +2155,45 @@ async def _run_deep_research(
         # Real-provider planner: a bounded model pass decomposes the prompt into
         # sub-questions so a plain request fans out without the user typing the
         # `DEEP_RESEARCH:` marker. Clarifications ride as trailing DATA.
-        plan_reply, planner_usage = await _collect_answer(
-            make_stream_for,
-            settings,
-            planner.build_planner_prompt(effective_user_text, max_workers=max_workers),
+        # A-5: retry once on a fallback route; last resort is deterministic
+        # decompose so a transient planner outage does not kill the whole run.
+        planner_prompt = planner.build_planner_prompt(
+            effective_user_text, max_workers=max_workers
         )
+        try:
+            plan_reply, planner_usage = await _collect_answer(
+                make_stream_for,
+                settings,
+                planner_prompt,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as plan_exc:
+            if fallback_make_stream_for is not None and is_retryable(plan_exc):
+                try:
+                    plan_reply, planner_usage = await _collect_answer(
+                        fallback_make_stream_for,
+                        settings,
+                        planner_prompt,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as fallback_exc:
+                    _log.warning(
+                        "agentic.planner_fallback_failed",
+                        error=str(fallback_exc),
+                    )
+                    plan_reply = ""
+                    planner_usage = UsageUpdate()
+            else:
+                _log.warning("agentic.planner_failed", error=str(plan_exc))
+                plan_reply = ""
+                planner_usage = UsageUpdate()
         sub_questions = planner.parse_plan(
             plan_reply, max_workers=max_workers, fallback=plan_text
         )
+        if not sub_questions:
+            sub_questions = planner.decompose(plan_text, max_workers=max_workers)
     cap = settings.agentic_run_budget_usd
     estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
     # O-014: fold amplified clarification prompt chars into admission so a

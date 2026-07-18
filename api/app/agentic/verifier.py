@@ -512,6 +512,27 @@ def _finalize_samples(
             cost_usd=cost_usd,
         )
 
+    # A-9: require a parse-ok quorum (strict majority of requested N) before
+    # claiming consensus pass — one parseable sample among garbage peers is not
+    # enough when N>1. Runs only when the full sample set completed.
+    parse_quorum = requested_n // 2 + 1
+    if len(parse_ok_samples) < parse_quorum:
+        return VerifyResult(
+            answer=compose_verified_answer(
+                draft, verdict="fail", report="", parse_failed=True
+            ),
+            usage=total_usage,
+            verdict="fail",
+            samples=tuple(samples),
+            outcome="unavailable",
+            budget_halted=budget_halted,
+            draft_truncated=draft_truncated,
+            parse_failed=True,
+            requested_samples=requested_n,
+            sample_usages=sample_usages,
+            cost_usd=cost_usd,
+        )
+
     if draft_truncated:
         return VerifyResult(
             answer=compose_verified_answer(

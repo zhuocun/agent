@@ -38,7 +38,11 @@ from app.agentic import (
     is_plan_approval_call_id,
     is_plan_clarify_call_id,
 )
-from app.agentic.budget import compose_headroom, estimate_run_cost
+from app.agentic.budget import (
+    compose_headroom,
+    estimate_residual_run_cost,
+    estimate_run_cost,
+)
 from app.agentic.clarify import (
     ClarificationRecord,
     ClarifyInputError,
@@ -2545,16 +2549,58 @@ async def send_message(
                 for attachment in provider_attachments
                 if attachment.media_type == "image"
             )
-            reserve_amount = estimate_run_cost(
-                sub_question_count=(
-                    settings.agentic_max_workers
-                    if effective_agentic_mode == "deep_research"
-                    else 1
-                ),
-                binding=binding,
-                settings=settings,
-                image_count=image_count,
-            )
+            # AR-007: resume reserves remaining phases only — not a full fresh run.
+            if resume_seed is not None and resume_seed.agentic_continuation is not None:
+                reserve_amount = estimate_residual_run_cost(
+                    remaining_workers=1,
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                    include_planner=False,
+                )
+            elif (
+                resume_seed is not None
+                and resume_seed.is_plan
+                and resume_seed.decision == "approve"
+            ):
+                plan_n = (
+                    len(resume_seed.approved_plan)
+                    if resume_seed.approved_plan
+                    else settings.agentic_max_workers
+                )
+                reserve_amount = estimate_residual_run_cost(
+                    remaining_workers=max(1, plan_n),
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                    include_planner=False,
+                )
+            elif resume_seed is not None and (
+                resume_seed.is_plan or resume_seed.is_clarify
+            ):
+                # Decline / clarify still need remaining orchestration estimate.
+                reserve_amount = estimate_residual_run_cost(
+                    remaining_workers=(
+                        1
+                        if effective_agentic_mode != "deep_research"
+                        else settings.agentic_max_workers
+                    ),
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                    include_planner=resume_seed.is_clarify,
+                )
+            else:
+                reserve_amount = estimate_run_cost(
+                    sub_question_count=(
+                        settings.agentic_max_workers
+                        if effective_agentic_mode == "deep_research"
+                        else 1
+                    ),
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                )
             reserved = await usage_repo.reserve_platform_budget(
                 db,
                 user_id=user.id,
@@ -2889,6 +2935,57 @@ async def stop_stream(
         # records stop intent by bumping `updated_at` without releasing that guard.
         await request_stop_async(active.id)
         await streams_repo.mark_status(db, stream_id=active.id, status="stopped")
+        return None
+
+    # A-7: no live stream — settle a parked awaiting_approval checkpoint as denied
+    # so Stop is a user-facing exit (not a no-op that leaves the pause forever).
+    paused = await messages_repo.get_latest_assistant_with_status(
+        db, conversation_id, status="awaiting_approval"
+    )
+    if paused is None:
+        return None
+    pending = _find_any_resumable_tool_call(
+        paused.parts, server_state=paused.server_state
+    )
+    if pending is None:
+        return None
+    tool_call_id = str(pending.get("id") or pending.get("toolCallId") or "")
+    tool_name = str(pending.get("name") or "")
+    if not tool_call_id:
+        return None
+    label = pending.get("label")
+    label_str = str(label) if isinstance(label, str) else None
+    try:
+        if tool_name in {PLAN_APPROVAL_TOOL_NAME, PLAN_CLARIFY_TOOL_NAME}:
+            await settle_pseudo_tool_approval_outcome(
+                db,
+                paused_message=paused,
+                tool_call_id=tool_call_id,
+                decision="deny",
+                output={"decision": "deny", "stopped": True},
+                label=label_str,
+                summary="Stopped by user.",
+            )
+        else:
+            cleaned_input, _cont = resolve_continuation(
+                server_state=paused.server_state,
+                tool_input=pending.get("input"),
+                tool_call_id=tool_call_id,
+            )
+            await claim_and_settle_approval_outcome(
+                db,
+                paused_message=paused,
+                tool_call_id=tool_call_id,
+                decision="deny",
+                effective_input=dict(cleaned_input),
+                label=label_str,
+            )
+    except (ApprovalDecisionConflict, ApprovalSettlementIncomplete):
+        # Already settled / conflict — treat as idempotent stop.
+        return None
+    # Mark the paused assistant stopped so it no longer looks actionable.
+    paused.status = "stopped"
+    await db.commit()
     return None
 
 
@@ -3092,6 +3189,28 @@ def _find_resumable_tool_call(
                 if cont is None and part.get("approvalState") == "rejected":
                     return None
             return part
+    return None
+
+
+def _find_any_resumable_tool_call(
+    parts: object,
+    *,
+    server_state: object = None,
+) -> dict[str, object] | None:
+    """Return the first still-pending approval-gated tool_call (A-7 Stop)."""
+    if not isinstance(parts, list):
+        return None
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") != "tool_call":
+            continue
+        call_id = part.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        found = _find_resumable_tool_call(
+            parts, call_id, server_state=server_state
+        )
+        if found is not None and found.get("approvalState") == "pending":
+            return found
     return None
 
 

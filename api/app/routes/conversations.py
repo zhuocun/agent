@@ -700,6 +700,16 @@ def _request_fingerprint(
     attachment payload bytes must never be duplicated in an idempotency column.
     """
     payload_hashes = [_attachment_payload_sha256(attachment) for attachment in body.attachments]
+    # AR-020: v2 includes response-affecting controls so reusing a clientMessageId
+    # with a different agentic/effort/format mode cannot silently replay.
+    if body.response_format is not None:
+        response_format_payload: dict[str, object] = {
+            "type": body.response_format.type,
+        }
+        if body.response_format.schema_ is not None:
+            response_format_payload["schema"] = body.response_format.schema_
+    else:
+        response_format_payload = {}
     payload = {
         "tierId": body.tier_id,
         "providerId": provider_id,
@@ -708,6 +718,9 @@ def _request_fingerprint(
         "regenerate": bool(body.regenerate),
         "continueTurn": bool(body.continue_turn),
         "editMessageId": body.edit_message_id,
+        "agenticMode": body.agentic_mode,
+        "reasoningEffort": body.reasoning_effort,
+        "responseFormat": response_format_payload or None,
         "attachments": [
             {
                 "id": attachment.id,
@@ -721,7 +734,7 @@ def _request_fingerprint(
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return {
-        "v": 1,
+        "v": 2,
         "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         **(
             {"attachmentPayloadSha256": payload_hashes}

@@ -323,3 +323,16 @@ def test_agentic_max_concurrency_config_positive() -> None:
             TOOLS_ENABLED=True,
             AGENTIC_MAX_CONCURRENCY=0,
         ).assert_prod_safe()
+
+
+def test_ar021_rejects_nan_budget() -> None:
+    """AR-021: NaN/inf must fail assert_prod_safe."""
+    import math
+
+    with pytest.raises(RuntimeError, match="finite"):
+        Settings(
+            PROVIDER_BACKEND="fake",
+            AGENTIC_ENABLED=True,
+            TOOLS_ENABLED=True,
+            AGENTIC_RUN_BUDGET_USD=math.nan,
+        ).assert_prod_safe()

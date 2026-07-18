@@ -2629,6 +2629,8 @@ async def _run_deep_research(
     # AR-008: workers that already substituted use the fallback pricer for
     # provisional mid-flight ledger samples.
     fallback_priced_workers: set[str] = set()
+    # AR-023: sibling pauses cancelled as superseded — not "succeeded".
+    superseded_worker_ids: set[str] = set()
 
     def _price_pause(pause: _WorkerPause) -> float:
         if pause.used_fallback and fallback_cost_for_usage is not None:
@@ -2687,6 +2689,7 @@ async def _run_deep_research(
                     costs[item.subagent_id] = pause_cost
                     provisional_costs.pop(item.subagent_id, None)
                     superseded_workers += 1
+                    superseded_worker_ids.add(item.subagent_id)
                     if item.partial_answer.strip():
                         results[item.subagent_id] = WorkerOutput(
                             subagent_id=item.subagent_id,
@@ -2816,7 +2819,9 @@ async def _run_deep_research(
                     answer=out.answer,
                     usage=usages.get(sid, UsageUpdate()),
                     cost_usd=costs.get(sid, 0.0),
-                    outcome="succeeded",
+                    outcome=(
+                        "cancelled" if sid in superseded_worker_ids else "succeeded"
+                    ),
                     source_ids=out.source_ids,
                 )
             )

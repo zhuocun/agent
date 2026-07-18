@@ -7,6 +7,7 @@ must override `SESSION_SECRET`, `DATABASE_URL`, and `CORS_ALLOWED_ORIGINS`.
 
 from __future__ import annotations
 
+import math
 from functools import cached_property, lru_cache
 from typing import Literal
 
@@ -602,6 +603,20 @@ class Settings(BaseSettings):
             )
         if self.agentic_run_budget_usd <= 0:
             raise RuntimeError("AGENTIC_RUN_BUDGET_USD must be > 0")
+        # AR-021: reject NaN/inf — positive-only float checks alone accept them.
+        for name, value in (
+            ("AGENTIC_RUN_BUDGET_USD", self.agentic_run_budget_usd),
+            (
+                "AGENTIC_REASONING_TOKEN_MULTIPLIER",
+                self.agentic_reasoning_token_multiplier,
+            ),
+            (
+                "AGENTIC_FANOUT_TOKEN_MULTIPLIER",
+                self.agentic_fanout_token_multiplier,
+            ),
+        ):
+            if not math.isfinite(float(value)) or float(value) <= 0:
+                raise RuntimeError(f"{name} must be a finite number > 0")
         if self.agentic_reasoning_token_multiplier <= 0:
             raise RuntimeError("AGENTIC_REASONING_TOKEN_MULTIPLIER must be > 0")
         if self.agentic_fanout_token_multiplier <= 0:

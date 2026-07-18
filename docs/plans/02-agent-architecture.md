@@ -386,6 +386,18 @@ status; this section owns **target** decisions and **deferred hard gaps**.
 
 ---
 
+## Deferred / product notes (2026-07-18 residual pass)
+
+- **A-8 (public share reasoning):** keep exposing worker reasoning / tool
+  transcripts on public shares for now. Cost keys remain stripped. Revisit if
+  product wants an internal-only filter.
+- **AR-011 (whole-run wall-clock deadline):** deferred. Per-tool timeouts +
+  round bounds + per-run USD soft cap remain the active consumption controls
+  until an explicit product surface needs a run-level deadline.
+- **Per-run USD soft cap (A-10):** admit + mid-flight kill are hard at phase
+  boundaries; overshoot within an in-flight provider call is bounded ≈ one
+  concurrent batch (see Hard bounds table).
+
 ## Invariants (must hold)
 
 1. Flag-off byte-identical to pre-agentic stream.

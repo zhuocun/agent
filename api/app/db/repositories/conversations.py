@@ -1196,6 +1196,8 @@ _PUBLIC_COST_KEYS = frozenset(
         "subtotal_usd",
         "costConfidence",
         "cost_confidence",
+        "costPhase",
+        "cost_phase",
         "breakdown",
         "listPriceInPerM",
         "list_price_in_per_m",

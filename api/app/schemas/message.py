@@ -276,6 +276,9 @@ class AgenticRunSummaryPart(CamelModel):
     Persisted on the final assistant message when a deep-research run completed
     with missing/failed workers or a mid-flight budget halt. The FE renders a
     warning chip from this part — independent of model-authored prose.
+
+    AR-012 / A-4: also carries the terminal run-cost receipt (cap/confidence/
+    phase/subtotal) so reload matches the live meter without inventing defaults.
     """
 
     type: Literal["agentic_run_summary"] = "agentic_run_summary"
@@ -284,6 +287,11 @@ class AgenticRunSummaryPart(CamelModel):
     failed_workers: int = 0
     planned_workers: int | None = None
     completed_workers: int | None = None
+    # Logical run-cost receipt (private; share projection strips cost keys).
+    subtotal_usd: float | None = None
+    cap_usd: float | None = None
+    cost_confidence: Literal["estimate", "exact"] | None = None
+    cost_phase: Literal["plan", "progress", "final"] | None = None
 
 
 MessagePart = Annotated[

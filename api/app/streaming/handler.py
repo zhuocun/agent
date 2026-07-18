@@ -1645,13 +1645,19 @@ async def stream_and_persist(
         except Exception as exc:
             await queue.put(_PumpError(exc))
         finally:
-            while True:
-                try:
-                    queue.put_nowait(None)
-                    break
-                except asyncio.QueueFull:
-                    with contextlib.suppress(asyncio.QueueEmpty):
-                        queue.get_nowait()
+            # AR-003: on natural completion await the sentinel so we never drop
+            # valid events just to make room. Drop-oldest only if we are being
+            # cancelled and must still unblock the consumer.
+            try:
+                await queue.put(None)
+            except asyncio.CancelledError:
+                while True:
+                    try:
+                        queue.put_nowait(None)
+                        break
+                    except asyncio.QueueFull:
+                        with contextlib.suppress(asyncio.QueueEmpty):
+                            queue.get_nowait()
 
     pump_task = asyncio.create_task(_pump(provider_iter))
 
@@ -2051,11 +2057,29 @@ async def stream_and_persist(
                 done_acc.substituted_display_label = ev.substituted_display_label
                 return
             if isinstance(ev, RunCost):
-                if ev.partial or ev.budget_halted or ev.failed_worker_count > 0:
+                persist_receipt = (
+                    ev.phase == "final"
+                    or ev.partial
+                    or ev.budget_halted
+                    or ev.failed_worker_count > 0
+                )
+                if persist_receipt:
                     agentic_run_summary = AgenticRunSummaryPart(
-                        outcome="partial",
+                        outcome=(
+                            "partial"
+                            if (
+                                ev.partial
+                                or ev.budget_halted
+                                or ev.failed_worker_count > 0
+                            )
+                            else "complete"
+                        ),
                         budget_halted=ev.budget_halted,
                         failed_workers=ev.failed_worker_count,
+                        subtotal_usd=ev.subtotal_usd,
+                        cap_usd=ev.cap_usd,
+                        cost_confidence=ev.confidence,
+                        cost_phase=ev.phase,
                     )
                 return
             sid = getattr(ev, "subagent_id", None)
@@ -2691,11 +2715,25 @@ async def stream_and_persist(
                 )
             elif isinstance(ev, RunCost):
                 # Running run-cost subtotal vs the configured cap (M3 scaffold).
-                if ev.partial or ev.budget_halted or ev.failed_worker_count > 0:
+                # AR-012: always persist a terminal receipt so reload matches live.
+                if (
+                    ev.phase == "final"
+                    or ev.partial
+                    or ev.budget_halted
+                    or ev.failed_worker_count > 0
+                ):
                     agentic_run_summary = AgenticRunSummaryPart(
-                        outcome="partial",
+                        outcome=(
+                            "partial"
+                            if ev.partial or ev.budget_halted or ev.failed_worker_count > 0
+                            else "complete"
+                        ),
                         budget_halted=ev.budget_halted,
                         failed_workers=ev.failed_worker_count,
+                        subtotal_usd=ev.subtotal_usd,
+                        cap_usd=ev.cap_usd,
+                        cost_confidence=ev.confidence,
+                        cost_phase=ev.phase,
                     )
                 yield encode_run_cost(
                     RunCostEvent(

@@ -267,7 +267,7 @@ No cross-turn orchestrator memory. No background agent state store.
 - Real-provider planner/synthesis paths (deterministic no-network tests)
 - `invoke_agent` OTel on worker/primary/aggregator/quiet planner; `execute_tool` OTel in `agent_loop`
 - Mid-run `run_cost` ticks with `confidence`/`phase`; FE meter labels estimates
-- Fresh-context verifier judge (default off; per-sample billed; fail/budget/quorum semantics); workers advertise+execute empty tool allowlist; `AGENTIC_MAX_DEPTH` boot-pinned to 1
+- Fresh-context verifier judge (default off; per-sample billed; fail/budget/quorum semantics); workers advertise+execute a scoped HITL allowlist (`request_user_confirmation`, plus fake-only `calendar_create_event`); `AGENTIC_MAX_DEPTH` boot-pinned to 1
 - Always-on per-worker served model + live substitution; partial-synthesis warning chip; chat-anchored in-turn only; reuse `run_agent_loop`
 
 ### Target (gaps to close)
@@ -276,7 +276,7 @@ No cross-turn orchestrator memory. No background agent state store.
 | --- | --- |
 | Verifier | **Shipped** fresh-context judge (default off); cost in meter per sample; CitationAgent still open. |
 | `AGENTIC_VERIFIER_N` semantics | **Shipped:** N independent samples (≤5); majority on closed-form verdict only; consensus pass requires all N. |
-| Tool subsets | **Shipped minimum** — workers get empty registry allowlist; expand to per-task scoped tools when tools are re-enabled for workers |
+| Tool subsets | **Shipped minimum** — workers get a scoped HITL allowlist (`request_user_confirmation` + fake-only `calendar_create_event`); expand to per-task scoped tools when broader worker tools are re-enabled |
 | Mid-run `run_cost` ticks | **Shipped** — estimate + mid + final with `confidence`/`phase` + FE Est. label |
 | `execute_tool` OTel | **Shipped** — wired in `agent_loop.py` |
 | Planner / verifier `invoke_agent` spans | **Shipped** — quiet planner + verifier sibling spans |
@@ -346,8 +346,9 @@ status; this section owns **target** decisions and **deferred hard gaps**.
    keep `AGENTIC_VERIFIER` default off until proven in live E2E.
 2. **`AGENTIC_VERIFIER_N`** — shipped as independent sample count (default 1, ≤5);
    closed-form majority only; further quorum policy / parallel sampling still open.
-3. **Per-worker tool subsets** — **minimum shipped** (workers: empty allowlist);
-   expand to per-task scoped tools when worker tools are re-enabled.
+3. **Per-worker tool subsets** — **minimum shipped** (workers: scoped HITL
+   allowlist `{request_user_confirmation, calendar_create_event}`);
+   expand to per-task scoped tools when broader worker tools are re-enabled.
 4. **Mid-run `run_cost` ticks** — **closed** (estimate / mid / final + FE Est.).
 5. **`execute_tool` OTel** — **closed**; quiet planner + verifier sibling spans shipped.
 6. **Live-network E2E** — **gate shipped** (`test_agentic_live_e2e.py`); still a hard

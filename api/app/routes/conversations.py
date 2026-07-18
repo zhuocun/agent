@@ -2496,8 +2496,24 @@ async def send_message(
         and resume_seed is not None
         and resume_seed.agentic_continuation is not None
     ):
-        # Do not coerce a pinned deep_research continuation after settle.
-        pass
+        # AR-010: keep the pinned mode, but re-authorize before spending more.
+        # A revoked Pro/BYOK entitlement must not continue a platform-funded run.
+        if not await _has_platform_pro_access(
+            db, user=user, api_key=resolved_api_key
+        ):
+            raise AppError(
+                ErrorEnvelope(
+                    code="AGENTIC_ENTITLEMENT_REQUIRED",
+                    severity="error",
+                    title="Deep Research requires Pro or your own API key",
+                    body=(
+                        "This paused Deep Research run can no longer continue "
+                        "because Pro access or a BYOK key is no longer available. "
+                        "Restore access and try again, or start a new chat."
+                    ),
+                ),
+                status.HTTP_403_FORBIDDEN,
+            )
     elif effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
         db, user=user, api_key=resolved_api_key
     ):

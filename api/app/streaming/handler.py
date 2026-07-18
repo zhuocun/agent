@@ -2590,14 +2590,28 @@ async def stream_and_persist(
                 # `paused` ends the turn in `awaiting_approval`.
                 # H-012: store continuation in server_state (not tool input).
                 if ev.continuation is not None:
-                    # H-002: pin served route identity onto the durable checkpoint.
+                    # H-002 / AR-006: pin *served* route identity onto the durable
+                    # checkpoint (not just the requested tier). Fallback workers
+                    # pin the fallback binding so resume cannot silently switch.
                     cont_blob = dict(ev.continuation)
                     if agentic_mode is not None:
                         cont_blob.setdefault("orchestrationMode", agentic_mode)
-                    cont_blob.setdefault("tierId", requested_tier_id)
-                    if provider_id is not None:
-                        cont_blob.setdefault("providerId", provider_id)
-                    cont_blob.setdefault("modelId", binding.model_id)
+                    used_fb = bool(
+                        cont_blob.get("pausedWorkerUsedFallback")
+                        or cont_blob.get("paused_worker_used_fallback")
+                    )
+                    if used_fb and fallback_binding is not None:
+                        cont_blob["tierId"] = fallback_binding.tier.id
+                        cont_blob["providerId"] = (
+                            fallback_provider_id or fallback_binding.provider_id
+                        )
+                        cont_blob["modelId"] = fallback_binding.model_id
+                    else:
+                        cont_blob.setdefault("tierId", binding.tier.id)
+                        cont_blob.setdefault(
+                            "providerId", provider_id or binding.provider_id
+                        )
+                        cont_blob.setdefault("modelId", binding.model_id)
                     pending_server_continuations[ev.tool_call_id] = cont_blob
                     # Strip any legacy embedding from in-memory tool parts.
                     target_parts = (

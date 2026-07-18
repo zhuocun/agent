@@ -1314,6 +1314,22 @@ export function useApiStream(
       const reader = body.getReader();
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
+      // A-6: inactivity watchdog. Keep-alive comments arrive as chunks but are
+      // dropped in parseFrame — only parsed frames reset the timer so a wedged
+      // server that only emits comments surfaces a typed timeout.
+      const STREAM_INACTIVITY_MS = 120_000;
+      let lastFrameAt = Date.now();
+      let inactivityTimedOut = false;
+      const inactivityTimer = window.setInterval(() => {
+        if (Date.now() - lastFrameAt < STREAM_INACTIVITY_MS) return;
+        inactivityTimedOut = true;
+        window.clearInterval(inactivityTimer);
+        try {
+          void reader.cancel();
+        } catch {
+          // ignore
+        }
+      }, 5_000);
       // SSE frames are separated by a blank line. sse-starlette emits CRLF
       // (`\r\n`) line endings; the WHATWG spec also allows `\n` and `\r`. A
       // naive per-chunk `\r\n` → `\n` replace breaks when a `\r\n` straddles
@@ -1335,6 +1351,7 @@ export function useApiStream(
             buffer = buffer.slice(match.index + match[0].length);
             const frame = parseFrame(raw);
             if (frame) {
+              lastFrameAt = Date.now();
               const ended = handleFrame(frame);
               if (ended) {
                 // Drain the reader so the connection closes cleanly, but stop
@@ -1350,6 +1367,17 @@ export function useApiStream(
             }
           }
         }
+        if (inactivityTimedOut && !terminalEmittedRef.current) {
+          throw new ApiError(
+            {
+              code: "TIMEOUT",
+              severity: "error",
+              title: "Stream timed out",
+              body: "No updates arrived from the server for too long. Try again.",
+            },
+            408,
+          );
+        }
         // Stream ended without a terminal frame. Treat as a protocol error.
         if (!terminalEmittedRef.current) {
           throw new ApiError(
@@ -1363,6 +1391,7 @@ export function useApiStream(
           );
         }
       } finally {
+        window.clearInterval(inactivityTimer);
         try {
           reader.releaseLock();
         } catch {

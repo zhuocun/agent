@@ -49,7 +49,7 @@ explicit long-running workflow product surface.
 flowchart TD
   FE[FE composer: Deep Research toggle]
   POST["POST /messages + agenticMode"]
-  H[stream_and_persist / _build_provider_iter]
+  H[stream_and_persist / _resolve_provider_iter]
   RAW[raw provider.stream]
   LOOP[run_agent_loop]
   ORCH[run_orchestrator]
@@ -86,7 +86,7 @@ routes/conversations.py
   • budget_headroom_usd · resumable buffer × N when agentic
         │
         ▼
-streaming/handler.py :: _build_provider_iter
+streaming/handler.py :: _resolve_provider_iter
   ├── tools off              → raw provider.stream
   ├── tools on, agentic off  → run_agent_loop
   └── AGENTIC ∧ TOOLS        → run_orchestrator
@@ -139,7 +139,7 @@ Unbounded Consumption).
 | Max workers | `AGENTIC_MAX_WORKERS=4` | Planner truncate |
 | Concurrency | `AGENTIC_MAX_CONCURRENCY=3` | Semaphore |
 | Depth | `AGENTIC_MAX_DEPTH=1` | By construction (+ boot); raise only with eval proof |
-| Per-run USD | `AGENTIC_RUN_BUDGET_USD=1.0` | Admit + mid-flight kill |
+| Per-run USD | `AGENTIC_RUN_BUDGET_USD=1.0` | Admit + mid-flight kill (**soft** within an in-flight provider call — overshoot bounded ≈ one concurrent batch; A-10) |
 | Tool rounds / timeout | `TOOL_MAX_ROUNDS`, `TOOL_TIMEOUT_SECONDS` | `run_agent_loop` / `execute_tool` |
 | Entitlement | Pro / BYOK for `deep_research` | Coerce to `single` |
 | Resumable buffer | `AGENTIC_RESUMABLE_BUFFER_MULTIPLIER` | Conversations route |
@@ -392,7 +392,7 @@ status; this section owns **target** decisions and **deferred hard gaps**.
 2. Flag-on `single` = behavioral loop reuse + tags (not wire-identical).
 3. Chat-anchored in-turn only — no out-of-turn execution.
 4. Every subagent reuses `run_agent_loop`.
-5. One seam: `_build_provider_iter`.
+5. One seam: `_resolve_provider_iter`.
 6. Additive wire + parts accumulation.
 7. Untrusted transitive worker output into aggregator.
 8. Budget halt → graceful labeled `done`, never opaque error hang.

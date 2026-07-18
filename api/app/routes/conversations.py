@@ -2494,6 +2494,20 @@ async def send_message(
                 "INVALID_INPUT",
                 "Resume providerId does not match the paused run checkpoint.",
             )
+        # AR-006: enforce model identity when the checkpoint pinned one.
+        pinned_model = getattr(resume_seed.agentic_continuation, "model_id", None)
+        if isinstance(pinned_model, str) and pinned_model:
+            served_model = binding.model_id
+            # If the pause was on fallback, the pin is the fallback model —
+            # accept either the active binding or a configured fallback match.
+            fallback_model = (
+                fallback_binding.model_id if fallback_binding is not None else None
+            )
+            if pinned_model not in {served_model, fallback_model}:
+                raise _invalid_input(
+                    "INVALID_INPUT",
+                    "Resume model does not match the paused run checkpoint.",
+                )
     agentic_coercion_reason: Literal["entitlement"] | None = None
     if (
         effective_agentic_mode == "deep_research"

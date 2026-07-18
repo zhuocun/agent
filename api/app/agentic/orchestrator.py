@@ -2626,6 +2626,9 @@ async def _run_deep_research(
     # BE-005: at most one worker tool-HITL pause per fan-out (first wins).
     # Sibling policy = wait for others to finish before surfacing AwaitingApproval.
     worker_pause: _WorkerPause | None = None
+    # AR-008: workers that already substituted use the fallback pricer for
+    # provisional mid-flight ledger samples.
+    fallback_priced_workers: set[str] = set()
 
     def _price_pause(pause: _WorkerPause) -> float:
         if pause.used_fallback and fallback_cost_for_usage is not None:
@@ -2697,10 +2700,24 @@ async def _run_deep_research(
                         + sum(provisional_costs.values())
                     )
                 continue
-            # B3: provisional mid-flight ledger from tagged usage samples.
+            # B3 / AR-008: provisional mid-flight ledger from tagged usage samples.
+            # Prefer the fallback pricer once a worker has substituted.
             if isinstance(item, (UsageUpdate, Complete)) and item.subagent_id:
                 sample = item.usage if isinstance(item, Complete) else item
-                provisional_costs[item.subagent_id] = cost_for_usage(sample)
+                if (
+                    isinstance(item, Complete)
+                    and item.substitution is not None
+                ):
+                    fallback_priced_workers.add(item.subagent_id)
+                pricer = (
+                    fallback_cost_for_usage
+                    if (
+                        item.subagent_id in fallback_priced_workers
+                        and fallback_cost_for_usage is not None
+                    )
+                    else cost_for_usage
+                )
+                provisional_costs[item.subagent_id] = pricer(sample)
                 # SAF-005: snapshot so a mid-flight kill still rolls usage even if
                 # the worker's CancelledError path loses the race.
                 if item.subagent_id not in costs:

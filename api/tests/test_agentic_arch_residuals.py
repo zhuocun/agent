@@ -309,3 +309,17 @@ def test_a9_parse_ok_quorum_blocks_minority_pass() -> None:
     )
     assert result.parse_failed is True
     assert "Verification: pass" not in result.answer
+
+
+def test_agentic_max_concurrency_config_positive() -> None:
+    """Fable gap 2 (config half): concurrency bound is boot-validated."""
+    s = _settings(AGENTIC_MAX_CONCURRENCY=3)
+    s.assert_prod_safe()
+    assert s.agentic_max_concurrency == 3
+    with pytest.raises(RuntimeError, match="AGENTIC_MAX_CONCURRENCY"):
+        Settings(
+            PROVIDER_BACKEND="fake",
+            AGENTIC_ENABLED=True,
+            TOOLS_ENABLED=True,
+            AGENTIC_MAX_CONCURRENCY=0,
+        ).assert_prod_safe()

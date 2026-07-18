@@ -1566,7 +1566,7 @@ async def test_agentic_spans_emitted_with_attributes_only() -> None:
     assert tool.attributes["tool.name"] == "web_search"
     assert tool.attributes["agentic.subagent_id"] == "worker-0"
 
-    # Discipline: spans carry ids/role/tool ONLY — never message/tool content.
+    # Discipline: spans carry ids/role/tool/route/cost — never message content.
     for span in (invoke, tool):
         assert span.attributes is not None
         for key in span.attributes:
@@ -1574,5 +1574,42 @@ async def test_agentic_spans_emitted_with_attributes_only() -> None:
                 "agentic.subagent_id",
                 "agentic.role",
                 "agentic.label",
+                "agentic.run_id",
+                "agentic.cost_usd",
+                "agentic.outcome",
+                "gen_ai.request.model",
+                "gen_ai.provider.name",
                 "tool.name",
             }
+
+
+async def test_agentic_invoke_span_accepts_route_cost_attrs() -> None:
+    """A-2: optional route/cost attributes are recorded when provided."""
+    exporter = InMemorySpanExporter()
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        provider = TracerProvider()
+        trace.set_tracer_provider(provider)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    exporter.clear()
+
+    with invoke_agent_span(
+        subagent_id="aggregator",
+        role="aggregator",
+        label="Synthesis",
+        run_id="run-1",
+        model_id="fake-model",
+        provider_id="fake",
+        cost_usd=0.0123,
+        outcome="succeeded",
+    ):
+        pass
+
+    spans = {s.name: s for s in exporter.get_finished_spans()}
+    invoke = spans["invoke_agent"]
+    assert invoke.attributes is not None
+    assert invoke.attributes["agentic.run_id"] == "run-1"
+    assert invoke.attributes["gen_ai.request.model"] == "fake-model"
+    assert invoke.attributes["gen_ai.provider.name"] == "fake"
+    assert invoke.attributes["agentic.cost_usd"] == pytest.approx(0.0123)
+    assert invoke.attributes["agentic.outcome"] == "succeeded"

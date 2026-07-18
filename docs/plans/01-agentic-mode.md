@@ -12,7 +12,7 @@ The smallest extension that lets the existing chat turn spawn **bounded model su
 
 In scope (justified by FR-26c–FR-26k):
 
-- An **orchestrator** at the existing `streaming/handler.py::_build_provider_iter()` seam that, within one assistant turn, fans out to **N bounded subagents** (each a `run_agent_loop` instance) and aggregates their outputs into one streamed answer.
+- An **orchestrator** at the existing `streaming/handler.py::_resolve_provider_iter()` seam that, within one assistant turn, fans out to **N bounded subagents** (each a `run_agent_loop` instance) and aggregates their outputs into one streamed answer.
 - A **default single ReAct loop** (today's behavior, unchanged) plus an **opt-in "Deep Research"** mode: planner → workers → aggregator → optional verifier.
 - **Subagent-scoped** stream events + typed message parts + a **per-run cost meter** (orchestrator emits estimate @ plan pause, progress ticks as workers complete, and final; wire schema carries `confidence`/`phase` — confirm handler encode + FE parse stay in sync) + per-subagent model attribution persistence (live `subagent_done` attribution on the wire is target/partial — see **Remaining gaps**).
 - A **hard per-run USD cap**, **fan-out bounds**, a **recursion-depth bound**, and **plan approval** reusing the shipped `awaiting_approval` HITL terminal.
@@ -49,7 +49,7 @@ Remaining FE gaps (see **Remaining gaps**): always-on per-worker served-model la
         v
 [ FastAPI stream handler  (api/app/streaming/handler.py) ]
         |
-        +-- _build_provider_iter()                      # the one seam
+        +-- _resolve_provider_iter()                      # the one seam
         |     ├── raw provider stream            (tools off — unchanged)
         |     ├── run_agent_loop(...)            (tools on, single loop — unchanged)
         |     └── run_orchestrator(...)          (AGENTIC_ENABLED on — NEW)
@@ -73,7 +73,7 @@ Remaining FE gaps (see **Remaining gaps**): always-on per-worker served-model la
 Stack picks (one-line justifications):
 
 - **Reuse `run_agent_loop`** — the bounded-round, per-tool-timeout, untrusted-output, HITL-pause behavior is already proven and tested; a subagent is just an instance of it over a scoped sub-prompt. No second loop engine.
-- **One seam (`_build_provider_iter()`)** — the orchestrator is a third branch beside the raw stream and the single loop. The branch *selection* is the only change to those two paths: with the flag off, the raw and single-loop branches are byte-identical. The shared accumulation does change — `_apply_event` / `_build_parts` become subagent-aware (group by `subagentId`) — but additively: an un-tagged stream (raw/single-loop) groups into exactly one default group, so its output is unchanged.
+- **One seam (`_resolve_provider_iter()`)** — the orchestrator is a third branch beside the raw stream and the single loop. The branch *selection* is the only change to those two paths: with the flag off, the raw and single-loop branches are byte-identical. The shared accumulation does change — `_apply_event` / `_build_parts` become subagent-aware (group by `subagentId`) — but additively: an un-tagged stream (raw/single-loop) groups into exactly one default group, so its output is unchanged.
 - **`asyncio` fan-out** — workers run concurrently via `asyncio.create_task` bounded by a semaphore (max concurrency), their `ProviderEvent` streams merged into the handler's existing queue (unbounded queue + `gather` on completion). No `TaskGroup` / structured concurrency today. No Celery/arq/Redis — orchestration is in-turn on the same worker (this stays on the request task so cancellation propagates).
 - **Subagent-tagged events** — every relayed `ProviderEvent` carries a `subagent_id` so the handler can group parts and the FE can render per-worker activity; the wire stays the same SSE event names with an added field (additive, camelCase).
 - **Budget on the shipped cost math** — the per-run cap reads `api/app/providers/pricing.py` output, the same per-message accounting the transparency wedge already computes (no parallel cost model).
@@ -132,7 +132,7 @@ The orchestrator (`api/app/agentic/orchestrator.py`, NEW) is a thin coordinator 
 
 **Invariants:**
 
-- With `AGENTIC_ENABLED=false`, `run_orchestrator` is never constructed — `_build_provider_iter()` returns exactly the shipped raw/single-loop branches. Byte-identical.
+- With `AGENTIC_ENABLED=false`, `run_orchestrator` is never constructed — `_resolve_provider_iter()` returns exactly the shipped raw/single-loop branches. Byte-identical.
 - A worker's behavior (rounds, timeout, HITL, untrusted feedback) is exactly the shipped single-loop behavior — the orchestrator adds only fan-out/aggregate/bound/verify logic.
 - A subagent's output is **untrusted** to its parent/aggregator (transitive SR-2); it never alters orchestrator system/safety behavior.
 - Cancellation/Stop cancels all in-flight workers and flushes completed-worker partials (`status="stopped"`, `costConfidence="estimate"`), same as the single path.
@@ -209,7 +209,7 @@ Target architecture and gap ownership: [`02-agent-architecture.md`](./02-agent-a
 
 ### M0 — Seam + flag + inert orchestrator — **SHIPPED**
 
-Scope: `app/agentic/` scaffolded; `AGENTIC_ENABLED` + bound/budget flags in `app/config.py` (boot-validated, gated by `TOOLS_ENABLED`); the third branch in `streaming/handler.py::_build_provider_iter()` constructed **only** when both flags are on; bootstrap advertises the capability so the FE can show the (hidden-by-default) Deep-Research toggle. No fan-out yet.
+Scope: `app/agentic/` scaffolded; `AGENTIC_ENABLED` + bound/budget flags in `app/config.py` (boot-validated, gated by `TOOLS_ENABLED`); the third branch in `streaming/handler.py::_resolve_provider_iter()` constructed **only** when both flags are on; bootstrap advertises the capability so the FE can show the (hidden-by-default) Deep-Research toggle. No fan-out yet.
 
 Demo: with the flag off, every existing test passes byte-for-byte; with the flag on and `agenticMode:"single"`, behavior is identical to the shipped single loop. A CI assertion proves flag-off byte-identity (`test_agentic_flag_off.py`).
 
@@ -269,7 +269,7 @@ api/app/
     verifier.py            # fresh-context judge (default-off; N-sample closed-form verdict)
     budget.py              # per-run USD cap + fan-out/depth bounds (reads providers/pricing.py)
   streaming/
-    handler.py             # _build_provider_iter(): + run_orchestrator branch (gated)
+    handler.py             # _resolve_provider_iter(): + run_orchestrator branch (gated)
   schemas/
     stream_events.py       # + subagent_started / subagent_done / run_cost; subagentId on existing
     message.py             # + subagent marker part (additive to the typed union)

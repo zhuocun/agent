@@ -1782,6 +1782,21 @@ async def stream_and_persist(
                 total += _cost_for_usage(acc.usage)
         return total
 
+    def _billable_cost_delta(logical_cost: float) -> float:
+        """AR-002: charge only spend not already billed on a prior pause turn.
+
+        Orchestrator SubagentDone receipts are cumulative (pre-pause + new) for
+        cap/UI honesty. The usage rollup must not re-increment pre-pause dollars
+        that the pause terminal already wrote via ``increment_for_period``.
+        """
+        if resume_seed is None or not agentic_active:
+            return float(logical_cost)
+        already = float(resume_seed.prior_run_cost_usd or 0.0)
+        cont = resume_seed.agentic_continuation
+        if cont is not None:
+            already += float(getattr(cont, "paused_worker_cost_usd", 0.0) or 0.0)
+        return max(0.0, float(logical_cost) - already)
+
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
 
@@ -2264,6 +2279,7 @@ async def stream_and_persist(
                     # `attribution.costUsd` (pricing.py) so the ledger and the
                     # wire stay consistent.
                     turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+                billable_cost = _billable_cost_delta(turn_cost)
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
@@ -2289,7 +2305,7 @@ async def stream_and_persist(
                         attribution=attribution,
                         session=fresh_db,
                         commit=False,
-                        cost_usd=turn_cost,
+                        cost_usd=billable_cost,
                     )
                     # Stopped turn still cost partial tokens -- bump the meter.
                     # `is_temporary` already gates persistence; only increment
@@ -2298,7 +2314,7 @@ async def stream_and_persist(
                         await usage_repo.increment_for_period(
                             fresh_db,
                             user_id=user_id,
-                            cost_usd_delta=turn_cost,
+                            cost_usd_delta=billable_cost,
                             is_byok=is_byok_turn,
                             monthly_quota_usd=(
                                 monthly_quota_usd_override
@@ -2320,7 +2336,7 @@ async def stream_and_persist(
                                 terminal_status="stopped",
                                 attribution=attribution,
                                 message_id=stopped_assistant_id,
-                                cost_usd=turn_cost,
+                                cost_usd=billable_cost,
                             ),
                         )
                     # Land the durable stream lifecycle in the SAME commit as the
@@ -2897,6 +2913,8 @@ async def stream_and_persist(
             )
         else:
             turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+        # AR-002: rollup/message cost charge only the unbilled delta on resume.
+        billable_cost = _billable_cost_delta(turn_cost)
         attribution = build_attribution(
             requested_tier_id=requested_tier_id,
             binding=binding,
@@ -2956,7 +2974,7 @@ async def stream_and_persist(
                 status="done",
                 attribution=attribution.model_dump(by_alias=True, exclude_none=True),
                 responds_to_message_id=user_message_id,
-                cost_usd=turn_cost,
+                cost_usd=billable_cost,
             )
             # Bump usage_rollup before the commit so both writes land
             # atomically. `user_id` is set on every non-temporary path (the
@@ -2967,7 +2985,7 @@ async def stream_and_persist(
                 await usage_repo.increment_for_period(
                     db,
                     user_id=user_id,
-                    cost_usd_delta=turn_cost,
+                    cost_usd_delta=billable_cost,
                     is_byok=is_byok_turn,
                     monthly_quota_usd=(
                         monthly_quota_usd_override

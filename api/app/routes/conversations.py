@@ -585,6 +585,22 @@ def _approval_decision_conflict(exc: ApprovalDecisionConflict) -> AppError:
     )
 
 
+def _approval_already_settled() -> AppError:
+    """A-1: sequential re-approve after settlement must not re-enter fan-out."""
+    return AppError(
+        ErrorEnvelope(
+            code="APPROVAL_ALREADY_SETTLED",
+            severity="warning",
+            title="Approval already settled",
+            body=(
+                "This approval was already settled. Refresh the conversation "
+                "instead of approving again."
+            ),
+        ),
+        status.HTTP_409_CONFLICT,
+    )
+
+
 def _approval_settlement_incomplete(exc: ApprovalSettlementIncomplete) -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -2418,7 +2434,31 @@ async def send_message(
     # H-002 / O-003: a durable worker continuation pins orchestration mode (and
     # optionally tier/provider). Resume must derive from that checkpoint — never
     # silently coerce away from an already-settled continuation contract.
+    #
+    # AR-001 / A-3: when agentic is kill-switched, ignore body.agenticMode for
+    # entitlement, reservation, buffer sizing, and submitted metadata — except
+    # we refuse mid-flight agentic resumes rather than half-running them.
     effective_agentic_mode = body.agentic_mode
+    agentic_feature_on = settings.agentic_enabled and settings.tools_enabled
+    if not agentic_feature_on and resume_seed is not None and (
+        resume_seed.agentic_continuation is not None
+        or resume_seed.is_plan
+        or resume_seed.is_clarify
+    ):
+        raise AppError(
+            ErrorEnvelope(
+                code="AGENTIC_DISABLED",
+                severity="error",
+                title="Agentic mode is disabled",
+                body=(
+                    "This conversation has a paused agentic run, but agentic "
+                    "mode is currently disabled on the server."
+                ),
+            ),
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    if not agentic_feature_on:
+        effective_agentic_mode = None
     if resume_seed is not None and resume_seed.agentic_continuation is not None:
         pinned_mode = getattr(
             resume_seed.agentic_continuation, "orchestration_mode", None
@@ -3167,6 +3207,14 @@ async def _prepare_resume_tool(
             raise _approval_decision_conflict(exc) from exc
         except ApprovalSettlementIncomplete as exc:
             raise _approval_settlement_incomplete(exc) from exc
+        # A-1: settlement is idempotent for SSE retry, but not after a completed run.
+        if outcome.already_settled and await messages_repo.has_completed_hitl_continuation(
+            db,
+            conversation_id=conversation_id,
+            paused_message=last_assistant,
+            user_message_id=user_message_id,
+        ):
+            raise _approval_already_settled()
         # B4: planner spend lives in server_state (sanitize strips tool-input).
         plan_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
         seed = ResumeToolSeed(
@@ -3282,6 +3330,14 @@ async def _prepare_resume_tool(
             raise _approval_decision_conflict(exc) from exc
         except ApprovalSettlementIncomplete as exc:
             raise _approval_settlement_incomplete(exc) from exc
+        # A-1: do not rebuild a clarify ResumeToolSeed after the run completed.
+        if outcome.already_settled and await messages_repo.has_completed_hitl_continuation(
+            db,
+            conversation_id=conversation_id,
+            paused_message=last_assistant,
+            user_message_id=user_message_id,
+        ):
+            raise _approval_already_settled()
         if outcome.decision == "approve":
             stored_out = outcome.result.output or {}
             raw_stored = stored_out.get("clarifications")
@@ -3404,6 +3460,14 @@ async def _prepare_resume_tool(
         settled_result = outcome.result
         authoritative_decision = outcome.decision
         pending_settle = False
+        # A-1: already-settled + completed continuation must not re-enter.
+        if outcome.already_settled and await messages_repo.has_completed_hitl_continuation(
+            db,
+            conversation_id=conversation_id,
+            paused_message=last_assistant,
+            user_message_id=user_message_id,
+        ):
+            raise _approval_already_settled()
     elif str(pending.get("approvalState") or "") != "pending":
         # Claimed-without-result: fail closed via settlement (no re-execute).
         outcome = await claim_and_settle_approval_outcome(
@@ -3417,6 +3481,13 @@ async def _prepare_resume_tool(
         settled_result = outcome.result
         authoritative_decision = outcome.decision
         pending_settle = False
+        if outcome.already_settled and await messages_repo.has_completed_hitl_continuation(
+            db,
+            conversation_id=conversation_id,
+            paused_message=last_assistant,
+            user_message_id=user_message_id,
+        ):
+            raise _approval_already_settled()
 
     # B5: single-mode pause ledger from server_state (not tool input).
     tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)

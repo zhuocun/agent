@@ -1897,7 +1897,10 @@ async def _resume_worker_continuation(
                     nested_paused = True
                     break
                 yield item
-        except BaseException as exc:
+        except asyncio.CancelledError:
+            # AR-005: Stop/shutdown must not become an ordinary worker failure.
+            raise
+        except Exception as exc:
             # B16: refuse transparent fallback after any externally visible event.
             if (
                 not visible_progress
@@ -1921,7 +1924,9 @@ async def _resume_worker_continuation(
                             break
                         yield item
                     _stamp_fallback_route()
-                except BaseException as retry_exc:
+                except asyncio.CancelledError:
+                    raise
+                except Exception as retry_exc:
                     _log.warning(
                         "agentic.resume_worker_fallback_failed",
                         subagent_id=paused_id,
@@ -2721,6 +2726,35 @@ async def _run_deep_research(
             await asyncio.gather(*tasks, return_exceptions=True)
 
     # BE-005: after siblings finish, surface the worker tool pause with continuation.
+    # AR-004: if the run already breached the cap while parking the pause, do NOT
+    # expose an executable HITL card — cancel the pending call and synthesize.
+    if worker_pause is not None and budget_halted:
+        yield ToolResult(
+            tool_call_id=worker_pause.tool_call_id,
+            name=worker_pause.tool_name,
+            label=worker_pause.tool_label,
+            status="cancelled",
+            approval_state="rejected",
+            summary="Cancelled: run budget already exhausted.",
+            error=(
+                "The run reached its budget cap before this approval could be "
+                "shown. Partial synthesis continues without the gated tool."
+            ),
+            subagent_id=worker_pause.subagent_id,
+        )
+        if worker_pause.partial_answer.strip():
+            results[worker_pause.subagent_id] = WorkerOutput(
+                subagent_id=worker_pause.subagent_id,
+                sub_question=worker_pause.sub_question,
+                answer=worker_pause.partial_answer,
+                source_ids=worker_pause.source_ids,
+            )
+            usages[worker_pause.subagent_id] = worker_pause.usage
+            costs[worker_pause.subagent_id] = costs.get(
+                worker_pause.subagent_id, _price_pause(worker_pause)
+            )
+        worker_pause = None
+
     if worker_pause is not None:
         completed_states: list[CompletedWorkerState] = []
         for _index, sid, _label, sq in worker_meta:

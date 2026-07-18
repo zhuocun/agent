@@ -37,7 +37,6 @@ from pydantic import Field
 
 from app.schemas.common import CamelModel, MessageRole, ModelTierId, SubagentOutcome
 from app.schemas.message import (
-    AgenticRunSummaryPart,
     AttachmentPart,
     ReasoningPart,
     SourcesPart,
@@ -80,6 +79,17 @@ class PublicSubagentPart(CamelModel):
 # Same content parts as `MessagePart`, but with the cost-stripped
 # `PublicSubagentPart` swapped in for `SubagentPart` so the public parts tree
 # structurally cannot carry per-section cost.
+class PublicAgenticRunSummaryPart(CamelModel):
+    """Public agentic run summary — outcome flags only, no meter receipt (AR-012)."""
+
+    type: Literal["agentic_run_summary"] = "agentic_run_summary"
+    outcome: Literal["complete", "partial"] = "complete"
+    budget_halted: bool = False
+    failed_workers: int = 0
+    planned_workers: int | None = None
+    completed_workers: int | None = None
+
+
 PublicMessagePart = Annotated[
     TextPart
     | ReasoningPart
@@ -89,7 +99,7 @@ PublicMessagePart = Annotated[
     | ToolCallPart
     | ToolResultPart
     | PublicSubagentPart
-    | AgenticRunSummaryPart,
+    | PublicAgenticRunSummaryPart,
     Field(discriminator="type"),
 ]
 

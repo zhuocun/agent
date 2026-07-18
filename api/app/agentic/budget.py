@@ -101,6 +101,43 @@ def estimate_run_cost(
     )
 
 
+def estimate_residual_run_cost(
+    *,
+    remaining_workers: int,
+    binding: TierBinding,
+    settings: Settings,
+    image_count: int = 0,
+    include_planner: bool = False,
+) -> float:
+    """AR-007: estimate remaining phases only (resume reservation).
+
+    Counts aggregator (+ optional planner) + ``remaining_workers`` + verifier
+    samples when enabled — never a full fresh planner+N-workers estimate when
+    those phases are already complete.
+    """
+    per_subagent = _expected_subagent_usage(settings)
+    breakdown = compute_cost_breakdown(
+        usage=per_subagent,
+        binding=binding,
+        image_count=image_count,
+    )
+    base = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+    workers = max(0, remaining_workers)
+    # Aggregator always remains on deep-research resume; planner only when asked.
+    count = workers + 1
+    if include_planner:
+        count += 1
+    if settings.agentic_verifier:
+        count += max(1, settings.agentic_verifier_n)
+    count = max(1, count)
+    return (
+        base
+        * count
+        * settings.agentic_reasoning_token_multiplier
+        * settings.agentic_fanout_token_multiplier
+    )
+
+
 def effective_cap(*, cap_usd: float, headroom_usd: float | None) -> float:
     """Compose the per-run cap with the caller's remaining headroom.
 

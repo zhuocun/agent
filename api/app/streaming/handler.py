@@ -1645,13 +1645,19 @@ async def stream_and_persist(
         except Exception as exc:
             await queue.put(_PumpError(exc))
         finally:
-            while True:
-                try:
-                    queue.put_nowait(None)
-                    break
-                except asyncio.QueueFull:
-                    with contextlib.suppress(asyncio.QueueEmpty):
-                        queue.get_nowait()
+            # AR-003: on natural completion await the sentinel so we never drop
+            # valid events just to make room. Drop-oldest only if we are being
+            # cancelled and must still unblock the consumer.
+            try:
+                await queue.put(None)
+            except asyncio.CancelledError:
+                while True:
+                    try:
+                        queue.put_nowait(None)
+                        break
+                    except asyncio.QueueFull:
+                        with contextlib.suppress(asyncio.QueueEmpty):
+                            queue.get_nowait()
 
     pump_task = asyncio.create_task(_pump(provider_iter))
 
@@ -1781,6 +1787,21 @@ async def stream_and_persist(
             else:
                 total += _cost_for_usage(acc.usage)
         return total
+
+    def _billable_cost_delta(logical_cost: float) -> float:
+        """AR-002: charge only spend not already billed on a prior pause turn.
+
+        Orchestrator SubagentDone receipts are cumulative (pre-pause + new) for
+        cap/UI honesty. The usage rollup must not re-increment pre-pause dollars
+        that the pause terminal already wrote via ``increment_for_period``.
+        """
+        if resume_seed is None or not agentic_active:
+            return float(logical_cost)
+        already = float(resume_seed.prior_run_cost_usd or 0.0)
+        cont = resume_seed.agentic_continuation
+        if cont is not None:
+            already += float(getattr(cont, "paused_worker_cost_usd", 0.0) or 0.0)
+        return max(0.0, float(logical_cost) - already)
 
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
@@ -2036,11 +2057,29 @@ async def stream_and_persist(
                 done_acc.substituted_display_label = ev.substituted_display_label
                 return
             if isinstance(ev, RunCost):
-                if ev.partial or ev.budget_halted or ev.failed_worker_count > 0:
+                persist_receipt = (
+                    ev.phase == "final"
+                    or ev.partial
+                    or ev.budget_halted
+                    or ev.failed_worker_count > 0
+                )
+                if persist_receipt:
                     agentic_run_summary = AgenticRunSummaryPart(
-                        outcome="partial",
+                        outcome=(
+                            "partial"
+                            if (
+                                ev.partial
+                                or ev.budget_halted
+                                or ev.failed_worker_count > 0
+                            )
+                            else "complete"
+                        ),
                         budget_halted=ev.budget_halted,
                         failed_workers=ev.failed_worker_count,
+                        subtotal_usd=ev.subtotal_usd,
+                        cap_usd=ev.cap_usd,
+                        cost_confidence=ev.confidence,
+                        cost_phase=ev.phase,
                     )
                 return
             sid = getattr(ev, "subagent_id", None)
@@ -2264,6 +2303,7 @@ async def stream_and_persist(
                     # `attribution.costUsd` (pricing.py) so the ledger and the
                     # wire stay consistent.
                     turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+                billable_cost = _billable_cost_delta(turn_cost)
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
@@ -2289,7 +2329,7 @@ async def stream_and_persist(
                         attribution=attribution,
                         session=fresh_db,
                         commit=False,
-                        cost_usd=turn_cost,
+                        cost_usd=billable_cost,
                     )
                     # Stopped turn still cost partial tokens -- bump the meter.
                     # `is_temporary` already gates persistence; only increment
@@ -2298,7 +2338,7 @@ async def stream_and_persist(
                         await usage_repo.increment_for_period(
                             fresh_db,
                             user_id=user_id,
-                            cost_usd_delta=turn_cost,
+                            cost_usd_delta=billable_cost,
                             is_byok=is_byok_turn,
                             monthly_quota_usd=(
                                 monthly_quota_usd_override
@@ -2320,7 +2360,7 @@ async def stream_and_persist(
                                 terminal_status="stopped",
                                 attribution=attribution,
                                 message_id=stopped_assistant_id,
-                                cost_usd=turn_cost,
+                                cost_usd=billable_cost,
                             ),
                         )
                     # Land the durable stream lifecycle in the SAME commit as the
@@ -2550,14 +2590,28 @@ async def stream_and_persist(
                 # `paused` ends the turn in `awaiting_approval`.
                 # H-012: store continuation in server_state (not tool input).
                 if ev.continuation is not None:
-                    # H-002: pin served route identity onto the durable checkpoint.
+                    # H-002 / AR-006: pin *served* route identity onto the durable
+                    # checkpoint (not just the requested tier). Fallback workers
+                    # pin the fallback binding so resume cannot silently switch.
                     cont_blob = dict(ev.continuation)
                     if agentic_mode is not None:
                         cont_blob.setdefault("orchestrationMode", agentic_mode)
-                    cont_blob.setdefault("tierId", requested_tier_id)
-                    if provider_id is not None:
-                        cont_blob.setdefault("providerId", provider_id)
-                    cont_blob.setdefault("modelId", binding.model_id)
+                    used_fb = bool(
+                        cont_blob.get("pausedWorkerUsedFallback")
+                        or cont_blob.get("paused_worker_used_fallback")
+                    )
+                    if used_fb and fallback_binding is not None:
+                        cont_blob["tierId"] = fallback_binding.tier.id
+                        cont_blob["providerId"] = (
+                            fallback_provider_id or fallback_binding.provider_id
+                        )
+                        cont_blob["modelId"] = fallback_binding.model_id
+                    else:
+                        cont_blob.setdefault("tierId", binding.tier.id)
+                        cont_blob.setdefault(
+                            "providerId", provider_id or binding.provider_id
+                        )
+                        cont_blob.setdefault("modelId", binding.model_id)
                     pending_server_continuations[ev.tool_call_id] = cont_blob
                     # Strip any legacy embedding from in-memory tool parts.
                     target_parts = (
@@ -2675,11 +2729,25 @@ async def stream_and_persist(
                 )
             elif isinstance(ev, RunCost):
                 # Running run-cost subtotal vs the configured cap (M3 scaffold).
-                if ev.partial or ev.budget_halted or ev.failed_worker_count > 0:
+                # AR-012: always persist a terminal receipt so reload matches live.
+                if (
+                    ev.phase == "final"
+                    or ev.partial
+                    or ev.budget_halted
+                    or ev.failed_worker_count > 0
+                ):
                     agentic_run_summary = AgenticRunSummaryPart(
-                        outcome="partial",
+                        outcome=(
+                            "partial"
+                            if ev.partial or ev.budget_halted or ev.failed_worker_count > 0
+                            else "complete"
+                        ),
                         budget_halted=ev.budget_halted,
                         failed_workers=ev.failed_worker_count,
+                        subtotal_usd=ev.subtotal_usd,
+                        cap_usd=ev.cap_usd,
+                        cost_confidence=ev.confidence,
+                        cost_phase=ev.phase,
                     )
                 yield encode_run_cost(
                     RunCostEvent(
@@ -2897,6 +2965,8 @@ async def stream_and_persist(
             )
         else:
             turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+        # AR-002: rollup/message cost charge only the unbilled delta on resume.
+        billable_cost = _billable_cost_delta(turn_cost)
         attribution = build_attribution(
             requested_tier_id=requested_tier_id,
             binding=binding,
@@ -2956,7 +3026,7 @@ async def stream_and_persist(
                 status="done",
                 attribution=attribution.model_dump(by_alias=True, exclude_none=True),
                 responds_to_message_id=user_message_id,
-                cost_usd=turn_cost,
+                cost_usd=billable_cost,
             )
             # Bump usage_rollup before the commit so both writes land
             # atomically. `user_id` is set on every non-temporary path (the
@@ -2967,7 +3037,7 @@ async def stream_and_persist(
                 await usage_repo.increment_for_period(
                     db,
                     user_id=user_id,
-                    cost_usd_delta=turn_cost,
+                    cost_usd_delta=billable_cost,
                     is_byok=is_byok_turn,
                     monthly_quota_usd=(
                         monthly_quota_usd_override
@@ -3138,7 +3208,15 @@ async def stream_and_persist(
             envelope = exc.envelope
         else:
             # Unknown failure: generic upstream error. Never leak the raw
-            # exception text to the client.
+            # exception text to the client. AR-013: still capture the stack for
+            # operators (structured logs / Sentry when configured).
+            _struct_log.error(
+                "turn.provider_unexpected",
+                exc_info=exc,
+                conversation_id=str(conversation_id) if conversation_id else None,
+                stream_id=str(stream_id) if stream_id is not None else None,
+                agentic_mode=agentic_mode,
+            )
             envelope = ErrorEnvelope(
                 code="PROVIDER_UPSTREAM",
                 severity="error",

@@ -185,15 +185,21 @@ def invoke_agent_span(
     subagent_id: str,
     role: str,
     label: str | None = None,
+    run_id: str | None = None,
+    model_id: str | None = None,
+    provider_id: str | None = None,
+    cost_usd: float | None = None,
+    outcome: str | None = None,
 ) -> Iterator[Any]:
     """Manual OTel span for one orchestrator subagent (agentic mode, M3).
 
     One `invoke_agent` span per subagent (primary / worker / aggregator),
     nested under the turn's auto-instrumented request span. Carries ids +
-    role/label only — NEVER message content (matching the structured-log
-    discipline). A no-op when OpenTelemetry isn't importable, and a non-recording
-    span (negligible cost) when no tracer provider is configured, so the
-    flag-off / OTel-off paths are unaffected.
+    role/label and optional route/cost/outcome attributes — NEVER message
+    content (matching the structured-log discipline). A no-op when
+    OpenTelemetry isn't importable, and a non-recording span (negligible cost)
+    when no tracer provider is configured, so the flag-off / OTel-off paths
+    are unaffected.
     """
     try:
         from opentelemetry import trace
@@ -206,6 +212,16 @@ def invoke_agent_span(
         span.set_attribute("agentic.role", role)
         if label is not None:
             span.set_attribute("agentic.label", label)
+        if run_id is not None:
+            span.set_attribute("agentic.run_id", run_id)
+        if model_id is not None:
+            span.set_attribute("gen_ai.request.model", model_id)
+        if provider_id is not None:
+            span.set_attribute("gen_ai.provider.name", provider_id)
+        if cost_usd is not None:
+            span.set_attribute("agentic.cost_usd", float(cost_usd))
+        if outcome is not None:
+            span.set_attribute("agentic.outcome", outcome)
         yield span
 
 

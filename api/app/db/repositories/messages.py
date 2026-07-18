@@ -447,6 +447,34 @@ async def get_latest_assistant_with_status(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def has_completed_hitl_continuation(
+    db: AsyncSession,
+    *,
+    conversation_id: UUID,
+    paused_message: Message,
+    user_message_id: UUID,
+) -> bool:
+    """True when a ``done`` assistant already finished this HITL resume (A-1).
+
+    Settlement is idempotent and may be retried when the SSE producer failed
+    after claim. Once a terminal ``done`` row exists for the same user message
+    (other than the pause checkpoint itself), a further approve must not
+    re-enter the orchestrator.
+    """
+    stmt = (
+        select(Message.id)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.role == "assistant",
+            Message.status == "done",
+            Message.responds_to_message_id == user_message_id,
+            Message.id != paused_message.id,
+        )
+        .limit(1)
+    )
+    return (await db.execute(stmt)).scalar_one_or_none() is not None
+
+
 async def count_assistant_messages(
     db: AsyncSession,
     conversation_id: UUID,

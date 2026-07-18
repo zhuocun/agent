@@ -1925,6 +1925,27 @@ export function ChatThread() {
     effortAtSendRef.current = effectiveReasoningEffort;
     jsonModeAtSendRef.current = jsonModeEnabled;
     deepResearchAtSendRef.current = isAgenticHitl || effectiveDeepResearch;
+    // AR-014 / AR-024: optimistically clear the paused card's approval controls
+    // so the UI does not keep showing "Needs approval" while the resume streams.
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.role !== "assistant" || m.status !== "awaiting_approval") return m;
+        let touched = false;
+        const parts = m.parts.map((p) => {
+          if (p.type !== "tool_call" || p.id !== decision.toolCallId) return p;
+          touched = true;
+          return {
+            ...p,
+            approvalState:
+              decision.decision === "approve" ? "approved" : "rejected",
+            status:
+              decision.decision === "approve" ? "running" : "cancelled",
+          } as typeof p;
+        });
+        if (!touched) return m;
+        return { ...m, parts };
+      }),
+    );
     setPendingId(resumeId);
     setLiveMessage(
       decision.decision === "approve"

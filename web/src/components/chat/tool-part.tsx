@@ -93,6 +93,9 @@ interface ToolPartViewProps {
 }
 
 export function ToolPartView({ part, onDecision, embedded = false }: ToolPartViewProps) {
+  // A-14: synchronous double-submit guard — disable after the first click even
+  // before the parent flips isStreaming / approvalState.
+  const [decisionBusy, setDecisionBusy] = useState(false);
   const isResult = part.type === "tool_result";
   const status = part.status ?? (isResult ? "succeeded" : "pending");
   const approvalState = part.approvalState ?? "not_required";
@@ -201,12 +204,14 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
           <Button
             type="button"
             size="sm"
-            onClick={() =>
+            disabled={decisionBusy}
+            onClick={() => {
+              setDecisionBusy(true);
               onDecision({
                 toolCallId,
                 decision: "approve",
-              })
-            }
+              });
+            }}
             data-testid="tool-approve"
             className="min-h-11 rounded-full bg-brand px-4 text-brand-foreground hover:bg-brand/90 md:min-h-0"
           >
@@ -217,7 +222,11 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => onDecision({ toolCallId, decision: "deny" })}
+            disabled={decisionBusy}
+            onClick={() => {
+              setDecisionBusy(true);
+              onDecision({ toolCallId, decision: "deny" });
+            }}
             data-testid="tool-deny"
             className="min-h-11 rounded-full px-4 md:min-h-0"
           >
@@ -354,6 +363,7 @@ function PlanClarifyForm({
   }) => void;
 }) {
   const [answers, setAnswers] = useState<string[]>(() => questions.map(() => ""));
+  const [decisionBusy, setDecisionBusy] = useState(false);
   const maxAnswerChars = 2000;
   const firstAnswerRef = useRef<HTMLTextAreaElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -426,7 +436,9 @@ function PlanClarifyForm({
         <Button
           type="button"
           size="sm"
-          onClick={() =>
+          disabled={decisionBusy}
+          onClick={() => {
+            setDecisionBusy(true);
             onDecision({
               toolCallId,
               decision: "approve",
@@ -437,8 +449,8 @@ function PlanClarifyForm({
                   answer: answers[idx] ?? "",
                 })),
               },
-            })
-          }
+            });
+          }}
           data-testid="tool-approve"
           className="min-h-11 rounded-full bg-brand px-4 text-brand-foreground hover:bg-brand/90 md:min-h-0"
         >
@@ -449,7 +461,11 @@ function PlanClarifyForm({
           type="button"
           variant="ghost"
           size="sm"
-          onClick={() => onDecision({ toolCallId, decision: "deny" })}
+          disabled={decisionBusy}
+          onClick={() => {
+            setDecisionBusy(true);
+            onDecision({ toolCallId, decision: "deny" });
+          }}
           data-testid="tool-deny"
           className="min-h-11 rounded-full px-4 md:min-h-0"
         >

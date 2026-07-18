@@ -38,7 +38,11 @@ from app.agentic import (
     is_plan_approval_call_id,
     is_plan_clarify_call_id,
 )
-from app.agentic.budget import compose_headroom, estimate_run_cost
+from app.agentic.budget import (
+    compose_headroom,
+    estimate_residual_run_cost,
+    estimate_run_cost,
+)
 from app.agentic.clarify import (
     ClarificationRecord,
     ClarifyInputError,
@@ -585,6 +589,22 @@ def _approval_decision_conflict(exc: ApprovalDecisionConflict) -> AppError:
     )
 
 
+def _approval_already_settled() -> AppError:
+    """A-1: sequential re-approve after settlement must not re-enter fan-out."""
+    return AppError(
+        ErrorEnvelope(
+            code="APPROVAL_ALREADY_SETTLED",
+            severity="warning",
+            title="Approval already settled",
+            body=(
+                "This approval was already settled. Refresh the conversation "
+                "instead of approving again."
+            ),
+        ),
+        status.HTTP_409_CONFLICT,
+    )
+
+
 def _approval_settlement_incomplete(exc: ApprovalSettlementIncomplete) -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -680,6 +700,16 @@ def _request_fingerprint(
     attachment payload bytes must never be duplicated in an idempotency column.
     """
     payload_hashes = [_attachment_payload_sha256(attachment) for attachment in body.attachments]
+    # AR-020: v2 includes response-affecting controls so reusing a clientMessageId
+    # with a different agentic/effort/format mode cannot silently replay.
+    if body.response_format is not None:
+        response_format_payload: dict[str, object] = {
+            "type": body.response_format.type,
+        }
+        if body.response_format.schema_ is not None:
+            response_format_payload["schema"] = body.response_format.schema_
+    else:
+        response_format_payload = {}
     payload = {
         "tierId": body.tier_id,
         "providerId": provider_id,
@@ -688,6 +718,9 @@ def _request_fingerprint(
         "regenerate": bool(body.regenerate),
         "continueTurn": bool(body.continue_turn),
         "editMessageId": body.edit_message_id,
+        "agenticMode": body.agentic_mode,
+        "reasoningEffort": body.reasoning_effort,
+        "responseFormat": response_format_payload or None,
         "attachments": [
             {
                 "id": attachment.id,
@@ -701,7 +734,7 @@ def _request_fingerprint(
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return {
-        "v": 1,
+        "v": 2,
         "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         **(
             {"attachmentPayloadSha256": payload_hashes}
@@ -2418,7 +2451,31 @@ async def send_message(
     # H-002 / O-003: a durable worker continuation pins orchestration mode (and
     # optionally tier/provider). Resume must derive from that checkpoint — never
     # silently coerce away from an already-settled continuation contract.
+    #
+    # AR-001 / A-3: when agentic is kill-switched, ignore body.agenticMode for
+    # entitlement, reservation, buffer sizing, and submitted metadata — except
+    # we refuse mid-flight agentic resumes rather than half-running them.
     effective_agentic_mode = body.agentic_mode
+    agentic_feature_on = settings.agentic_enabled and settings.tools_enabled
+    if not agentic_feature_on and resume_seed is not None and (
+        resume_seed.agentic_continuation is not None
+        or resume_seed.is_plan
+        or resume_seed.is_clarify
+    ):
+        raise AppError(
+            ErrorEnvelope(
+                code="AGENTIC_DISABLED",
+                severity="error",
+                title="Agentic mode is disabled",
+                body=(
+                    "This conversation has a paused agentic run, but agentic "
+                    "mode is currently disabled on the server."
+                ),
+            ),
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    if not agentic_feature_on:
+        effective_agentic_mode = None
     if resume_seed is not None and resume_seed.agentic_continuation is not None:
         pinned_mode = getattr(
             resume_seed.agentic_continuation, "orchestration_mode", None
@@ -2450,14 +2507,44 @@ async def send_message(
                 "INVALID_INPUT",
                 "Resume providerId does not match the paused run checkpoint.",
             )
+        # AR-006: enforce model identity when the checkpoint pinned one.
+        pinned_model = getattr(resume_seed.agentic_continuation, "model_id", None)
+        if isinstance(pinned_model, str) and pinned_model:
+            served_model = binding.model_id
+            # If the pause was on fallback, the pin is the fallback model —
+            # accept either the active binding or a configured fallback match.
+            fallback_model = (
+                fallback_binding.model_id if fallback_binding is not None else None
+            )
+            if pinned_model not in {served_model, fallback_model}:
+                raise _invalid_input(
+                    "INVALID_INPUT",
+                    "Resume model does not match the paused run checkpoint.",
+                )
     agentic_coercion_reason: Literal["entitlement"] | None = None
     if (
         effective_agentic_mode == "deep_research"
         and resume_seed is not None
         and resume_seed.agentic_continuation is not None
     ):
-        # Do not coerce a pinned deep_research continuation after settle.
-        pass
+        # AR-010: keep the pinned mode, but re-authorize before spending more.
+        # A revoked Pro/BYOK entitlement must not continue a platform-funded run.
+        if not await _has_platform_pro_access(
+            db, user=user, api_key=resolved_api_key
+        ):
+            raise AppError(
+                ErrorEnvelope(
+                    code="AGENTIC_ENTITLEMENT_REQUIRED",
+                    severity="error",
+                    title="Deep Research requires Pro or your own API key",
+                    body=(
+                        "This paused Deep Research run can no longer continue "
+                        "because Pro access or a BYOK key is no longer available. "
+                        "Restore access and try again, or start a new chat."
+                    ),
+                ),
+                status.HTTP_403_FORBIDDEN,
+            )
     elif effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
         db, user=user, api_key=resolved_api_key
     ):
@@ -2489,16 +2576,58 @@ async def send_message(
                 for attachment in provider_attachments
                 if attachment.media_type == "image"
             )
-            reserve_amount = estimate_run_cost(
-                sub_question_count=(
-                    settings.agentic_max_workers
-                    if effective_agentic_mode == "deep_research"
-                    else 1
-                ),
-                binding=binding,
-                settings=settings,
-                image_count=image_count,
-            )
+            # AR-007: resume reserves remaining phases only — not a full fresh run.
+            if resume_seed is not None and resume_seed.agentic_continuation is not None:
+                reserve_amount = estimate_residual_run_cost(
+                    remaining_workers=1,
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                    include_planner=False,
+                )
+            elif (
+                resume_seed is not None
+                and resume_seed.is_plan
+                and resume_seed.decision == "approve"
+            ):
+                plan_n = (
+                    len(resume_seed.approved_plan)
+                    if resume_seed.approved_plan
+                    else settings.agentic_max_workers
+                )
+                reserve_amount = estimate_residual_run_cost(
+                    remaining_workers=max(1, plan_n),
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                    include_planner=False,
+                )
+            elif resume_seed is not None and (
+                resume_seed.is_plan or resume_seed.is_clarify
+            ):
+                # Decline / clarify still need remaining orchestration estimate.
+                reserve_amount = estimate_residual_run_cost(
+                    remaining_workers=(
+                        1
+                        if effective_agentic_mode != "deep_research"
+                        else settings.agentic_max_workers
+                    ),
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                    include_planner=resume_seed.is_clarify,
+                )
+            else:
+                reserve_amount = estimate_run_cost(
+                    sub_question_count=(
+                        settings.agentic_max_workers
+                        if effective_agentic_mode == "deep_research"
+                        else 1
+                    ),
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                )
             reserved = await usage_repo.reserve_platform_budget(
                 db,
                 user_id=user.id,
@@ -2833,6 +2962,57 @@ async def stop_stream(
         # records stop intent by bumping `updated_at` without releasing that guard.
         await request_stop_async(active.id)
         await streams_repo.mark_status(db, stream_id=active.id, status="stopped")
+        return None
+
+    # A-7: no live stream — settle a parked awaiting_approval checkpoint as denied
+    # so Stop is a user-facing exit (not a no-op that leaves the pause forever).
+    paused = await messages_repo.get_latest_assistant_with_status(
+        db, conversation_id, status="awaiting_approval"
+    )
+    if paused is None:
+        return None
+    pending = _find_any_resumable_tool_call(
+        paused.parts, server_state=paused.server_state
+    )
+    if pending is None:
+        return None
+    tool_call_id = str(pending.get("id") or pending.get("toolCallId") or "")
+    tool_name = str(pending.get("name") or "")
+    if not tool_call_id:
+        return None
+    label = pending.get("label")
+    label_str = str(label) if isinstance(label, str) else None
+    try:
+        if tool_name in {PLAN_APPROVAL_TOOL_NAME, PLAN_CLARIFY_TOOL_NAME}:
+            await settle_pseudo_tool_approval_outcome(
+                db,
+                paused_message=paused,
+                tool_call_id=tool_call_id,
+                decision="deny",
+                output={"decision": "deny", "stopped": True},
+                label=label_str,
+                summary="Stopped by user.",
+            )
+        else:
+            cleaned_input, _cont = resolve_continuation(
+                server_state=paused.server_state,
+                tool_input=pending.get("input"),
+                tool_call_id=tool_call_id,
+            )
+            await claim_and_settle_approval_outcome(
+                db,
+                paused_message=paused,
+                tool_call_id=tool_call_id,
+                decision="deny",
+                effective_input=dict(cleaned_input),
+                label=label_str,
+            )
+    except (ApprovalDecisionConflict, ApprovalSettlementIncomplete):
+        # Already settled / conflict — treat as idempotent stop.
+        return None
+    # Mark the paused assistant stopped so it no longer looks actionable.
+    paused.status = "stopped"
+    await db.commit()
     return None
 
 
@@ -3039,6 +3219,28 @@ def _find_resumable_tool_call(
     return None
 
 
+def _find_any_resumable_tool_call(
+    parts: object,
+    *,
+    server_state: object = None,
+) -> dict[str, object] | None:
+    """Return the first still-pending approval-gated tool_call (A-7 Stop)."""
+    if not isinstance(parts, list):
+        return None
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") != "tool_call":
+            continue
+        call_id = part.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        found = _find_resumable_tool_call(
+            parts, call_id, server_state=server_state
+        )
+        if found is not None and found.get("approvalState") == "pending":
+            return found
+    return None
+
+
 async def _prepare_resume_tool(
     *,
     db: AsyncSession,
@@ -3167,6 +3369,14 @@ async def _prepare_resume_tool(
             raise _approval_decision_conflict(exc) from exc
         except ApprovalSettlementIncomplete as exc:
             raise _approval_settlement_incomplete(exc) from exc
+        # A-1: settlement is idempotent for SSE retry, but not after a completed run.
+        if outcome.already_settled and await messages_repo.has_completed_hitl_continuation(
+            db,
+            conversation_id=conversation_id,
+            paused_message=last_assistant,
+            user_message_id=user_message_id,
+        ):
+            raise _approval_already_settled()
         # B4: planner spend lives in server_state (sanitize strips tool-input).
         plan_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
         seed = ResumeToolSeed(
@@ -3282,6 +3492,14 @@ async def _prepare_resume_tool(
             raise _approval_decision_conflict(exc) from exc
         except ApprovalSettlementIncomplete as exc:
             raise _approval_settlement_incomplete(exc) from exc
+        # A-1: do not rebuild a clarify ResumeToolSeed after the run completed.
+        if outcome.already_settled and await messages_repo.has_completed_hitl_continuation(
+            db,
+            conversation_id=conversation_id,
+            paused_message=last_assistant,
+            user_message_id=user_message_id,
+        ):
+            raise _approval_already_settled()
         if outcome.decision == "approve":
             stored_out = outcome.result.output or {}
             raw_stored = stored_out.get("clarifications")
@@ -3404,6 +3622,14 @@ async def _prepare_resume_tool(
         settled_result = outcome.result
         authoritative_decision = outcome.decision
         pending_settle = False
+        # A-1: already-settled + completed continuation must not re-enter.
+        if outcome.already_settled and await messages_repo.has_completed_hitl_continuation(
+            db,
+            conversation_id=conversation_id,
+            paused_message=last_assistant,
+            user_message_id=user_message_id,
+        ):
+            raise _approval_already_settled()
     elif str(pending.get("approvalState") or "") != "pending":
         # Claimed-without-result: fail closed via settlement (no re-execute).
         outcome = await claim_and_settle_approval_outcome(
@@ -3417,6 +3643,13 @@ async def _prepare_resume_tool(
         settled_result = outcome.result
         authoritative_decision = outcome.decision
         pending_settle = False
+        if outcome.already_settled and await messages_repo.has_completed_hitl_continuation(
+            db,
+            conversation_id=conversation_id,
+            paused_message=last_assistant,
+            user_message_id=user_message_id,
+        ):
+            raise _approval_already_settled()
 
     # B5: single-mode pause ledger from server_state (not tool input).
     tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)

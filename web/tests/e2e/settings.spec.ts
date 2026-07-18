@@ -474,7 +474,7 @@ test.describe("settings — BYOK", () => {
 
     // --- Add a key (real PUT /api/account/byok) ------------------------------
     await dialog.getByLabel("Provider").selectOption("deepseek");
-    await dialog.getByLabel("API key").fill("sk-deepseek-abcdefgh");
+    await dialog.getByRole("textbox", { name: "API key" }).fill("sk-deepseek-abcdefgh");
     const addReq = page.waitForResponse(
       (r) =>
         r.url() === `${BE_URL}/api/account/byok` &&
@@ -486,8 +486,8 @@ test.describe("settings — BYOK", () => {
 
     // --- Replace the key -----------------------------------------------------
     await dialog.getByRole("button", { name: "Replace key" }).click();
-    await expect(dialog.getByLabel("API key")).toBeVisible();
-    await dialog.getByLabel("API key").fill("sk-deepseek-replaced9");
+    await expect(dialog.getByRole("textbox", { name: "API key" })).toBeVisible();
+    await dialog.getByRole("textbox", { name: "API key" }).fill("sk-deepseek-replaced9");
     const replaceReq = page.waitForResponse(
       (r) =>
         r.url() === `${BE_URL}/api/account/byok` &&
@@ -499,7 +499,7 @@ test.describe("settings — BYOK", () => {
 
     // --- Clear-field affordance inside the key input --------------------------
     await dialog.getByRole("button", { name: "Replace key" }).click();
-    const keyInput = dialog.getByLabel("API key");
+    const keyInput = dialog.getByRole("textbox", { name: "API key" });
     await keyInput.fill("typo-typo");
     await dialog.getByRole("button", { name: "Clear API key" }).click();
     await expect(keyInput).toHaveValue("");
@@ -521,7 +521,7 @@ test.describe("settings — BYOK", () => {
     );
     await dialog.getByRole("button", { name: "Remove key" }).click();
     expect((await removeReq).status()).toBe(200);
-    await expect(dialog.getByLabel("API key")).toBeVisible();
+    await expect(dialog.getByRole("textbox", { name: "API key" })).toBeVisible();
   });
 
   test("rejects a too-short key with an error toast", async ({ page }) => {
@@ -534,7 +534,7 @@ test.describe("settings — BYOK", () => {
     await dialog.getByTestId("byok-section-toggle").click();
     await dialog.getByLabel("Provider").selectOption("deepseek");
     // Non-empty (passes the client guard) but < 8 chars → BE 400 INVALID_INPUT.
-    await dialog.getByLabel("API key").fill("short");
+    await dialog.getByRole("textbox", { name: "API key" }).fill("short");
     await dialog.getByRole("button", { name: "Add key", exact: true }).click();
 
     const toast = page

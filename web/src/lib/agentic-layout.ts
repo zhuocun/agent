@@ -18,6 +18,30 @@ const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
 export function deriveRunCostFromParts(
   parts: readonly MessagePart[],
 ): RunCostState | null {
+  const summary = parts.find(
+    (p): p is Extract<MessagePart, { type: "agentic_run_summary" }> =>
+      p.type === "agentic_run_summary",
+  );
+
+  // AR-012 / A-4: prefer the persisted terminal receipt when present.
+  if (
+    summary &&
+    typeof summary.subtotalUsd === "number" &&
+    typeof summary.capUsd === "number"
+  ) {
+    return {
+      subtotalUsd: summary.subtotalUsd,
+      capUsd: summary.capUsd,
+      confidence: summary.costConfidence ?? "exact",
+      phase: summary.costPhase ?? "final",
+      ...(summary.outcome === "partial" ? { partial: true } : {}),
+      ...(summary.budgetHalted ? { budgetHalted: true } : {}),
+      ...(typeof summary.failedWorkers === "number"
+        ? { failedWorkerCount: summary.failedWorkers }
+        : {}),
+    };
+  }
+
   let subtotalUsd = 0;
   let hasCost = false;
   for (const part of parts) {
@@ -29,26 +53,26 @@ export function deriveRunCostFromParts(
   if (!hasCost) return null;
 
   let capUsd = 0;
-  for (const part of parts) {
-    if (
-      part.type === "tool_call" &&
-      part.name === PLAN_APPROVAL_TOOL_NAME &&
-      part.input &&
-      typeof part.input.capUsd === "number"
-    ) {
-      capUsd = part.input.capUsd;
-      break;
+  if (typeof summary?.capUsd === "number") {
+    capUsd = summary.capUsd;
+  } else {
+    for (const part of parts) {
+      if (
+        part.type === "tool_call" &&
+        part.name === PLAN_APPROVAL_TOOL_NAME &&
+        part.input &&
+        typeof part.input.capUsd === "number"
+      ) {
+        capUsd = part.input.capUsd;
+        break;
+      }
     }
   }
-  const summary = parts.find(
-    (p): p is Extract<MessagePart, { type: "agentic_run_summary" }> =>
-      p.type === "agentic_run_summary",
-  );
   return {
-    subtotalUsd,
+    subtotalUsd: typeof summary?.subtotalUsd === "number" ? summary.subtotalUsd : subtotalUsd,
     capUsd,
-    confidence: "exact",
-    phase: "final",
+    confidence: summary?.costConfidence ?? "exact",
+    phase: summary?.costPhase ?? "final",
     ...(summary?.outcome === "partial" ? { partial: true } : {}),
     ...(summary?.budgetHalted ? { budgetHalted: true } : {}),
     ...(typeof summary?.failedWorkers === "number"

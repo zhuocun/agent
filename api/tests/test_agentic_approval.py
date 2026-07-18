@@ -475,3 +475,53 @@ async def test_plan_approval_concurrent_opposite_decisions_one_wins(
         }
         assert started_ids == {"aggregator"}
         assert not any(sid.startswith("worker-") for sid in started_ids)
+
+
+
+async def test_plan_hash_mismatch_rejects_approve(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Phase 6 gap: corrupted persisted planHash must 400 on approve."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    conv_id, pause_frames = await _pause_on_plan(agentic_client, session_factory)
+    plan_call_id = next(str(d["id"]) for n, d in pause_frames if n == "tool_call")
+
+    async with session_factory() as session:
+        msgs = (
+            await session.execute(
+                select(Message).where(Message.role == "assistant")
+            )
+        ).scalars().all()
+        paused = next(m for m in msgs if m.status == "awaiting_approval")
+        parts = [dict(p) if isinstance(p, dict) else p for p in (paused.parts or [])]
+        for part in parts:
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "tool_call"
+                and part.get("id") == plan_call_id
+            ):
+                inp = dict(part.get("input") or {})
+                inp["planHash"] = "deadbeef" * 8
+                part["input"] = inp
+        paused.parts = parts
+        flag_modified(paused, "parts")
+        await session.commit()
+
+    response = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "a0000000-0000-0000-0000-000000000099",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {
+                "toolCallId": plan_call_id,
+                "decision": "approve",
+            },
+        },
+        timeout=30.0,
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_INPUT"

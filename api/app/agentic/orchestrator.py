@@ -1897,7 +1897,10 @@ async def _resume_worker_continuation(
                     nested_paused = True
                     break
                 yield item
-        except BaseException as exc:
+        except asyncio.CancelledError:
+            # AR-005: Stop/shutdown must not become an ordinary worker failure.
+            raise
+        except Exception as exc:
             # B16: refuse transparent fallback after any externally visible event.
             if (
                 not visible_progress
@@ -1921,7 +1924,9 @@ async def _resume_worker_continuation(
                             break
                         yield item
                     _stamp_fallback_route()
-                except BaseException as retry_exc:
+                except asyncio.CancelledError:
+                    raise
+                except Exception as retry_exc:
                     _log.warning(
                         "agentic.resume_worker_fallback_failed",
                         subagent_id=paused_id,
@@ -2150,14 +2155,45 @@ async def _run_deep_research(
         # Real-provider planner: a bounded model pass decomposes the prompt into
         # sub-questions so a plain request fans out without the user typing the
         # `DEEP_RESEARCH:` marker. Clarifications ride as trailing DATA.
-        plan_reply, planner_usage = await _collect_answer(
-            make_stream_for,
-            settings,
-            planner.build_planner_prompt(effective_user_text, max_workers=max_workers),
+        # A-5: retry once on a fallback route; last resort is deterministic
+        # decompose so a transient planner outage does not kill the whole run.
+        planner_prompt = planner.build_planner_prompt(
+            effective_user_text, max_workers=max_workers
         )
+        try:
+            plan_reply, planner_usage = await _collect_answer(
+                make_stream_for,
+                settings,
+                planner_prompt,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as plan_exc:
+            if fallback_make_stream_for is not None and is_retryable(plan_exc):
+                try:
+                    plan_reply, planner_usage = await _collect_answer(
+                        fallback_make_stream_for,
+                        settings,
+                        planner_prompt,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as fallback_exc:
+                    _log.warning(
+                        "agentic.planner_fallback_failed",
+                        error=str(fallback_exc),
+                    )
+                    plan_reply = ""
+                    planner_usage = UsageUpdate()
+            else:
+                _log.warning("agentic.planner_failed", error=str(plan_exc))
+                plan_reply = ""
+                planner_usage = UsageUpdate()
         sub_questions = planner.parse_plan(
             plan_reply, max_workers=max_workers, fallback=plan_text
         )
+        if not sub_questions:
+            sub_questions = planner.decompose(plan_text, max_workers=max_workers)
     cap = settings.agentic_run_budget_usd
     estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
     # O-014: fold amplified clarification prompt chars into admission so a
@@ -2590,6 +2626,11 @@ async def _run_deep_research(
     # BE-005: at most one worker tool-HITL pause per fan-out (first wins).
     # Sibling policy = wait for others to finish before surfacing AwaitingApproval.
     worker_pause: _WorkerPause | None = None
+    # AR-008: workers that already substituted use the fallback pricer for
+    # provisional mid-flight ledger samples.
+    fallback_priced_workers: set[str] = set()
+    # AR-023: sibling pauses cancelled as superseded — not "succeeded".
+    superseded_worker_ids: set[str] = set()
 
     def _price_pause(pause: _WorkerPause) -> float:
         if pause.used_fallback and fallback_cost_for_usage is not None:
@@ -2648,6 +2689,7 @@ async def _run_deep_research(
                     costs[item.subagent_id] = pause_cost
                     provisional_costs.pop(item.subagent_id, None)
                     superseded_workers += 1
+                    superseded_worker_ids.add(item.subagent_id)
                     if item.partial_answer.strip():
                         results[item.subagent_id] = WorkerOutput(
                             subagent_id=item.subagent_id,
@@ -2661,10 +2703,24 @@ async def _run_deep_research(
                         + sum(provisional_costs.values())
                     )
                 continue
-            # B3: provisional mid-flight ledger from tagged usage samples.
+            # B3 / AR-008: provisional mid-flight ledger from tagged usage samples.
+            # Prefer the fallback pricer once a worker has substituted.
             if isinstance(item, (UsageUpdate, Complete)) and item.subagent_id:
                 sample = item.usage if isinstance(item, Complete) else item
-                provisional_costs[item.subagent_id] = cost_for_usage(sample)
+                if (
+                    isinstance(item, Complete)
+                    and item.substitution is not None
+                ):
+                    fallback_priced_workers.add(item.subagent_id)
+                pricer = (
+                    fallback_cost_for_usage
+                    if (
+                        item.subagent_id in fallback_priced_workers
+                        and fallback_cost_for_usage is not None
+                    )
+                    else cost_for_usage
+                )
+                provisional_costs[item.subagent_id] = pricer(sample)
                 # SAF-005: snapshot so a mid-flight kill still rolls usage even if
                 # the worker's CancelledError path loses the race.
                 if item.subagent_id not in costs:
@@ -2721,6 +2777,35 @@ async def _run_deep_research(
             await asyncio.gather(*tasks, return_exceptions=True)
 
     # BE-005: after siblings finish, surface the worker tool pause with continuation.
+    # AR-004: if the run already breached the cap while parking the pause, do NOT
+    # expose an executable HITL card — cancel the pending call and synthesize.
+    if worker_pause is not None and budget_halted:
+        yield ToolResult(
+            tool_call_id=worker_pause.tool_call_id,
+            name=worker_pause.tool_name,
+            label=worker_pause.tool_label,
+            status="cancelled",
+            approval_state="rejected",
+            summary="Cancelled: run budget already exhausted.",
+            error=(
+                "The run reached its budget cap before this approval could be "
+                "shown. Partial synthesis continues without the gated tool."
+            ),
+            subagent_id=worker_pause.subagent_id,
+        )
+        if worker_pause.partial_answer.strip():
+            results[worker_pause.subagent_id] = WorkerOutput(
+                subagent_id=worker_pause.subagent_id,
+                sub_question=worker_pause.sub_question,
+                answer=worker_pause.partial_answer,
+                source_ids=worker_pause.source_ids,
+            )
+            usages[worker_pause.subagent_id] = worker_pause.usage
+            costs[worker_pause.subagent_id] = costs.get(
+                worker_pause.subagent_id, _price_pause(worker_pause)
+            )
+        worker_pause = None
+
     if worker_pause is not None:
         completed_states: list[CompletedWorkerState] = []
         for _index, sid, _label, sq in worker_meta:
@@ -2734,7 +2819,9 @@ async def _run_deep_research(
                     answer=out.answer,
                     usage=usages.get(sid, UsageUpdate()),
                     cost_usd=costs.get(sid, 0.0),
-                    outcome="succeeded",
+                    outcome=(
+                        "cancelled" if sid in superseded_worker_ids else "succeeded"
+                    ),
                     source_ids=out.source_ids,
                 )
             )

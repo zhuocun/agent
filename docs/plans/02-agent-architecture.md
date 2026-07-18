@@ -49,7 +49,7 @@ explicit long-running workflow product surface.
 flowchart TD
   FE[FE composer: Deep Research toggle]
   POST["POST /messages + agenticMode"]
-  H[stream_and_persist / _build_provider_iter]
+  H[stream_and_persist / _resolve_provider_iter]
   RAW[raw provider.stream]
   LOOP[run_agent_loop]
   ORCH[run_orchestrator]
@@ -86,7 +86,7 @@ routes/conversations.py
   • budget_headroom_usd · resumable buffer × N when agentic
         │
         ▼
-streaming/handler.py :: _build_provider_iter
+streaming/handler.py :: _resolve_provider_iter
   ├── tools off              → raw provider.stream
   ├── tools on, agentic off  → run_agent_loop
   └── AGENTIC ∧ TOOLS        → run_orchestrator
@@ -139,7 +139,7 @@ Unbounded Consumption).
 | Max workers | `AGENTIC_MAX_WORKERS=4` | Planner truncate |
 | Concurrency | `AGENTIC_MAX_CONCURRENCY=3` | Semaphore |
 | Depth | `AGENTIC_MAX_DEPTH=1` | By construction (+ boot); raise only with eval proof |
-| Per-run USD | `AGENTIC_RUN_BUDGET_USD=1.0` | Admit + mid-flight kill |
+| Per-run USD | `AGENTIC_RUN_BUDGET_USD=1.0` | Admit + mid-flight kill (**soft** within an in-flight provider call — overshoot bounded ≈ one concurrent batch; A-10) |
 | Tool rounds / timeout | `TOOL_MAX_ROUNDS`, `TOOL_TIMEOUT_SECONDS` | `run_agent_loop` / `execute_tool` |
 | Entitlement | Pro / BYOK for `deep_research` | Coerce to `single` |
 | Resumable buffer | `AGENTIC_RESUMABLE_BUFFER_MULTIPLIER` | Conversations route |
@@ -267,7 +267,7 @@ No cross-turn orchestrator memory. No background agent state store.
 - Real-provider planner/synthesis paths (deterministic no-network tests)
 - `invoke_agent` OTel on worker/primary/aggregator/quiet planner; `execute_tool` OTel in `agent_loop`
 - Mid-run `run_cost` ticks with `confidence`/`phase`; FE meter labels estimates
-- Fresh-context verifier judge (default off; per-sample billed; fail/budget/quorum semantics); workers advertise+execute empty tool allowlist; `AGENTIC_MAX_DEPTH` boot-pinned to 1
+- Fresh-context verifier judge (default off; per-sample billed; fail/budget/quorum semantics); workers advertise+execute a scoped HITL allowlist (`request_user_confirmation`, plus fake-only `calendar_create_event`); `AGENTIC_MAX_DEPTH` boot-pinned to 1
 - Always-on per-worker served model + live substitution; partial-synthesis warning chip; chat-anchored in-turn only; reuse `run_agent_loop`
 
 ### Target (gaps to close)
@@ -276,7 +276,7 @@ No cross-turn orchestrator memory. No background agent state store.
 | --- | --- |
 | Verifier | **Shipped** fresh-context judge (default off); cost in meter per sample; CitationAgent still open. |
 | `AGENTIC_VERIFIER_N` semantics | **Shipped:** N independent samples (≤5); majority on closed-form verdict only; consensus pass requires all N. |
-| Tool subsets | **Shipped minimum** — workers get empty registry allowlist; expand to per-task scoped tools when tools are re-enabled for workers |
+| Tool subsets | **Shipped minimum** — workers get a scoped HITL allowlist (`request_user_confirmation` + fake-only `calendar_create_event`); expand to per-task scoped tools when broader worker tools are re-enabled |
 | Mid-run `run_cost` ticks | **Shipped** — estimate + mid + final with `confidence`/`phase` + FE Est. label |
 | `execute_tool` OTel | **Shipped** — wired in `agent_loop.py` |
 | Planner / verifier `invoke_agent` spans | **Shipped** — quiet planner + verifier sibling spans |
@@ -346,8 +346,9 @@ status; this section owns **target** decisions and **deferred hard gaps**.
    keep `AGENTIC_VERIFIER` default off until proven in live E2E.
 2. **`AGENTIC_VERIFIER_N`** — shipped as independent sample count (default 1, ≤5);
    closed-form majority only; further quorum policy / parallel sampling still open.
-3. **Per-worker tool subsets** — **minimum shipped** (workers: empty allowlist);
-   expand to per-task scoped tools when worker tools are re-enabled.
+3. **Per-worker tool subsets** — **minimum shipped** (workers: scoped HITL
+   allowlist `{request_user_confirmation, calendar_create_event}`);
+   expand to per-task scoped tools when broader worker tools are re-enabled.
 4. **Mid-run `run_cost` ticks** — **closed** (estimate / mid / final + FE Est.).
 5. **`execute_tool` OTel** — **closed**; quiet planner + verifier sibling spans shipped.
 6. **Live-network E2E** — **gate shipped** (`test_agentic_live_e2e.py`); still a hard
@@ -385,13 +386,25 @@ status; this section owns **target** decisions and **deferred hard gaps**.
 
 ---
 
+## Deferred / product notes (2026-07-18 residual pass)
+
+- **A-8 (public share reasoning):** keep exposing worker reasoning / tool
+  transcripts on public shares for now. Cost keys remain stripped. Revisit if
+  product wants an internal-only filter.
+- **AR-011 (whole-run wall-clock deadline):** deferred. Per-tool timeouts +
+  round bounds + per-run USD soft cap remain the active consumption controls
+  until an explicit product surface needs a run-level deadline.
+- **Per-run USD soft cap (A-10):** admit + mid-flight kill are hard at phase
+  boundaries; overshoot within an in-flight provider call is bounded ≈ one
+  concurrent batch (see Hard bounds table).
+
 ## Invariants (must hold)
 
 1. Flag-off byte-identical to pre-agentic stream.
 2. Flag-on `single` = behavioral loop reuse + tags (not wire-identical).
 3. Chat-anchored in-turn only — no out-of-turn execution.
 4. Every subagent reuses `run_agent_loop`.
-5. One seam: `_build_provider_iter`.
+5. One seam: `_resolve_provider_iter`.
 6. Additive wire + parts accumulation.
 7. Untrusted transitive worker output into aggregator.
 8. Budget halt → graceful labeled `done`, never opaque error hang.

@@ -251,6 +251,11 @@ export interface AgenticRunSummaryPart {
   failedWorkers?: number;
   plannedWorkers?: number;
   completedWorkers?: number;
+  /** AR-012: persisted run-cost receipt for reload parity. */
+  subtotalUsd?: number;
+  capUsd?: number;
+  costConfidence?: "estimate" | "exact";
+  costPhase?: "plan" | "progress" | "final";
 }
 
 export type MessagePart =

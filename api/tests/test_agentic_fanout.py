@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -24,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
+from app.db.repositories import billing as billing_repo
 from app.db.session import get_db
 
 pytestmark = pytest.mark.asyncio
@@ -162,6 +165,29 @@ async def _seed_conversation(
 async def _current_user_id(session_factory: async_sessionmaker[AsyncSession]) -> object:
     async with session_factory() as session:
         return (await session.execute(select(User))).scalar_one().id
+
+
+async def _grant_pro(
+    session_factory: async_sessionmaker[AsyncSession], *, user_id: object
+) -> None:
+    """Grant the test user an active Pro entitlement.
+
+    Deep Research no longer requires Pro; fan-out tests here skip this grant.
+    Kept as a shared helper for sibling modules (`test_agentic_resilience`,
+    `test_empty_reply_fallback`) that still import it.
+    """
+    async with session_factory() as session:
+        await billing_repo.upsert_subscription_entitlement(
+            session,
+            user_id=UUID(str(user_id)),
+            provider="fake",
+            subscription_id=f"sub-{user_id}",
+            status="active",
+            customer_id=f"cus-{user_id}",
+            current_period_end=datetime.now(UTC) + timedelta(days=30),
+            event_created_at=datetime.now(UTC),
+        )
+        await session.commit()
 
 
 async def _load_messages(

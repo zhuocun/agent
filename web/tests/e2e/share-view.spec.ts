@@ -30,6 +30,16 @@ async function enableDeepResearch(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
 }
 
+async function enableWebSearch(page: Page): Promise<void> {
+  await modelModeTrigger(page).click();
+  await page.getByTestId("picker-advanced").click();
+  const toggle = page.getByTestId("web-search-toggle");
+  await expect(toggle).toBeVisible({ timeout: 5_000 });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
+}
+
 test.describe("public share view", () => {
   test("a shared conversation renders read-only with attribution and no cost", async ({
     page,
@@ -127,35 +137,43 @@ test.describe("public share view", () => {
   test("shared agentic conversation renders subagent panel with nested tools and no cost", async ({
     page,
   }) => {
-    // 1) Drive a real agentic send so the BE persists a subagent-tagged turn.
+    // 1) Drive a real deep-research send (platform key; no Pro) so the BE
+    // persists a subagent-tagged turn. Plan approval pauses before fan-out;
+    // approve to get workers + synthesis. Nested generic tool groups are no
+    // longer produced via coerce-to-single; web search nests under workers.
     await page.goto("/");
     await waitForBootstrap(page);
-    // Deep Research toggle ON but NO Pro grant: `deep_research` is Pro/BYOK-gated,
-    // so the BE coerces a non-entitled caller down to `single` mode (one
-    // `primary` subagent). `TOOL_MULTI:` then drives the fake provider to request
-    // two `get_current_time` calls that fold into one generic tool group owned by
-    // `primary` — rendered nested inside the agent-activity (subagent) panel.
     await enableDeepResearch(page);
+    await enableWebSearch(page);
+
+    let capturedConvId: string | null = null;
+    page.on("request", (req) => {
+      const m = req
+        .url()
+        .match(/\/api\/conversations\/([0-9a-fA-F-]{36})\/messages/);
+      if (m && !capturedConvId) capturedConvId = m[1]!;
+    });
 
     const composer = page.getByTestId("composer-textarea");
-    await composer.fill("TOOL_MULTI: what time is it");
-
-    const createPromise = page.waitForResponse(
-      (r) =>
-        r.url() === `${BE_URL}/api/conversations` &&
-        r.request().method() === "POST",
-    );
+    await composer.fill("DEEP_RESEARCH: alpha topic | beta topic");
     await page.getByTestId("composer-send").click();
 
-    const createResp = await createPromise;
-    const { id: createdConvoId } = (await createResp.json()) as { id: string };
-    expect(createdConvoId).toBeTruthy();
-
-    // Wait for the assistant turn to settle (terminal frame committed).
-    const assistant = page.getByTestId("assistant-message").last();
-    await expect(assistant).toHaveAttribute("data-status", "done", {
+    const paused = page.getByTestId("assistant-message").last();
+    await expect(paused).toHaveAttribute("data-status", "awaiting_approval", {
       timeout: 15_000,
     });
+    await paused.getByTestId("tool-approve").click();
+
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toHaveAttribute("data-status", "done", {
+      timeout: 30_000,
+    });
+    const privatePanel = assistant.getByTestId("subagent-panel");
+    await expect(privatePanel.getByTestId("web-search-panel").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect.poll(() => capturedConvId).not.toBeNull();
+    const createdConvoId = capturedConvId!;
 
     // 2) Mint a share token. The same browser context carries the anon session
     // cookie minted on bootstrap, so this owner-side request is owned.
@@ -182,25 +200,25 @@ test.describe("public share view", () => {
     await page.goto(share.sharePath);
 
     // The agentic turn re-renders read-only: the assistant message carries the
-    // subagent panel, and the folded generic tool group nests INSIDE it (parity
-    // with the private thread — same AgenticAssistantParts primitive).
-    const publicAssistant = page.getByTestId("public-assistant-message").first();
+    // subagent panel, and web-search activity nests INSIDE it (parity with the
+    // private thread — same AgenticAssistantParts primitive).
+    const publicAssistant = page.getByTestId("public-assistant-message").last();
     await expect(publicAssistant).toBeVisible({ timeout: 15_000 });
     const panel = publicAssistant.getByTestId("subagent-panel");
     await expect(panel).toBeVisible({ timeout: 15_000 });
-    const nestedTools = panel.getByTestId("tool-group-panel");
-    await expect(nestedTools.first()).toBeVisible({ timeout: 15_000 });
-    const nestedCount = await nestedTools.count();
+    const nestedSearch = panel.getByTestId("web-search-panel");
+    await expect(nestedSearch.first()).toBeVisible({ timeout: 15_000 });
+    const nestedCount = await nestedSearch.count();
     expect(nestedCount).toBeGreaterThan(0);
     await expect(publicAssistant.getByTestId("public-assistant-answer")).toBeVisible({
       timeout: 15_000,
     });
     await expect(publicAssistant.getByTestId("assistant-empty-fallback")).toHaveCount(0);
-    // No standalone sibling tool-group-panel leaked outside the panel.
-    const totalToolPanels = await publicAssistant
-      .getByTestId("tool-group-panel")
+    // No standalone sibling web-search-panel leaked outside the panel.
+    const totalSearchPanels = await publicAssistant
+      .getByTestId("web-search-panel")
       .count();
-    expect(totalToolPanels).toBe(nestedCount);
+    expect(totalSearchPanels).toBe(nestedCount);
 
     // NO cost figure anywhere on the page — the public contract is cost-free.
     const bodyText = (await page.locator("body").innerText()) ?? "";

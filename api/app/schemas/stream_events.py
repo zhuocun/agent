@@ -23,9 +23,10 @@ from app.search.protocol import SourceItem
 class SubmittedEvent(CamelModel):
     message_id: str
     stream_id: str | None = None
-    # Entitlement coerce disclosure (FE-013): when the client asked for
-    # `deep_research` but the server ran `single`, both modes + a reason are
-    # set so the FE can show a non-error callout. Omitted on every other turn.
+    # Agentic mode disclosure (FE-013): requested vs effective mode. Historically
+    # used when entitlement coerced `deep_research` → `single`; that gate is
+    # gone (platform key is enough). Fields remain for future coerce reasons /
+    # FE callout plumbing; normally both modes match and reason is omitted.
     requested_agentic_mode: Literal["single", "deep_research"] | None = None
     effective_agentic_mode: Literal["single", "deep_research"] | None = None
     agentic_coercion_reason: Literal["entitlement"] | None = None

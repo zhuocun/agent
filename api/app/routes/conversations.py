@@ -2441,20 +2441,19 @@ async def send_message(
         memory_fact_ids = [fact_id for fact_id, _ in injected]
         memory_facts = [content for _, content in injected]
 
-    # Agentic Pro/BYOK entitlement gate (M3, FR-26 / T7). `deep_research` is the
-    # expensive multi-agent mode, so it is reserved for entitled callers: a BYOK
-    # turn (the user pays their own provider) OR an active platform Pro
-    # entitlement. A non-entitled caller is COERCED down to `single` rather than
-    # refused, so the request still streams a useful answer (graceful degrade,
-    # never a hard error). `single` and the flag-off path are unaffected.
+    # Agentic mode resolution. `deep_research` reuses the same platform-configured
+    # provider key as normal chat — Pro/BYOK is NOT required. Platform spend stays
+    # gated by `budget_headroom_usd` / usage quotas (applied when
+    # `resolved_api_key is None` below). `_has_platform_pro_access` still gates
+    # Pro tier / auto-route elsewhere; it is intentionally not consulted here.
     #
     # H-002 / O-003: a durable worker continuation pins orchestration mode (and
     # optionally tier/provider). Resume must derive from that checkpoint — never
     # silently coerce away from an already-settled continuation contract.
     #
     # AR-001 / A-3: when agentic is kill-switched, ignore body.agenticMode for
-    # entitlement, reservation, buffer sizing, and submitted metadata — except
-    # we refuse mid-flight agentic resumes rather than half-running them.
+    # reservation, buffer sizing, and submitted metadata — except we refuse
+    # mid-flight agentic resumes rather than half-running them.
     effective_agentic_mode = body.agentic_mode
     agentic_feature_on = settings.agentic_enabled and settings.tools_enabled
     if not agentic_feature_on and resume_seed is not None and (
@@ -2521,35 +2520,10 @@ async def send_message(
                     "INVALID_INPUT",
                     "Resume model does not match the paused run checkpoint.",
                 )
+    # Reserved for future coerce disclosure on `submitted` (FE-013). Deep Research
+    # no longer coerces for entitlement; kept so stream_and_persist call sites
+    # stay stable.
     agentic_coercion_reason: Literal["entitlement"] | None = None
-    if (
-        effective_agentic_mode == "deep_research"
-        and resume_seed is not None
-        and resume_seed.agentic_continuation is not None
-    ):
-        # AR-010: keep the pinned mode, but re-authorize before spending more.
-        # A revoked Pro/BYOK entitlement must not continue a platform-funded run.
-        if not await _has_platform_pro_access(
-            db, user=user, api_key=resolved_api_key
-        ):
-            raise AppError(
-                ErrorEnvelope(
-                    code="AGENTIC_ENTITLEMENT_REQUIRED",
-                    severity="error",
-                    title="Deep Research requires Pro or your own API key",
-                    body=(
-                        "This paused Deep Research run can no longer continue "
-                        "because Pro access or a BYOK key is no longer available. "
-                        "Restore access and try again, or start a new chat."
-                    ),
-                ),
-                status.HTTP_403_FORBIDDEN,
-            )
-    elif effective_agentic_mode == "deep_research" and not await _has_platform_pro_access(
-        db, user=user, api_key=resolved_api_key
-    ):
-        effective_agentic_mode = "single"
-        agentic_coercion_reason = "entitlement"
 
     # Per-run budget headroom (M3, T5 / BE-019). Compose the caller's REMAINING
     # platform allowance with any per-conversation remaining so a deep-research

@@ -4,9 +4,9 @@
 // (see shared-config.ts), so:
 //   - bootstrap advertises `agenticEnabled: true` → the Deep Research toggle
 //     renders in the model-mode picker
-//   - `deep_research` is Pro/BYOK-gated server-side (a non-entitled caller is
-//     coerced down to `single`), so each fan-out test first grants Pro over
-//     HTTP via the fake billing webhook
+//   - `deep_research` uses the platform provider key (same as normal chat);
+//     Pro/BYOK is NOT required. Platform spend stays gated by usage quotas.
+//     (Pro grant helpers live in settings.spec.ts for unrelated billing coverage.)
 //   - a deep-research turn pauses on the plan BEFORE any fan-out: the planner
 //     surfaces a pseudo `agentic_plan_approval` tool_call with the decomposed
 //     plan + cost estimate, reusing the shipped `awaiting_approval` terminal
@@ -22,58 +22,6 @@
 import { expect, test, type Page } from "./coverage-fixture";
 
 import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
-
-// Grant the CURRENT browser session an active Pro entitlement through the fake
-// billing backend, entirely over HTTP (mirrors api/tests/test_billing.py):
-//   1. promote the anonymous session to a registered user (checkout requires
-//      a registered caller)
-//   2. start a fake checkout — the fake backend returns a redirect URL of the
-//      shape `/settings?billing=fake-pro_subscription&user=<uuid>`, which is
-//      the only place the test can learn its own user id
-//   3. post an unsigned `customer.subscription.created` webhook for that user
-//      (the fake backend skips Stripe signature verification)
-// `page.request` shares the browser context's cookie jar, so the BE-origin
-// `sid` cookie minted at bootstrap rides along on every call.
-async function grantPro(page: Page): Promise<void> {
-  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-  const upgrade = await page.request.post(`${BE_URL}/api/auth/upgrade`, {
-    data: {
-      email: `agentic-${unique}@example.com`,
-      password: "agentic-e2e-password",
-    },
-  });
-  expect(upgrade.ok()).toBe(true);
-
-  const checkout = await page.request.post(`${BE_URL}/api/billing/checkout`, {
-    data: { kind: "pro_subscription" },
-  });
-  expect(checkout.ok()).toBe(true);
-  const { url } = (await checkout.json()) as { url: string };
-  const userId = new URL(url, BE_URL).searchParams.get("user");
-  expect(userId).toBeTruthy();
-
-  const webhook = await page.request.post(`${BE_URL}/api/billing/webhook`, {
-    data: {
-      id: `evt_agentic_${unique}`,
-      type: "customer.subscription.created",
-      created: Math.floor(Date.now() / 1000),
-      data: {
-        object: {
-          id: `sub_agentic_${unique}`,
-          customer: `cus_agentic_${unique}`,
-          status: "active",
-          current_period_end:
-            Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
-          metadata: { user_id: userId },
-        },
-      },
-    },
-  });
-  expect(webhook.ok()).toBe(true);
-  const webhookBody = (await webhook.json()) as { processed?: boolean };
-  expect(webhookBody.processed).toBe(true);
-}
 
 // Flip the Deep Research toggle ON via the model-mode picker (desktop
 // dropdown variant — the chromium project). It sits in the picker's main
@@ -98,36 +46,7 @@ async function enableWebSearch(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
 }
 
-// Send `TOOL_MULTI: …` as the first turn of a brand-new chat and wait for the
-// assistant turn to settle done. Returns the conversation id captured from the
-// create POST so a reload can re-open the same thread. The `TOOL_MULTI:` marker
-// drives the fake provider to request two auto `get_current_time` calls in
-// round 1 (see api/app/providers/fake.py); inside `single` mode the
-// orchestrator tags every event with the `primary` subagent id, so the two
-// settled runs fold into one generic `tool_group` owned by `primary`.
-async function sendMultiToolNewChat(page: Page): Promise<string> {
-  const composer = page.getByTestId("composer-textarea");
-  await composer.fill("TOOL_MULTI: what time is it");
-
-  const createPromise = page.waitForResponse(
-    (r) =>
-      r.url() === `${BE_URL}/api/conversations` &&
-      r.request().method() === "POST",
-  );
-  await page.getByTestId("composer-send").click();
-
-  const createResp = await createPromise;
-  const { id: convId } = (await createResp.json()) as { id: string };
-  expect(convId).toBeTruthy();
-
-  const assistant = page.getByTestId("assistant-message").last();
-  await expect(assistant).toHaveAttribute("data-status", "done", {
-    timeout: 15_000,
-  });
-  return convId;
-}
-
-// Drive a Pro session to the plan-approval pause. Returns the conversation id
+// Drive a session to the plan-approval pause. Returns the conversation id
 // (captured from the streaming POST URL) once the BE has PERSISTED the
 // `awaiting_approval` row, so the approve/deny resume can't race persistence —
 // mirrors tool-approval.spec.ts's sendAndPause.
@@ -216,7 +135,6 @@ test.describe("agentic mode (deep research)", () => {
   }) => {
     await page.goto("/");
     await waitForBootstrap(page);
-    await grantPro(page);
     await enableDeepResearch(page);
 
     // Capture every message-create POST body — the initial send AND the
@@ -311,7 +229,6 @@ test.describe("agentic mode (deep research)", () => {
   }) => {
     await page.goto("/");
     await waitForBootstrap(page);
-    await grantPro(page);
     await enableDeepResearch(page);
 
     await sendAndPauseOnPlan(page);
@@ -345,7 +262,6 @@ test.describe("agentic mode (deep research)", () => {
   }) => {
     await page.goto("/");
     await waitForBootstrap(page);
-    await grantPro(page);
     await enableDeepResearch(page);
     await enableWebSearch(page);
 
@@ -401,22 +317,15 @@ test.describe("agentic mode (deep research)", () => {
     expect(reloadedTotal).toBe(reloadedNested);
   });
 
-  test("generic tools in degraded (no-Pro) single mode render inside the agent activity panel", async ({
+  test("no-Pro deep research fans out without entitlement coercion", async ({
     page,
   }) => {
     await page.goto("/");
     await waitForBootstrap(page);
-    // Deep Research toggle ON but DELIBERATELY no Pro grant: `deep_research` is
-    // Pro/BYOK-gated, so the BE coerces a non-entitled caller down to `single`
-    // mode (one `primary` subagent) rather than refusing. This is the generic
-    // tool-group analogue of the web-search nesting test above — the same
-    // `firstSubagentIdx >= 0` gate routes settled generic tool runs INTO the
-    // agent-activity panel instead of rendering them as flat siblings.
+    // Deep Research ON, deliberately NO Pro grant: platform key is enough.
+    // Must NOT coerce to single / show an entitlement callout.
     await enableDeepResearch(page);
 
-    // The send must carry `agenticMode: "deep_research"` (the FE asked for it);
-    // the coercion to `single` happens server-side, so the wire mode stays
-    // deep_research even though the rendered panel is single-agent.
     const sentModes: unknown[] = [];
     page.on("request", (req) => {
       if (
@@ -432,38 +341,36 @@ test.describe("agentic mode (deep research)", () => {
       }
     });
 
-    const convId = await sendMultiToolNewChat(page);
+    const convId = await sendAndPauseOnPlan(page);
     expect(sentModes).toEqual(["deep_research"]);
+
+    const paused = page.getByTestId("assistant-message").last();
+    await paused.getByTestId("tool-approve").click();
 
     const resumed = page.getByTestId("assistant-message").last();
     const panel = resumed.getByTestId("subagent-panel");
     await expect(panel).toBeVisible({ timeout: 15_000 });
-    // One primary subagent → the panel titles itself "Agent activity", never
-    // "Deep research" (which only worker/aggregator roles claim).
-    await expect(panel).toContainText("Agent activity");
+    // Real deep-research fan-out (workers + synthesis), not coerced primary-only
+    // "Agent activity".
+    await expect(panel.getByTestId("subagent-row")).toHaveCount(3, {
+      timeout: 15_000,
+    });
+    await expect(panel).toContainText("Worker 1");
+    await expect(panel).toContainText("Worker 2");
+    await expect(panel).toContainText("Synthesis");
+    await expect(panel).not.toContainText("Agent activity");
+    await expect(resumed.getByTestId("agentic-coercion-callout")).toHaveCount(0);
 
-    // Entitlement coerce callout (FE-013): server disclosed the downgrade.
-    await expect(
-      resumed.getByTestId("agentic-coercion-callout"),
-    ).toBeVisible({ timeout: 15_000 });
-
-    const answerText = "Both current times were retrieved by the tools.";
-    await expect(resumed.getByTestId("assistant-answer")).toContainText(answerText);
+    await expect(resumed).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+    await expect(resumed.getByTestId("assistant-answer")).toContainText(
+      "Synthesis of 2 findings",
+    );
     await expect(resumed.getByTestId("assistant-empty-fallback")).toHaveCount(0);
-    await expect(panel).not.toContainText(answerText);
+    expect(sentModes).toEqual(["deep_research", "deep_research"]);
 
-    // (a) The folded generic tool group renders INSIDE the agent-activity panel.
-    const nestedTools = panel.getByTestId("tool-group-panel");
-    await expect(nestedTools.first()).toBeVisible({ timeout: 15_000 });
-    const nestedCount = await nestedTools.count();
-    expect(nestedCount).toBeGreaterThan(0);
-    // (b) No standalone sibling tool-group-panel leaked outside the panel: every
-    // tool-group-panel in the bubble is the nested one.
-    const totalToolPanels = await resumed.getByTestId("tool-group-panel").count();
-    expect(totalToolPanels).toBe(nestedCount);
-
-    // (c) Reload parity: the nesting derives from the persisted call+result parts
-    // (tagged `subagentId: "primary"`), so a cold render re-nests identically.
+    // Reload parity: fan-out panel + answer survive a cold render.
     await page.reload();
     await waitForBootstrap(page);
     const row = page.locator(`[data-conversation-id="${convId}"]`);
@@ -471,14 +378,14 @@ test.describe("agentic mode (deep research)", () => {
     await row.getByTestId("sidebar-conversation-link").click();
 
     const reloaded = page.getByTestId("assistant-message").last();
-    const reloadedPanel = reloaded.getByTestId("subagent-panel");
-    await expect(reloadedPanel.getByTestId("tool-group-panel").first()).toBeVisible({
+    await expect(reloaded.getByTestId("subagent-panel")).toBeVisible({
       timeout: 15_000,
     });
-    const reloadedTotal = await reloaded.getByTestId("tool-group-panel").count();
-    const reloadedNested = await reloadedPanel.getByTestId("tool-group-panel").count();
-    expect(reloadedNested).toBeGreaterThan(0);
-    expect(reloadedTotal).toBe(reloadedNested);
+    await expect(reloaded.getByTestId("subagent-row")).toHaveCount(3);
+    await expect(reloaded.getByTestId("assistant-answer")).toContainText(
+      "Synthesis of 2 findings",
+    );
+    await expect(reloaded.getByTestId("agentic-coercion-callout")).toHaveCount(0);
     await expect(reloaded.getByTestId("assistant-empty-fallback")).toHaveCount(0);
   });
 
@@ -528,11 +435,10 @@ test.describe("agentic mode (deep research)", () => {
     await expect(reloaded.getByTestId("assistant-empty-fallback")).toHaveCount(0);
   });
 
-  // The "Agent activity" card is a disclosure: its body (the nested tool-group
-  // panel, here) folds behind `subagent-panel-trigger` while the header/title
-  // row stays put. Reuses the degraded single-mode fan-out — one `primary`
-  // subagent with a folded generic tool group — since that's the cheapest turn
-  // that renders the panel with nested content.
+  // The subagent panel is a disclosure: its body (worker findings, etc.) folds
+  // behind `subagent-panel-trigger` while the header/title row stays put.
+  // Uses a real deep-research fan-out (platform key; no Pro) — cheapest turn
+  // that renders the panel with nested worker content.
   test("agent activity panel folds and unfolds its nested content", async ({
     page,
   }) => {
@@ -540,16 +446,23 @@ test.describe("agentic mode (deep research)", () => {
     await waitForBootstrap(page);
     await enableDeepResearch(page);
 
-    await sendMultiToolNewChat(page);
+    await sendAndPauseOnPlan(page);
+    const paused = page.getByTestId("assistant-message").last();
+    await paused.getByTestId("tool-approve").click();
 
     const resumed = page.getByTestId("assistant-message").last();
     const panel = resumed.getByTestId("subagent-panel");
     await expect(panel).toBeVisible({ timeout: 15_000 });
+    await expect(resumed).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
 
-    // The nested tool-group panel is the body content this disclosure guards.
-    const nested = panel.getByTestId("tool-group-panel").first();
+    // Outer-panel body content this disclosure guards: settled worker *rows*
+    // (headers stay visible; per-row finding text collapses behind its own
+    // chevron and is the wrong target for the outer fold).
+    const nested = panel.getByTestId("subagent-row").first();
     const trigger = panel.getByTestId("subagent-panel-trigger");
-    const header = panel.getByText("Agent activity");
+    const header = panel.getByText("Deep research");
 
     // (1) Default-open: trigger + header + nested content all visible.
     await expect(trigger).toBeVisible();

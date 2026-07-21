@@ -50,8 +50,9 @@ export const BE_ENV = {
   // any fan-out. Scoped to `agenticMode: "deep_research"` sends, so this too
   // is a no-op for every other test.
   AGENTIC_PLAN_APPROVAL: "true",
-  // Fake billing so agentic.spec.ts can grant Pro over HTTP (deep_research is
-  // Pro/BYOK-gated; without it the BE coerces the turn down to `single`). The
+  // Fake billing so specs that need a Pro entitlement (e.g. settings.spec.ts)
+  // can grant it over HTTP. Deep Research itself is NOT Pro/BYOK-gated — it
+  // uses the platform provider key; spend stays gated by usage quotas. The
   // fake provider's /api/billing/webhook accepts unsigned Stripe-shaped events.
   BILLING_BACKEND: "fake",
   // The auth + BYOK routes are IP-rate-limited (5/min upgrade+login, 10/min

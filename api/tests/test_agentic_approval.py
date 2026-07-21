@@ -177,7 +177,12 @@ async def _current_user_id(session_factory: async_sessionmaker[AsyncSession]) ->
 async def _grant_pro(
     session_factory: async_sessionmaker[AsyncSession], *, user_id: object
 ) -> None:
-    """Grant the test user an active Pro entitlement (deep_research is gated)."""
+    """Grant the test user an active Pro entitlement.
+
+    Deep Research no longer requires Pro; grants here are harmless for DR
+    coverage and remain useful when a test needs an entitled session for
+    other reasons.
+    """
     async with session_factory() as session:
         await billing_repo.upsert_subscription_entitlement(
             session,

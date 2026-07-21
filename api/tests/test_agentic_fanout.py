@@ -172,10 +172,9 @@ async def _grant_pro(
 ) -> None:
     """Grant the test user an active Pro entitlement.
 
-    `deep_research` is Pro/BYOK-gated (M3, T7): without an entitlement (or a
-    BYOK key) the route coerces it down to `single`. The test user is an
-    anonymous guest with no key, so the fan-out tests must establish Pro
-    explicitly to exercise the deep-research path.
+    Deep Research no longer requires Pro; fan-out tests here skip this grant.
+    Kept as a shared helper for sibling modules (`test_agentic_resilience`,
+    `test_empty_reply_fallback`) that still import it.
     """
     async with session_factory() as session:
         await billing_repo.upsert_subscription_entitlement(
@@ -299,7 +298,6 @@ async def test_deep_research_fans_out_workers_and_aggregates(
 ) -> None:
     await agentic_client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
-    await _grant_pro(session_factory, user_id=user_id)
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
 
     frames = await _collect_sse(
@@ -355,7 +353,6 @@ async def test_deep_research_without_marker_runs_single_worker(
     # produces a valid fan-out of exactly one worker + the aggregator.
     await agentic_client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
-    await _grant_pro(session_factory, user_id=user_id)
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
 
     frames = await _collect_sse(
@@ -370,3 +367,46 @@ async def test_deep_research_without_marker_runs_single_worker(
     assert _names(frames)[-1] == "terminal"
     assert frames[-1][1]["status"] == "done"
     assert "Synthesis of 1 findings" in _answer(frames)
+
+
+async def test_deep_research_without_pro_uses_platform_key_and_fans_out(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Platform key is enough: no Pro grant, no BYOK. Deep research must NOT
+    # coerce to `single` / primary-only — same fan-out shape as the entitled path.
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": "60000000-0000-0000-0000-000000000001",
+         "tierId": "smart",
+         "text": "DEEP_RESEARCH: causes of inflation | effects on housing",
+         "agenticMode": "deep_research"},
+    )
+    names = _names(frames)
+    assert names[0] == "submitted"
+    submitted = frames[0][1]
+    assert submitted.get("requestedAgenticMode") == "deep_research"
+    assert submitted.get("effectiveAgenticMode") == "deep_research"
+    assert submitted.get("agenticCoercionReason") is None
+
+    assert names[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    started_ids = {
+        str(d["subagentId"]) for n, d in frames if n == "subagent_started"
+    }
+    assert started_ids == {"worker-0", "worker-1", "aggregator"}
+    done_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_done"}
+    assert done_ids == {"worker-0", "worker-1", "aggregator"}
+    # Must not have degraded to a single primary agent.
+    assert "primary" not in started_ids
+
+    full_answer = _answer(frames)
+    assert "Synthesis of 2 findings" in full_answer
+    assert "causes of inflation" in full_answer
+    assert "effects on housing" in full_answer

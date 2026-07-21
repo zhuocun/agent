@@ -457,8 +457,10 @@ test.describe("agentic mode (deep research)", () => {
       timeout: 15_000,
     });
 
-    // Worker intermediate findings live in the panel body this disclosure guards.
-    const nested = panel.getByText("Worker 1 finding").first();
+    // Outer-panel body content this disclosure guards: settled worker *rows*
+    // (headers stay visible; per-row finding text collapses behind its own
+    // chevron and is the wrong target for the outer fold).
+    const nested = panel.getByTestId("subagent-row").first();
     const trigger = panel.getByTestId("subagent-panel-trigger");
     const header = panel.getByText("Deep research");
 

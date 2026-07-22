@@ -96,18 +96,20 @@ def parse_plan(reply: str, *, max_workers: int, fallback: str) -> list[str]:
 
     SECURITY (second layer): a stubborn model can leak raw tool-call markup into
     the planner reply even though the stream sanitizer (`ToolMarkupSanitizer`)
-    truncates it on the wire. As a defense-in-depth scrub, each line is passed
-    through `strip_tool_markup` before it becomes a sub-question, so anything from
-    the first tool-call START marker onward is dropped and no sub-question ever
-    carries tool markup. For markup-free replies this is a no-op — the parse
-    output is byte-for-byte identical.
+    truncates it on the wire. As a defense-in-depth scrub, the WHOLE reply is
+    passed through `strip_tool_markup` ONCE before splitting into lines, so
+    everything from the first tool-call START marker onward is dropped — matching
+    the stream sanitizer's truncate-from-first-marker semantics. This means a
+    line that leaks markup mid-way drops both the markup AND any lines after it
+    (a closing-tag line following a leak never becomes a spurious sub-question).
+    For markup-free replies this is a no-op — the parse output is byte-for-byte
+    identical.
     """
     bound = max(1, max_workers)
     out: list[str] = []
     seen: set[str] = set()
-    for raw in (reply or "").splitlines():
-        scrubbed = strip_tool_markup(raw)
-        cleaned = scrubbed.strip().lstrip("-*•0123456789.)( \t").strip()
+    for raw in strip_tool_markup(reply or "").splitlines():
+        cleaned = raw.strip().lstrip("-*•0123456789.)( \t").strip()
         if not cleaned:
             continue
         key = cleaned.casefold()

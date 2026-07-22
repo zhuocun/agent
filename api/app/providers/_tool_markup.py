@@ -51,6 +51,37 @@ _START_MARKERS: tuple[str, ...] = (
 _MAX_MARKER_LEN = max(len(m) for m in _START_MARKERS)
 
 
+def _earliest_marker_index(text: str) -> int | None:
+    """Index of the earliest start-marker occurrence in `text`, or None."""
+    best: int | None = None
+    for marker in _START_MARKERS:
+        idx = text.find(marker)
+        if idx != -1 and (best is None or idx < best):
+            best = idx
+    return best
+
+
+def contains_tool_markup(text: str) -> bool:
+    """True when `text` contains any tool-call START marker.
+
+    Non-streaming counterpart to `ToolMarkupSanitizer` for callers holding a
+    complete string (no chunk-boundary concerns). Legitimate answers never
+    contain these markers, so a hit means leaked tool-call markup is present.
+    """
+    return _earliest_marker_index(text) is not None
+
+
+def strip_tool_markup(text: str) -> str:
+    """Return `text` truncated at the first tool-call START marker.
+
+    Non-streaming counterpart to `ToolMarkupSanitizer`: for a complete string,
+    everything from the first start marker onward (the leaked tool-call block)
+    is dropped. Returns `text` unchanged when no marker is present.
+    """
+    hit = _earliest_marker_index(text)
+    return text if hit is None else text[:hit]
+
+
 def _longest_suffix_that_is_marker_prefix(text: str) -> int:
     """Length of the longest suffix of `text` that is a strict prefix of a marker.
 
@@ -125,9 +156,4 @@ class ToolMarkupSanitizer:
 
     def _earliest_marker_index(self) -> int | None:
         """Index of the earliest start-marker occurrence in the buffer, or None."""
-        best: int | None = None
-        for marker in _START_MARKERS:
-            idx = self._buf.find(marker)
-            if idx != -1 and (best is None or idx < best):
-                best = idx
-        return best
+        return _earliest_marker_index(self._buf)

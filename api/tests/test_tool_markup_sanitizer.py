@@ -11,11 +11,26 @@ that merely contains `<`, `|`, or a bare `<｜` that is not a real tool token.
 
 from __future__ import annotations
 
-from app.providers._tool_markup import ToolMarkupSanitizer
+from app.providers._tool_markup import (
+    ToolMarkupSanitizer,
+    contains_tool_markup,
+    strip_tool_markup,
+)
 
 _DSML = "<｜｜DSML｜｜"
 _NATIVE_CALLS = "<｜tool▁calls▁begin｜>"
 _NATIVE_CALL = "<｜tool▁call▁begin｜>"
+
+# The EXACT prod leak pasted by the reporter: clean prose immediately followed by
+# a raw `web_fetch` DSML tool-call block. A correct scrub keeps only the prose.
+_PASTED_PROSE = "Sure, here is the first chapter you asked for. "
+_PASTED_LEAK = (
+    '<｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name="web_fetch"> '
+    '<｜｜DSML｜｜parameter name="url" string="true">'
+    "https://www.xbookcn.net/book/baijie/1.htm</｜｜DSML｜｜parameter> "
+    "</｜｜DSML｜｜invoke> "
+)
+_PASTED = _PASTED_PROSE + _PASTED_LEAK
 
 
 def _drain(san: ToolMarkupSanitizer, chunks: list[str]) -> str:
@@ -112,3 +127,33 @@ def test_empty_and_finish_only() -> None:
     san = ToolMarkupSanitizer()
     assert san.feed("") == ""
     assert san.finish() == ""
+
+
+def test_exact_pasted_web_fetch_dsml_leak_is_truncated_streamed() -> None:
+    """The EXACT captured `web_fetch` DSML leak truncates at the marker (streamed).
+
+    Streamed in small chunks so the `<｜｜DSML｜｜` start marker straddles chunk
+    boundaries. Only the clean prose survives; none of the tool-call block leaks.
+    """
+    chunks = [_PASTED[i : i + 4] for i in range(0, len(_PASTED), 4)]
+    out = _drain(ToolMarkupSanitizer(), chunks)
+    assert out == _PASTED_PROSE
+    for forbidden in ("DSML", "tool_calls", "invoke", "web_fetch", "parameter", "<｜"):
+        assert forbidden not in out
+
+
+def test_exact_pasted_leak_stripped_by_helper() -> None:
+    """`strip_tool_markup` drops everything from the first marker for a whole string."""
+    assert strip_tool_markup(_PASTED) == _PASTED_PROSE
+    # A clean string is returned unchanged.
+    clean = "A perfectly normal answer with a < b and a | b table."
+    assert strip_tool_markup(clean) == clean
+
+
+def test_contains_tool_markup_helper_detects_all_markers() -> None:
+    """`contains_tool_markup` is True for every start marker, False for clean text."""
+    assert contains_tool_markup(_PASTED) is True
+    assert contains_tool_markup(f"lead {_DSML}tool_calls>") is True
+    assert contains_tool_markup(f"lead {_NATIVE_CALLS}x") is True
+    assert contains_tool_markup(f"lead {_NATIVE_CALL}x") is True
+    assert contains_tool_markup("Clean text with < and | and a bare <｜ here.") is False

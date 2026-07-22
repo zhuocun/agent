@@ -706,8 +706,13 @@ class OpenAIProvider:
 
         if not agentic:
             # Fast path: no tools (web_search disabled/no backend AND no registry
-            # tools). ONE completion, no tools, no sanitizer. Byte-for-byte
-            # identical to a pre-tools build — the regression-critical no-op.
+            # tools). ONE completion, no tools. We still attach a
+            # ToolMarkupSanitizer: DeepSeek's OpenAI-compatible endpoint can leak
+            # raw tool-call special tokens into `delta.content` even with no tools
+            # advertised, and that garbage must never reach the answer. The
+            # sanitizer scrubs CONTENT only (never reasoning_content) and, for a
+            # clean stream, passes text through verbatim so usage/Complete and the
+            # event order stay identical to a pre-tools build.
             async for event in self._consume_completion(
                 client=client,
                 model_id=model_id,
@@ -715,7 +720,7 @@ class OpenAIProvider:
                 extra_kwargs=kwargs,
                 usage_acc=usage_acc,
                 tool_calls=None,
-                sanitizer=None,
+                sanitizer=ToolMarkupSanitizer(),
             ):
                 yield event
             usage_update = usage_acc.to_usage_update()
@@ -905,7 +910,10 @@ class OpenAIProvider:
 
         if not answer_relayed:
             # Every round requested tools and discarded pre-tool content; compel a
-            # final no-tools completion from the gathered search results.
+            # final no-tools completion from the gathered search results. This
+            # completion forces `tool_choice` off implicitly (no tools advertised),
+            # so a stubborn model can still leak raw tool-call markup into content;
+            # scrub it with a sanitizer (content only, never reasoning_content).
             async for event in self._consume_completion(
                 client=client,
                 model_id=model_id,
@@ -913,7 +921,7 @@ class OpenAIProvider:
                 extra_kwargs=kwargs,
                 usage_acc=usage_acc,
                 tool_calls=None,
-                sanitizer=None,
+                sanitizer=ToolMarkupSanitizer(),
             ):
                 if isinstance(event, AnswerDelta) and event.text.strip():
                     answer_relayed = True

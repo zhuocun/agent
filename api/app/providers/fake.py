@@ -53,6 +53,13 @@ reasoning block then ~40 non-empty answer deltas at 50ms each, so an e2e can
 deterministically catch the stream mid-flight (e.g. to click Stop and commit a
 non-empty `stopped` partial). Without it the default stream is too fast to stop.
 
+Leaked tool-call markup: when `user_text` starts with `LEAK_MARKUP:`, the
+provider emits clean lead-in prose then a raw DSML tool-call block as answer
+content (the shape a stubborn real provider leaks). The fake path bypasses the
+BE stream sanitizer, so this reaches the FE intact and exercises the FE
+render-time scrub (`stripToolMarkup`) end-to-end — the rendered answer must keep
+the prose and show none of the markup.
+
 Backend tool calling (only when `settings.tools_enabled` is True — otherwise
 these markers are ignored and the provider streams a normal templated answer, so
 the flag-off path is byte-for-byte unchanged):
@@ -234,6 +241,38 @@ class FakeProvider:
             yield ReasoningDelta(text="... OK")
             await asyncio.sleep(self._delay)
             yield ReasoningDone()
+
+        # Leaked tool-call markup. When `user_text` starts with `LEAK_MARKUP:`
+        # the fake emits clean lead-in prose followed by a raw DSML tool-call
+        # block in `AnswerDelta` content — mimicking a stubborn real provider
+        # dumping tool-call special tokens as answer text. The BE stream
+        # sanitizer never runs on the fake path, so this reaches the FE intact
+        # and exercises the FE render-time scrub (`stripToolMarkup`) end-to-end:
+        # the rendered answer must keep the prose and show NONE of the markup.
+        # `｜` is U+FF5C (fullwidth vertical bar).
+        if user_text.startswith("LEAK_MARKUP:"):
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="Sure, here is the answer you asked for. ")
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(
+                text=(
+                    "<｜｜DSML｜｜tool_calls>\n"
+                    '<｜｜DSML｜｜invoke name="web_search">\n'
+                    '<｜｜DSML｜｜parameter name="query" string="true">'
+                    "San Antonio Spurs score</｜｜DSML｜｜parameter>\n"
+                    "</｜｜DSML｜｜invoke>\n"
+                    "</｜｜DSML｜｜tool_calls>"
+                )
+            )
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
 
         # Agentic deep-research worker. The orchestrator hands each worker
         # subagent a prompt prefixed `DEEP_RESEARCH_WORKER:n:<sub-question>` (see

@@ -15,6 +15,7 @@ import { useTheme } from "next-themes";
 
 import { cn } from "@/lib/utils";
 import type { SourceItem } from "@/lib/types";
+import { stripToolMarkup } from "@/lib/strip-tool-markup";
 import { CITATION_TAG, createCitationRehypePlugin } from "./citation-rehype";
 
 // Mirror of Streamdown's internal `MermaidInstance` interface (not exported
@@ -148,6 +149,11 @@ export function MarkdownRenderer({
 }) {
   const { resolvedTheme } = useTheme();
 
+  // Final render-time net: drop any leaked tool-call markup (mirrors the BE
+  // sanitizer) so persisted/edge-case leaks never display raw. Display-only —
+  // streaming and persistence are untouched.
+  const safeChildren = stripToolMarkup(children);
+
   // Memoize so the config object identity only changes with the theme, avoiding
   // needless mermaid re-inits / re-renders on unrelated re-renders.
   const mermaid = useMemo(
@@ -204,7 +210,7 @@ export function MarkdownRenderer({
       {...(rehypePlugins ? { rehypePlugins } : {})}
       {...(components ? { components } : {})}
     >
-      {children}
+      {safeChildren}
     </Streamdown>
   );
 }

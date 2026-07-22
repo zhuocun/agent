@@ -1322,6 +1322,97 @@ async def test_stream_web_search_leaked_markup_is_scrubbed_from_answer() -> None
 
 
 @respx.mock
+async def test_stream_no_tools_fast_path_scrubs_leaked_markup() -> None:
+    """The NON-agentic fast path (no tools advertised) scrubs leaked markup.
+
+    Even with NO search backend and web_search off, DeepSeek's OpenAI-compatible
+    endpoint can dump raw tool-call special tokens into `delta.content`. The fast
+    path still attaches a `ToolMarkupSanitizer`, so the emitted answer keeps the
+    clean lead-in prose and NONE of the leak (`DSML`, `invoke name`, `tool_calls`,
+    `web_search`) reaches an `AnswerDelta`.
+    """
+    leaked = _sse_response(
+        _stream_body(
+            prompt_tokens=10,
+            completion_tokens=20,
+            # Split the leak across two chunks so the marker also straddles a
+            # chunk boundary in part of the run.
+            answer_chunks=(_LEAKED_MARKUP[:90], _LEAKED_MARKUP[90:]),
+        )
+    )
+    respx.post(_COMPLETIONS_URL).mock(return_value=leaked)
+
+    # Plain provider: NO search backend → the agentic loop never engages, so this
+    # exercises the fast, no-tools path specifically.
+    provider = _provider()
+    answer_parts: list[str] = []
+    completes: list[Complete] = []
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=False
+    ):
+        if isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+        elif isinstance(event, Complete):
+            completes.append(event)
+
+    answer = "".join(answer_parts)
+    assert "Let me search for that." in answer
+    for forbidden in ("tool_calls", "invoke name", "｜｜DSML", "DSML", "web_search", "<｜"):
+        assert forbidden not in answer
+    # The turn still completes normally.
+    assert len(completes) == 1
+
+
+@respx.mock
+async def test_stream_compelled_final_fallback_scrubs_leaked_markup() -> None:
+    """The compelled final no-tools completion scrubs leaked markup too.
+
+    Every round requests a `web_search` tool call and relays no answer, so the
+    loop hits the cap and issues one compelled no-tools completion to force a
+    final answer. If THAT completion leaks raw tool-call markup into content, the
+    sanitizer must scrub it — none of the leak reaches the answer, and the clean
+    lead-in prose survives.
+    """
+    from app.providers.openai import _MAX_SEARCH_ROUNDS
+
+    bodies = [
+        _sse_response(_tool_call_stream_body(query=f"q{i}", prompt_tokens=2, completion_tokens=3))
+        for i in range(_MAX_SEARCH_ROUNDS)
+    ] + [
+        _sse_response(
+            _stream_body(
+                prompt_tokens=1,
+                completion_tokens=4,
+                answer_chunks=(_LEAKED_MARKUP[:70], _LEAKED_MARKUP[70:]),
+            )
+        )
+    ]
+    route = respx.post(_COMPLETIONS_URL).mock(side_effect=bodies)
+
+    provider = _search_provider()
+    answer_parts: list[str] = []
+    completes: list[Complete] = []
+    async for event in provider.stream(
+        model_id="deepseek-v4-pro", history=[], user_text="hi", web_search=True
+    ):
+        if isinstance(event, AnswerDelta):
+            answer_parts.append(event.text)
+        elif isinstance(event, Complete):
+            completes.append(event)
+
+    # The extra compelled completion ran (rounds + 1), with no tools advertised.
+    assert route.call_count == _MAX_SEARCH_ROUNDS + 1
+    final_body = json.loads(route.calls[-1].request.content)
+    assert "tools" not in final_body
+
+    answer = "".join(answer_parts)
+    assert "Let me search for that." in answer
+    for forbidden in ("tool_calls", "invoke name", "｜｜DSML", "DSML", "web_search", "<｜"):
+        assert forbidden not in answer
+    assert len(completes) == 1
+
+
+@respx.mock
 async def test_stream_web_search_round_cap_forces_terminal_answer() -> None:
     """If the model calls the tool EVERY round, the loop stops at the cap.
 

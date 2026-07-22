@@ -24,6 +24,7 @@ import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
 import { panelAnswerForSection } from "@/lib/agentic-layout";
+import { stripToolMarkup } from "@/lib/strip-tool-markup";
 import type { MessagePart } from "@/lib/types";
 
 // One orchestrator subagent's section, shape-compatible with the live
@@ -93,7 +94,7 @@ function roleLabel(role: string): string {
 // their detail behind a one-line summary (progressive disclosure). Running
 // rows stay expanded — they carry live streaming text.
 export function SubagentPanel({
-  sections,
+  sections: rawSections,
   runCost = null,
   panelWebSearchGroups = [],
   webSearchBySubagentId,
@@ -103,6 +104,15 @@ export function SubagentPanel({
   liveToolPartsBySubagentId,
   onToolDecision,
 }: SubagentPanelProps) {
+  // Display-side net: scrub any leaked tool-call markup out of task labels and
+  // panel text (mirrors the BE sanitizer) so a pre-leaked section never shows
+  // raw. Streaming/persistence are untouched.
+  const sections = rawSections.map((s) => ({
+    ...s,
+    label: stripToolMarkup(s.label),
+    reasoning: stripToolMarkup(s.reasoning),
+    answer: stripToolMarkup(s.answer),
+  }));
   if (sections.length === 0) return null;
 
   const runningCount = sections.filter((s) => s.status === "running").length;

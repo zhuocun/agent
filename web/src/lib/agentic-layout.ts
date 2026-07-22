@@ -11,6 +11,7 @@ import {
   type ToolGroupLayout,
 } from "@/lib/tool-groups";
 import type { RunCostState } from "@/lib/stream-client";
+import { stripToolMarkup } from "@/lib/strip-tool-markup";
 import type { MessagePart } from "@/lib/types";
 
 const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
@@ -263,7 +264,7 @@ export function resolveMainBubbleText(
   const answerText = parts
     .filter((p): p is Extract<MessagePart, { type: "text" }> => p.type === "text")
     .filter((p) => shouldRenderTextInMainBubble(p, subagentRoleById))
-    .map((p) => p.text)
+    .map((p) => stripToolMarkup(p.text))
     .join("\n\n");
   return { answerText, effectiveAnswerText: answerText };
 }

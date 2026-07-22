@@ -20,6 +20,8 @@ discipline the tool seam uses.
 
 from __future__ import annotations
 
+from app.providers._tool_markup import strip_tool_markup
+
 # Prefix that opts a prompt into explicit sub-question decomposition. The planner
 # splits everything AFTER this prefix on `|`. The fake provider does NOT key on
 # this marker itself — the orchestrator constructs per-worker prompts (see
@@ -91,12 +93,21 @@ def parse_plan(reply: str, *, max_workers: int, fallback: str) -> list[str]:
     capped at `max_workers`, and an empty/unusable reply degrades to
     ``[fallback]`` (the whole request as a single sub-question) so a deep-research
     turn always fans out to >= 1 worker.
+
+    SECURITY (second layer): a stubborn model can leak raw tool-call markup into
+    the planner reply even though the stream sanitizer (`ToolMarkupSanitizer`)
+    truncates it on the wire. As a defense-in-depth scrub, each line is passed
+    through `strip_tool_markup` before it becomes a sub-question, so anything from
+    the first tool-call START marker onward is dropped and no sub-question ever
+    carries tool markup. For markup-free replies this is a no-op — the parse
+    output is byte-for-byte identical.
     """
     bound = max(1, max_workers)
     out: list[str] = []
     seen: set[str] = set()
     for raw in (reply or "").splitlines():
-        cleaned = raw.strip().lstrip("-*•0123456789.)( \t").strip()
+        scrubbed = strip_tool_markup(raw)
+        cleaned = scrubbed.strip().lstrip("-*•0123456789.)( \t").strip()
         if not cleaned:
             continue
         key = cleaned.casefold()

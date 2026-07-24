@@ -169,7 +169,11 @@ async def test_mint_then_public_get_returns_attribution(
     assert body["title"] == "Shared conversation"
     assert len(body["messages"]) == 2
 
+    # Status is projected so the FE share view can gate its empty-reply note on
+    # `status == "done"` (an unknown/missing status must not claim finished).
+    assert body["messages"][0]["status"] is None
     asst = body["messages"][1]
+    assert asst["status"] == "done"
     attribution = asst["attribution"]
     # Model identity / attribution is KEPT.
     assert attribution["requestedTierId"] == "smart"

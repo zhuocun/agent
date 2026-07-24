@@ -35,7 +35,13 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from app.schemas.common import CamelModel, MessageRole, ModelTierId, SubagentOutcome
+from app.schemas.common import (
+    CamelModel,
+    MessageRole,
+    ModelTierId,
+    StreamStatus,
+    SubagentOutcome,
+)
 from app.schemas.message import (
     AttachmentPart,
     ReasoningPart,
@@ -105,12 +111,19 @@ PublicMessagePart = Annotated[
 
 
 class PublicMessage(CamelModel):
-    """A single message in the public share view. No `feedback`, no cost."""
+    """A single message in the public share view. No `feedback`, no cost.
+
+    `status` is projected so the FE share view can gate its empty-reply note on
+    `status == "done"` — an unknown/missing status must NOT claim the turn
+    finished. It always exists on persisted `Message` rows; nullable only for
+    forward/backward wire tolerance.
+    """
 
     id: str
     role: MessageRole
     parts: list[PublicMessagePart]
     created_at: str
+    status: StreamStatus | None = None
     attribution: PublicAttribution | None = None
 
 

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.session import get_db
+from app.providers._tool_markup import strip_tool_markup
 from app.providers.protocol import (
     AnswerDelta,
     AwaitingApproval,
@@ -28,7 +29,7 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.tiers import get_binding
-from app.streaming.constants import EMPTY_REPLY_FALLBACK
+from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.streaming.handler import stream_and_persist
 from app.tools.agent_loop import run_agent_loop
 
@@ -48,6 +49,13 @@ from .test_providers_openai_stream import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+# A markup-only completion as the unsanitized Anthropic provider can yield it
+# (raw tool-call markup relayed as answer text with no `ToolMarkupSanitizer`).
+# `.strip()` sees non-whitespace (a naive guard thinks the turn answered), but
+# `strip_tool_markup` truncates at the leading start marker so the shared
+# `main_answer_is_empty` helper — and the FE — resolve it to empty.
+_RAW_TOOL_MARKUP = '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="web_search">'
 
 
 @pytest.fixture
@@ -602,3 +610,126 @@ async def test_handler_reasoning_only_blank_done_emits_reasoning_done_then_fallb
     terminal_idx = event_names.index("terminal")
     assert reasoning_done_idx < fallback_idx < terminal_idx
     assert answer_texts == [EMPTY_REPLY_FALLBACK]
+
+
+async def test_main_answer_is_empty_treats_raw_tool_markup_as_empty() -> None:
+    """The shared helper's contract: markup-only / whitespace resolve empty."""
+    assert main_answer_is_empty("") is True
+    assert main_answer_is_empty("   \n\t ") is True
+    assert main_answer_is_empty("A real written reply.") is False
+    # The gap the helper closes: a naive `.strip()` guard would treat leaked
+    # markup as a written answer; the markup-aware helper agrees with the FE.
+    assert _RAW_TOOL_MARKUP.strip() != ""
+    assert strip_tool_markup(_RAW_TOOL_MARKUP).strip() == ""
+    assert main_answer_is_empty(_RAW_TOOL_MARKUP) is True
+
+
+async def test_handler_raw_tool_markup_answer_injects_fallback(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Unsanitized raw markup in answer_buf is treated as empty → done injects.
+
+    Simulates the Anthropic provider yielding raw tool-call markup as answer
+    text (no `ToolMarkupSanitizer`). The old raw-`.strip()` guard thought the
+    turn answered and skipped the inject; the shared markup-aware helper now
+    resolves it to empty so the done-path injects `EMPTY_REPLY_FALLBACK`.
+    """
+
+    class _RawMarkupAnswerProvider:
+        async def stream(self, **_kwargs: object) -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text=_RAW_TOOL_MARKUP)
+            yield UsageUpdate(input_tokens=1, output_tokens=1)
+            yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="New chat",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    class _StubRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    event_names: list[str] = []
+    answer_frames: list[str] = []
+    async with session_factory() as session:
+        gen = stream_and_persist(
+            request=_StubRequest(),  # type: ignore[arg-type]
+            db=session,
+            provider=_RawMarkupAnswerProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="hello",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+        )
+        async for ev in gen:
+            event_names.append(ev.event or "")
+            if ev.event == "answer_delta" and ev.data:
+                answer_frames.append(str(json.loads(ev.data).get("text", "")))
+
+    # Done-path injected the fallback as a live answer_delta before terminal.
+    assert EMPTY_REPLY_FALLBACK in answer_frames
+    terminal_idx = event_names.index("terminal")
+    last_answer_idx = len(event_names) - 1 - event_names[::-1].index("answer_delta")
+    assert last_answer_idx < terminal_idx
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .order_by(Message.created_at.desc())
+            )
+        ).scalar_one()
+        assert row.status == "done"
+        parts = row.parts
+        assert isinstance(parts, list)
+        text_parts = [p for p in parts if isinstance(p, dict) and p.get("type") == "text"]
+        assert text_parts
+        # The persisted main text carries the injected fallback (the FE strips
+        # the leaked markup at render time — Layer 5).
+        assert EMPTY_REPLY_FALLBACK in str(text_parts[0].get("text", ""))
+
+
+async def test_agent_loop_no_tools_empty_completion_emits_fallback() -> None:
+    """No-tools empty completion still ends with the fallback (tools_ran drop).
+
+    Before the change the terminal fallback was gated on `tools_ran`, so a
+    completion that ran no tools AND produced no answer ended blank. The gate is
+    now `not answer_emitted`, so a pathological blank no-tools turn is backstopped.
+    """
+    from app.config import Settings
+
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield Complete()
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer.strip() == EMPTY_REPLY_FALLBACK
+    assert sum(1 for e in events if isinstance(e, AnswerDelta)) == 1
+    assert any(isinstance(e, Complete) for e in events)

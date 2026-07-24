@@ -75,7 +75,7 @@ from app.providers.protocol import (
     ToolResult,
     UsageUpdate,
 )
-from app.streaming.constants import EMPTY_REPLY_FALLBACK
+from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolApprovalState, ToolCallRequest, ToolExecutionResult
 
@@ -256,7 +256,6 @@ async def run_agent_loop(
     # ends without an extra provider call (defensive empty fallback if needed).
     action_rounds = max_rounds if max_rounds == 1 else max_rounds - 1
     answer_emitted = False
-    tools_ran = bool(tool_feedback)
     accumulated_usage = UsageUpdate()
     allowed: set[str] | None = None if allowed_tools is None else set(allowed_tools)
     approved_ids: set[str] = (
@@ -268,7 +267,10 @@ async def run_agent_loop(
 
     def _note_answer(delta: AnswerDelta) -> None:
         nonlocal answer_emitted
-        if delta.text.strip():
+        # Markup-aware: a delta that strips to empty (leaked tool-call markup or
+        # whitespace) is NOT a written answer, so the terminal fallback still
+        # fires. Shared with the handler guard via `main_answer_is_empty`.
+        if not main_answer_is_empty(delta.text):
             answer_emitted = True
 
     def _make_usage_folder() -> tuple[
@@ -345,7 +347,7 @@ async def run_agent_loop(
                 _note_answer(event)
                 relayed_terminal = True
             elif isinstance(event, Complete):
-                if tools_ran and not answer_emitted:
+                if not answer_emitted:
                     yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                     answer_emitted = True
                 relayed_terminal = True
@@ -355,7 +357,7 @@ async def run_agent_loop(
 
         unresolved = [c for c in pending_calls if c.id not in provider_resolved]
         if not unresolved:
-            if tools_ran and not answer_emitted:
+            if not answer_emitted:
                 yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                 answer_emitted = True
                 if not relayed_terminal:
@@ -483,7 +485,6 @@ async def run_agent_loop(
                 consumed_ids.add(call.id)
 
         tool_feedback.extend(round_results)
-        tools_ran = True
 
         is_last_action = _round == action_rounds - 1
         if is_last_action and max_rounds > action_rounds:
@@ -497,12 +498,12 @@ async def run_agent_loop(
                     _note_answer(event)
                     relayed_terminal = True
                 elif isinstance(event, Complete):
-                    if tools_ran and not answer_emitted:
+                    if not answer_emitted:
                         yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                         answer_emitted = True
                     relayed_terminal = True
                 yield fold_final(event)
-            if tools_ran and not answer_emitted:
+            if not answer_emitted:
                 yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                 answer_emitted = True
                 if not relayed_terminal:
@@ -510,7 +511,7 @@ async def run_agent_loop(
             return
         if is_last_action:
             # N=1: no reserved final pass. End with defensive fallback if needed.
-            if tools_ran and not answer_emitted:
+            if not answer_emitted:
                 yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                 answer_emitted = True
                 yield Complete(usage=accumulated_usage)

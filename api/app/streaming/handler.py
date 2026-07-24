@@ -123,7 +123,7 @@ from app.schemas.stream_events import (
     ToolResultEvent,
 )
 from app.search.protocol import SourceItem
-from app.streaming.constants import EMPTY_REPLY_FALLBACK
+from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.streaming.replay_registry import ReplayLogBuffer
 from app.streaming.sse import (
     encode_answer_delta,
@@ -1730,17 +1730,43 @@ async def stream_and_persist(
             and _no_output_yet()
         )
 
+    def _agentic_main_answer_ids() -> list[str]:
+        """Subagent ids whose text lands in the main bubble (mirror FE).
+
+        Mirrors `isMainAnswerSubagent` (`web/src/lib/agentic-layout.ts`): id in
+        {primary, aggregator} OR role in {primary, aggregator}. Preferring the
+        accumulators' own role metadata keeps the injected fallback
+        main-answer-classified even under custom-id tagging. Ordered
+        aggregator-first (the synthesized final bubble), then primary.
+        """
+
+        def _kind(subagent_id: str, acc: _SubagentAccumulator) -> int:
+            return 0 if subagent_id == "aggregator" or acc.role == "aggregator" else 1
+
+        main = [
+            (subagent_id, acc)
+            for subagent_id, acc in agentic_subagents.items()
+            if subagent_id in ("primary", "aggregator")
+            or acc.role in ("primary", "aggregator")
+        ]
+        main.sort(key=lambda pair: (_kind(*pair), pair[0]))
+        return [subagent_id for subagent_id, _ in main]
+
     def _resolved_main_answer_text() -> str:
-        """Main answer text for the done-path empty-reply guard."""
+        """Main answer text for the done-path empty-reply guard.
+
+        Emptiness is decided by the shared markup-aware `main_answer_is_empty`
+        so leaked tool-call markup (e.g. the unsanitized Anthropic path) is
+        treated as no answer — matching what the FE renders.
+        """
         if agentic_active:
-            for subagent_id in ("aggregator", "primary"):
-                acc = agentic_subagents.get(subagent_id)
-                if acc is not None:
-                    text = "".join(acc.answer).strip()
-                    if text:
-                        return text
+            for subagent_id in _agentic_main_answer_ids():
+                text = "".join(agentic_subagents[subagent_id].answer)
+                if not main_answer_is_empty(text):
+                    return text.strip()
             return ""
-        return "".join(answer_buf).strip()
+        text = "".join(answer_buf)
+        return "" if main_answer_is_empty(text) else text.strip()
 
     def _inject_empty_reply_fallback_if_needed() -> tuple[bool, str | None]:
         """Inject fallback main text when a done turn would persist blank.
@@ -1752,10 +1778,9 @@ async def stream_and_persist(
             return False, None
         target_subagent: str | None = None
         if agentic_active:
-            for subagent_id in ("primary", "aggregator"):
-                if subagent_id in agentic_subagents:
-                    target_subagent = subagent_id
-                    break
+            main_ids = _agentic_main_answer_ids()
+            if main_ids:
+                target_subagent = main_ids[0]
         if target_subagent is not None:
             agentic_subagents[target_subagent].answer.append(EMPTY_REPLY_FALLBACK)
         else:

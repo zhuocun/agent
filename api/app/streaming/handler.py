@@ -1773,6 +1773,14 @@ async def stream_and_persist(
 
         Returns `(injected, subagent_id)` where `subagent_id` tags the live
         `answer_delta` for agentic turns and is None on non-agentic turns.
+
+        REPLACES rather than appends: the inject only runs when
+        `_resolved_main_answer_text()` is already empty, i.e. the buffer strips
+        to nothing (whitespace or leaked tool-call markup). Appending would
+        leave `RAW_MARKUP + EMPTY_REPLY_FALLBACK` in the persisted text, and the
+        FE `stripToolMarkup` truncates from the first marker (index 0) — wiping
+        the fallback too. Clearing first guarantees the persisted main text is
+        the fallback alone, so it survives the FE strip on reload / share.
         """
         if _resolved_main_answer_text():
             return False, None
@@ -1782,8 +1790,11 @@ async def stream_and_persist(
             if main_ids:
                 target_subagent = main_ids[0]
         if target_subagent is not None:
-            agentic_subagents[target_subagent].answer.append(EMPTY_REPLY_FALLBACK)
+            acc = agentic_subagents[target_subagent]
+            acc.answer.clear()
+            acc.answer.append(EMPTY_REPLY_FALLBACK)
         else:
+            answer_buf.clear()
             answer_buf.append(EMPTY_REPLY_FALLBACK)
         return True, target_subagent
 

@@ -345,6 +345,13 @@ async def run_agent_loop(
                 break
             elif isinstance(event, AnswerDelta):
                 _note_answer(event)
+                # Drop markup-only / whitespace deltas (e.g. the unsanitized
+                # Anthropic path): they strip to empty for the FE, and relaying
+                # them would leave raw tool-call markup in the handler's answer
+                # buffer ahead of the backstop fallback. `_note_answer` left
+                # `answer_emitted` False, so the terminal fallback still fires.
+                if main_answer_is_empty(event.text):
+                    continue
                 relayed_terminal = True
             elif isinstance(event, Complete):
                 if not answer_emitted:
@@ -496,6 +503,11 @@ async def run_agent_loop(
             async for event in final_stream:
                 if isinstance(event, AnswerDelta):
                     _note_answer(event)
+                    # Drop markup-only / whitespace deltas (see the action-round
+                    # loop): they strip to empty for the FE and must not precede
+                    # the backstop fallback in the handler buffer.
+                    if main_answer_is_empty(event.text):
+                        continue
                     relayed_terminal = True
                 elif isinstance(event, Complete):
                     if not answer_emitted:

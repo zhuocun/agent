@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.session import get_db
-from app.providers._tool_markup import strip_tool_markup
+from app.providers._tool_markup import contains_tool_markup, strip_tool_markup
 from app.providers.protocol import (
     AnswerDelta,
     AwaitingApproval,
@@ -705,9 +705,13 @@ async def test_handler_raw_tool_markup_answer_injects_fallback(
         assert isinstance(parts, list)
         text_parts = [p for p in parts if isinstance(p, dict) and p.get("type") == "text"]
         assert text_parts
-        # The persisted main text carries the injected fallback (the FE strips
-        # the leaked markup at render time — Layer 5).
-        assert EMPTY_REPLY_FALLBACK in str(text_parts[0].get("text", ""))
+        persisted_text = str(text_parts[0].get("text", ""))
+        # Replace-on-inject: the persisted main text is the fallback ALONE — the
+        # leaked markup was cleared, not left ahead of the fallback. So the
+        # fallback SURVIVES the FE `stripToolMarkup` (truncate-from-first-marker)
+        # on reload / share instead of being wiped to ''.
+        assert strip_tool_markup(persisted_text).strip() == EMPTY_REPLY_FALLBACK
+        assert not contains_tool_markup(persisted_text)
 
 
 async def test_agent_loop_no_tools_empty_completion_emits_fallback() -> None:

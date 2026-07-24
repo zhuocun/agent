@@ -345,12 +345,17 @@ async def run_agent_loop(
                 break
             elif isinstance(event, AnswerDelta):
                 _note_answer(event)
-                # Drop markup-only / whitespace deltas (e.g. the unsanitized
-                # Anthropic path): they strip to empty for the FE, and relaying
-                # them would leave raw tool-call markup in the handler's answer
-                # buffer ahead of the backstop fallback. `_note_answer` left
-                # `answer_emitted` False, so the terminal fallback still fires.
-                if main_answer_is_empty(event.text):
+                # Drop a markup-only / whitespace delta ONLY when no written
+                # answer has been emitted yet (`answer_emitted` still False):
+                # such a turn strips to empty for the FE and the terminal
+                # fallback will fire, so relaying the raw markup ahead of it
+                # would wipe the fallback under the FE truncate-from-first-marker
+                # scrub. Once real prose HAS been emitted (prose + trailing
+                # markup, e.g. a stubborn provider dumping tool tokens after a
+                # real answer) the markup is kept and relayed: the answer is
+                # non-empty, no fallback fires, and the raw markup must persist
+                # so the FE render-time scrub is what hides it on reload/share.
+                if main_answer_is_empty(event.text) and not answer_emitted:
                     continue
                 relayed_terminal = True
             elif isinstance(event, Complete):
@@ -503,10 +508,12 @@ async def run_agent_loop(
             async for event in final_stream:
                 if isinstance(event, AnswerDelta):
                     _note_answer(event)
-                    # Drop markup-only / whitespace deltas (see the action-round
-                    # loop): they strip to empty for the FE and must not precede
-                    # the backstop fallback in the handler buffer.
-                    if main_answer_is_empty(event.text):
+                    # Drop a markup-only / whitespace delta ONLY when no written
+                    # answer has been emitted yet (see the action-round loop):
+                    # then the fallback fires and the raw markup must not precede
+                    # it. After real prose, trailing markup is kept and relayed
+                    # so the prose + raw markup persists for the FE scrub.
+                    if main_answer_is_empty(event.text) and not answer_emitted:
                         continue
                     relayed_terminal = True
                 elif isinstance(event, Complete):

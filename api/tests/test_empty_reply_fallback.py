@@ -549,6 +549,55 @@ async def test_tool_complete_only_single_fallback_via_handler_and_agent_loop(
     assert str(text_parts[0].get("text", "")).strip() == EMPTY_REPLY_FALLBACK
 
 
+async def test_leak_markup_persists_raw_markup_through_tools_handler(
+    tools_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """BE guard for `leaked-markup.spec.ts`: prose + markup persists the DSML.
+
+    Drives the fake provider's `LEAK_MARKUP:` path (prose delta then a raw DSML
+    tool-call block) through the tools-enabled handler + agent loop — the same
+    wiring the e2e uses. The answer is non-empty (strips to the prose), so NO
+    fallback fires and the raw markup must persist unchanged; the FE
+    render-time scrub is what hides it. Regression guard: the agent loop must
+    not drop the trailing markup delta.
+    """
+    await tools_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        tools_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "99999999-9999-9999-9999-999999999999",
+            "tierId": "smart",
+            "text": "LEAK_MARKUP: please leak tool markup",
+        },
+    )
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    fallback_frames = [
+        d
+        for n, d in frames
+        if n == "answer_delta" and str(d.get("text", "")) == EMPTY_REPLY_FALLBACK
+    ]
+    assert not fallback_frames
+
+    messages = await _load_messages(session_factory, conv_id)
+    assistant = next(m for m in messages if m.role == "assistant")
+    text_parts = [
+        p for p in assistant.parts if isinstance(p, dict) and p.get("type") == "text"
+    ]
+    persisted_text = "".join(str(p.get("text", "")) for p in text_parts)
+    # The raw markup persists (the e2e asserts `persistedText` contains "DSML")
+    # and the clean lead-in prose survives the FE scrub.
+    assert "DSML" in persisted_text
+    assert contains_tool_markup(persisted_text)
+    assert "Sure, here is the answer you asked for." in strip_tool_markup(persisted_text)
+
+
 async def test_handler_reasoning_only_blank_done_emits_reasoning_done_then_fallback(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -712,6 +761,69 @@ async def test_handler_raw_tool_markup_answer_injects_fallback(
         # on reload / share instead of being wiped to ''.
         assert strip_tool_markup(persisted_text).strip() == EMPTY_REPLY_FALLBACK
         assert not contains_tool_markup(persisted_text)
+
+
+async def test_agent_loop_prose_then_trailing_markup_relays_raw_markup() -> None:
+    """Prose + trailing leaked markup: the markup is KEPT (not dropped).
+
+    A stubborn provider can stream real prose then dump raw tool-call markup as
+    answer content. The combined answer is non-empty (strips to the prose), so
+    NO fallback fires and the raw markup must be relayed intact — the FE
+    render-time scrub is what hides it on reload / share. This is the exact
+    shape the `LEAK_MARKUP:` e2e (`web/tests/e2e/leaked-markup.spec.ts`) drives
+    through the agent loop, and it must persist the `DSML` markup.
+    """
+    from app.config import Settings
+
+    prose = "Sure, here is the answer you asked for. "
+
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text=prose)
+            yield AnswerDelta(text=_RAW_TOOL_MARKUP)
+            yield Complete()
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    # Prose survives AND the raw markup is relayed unchanged (no drop, no
+    # fallback) so the persisted transcript still carries the leaked markup.
+    assert prose in answer
+    assert _RAW_TOOL_MARKUP in answer
+    assert contains_tool_markup(answer)
+    assert EMPTY_REPLY_FALLBACK not in answer
+    # FE-side scrub still resolves the rendered answer to the clean prose.
+    assert strip_tool_markup(answer).strip() == prose.strip()
+
+
+async def test_agent_loop_markup_only_drops_markup_and_injects_fallback() -> None:
+    """Markup-only answer: the markup is DROPPED and the fallback stands alone.
+
+    With no real prose the answer strips to empty, so the terminal fallback
+    fires. Relaying the raw markup ahead of it would let the FE
+    truncate-from-first-marker scrub wipe the fallback too, so the markup delta
+    is dropped from the wire and only `EMPTY_REPLY_FALLBACK` is relayed.
+    """
+    from app.config import Settings
+
+    def _make_stream(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text=_RAW_TOOL_MARKUP)
+            yield Complete()
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    answer_deltas = [e.text for e in events if isinstance(e, AnswerDelta)]
+    assert answer_deltas == [EMPTY_REPLY_FALLBACK]
+    assert not contains_tool_markup("".join(answer_deltas))
 
 
 async def test_agent_loop_no_tools_empty_completion_emits_fallback() -> None:

@@ -743,6 +743,11 @@ export interface PublicMessage {
   createdAt: string; // ISO
   // Assistant turns carry model identity; user turns omit it.
   attribution?: PublicAttribution;
+  // Per-message stream lifecycle, projected from the persisted Message row.
+  // The share view only claims a turn "finished without a written reply" when
+  // this is explicitly "done"; unknown/missing must not fake completion. The
+  // BE `PublicMessage` projection supplies the matching field.
+  status?: StreamStatus;
 }
 
 export interface PublicConversation {

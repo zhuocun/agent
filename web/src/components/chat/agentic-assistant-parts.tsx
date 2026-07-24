@@ -28,6 +28,7 @@ import {
   shouldShowSourcesInMainPanel,
 } from "@/lib/agentic-layout";
 import type { MessagePart } from "@/lib/types";
+import { EMPTY_REPLY_FALLBACK_COPY } from "@/lib/empty-reply";
 import { AlertTriangle } from "lucide-react";
 
 export function AgenticAssistantParts({
@@ -168,7 +169,7 @@ export function AgenticAssistantParts({
           className="ui-body text-muted-foreground"
           data-testid="assistant-empty-fallback"
         >
-          Finished without a written reply.
+          {EMPTY_REPLY_FALLBACK_COPY}
         </p>
       ) : null}
     </>

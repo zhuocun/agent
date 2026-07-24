@@ -57,6 +57,7 @@ import {
   shouldShowSourcesInMainPanel,
 } from "@/lib/agentic-layout";
 import { cn } from "@/lib/utils";
+import { EMPTY_REPLY_FALLBACK_COPY } from "@/lib/empty-reply";
 import type {
   ChatMessage,
   Feedback,
@@ -487,12 +488,31 @@ export function AssistantMessage({
       })}
 
       {isDone && hasToolOrSubagentActivityOnTurn && !effectiveAnswerText.trim() ? (
-        <p
-          className="ui-body text-muted-foreground"
+        // Layer 5 last resort: a turn settled with tool/subagent activity but no
+        // written main answer (most often a pre-fix persisted transcript the
+        // backend can't retroactively repair). Rather than dead-end on a bare
+        // note, offer a one-click Regenerate when the thread can regenerate.
+        <div
+          className="flex flex-wrap items-center gap-x-2 gap-y-1"
           data-testid="assistant-empty-fallback"
         >
-          Finished without a written reply.
-        </p>
+          <p className="ui-body text-muted-foreground">
+            {EMPTY_REPLY_FALLBACK_COPY}
+          </p>
+          {canRegenerate && onRegenerate ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onRegenerate}
+              className="min-h-11 rounded-full px-4 md:min-h-0"
+              data-testid="assistant-empty-regenerate"
+            >
+              <RotateCcw aria-hidden />
+              <span>Regenerate</span>
+            </Button>
+          ) : null}
+        </div>
       ) : null}
 
       {isErrored ? (

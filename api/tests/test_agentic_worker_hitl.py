@@ -477,7 +477,7 @@ async def test_settled_id_reissue_does_not_reexecute(
     events: list[object] = []
     round_n = {"n": 0}
 
-    async def _make_stream(feedback, suppress_tools=False):  # type: ignore[no-untyped-def]
+    async def _make_stream(feedback, suppress_tools=False, *, answer_nudge=False):  # type: ignore[no-untyped-def]
         round_n["n"] += 1
         if round_n["n"] == 1:
             # First provider pass after seeding: reissue the settled id.
@@ -779,7 +779,10 @@ async def test_h009_budget_halted_resume_skips_provider() -> None:
 
     def _make_stream_for(prompt: str, **_kwargs: object):
         def _make(
-            _feedback: list[ToolResult], suppress_tools: bool = False
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[object]:
             async def _gen() -> AsyncIterator[object]:
                 calls["n"] += 1
@@ -856,7 +859,10 @@ async def test_o008_resume_uses_fallback_on_retryable_failure() -> None:
 
     def _make_stream_for(prompt: str, **_kwargs: object):
         def _make(
-            _feedback: list[ToolResult], suppress_tools: bool = False
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[object]:
             async def _gen() -> AsyncIterator[object]:
                 primary_calls["n"] += 1
@@ -869,7 +875,10 @@ async def test_o008_resume_uses_fallback_on_retryable_failure() -> None:
 
     def _fallback_make_stream_for(prompt: str, **_kwargs: object):
         def _make(
-            _feedback: list[ToolResult], suppress_tools: bool = False
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[object]:
             async def _gen() -> AsyncIterator[object]:
                 fallback_calls["n"] += 1
@@ -962,7 +971,10 @@ async def test_c002_resume_worker_prompt_keeps_clarification_questions() -> None
         captured.append(prompt)
 
         def _make(
-            _feedback: list[ToolResult], suppress_tools: bool = False
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[object]:
             async def _gen() -> AsyncIterator[object]:
                 yield AnswerDelta(text="alpha finding")
@@ -1232,7 +1244,10 @@ async def test_h010_resume_does_not_reemit_partial_answer() -> None:
 
     def _make_stream_for(prompt: str, **_kwargs: object):
         def _make(
-            _feedback: list[ToolResult], suppress_tools: bool = False
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[object]:
             async def _gen() -> AsyncIterator[object]:
                 yield AnswerDelta(text=" post-resume finding")

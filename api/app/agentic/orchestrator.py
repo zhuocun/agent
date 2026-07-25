@@ -1303,6 +1303,10 @@ async def _collect_answer(
             ),
             settings=settings,
             allowed_tools=_PLANNER_ALLOWED_TOOLS,
+            # Planner quiet-collect parses answer text into a plan; an empty-retry
+            # nudge answer would corrupt that. Keep it out of the retry (the empty
+            # terminal still injects the static fallback text, unchanged).
+            allow_empty_retry=False,
         ):
             if isinstance(
                 event, (AwaitingApproval, ToolCall, ToolResult, Sources, StatusUpdate)
@@ -1797,6 +1801,9 @@ async def _resume_worker_continuation(
             allowed_tools=_WORKER_ALLOWED_TOOLS,
             server_approved_call_ids=server_approved_call_ids,
             initial_tool_results=initial,
+            # Worker subagents never spend the empty-reply retry (amendment B):
+            # synthesis / the deterministic aggregate is the recovery here.
+            allow_empty_retry=False,
         ):
             if _event_shows_external_progress(event):
                 visible_progress = True
@@ -2375,6 +2382,9 @@ async def _run_deep_research(
                 make_stream=make_stream,
                 settings=settings,
                 allowed_tools=_WORKER_ALLOWED_TOOLS,
+                # Worker subagents never spend the empty-reply retry (amendment
+                # B): synthesis / the deterministic aggregate is the recovery.
+                allow_empty_retry=False,
             ):
                 if _event_shows_external_progress(event):
                     visible_progress = True

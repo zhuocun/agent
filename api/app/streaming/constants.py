@@ -26,6 +26,32 @@ EMPTY_REPLY_FALLBACK = (
     "Please try again or rephrase your question."
 )
 
+# Soft system nudge appended to the retry pass that fires when a turn would end
+# empty (see `app/tools/agent_loop.py` / `app/streaming/empty_reply_retry.py`).
+# It is gated to genuinely-empty prior passes ONLY — never the reserved
+# tool-exhaustion final pass, whose "you produced no answer" would be false. The
+# base copy is JSON-safe (no "plain text" clause) so it stays valid when the turn
+# requested structured output; the plain-prose clause is appended ONLY when no
+# `response_format` was requested (see `empty_reply_retry_nudge`).
+EMPTY_REPLY_RETRY_NUDGE = (
+    "Your previous attempt did not produce a written answer. Provide your best "
+    "final answer to the user's request now. Do not call tools."
+)
+
+_EMPTY_REPLY_RETRY_PLAIN_PROSE_CLAUSE = " Respond in plain prose."
+
+
+def empty_reply_retry_nudge(*, response_format_requested: bool) -> str:
+    """Assemble the retry nudge, response-format aware.
+
+    Appends the plain-prose clause only when the turn did NOT request structured
+    output; when a `response_format` is set that clause is omitted so the nudge
+    never contradicts a JSON-mode instruction.
+    """
+    if response_format_requested:
+        return EMPTY_REPLY_RETRY_NUDGE
+    return EMPTY_REPLY_RETRY_NUDGE + _EMPTY_REPLY_RETRY_PLAIN_PROSE_CLAUSE
+
 
 def main_answer_is_empty(text: str) -> bool:
     """Whether `text` carries no written main answer (markup-aware).

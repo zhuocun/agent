@@ -60,7 +60,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Callable, Collection
 from dataclasses import replace
-from typing import Any
+from typing import Any, Protocol
 
 from app.config import Settings
 from app.observability.tracing import execute_tool_span
@@ -79,16 +79,81 @@ from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolApprovalState, ToolCallRequest, ToolExecutionResult
 
+
 # Factory: given the tool results gathered so far and whether tools should be
 # suppressed on the provider, build a fresh provider event stream for the next
 # round. The handler supplies this so the loop stays provider-agnostic and the
 # `Provider.stream` Protocol gains no tool params.
 #
-# `suppress_tools` is True ONLY for the compelled final pass (see
-# `run_agent_loop`): the factory must then advertise NO tools to the provider
-# (`tools=None`) so a greedy provider that would otherwise keep requesting tools
-# is forced to emit its final answer instead of returning a blank turn.
-MakeStream = Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]
+# `suppress_tools` is True ONLY for the compelled final pass and the empty-reply
+# retry pass (see `run_agent_loop`): the factory must then advertise NO tools to
+# the provider (`tools=None`) so a greedy provider that would otherwise keep
+# requesting tools is forced to emit its final answer instead of returning a
+# blank turn.
+#
+# `answer_nudge` (keyword-only) opts the pass into an extra answer-eliciting
+# system nudge (empty-reply retry only). It is a `Protocol` — not a bare
+# `Callable` alias — so the keyword-only parameter is part of the type and every
+# closure the handler supplies (`_build_raw_stream`, the agentic `_make`
+# closures) must accept it; positional call sites like `make_stream(feedback,
+# True)` stay valid because the default is False.
+class MakeStream(Protocol):
+    def __call__(
+        self,
+        tool_feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
+    ) -> AsyncIterator[ProviderEvent]: ...
+
+
+def make_usage_folder() -> tuple[
+    Callable[[ProviderEvent], ProviderEvent],
+    Callable[[], None],
+    Callable[[], UsageUpdate],
+]:
+    """Shared per-stream usage folder (agent loop + plain-chat empty-retry).
+
+    Returns ``(fold, reset, get_cumulative)``. The closure owns BOTH the
+    cumulative accumulator (across every stream this turn) AND the per-round XOR
+    latch that counts each round's usage exactly once (a round reports usage via
+    EITHER a ``UsageUpdate`` OR the ``Complete.usage``, never both). ``fold``
+    folds one event and returns the cumulative-usage variant of
+    ``UsageUpdate``/``Complete`` (other events pass through unchanged); ``reset``
+    clears the per-round latch and MUST be called before each new stream;
+    ``get_cumulative`` reads the running total (e.g. for a synthesized terminal
+    ``Complete``). Both `run_agent_loop` and `run_chat_with_empty_retry` use this
+    so the XOR fold is identical across the two empty-retry paths.
+    """
+    accumulated = UsageUpdate()
+    round_usage_folded = False
+
+    def _fold(event: ProviderEvent) -> ProviderEvent:
+        nonlocal accumulated, round_usage_folded
+        if isinstance(event, UsageUpdate):
+            accumulated = _add_usage(accumulated, event)
+            round_usage_folded = True
+            return UsageUpdate(
+                input_tokens=accumulated.input_tokens,
+                output_tokens=accumulated.output_tokens,
+                reasoning_tokens=accumulated.reasoning_tokens,
+                cached_input_tokens=accumulated.cached_input_tokens,
+                subagent_id=event.subagent_id,
+            )
+        if isinstance(event, Complete):
+            if not round_usage_folded:
+                accumulated = _add_usage(accumulated, event.usage)
+            return replace(event, usage=accumulated)
+        return event
+
+    def _reset() -> None:
+        nonlocal round_usage_folded
+        round_usage_folded = False
+
+    def _get_cumulative() -> UsageUpdate:
+        return accumulated
+
+    return _fold, _reset, _get_cumulative
 
 # Sentinel prefixing the synthetic history turn that carries tool results back to
 # the provider for the next round. The handler builds these turns via
@@ -223,6 +288,7 @@ async def run_agent_loop(
     allowed_tools: Collection[str] | None = None,
     server_approved_call_ids: Collection[str] | None = None,
     initial_tool_results: list[ToolResult] | None = None,
+    allow_empty_retry: bool = True,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive a bounded tool-calling loop over a provider event stream.
 
@@ -231,6 +297,18 @@ async def run_agent_loop(
     tool calls (relayed answer), an ``AwaitingApproval`` pause, or the
     ``tool_max_rounds`` bound (total provider invocations, including any
     suppress-tools final pass).
+
+    ``allow_empty_retry``: whether this loop may spend the one-shot empty-reply
+    retry at a genuinely-empty terminal. True (the default) for plain/tools chat,
+    the agentic ``primary`` (`run_single`), and the aggregator synthesis draft.
+    Deep-research WORKER subagents (and the quiet planner collect) pass False so a
+    worker never burns an extra provider round — synthesis / the deterministic
+    aggregate is the recovery there. The retry is ALSO gated by
+    ``settings.empty_reply_retry_enabled`` (kill-switch) and the one-shot
+    ``empty_retry_spent`` latch + ``invocations < tool_max_rounds`` budget; when
+    it cannot fire, the terminal injects the static ``EMPTY_REPLY_FALLBACK`` as
+    before. The reserved suppress-tools force-final pass is UNCONDITIONAL and
+    nudge-free — it is NOT an empty retry (see below).
 
     ``allowed_tools``: when set, only those registry tool names may execute;
     others fail closed as unknown. ``None`` = full registry. Deep-research
@@ -256,7 +334,14 @@ async def run_agent_loop(
     # ends without an extra provider call (defensive empty fallback if needed).
     action_rounds = max_rounds if max_rounds == 1 else max_rounds - 1
     answer_emitted = False
-    accumulated_usage = UsageUpdate()
+    # One-shot empty-reply retry budget (turn-wide for this loop invocation).
+    empty_retry_spent = False
+    # Total provider streams opened this loop (action rounds + reserved pass +
+    # any empty-retry pass). The empty retry may fire only while
+    # `invocations < max_rounds`, so it can never stack on the reserved pass
+    # (which consumes the last slot) or on N=1 (the sole round exhausts it).
+    invocations = 0
+    fold_usage, reset_usage, get_cumulative = make_usage_folder()
     allowed: set[str] | None = None if allowed_tools is None else set(allowed_tools)
     approved_ids: set[str] = (
         set(server_approved_call_ids) if server_approved_call_ids is not None else set()
@@ -273,39 +358,74 @@ async def run_agent_loop(
         if not main_answer_is_empty(delta.text):
             answer_emitted = True
 
-    def _make_usage_folder() -> tuple[
-        Callable[[ProviderEvent], ProviderEvent], Callable[[], None]
-    ]:
-        """Per-stream usage folder: count each round once (UsageUpdate XOR Complete)."""
-        round_usage_folded = False
+    def _can_retry() -> bool:
+        """Whether the one-shot empty-reply retry may fire at an empty terminal."""
+        return (
+            settings.empty_reply_retry_enabled
+            and allow_empty_retry
+            and not empty_retry_spent
+            and invocations < max_rounds
+        )
 
-        def _fold(event: ProviderEvent) -> ProviderEvent:
-            nonlocal accumulated_usage, round_usage_folded
-            if isinstance(event, UsageUpdate):
-                accumulated_usage = _add_usage(accumulated_usage, event)
-                round_usage_folded = True
-                return UsageUpdate(
-                    input_tokens=accumulated_usage.input_tokens,
-                    output_tokens=accumulated_usage.output_tokens,
-                    reasoning_tokens=accumulated_usage.reasoning_tokens,
-                    cached_input_tokens=accumulated_usage.cached_input_tokens,
-                    subagent_id=event.subagent_id,
+    async def _emit_empty_terminal() -> AsyncIterator[ProviderEvent]:
+        """Genuinely-empty terminal: retry once (if allowed) else static fallback.
+
+        Precondition: no written answer has been emitted this turn. When a retry
+        is allowed it runs ONE suppress-tools, answer-eliciting pass (nudge on)
+        over the same history + accumulated tool feedback, folding its usage and
+        applying the markup-drop rule; its own ``Complete`` is suppressed so the
+        wire sees exactly one terminal ``Complete`` — synthesized here carrying
+        the ``empty_retry`` / ``empty_retry_recovered`` markers. If the retry is
+        disallowed / still empty, the static ``EMPTY_REPLY_FALLBACK`` is injected
+        exactly once as before.
+        """
+        nonlocal answer_emitted, empty_retry_spent, invocations
+        if _can_retry():
+            empty_retry_spent = True
+            invocations += 1
+            reset_usage()
+            retry_stream = make_stream(list(tool_feedback), True, answer_nudge=True)
+            async for event in retry_stream:
+                if isinstance(event, AnswerDelta):
+                    _note_answer(event)
+                    # Same markup-drop as the action rounds: a markup-only /
+                    # whitespace delta ahead of the fallback would be wiped by
+                    # the FE truncate-from-first-marker scrub, so drop it while
+                    # no real answer has been emitted.
+                    if main_answer_is_empty(event.text) and not answer_emitted:
+                        continue
+                    yield event
+                    continue
+                if isinstance(event, Complete):
+                    # Fold usage but suppress the retry's Complete — the single
+                    # terminal Complete is emitted below with the markers.
+                    fold_usage(event)
+                    continue
+                yield fold_usage(event)
+            if answer_emitted:
+                yield Complete(
+                    usage=get_cumulative(),
+                    empty_retry=True,
+                    empty_retry_recovered=True,
                 )
-            if isinstance(event, Complete):
-                if not round_usage_folded:
-                    accumulated_usage = _add_usage(accumulated_usage, event.usage)
-                return replace(event, usage=accumulated_usage)
-            return event
-
-        def _reset() -> None:
-            nonlocal round_usage_folded
-            round_usage_folded = False
-
-        return _fold, _reset
+                return
+            yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+            answer_emitted = True
+            yield Complete(
+                usage=get_cumulative(),
+                empty_retry=True,
+                empty_retry_recovered=False,
+            )
+            return
+        # Retry not allowed (kill-switch off, worker, spent, or budget
+        # exhausted) → static fallback exactly once, as before.
+        yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+        answer_emitted = True
+        yield Complete(usage=get_cumulative())
 
     for _round in range(action_rounds):
         stream = make_stream(list(tool_feedback), False)
-        fold_usage, reset_usage = _make_usage_folder()
+        invocations += 1
         reset_usage()
 
         pending_calls: list[ToolCall] = []
@@ -360,8 +480,12 @@ async def run_agent_loop(
                 relayed_terminal = True
             elif isinstance(event, Complete):
                 if not answer_emitted:
-                    yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
-                    answer_emitted = True
+                    # Defer a blank Complete: fold its usage but do NOT relay it —
+                    # the post-stream terminal decision runs retry-or-static and
+                    # emits the single terminal Complete (carrying the empty-retry
+                    # markers) so the wire never sees a premature blank Complete.
+                    fold_usage(event)
+                    continue
                 relayed_terminal = True
             yield fold_usage(event)
         if paused_by_provider:
@@ -369,11 +493,12 @@ async def run_agent_loop(
 
         unresolved = [c for c in pending_calls if c.id not in provider_resolved]
         if not unresolved:
+            # Genuinely-empty terminal (no tool calls this round): a blank
+            # Complete deferred above, or a stream that ended with no written
+            # answer. Route through the single retry-or-static decision.
             if not answer_emitted:
-                yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
-                answer_emitted = True
-                if not relayed_terminal:
-                    yield Complete(usage=accumulated_usage)
+                async for terminal_event in _emit_empty_terminal():
+                    yield terminal_event
             return
 
         round_results: list[ToolResult] = []
@@ -501,9 +626,15 @@ async def run_agent_loop(
         is_last_action = _round == action_rounds - 1
         if is_last_action and max_rounds > action_rounds:
             # Reserved final provider slot: suppress tools and force an answer.
+            # UNCONDITIONAL force-final on tool exhaustion — NOT an empty retry:
+            # it is nudge-free (`make_stream(..., True)` with no `answer_nudge`)
+            # and fires regardless of `empty_reply_retry_enabled`. If it ends
+            # empty the invocation budget is exhausted (`invocations ==
+            # max_rounds`) so the terminal goes straight to static, never a
+            # second compelled pass.
             final_stream = make_stream(list(tool_feedback), True)
-            fold_final, reset_final = _make_usage_folder()
-            reset_final()
+            invocations += 1
+            reset_usage()
             relayed_terminal = False
             async for event in final_stream:
                 if isinstance(event, AnswerDelta):
@@ -521,17 +652,19 @@ async def run_agent_loop(
                         yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                         answer_emitted = True
                     relayed_terminal = True
-                yield fold_final(event)
+                yield fold_usage(event)
             if not answer_emitted:
                 yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                 answer_emitted = True
                 if not relayed_terminal:
-                    yield Complete(usage=accumulated_usage)
+                    yield Complete(usage=get_cumulative())
             return
         if is_last_action:
-            # N=1: no reserved final pass. End with defensive fallback if needed.
+            # N=1: no reserved final pass. This is a genuinely-empty terminal
+            # after a tool round; route it through the single retry-or-static
+            # decision. With N=1 the budget (`invocations < max_rounds`) is
+            # already spent, so it falls straight to the static fallback.
             if not answer_emitted:
-                yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
-                answer_emitted = True
-                yield Complete(usage=accumulated_usage)
+                async for terminal_event in _emit_empty_terminal():
+                    yield terminal_event
             return

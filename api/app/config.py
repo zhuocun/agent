@@ -418,6 +418,19 @@ class Settings(BaseSettings):
     # cancelled and reported as a failed result rather than hanging the turn.
     tool_timeout_seconds: float = Field(default=10.0, alias="TOOL_TIMEOUT_SECONDS")
 
+    # Automatic empty-reply retry. When True (the default), a turn that would end
+    # with no written main answer automatically retries ONCE — a suppress-tools,
+    # answer-eliciting pass over the same history + accumulated tool feedback —
+    # before falling back to the static `EMPTY_REPLY_FALLBACK` copy. The retry is
+    # one-shot per iterator (agent loop / plain-chat wrapper), its tokens fold into
+    # the single cumulative usage so billing stays honest, and HITL pauses /
+    # stopped turns never reach it. When False, behavior is byte-for-byte identical
+    # to a pre-retry build: the static fallback fires immediately on an empty
+    # terminal. Deep-research worker subagents never retry regardless of this flag.
+    empty_reply_retry_enabled: bool = Field(
+        default=True, alias="EMPTY_REPLY_RETRY_ENABLED"
+    )
+
     # Agentic mode (multi-agent orchestration). DEFAULT-OFF feature flag — a hard
     # safety gate around the orchestrator, layered ON TOP of `tools_enabled`. When
     # False (the default), the orchestrator never runs and the streaming path is

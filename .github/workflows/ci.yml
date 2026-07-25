@@ -238,8 +238,16 @@ jobs:
         # Boots the instrumented webpack build, runs every spec, and writes the
         # merged report under web/coverage. This step does not fail on a low
         # floor (see test:e2e:coverage) — the gate is the next step.
+        #
+        # Headroom note: the instrumented (webpack + istanbul) suite already
+        # runs ~15m clean on a single worker, so a 15m budget left no room for
+        # Playwright's `--retries=1` to re-run a flaky spec (e.g. the
+        # timing-nondeterministic stopped-turn disconnect persist), and one
+        # retry (~1m) tipped the whole step into a false timeout even though
+        # Playwright itself reported all tests passed. 25m absorbs a flaky
+        # retry plus the trailing coverage:report without masking a genuine hang.
         run: pnpm test:e2e:coverage
-        timeout-minutes: 15
+        timeout-minutes: 25
 
       - name: Enforce coverage floor
         working-directory: web

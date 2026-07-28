@@ -70,7 +70,7 @@ from app.providers.protocol import (
 )
 from app.schemas.common import SubstitutionReasonCode
 from app.search.protocol import SourceItem
-from app.streaming.constants import EMPTY_REPLY_FALLBACK
+from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.tools.agent_loop import MakeStream, run_agent_loop
 
 _log = structlog.get_logger(__name__)
@@ -1151,14 +1151,14 @@ async def _finalize_synthesis_streamed(
         suffix += (
             f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"
         )
-    if aggregator_failed or not streamed.strip():
+    if aggregator_failed or main_answer_is_empty(streamed):
         draft = aggregate.synthesize(
             outputs,
             planned=planned,
             budget_halted=budget_halted or aggregator_failed,
             failed=failed,
         )
-        if aggregator_failed and streamed.strip():
+        if aggregator_failed and not main_answer_is_empty(streamed):
             # Keep any partial model text ahead of the deterministic fallback.
             draft = streamed + "\n\n" + draft
     elif suffix:
@@ -1224,7 +1224,11 @@ async def _finalize_synthesis_streamed(
             ):
                 yield event
         yield AnswerDelta(text=final_answer, subagent_id=_AGGREGATOR_ID)
-    elif aggregator_failed or (verify_after and quiet_provenance) or not streamed.strip():
+    elif (
+        aggregator_failed
+        or (verify_after and quiet_provenance)
+        or main_answer_is_empty(streamed)
+    ):
         yield AnswerDelta(text=draft, subagent_id=_AGGREGATOR_ID)
     elif suffix:
         yield AnswerDelta(text=suffix, subagent_id=_AGGREGATOR_ID)
@@ -1299,6 +1303,10 @@ async def _collect_answer(
             ),
             settings=settings,
             allowed_tools=_PLANNER_ALLOWED_TOOLS,
+            # Planner quiet-collect parses answer text into a plan; an empty-retry
+            # nudge answer would corrupt that. Keep it out of the retry (the empty
+            # terminal still injects the static fallback text, unchanged).
+            allow_empty_retry=False,
         ):
             if isinstance(
                 event, (AwaitingApproval, ToolCall, ToolResult, Sources, StatusUpdate)
@@ -1421,7 +1429,7 @@ async def run_single(
                 return
             if budget_halted and isinstance(event, (Complete, UsageUpdate)):
                 break
-    if not "".join(answer_parts).strip():
+    if main_answer_is_empty("".join(answer_parts)):
         yield AnswerDelta(text=EMPTY_REPLY_FALLBACK, subagent_id=subagent_id)
     elif budget_halted:
         yield AnswerDelta(
@@ -1793,6 +1801,9 @@ async def _resume_worker_continuation(
             allowed_tools=_WORKER_ALLOWED_TOOLS,
             server_approved_call_ids=server_approved_call_ids,
             initial_tool_results=initial,
+            # Worker subagents never spend the empty-reply retry (amendment B):
+            # synthesis / the deterministic aggregate is the recovery here.
+            allow_empty_retry=False,
         ):
             if _event_shows_external_progress(event):
                 visible_progress = True
@@ -2371,6 +2382,9 @@ async def _run_deep_research(
                 make_stream=make_stream,
                 settings=settings,
                 allowed_tools=_WORKER_ALLOWED_TOOLS,
+                # Worker subagents never spend the empty-reply retry (amendment
+                # B): synthesis / the deterministic aggregate is the recovery.
+                allow_empty_retry=False,
             ):
                 if _event_shows_external_progress(event):
                     visible_progress = True

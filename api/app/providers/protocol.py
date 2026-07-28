@@ -274,6 +274,16 @@ class Complete:
     substituted_model: str | None = None
     substituted_display_label: str | None = None
     subagent_id: str | None = None
+    # INTERNAL, non-wire analytics markers for the automatic empty-reply retry
+    # (see `app/tools/agent_loop.py` / `app/streaming/empty_reply_retry.py`).
+    # `empty_retry` is True on the terminal Complete when an empty-reply retry
+    # pass ran this turn; `empty_retry_recovered` is True when that retry then
+    # produced a real written answer. The streaming handler reads these into the
+    # `turn.done` structlog. They are NEVER serialized to SSE — the handler builds
+    # the wire `TerminalEvent` from the attribution and only reads `usage` off the
+    # Complete, so these fields stay purely internal.
+    empty_retry: bool = False
+    empty_retry_recovered: bool = False
 
 
 @dataclass(frozen=True)

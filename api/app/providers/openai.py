@@ -69,7 +69,7 @@ from app.providers.protocol import (
 )
 from app.providers.steering import steer_user_text
 from app.search.protocol import SearchProvider, SourceItem
-from app.streaming.constants import EMPTY_REPLY_FALLBACK
+from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.tools.agent_loop import parse_tool_feedback_history
 
 _log = structlog.get_logger(__name__)
@@ -802,7 +802,9 @@ class OpenAIProvider:
                 # No tool call this round → the streamed content was the final
                 # answer. Done.
                 for event in round_events:
-                    if isinstance(event, AnswerDelta) and event.text.strip():
+                    if isinstance(event, AnswerDelta) and not main_answer_is_empty(
+                        event.text
+                    ):
                         answer_relayed = True
                     yield event
                 break
@@ -923,7 +925,9 @@ class OpenAIProvider:
                 tool_calls=None,
                 sanitizer=ToolMarkupSanitizer(),
             ):
-                if isinstance(event, AnswerDelta) and event.text.strip():
+                if isinstance(event, AnswerDelta) and not main_answer_is_empty(
+                    event.text
+                ):
                     answer_relayed = True
                 yield event
             if not answer_relayed:

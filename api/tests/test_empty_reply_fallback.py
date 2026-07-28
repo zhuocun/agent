@@ -13,9 +13,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models import Conversation, Message, User
 from app.db.session import get_db
+from app.providers._tool_markup import contains_tool_markup, strip_tool_markup
 from app.providers.protocol import (
     AnswerDelta,
     AwaitingApproval,
@@ -28,7 +29,13 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.tiers import get_binding
-from app.streaming.constants import EMPTY_REPLY_FALLBACK
+from app.streaming.constants import (
+    EMPTY_REPLY_FALLBACK,
+    EMPTY_REPLY_RETRY_NUDGE,
+    empty_reply_retry_nudge,
+    main_answer_is_empty,
+)
+from app.streaming.empty_reply_retry import run_chat_with_empty_retry
 from app.streaming.handler import stream_and_persist
 from app.tools.agent_loop import run_agent_loop
 
@@ -48,6 +55,13 @@ from .test_providers_openai_stream import (
 )
 
 pytestmark = pytest.mark.asyncio
+
+# A markup-only completion as the unsanitized Anthropic provider can yield it
+# (raw tool-call markup relayed as answer text with no `ToolMarkupSanitizer`).
+# `.strip()` sees non-whitespace (a naive guard thinks the turn answered), but
+# `strip_tool_markup` truncates at the leading start marker so the shared
+# `main_answer_is_empty` helper — and the FE — resolve it to empty.
+_RAW_TOOL_MARKUP = '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="web_search">'
 
 
 @pytest.fixture
@@ -191,7 +205,10 @@ async def test_agent_loop_complete_only_after_tools_emits_fallback() -> None:
     tools_executed = False
 
     def _make_stream(
-        _feedback: list[ToolResult], suppress_tools: bool = False
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
         nonlocal tools_executed
 
@@ -403,7 +420,10 @@ async def test_agent_loop_awaiting_approval_does_not_emit_fallback() -> None:
     from app.config import Settings
 
     def _make_stream(
-        _feedback: list[ToolResult], suppress_tools: bool = False
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
         async def _gen() -> AsyncIterator[ProviderEvent]:
             yield ToolCall(
@@ -541,6 +561,55 @@ async def test_tool_complete_only_single_fallback_via_handler_and_agent_loop(
     assert str(text_parts[0].get("text", "")).strip() == EMPTY_REPLY_FALLBACK
 
 
+async def test_leak_markup_persists_raw_markup_through_tools_handler(
+    tools_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """BE guard for `leaked-markup.spec.ts`: prose + markup persists the DSML.
+
+    Drives the fake provider's `LEAK_MARKUP:` path (prose delta then a raw DSML
+    tool-call block) through the tools-enabled handler + agent loop — the same
+    wiring the e2e uses. The answer is non-empty (strips to the prose), so NO
+    fallback fires and the raw markup must persist unchanged; the FE
+    render-time scrub is what hides it. Regression guard: the agent loop must
+    not drop the trailing markup delta.
+    """
+    await tools_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        tools_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "99999999-9999-9999-9999-999999999999",
+            "tierId": "smart",
+            "text": "LEAK_MARKUP: please leak tool markup",
+        },
+    )
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    fallback_frames = [
+        d
+        for n, d in frames
+        if n == "answer_delta" and str(d.get("text", "")) == EMPTY_REPLY_FALLBACK
+    ]
+    assert not fallback_frames
+
+    messages = await _load_messages(session_factory, conv_id)
+    assistant = next(m for m in messages if m.role == "assistant")
+    text_parts = [
+        p for p in assistant.parts if isinstance(p, dict) and p.get("type") == "text"
+    ]
+    persisted_text = "".join(str(p.get("text", "")) for p in text_parts)
+    # The raw markup persists (the e2e asserts `persistedText` contains "DSML")
+    # and the clean lead-in prose survives the FE scrub.
+    assert "DSML" in persisted_text
+    assert contains_tool_markup(persisted_text)
+    assert "Sure, here is the answer you asked for." in strip_tool_markup(persisted_text)
+
+
 async def test_handler_reasoning_only_blank_done_emits_reasoning_done_then_fallback(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -602,3 +671,513 @@ async def test_handler_reasoning_only_blank_done_emits_reasoning_done_then_fallb
     terminal_idx = event_names.index("terminal")
     assert reasoning_done_idx < fallback_idx < terminal_idx
     assert answer_texts == [EMPTY_REPLY_FALLBACK]
+
+
+async def test_main_answer_is_empty_treats_raw_tool_markup_as_empty() -> None:
+    """The shared helper's contract: markup-only / whitespace resolve empty."""
+    assert main_answer_is_empty("") is True
+    assert main_answer_is_empty("   \n\t ") is True
+    assert main_answer_is_empty("A real written reply.") is False
+    # The gap the helper closes: a naive `.strip()` guard would treat leaked
+    # markup as a written answer; the markup-aware helper agrees with the FE.
+    assert _RAW_TOOL_MARKUP.strip() != ""
+    assert strip_tool_markup(_RAW_TOOL_MARKUP).strip() == ""
+    assert main_answer_is_empty(_RAW_TOOL_MARKUP) is True
+
+
+async def test_handler_raw_tool_markup_answer_injects_fallback(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Unsanitized raw markup in answer_buf is treated as empty → done injects.
+
+    Simulates the Anthropic provider yielding raw tool-call markup as answer
+    text (no `ToolMarkupSanitizer`). The old raw-`.strip()` guard thought the
+    turn answered and skipped the inject; the shared markup-aware helper now
+    resolves it to empty so the done-path injects `EMPTY_REPLY_FALLBACK`.
+    """
+
+    class _RawMarkupAnswerProvider:
+        async def stream(self, **_kwargs: object) -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text=_RAW_TOOL_MARKUP)
+            yield UsageUpdate(input_tokens=1, output_tokens=1)
+            yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="New chat",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    class _StubRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    event_names: list[str] = []
+    answer_frames: list[str] = []
+    async with session_factory() as session:
+        gen = stream_and_persist(
+            request=_StubRequest(),  # type: ignore[arg-type]
+            db=session,
+            provider=_RawMarkupAnswerProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="hello",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+        )
+        async for ev in gen:
+            event_names.append(ev.event or "")
+            if ev.event == "answer_delta" and ev.data:
+                answer_frames.append(str(json.loads(ev.data).get("text", "")))
+
+    # Done-path injected the fallback as a live answer_delta before terminal.
+    assert EMPTY_REPLY_FALLBACK in answer_frames
+    terminal_idx = event_names.index("terminal")
+    last_answer_idx = len(event_names) - 1 - event_names[::-1].index("answer_delta")
+    assert last_answer_idx < terminal_idx
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .order_by(Message.created_at.desc())
+            )
+        ).scalar_one()
+        assert row.status == "done"
+        parts = row.parts
+        assert isinstance(parts, list)
+        text_parts = [p for p in parts if isinstance(p, dict) and p.get("type") == "text"]
+        assert text_parts
+        persisted_text = str(text_parts[0].get("text", ""))
+        # Replace-on-inject: the persisted main text is the fallback ALONE — the
+        # leaked markup was cleared, not left ahead of the fallback. So the
+        # fallback SURVIVES the FE `stripToolMarkup` (truncate-from-first-marker)
+        # on reload / share instead of being wiped to ''.
+        assert strip_tool_markup(persisted_text).strip() == EMPTY_REPLY_FALLBACK
+        assert not contains_tool_markup(persisted_text)
+
+
+async def test_agent_loop_prose_then_trailing_markup_relays_raw_markup() -> None:
+    """Prose + trailing leaked markup: the markup is KEPT (not dropped).
+
+    A stubborn provider can stream real prose then dump raw tool-call markup as
+    answer content. The combined answer is non-empty (strips to the prose), so
+    NO fallback fires and the raw markup must be relayed intact — the FE
+    render-time scrub is what hides it on reload / share. This is the exact
+    shape the `LEAK_MARKUP:` e2e (`web/tests/e2e/leaked-markup.spec.ts`) drives
+    through the agent loop, and it must persist the `DSML` markup.
+    """
+    from app.config import Settings
+
+    prose = "Sure, here is the answer you asked for. "
+
+    def _make_stream(
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text=prose)
+            yield AnswerDelta(text=_RAW_TOOL_MARKUP)
+            yield Complete()
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    # Prose survives AND the raw markup is relayed unchanged (no drop, no
+    # fallback) so the persisted transcript still carries the leaked markup.
+    assert prose in answer
+    assert _RAW_TOOL_MARKUP in answer
+    assert contains_tool_markup(answer)
+    assert EMPTY_REPLY_FALLBACK not in answer
+    # FE-side scrub still resolves the rendered answer to the clean prose.
+    assert strip_tool_markup(answer).strip() == prose.strip()
+
+
+async def test_agent_loop_markup_only_drops_markup_and_injects_fallback() -> None:
+    """Markup-only answer: the markup is DROPPED and the fallback stands alone.
+
+    With no real prose the answer strips to empty, so the terminal fallback
+    fires. Relaying the raw markup ahead of it would let the FE
+    truncate-from-first-marker scrub wipe the fallback too, so the markup delta
+    is dropped from the wire and only `EMPTY_REPLY_FALLBACK` is relayed.
+    """
+    from app.config import Settings
+
+    def _make_stream(
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text=_RAW_TOOL_MARKUP)
+            yield Complete()
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    answer_deltas = [e.text for e in events if isinstance(e, AnswerDelta)]
+    assert answer_deltas == [EMPTY_REPLY_FALLBACK]
+    assert not contains_tool_markup("".join(answer_deltas))
+
+
+async def test_agent_loop_no_tools_empty_completion_emits_fallback() -> None:
+    """No-tools empty completion still ends with the fallback (tools_ran drop).
+
+    Before the change the terminal fallback was gated on `tools_ran`, so a
+    completion that ran no tools AND produced no answer ended blank. The gate is
+    now `not answer_emitted`, so a pathological blank no-tools turn is backstopped.
+    """
+    from app.config import Settings
+
+    def _make_stream(
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
+    ) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield Complete()
+
+        return _gen()
+
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer.strip() == EMPTY_REPLY_FALLBACK
+    assert sum(1 for e in events if isinstance(e, AnswerDelta)) == 1
+    assert any(isinstance(e, Complete) for e in events)
+
+
+# --- Automatic empty-reply retry -------------------------------------------
+#
+# A `MakeStream` spy: each call `i` replays the events from `passes[i]` and
+# records `(suppress_tools, answer_nudge)` in `.calls`. Missing passes yield an
+# empty stream (defensive). Mirrors the real closures' keyword-only signature.
+
+
+def _spy_make_stream(
+    *passes: list[ProviderEvent],
+) -> tuple[object, list[tuple[bool, bool]]]:
+    calls: list[tuple[bool, bool]] = []
+
+    def _make(
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
+    ) -> AsyncIterator[ProviderEvent]:
+        index = len(calls)
+        calls.append((suppress_tools, answer_nudge))
+        events = list(passes[index]) if index < len(passes) else []
+
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            for event in events:
+                yield event
+
+        return _gen()
+
+    return _make, calls
+
+
+async def test_empty_reply_retry_nudge_response_format_aware() -> None:
+    """The nudge omits the plain-prose clause when structured output is wanted."""
+    plain = empty_reply_retry_nudge(response_format_requested=False)
+    structured = empty_reply_retry_nudge(response_format_requested=True)
+    assert structured == EMPTY_REPLY_RETRY_NUDGE
+    assert "plain prose" not in structured
+    assert plain.startswith(EMPTY_REPLY_RETRY_NUDGE)
+    assert plain.endswith("Respond in plain prose.")
+    # Base copy is JSON-safe (no "plain text"/"prose" clause baked in).
+    assert "prose" not in EMPTY_REPLY_RETRY_NUDGE
+
+
+async def test_agent_loop_empty_retry_recovers() -> None:
+    """Empty terminal → one suppress-tools+nudge retry recovers a real answer."""
+    make, calls = _spy_make_stream(
+        [Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))],
+        [AnswerDelta(text="Recovered answer."), Complete()],
+    )
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_agent_loop(make_stream=make, settings=settings)  # type: ignore[arg-type]
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer == "Recovered answer."
+    assert EMPTY_REPLY_FALLBACK not in answer
+    # Exactly one extra invocation, and it was the nudged suppress-tools pass.
+    assert calls == [(False, False), (True, True)]
+    complete = next(e for e in reversed(events) if isinstance(e, Complete))
+    assert complete.empty_retry is True
+    assert complete.empty_retry_recovered is True
+
+
+async def test_agent_loop_empty_retry_still_empty_static_once() -> None:
+    """Retry also empty → exactly one static fallback, recovered marker false."""
+    make, calls = _spy_make_stream(
+        [Complete()],
+        [Complete()],
+    )
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_agent_loop(make_stream=make, settings=settings)  # type: ignore[arg-type]
+    ]
+    fallbacks = [
+        e for e in events if isinstance(e, AnswerDelta) and e.text == EMPTY_REPLY_FALLBACK
+    ]
+    assert len(fallbacks) == 1
+    # Retry attempted exactly once (no re-retry on the second empty).
+    assert calls == [(False, False), (True, True)]
+    complete = next(e for e in reversed(events) if isinstance(e, Complete))
+    assert complete.empty_retry is True
+    assert complete.empty_retry_recovered is False
+
+
+async def test_agent_loop_empty_retry_is_one_shot() -> None:
+    """The one-shot latch prevents a second retry even across empty rounds."""
+    make, calls = _spy_make_stream(
+        [Complete()],  # round 0 empty terminal → spends the retry
+        [Complete()],  # retry pass, still empty → static
+    )
+    settings = Settings(TOOL_MAX_ROUNDS=4)  # type: ignore[call-arg]
+    _ = [
+        ev
+        async for ev in run_agent_loop(make_stream=make, settings=settings)  # type: ignore[arg-type]
+    ]
+    # Only two streams ever opened: the initial pass + the single retry.
+    assert len(calls) == 2
+    assert calls[1] == (True, True)
+
+
+async def test_agent_loop_reserved_pass_unconditional_and_nudge_free() -> None:
+    """Reserved force-final pass fires unconditionally and carries NO nudge.
+
+    With N=2 the sole action round still requests a tool, so the reserved
+    suppress-tools final pass fires. It must be nudge-free and fire regardless of
+    the empty-reply-retry kill switch; an empty reserved pass goes straight to the
+    static fallback with NO extra retry pass (budget exhausted).
+    """
+    for enabled in (True, False):
+        make, calls = _spy_make_stream(
+            [ToolCall(id="c1", name="get_current_time", status="running")],
+            [Complete()],  # reserved suppress-tools pass, empty
+        )
+        settings = Settings(  # type: ignore[call-arg]
+            TOOL_MAX_ROUNDS=2, EMPTY_REPLY_RETRY_ENABLED=enabled
+        )
+        events = [
+            ev
+            async for ev in run_agent_loop(make_stream=make, settings=settings)  # type: ignore[arg-type]
+        ]
+        answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+        assert answer.strip() == EMPTY_REPLY_FALLBACK
+        # Exactly two streams: action round + reserved pass. The reserved pass is
+        # suppress-tools but NEVER carries the answer nudge, and no retry follows.
+        assert len(calls) == 2
+        assert calls[1] == (True, False)
+        complete = next(e for e in reversed(events) if isinstance(e, Complete))
+        assert complete.empty_retry is False
+
+
+async def test_agent_loop_tool_max_rounds_1_no_retry() -> None:
+    """N=1 exhausts the budget on the sole round → no tool-path retry."""
+    make, calls = _spy_make_stream([Complete()])
+    settings = Settings(TOOL_MAX_ROUNDS=1)  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_agent_loop(make_stream=make, settings=settings)  # type: ignore[arg-type]
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer.strip() == EMPTY_REPLY_FALLBACK
+    assert len(calls) == 1  # no retry pass opened
+    complete = next(e for e in reversed(events) if isinstance(e, Complete))
+    assert complete.empty_retry is False
+
+
+async def test_agent_loop_flag_off_no_retry() -> None:
+    """Kill-switch off → static immediately, no extra invocation."""
+    make, calls = _spy_make_stream([Complete()])
+    settings = Settings(  # type: ignore[call-arg]
+        TOOL_MAX_ROUNDS=3, EMPTY_REPLY_RETRY_ENABLED=False
+    )
+    events = [
+        ev
+        async for ev in run_agent_loop(make_stream=make, settings=settings)  # type: ignore[arg-type]
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer.strip() == EMPTY_REPLY_FALLBACK
+    assert len(calls) == 1
+    complete = next(e for e in reversed(events) if isinstance(e, Complete))
+    assert complete.empty_retry is False
+
+
+async def test_agent_loop_worker_allow_empty_retry_false() -> None:
+    """Worker subagents (allow_empty_retry=False) never spend the retry."""
+    make, calls = _spy_make_stream([Complete()])
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_agent_loop(
+            make_stream=make,  # type: ignore[arg-type]
+            settings=settings,
+            allow_empty_retry=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer.strip() == EMPTY_REPLY_FALLBACK
+    assert len(calls) == 1
+    complete = next(e for e in reversed(events) if isinstance(e, Complete))
+    assert complete.empty_retry is False
+
+
+async def test_agent_loop_awaiting_approval_spends_no_retry_budget() -> None:
+    """A HITL pause returns before the terminal decision — no retry pass."""
+    make, calls = _spy_make_stream(
+        [
+            ToolCall(
+                id="c1",
+                name="calendar_create_event",
+                status="awaiting_approval",
+                approval_state="pending",
+            ),
+            AwaitingApproval(tool_call_id="c1"),
+        ],
+    )
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_agent_loop(make_stream=make, settings=settings)  # type: ignore[arg-type]
+    ]
+    assert any(isinstance(e, AwaitingApproval) for e in events)
+    assert not any(
+        isinstance(e, AnswerDelta) and e.text == EMPTY_REPLY_FALLBACK for e in events
+    )
+    # Only the first stream ever opened; the pause spent no retry budget.
+    assert len(calls) == 1
+
+
+async def test_wrapper_empty_then_recovers_folds_usage() -> None:
+    """Plain-chat wrapper: empty pass 1 → retry recovers; usage sums both."""
+    make, calls = _spy_make_stream(
+        [
+            UsageUpdate(input_tokens=2, output_tokens=3),
+            Complete(usage=UsageUpdate(input_tokens=2, output_tokens=3)),
+        ],
+        [
+            AnswerDelta(text="Now answered."),
+            UsageUpdate(input_tokens=5, output_tokens=7),
+            Complete(usage=UsageUpdate(input_tokens=5, output_tokens=7)),
+        ],
+    )
+    settings = Settings()  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_chat_with_empty_retry(make, settings)  # type: ignore[arg-type]
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer == "Now answered."
+    assert calls == [(False, False), (True, True)]
+    completes = [e for e in events if isinstance(e, Complete)]
+    assert len(completes) == 1
+    # Cumulative Complete tokens = pass1 + pass2.
+    assert completes[0].usage.input_tokens == 7
+    assert completes[0].usage.output_tokens == 10
+    assert completes[0].empty_retry is True
+    assert completes[0].empty_retry_recovered is True
+
+
+async def test_wrapper_markup_drop_then_prose_persists() -> None:
+    """Pass1 markup-only is dropped; pass2 prose is relayed intact (not wiped)."""
+    make, _calls = _spy_make_stream(
+        [AnswerDelta(text=_RAW_TOOL_MARKUP), Complete()],
+        [AnswerDelta(text="Real prose answer."), Complete()],
+    )
+    settings = Settings()  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_chat_with_empty_retry(make, settings)  # type: ignore[arg-type]
+    ]
+    answer_deltas = [e.text for e in events if isinstance(e, AnswerDelta)]
+    # The markup-only delta was dropped; only the prose reaches the wire.
+    assert answer_deltas == ["Real prose answer."]
+    assert not contains_tool_markup("".join(answer_deltas))
+
+
+async def test_wrapper_non_empty_passthrough_no_retry() -> None:
+    """A non-empty first pass is transparent — no second invocation."""
+    make, calls = _spy_make_stream(
+        [AnswerDelta(text="First answer."), Complete()],
+        [AnswerDelta(text="SHOULD NOT RUN"), Complete()],
+    )
+    settings = Settings()  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_chat_with_empty_retry(make, settings)  # type: ignore[arg-type]
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer == "First answer."
+    assert len(calls) == 1
+    complete = next(e for e in reversed(events) if isinstance(e, Complete))
+    assert complete.empty_retry is False
+
+
+async def test_wrapper_web_search_self_inject_not_retried() -> None:
+    """A provider that self-injects the static string reads as answered — no retry."""
+    make, calls = _spy_make_stream(
+        [AnswerDelta(text=EMPTY_REPLY_FALLBACK), Complete()],
+        [AnswerDelta(text="SHOULD NOT RUN"), Complete()],
+    )
+    settings = Settings()  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_chat_with_empty_retry(make, settings)  # type: ignore[arg-type]
+    ]
+    fallbacks = [
+        e for e in events if isinstance(e, AnswerDelta) and e.text == EMPTY_REPLY_FALLBACK
+    ]
+    # Relayed exactly once (no double-inject), and no retry pass opened.
+    assert len(fallbacks) == 1
+    assert len(calls) == 1
+    complete = next(e for e in reversed(events) if isinstance(e, Complete))
+    assert complete.empty_retry is False
+
+
+async def test_wrapper_both_empty_emits_no_static() -> None:
+    """Both passes empty → wrapper emits no static text (handler is last resort)."""
+    make, calls = _spy_make_stream([Complete()], [Complete()])
+    settings = Settings()  # type: ignore[call-arg]
+    events = [
+        ev
+        async for ev in run_chat_with_empty_retry(make, settings)  # type: ignore[arg-type]
+    ]
+    assert not any(isinstance(e, AnswerDelta) for e in events)
+    assert len(calls) == 2
+    completes = [e for e in events if isinstance(e, Complete)]
+    assert len(completes) == 1
+    assert completes[0].empty_retry is True
+    assert completes[0].empty_retry_recovered is False

@@ -224,7 +224,10 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
         sourcesPanelRef={sourcesPanelRef}
         sourceItems={sourceItems}
         answerTestId="public-assistant-answer"
-        showEmptyFallback
+        // Only claim "finished without a written reply" when the turn is
+        // explicitly done. Unknown/missing status must not fake completion —
+        // e.g. a stopped/paused legacy turn should stay silent, not dead-end.
+        showEmptyFallback={message.status === "done"}
       />
       {ungroundedPart ? <PublicUngroundedMarker /> : null}
 

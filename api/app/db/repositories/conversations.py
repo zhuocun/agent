@@ -1322,6 +1322,7 @@ async def get_public_by_share_token(
                     "role": m.role,
                     "parts": public_parts,
                     "created_at": _iso(m.created_at),
+                    "status": m.status,
                     "attribution": public_attribution,
                 }
             )

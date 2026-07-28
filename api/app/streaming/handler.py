@@ -33,7 +33,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Callable, Collection
+from collections.abc import AsyncIterator, Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -123,7 +123,12 @@ from app.schemas.stream_events import (
     ToolResultEvent,
 )
 from app.search.protocol import SourceItem
-from app.streaming.constants import EMPTY_REPLY_FALLBACK
+from app.streaming.constants import (
+    EMPTY_REPLY_FALLBACK,
+    empty_reply_retry_nudge,
+    main_answer_is_empty,
+)
+from app.streaming.empty_reply_retry import run_chat_with_empty_retry
 from app.streaming.replay_registry import ReplayLogBuffer
 from app.streaming.sse import (
     encode_answer_delta,
@@ -141,7 +146,7 @@ from app.streaming.sse import (
     encode_tool_result,
 )
 from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
-from app.tools.agent_loop import run_agent_loop, tool_feedback_to_history
+from app.tools.agent_loop import MakeStream, run_agent_loop, tool_feedback_to_history
 from app.tools.approval_settlement import (
     ApprovalDecisionConflict,
     claim_and_settle_approval_outcome,
@@ -981,6 +986,13 @@ async def stream_and_persist(
     sub_provider: str | None = None
     sub_model: str | None = None
     sub_label: str | None = None
+    # Empty-reply retry analytics (§9 / amendment A): read off the internal,
+    # non-wire `Complete.empty_retry` / `empty_retry_recovered` markers set by
+    # the agent loop / plain-chat wrapper. `recovered` is taken straight from the
+    # marker — NOT re-derived from post-inject resolved text, which would always
+    # read True once the static fallback lands. Logged in `turn.done`.
+    empty_retry_seen = False
+    empty_retry_recovered_seen = False
 
     # Build ONE raw provider stream for the current working route + optional
     # agent-loop tool feedback. `tool_feedback` carries the results the agent
@@ -1029,6 +1041,7 @@ async def stream_and_persist(
         *,
         tool_definitions: list[ToolDefinition] | None = None,
         web_search_override: bool | None = None,
+        answer_nudge: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
         advertised = (
             None
@@ -1039,6 +1052,18 @@ async def stream_and_persist(
         effective_web_search = (
             web_search if web_search_override is None else web_search_override
         )
+        # Empty-reply retry nudge (response-format aware): appended to the system
+        # preamble ONLY on an empty-retry pass so the model is told its prior
+        # attempt produced no answer and must answer now without tools. The
+        # plain-prose clause is dropped when structured output was requested.
+        effective_system_prefix = turn_system_prefix
+        if answer_nudge:
+            effective_system_prefix = (
+                f"{turn_system_prefix}\n\n"
+                + empty_reply_retry_nudge(
+                    response_format_requested=response_format is not None
+                )
+            )
         return active_provider.stream(
             model_id=binding.model_id,
             history=round_history,
@@ -1074,8 +1099,9 @@ async def stream_and_persist(
             # point.
             supports_vision=binding.supports_vision,
             # System preamble (UTC datetime + custom instructions + memory).
-            # Always non-None — the datetime block is always present.
-            system_prefix=turn_system_prefix,
+            # Always non-None — the datetime block is always present. Carries the
+            # empty-reply retry nudge appended when `answer_nudge` is set.
+            system_prefix=effective_system_prefix,
             # Agent-loop tools advertised to a real provider (None when tools are
             # off or the caller scoped an empty allowlist). The fake provider
             # ignores this; the OpenAI/Anthropic adapters advertise them natively
@@ -1093,7 +1119,7 @@ async def stream_and_persist(
         system_prefix: str | None = None,
         response_format: ResponseFormat | None = None,
         web_search: bool = False,
-    ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
+    ) -> MakeStream:
         """Fresh-context `MakeStream` for the verifier judge (agentic only).
 
         Industry / plan 02 fresh-context means an empty judge session: no
@@ -1114,8 +1140,15 @@ async def stream_and_persist(
         judge_system_prefix = system_prefix
 
         def _make(
-            tool_feedback: list[ToolResult], suppress_tools: bool = False
+            tool_feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[ProviderEvent]:
+            # `answer_nudge` accepted for `MakeStream` conformance but IGNORED:
+            # the verifier fresh-context judge stays pristine (no empty retry runs
+            # for workers/verifier), so no nudge is ever appended here.
+            _ = answer_nudge
             # Tool-feedback rounds (if any) stay isolated — never splice chat
             # history into the judge session.
             round_history = tool_feedback_to_history(tool_feedback)
@@ -1151,7 +1184,7 @@ async def stream_and_persist(
         web_search: bool | None = None,
         system_prefix: str | None = None,
         response_format: ResponseFormat | None = None,
-    ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
+    ) -> MakeStream:
         """Build a per-subagent `MakeStream` over the active route (agentic only).
 
         Captures the same route/binding/history/hints `_build_raw_stream` uses;
@@ -1172,7 +1205,10 @@ async def stream_and_persist(
         phase_web_search = web_search  # None → inherit turn flag
 
         def _make(
-            tool_feedback: list[ToolResult], suppress_tools: bool = False
+            tool_feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[ProviderEvent]:
             return _build_raw_stream(
                 tool_feedback,
@@ -1180,6 +1216,7 @@ async def stream_and_persist(
                 worker_user_text,
                 tool_definitions=scoped_tools,
                 web_search_override=phase_web_search,
+                answer_nudge=answer_nudge,
             )
 
         return _make
@@ -1190,7 +1227,7 @@ async def stream_and_persist(
         worker_user_text: str,
         *,
         allowed_tools: Collection[str] | None = None,
-    ) -> Callable[[list[ToolResult], bool], AsyncIterator[ProviderEvent]]:
+    ) -> MakeStream:
         """Per-subagent stream factory over the fallback route (agentic only)."""
         assert fallback_binding is not None
         if _cached_fb_provider[0] is None:
@@ -1210,9 +1247,20 @@ async def stream_and_persist(
         )
 
         def _make(
-            tool_feedback: list[ToolResult], suppress_tools: bool = False
+            tool_feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[ProviderEvent]:
             round_history = history + tool_feedback_to_history(tool_feedback)
+            fb_system_prefix = turn_system_prefix
+            if answer_nudge:
+                fb_system_prefix = (
+                    f"{turn_system_prefix}\n\n"
+                    + empty_reply_retry_nudge(
+                        response_format_requested=response_format is not None
+                    )
+                )
             return fb_provider.stream(
                 model_id=fb_binding.model_id,
                 history=round_history,
@@ -1230,7 +1278,7 @@ async def stream_and_persist(
                 web_search=web_search,
                 response_format=response_format,
                 supports_vision=fb_binding.supports_vision,
-                system_prefix=turn_system_prefix,
+                system_prefix=fb_system_prefix,
                 tools=None if suppress_tools else scoped_tools,
             )
 
@@ -1616,6 +1664,13 @@ async def stream_and_persist(
                 prior_run_usage=prior_run_usage,
             )
 
+        # Plain chat (non-tools, non-agentic). Wrap the raw stream in the
+        # empty-reply retry loop when the kill-switch is on; when off, pass the
+        # raw stream straight through so behavior is byte-for-byte identical to a
+        # pre-retry build. The wrapper folds usage across attempts and emits no
+        # static text — the handler injector stays the last resort.
+        if handler_settings.empty_reply_retry_enabled:
+            return run_chat_with_empty_retry(_build_raw_stream, handler_settings)
         return _build_raw_stream([])
 
     provider_iter = await _resolve_provider_iter()
@@ -1730,35 +1785,71 @@ async def stream_and_persist(
             and _no_output_yet()
         )
 
+    def _agentic_main_answer_ids() -> list[str]:
+        """Subagent ids whose text lands in the main bubble (mirror FE).
+
+        Mirrors `isMainAnswerSubagent` (`web/src/lib/agentic-layout.ts`): id in
+        {primary, aggregator} OR role in {primary, aggregator}. Preferring the
+        accumulators' own role metadata keeps the injected fallback
+        main-answer-classified even under custom-id tagging. Ordered
+        aggregator-first (the synthesized final bubble), then primary.
+        """
+
+        def _kind(subagent_id: str, acc: _SubagentAccumulator) -> int:
+            return 0 if subagent_id == "aggregator" or acc.role == "aggregator" else 1
+
+        main = [
+            (subagent_id, acc)
+            for subagent_id, acc in agentic_subagents.items()
+            if subagent_id in ("primary", "aggregator")
+            or acc.role in ("primary", "aggregator")
+        ]
+        main.sort(key=lambda pair: (_kind(*pair), pair[0]))
+        return [subagent_id for subagent_id, _ in main]
+
     def _resolved_main_answer_text() -> str:
-        """Main answer text for the done-path empty-reply guard."""
+        """Main answer text for the done-path empty-reply guard.
+
+        Emptiness is decided by the shared markup-aware `main_answer_is_empty`
+        so leaked tool-call markup (e.g. the unsanitized Anthropic path) is
+        treated as no answer — matching what the FE renders.
+        """
         if agentic_active:
-            for subagent_id in ("aggregator", "primary"):
-                acc = agentic_subagents.get(subagent_id)
-                if acc is not None:
-                    text = "".join(acc.answer).strip()
-                    if text:
-                        return text
+            for subagent_id in _agentic_main_answer_ids():
+                text = "".join(agentic_subagents[subagent_id].answer)
+                if not main_answer_is_empty(text):
+                    return text.strip()
             return ""
-        return "".join(answer_buf).strip()
+        text = "".join(answer_buf)
+        return "" if main_answer_is_empty(text) else text.strip()
 
     def _inject_empty_reply_fallback_if_needed() -> tuple[bool, str | None]:
         """Inject fallback main text when a done turn would persist blank.
 
         Returns `(injected, subagent_id)` where `subagent_id` tags the live
         `answer_delta` for agentic turns and is None on non-agentic turns.
+
+        REPLACES rather than appends: the inject only runs when
+        `_resolved_main_answer_text()` is already empty, i.e. the buffer strips
+        to nothing (whitespace or leaked tool-call markup). Appending would
+        leave `RAW_MARKUP + EMPTY_REPLY_FALLBACK` in the persisted text, and the
+        FE `stripToolMarkup` truncates from the first marker (index 0) — wiping
+        the fallback too. Clearing first guarantees the persisted main text is
+        the fallback alone, so it survives the FE strip on reload / share.
         """
         if _resolved_main_answer_text():
             return False, None
         target_subagent: str | None = None
         if agentic_active:
-            for subagent_id in ("primary", "aggregator"):
-                if subagent_id in agentic_subagents:
-                    target_subagent = subagent_id
-                    break
+            main_ids = _agentic_main_answer_ids()
+            if main_ids:
+                target_subagent = main_ids[0]
         if target_subagent is not None:
-            agentic_subagents[target_subagent].answer.append(EMPTY_REPLY_FALLBACK)
+            acc = agentic_subagents[target_subagent]
+            acc.answer.clear()
+            acc.answer.append(EMPTY_REPLY_FALLBACK)
         else:
+            answer_buf.clear()
             answer_buf.append(EMPTY_REPLY_FALLBACK)
         return True, target_subagent
 
@@ -2766,6 +2857,10 @@ async def stream_and_persist(
                 else:
                     final_usage = ev
             elif isinstance(ev, Complete):
+                empty_retry_seen = empty_retry_seen or ev.empty_retry
+                empty_retry_recovered_seen = (
+                    empty_retry_recovered_seen or ev.empty_retry_recovered
+                )
                 if agentic_active and ev.subagent_id is not None:
                     _sub(ev.subagent_id).usage = ev.usage
                 else:
@@ -3154,6 +3249,8 @@ async def stream_and_persist(
             provider_id=attribution.provider_id,
             provider_label=attribution.provider_label,
             message_id=terminal_message_id,
+            empty_reply_retry=empty_retry_seen,
+            empty_reply_retry_recovered=empty_retry_recovered_seen,
         )
         yield encode_terminal(
             TerminalEvent(message_id=terminal_message_id, attribution=attribution)

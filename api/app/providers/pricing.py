@@ -111,6 +111,12 @@ def compute_cost_breakdown(
        (`pricing_tiers`, Gemini style) — never both (session wins if mis-set).
        The request-scoped delta over baseline is `session_surcharge_usd`.
 
+    **Charging invariant:** `subtotal_usd` **is** the total — every layer above
+    is already folded into it. `session_surcharge_usd` is a disclosure field
+    describing a part of that total (which portion of `subtotal_usd` the
+    long-context layer added), never an addend. Charging
+    `subtotal_usd + session_surcharge_usd` double-counts the surcharge.
+
     `now` defaults to the current UTC instant (drives the promo window) and is
     injectable so the promo-expiry boundary is unit-testable.
     """
@@ -285,7 +291,9 @@ def build_attribution(
         provider_id=served_provider_id,
         provider_label=route.label if route is not None else served_provider_id,
         is_byok=is_byok,
-        cost_usd=breakdown.subtotal_usd + breakdown.session_surcharge_usd,
+        # `subtotal_usd` is the total; the surcharge is a disclosure slice of it
+        # (see `compute_cost_breakdown`), so adding it here would double-charge.
+        cost_usd=breakdown.subtotal_usd,
         cost_confidence=cost_confidence,
         breakdown=breakdown,
         substitution=sub_obj,

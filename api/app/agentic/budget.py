@@ -18,6 +18,10 @@ budget is enforced at two gates (PRD 01 §"Cost & budget"):
 The estimate is sized against the PRODUCT of the two FR-26g multipliers
 (reasoning-token burn x multi-agent fan-out burn), not either alone, so the cap
 guards the realistic worst case rather than a single-turn baseline.
+
+Both estimators charge `CostBreakdown.subtotal_usd` alone: any long-context
+surcharge is already folded into it and `session_surcharge_usd` is a disclosure
+slice of that total, not an addend (`pricing.compute_cost_breakdown`).
 """
 
 from __future__ import annotations
@@ -91,7 +95,7 @@ def estimate_run_cost(
         binding=binding,
         image_count=image_count,
     )
-    base = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+    base = breakdown.subtotal_usd
     subagents = _subagent_count(sub_question_count, settings)
     return (
         base
@@ -121,7 +125,7 @@ def estimate_residual_run_cost(
         binding=binding,
         image_count=image_count,
     )
-    base = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+    base = breakdown.subtotal_usd
     workers = max(0, remaining_workers)
     # Aggregator always remains on deep-research resume; planner only when asked.
     count = workers + 1

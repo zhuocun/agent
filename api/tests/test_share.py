@@ -482,3 +482,94 @@ async def test_public_get_strips_agentic_continuation_and_claim_keys(
         p for p in body["messages"][0]["parts"] if p.get("type") == "tool_call"
     )
     assert tool_part["input"] == {"title": "Kickoff"}
+
+
+async def test_public_run_summary_omits_dead_worker_count_fields(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """FE-8: `plannedWorkers` / `completedWorkers` are gone from both wires.
+
+    The private dump uses `exclude_none=True`, so two never-populated optional
+    fields were omitted there while `response_model=PublicConversation` (no
+    `response_model_exclude_none`) serialized them as explicit `null`s on the
+    share wire. They are deleted from the schemas, so neither payload carries
+    them and the asymmetry has no root left. Persisted rows may still hold the
+    legacy keys; extra keys are ignored on validation, so the projection drops
+    them rather than failing.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    async with session_factory() as session:
+        conversation = Conversation(
+            user_id=user_id,
+            title="Run summary shared",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(conversation)
+        await session.flush()
+        session.add(
+            Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                parts=[
+                    {"type": "text", "text": "Synthesis of 2 findings."},
+                    {
+                        "type": "agentic_run_summary",
+                        "outcome": "partial",
+                        "budgetHalted": False,
+                        "failedWorkers": 1,
+                        "subtotalUsd": 0.12,
+                        "capUsd": 1.0,
+                        "costConfidence": "exact",
+                        "costPhase": "final",
+                        # Legacy rows can still carry the removed keys.
+                        "plannedWorkers": 4,
+                        "completedWorkers": 2,
+                    },
+                ],
+                status="done",
+                attribution=None,
+                created_at=datetime(2026, 1, 1, 12, 0, 5, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+        conv_id = str(conversation.id)
+
+    private = await client.get(f"/api/conversations/{conv_id}")
+    assert private.status_code == 200
+    private_summary = next(
+        p
+        for p in private.json()["messages"][0]["parts"]
+        if p.get("type") == "agentic_run_summary"
+    )
+
+    token = (
+        await client.post(f"/api/conversations/{conv_id}/share")
+    ).json()["shareToken"]
+    public = await client.get(f"/api/share/{token}")
+    assert public.status_code == 200
+    body = public.json()
+    public_summary = next(
+        p
+        for p in body["messages"][0]["parts"]
+        if p.get("type") == "agentic_run_summary"
+    )
+
+    for summary in (private_summary, public_summary):
+        assert "plannedWorkers" not in summary
+        assert "completedWorkers" not in summary
+    # No `null`-valued worker counts anywhere in the public tree either.
+    assert not _all_keys(body) & {
+        "plannedWorkers",
+        "planned_workers",
+        "completedWorkers",
+        "completed_workers",
+    }
+    # The outcome flags the chip copy reads still cross both wires; the public
+    # projection keeps stripping the cost receipt.
+    assert public_summary["outcome"] == "partial"
+    assert public_summary["failedWorkers"] == 1
+    assert not _all_keys(body) & _FORBIDDEN_COST_KEYS
+    assert private_summary["subtotalUsd"] == 0.12

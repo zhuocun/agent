@@ -12,6 +12,7 @@ import { SubagentPanel } from "@/components/chat/subagent-panel";
 import { ToolGroupPanel } from "@/components/chat/tool-group-panel";
 import { WebSearchPanel } from "@/components/chat/web-search-panel";
 import { ToolPartView } from "@/components/chat/tool-part";
+import { UngroundedMarker } from "@/components/chat/ungrounded-marker";
 import {
   buildAgenticPanelLayout,
   buildSubagentRoleById,
@@ -150,7 +151,14 @@ export function AgenticAssistantParts({
           if (!shouldShowSourcesInMainPanel(part, subagentRoleById)) {
             return null;
           }
-          if (part.items.length === 0) return null;
+          // FE-6: an empty list with `requested` is the ungrounded state. The
+          // same predicate that decides which sources belong to the main answer
+          // decides which empty list is a turn-global ungrounded signal, so the
+          // share view and the private thread cannot drift (AR-015: a
+          // worker-local empty catalog must not brand the synthesis).
+          if (part.items.length === 0) {
+            return part.requested ? <UngroundedMarker key={idx} /> : null;
+          }
           return (
             <SourcesPanel key={idx} ref={sourcesPanelRef} items={part.items} />
           );

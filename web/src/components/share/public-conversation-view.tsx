@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { RotateCw, SearchX } from "lucide-react";
+import { RotateCw } from "lucide-react";
 import Link from "next/link";
 import { Loader2, MessageSquareText } from "lucide-react";
 
@@ -178,16 +178,6 @@ function ConversationBody({
 
 function PublicMessageItem({ message }: { message: PublicMessage }) {
   const { sourcesPanelRef, sourceItems } = useSourcesFromParts(message.parts);
-  // AR-015: only an empty *main/untagged* sources part is a turn-global
-  // ungrounded signal — worker-local empty catalogs must not brand the
-  // synthesized answer as "Answered without live sources".
-  const ungroundedPart = message.parts.find(
-    (p) =>
-      p.type === "sources" &&
-      p.requested &&
-      p.items.length === 0 &&
-      p.subagentId == null,
-  );
 
   if (message.role === "user") {
     const text = message.parts
@@ -211,7 +201,9 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
   }
 
   // Assistant (and any system) turns: render reasoning + text parts with the
-  // same primitives as the private thread, then a cost-free attribution byline.
+  // same primitives as the private thread (including the ungrounded honesty
+  // marker, which AgenticAssistantParts owns), then a cost-free attribution
+  // byline.
   return (
     <div
       className="space-y-3 break-words text-foreground"
@@ -229,27 +221,12 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
         // e.g. a stopped/paused legacy turn should stay silent, not dead-end.
         showEmptyFallback={message.status === "done"}
       />
-      {ungroundedPart ? <PublicUngroundedMarker /> : null}
 
       {message.attribution ? (
         <div className="pt-1">
           <PublicAttributionRow attribution={message.attribution} />
         </div>
       ) : null}
-    </div>
-  );
-}
-
-// Mirror of the private thread's ungrounded honesty marker (PRD 07 §4.3) so a
-// shared ungrounded turn reads "Answered without live sources" too.
-function PublicUngroundedMarker() {
-  return (
-    <div
-      className="inline-flex items-center gap-1.5 ui-caption text-muted-foreground"
-      data-testid="ungrounded-marker"
-    >
-      <SearchX aria-hidden className="size-3.5" />
-      <span>Answered without live sources</span>
     </div>
   );
 }

@@ -1034,17 +1034,31 @@ export function ChatThread() {
           result.answer,
         ),
       );
-      if (
-        result.runCost?.partial ||
-        result.runCost?.budgetHalted ||
-        (result.runCost?.failedWorkerCount ?? 0) > 0
-      ) {
-        const rc = result.runCost;
+      // Carry the run-cost receipt the meter just showed into the committed
+      // parts under the SAME condition the BE persists one (AR-012, mirroring
+      // `_build_agentic_parts`): a final phase, or a partial/halted/failed run.
+      // Matching the condition — and the honesty labels with it — is what makes
+      // the settled bubble and the reloaded bubble derive an identical meter. A
+      // non-final pause deliberately persists nothing on either side, so both
+      // fall back to the reconstructed `estimate` / `plan` labels (FE-3).
+      const rc = result.runCost;
+      const isPartial =
+        !!rc &&
+        (rc.partial === true ||
+          rc.budgetHalted === true ||
+          (rc.failedWorkerCount ?? 0) > 0);
+      if (rc && (rc.phase === "final" || isPartial)) {
         parts.push({
           type: "agentic_run_summary",
-          outcome: "partial",
-          budgetHalted: rc?.budgetHalted === true,
-          failedWorkers: rc?.failedWorkerCount ?? 0,
+          outcome: isPartial ? "partial" : "complete",
+          budgetHalted: rc.budgetHalted === true,
+          failedWorkers: rc.failedWorkerCount ?? 0,
+          subtotalUsd: rc.subtotalUsd,
+          capUsd: rc.capUsd,
+          ...(rc.confidence !== undefined
+            ? { costConfidence: rc.confidence }
+            : {}),
+          ...(rc.phase !== undefined ? { costPhase: rc.phase } : {}),
         });
       }
     } else {

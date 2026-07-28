@@ -92,8 +92,6 @@ class PublicAgenticRunSummaryPart(CamelModel):
     outcome: Literal["complete", "partial"] = "complete"
     budget_halted: bool = False
     failed_workers: int = 0
-    planned_workers: int | None = None
-    completed_workers: int | None = None
 
 
 PublicMessagePart = Annotated[

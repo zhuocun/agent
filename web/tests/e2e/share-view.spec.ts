@@ -228,6 +228,121 @@ test.describe("public share view", () => {
     await expect(page.getByTestId("composer-textarea")).toHaveCount(0);
   });
 
+  // FE-6 / GAP-6: the ungrounded honesty marker ("Answered without live
+  // sources") used to be decided by two different rules. The private thread
+  // asked `shouldShowSourcesInMainPanel`, which counts a `primary`-tagged list
+  // as the main answer's; the share view hard-gated on `subagentId == null`, so
+  // a `primary`-tagged empty catalog silently lost the marker on exactly the
+  // surface where the transparency contract carries the most weight. Both
+  // surfaces now read the one predicate and render the one component.
+  //
+  // `api/app/search/fake.py` always returns three results, so the zero-result
+  // state comes from a route stub — applied identically to the private and the
+  // public payload so any divergence is the renderers', not the fixture's.
+  test("ungrounded marker appears on the share view", async ({ page }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await enableWebSearch(page);
+
+    let capturedConvId: string | null = null;
+    page.on("request", (req) => {
+      const m = req
+        .url()
+        .match(/\/api\/conversations\/([0-9a-fA-F-]{36})\/messages/);
+      if (m && !capturedConvId) capturedConvId = m[1]!;
+    });
+
+    const composer = page.getByTestId("composer-textarea");
+    await composer.fill("What is the latest on Playwright?");
+    await page.getByTestId("composer-send").click();
+
+    const assistant = page.getByTestId("assistant-message").last();
+    await expect(assistant).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+    // Grounded control: real sources landed, so NEITHER surface shows the
+    // marker. Without this half the test would pass on a renderer that always
+    // draws it.
+    await expect(assistant.getByTestId("sources-panel")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(assistant.getByTestId("ungrounded-marker")).toHaveCount(0);
+    await expect.poll(() => capturedConvId).not.toBeNull();
+    const convId = capturedConvId!;
+
+    const shareResp = await page.request.post(
+      `${BE_URL}/api/conversations/${convId}/share`,
+    );
+    expect(shareResp.status()).toBe(200);
+    const share = await shareResp.json();
+
+    await page.goto(share.sharePath);
+    const publicAssistant = page.getByTestId("public-assistant-message").last();
+    await expect(publicAssistant.getByTestId("public-assistant-answer")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(publicAssistant.getByTestId("ungrounded-marker")).toHaveCount(0);
+
+    // Rewrite the persisted turn into the ungrounded state on BOTH payloads:
+    // the search stays `requested`, its catalog empties, and the list is tagged
+    // to a `primary` subagent — the shape whose marker the share view dropped.
+    const asUngrounded = (parts: Array<Record<string, unknown>>) => {
+      for (const part of parts) {
+        if (part.type === "sources") {
+          part.items = [];
+          part.requested = true;
+          part.subagentId = "primary";
+        }
+      }
+      parts.push({
+        type: "subagent",
+        subagentId: "primary",
+        label: "Answer",
+        role: "primary",
+        outcome: "succeeded",
+      });
+    };
+    const stub = async (pattern: string) => {
+      await page.route(pattern, async (route) => {
+        if (route.request().method() !== "GET") return route.fallback();
+        const response = await route.fetch();
+        const body = (await response.json()) as {
+          messages: Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+        };
+        for (const message of body.messages) {
+          if (message.role === "assistant") asUngrounded(message.parts);
+        }
+        await route.fulfill({ response, json: body });
+      });
+    };
+    await stub(`**/api/share/${share.shareToken}`);
+    await stub(`**/api/conversations/${convId}`);
+
+    // The share view: the marker is back, and no empty sources panel takes its
+    // place.
+    await page.goto(share.sharePath);
+    const reloadedPublic = page.getByTestId("public-assistant-message").last();
+    await expect(reloadedPublic.getByTestId("ungrounded-marker")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(reloadedPublic.getByTestId("ungrounded-marker")).toHaveText(
+      "Answered without live sources",
+    );
+    await expect(reloadedPublic.getByTestId("sources-panel")).toHaveCount(0);
+
+    // ...and the private thread reads the same rule on the same payload shape.
+    await page.goto("/");
+    await waitForBootstrap(page);
+    const row = page.locator(`[data-conversation-id="${convId}"]`);
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByTestId("sidebar-conversation-link").click();
+    const reloadedPrivate = page.getByTestId("assistant-message").last();
+    await expect(reloadedPrivate.getByTestId("ungrounded-marker")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(reloadedPrivate.getByTestId("sources-panel")).toHaveCount(0);
+  });
+
   test("a non-404 server error shows the retryable error state", async ({
     page,
   }) => {

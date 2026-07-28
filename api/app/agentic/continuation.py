@@ -78,6 +78,11 @@ SERVER_STATE_PLANNER_COST_KEY = "plannerCostUsd"
 SERVER_STATE_PLANNER_USAGE_KEY = "plannerUsage"
 SERVER_STATE_PRIOR_RUN_COST_KEY = "priorRunCostUsd"
 SERVER_STATE_PRIOR_RUN_USAGE_KEY = "priorRunUsage"
+# FL-28: orchestration mode of the paused run. Lives beside the ledger seeds
+# rather than on the continuation blob because plan-approval / clarify / single
+# pauses have no continuation at all, and a resume onto a different mode
+# consumes the approval and discards the approved work.
+SERVER_STATE_ORCHESTRATION_MODE_KEY = "orchestrationMode"
 
 
 @dataclass(frozen=True)
@@ -427,6 +432,8 @@ class RunLedgerSeeds:
     planner_usage: UsageUpdate | None = None
     prior_run_cost_usd: float = 0.0
     prior_run_usage: UsageUpdate | None = None
+    # FL-28: mode the paused run was orchestrated in, for every pause shape.
+    orchestration_mode: Literal["single", "deep_research"] | None = None
 
 
 def put_run_ledger_in_server_state(
@@ -436,6 +443,7 @@ def put_run_ledger_in_server_state(
     planner_usage: UsageUpdate | dict[str, Any] | None = None,
     prior_run_cost_usd: float | None = None,
     prior_run_usage: UsageUpdate | dict[str, Any] | None = None,
+    orchestration_mode: str | None = None,
 ) -> dict[str, Any]:
     """Merge B4/B5 run-cap ledger seeds into Message.server_state (H-012).
 
@@ -443,6 +451,8 @@ def put_run_ledger_in_server_state(
     ``RESERVED_CONTROL_KEYS`` before the durable row is written.
     """
     out = dict(server_state or {})
+    if orchestration_mode in ("single", "deep_research"):
+        out[SERVER_STATE_ORCHESTRATION_MODE_KEY] = orchestration_mode
     if planner_cost_usd is not None and float(planner_cost_usd) > 0.0:
         out[SERVER_STATE_PLANNER_COST_KEY] = float(planner_cost_usd)
     if planner_usage is not None:
@@ -496,11 +506,18 @@ def get_run_ledger_from_server_state(server_state: object) -> RunLedgerSeeds:
     prior_run_usage = (
         usage_from_wire(prior_usage_raw) if isinstance(prior_usage_raw, dict) else None
     )
+    mode_raw = server_state.get(SERVER_STATE_ORCHESTRATION_MODE_KEY)
+    if mode_raw is None:
+        mode_raw = server_state.get("orchestration_mode")
+    mode: Literal["single", "deep_research"] | None = (
+        mode_raw if mode_raw in ("single", "deep_research") else None
+    )
     return RunLedgerSeeds(
         planner_cost_usd=float(planner_cost_raw or 0.0),
         planner_usage=planner_usage,
         prior_run_cost_usd=float(prior_cost_raw or 0.0),
         prior_run_usage=prior_run_usage,
+        orchestration_mode=mode,
     )
 
 

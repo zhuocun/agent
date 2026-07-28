@@ -1207,6 +1207,214 @@ async def test_verifier_incomplete_n_does_not_claim_pass(
     get_settings.cache_clear()
 
 
+async def test_run_verifier_first_sample_refusal_is_a_budget_halt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-01 (COST-7): an unaffordable FIRST sample is a budget halt as well.
+
+    `budget_halted or bool(samples)` left the flag False when the refusal landed
+    before any sample completed, so `run_verifier` reported `partial` and handed
+    the draft back verbatim — while its own docstring tells callers to gate on
+    that flag. The second-sample refusal already behaved
+    (`test_verifier_incomplete_n_does_not_claim_pass`).
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import run_verifier
+    from app.providers.protocol import ProviderEvent
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "2")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            raise AssertionError("judge must not run when it cannot be afforded")
+
+        return _make
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft="DRAFT BODY",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        can_afford_next_sample=lambda _u, _spent: False,
+        cost_for_usage=lambda _u: 1.0,
+    )
+    assert result.outcome == "budget_halted"
+    assert result.budget_halted is True
+    assert result.samples == ()
+    assert result.answer.startswith("DRAFT BODY")
+    assert result.answer != "DRAFT BODY"
+    assert "[Verification: incomplete" in result.answer
+    assert "run budget" in result.answer
+    # Nothing was consumed, so nothing is billed.
+    assert result.cost_usd == 0.0
+    assert result.usage.input_tokens == 0
+    get_settings.cache_clear()
+
+
+async def test_first_sample_hard_failure_caveats_the_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-02-a (COST-8, verifier arm): a judge that raises on sample 1 says so.
+
+    The no-samples hard-failure return shipped `answer=draft`, so the user saw
+    no sign verification was attempted and failed — unlike its parse-failure
+    sibling. Extends `test_verifier_preserves_usage_when_later_sample_raises`,
+    which covers a LATER sample raising.
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import run_verifier
+    from app.providers.protocol import ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield UsageUpdate(input_tokens=9, output_tokens=4)
+                raise RuntimeError("judge sample 1 boom")
+
+            return _gen()
+
+        return _make
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft="good draft",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        cost_for_usage=lambda u: 0.001 * (u.input_tokens + u.output_tokens),
+    )
+    assert result.outcome == "failed"
+    assert result.samples == ()
+    assert result.answer.startswith("good draft")
+    assert result.answer.rstrip().endswith("run budget / sample quota.]")
+    assert "Verification: pass" not in result.answer
+    # The judge tokens it did consume are still billed.
+    assert result.usage.input_tokens == 9
+    assert result.usage.output_tokens == 4
+    assert result.cost_usd == pytest.approx(0.013)
+    get_settings.cache_clear()
+
+
+_VERIFIER_FAILURE_MODES = (
+    "budget_refusal_first_sample",
+    "budget_cap_after_sample",
+    "hard_failure_first_sample",
+    "hard_failure_later_sample",
+    "unparseable_judge",
+    "draft_past_review_window",
+)
+
+
+@pytest.mark.parametrize("mode", _VERIFIER_FAILURE_MODES)
+async def test_run_verifier_failure_modes_never_return_a_bare_draft(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F3 DoD 3: no `run_verifier` return path hands back an uncaveated draft.
+
+    One case per non-`pass` outcome — `budget_halted`, `failed`, `unavailable`,
+    `partial` — so the honesty contract at
+    `docs/plans/02-agent-architecture.md:255` is executable and a future return
+    path cannot quietly reintroduce a bare draft. Consumed judge tokens are
+    billed in every mode.
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import _MAX_DRAFT_CHARS, run_verifier
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    two_sample_modes = {"budget_cap_after_sample", "hard_failure_later_sample"}
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "2" if mode in two_sample_modes else "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    calls = {"n": 0}
+    reply = (
+        "I am unable to comply with this request."
+        if mode == "unparseable_judge"
+        else '{"verdict":"pass","report":"none"}'
+    )
+    raises_on = {
+        "hard_failure_first_sample": 1,
+        "hard_failure_later_sample": 2,
+    }.get(mode)
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            calls["n"] += 1
+            index = calls["n"]
+
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                usage = UsageUpdate(input_tokens=20, output_tokens=5)
+                if index == raises_on:
+                    yield usage
+                    raise RuntimeError("judge boom")
+                yield AnswerDelta(text=reply)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    draft = "good draft"
+    if mode == "draft_past_review_window":
+        draft = draft + "x" * (_MAX_DRAFT_CHARS + 10)
+    gates: dict[str, object] = {}
+    if mode == "budget_refusal_first_sample":
+        gates["can_afford_next_sample"] = lambda _u, _spent: False
+    if mode == "budget_cap_after_sample":
+        gates["actual_within_cap"] = lambda u, _spent: u.input_tokens <= 10
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft=draft,
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        cost_for_usage=lambda u: 0.001 * (u.input_tokens + u.output_tokens),
+        **gates,  # type: ignore[arg-type]
+    )
+
+    expected_outcome = {
+        "budget_refusal_first_sample": "budget_halted",
+        "budget_cap_after_sample": "budget_halted",
+        "hard_failure_first_sample": "failed",
+        "hard_failure_later_sample": "failed",
+        "unparseable_judge": "unavailable",
+        "draft_past_review_window": "partial",
+    }[mode]
+    assert result.outcome == expected_outcome
+    assert result.answer.startswith("good draft")
+    assert result.answer != draft, "a non-pass outcome must never return a bare draft"
+    assert "[Verification:" in result.answer
+    assert "Verification: pass" not in result.answer
+    # Every sample that opened is billed for what it consumed.
+    assert result.usage.input_tokens == 20 * calls["n"]
+    assert result.cost_usd == pytest.approx(0.025 * calls["n"])
+    get_settings.cache_clear()
+
+
 async def test_verifier_skips_when_budget_blocks_first_sample(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

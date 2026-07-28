@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
@@ -1030,4 +1030,203 @@ def test_b23_queue_put_never_drops_sentinels() -> None:
     assert any(
         isinstance(i, _WorkerSentinel) and i.subagent_id == "worker-b" for i in items
     )
+
+
+# FL-33-a: run-summary persist gate ------------------------------------------
+#
+# Both gates live in `stream_and_persist` closures, so the only way to observe
+# them is through the handler. The orchestrator is stubbed out so the test owns
+# the exact `RunCost` shape each arm emits.
+
+
+@pytest.fixture
+def handler_agentic_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Both flags on, so `stream_and_persist` takes the agentic path."""
+    from app.config import get_settings
+
+    monkeypatch.setenv("TOOLS_ENABLED", "true")
+    monkeypatch.setenv("AGENTIC_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+
+
+class _NeverDisconnected:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _DisconnectAfterFirstFrame:
+    """Disconnect once one frame has been yielded, so the rest is DRAINED.
+
+    The first poll returns False, which parks the consumer on an empty queue —
+    that hands control to the pump, which enqueues the whole (await-free) stub
+    stream in one go. The second poll then cancels the pump with the remaining
+    events already queued, which is exactly the `_apply_event` drain path.
+    """
+
+    def __init__(self) -> None:
+        self._polls = 0
+
+    async def is_disconnected(self) -> bool:
+        self._polls += 1
+        return self._polls > 1
+
+
+class _UnusedProvider:
+    def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise AssertionError("the stubbed orchestrator replaces the provider")
+
+
+async def _drive_stubbed_orchestrator(
+    session_factory: object,
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[ProviderEvent],
+    *,
+    request_stub: object,
+    hold_open: bool = False,
+    web_search: bool = False,
+) -> list[dict[str, object]]:
+    """Run one deep-research turn over `events`; return the persisted parts."""
+    import asyncio as _asyncio
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from app.db.models import Conversation, Message, User
+    from app.providers.tiers import get_binding
+    from app.streaming import handler as handler_mod
+
+    def _fake_run_orchestrator(**_kwargs: object) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            for ev in events:
+                yield ev
+            if hold_open:
+                # A drained turn must not end on its own: the disconnect, not
+                # exhaustion, has to be what ends it.
+                await _asyncio.sleep(30)
+
+        return _gen()
+
+    monkeypatch.setattr(handler_mod, "run_orchestrator", _fake_run_orchestrator)
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:  # type: ignore[operator]
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="fl33a", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    async with session_factory() as session:  # type: ignore[operator]
+        async for _ev in handler_mod.stream_and_persist(
+            request=request_stub,  # type: ignore[arg-type]
+            db=session,
+            provider=_UnusedProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="compare alpha | beta",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            web_search=web_search,
+            agentic_mode="deep_research",
+        ):
+            pass
+
+    async with session_factory() as session:  # type: ignore[operator]
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+            )
+        ).scalars().first()
+    assert row is not None
+    raw = row.parts if isinstance(row.parts, list) else []
+    return [p for p in raw if isinstance(p, dict)]
+
+
+_GATE_MATRIX = [
+    # phase, partial, expected persisted outcome
+    ("plan", True, "partial"),
+    ("plan", False, "partial"),
+    ("progress", True, "partial"),
+    ("progress", False, "partial"),
+    ("final", True, "partial"),
+    ("final", False, "complete"),
+]
+
+
+@pytest.mark.parametrize(("phase", "partial", "expected_outcome"), _GATE_MATRIX)
+@pytest.mark.parametrize("path", ["live", "drain"])
+async def test_run_summary_persist_gate_matrix(
+    handler_agentic_env: None,
+    session_factory: object,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    partial: bool,
+    expected_outcome: str,
+    path: str,
+) -> None:
+    """FL-33-a (FE-3 / GAP-3): every receipt persists, with the emitted labels.
+
+    The old gate (`phase == "final" or partial or budget_halted or
+    failed_worker_count > 0`) dropped a plan pause's and a worker-HITL pause's
+    receipt, so reload re-derived a meter that showed a different number AND
+    claimed exact/final while the plan card above it still said "(estimate)".
+    A non-final phase is never a finished run, so it persists as `partial`.
+
+    The identical table runs through the live gate and the `_apply_event` drain
+    twin, so the two can no longer drift (F2 DoD 6).
+    """
+    confidence = "exact" if phase == "final" else "estimate"
+    events: list[ProviderEvent] = [
+        SubagentStarted(subagent_id="worker-0", label="Alpha", role="worker"),
+        AnswerDelta(text="alpha finding", subagent_id="worker-0"),
+        UsageUpdate(input_tokens=6, output_tokens=3, subagent_id="worker-0"),
+        RunCost(
+            subtotal_usd=0.25,
+            cap_usd=10.0,
+            partial=partial,
+            phase=phase,  # type: ignore[arg-type]
+            confidence=confidence,  # type: ignore[arg-type]
+        ),
+    ]
+    request_stub: object
+    if path == "live":
+        events.append(Complete(usage=UsageUpdate(input_tokens=6, output_tokens=3)))
+        request_stub = _NeverDisconnected()
+    else:
+        request_stub = _DisconnectAfterFirstFrame()
+
+    parts = await _drive_stubbed_orchestrator(
+        session_factory,
+        monkeypatch,
+        events,
+        request_stub=request_stub,
+        hold_open=path == "drain",
+    )
+    summaries = [p for p in parts if p.get("type") == "agentic_run_summary"]
+    assert len(summaries) == 1, f"{path}/{phase}/{partial} persisted no receipt"
+    summary = summaries[0]
+    assert summary["outcome"] == expected_outcome
+    assert summary["subtotalUsd"] == pytest.approx(0.25)
+    # The honesty labels are the ones the backend emitted, never re-derived.
+    assert summary["costConfidence"] == confidence
+    assert summary["costPhase"] == phase
 

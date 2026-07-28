@@ -384,6 +384,29 @@ def _outcome_from_settled_part(
     )
 
 
+def _adoptable_claim(call_part: dict[str, Any], decision: str) -> str | None:
+    """FL-29: the row's own claim id when a pseudo-tool claim never settled.
+
+    A crash (or a Fly machine restart) between the claim commit and the settle
+    write leaves the ``tool_call`` terminal-but-unsettled, which
+    ``_raise_incomplete_or_conflict`` turns into a permanent 409 — the pause card
+    can never be resolved again and the whole turn is stranded. Pseudo-tool
+    settlement never calls ``execute_tool``
+    (``settle_pseudo_tool_approval_outcome``), so re-entering under the existing
+    claim replays no side effect: it only finishes the write that was
+    interrupted. Returns None for an absent claim or a decision the row does not
+    already record, so an opposite decision still conflicts. The registry path
+    (``claim_and_settle_approval_outcome``) keeps failing closed — BE-007.
+    """
+    approval_state = str(call_part.get("approvalState") or "")
+    if approval_state not in ("approved", "rejected"):
+        return None
+    if _decision_from_approval_state(approval_state) != decision:
+        return None
+    existing = call_part.get(APPROVAL_CLAIM_ID_KEY)
+    return str(existing) if existing is not None else None
+
+
 def _raise_incomplete_or_conflict(
     *,
     tool_call_id: str,
@@ -476,55 +499,66 @@ async def settle_pseudo_tool_approval_outcome(
                 )
 
             approval_state = str(call_part.get("approvalState") or "")
-            if approval_state != "pending":
-                _raise_incomplete_or_conflict(
-                    tool_call_id=tool_call_id,
-                    decision=decision,
-                    approval_state=approval_state,
-                )
-
-            minted_claim = claim_id or f"claim-{secrets.token_urlsafe(12)}"
-            claimed = deepcopy(call_part)
-            if decision == "approve":
-                claimed["approvalState"] = "approved"
-                claimed["status"] = "running"
-            else:
-                claimed["approvalState"] = "rejected"
-                claimed["status"] = "cancelled"
-            claimed[APPROVAL_CLAIM_ID_KEY] = minted_claim
-            expected_version = int(getattr(locked, "parts_version", 0) or 0)
-            won = await _cas_persist_parts(
-                db,
-                message_id=message_id,
-                parts=_replace_tool_call(parts, tool_call_id, claimed),
-                expected_version=expected_version,
-            )
-            if not won:
-                # Lost claim CAS — re-read; never stale-overwrite.
-                locked = await _lock_message(db, message_id)
-                parts = list(locked.parts or [])
-                existing = find_settled_tool_result(parts, tool_call_id)
-                call_part = find_tool_call_part(parts, tool_call_id)
-                tool_name = str((call_part or {}).get("name") or tool_name)
-                if existing is not None:
-                    return _outcome_from_settled_part(
-                        existing,
+            # FL-29: adopt an orphaned claim instead of stranding the card.
+            adopted_claim = _adoptable_claim(call_part, decision)
+            minted_claim = adopted_claim or claim_id or f"claim-{secrets.token_urlsafe(12)}"
+            if adopted_claim is None:
+                if approval_state != "pending":
+                    _raise_incomplete_or_conflict(
                         tool_call_id=tool_call_id,
-                        tool_name=tool_name,
                         decision=decision,
-                        call_part=call_part,
-                        already_settled=True,
+                        approval_state=approval_state,
                     )
-                if call_part is None:
-                    raise ApprovalSettlementIncomplete(
-                        tool_call_id=tool_call_id,
-                        detail="No matching tool call to settle.",
-                    )
-                _raise_incomplete_or_conflict(
-                    tool_call_id=tool_call_id,
-                    decision=decision,
-                    approval_state=str(call_part.get("approvalState") or "approved"),
+
+                claimed = deepcopy(call_part)
+                if decision == "approve":
+                    claimed["approvalState"] = "approved"
+                    claimed["status"] = "running"
+                else:
+                    claimed["approvalState"] = "rejected"
+                    claimed["status"] = "cancelled"
+                claimed[APPROVAL_CLAIM_ID_KEY] = minted_claim
+                expected_version = int(getattr(locked, "parts_version", 0) or 0)
+                won = await _cas_persist_parts(
+                    db,
+                    message_id=message_id,
+                    parts=_replace_tool_call(parts, tool_call_id, claimed),
+                    expected_version=expected_version,
                 )
+                if not won:
+                    # Lost claim CAS — re-read; never stale-overwrite.
+                    locked = await _lock_message(db, message_id)
+                    parts = list(locked.parts or [])
+                    existing = find_settled_tool_result(parts, tool_call_id)
+                    call_part = find_tool_call_part(parts, tool_call_id)
+                    tool_name = str((call_part or {}).get("name") or tool_name)
+                    if existing is not None:
+                        return _outcome_from_settled_part(
+                            existing,
+                            tool_call_id=tool_call_id,
+                            tool_name=tool_name,
+                            decision=decision,
+                            call_part=call_part,
+                            already_settled=True,
+                        )
+                    if call_part is None:
+                        raise ApprovalSettlementIncomplete(
+                            tool_call_id=tool_call_id,
+                            detail="No matching tool call to settle.",
+                        )
+                    # FL-29: the CAS winner may itself be an unsettled
+                    # same-decision claim. Fixing only the straight-line exit
+                    # above would leave this window stranding the card.
+                    adopted_claim = _adoptable_claim(call_part, decision)
+                    if adopted_claim is None:
+                        _raise_incomplete_or_conflict(
+                            tool_call_id=tool_call_id,
+                            decision=decision,
+                            approval_state=str(
+                                call_part.get("approvalState") or "approved"
+                            ),
+                        )
+                    minted_claim = str(adopted_claim)
 
             locked = await _lock_message(db, message_id)
             parts_after = list(locked.parts or [])
@@ -655,6 +689,7 @@ async def claim_and_settle_approval_outcome(
                 decision=decision,
                 claim_id=claim_id,
                 subagent_id=subagent_id,
+                label=label,
             )
             if isinstance(claimed, SettlementOutcome):
                 return claimed
@@ -735,12 +770,22 @@ async def claim_and_settle_approval_outcome(
             )
         if not settled_ok:
             # Executed but settlement did not land — fail closed so callers do not
-            # treat an unpersisted side effect as durable success.
-            failed = _claimed_without_result_failure(
-                tool_call_id=tool_call_id,
-                name=tool_name,
-                approval_state="approved" if decision == "approve" else "rejected",
-            )
+            # treat an unpersisted side effect as durable success. FL-31: still
+            # try to write that failure under our own claim so the row does not
+            # strand at approved/running (a no-op when we no longer own it).
+            async with lock:
+                failed = await _persist_claimed_without_result(
+                    db,
+                    message_id=message_id,
+                    tool_call_id=tool_call_id,
+                    existing_claim=minted_claim,
+                    tool_name=tool_name,
+                    approval_state=(
+                        "approved" if decision == "approve" else "rejected"
+                    ),
+                    label=label,
+                    subagent_id=part_subagent,
+                )
             return SettlementOutcome(
                 result=failed,
                 decision=_decision_from_approval_state(failed.approval_state),
@@ -758,6 +803,45 @@ async def claim_and_settle_approval_outcome(
         await _release_claim_lock_if_idle(message_id, tool_call_id)
 
 
+async def _persist_claimed_without_result(
+    db: AsyncSession,
+    *,
+    message_id: UUID,
+    tool_call_id: str,
+    existing_claim: object,
+    tool_name: str,
+    approval_state: str,
+    label: str | None,
+    subagent_id: str | None,
+) -> ToolExecutionResult:
+    """FL-31: make a claimed-but-unsettled registry approval terminal on the row.
+
+    The safety goal (BE-007) was already met — nothing re-executes — but the
+    durability goal was not: the ``tool_call`` stayed ``approved`` / ``running``
+    with no ``tool_result``, so every refetch kept rendering the card as in
+    flight and no retry could ever terminalize it. Persisting the *failure*
+    replay executes nothing, so fail-closed is untouched. Written under the
+    row's **existing** claim id, so ``_settle_under_claim`` refuses when this
+    session does not own the claim.
+    """
+    failure = _claimed_without_result_failure(
+        tool_call_id=tool_call_id,
+        name=tool_name,
+        approval_state=approval_state,
+    )
+    if existing_claim is not None:
+        await _settle_under_claim(
+            db,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            minted_claim=str(existing_claim),
+            result=failure,
+            label=label,
+            subagent_id=subagent_id,
+        )
+    return failure
+
+
 async def _claim_pending_locked(
     db: AsyncSession,
     *,
@@ -766,6 +850,7 @@ async def _claim_pending_locked(
     decision: str,
     claim_id: str | None,
     subagent_id: str | None,
+    label: str | None = None,
 ) -> SettlementOutcome | tuple[str, str, str | None]:
     locked = await _lock_message(db, message_id)
     parts: list[Any] = list(locked.parts or [])
@@ -816,11 +901,18 @@ async def _claim_pending_locked(
 
     approval_state = str(call_part.get("approvalState") or "")
     if approval_state != "pending":
-        # Already claimed without a result: fail closed (never re-execute).
-        result = _claimed_without_result_failure(
+        # Already claimed without a result: fail closed (never re-execute), and
+        # FL-31: persist that failure so the row actually reaches a terminal
+        # state instead of rendering approved/running forever.
+        result = await _persist_claimed_without_result(
+            db,
+            message_id=message_id,
             tool_call_id=tool_call_id,
-            name=tool_name,
+            existing_claim=call_part.get(APPROVAL_CLAIM_ID_KEY),
+            tool_name=tool_name,
             approval_state=approval_state,
+            label=label,
+            subagent_id=part_subagent,
         )
         return SettlementOutcome(
             result=result,
@@ -901,10 +993,16 @@ async def _claim_pending_locked(
             return SettlementOutcome(
                 result=result, decision="deny", already_settled=False
             )
-        result = _claimed_without_result_failure(
+        # FL-31: same durable failure on the lost-claim-CAS exit.
+        result = await _persist_claimed_without_result(
+            db,
+            message_id=message_id,
             tool_call_id=tool_call_id,
-            name=tool_name,
+            existing_claim=call_part.get(APPROVAL_CLAIM_ID_KEY),
+            tool_name=tool_name,
             approval_state=str(call_part.get("approvalState") or "approved"),
+            label=label,
+            subagent_id=part_subagent,
         )
         return SettlementOutcome(
             result=result,

@@ -1856,3 +1856,251 @@ async def test_h010_two_consecutive_worker_approvals_keep_transcript(
     )
     assert resume2[-1][0] == "terminal"
     assert resume2[-1][1]["status"] == "done"
+
+
+async def test_worker_pause_pins_served_route_identity(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """FL-32 (HITL-5): the AR-006 route pin has to actually reach the checkpoint.
+
+    `serialize_continuation` emits `tierId` / `providerId` / `modelId`
+    unconditionally, as `None` — so the handler's `cont_blob.setdefault(...)`
+    never fired and all three stayed null. That left the three route guards in
+    `send_message` dead: a resume could silently move a settled continuation to
+    a different tier, provider, or model.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    pause_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000051",
+            "tierId": "smart",
+            "text": _WORKER_HITL_PROMPT,
+            "agenticMode": "deep_research",
+        },
+    )
+    assert pause_frames[-1][1]["status"] == "awaiting_approval"
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused = next(
+        m for m in msgs if m.role == "assistant" and m.status == "awaiting_approval"
+    )
+    call_id = "worker-0::fake_worker_cal_0"
+    cont = get_continuation_from_server_state(paused.server_state, call_id)
+    assert cont is not None
+    assert cont.tier_id == "smart"
+    assert cont.provider_id
+    assert cont.model_id
+    # FL-28's companion pin: the mode is recorded for the resume too.
+    assert cont.orchestration_mode == "deep_research"
+
+    # With the pin populated, the dead guard rejects a cross-tier resume.
+    resp = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "f0000000-0000-0000-0000-000000000052",
+            "tierId": "fast",
+            "text": "",
+            "toolApproval": {"toolCallId": call_id, "decision": "approve"},
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "INVALID_INPUT"
+
+
+class _NoDisconnect:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _UnusedProvider:
+    def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise AssertionError("the stubbed orchestrator replaces the provider")
+
+
+async def test_paused_fallback_worker_is_billed_and_attributed_on_the_fallback_binding(
+    agentic_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-30 (COST-2, live-pause arm): the pause must pay the fallback price.
+
+    A live HITL pause stays non-terminal (B15), so the paused worker never gets a
+    `SubagentDone` to carry `substitution`. The handler therefore priced its
+    banked usage on the PRIMARY binding and persisted a primary attribution — a
+    silent downgrade plus a permanently unbilled remainder, since
+    `_billable_cost_delta` later subtracts the larger orchestrator-side
+    `pausedWorkerCostUsd`.
+
+    The orchestrator is stubbed so the fan-out shape (paused fallback worker +
+    completed primary sibling) and the reported `RunCost` are exact.
+    """
+    from uuid import uuid4
+
+    from app.providers.pricing import compute_cost_breakdown
+    from app.providers.protocol import (
+        AnswerDelta,
+        AwaitingApproval,
+        ProviderEvent,
+        RunCost,
+        SubagentDone,
+        SubagentStarted,
+        ToolCall,
+        UsageUpdate,
+    )
+    from app.providers.tiers import get_binding
+    from app.streaming import handler as handler_mod
+
+    binding = get_binding("smart")
+    fallback_binding = get_binding("pro")
+    assert binding is not None and fallback_binding is not None
+    assert fallback_binding.model_id != binding.model_id
+
+    paused_usage = UsageUpdate(input_tokens=900, output_tokens=400)
+    # What the orchestrator banked for the paused worker: the FALLBACK price.
+    paused_cost = compute_cost_breakdown(
+        usage=paused_usage, binding=fallback_binding, image_count=0
+    ).subtotal_usd
+    primary_cost = compute_cost_breakdown(
+        usage=paused_usage, binding=binding, image_count=0
+    ).subtotal_usd
+    assert paused_cost > primary_cost  # otherwise the arm proves nothing
+    sibling_cost = 0.011
+    run_subtotal = paused_cost + sibling_cost
+
+    call_id = "worker-0::cal-1"
+    events: list[ProviderEvent] = [
+        SubagentStarted(subagent_id="worker-0", label="Alpha", role="worker"),
+        SubagentStarted(subagent_id="worker-1", label="Beta", role="worker"),
+        AnswerDelta(text="beta done", subagent_id="worker-1"),
+        SubagentDone(
+            subagent_id="worker-1",
+            label="Beta",
+            role="worker",
+            usage=UsageUpdate(input_tokens=20, output_tokens=8),
+            cost_usd=sibling_cost,
+            outcome="succeeded",
+        ),
+        AnswerDelta(text="alpha partial", subagent_id="worker-0"),
+        UsageUpdate(
+            input_tokens=paused_usage.input_tokens,
+            output_tokens=paused_usage.output_tokens,
+            subagent_id="worker-0",
+        ),
+        ToolCall(
+            id=call_id,
+            name="calendar_create_event",
+            label="Create calendar event",
+            status="awaiting_approval",
+            approval_state="pending",
+            input={"title": "kickoff"},
+            subagent_id="worker-0",
+        ),
+        # FL-14: the receipt precedes the pause terminal on the wire.
+        RunCost(
+            subtotal_usd=run_subtotal,
+            cap_usd=10.0,
+            confidence="exact",
+            phase="final",
+            partial=True,
+        ),
+        AwaitingApproval(
+            tool_call_id=call_id,
+            subagent_id="worker-0",
+            continuation={
+                "phase": "worker",
+                "pausedSubagentId": "worker-0",
+                "userText": "compare alpha | beta",
+                "plan": ["alpha", "beta"],
+                "pausedWorkerIndex": 0,
+                "pausedSubQuestion": "alpha",
+                "pausedWorkerUsedFallback": True,
+                "pausedWorkerCostUsd": paused_cost,
+                "actualCostUsd": run_subtotal,
+            },
+        ),
+    ]
+
+    def _fake_run_orchestrator(**_kwargs: object) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            for ev in events:
+                yield ev
+
+        return _gen()
+
+    monkeypatch.setattr(handler_mod, "run_orchestrator", _fake_run_orchestrator)
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="fl30", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    async with session_factory() as session:
+        async for _ev in handler_mod.stream_and_persist(
+            request=_NoDisconnect(),  # type: ignore[arg-type]
+            db=session,
+            provider=_UnusedProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="compare alpha | beta",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            fallback_binding=fallback_binding,
+            fallback_provider_id="openai",
+            fallback_substitution="provider_fallback",
+            agentic_mode="deep_research",
+        ):
+            pass
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+            )
+        ).scalars().first()
+    assert row is not None
+    assert row.status == "awaiting_approval"
+
+    # F2 DoD 5: the billed amount IS the orchestrator's reported subtotal.
+    assert float(row.cost_usd or 0.0) == pytest.approx(run_subtotal)
+    attribution = row.attribution
+    assert isinstance(attribution, dict)
+    assert float(attribution["costUsd"]) == pytest.approx(run_subtotal)
+
+    parts = [p for p in (row.parts or []) if isinstance(p, dict)]
+    paused_part = next(
+        p
+        for p in parts
+        if p.get("type") == "subagent" and p.get("subagentId") == "worker-0"
+    )
+    part_attr = paused_part.get("attribution")
+    assert isinstance(part_attr, dict)
+    # Attributed to the route that actually served, with the disclosure reason.
+    assert part_attr["servedTierId"] == fallback_binding.tier.id
+    assert part_attr["servedModelLabel"] == fallback_binding.model_label
+    assert part_attr["providerId"] == "openai"
+    substitution = part_attr.get("substitution")
+    assert isinstance(substitution, dict)
+    assert substitution["reasonCode"] == "provider_fallback"
+    assert float(part_attr["costUsd"]) == pytest.approx(paused_cost)

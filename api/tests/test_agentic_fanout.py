@@ -1054,3 +1054,134 @@ async def test_every_started_subagent_reaches_a_terminal_outcome_on_stop(
     # real outcome rather than the persist-time default.
     assert outcomes["planner"] == "succeeded"
     assert "aggregator" not in outcomes
+
+
+# FL-35: a grounded agentic turn must not end with an "ungrounded" frame --------
+
+
+class _NoDisconnect:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _DisconnectAfterFirstFrame:
+    """Disconnect after one yielded frame, so the rest is folded by the drain."""
+
+    def __init__(self) -> None:
+        self._polls = 0
+
+    async def is_disconnected(self) -> bool:
+        self._polls += 1
+        return self._polls > 1
+
+
+class _UnusedProvider:
+    def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise AssertionError("the stubbed orchestrator replaces the provider")
+
+
+@pytest.mark.parametrize("path", ["live", "drain"])
+async def test_grounded_agentic_turn_emits_no_ungrounded_sources_frame(
+    agentic_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    """FL-35 (FE-5): tagged sources still ground the turn.
+
+    `saw_sources_event` was only set in the untagged arm of the `Sources`
+    handler, so a fully subagent-tagged agentic turn fell through to the
+    ungrounded honesty frame (`items=[]`, `requested=True`) — telling a
+    frame-reading consumer the cited answer had no live sources.
+
+    The `drain` arm pins the `_apply_event` twin: only the success path can emit
+    the honesty frame, so what the drain has to guarantee is that a stopped turn
+    folds the tagged sources identically rather than dropping them.
+    """
+    import asyncio as _asyncio
+
+    from app.providers.protocol import Sources, SubagentStarted
+    from app.providers.tiers import get_binding
+    from app.search.protocol import SourceItem
+    from app.streaming import handler as handler_mod
+
+    items = [
+        SourceItem(id=1, title="Alpha source", url="https://example.test/alpha"),
+        SourceItem(id=2, title="Beta source", url="https://example.test/beta"),
+    ]
+    events: list[ProviderEvent] = [
+        SubagentStarted(subagent_id="worker-0", label="Alpha", role="worker"),
+        Sources(items=items, subagent_id="worker-0"),
+        AnswerDelta(text="grounded finding [1][2]", subagent_id="worker-0"),
+        UsageUpdate(input_tokens=8, output_tokens=4, subagent_id="worker-0"),
+    ]
+    if path == "live":
+        events.append(Complete(usage=UsageUpdate(input_tokens=8, output_tokens=4)))
+
+    def _fake_run_orchestrator(**_kwargs: object) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            for ev in events:
+                yield ev
+            if path == "drain":
+                await _asyncio.sleep(30)
+
+        return _gen()
+
+    monkeypatch.setattr(handler_mod, "run_orchestrator", _fake_run_orchestrator)
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="fl35", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    frames: list[tuple[str, dict[str, object]]] = []
+    request_stub: object = (
+        _NoDisconnect() if path == "live" else _DisconnectAfterFirstFrame()
+    )
+    async with session_factory() as session:
+        async for ev in handler_mod.stream_and_persist(
+            request=request_stub,  # type: ignore[arg-type]
+            db=session,
+            provider=_UnusedProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="compare alpha | beta",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            web_search=True,
+            agentic_mode="deep_research",
+        ):
+            payload: dict[str, object] = {}
+            if ev.data:
+                try:
+                    payload = json.loads(ev.data)
+                except json.JSONDecodeError:
+                    payload = {}
+            frames.append((ev.event or "", payload))
+
+    sources_frames = [d for n, d in frames if n == "sources"]
+    assert not any(
+        d.get("items") == [] and d.get("requested") is True for d in sources_frames
+    ), "grounded turn emitted the ungrounded honesty frame"
+
+    msgs = await _load_messages(session_factory, conv_id)
+    assistant = [m for m in msgs if m.role == "assistant"]
+    assert len(assistant) == 1
+    sources_parts = [p for p in _parts(assistant[0]) if p.get("type") == "sources"]
+    assert sources_parts, "the tagged sources must persist"
+    assert all(p.get("items") for p in sources_parts)

@@ -2052,6 +2052,9 @@ async def send_message(
             custom_instructions=effective_instructions,
             supports_attachments=binding.supports_attachments,
             supports_vision=binding.supports_vision,
+            # FL-28: mode conflicts are decided before the pseudo-tool settle, so
+            # a rejected resume cannot consume the approval.
+            requested_agentic_mode=body.agentic_mode,
         )
 
     # Claim the single active stream BEFORE mutating message history. The row is
@@ -2292,10 +2295,9 @@ async def send_message(
             binding=binding,
             image_count=0,
         )
-        compaction_cost = (
-            compaction_breakdown.subtotal_usd
-            + compaction_breakdown.session_surcharge_usd
-        )
+        # FL-34-b: `subtotal_usd` is the total; `session_surcharge_usd` only
+        # discloses the part of it attributable to the long-context band.
+        compaction_cost = compaction_breakdown.subtotal_usd
         if compaction_cost > 0:
             await usage_repo.increment_for_period(
                 db,
@@ -2475,14 +2477,19 @@ async def send_message(
         )
     if not agentic_feature_on:
         effective_agentic_mode = None
-    if resume_seed is not None and resume_seed.agentic_continuation is not None:
-        pinned_mode = getattr(
-            resume_seed.agentic_continuation, "orchestration_mode", None
-        )
-        if pinned_mode in ("single", "deep_research"):
-            effective_agentic_mode = pinned_mode
-        elif effective_agentic_mode is None:
+    # FL-28: pin the mode for EVERY resumable pause shape, not just the ones
+    # carrying a worker continuation. `_prepare_resume_tool` already rejected a
+    # conflicting explicit `agenticMode` (before settling), so this only applies
+    # the checkpoint's mode; a legacy pause with no stamp keeps the historical
+    # `deep_research` default for continuation-bearing seeds.
+    if agentic_feature_on and resume_seed is not None:
+        if resume_seed.orchestration_mode is not None:
+            effective_agentic_mode = resume_seed.orchestration_mode
+        elif resume_seed.agentic_continuation is not None and (
+            effective_agentic_mode is None
+        ):
             effective_agentic_mode = "deep_research"
+    if resume_seed is not None and resume_seed.agentic_continuation is not None:
         pinned_tier = getattr(resume_seed.agentic_continuation, "tier_id", None)
         if (
             isinstance(pinned_tier, str)
@@ -3215,6 +3222,39 @@ def _find_any_resumable_tool_call(
     return None
 
 
+def _pin_orchestration_mode(
+    *,
+    pinned_mode: Literal["single", "deep_research"] | None,
+    requested_mode: Literal["single", "deep_research"] | None,
+    reject_conflict: bool,
+) -> Literal["single", "deep_research"] | None:
+    """FL-28: a pause resumes onto the mode it paused in, never a client-chosen one.
+
+    Resolved BEFORE any settlement so a rejected resume cannot burn the approval:
+    honouring the request consumed the approval and then discarded the approved
+    work, destroying one conversation turn unrecoverably.
+
+    ``reject_conflict`` picks the arm. Worker-continuation and single-mode pauses
+    keep H-002's silent pin (the checkpoint wins, the run continues).
+    Plan-approval / clarify pauses refuse a conflicting explicit ``agenticMode``
+    with 400, matching the tier / provider / model rejections in
+    ``send_message`` — there is no coherent way to run an approved research plan
+    in single mode.
+    """
+    if pinned_mode is None:
+        return None
+    if (
+        reject_conflict
+        and requested_mode is not None
+        and requested_mode != pinned_mode
+    ):
+        raise _invalid_input(
+            "INVALID_INPUT",
+            "Resume agenticMode does not match the paused run checkpoint.",
+        )
+    return pinned_mode
+
+
 async def _prepare_resume_tool(
     *,
     db: AsyncSession,
@@ -3225,6 +3265,7 @@ async def _prepare_resume_tool(
     custom_instructions: str | None,
     supports_attachments: bool,
     supports_vision: bool,
+    requested_agentic_mode: Literal["single", "deep_research"] | None = None,
 ) -> tuple[UUID, list[ProviderChatMessage], str, list[AttachmentPayload], ResumeToolSeed]:
     """Resolve + RE-VALIDATE a human-in-the-loop tool approval, return the seed.
 
@@ -3279,6 +3320,15 @@ async def _prepare_resume_tool(
     if tool_name == PLAN_APPROVAL_TOOL_NAME and is_plan_approval_call_id(
         decision.tool_call_id
     ):
+        # B4: planner spend lives in server_state (sanitize strips tool-input).
+        plan_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
+        # FL-28: resolve the mode BEFORE the settle. A plan approval only exists
+        # in Deep Research, so a `single` resume is a conflict, not a coercion.
+        plan_mode = _pin_orchestration_mode(
+            pinned_mode=plan_ledger.orchestration_mode or "deep_research",
+            requested_mode=requested_agentic_mode,
+            reject_conflict=True,
+        )
         user_message_id = last_assistant.responds_to_message_id
         if user_message_id is None:
             last_user = await messages_repo.get_last_user_message(db, conversation_id)
@@ -3351,8 +3401,6 @@ async def _prepare_resume_tool(
             user_message_id=user_message_id,
         ):
             raise _approval_already_settled()
-        # B4: planner spend lives in server_state (sanitize strips tool-input).
-        plan_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
@@ -3372,6 +3420,7 @@ async def _prepare_resume_tool(
             settled_result=outcome.result,
             prior_planner_cost_usd=plan_ledger.planner_cost_usd,
             prior_planner_usage=plan_ledger.planner_usage,
+            orchestration_mode=plan_mode,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3382,6 +3431,14 @@ async def _prepare_resume_tool(
     if tool_name == PLAN_CLARIFY_TOOL_NAME and is_plan_clarify_call_id(
         decision.tool_call_id
     ):
+        # FL-28: same pre-settle mode resolution as plan approval — clarify
+        # before plan only runs in Deep Research.
+        clarify_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
+        clarify_mode = _pin_orchestration_mode(
+            pinned_mode=clarify_ledger.orchestration_mode or "deep_research",
+            requested_mode=requested_agentic_mode,
+            reject_conflict=True,
+        )
         user_message_id = last_assistant.responds_to_message_id
         if user_message_id is None:
             last_user = await messages_repo.get_last_user_message(db, conversation_id)
@@ -3494,6 +3551,7 @@ async def _prepare_resume_tool(
             clarify_records=clarify_records_tuple,
             clarify_answers=clarify_answers,
             settled_result=outcome.result,
+            orchestration_mode=clarify_mode,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3516,6 +3574,21 @@ async def _prepare_resume_tool(
         server_state=last_assistant.server_state,
         tool_input=raw_input,
         tool_call_id=decision.tool_call_id,
+    )
+    # B5: single-mode pause ledger from server_state (not tool input).
+    tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
+    # FL-28: pin the paused run's mode before any settlement runs. Prefer the
+    # continuation's own pin; single-mode pauses carry no continuation, so they
+    # fall back to the server_state stamp.
+    tool_mode = _pin_orchestration_mode(
+        pinned_mode=(
+            getattr(agentic_continuation, "orchestration_mode", None)
+            if agentic_continuation is not None
+            else None
+        )
+        or tool_ledger.orchestration_mode,
+        requested_mode=requested_agentic_mode,
+        reject_conflict=False,
     )
     effective_input: dict[str, object] = cleaned_input
     if decision.edited_input is not None:
@@ -3625,8 +3698,6 @@ async def _prepare_resume_tool(
         ):
             raise _approval_already_settled()
 
-    # B5: single-mode pause ledger from server_state (not tool input).
-    tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
     seed = ResumeToolSeed(
         tool_call_id=decision.tool_call_id,
         name=tool_name,
@@ -3644,6 +3715,7 @@ async def _prepare_resume_tool(
         prior_run_usage=tool_ledger.prior_run_usage,
         prior_planner_cost_usd=tool_ledger.planner_cost_usd,
         prior_planner_usage=tool_ledger.planner_usage,
+        orchestration_mode=tool_mode,
     )
     # Worker continuation resumes with the original user text (the orchestrator
     # continues that subagent). Aggregator continuation is not supported (O-011).

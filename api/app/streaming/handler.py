@@ -269,6 +269,11 @@ class ResumeToolSeed:
     # B5: single-mode pause ledger (from Message.server_state).
     prior_run_cost_usd: float = 0.0
     prior_run_usage: UsageUpdate | None = None
+    # FL-28: orchestration mode the pause was taken in, for EVERY pause shape
+    # (plan approval / clarify / single / worker continuation). The route pins
+    # this instead of honouring a client-chosen `agenticMode`, which would
+    # consume the approval and then discard the approved work.
+    orchestration_mode: Literal["single", "deep_research"] | None = None
 
 
 @dataclass
@@ -302,6 +307,9 @@ class _SubagentAccumulator:
     latest_status: tuple[str, str] | None = None
     search_items: list[Any] = field(default_factory=list)
     saw_sources: bool = False
+    # FL-37: per-subagent reasoning wall-clock (monotonic start, closed seconds).
+    reasoning_started_at: float | None = None
+    reasoning_duration_sec: float | None = None
 
 
 def mark_unfinished_subagents_stopped(
@@ -328,6 +336,40 @@ def mark_unfinished_subagents_paused(
     ``stopped`` renders as a non-success cancelled state.
     """
     mark_unfinished_subagents_stopped(subagents)
+
+
+def build_agentic_run_summary_part(ev: RunCost) -> AgenticRunSummaryPart:
+    """Fold a ``RunCost`` into the persisted receipt (FL-33-a).
+
+    Every receipt persists, including a plan pause and a worker-HITL pause: the
+    old gate (``phase == "final" or partial or budget_halted or
+    failed_worker_count > 0``) dropped a paused run's receipt entirely, so reload
+    re-derived a meter that both showed a different number and claimed
+    exact/final while the plan card above it still said "(estimate)".
+
+    A non-final phase is by definition not a finished run, so it folds to
+    ``partial`` regardless of the flags — a resumable pause must never read as a
+    completed receipt. The live and drain gates both call this so they cannot
+    drift (F2 DoD 6).
+    """
+    return AgenticRunSummaryPart(
+        outcome=(
+            "partial"
+            if (
+                ev.partial
+                or ev.budget_halted
+                or ev.failed_worker_count > 0
+                or ev.phase != "final"
+            )
+            else "complete"
+        ),
+        budget_halted=ev.budget_halted,
+        failed_workers=ev.failed_worker_count,
+        subtotal_usd=ev.subtotal_usd,
+        cap_usd=ev.cap_usd,
+        cost_confidence=ev.confidence,
+        cost_phase=ev.phase,
+    )
 
 
 def tool_results_from_message_parts(
@@ -806,6 +848,11 @@ async def stream_and_persist(
     answer_buf: list[str] = []
     final_usage = UsageUpdate()
     emitted_reasoning_done = False
+    # FL-37: reasoning wall-clock for the untagged stream, measured on the same
+    # monotonic base as `first_answer_ms` and persisted as ReasoningPart
+    # `durationSec` so "Thought for Ns" survives a reload.
+    reasoning_started_at: float | None = None
+    reasoning_duration_sec: float | None = None
     # Web-search accumulators (only populated when the provider emits the
     # corresponding events). `latest_status` holds the most recent
     # (label, state) so the persisted `status` part records the final line (the
@@ -836,6 +883,8 @@ async def stream_and_persist(
     pending_planner_usage: UsageUpdate | None = None
     pending_prior_run_cost_usd: float = 0.0
     pending_prior_run_usage: UsageUpdate | None = None
+    # FL-28: orchestration mode stamped onto the pause row so resume pins it.
+    pending_orchestration_mode: str | None = None
     # Captured once so the per-turn tools gate + agent-loop wrapping read a
     # stable value (and tests can override via a settings cache flush).
     handler_settings = get_settings()
@@ -940,6 +989,40 @@ async def stream_and_persist(
             agentic_subagents[subagent_id] = acc
             agentic_order.append(subagent_id)
         return acc
+
+    def _open_reasoning_clock(subagent_id: str | None) -> None:
+        """FL-37: start the reasoning clock on the first delta for this scope."""
+        nonlocal reasoning_started_at
+        if agentic_active and subagent_id is not None:
+            acc = _sub(subagent_id)
+            if acc.reasoning_started_at is None:
+                acc.reasoning_started_at = time.monotonic()
+            return
+        if reasoning_started_at is None:
+            reasoning_started_at = time.monotonic()
+
+    def _close_reasoning_clock(subagent_id: str | None) -> None:
+        """FL-37: close the reasoning clock at ReasoningDone / first AnswerDelta.
+
+        Scoped per subagent on agentic turns, where several reasoning blocks
+        interleave. Idempotent, and a no-op when the scope emitted no reasoning,
+        so a turn without reasoning persists no duration at all.
+        """
+        nonlocal reasoning_duration_sec
+        now = time.monotonic()
+        if agentic_active and subagent_id is not None:
+            # `get`, not `_sub`: a stray tagged done must not open a section.
+            acc = agentic_subagents.get(subagent_id)
+            if (
+                acc is not None
+                and acc.reasoning_started_at is not None
+                and acc.reasoning_duration_sec is None
+            ):
+                acc.reasoning_duration_sec = max(0.0, now - acc.reasoning_started_at)
+            return
+        if reasoning_started_at is not None and reasoning_duration_sec is None:
+            reasoning_duration_sec = max(0.0, now - reasoning_started_at)
+
     # Transparent long-term memory (D19): how many facts were injected into this
     # turn. Surfaced on the attribution (and thus the persisted message + the
     # terminal frame) so the FE can render the "Memory used here" chip. Zero when
@@ -1284,14 +1367,37 @@ async def stream_and_persist(
 
         return _make
 
+    def _phase_image_count(subagent_id: str | None, role: str | None) -> int:
+        """FL-36: only the phase that actually sent the attachments pays for them.
+
+        `image_token_formula` folds estimated image tokens into the input bucket,
+        so passing the turn's `image_attachment_count` on every agentic phase
+        bills the same attachments once per planner / worker / aggregator call.
+        Planner, worker and aggregator prompts are text-only; the single-mode
+        `primary` phase is the one that carries the attachments. Same shape as
+        the pre-existing verifier carve-out.
+        """
+        if role == "verifier":
+            return 0
+        if agentic_mode == "single" and subagent_id == "primary":
+            return image_attachment_count
+        return 0
+
     def _cost_for_usage(usage: UsageUpdate) -> float:
-        """Price an accumulated usage for the active binding (agentic only)."""
+        """Price an accumulated usage for the active binding (agentic only).
+
+        FL-34-b: `subtotal_usd` **is** the total — `session_surcharge_usd` is a
+        disclosure field describing part of it, so adding it double-charges the
+        long-context surcharge.
+        FL-36: image tokens belong to the phase that sent the attachments only,
+        which in agentic mode is `single`'s primary pass.
+        """
         breakdown = compute_cost_breakdown(
             usage=usage,
             binding=binding,
-            image_count=image_attachment_count,
+            image_count=image_attachment_count if agentic_mode == "single" else 0,
         )
-        return breakdown.subtotal_usd + breakdown.session_surcharge_usd
+        return breakdown.subtotal_usd
 
     def _verifier_cost_for_usage(usage: UsageUpdate) -> float:
         """Phase pricer for the fresh-context judge (V-011).
@@ -1304,7 +1410,7 @@ async def stream_and_persist(
             binding=binding,
             image_count=0,
         )
-        return breakdown.subtotal_usd + breakdown.session_surcharge_usd
+        return breakdown.subtotal_usd
 
     def _fallback_cost_for_usage(usage: UsageUpdate) -> float:
         """Price usage against the fallback binding (FE-009)."""
@@ -1312,9 +1418,9 @@ async def stream_and_persist(
         breakdown = compute_cost_breakdown(
             usage=usage,
             binding=fallback_binding,
-            image_count=image_attachment_count,
+            image_count=image_attachment_count if agentic_mode == "single" else 0,
         )
-        return breakdown.subtotal_usd + breakdown.session_surcharge_usd
+        return breakdown.subtotal_usd
 
     def _estimate_run_cost(sub_question_count: int) -> float:
         """Worst-case run-cost estimate for pre-spawn admission (agentic only).
@@ -1918,7 +2024,14 @@ async def stream_and_persist(
             return _build_agentic_parts()
         parts: list[dict[str, Any]] = []
         if reasoning_buf:
-            parts.append({"type": "reasoning", "text": "".join(reasoning_buf)})
+            # FL-37: carry the measured wall-clock so the reloaded panel keeps
+            # the "Thought for Ns" line (omitted when it was never measured).
+            parts.append(
+                ReasoningPart(
+                    text="".join(reasoning_buf),
+                    duration_sec=reasoning_duration_sec,
+                ).model_dump(by_alias=True, exclude_none=True)
+            )
         parts.extend(tool_parts)
         if latest_status is not None:
             label, _state = latest_status
@@ -1981,9 +2094,8 @@ async def stream_and_persist(
                     attr_binding = fallback_binding
                 # Verifier is fresh-context (no attachments); never inherit turn
                 # image pricing. Prefer SubagentDone.cost_usd when present.
-                attr_image_count = (
-                    0 if acc.role == "verifier" else image_attachment_count
-                )
+                # FL-36: neither does any other text-only agentic phase.
+                attr_image_count = _phase_image_count(subagent_id, acc.role)
                 breakdown = compute_cost_breakdown(
                     usage=acc.usage,
                     binding=attr_binding,
@@ -2020,7 +2132,9 @@ async def stream_and_persist(
             if acc.reasoning:
                 parts.append(
                     ReasoningPart(
-                        text="".join(acc.reasoning), subagent_id=subagent_id
+                        text="".join(acc.reasoning),
+                        duration_sec=acc.reasoning_duration_sec,
+                        subagent_id=subagent_id,
                     ).model_dump(by_alias=True, exclude_none=True)
                 )
             parts.extend(acc.tool_parts)
@@ -2081,6 +2195,7 @@ async def stream_and_persist(
             or pending_planner_usage is not None
             or pending_prior_run_cost_usd > 0.0
             or pending_prior_run_usage is not None
+            or pending_orchestration_mode is not None
         ):
             server_state = put_run_ledger_in_server_state(
                 server_state,
@@ -2088,6 +2203,7 @@ async def stream_and_persist(
                 planner_usage=pending_planner_usage,
                 prior_run_cost_usd=pending_prior_run_cost_usd or None,
                 prior_run_usage=pending_prior_run_usage,
+                orchestration_mode=pending_orchestration_mode,
             )
         row = await messages_repo.create_assistant_message(
             db=target_session,
@@ -2120,6 +2236,12 @@ async def stream_and_persist(
         nonlocal final_usage, first_answer_ms, sub_code, sub_provider, sub_model, sub_label
         nonlocal latest_status, search_items, saw_sources_event, agentic_run_summary
 
+        if isinstance(ev, ReasoningDone):
+            # FL-37: close the reasoning clock on the drain path too, for both
+            # the tagged and untagged scope.
+            _close_reasoning_clock(ev.subagent_id)
+            return
+
         if agentic_active:
             if isinstance(ev, SubagentStarted):
                 if ev.subagent_id not in agentic_subagents:
@@ -2148,36 +2270,16 @@ async def stream_and_persist(
                 done_acc.substituted_display_label = ev.substituted_display_label
                 return
             if isinstance(ev, RunCost):
-                persist_receipt = (
-                    ev.phase == "final"
-                    or ev.partial
-                    or ev.budget_halted
-                    or ev.failed_worker_count > 0
-                )
-                if persist_receipt:
-                    agentic_run_summary = AgenticRunSummaryPart(
-                        outcome=(
-                            "partial"
-                            if (
-                                ev.partial
-                                or ev.budget_halted
-                                or ev.failed_worker_count > 0
-                            )
-                            else "complete"
-                        ),
-                        budget_halted=ev.budget_halted,
-                        failed_workers=ev.failed_worker_count,
-                        subtotal_usd=ev.subtotal_usd,
-                        cap_usd=ev.cap_usd,
-                        cost_confidence=ev.confidence,
-                        cost_phase=ev.phase,
-                    )
+                # FL-33-a: drain twin of the live gate — shared builder.
+                agentic_run_summary = build_agentic_run_summary_part(ev)
                 return
             sid = getattr(ev, "subagent_id", None)
             if isinstance(ev, ReasoningDelta) and sid is not None:
+                _open_reasoning_clock(sid)
                 _sub(sid).reasoning.append(ev.text)
                 return
             if isinstance(ev, AnswerDelta) and sid is not None:
+                _close_reasoning_clock(sid)
                 if first_answer_ms is None:
                     first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
                 _sub(sid).answer.append(ev.text)
@@ -2186,6 +2288,8 @@ async def stream_and_persist(
                 _sub(sid).latest_status = (ev.label, ev.state)
                 return
             if isinstance(ev, Sources) and sid is not None:
+                # FL-35: drain twin — fold the turn-level flag identically.
+                saw_sources_event = True
                 acc = _sub(sid)
                 acc.search_items = list(ev.items)
                 acc.saw_sources = True
@@ -2223,8 +2327,10 @@ async def stream_and_persist(
             # Untagged agentic content (rare): fall through to flat buffers.
 
         if isinstance(ev, ReasoningDelta):
+            _open_reasoning_clock(None)
             reasoning_buf.append(ev.text)
         elif isinstance(ev, AnswerDelta):
+            _close_reasoning_clock(None)
             if first_answer_ms is None:
                 first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
             answer_buf.append(ev.text)
@@ -2392,8 +2498,9 @@ async def stream_and_persist(
                     )
                     # Per-turn cost: matches what build_attribution exposes as
                     # `attribution.costUsd` (pricing.py) so the ledger and the
-                    # wire stay consistent.
-                    turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+                    # wire stay consistent. FL-34-b: `subtotal_usd` is the total;
+                    # re-adding the surcharge charged it twice.
+                    turn_cost = breakdown.subtotal_usd
                 billable_cost = _billable_cost_delta(turn_cost)
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
@@ -2564,6 +2671,7 @@ async def stream_and_persist(
                 raise ev.exc
 
             if isinstance(ev, ReasoningDelta):
+                _open_reasoning_clock(ev.subagent_id)
                 if agentic_active and ev.subagent_id is not None:
                     _sub(ev.subagent_id).reasoning.append(ev.text)
                 else:
@@ -2572,6 +2680,7 @@ async def stream_and_persist(
                     ReasoningDeltaEvent(text=ev.text, subagent_id=ev.subagent_id)
                 )
             elif isinstance(ev, ReasoningDone):
+                _close_reasoning_clock(ev.subagent_id)
                 # Agentic turns interleave multiple subagents, each with its own
                 # reasoning block, so the single-shot global gate doesn't apply —
                 # relay every `reasoning_done` (tagged with subagent_id when set).
@@ -2603,13 +2712,18 @@ async def stream_and_persist(
                 # text part at the persist sites). `requested` mirrors whether
                 # web search was effective for the turn (it is, here) so the FE
                 # can tell grounded from ungrounded on the live stream.
+                # FL-35: the turn is grounded whoever produced the sources. The
+                # flag used to be set only in the untagged arm, so a fully
+                # subagent-tagged agentic turn still emitted the final
+                # "ungrounded" `sources` frame (empty items, `requested=True`)
+                # below — a wire-contract violation on a cited turn.
+                saw_sources_event = True
                 if agentic_active and ev.subagent_id is not None:
                     acc = _sub(ev.subagent_id)
                     acc.search_items = list(ev.items)
                     acc.saw_sources = True
                 else:
                     search_items = list(ev.items)
-                    saw_sources_event = True
                 yield encode_sources(
                     SourcesEvent(
                         items=list(ev.items),
@@ -2684,9 +2798,16 @@ async def stream_and_persist(
                     # H-002 / AR-006: pin *served* route identity onto the durable
                     # checkpoint (not just the requested tier). Fallback workers
                     # pin the fallback binding so resume cannot silently switch.
+                    #
+                    # FL-32: these are truthiness checks, not `setdefault`.
+                    # `serialize_continuation` emits `orchestrationMode` /
+                    # `tierId` / `providerId` / `modelId` unconditionally as
+                    # `None`, so the key is always present and `setdefault` never
+                    # fired — the whole AR-006 pin (and its three route guards)
+                    # was inert.
                     cont_blob = dict(ev.continuation)
-                    if agentic_mode is not None:
-                        cont_blob.setdefault("orchestrationMode", agentic_mode)
+                    if agentic_mode is not None and not cont_blob.get("orchestrationMode"):
+                        cont_blob["orchestrationMode"] = agentic_mode
                     used_fb = bool(
                         cont_blob.get("pausedWorkerUsedFallback")
                         or cont_blob.get("paused_worker_used_fallback")
@@ -2697,12 +2818,34 @@ async def stream_and_persist(
                             fallback_provider_id or fallback_binding.provider_id
                         )
                         cont_blob["modelId"] = fallback_binding.model_id
+                        # FL-30: a live pause must stay non-terminal (B15), so it
+                        # never gets a `SubagentDone` to carry the served route.
+                        # Stamp the substitution onto the accumulator instead —
+                        # `_agentic_sum_cost_usd` then prices this worker with the
+                        # fallback pricer (matching the orchestrator's
+                        # `pausedWorkerCostUsd`, so nothing is left unbilled) and
+                        # `_build_agentic_parts` attributes it to the model that
+                        # actually served.
+                        if agentic_active and ev.subagent_id is not None:
+                            paused_acc = _sub(ev.subagent_id)
+                            paused_acc.substitution = (
+                                fallback_substitution or "provider_fallback"
+                            )
+                            paused_acc.substituted_provider = (
+                                fallback_provider_id or fallback_binding.provider_id
+                            )
+                            paused_acc.substituted_model = fallback_binding.model_id
+                            paused_acc.substituted_display_label = (
+                                fallback_binding.model_label
+                                or fallback_binding.model_id
+                            )
                     else:
-                        cont_blob.setdefault("tierId", binding.tier.id)
-                        cont_blob.setdefault(
-                            "providerId", provider_id or binding.provider_id
-                        )
-                        cont_blob.setdefault("modelId", binding.model_id)
+                        if not cont_blob.get("tierId"):
+                            cont_blob["tierId"] = binding.tier.id
+                        if not cont_blob.get("providerId"):
+                            cont_blob["providerId"] = provider_id or binding.provider_id
+                        if not cont_blob.get("modelId"):
+                            cont_blob["modelId"] = binding.model_id
                     pending_server_continuations[ev.tool_call_id] = cont_blob
                     # Strip any legacy embedding from in-memory tool parts.
                     target_parts = (
@@ -2730,6 +2873,9 @@ async def stream_and_persist(
                 if not agentic_active and reasoning_buf and not emitted_reasoning_done:
                     yield encode_reasoning_done(ReasoningDoneEvent())
                     emitted_reasoning_done = True
+                # FL-37: a provider that jumps straight to prose without a
+                # ReasoningDone still ends the reasoning block here.
+                _close_reasoning_clock(ev.subagent_id)
                 if first_answer_ms is None:
                     first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
                 if agentic_active and ev.subagent_id is not None:
@@ -2778,9 +2924,8 @@ async def stream_and_persist(
                         # Verifier is fresh-context (no attachments); never
                         # inherit turn image pricing. Prefer authoritative
                         # SubagentDone.cost_usd when present.
-                        attr_image_count = (
-                            0 if ev.role == "verifier" else image_attachment_count
-                        )
+                        # FL-36: same carve-out for every text-only phase.
+                        attr_image_count = _phase_image_count(ev.subagent_id, ev.role)
                         breakdown = compute_cost_breakdown(
                             usage=ev.usage,
                             binding=attr_binding,
@@ -2821,25 +2966,9 @@ async def stream_and_persist(
             elif isinstance(ev, RunCost):
                 # Running run-cost subtotal vs the configured cap (M3 scaffold).
                 # AR-012: always persist a terminal receipt so reload matches live.
-                if (
-                    ev.phase == "final"
-                    or ev.partial
-                    or ev.budget_halted
-                    or ev.failed_worker_count > 0
-                ):
-                    agentic_run_summary = AgenticRunSummaryPart(
-                        outcome=(
-                            "partial"
-                            if ev.partial or ev.budget_halted or ev.failed_worker_count > 0
-                            else "complete"
-                        ),
-                        budget_halted=ev.budget_halted,
-                        failed_workers=ev.failed_worker_count,
-                        subtotal_usd=ev.subtotal_usd,
-                        cap_usd=ev.cap_usd,
-                        cost_confidence=ev.confidence,
-                        cost_phase=ev.phase,
-                    )
+                # FL-33-a: a plan / progress pause receipt persists too, with the
+                # confidence + phase the backend actually emitted.
+                agentic_run_summary = build_agentic_run_summary_part(ev)
                 yield encode_run_cost(
                     RunCostEvent(
                         subtotal_usd=ev.subtotal_usd,
@@ -2882,6 +3011,12 @@ async def stream_and_persist(
         # the tokens consumed up to the pause, bump usage, and RELEASE the
         # single-active-stream guard so the resume POST can open its own stream.
         if paused:
+            # FL-28: record the mode this run paused in so the resume POST cannot
+            # be talked into a different orchestration mode. Plan-approval,
+            # clarify and single-mode pauses carry no continuation blob, so the
+            # pin has to live in server_state beside the ledger seeds.
+            if agentic_active and agentic_mode is not None:
+                pending_orchestration_mode = agentic_mode
             if agentic_active and agentic_subagents:
                 mark_unfinished_subagents_paused(agentic_subagents)
             breakdown = compute_cost_breakdown(
@@ -2895,7 +3030,8 @@ async def stream_and_persist(
                     update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
                 )
             else:
-                turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+                # FL-34-b: charge the subtotal alone (surcharge is disclosure).
+                turn_cost = breakdown.subtotal_usd
             # B4: if tool-input stamp was missing, fall back to planner accumulator.
             if pending_planner_cost_usd <= 0.0 and agentic_active:
                 planner_acc = agentic_subagents.get("planner")
@@ -3059,7 +3195,8 @@ async def stream_and_persist(
                 update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
             )
         else:
-            turn_cost = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+            # FL-34-b: charge the subtotal alone (surcharge is disclosure).
+            turn_cost = breakdown.subtotal_usd
         # AR-002: rollup/message cost charge only the unbilled delta on resume.
         billable_cost = _billable_cost_delta(turn_cost)
         attribution = build_attribution(

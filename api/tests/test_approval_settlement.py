@@ -853,6 +853,245 @@ async def test_pseudo_tool_opposite_decision_after_settle_conflicts(
             )
 
 
+def _pending_plan_parts(*, tool_call_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "tool_call",
+            "id": tool_call_id,
+            "name": "agentic_plan_approval",
+            "label": "Approve plan",
+            "status": "awaiting_approval",
+            "approvalState": "pending",
+            "input": {"plan": ["a", "b"]},
+        }
+    ]
+
+
+async def test_pseudo_tool_same_decision_retry_adopts_an_orphaned_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-29: a crash between pseudo-tool claim and settle must not strand the card.
+
+    Proves the straight-line exit: the first attempt commits the claim and then
+    dies before settling, and the same-decision retry adopts the row's own claim
+    and reaches a durable ``tool_result`` instead of raising
+    ``APPROVAL_SETTLEMENT_INCOMPLETE`` forever. An opposite-decision retry still
+    conflicts, so adoption never launders a contradictory decision.
+    """
+    from app.tools.approval_settlement import (
+        ApprovalDecisionConflict,
+        settle_pseudo_tool_approval_outcome,
+    )
+
+    tool_call_id = "plan_approval_orphan"
+    msg = await _seed_paused_message(
+        session_factory, parts=_pending_plan_parts(tool_call_id=tool_call_id)
+    )
+
+    async def _crash_after_claim(_db: Any, **_kwargs: Any) -> bool:
+        raise RuntimeError("simulated crash between claim and settle")
+
+    monkeypatch.setattr(
+        approval_settlement, "_settle_under_claim", _crash_after_claim
+    )
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        with pytest.raises(RuntimeError):
+            await settle_pseudo_tool_approval_outcome(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="approve",
+                output={"decision": "approve"},
+                claim_id="claim-orphaned",
+            )
+
+    # The claim is committed and terminal, but nothing settled it.
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        call = approval_settlement.find_tool_call_part(row.parts, tool_call_id)
+        assert call is not None
+        assert call.get("approvalState") == "approved"
+        assert call.get(APPROVAL_CLAIM_ID_KEY) == "claim-orphaned"
+        assert (
+            approval_settlement.find_settled_tool_result(row.parts, tool_call_id)
+            is None
+        )
+
+    monkeypatch.undo()
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        retry = await settle_pseudo_tool_approval_outcome(
+            session,
+            paused_message=row,
+            tool_call_id=tool_call_id,
+            decision="approve",
+            output={"decision": "approve"},
+        )
+    assert retry.decision == "approve"
+    assert retry.result.status == "succeeded"
+    # Adopted the orphaned claim rather than minting a new one.
+    assert retry.claim_id == "claim-orphaned"
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        settled = approval_settlement.find_settled_tool_result(row.parts, tool_call_id)
+        assert settled is not None
+        assert settled.get("status") == "succeeded"
+        with pytest.raises(ApprovalDecisionConflict):
+            await settle_pseudo_tool_approval_outcome(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="deny",
+                output={"decision": "deny"},
+            )
+
+
+async def test_pseudo_tool_claim_cas_loser_adopts_the_winners_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-29: the claim-CAS-loss exit adopts too, so no live window strands.
+
+    Two same-decision resumes race the pending→claimed CAS with the in-process
+    lock bypassed; the settle of whichever wins is held open. Fixing only the
+    straight-line exit would leave the loser raising incomplete against a claim
+    that is about to settle.
+    """
+    from app.tools.approval_settlement import settle_pseudo_tool_approval_outcome
+
+    monkeypatch.setattr(approval_settlement, "_bypass_claim_locks", True)
+    tool_call_id = "plan_approval_cas_orphan"
+    msg = await _seed_paused_message(
+        session_factory, parts=_pending_plan_parts(tool_call_id=tool_call_id)
+    )
+
+    real_settle = approval_settlement._settle_under_claim
+    settle_calls = {"n": 0}
+    first_entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _gated_settle(db: Any, **kwargs: Any) -> bool:
+        settle_calls["n"] += 1
+        if settle_calls["n"] == 1:
+            first_entered.set()
+            await release.wait()
+        return await real_settle(db, **kwargs)
+
+    monkeypatch.setattr(approval_settlement, "_settle_under_claim", _gated_settle)
+
+    both_ready = asyncio.Event()
+    ready = {"n": 0}
+
+    async def _approve(claim: str) -> Any:
+        async with session_factory() as session:
+            row = await session.get(Message, msg.id)
+            assert row is not None
+            ready["n"] += 1
+            if ready["n"] >= 2:
+                both_ready.set()
+            await both_ready.wait()
+            return await settle_pseudo_tool_approval_outcome(
+                session,
+                paused_message=row,
+                tool_call_id=tool_call_id,
+                decision="approve",
+                output={"decision": "approve"},
+                claim_id=claim,
+            )
+
+    t1 = asyncio.create_task(_approve("claim-race-a"))
+    t2 = asyncio.create_task(_approve("claim-race-b"))
+    await asyncio.wait_for(first_entered.wait(), timeout=5.0)
+    release.set()
+    outcomes = await asyncio.gather(t1, t2)
+
+    # Neither resume is stranded and the row carries exactly one settlement.
+    assert all(o.result.status == "succeeded" for o in outcomes)
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        results = [
+            p
+            for p in (row.parts or [])
+            if isinstance(p, dict) and p.get("type") == "tool_result"
+        ]
+        assert len(results) == 1
+
+
+async def test_claimed_without_result_persists_a_terminal_failure(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-31: a claimed-but-unsettled registry approval becomes terminal on the row.
+
+    The safety half of BE-007 was already met — the executor never runs — but the
+    row stayed ``approved`` / ``running`` with no ``tool_result``, so refetch kept
+    rendering the card as in flight and no retry could resolve it. Asserts the
+    persisted ``failed`` result plus the explicit zero-execution guarantee.
+    """
+    from app.tools.approval_settlement import claim_and_settle_approval_outcome
+
+    tool_call_id = "cal_terminal_failure"
+    parts = _pending_calendar_parts(tool_call_id=tool_call_id)
+    parts[0]["approvalState"] = "approved"
+    parts[0]["status"] = "running"
+    parts[0][APPROVAL_CLAIM_ID_KEY] = "claim-crashed"
+    msg = await _seed_paused_message(session_factory, parts=parts)
+
+    exec_count = {"n": 0}
+
+    async def _boom(_call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        raise AssertionError("fail-closed must not re-run the side effect")
+
+    original = TOOL_REGISTRY["calendar_create_event"]
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "calendar_create_event",
+        ToolSpec(
+            name=original.name,
+            label=original.label,
+            needs_approval=True,
+            schema=original.schema,
+            executor=_boom,
+            prod_safe=original.prod_safe,
+        ),
+    )
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        outcome = await claim_and_settle_approval_outcome(
+            session,
+            paused_message=row,
+            tool_call_id=tool_call_id,
+            decision="approve",
+            effective_input={"title": "Planning review"},
+            label="Create calendar event",
+        )
+
+    assert exec_count["n"] == 0
+    assert outcome.result.status == "failed"
+
+    async with session_factory() as session:
+        row = await session.get(Message, msg.id)
+        assert row is not None
+        settled = approval_settlement.find_settled_tool_result(row.parts, tool_call_id)
+        assert settled is not None
+        assert settled.get("status") == "failed"
+        call = approval_settlement.find_tool_call_part(row.parts, tool_call_id)
+        assert call is not None
+        # The card no longer renders approved/running on refetch.
+        assert call.get("status") == "failed"
+
+
 async def test_claim_locks_do_not_grow_unbounded_across_settlements(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,

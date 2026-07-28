@@ -1181,3 +1181,132 @@ async def test_wrapper_both_empty_emits_no_static() -> None:
     assert len(completes) == 1
     assert completes[0].empty_retry is True
     assert completes[0].empty_retry_recovered is False
+
+
+async def test_inject_empty_fallback_false_suppresses_static_filler() -> None:
+    """FL-04: subagents that own their recovery must get a genuinely empty answer.
+
+    Covers the no-tool terminal, the retry-exhausted terminal and the reserved
+    final pass: every injection site is gated on the same flag, and the single
+    terminal `Complete` still ships so the wire sees exactly one terminal.
+    """
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+
+    # Empty terminal with the retry allowed: both the retry pass and the static
+    # fallback must stay silent.
+    make, calls = _spy_make_stream([Complete()], [Complete()])
+    events = [
+        ev
+        async for ev in run_agent_loop(
+            make_stream=make,  # type: ignore[arg-type]
+            settings=settings,
+            inject_empty_fallback=False,
+        )
+    ]
+    assert not any(isinstance(e, AnswerDelta) for e in events)
+    assert len([e for e in events if isinstance(e, Complete)]) == 1
+    assert len(calls) == 2
+
+    # Reserved final pass after a tool round: same suppression.
+    make2, calls2 = _spy_make_stream(
+        [ToolCall(id="c1", name="get_current_time", status="running")],
+        [Complete()],
+        [Complete()],
+    )
+    events2 = [
+        ev
+        async for ev in run_agent_loop(
+            make_stream=make2,  # type: ignore[arg-type]
+            settings=settings,
+            inject_empty_fallback=False,
+        )
+    ]
+    assert not any(isinstance(e, AnswerDelta) for e in events2)
+    assert len([e for e in events2 if isinstance(e, Complete)]) == 1
+    assert len(calls2) >= 2
+
+
+async def test_inject_empty_fallback_default_still_injects_static_filler() -> None:
+    """FL-04: the primary loop's default behavior is unchanged (guards #264)."""
+    settings = Settings(TOOL_MAX_ROUNDS=3)  # type: ignore[call-arg]
+    make, _calls = _spy_make_stream([Complete()], [Complete()])
+    events = [
+        ev
+        async for ev in run_agent_loop(
+            make_stream=make,  # type: ignore[arg-type]
+            settings=settings,
+        )
+    ]
+    fallbacks = [
+        e
+        for e in events
+        if isinstance(e, AnswerDelta) and e.text == EMPTY_REPLY_FALLBACK
+    ]
+    assert len(fallbacks) == 1
+    assert len([e for e in events if isinstance(e, Complete)]) == 1
+
+
+async def test_aggregator_empty_draft_degrades_to_deterministic_synthesis() -> None:
+    """FL-04: an empty aggregator draft must fall back to the worker findings.
+
+    The injected filler used to make `main_answer_is_empty(streamed)` false, so
+    the degrade was unreachable and total answer loss shipped as `partial=False`.
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import RunCost, SubagentDone
+
+    def _markup_only_stream(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text=_RAW_TOOL_MARKUP)
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_markup_only_stream,
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(
+                    subagent_id="w0", sub_question="alpha", answer="alpha finding"
+                ),
+                WorkerOutput(
+                    subagent_id="w1", sub_question="beta", answer="beta finding"
+                ),
+            ],
+            planned=2,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "alpha finding" in answer
+    assert "beta finding" in answer
+    assert EMPTY_REPLY_FALLBACK not in answer
+    # The bracket still closes cleanly — this is a degrade, not a crash.
+    done = next(e for e in events if isinstance(e, SubagentDone))
+    assert done.role == "aggregator"
+    assert done.outcome == "succeeded"
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].budget_halted is False

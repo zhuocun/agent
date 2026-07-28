@@ -530,3 +530,80 @@ async def test_plan_hash_mismatch_rejects_approve(
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_approved_resume_with_missing_plan_never_calls_the_model_planner() -> None:
+    """FL-25 (HITL-7): an approved resume must execute a plan, never invent one.
+
+    `plan_approved is True and approved_plan is not None` fell through to the
+    model planner when the persisted `input["plan"]` was not a list (a corrupted
+    or pre-BE-039 row), spending planner tokens on — and fanning out over — a plan
+    the user never saw, against the BE-039 contract.
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.agentic.orchestrator import run_orchestrator
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        ProviderEvent,
+        SubagentStarted,
+        ToolResult,
+        UsageUpdate,
+    )
+
+    prompts: list[str] = []
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        prompts.append(prompt)
+
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            async def _gen() -> _AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="finding")
+                usage = UsageUpdate(input_tokens=2, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    # A non-fake backend is what makes the model planner reachable at all; the
+    # `scaffolded` short-circuit would otherwise mask the bug.
+    settings = Settings(  # type: ignore[call-arg]
+        provider_backend="openai",
+        openai_api_key="sk-test",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_PLAN_APPROVAL=True,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_MAX_WORKERS=2,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            mode="deep_research",
+            user_text="compare inflation causes and housing effects",
+            cost_for_usage=lambda u: 0.001 * float(u.input_tokens),
+            plan_approved=True,
+            approved_plan=None,
+        )
+    ]
+    assert not any("You are the planner" in p for p in prompts)
+    assert not any(
+        isinstance(e, SubagentStarted) and e.subagent_id == "planner" for e in events
+    )
+    # The turn still completes as a labeled `done` over a deterministic plan.
+    assert any(
+        isinstance(e, SubagentStarted) and e.subagent_id == "worker-0" for e in events
+    )
+    assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)

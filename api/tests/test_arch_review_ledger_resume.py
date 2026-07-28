@@ -395,3 +395,117 @@ async def test_b13_compaction_usage_incremented(
             )
         ).scalar_one()
         assert float(rollup.cost_usd) == pytest.approx(expected_cost)
+
+
+class _StubRequest:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _PauseAfterUsageProvider:
+    """Single-mode provider that banks usage, then requests a gated tool."""
+
+    def stream(self, *, user_text: str = "", **_kwargs: object):  # type: ignore[no-untyped-def]
+        from app.providers.protocol import ProviderEvent, ToolCall
+
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield UsageUpdate(input_tokens=40, output_tokens=12, reasoning_tokens=3)
+            yield ToolCall(
+                id="cal-1",
+                name="calendar_create_event",
+                status="running",
+                input={"title": "Planning review"},
+            )
+
+        return _gen()
+
+
+async def test_single_mode_pause_terminal_reports_tokens_and_receipt(
+    plan_approval_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-14 (HITL-6): a single-mode pause must still ship tokens and a receipt.
+
+    `run_single` returned at the pause before the untagged `Complete` and the
+    final `RunCost`, and the handler `break`s at the pause terminal — so the
+    paused row's attribution reported 0 tokens and carried no run summary even
+    though billing was correct.
+    """
+    from app.streaming.handler import stream_and_persist
+
+    monkeypatch.setenv("AGENTIC_PLAN_APPROVAL", "false")
+    get_settings.cache_clear()
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="fl14",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    frames: list[tuple[str, dict[str, object]]] = []
+    async with session_factory() as session:
+        async for ev in stream_and_persist(
+            request=_StubRequest(),  # type: ignore[arg-type]
+            db=session,
+            provider=_PauseAfterUsageProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=UUID(int=0x14),
+            user_text="schedule a meeting",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            agentic_mode="single",
+        ):
+            payload: dict[str, object] = {}
+            if ev.data:
+                payload = json.loads(ev.data)
+            frames.append((ev.event or "", payload))
+
+    assert frames[-1][1]["status"] == "awaiting_approval"
+    # The receipt precedes the pause on the wire — the handler stops reading after
+    # the pause terminal, so a post-pause receipt would never be consumed.
+    names = [n for n, _ in frames]
+    assert names.index("run_cost") < names.index("terminal")
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+            )
+        ).scalar_one()
+
+    attribution = row.attribution
+    assert isinstance(attribution, dict)
+    breakdown = attribution["breakdown"]
+    assert isinstance(breakdown, dict)
+    assert breakdown["inputTokens"] == 40
+    assert breakdown["outputTokens"] == 12
+    assert float(attribution["costUsd"]) > 0.0
+
+    summary = next(
+        p
+        for p in (row.parts or [])
+        if isinstance(p, dict) and p.get("type") == "agentic_run_summary"
+    )
+    # A resumable pause is not a finished answer.
+    assert summary["outcome"] == "partial"
+    assert summary["budgetHalted"] is False

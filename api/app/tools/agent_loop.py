@@ -62,6 +62,8 @@ from collections.abc import AsyncIterator, Callable, Collection
 from dataclasses import replace
 from typing import Any, Protocol
 
+import structlog
+
 from app.config import Settings
 from app.observability.tracing import execute_tool_span
 from app.providers.protocol import (
@@ -78,6 +80,20 @@ from app.providers.protocol import (
 from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolApprovalState, ToolCallRequest, ToolExecutionResult
+
+_log = structlog.get_logger(__name__)
+
+# Separator the orchestrator's `namespace_tool_call_id` uses to bind a provider
+# call id to a subagent (`worker-0::abc`). This loop is provider-scoped, so a
+# seeded namespaced id must ALSO consume the raw id the provider will reissue —
+# otherwise the settlement guard is inert in both agentic modes (FL-15 / H-002).
+TOOL_CALL_ID_NAMESPACE_SEP = "::"
+
+
+def _raw_tool_call_id(call_id: str) -> str:
+    """Provider-scoped call id for a possibly `<subagent>::<id>` namespaced id."""
+    _, sep, tail = call_id.partition(TOOL_CALL_ID_NAMESPACE_SEP)
+    return tail if sep and tail else call_id
 
 
 # Factory: given the tool results gathered so far and whether tools should be
@@ -289,6 +305,7 @@ async def run_agent_loop(
     server_approved_call_ids: Collection[str] | None = None,
     initial_tool_results: list[ToolResult] | None = None,
     allow_empty_retry: bool = True,
+    inject_empty_fallback: bool = True,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive a bounded tool-calling loop over a provider event stream.
 
@@ -309,6 +326,16 @@ async def run_agent_loop(
     it cannot fire, the terminal injects the static ``EMPTY_REPLY_FALLBACK`` as
     before. The reserved suppress-tools force-final pass is UNCONDITIONAL and
     nudge-free — it is NOT an empty retry (see below).
+
+    ``inject_empty_fallback`` (FL-04 / ORCH-1): whether a genuinely-empty terminal
+    may inject the static ``EMPTY_REPLY_FALLBACK`` text. True for callers whose
+    loop output IS the user-facing answer (plain/tools chat, the agentic
+    ``primary``). Deep-research workers and the aggregator pass False because they
+    own their own recovery (``aggregate.synthesize`` / ``"(no answer)"``), and the
+    non-blank filler would otherwise make their answer look non-empty — masking
+    the degrade and shipping filler as a research finding. The terminal
+    ``Complete`` is emitted either way, so the wire still sees exactly one
+    terminal.
 
     ``allowed_tools``: when set, only those registry tool names may execute;
     others fail closed as unknown. ``None`` = full registry. Deep-research
@@ -347,7 +374,14 @@ async def run_agent_loop(
         set(server_approved_call_ids) if server_approved_call_ids is not None else set()
     )
     # Settled / seeded results consume their call ids permanently for this loop.
-    consumed_ids: set[str] = {r.tool_call_id for r in tool_feedback if r.tool_call_id}
+    # FL-15: seeds arrive namespaced from the orchestrator (`worker-0::abc`) while
+    # the provider reissues the raw id, so consume BOTH spellings.
+    consumed_ids: set[str] = set()
+    for seeded in tool_feedback:
+        if not seeded.tool_call_id:
+            continue
+        consumed_ids.add(seeded.tool_call_id)
+        consumed_ids.add(_raw_tool_call_id(seeded.tool_call_id))
     approved_ids -= consumed_ids
 
     def _note_answer(delta: AnswerDelta) -> None:
@@ -377,7 +411,8 @@ async def run_agent_loop(
         wire sees exactly one terminal ``Complete`` — synthesized here carrying
         the ``empty_retry`` / ``empty_retry_recovered`` markers. If the retry is
         disallowed / still empty, the static ``EMPTY_REPLY_FALLBACK`` is injected
-        exactly once as before.
+        exactly once as before — unless ``inject_empty_fallback`` is False, in
+        which case the terminal ``Complete`` ships with no answer text (FL-04).
         """
         nonlocal answer_emitted, empty_retry_spent, invocations
         if _can_retry():
@@ -409,7 +444,8 @@ async def run_agent_loop(
                     empty_retry_recovered=True,
                 )
                 return
-            yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+            if inject_empty_fallback:
+                yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
             answer_emitted = True
             yield Complete(
                 usage=get_cumulative(),
@@ -419,7 +455,8 @@ async def run_agent_loop(
             return
         # Retry not allowed (kill-switch off, worker, spent, or budget
         # exhausted) → static fallback exactly once, as before.
-        yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+        if inject_empty_fallback:
+            yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
         answer_emitted = True
         yield Complete(usage=get_cumulative())
 
@@ -447,6 +484,21 @@ async def run_agent_loop(
             if isinstance(event, ReasoningDelta):
                 round_reasoning_parts.append(event.text)
             elif isinstance(event, ToolResult):
+                # FL-26 / ORCH-9: a provider-supplied result NEVER resolves a
+                # REGISTRY tool — honoring it would bypass the approval gate and
+                # the server executor (untrusted-output rule 2). Registry calls
+                # stay `unresolved` so the gate decides; the provider's result is
+                # neither relayed nor fed back.
+                resolved_call = next(
+                    (c for c in pending_calls if c.id == event.tool_call_id), None
+                )
+                if resolved_call is not None and resolved_call.name in TOOL_REGISTRY:
+                    _log.warning(
+                        "agent_loop.provider_result_for_registry_tool_ignored",
+                        tool_call_id=event.tool_call_id,
+                        name=resolved_call.name,
+                    )
+                    continue
                 provider_resolved.add(event.tool_call_id)
             elif isinstance(event, AwaitingApproval):
                 # Provider-emitted pause (e.g. fake TOOL_APPROVE): emit a
@@ -456,10 +508,28 @@ async def run_agent_loop(
                     (c for c in pending_calls if c.id == event.tool_call_id),
                     None,
                 )
-                if matched is None and pending_calls:
-                    matched = pending_calls[0]
-                if matched is not None:
-                    yield _pending_approval_call(matched)
+                if matched is None:
+                    # FL-27 / ORCH-8: never park a pause on a call the provider
+                    # did not request this round — the id has no persisted
+                    # `tool_call` part, so resume could never settle it. Fail the
+                    # unmatched id and keep draining instead.
+                    _log.warning(
+                        "agent_loop.unmatched_provider_pause_id",
+                        tool_call_id=event.tool_call_id,
+                    )
+                    yield ToolResult(
+                        tool_call_id=event.tool_call_id,
+                        name="unknown",
+                        status="failed",
+                        approval_state="not_required",
+                        summary="Unmatched approval request.",
+                        error=(
+                            "The provider requested approval for a tool call id "
+                            "that was not issued this round; it was not executed."
+                        ),
+                    )
+                    continue
+                yield _pending_approval_call(matched)
                 yield fold_usage(event)
                 paused_by_provider = True
                 break
@@ -649,12 +719,16 @@ async def run_agent_loop(
                     relayed_terminal = True
                 elif isinstance(event, Complete):
                     if not answer_emitted:
-                        yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+                        if inject_empty_fallback:
+                            yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+                        # Latch the terminal decision either way so a suppressed
+                        # fallback cannot be re-decided below (FL-04).
                         answer_emitted = True
                     relayed_terminal = True
                 yield fold_usage(event)
             if not answer_emitted:
-                yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
+                if inject_empty_fallback:
+                    yield AnswerDelta(text=EMPTY_REPLY_FALLBACK)
                 answer_emitted = True
                 if not relayed_terminal:
                     yield Complete(usage=get_cumulative())

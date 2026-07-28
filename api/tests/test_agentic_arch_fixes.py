@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 
 import pytest
@@ -24,6 +25,7 @@ from app.agentic.orchestrator import (
 from app.config import Settings
 from app.providers.protocol import (
     AnswerDelta,
+    AwaitingApproval,
     Complete,
     ProviderEvent,
     ReasoningDelta,
@@ -456,6 +458,257 @@ async def test_b8_aggregator_exception_falls_back_to_synthesize() -> None:
     assert done.outcome == "failed"
     assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)
     assert any(isinstance(e, RunCost) and e.partial for e in events)
+
+
+@pytest.mark.asyncio
+async def test_c1_aggregator_partial_draft_is_not_re_emitted() -> None:
+    """FL-07 (C-1): live-relayed aggregator text must not be prepended again.
+
+    On the verifier-off path the partial draft was already streamed to the user;
+    prepending it to the deterministic fallback delivered the same prose twice,
+    live and on reload.
+    """
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="PARTIAL-DRAFT-MARKER")
+                raise RuntimeError("aggregator boom")
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_make_stream_for,
+            settings=_settings(PROVIDER_BACKEND="openai", OPENAI_API_KEY="sk"),
+            user_text="original",
+            outputs=[
+                WorkerOutput(subagent_id="worker-0", sub_question="q", answer="finding-a")
+            ],
+            planned=1,
+            worker_usages=[UsageUpdate(input_tokens=1)],
+            worker_total_cost=0.01,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=1.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    texts = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert texts.count("PARTIAL-DRAFT-MARKER") == 1
+    # FL-06: the degrade label names a synthesis failure, and the flag agrees.
+    assert "synthesis failed" in texts
+    assert "run budget" not in texts
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is False
+
+
+@pytest.mark.asyncio
+async def test_c1_quiet_collect_still_prepends_its_unrelayed_draft() -> None:
+    """FL-07 twin: quiet-collect relayed nothing, so it MUST still prepend."""
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="QUIET-DRAFT-MARKER")
+                raise RuntimeError("aggregator boom")
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_make_stream_for,
+            settings=_settings(
+                PROVIDER_BACKEND="openai", OPENAI_API_KEY="sk", AGENTIC_VERIFIER=True
+            ),
+            user_text="original",
+            outputs=[
+                WorkerOutput(subagent_id="worker-0", sub_question="q", answer="finding-a")
+            ],
+            planned=1,
+            worker_usages=[UsageUpdate(input_tokens=1)],
+            worker_total_cost=0.01,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=1.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    texts = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert texts.count("QUIET-DRAFT-MARKER") == 1
+
+
+@pytest.mark.asyncio
+async def test_b5_single_mode_over_cap_seed_halts_before_provider_call() -> None:
+    """FL-12 (ORCH-2): a seeded ledger already over cap must not open a stream.
+
+    Admission prices only the FRESH estimate, so a resume whose prior spend is
+    already over the cap used to overrun by a whole primary turn.
+    """
+    invocations = {"n": 0}
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        invocations["n"] += 1
+
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:  # pragma: no cover
+                # Would park an actionable approval card if the stream opened.
+                yield ToolCall(
+                    id="c1",
+                    name="calendar_create_event",
+                    status="running",
+                    input={"title": "x"},
+                )
+                yield Complete(usage=UsageUpdate(input_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=_settings(AGENTIC_RUN_BUDGET_USD=1.0),
+            mode="single",
+            user_text="hi",
+            cost_for_usage=lambda u: 1e-9 * float(u.input_tokens),
+            prior_run_cost_usd=5.0,
+            prior_run_usage=UsageUpdate(input_tokens=10, output_tokens=5),
+        )
+    ]
+    assert invocations["n"] == 0
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    texts = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "stay within the run budget" in texts
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].budget_halted is True
+    assert finals[-1].partial is True
+    # Still a labeled `done`, never an error or a hang.
+    done = next(e for e in events if isinstance(e, SubagentDone) and e.role == "primary")
+    assert done.outcome == "budget_cancelled"
+    assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)
+
+
+@pytest.mark.asyncio
+async def test_b5_single_mode_midflight_halt_parks_no_approval_card() -> None:
+    """FL-12: a mid-flight halt must not hand the user an actionable card.
+
+    The gated tool is requested only after the cap-breaching `UsageUpdate`, so
+    the halt has to win over the pause. The turn still ends as a labeled `done`
+    (invariant 8) rather than an error or a parked approval.
+    """
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield UsageUpdate(input_tokens=1_000_000)
+                yield ToolCall(
+                    id="c1",
+                    name="calendar_create_event",
+                    status="running",
+                    input={"title": "x"},
+                )
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=_settings(AGENTIC_RUN_BUDGET_USD=0.5),
+            mode="single",
+            user_text="hi",
+            cost_for_usage=lambda u: 1e-6 * float(u.input_tokens),
+        )
+    ]
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    assert not any(
+        isinstance(e, ToolCall) and e.status == "awaiting_approval" for e in events
+    )
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].budget_halted is True
+    assert finals[-1].partial is True
+    texts = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "stay within the run budget" in texts
+    done = next(e for e in events if isinstance(e, SubagentDone) and e.role == "primary")
+    assert done.outcome == "budget_cancelled"
+
+
+def test_b12_cite_before_sources_never_yields_a_foreign_global_id() -> None:
+    """FL-16-a (FE-1 / GAP-7): an unmapped marker must not resolve elsewhere.
+
+    Returning the raw local ordinal let worker-1's `[1]` render as whichever
+    source happened to own global id 1 — silent factual misattribution.
+    """
+    from app.agentic.orchestrator import _SourceIdRemapper
+
+    remapper = _SourceIdRemapper()
+    worker0 = remapper.remap_sources(
+        Sources(
+            items=[
+                SourceItem(id=1, title="A1", url="https://a1.example"),
+                SourceItem(id=2, title="A2", url="https://a2.example"),
+            ]
+        ),
+        "worker-0",
+    )
+    worker0_ids = {str(item.id) for item in worker0.items}
+    assert worker0_ids == {"1", "2"}
+
+    # worker-1 cites before emitting its own Sources event.
+    rewritten = remapper.rewrite_answer_text("Also see [1].", "worker-1")
+    cited = re.findall(r"\[(\d+)\]", rewritten)
+    assert cited
+    assert not (set(cited) & worker0_ids)
+    # The allocation is stable and unique — a later Sources event agrees.
+    worker1 = remapper.remap_sources(
+        Sources(items=[SourceItem(id=1, title="B", url="https://b.example")]),
+        "worker-1",
+    )
+    assert str(worker1.items[0].id) == cited[0]
+    assert remapper.mapped_ids_for("worker-1", ["1"]) == (cited[0],)
+
+
+def test_b12_empty_map_marker_is_allocated_not_passed_through() -> None:
+    """FL-16-a: the `if not self._map` early return took the same unsafe path."""
+    from app.agentic.orchestrator import _SourceIdRemapper
+
+    remapper = _SourceIdRemapper()
+    remapper.seed_catalog(
+        [SourceItem(id=1, title="prior", url="https://prior.example")]
+    )
+    # No live mappings yet; a cited marker must still allocate past the seed.
+    assert remapper.rewrite_answer_text("See [1].", "worker-0") == "See [2]."
 
 
 @pytest.mark.asyncio

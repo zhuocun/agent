@@ -227,3 +227,19 @@ async def test_subagent_parts_carry_attribution(
             attr = part.get("attribution")
             assert isinstance(attr, dict)
             assert attr.get("servedModelLabel")
+
+
+async def test_fanout_queue_bound_exceeds_protected_item_worst_case() -> None:
+    """ORCH-6: the B23 drop-oldest safety argument must be executable, not prose.
+
+    Teardown never drops a protected control message, so the bound has to exceed
+    the worst case of one sentinel plus one terminal per worker; at
+    `MAX_WORKER_ARTIFACTS` workers that is `2 * MAX_WORKER_ARTIFACTS`. Shrinking
+    the queue below that could deadlock the fan-out consumer.
+    """
+    from app.agentic.orchestrator import _FANOUT_QUEUE_MAXSIZE
+    from app.config import MAX_WORKER_ARTIFACTS, get_settings
+
+    assert _FANOUT_QUEUE_MAXSIZE >= 2 * MAX_WORKER_ARTIFACTS
+    # The configured worker bound can never exceed the artifact bound either.
+    assert get_settings().agentic_max_workers <= MAX_WORKER_ARTIFACTS

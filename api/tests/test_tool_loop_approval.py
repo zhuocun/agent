@@ -702,6 +702,203 @@ async def test_agent_loop_relays_provider_internal_web_search_before_status() ->
     assert any(isinstance(e, Complete) for e in events)
 
 
+# 6b. Settlement + provider-authority guards (F1) ------------------------------
+
+
+async def test_namespaced_settled_id_still_blocks_a_reissued_gated_call() -> None:
+    """FL-15 / H-002: a seeded `<subagent>::<id>` must consume the raw id too.
+
+    The orchestrator namespaces seeds for persistence while the provider reissues
+    the raw id, so the settlement guard was 100% dead in both agentic modes and a
+    settled call could be re-approved (and re-executed once a side-effecting
+    gated tool ships).
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.config import Settings
+    from app.providers.protocol import (
+        AwaitingApproval,
+        Complete,
+        ProviderEvent,
+        ToolCall,
+        ToolResult,
+    )
+    from app.tools import builtin
+    from app.tools.agent_loop import run_agent_loop
+
+    executions = {"n": 0}
+
+    async def _counting(call: object) -> object:  # pragma: no cover - must not run
+        executions["n"] += 1
+        raise AssertionError("settled id must never re-execute")
+
+    def _make_stream(
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
+    ) -> _AsyncIterator[ProviderEvent]:
+        async def _gen() -> _AsyncIterator[ProviderEvent]:
+            if suppress_tools:
+                yield Complete()
+                return
+            # Provider reissues the RAW id for an already-settled call.
+            yield ToolCall(
+                id="fake_cal_1",
+                name="calendar_create_event",
+                status="running",
+                input={"title": "again"},
+            )
+
+        return _gen()
+
+    seeded = ToolResult(
+        tool_call_id="worker-0::fake_cal_1",
+        name="calendar_create_event",
+        status="succeeded",
+        approval_state="approved",
+        summary="ok",
+    )
+    from dataclasses import replace as _replace
+
+    original = builtin.TOOL_REGISTRY["calendar_create_event"]
+    try:
+        builtin.TOOL_REGISTRY["calendar_create_event"] = _replace(  # type: ignore[index]
+            original, executor=_counting
+        )
+        events = [
+            ev
+            async for ev in run_agent_loop(
+                make_stream=_make_stream,
+                settings=Settings(TOOL_MAX_ROUNDS=3),  # type: ignore[call-arg]
+                initial_tool_results=[seeded],
+            )
+        ]
+    finally:
+        builtin.TOOL_REGISTRY["calendar_create_event"] = original  # type: ignore[index]
+
+    assert executions["n"] == 0
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    refusals = [
+        e
+        for e in events
+        if isinstance(e, ToolResult) and e.tool_call_id == "fake_cal_1"
+    ]
+    assert refusals
+    assert refusals[0].summary == "Duplicate tool call after settlement."
+    assert refusals[0].status == "failed"
+
+
+async def test_provider_supplied_result_for_a_registry_tool_is_ignored() -> None:
+    """FL-26 / ORCH-9: only the server may resolve a REGISTRY tool call.
+
+    Honoring the provider's own `ToolResult` skipped the approval gate and the
+    server executor — model text is never approval (untrusted-output rule 2).
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.config import Settings
+    from app.providers.protocol import (
+        AwaitingApproval,
+        ProviderEvent,
+        ToolCall,
+        ToolResult,
+    )
+    from app.tools.agent_loop import run_agent_loop
+
+    def _make_stream(
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
+    ) -> _AsyncIterator[ProviderEvent]:
+        async def _gen() -> _AsyncIterator[ProviderEvent]:
+            yield ToolCall(
+                id="c1",
+                name="calendar_create_event",
+                status="running",
+                input={"title": "self-approved"},
+            )
+            yield ToolResult(
+                tool_call_id="c1",
+                name="calendar_create_event",
+                status="succeeded",
+                approval_state="approved",
+                summary="provider says done",
+                output={"eventId": "forged"},
+            )
+
+        return _gen()
+
+    events = [
+        ev
+        async for ev in run_agent_loop(
+            make_stream=_make_stream,
+            settings=Settings(TOOL_MAX_ROUNDS=3),  # type: ignore[call-arg]
+        )
+    ]
+    assert any(isinstance(e, AwaitingApproval) for e in events)
+    relayed = [e for e in events if isinstance(e, ToolResult)]
+    assert not any(r.summary == "provider says done" for r in relayed)
+    assert not any((r.output or {}).get("eventId") == "forged" for r in relayed)
+    pending = [
+        e
+        for e in events
+        if isinstance(e, ToolCall) and e.status == "awaiting_approval"
+    ]
+    assert pending and pending[0].id == "c1"
+
+
+async def test_unmatched_provider_pause_id_does_not_park_a_mismatched_pause() -> None:
+    """FL-27 / ORCH-8: a pause id with no buffered call is failed, not parked.
+
+    The `pending_calls[0]` fallback parked the pause on a DIFFERENT call, and an
+    id the provider never requested has no persisted `tool_call` part, so resume
+    could never settle it.
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        AwaitingApproval,
+        Complete,
+        ProviderEvent,
+        ToolResult,
+    )
+    from app.tools.agent_loop import run_agent_loop
+
+    def _make_stream(
+        _feedback: list[ToolResult],
+        suppress_tools: bool = False,
+        *,
+        answer_nudge: bool = False,
+    ) -> _AsyncIterator[ProviderEvent]:
+        async def _gen() -> _AsyncIterator[ProviderEvent]:
+            yield AwaitingApproval(tool_call_id="never-requested")
+            yield AnswerDelta(text="carried on")
+            yield Complete()
+
+        return _gen()
+
+    events = [
+        ev
+        async for ev in run_agent_loop(
+            make_stream=_make_stream,
+            settings=Settings(TOOL_MAX_ROUNDS=3),  # type: ignore[call-arg]
+        )
+    ]
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    failed = [
+        e
+        for e in events
+        if isinstance(e, ToolResult) and e.tool_call_id == "never-requested"
+    ]
+    assert failed and failed[0].status == "failed"
+    # The turn still terminates normally instead of hanging on an unresumable pause.
+    assert any(isinstance(e, Complete) for e in events)
+
+
 # 7. Flag-off no-op invariant --------------------------------------------------
 
 

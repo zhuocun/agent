@@ -718,6 +718,214 @@ async def test_h003_concurrent_worker_pauses_reject_sibling(
     assert resume_frames[-1][1]["status"] == "done"
 
 
+async def test_h003_superseded_sibling_emits_subagent_done_and_attribution(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """FL-09 (GAP-2): the superseded loser is CLOSED on the wire, not left open.
+
+    The cancelled `ToolResult` shipped without a `SubagentDone`, so the FE row
+    spun forever and the handler defaulted the outcome to `succeeded`.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "f0000000-0000-0000-0000-000000000031",
+            "tierId": "smart",
+            "text": _TWO_WORKER_HITL_PROMPT,
+            "agenticMode": "deep_research",
+        },
+    )
+    assert frames[-1][1]["status"] == "awaiting_approval"
+
+    superseded_result = next(
+        d
+        for n, d in frames
+        if n == "tool_result" and d.get("status") == "cancelled"
+    )
+    loser_id = str(superseded_result["subagentId"])
+    dones = {str(d["subagentId"]): d for n, d in frames if n == "subagent_done"}
+    assert loser_id in dones, "superseded sibling never reached a terminal outcome"
+    assert dones[loser_id]["outcome"] == "cancelled"
+    # A cancelled sibling is not a failure — `failed_worker_count` stays honest.
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert all(d.get("failedWorkerCount", 0) == 0 for d in run_costs)
+
+    msgs = await _load_messages(session_factory, conv_id)
+    paused = next(
+        m for m in msgs if m.role == "assistant" and m.status == "awaiting_approval"
+    )
+    parts = [p for p in (paused.parts or []) if isinstance(p, dict)]
+    loser_part = next(
+        p
+        for p in parts
+        if p.get("type") == "subagent" and p.get("subagentId") == loser_id
+    )
+    assert loser_part.get("outcome") == "cancelled"
+
+    # The continuation's stored outcome must match the streamed one so the
+    # resume can fold the loser's text back as a truncated partial.
+    winner_call = next(
+        p
+        for p in parts
+        if p.get("type") == "tool_call"
+        and get_continuation_from_server_state(
+            paused.server_state, str(p.get("id") or "")
+        )
+        is not None
+    )
+    cont = get_continuation_from_server_state(
+        paused.server_state, str(winner_call["id"])
+    )
+    assert cont is not None
+    loser_state = next(
+        w for w in cont.completed_workers if w.subagent_id == loser_id
+    )
+    assert loser_state.outcome == "cancelled"
+    # Its partial findings are preserved for synthesis, not discarded.
+    assert loser_state.answer.strip()
+
+
+async def test_h003_superseded_fallback_sibling_is_priced_on_fallback_binding() -> None:
+    """FL-09 / COST-2: a fallback-served loser is billed and attributed there.
+
+    With no `substitution` on the wire the handler priced `acc.usage` on the
+    PRIMARY binding and persisted a primary `ModelAttribution` — a silent
+    downgrade plus an unbilled delta (invariant 13).
+    """
+    import asyncio
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.agentic.orchestrator import run_orchestrator
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        AwaitingApproval,
+        ProviderEvent,
+        RunCost,
+        SubagentDone,
+        ToolCall,
+        ToolResult,
+        UsageUpdate,
+    )
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_PLAN_APPROVAL=False,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_MAX_WORKERS=2,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    first_paused = asyncio.Event()
+
+    def _pause_stream(index: str, *, wait: bool) -> _AsyncIterator[ProviderEvent]:
+        async def _gen() -> _AsyncIterator[ProviderEvent]:
+            if wait:
+                await first_paused.wait()
+                # Let the winner's pause reach the fan-out queue first so this
+                # sibling is deterministically the superseded one.
+                await asyncio.sleep(0.05)
+            yield AnswerDelta(text=f"partial from {index}")
+            yield UsageUpdate(input_tokens=2, output_tokens=0)
+            yield ToolCall(
+                id=f"cal-{index}",
+                name="calendar_create_event",
+                label="Create calendar event",
+                status="awaiting_approval",
+                approval_state="pending",
+                input={"title": index},
+            )
+            if not wait:
+                # Release the sibling BEFORE the pause: the loop breaks on
+                # AwaitingApproval, so nothing after it ever runs.
+                first_paused.set()
+            yield AwaitingApproval(tool_call_id=f"cal-{index}")
+
+        return _gen()
+
+    def _primary(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            if "DEEP_RESEARCH_WORKER:0:" in prompt:
+                return _pause_stream("w0", wait=False)
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                # Retryable before any visible event: the loser is fallback-served.
+                async def _boom() -> _AsyncIterator[ProviderEvent]:
+                    raise RuntimeError("retryable")
+                    yield AnswerDelta(text="x")  # pragma: no cover
+
+                return _boom()
+
+            async def _agg() -> _AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="agg")
+                yield Complete(usage=UsageUpdate())
+
+            return _agg()
+
+        return _make
+
+    def _fallback(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            return _pause_stream("w1", wait=True)
+
+        return _make
+
+    from app.providers.protocol import Complete
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_primary,
+            settings=settings,
+            mode="deep_research",
+            user_text="DEEP_RESEARCH: alpha | beta",
+            cost_for_usage=lambda u: 0.01 * float(u.input_tokens),
+            fallback_make_stream_for=_fallback,
+            fallback_cost_for_usage=lambda u: 0.5 * float(u.input_tokens),
+            fallback_provider_id="openai",
+            fallback_model_id="gpt-test",
+            fallback_display_label="GPT Test",
+            is_retryable=lambda _exc: True,
+        )
+    ]
+    cancelled = [
+        e for e in events if isinstance(e, ToolResult) and e.status == "cancelled"
+    ]
+    assert cancelled
+    loser_id = str(cancelled[0].subagent_id)
+    assert loser_id == "worker-1"
+    loser_done = next(
+        e
+        for e in events
+        if isinstance(e, SubagentDone) and e.subagent_id == loser_id
+    )
+    assert loser_done.outcome == "cancelled"
+    # Priced and attributed on the route that actually served it.
+    assert loser_done.substitution == "provider_fallback"
+    assert loser_done.substituted_provider == "openai"
+    assert loser_done.substituted_model == "gpt-test"
+    assert loser_done.cost_usd == pytest.approx(0.5 * 2)
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert all(f.failed_worker_count == 0 for f in finals)
+
+
 async def test_h008_continue_turn_refuses_agentic_checkpoint(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
@@ -1316,6 +1524,196 @@ async def test_h010_resume_does_not_reemit_partial_answer() -> None:
     texts = [e.text for e in answer_deltas]
     assert "already delivered draft" not in "".join(texts)
     assert any("post-resume" in t for t in texts)
+
+
+async def test_resume_does_not_re_pause_on_an_already_settled_id() -> None:
+    """FL-15 / H-002: the resumed worker must not re-pause on the settled id.
+
+    The seed arrives namespaced (`worker-0::…`) while the provider reissues the
+    raw id, so the settlement guard never matched and the run surfaced a second
+    approval card for a call the user had already decided.
+    """
+    from app.agentic.continuation import AgenticContinuation, CompletedWorkerState
+    from app.agentic.orchestrator import _resume_worker_continuation
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        AwaitingApproval,
+        Complete,
+        ToolCall,
+        ToolResult,
+        UsageUpdate,
+    )
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[object]:
+            async def _gen() -> AsyncIterator[object]:
+                if suppress_tools:
+                    yield AnswerDelta(text="finishing without the tool")
+                    yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+                    return
+                # Reissue the RAW id the pause turn already settled.
+                yield ToolCall(
+                    id="fake_cal_1",
+                    name="calendar_create_event",
+                    status="running",
+                    input={"title": "again"},
+                )
+
+            return _gen()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    cont = AgenticContinuation(
+        phase="worker",
+        paused_subagent_id="worker-0",
+        user_text="DEEP_RESEARCH: alpha | beta",
+        plan=("alpha", "beta"),
+        completed_workers=(
+            CompletedWorkerState(
+                subagent_id="worker-1",
+                sub_question="beta",
+                answer="beta ok",
+                usage=UsageUpdate(input_tokens=2, output_tokens=1),
+                cost_usd=0.2,
+            ),
+        ),
+        planner_usage=UsageUpdate(input_tokens=1, output_tokens=1),
+        planner_cost_usd=0.1,
+        actual_cost_usd=0.3,
+        paused_worker_index=0,
+        paused_sub_question="alpha",
+        partial_answer="",
+        orchestration_mode="deep_research",
+    )
+    seed = ToolResult(
+        tool_call_id="worker-0::fake_cal_1",
+        name="calendar_create_event",
+        status="succeeded",
+        approval_state="approved",
+        summary="ok",
+    )
+    events = [
+        ev
+        async for ev in _resume_worker_continuation(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            cost_for_usage=lambda _u: 0.01,
+            continuation=cont,
+            resume_tool_result=seed,
+            server_approved_call_ids=set(),
+        )
+    ]
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    refusals = [
+        e
+        for e in events
+        if isinstance(e, ToolResult)
+        and str(e.tool_call_id).endswith("fake_cal_1")
+        and e.summary == "Duplicate tool call after settlement."
+    ]
+    assert refusals
+
+
+async def test_resume_folds_a_cancelled_sibling_as_a_truncated_partial() -> None:
+    """FL-09: the resume READS `CompletedWorkerState.outcome` (write-only before).
+
+    A superseded sibling's text is a truncated partial, so the resume must mark it
+    and keep `RunCost.partial` True instead of re-presenting it as finished work.
+    """
+    from app.agentic.continuation import AgenticContinuation, CompletedWorkerState
+    from app.agentic.orchestrator import _resume_worker_continuation
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        RunCost,
+        ToolResult,
+        UsageUpdate,
+    )
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[object]:
+            async def _gen() -> AsyncIterator[object]:
+                yield AnswerDelta(text="alpha resumed finding")
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    cont = AgenticContinuation(
+        phase="worker",
+        paused_subagent_id="worker-0",
+        user_text="DEEP_RESEARCH: alpha | beta",
+        plan=("alpha", "beta"),
+        completed_workers=(
+            CompletedWorkerState(
+                subagent_id="worker-1",
+                sub_question="beta",
+                answer="beta partial text",
+                usage=UsageUpdate(input_tokens=2, output_tokens=1),
+                cost_usd=0.2,
+                outcome="cancelled",
+            ),
+        ),
+        planner_usage=UsageUpdate(input_tokens=1, output_tokens=1),
+        planner_cost_usd=0.1,
+        actual_cost_usd=0.3,
+        paused_worker_index=0,
+        paused_sub_question="alpha",
+        partial_answer="",
+        orchestration_mode="deep_research",
+    )
+    seed = ToolResult(
+        tool_call_id="worker-0::x",
+        name="calendar_create_event",
+        status="succeeded",
+        approval_state="approved",
+        summary="ok",
+    )
+    events = [
+        ev
+        async for ev in _resume_worker_continuation(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            cost_for_usage=lambda _u: 0.01,
+            continuation=cont,
+            resume_tool_result=seed,
+            server_approved_call_ids=set(),
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "beta partial text" in answer
+    assert "cancelled before finishing" in answer
+    assert "were cancelled while another awaited approval" in answer
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is False
 
 
 async def test_h013_conflicting_decision_on_worker_resume(

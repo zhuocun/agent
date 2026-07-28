@@ -71,7 +71,11 @@ from app.providers.protocol import (
 from app.schemas.common import SubstitutionReasonCode
 from app.search.protocol import SourceItem
 from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
-from app.tools.agent_loop import MakeStream, run_agent_loop
+from app.tools.agent_loop import (
+    TOOL_CALL_ID_NAMESPACE_SEP,
+    MakeStream,
+    run_agent_loop,
+)
 
 _log = structlog.get_logger(__name__)
 
@@ -136,6 +140,61 @@ _AGGREGATOR_QUIET_ALLOWED_TOOLS: frozenset[str] = _AGGREGATOR_ALLOWED_TOOLS
 # Quiet planner: judgment/decomposition only — empty registry allowlist so a
 # planner ToolCall/HITL pause cannot be swallowed into an empty plan (O-009).
 _PLANNER_ALLOWED_TOOLS: frozenset[str] = frozenset()
+
+# --- degrade labels (orchestrator-local) --------------------------------------
+#
+# Each degrade path owns a DISTINCT label channel so the copy on the wire always
+# agrees with the flag on the wire. `aggregate.synthesize` owns the budget-halt
+# and failed-worker clauses; the three below are the ones it cannot express.
+
+# FL-06: an aggregator crash is a synthesis failure, not a budget event. Folding
+# it into `synthesize(budget_halted=...)` claimed a budget halt on a provider
+# crash while `RunCost.budget_halted` stayed False.
+_AGGREGATOR_FAILED_LABEL = (
+    "\n\n[Partial answer: synthesis failed; composed from completed sub-agents.]"
+)
+
+# FL-13: single-mode budget halt. Additive with `EMPTY_REPLY_FALLBACK` so a halt
+# before any prose is labeled a budget stop, not a blank turn.
+_SINGLE_BUDGET_HALT_LABEL = (
+    "\n\n[Partial answer: stopped early to stay within the run budget.]"
+)
+
+# FL-09: a sibling cancelled because another worker already holds the run's one
+# HITL continuation. Neither `failed` nor a budget event.
+_TRUNCATED_PARTIAL_SUFFIX = (
+    " […partial: this sub-agent was cancelled before finishing.]"
+)
+
+
+def _superseded_label(count: int) -> str:
+    """Suffix for workers cancelled as superseded (FL-09); empty when none."""
+    if count <= 0:
+        return ""
+    return (
+        f"\n\n[{count} sub-agent(s) were cancelled while another awaited "
+        "approval; their partial findings are included.]"
+    )
+
+
+def _fold_completed_answer(state: CompletedWorkerState) -> str:
+    """Restored sibling answer, marked truncated when it was cancelled (FL-09).
+
+    Reads the `outcome` the pause turn persisted so a superseded worker's partial
+    is never re-presented as a finished finding on the resume.
+    """
+    if state.outcome == "cancelled" and state.answer.strip():
+        return state.answer + _TRUNCATED_PARTIAL_SUFFIX
+    return state.answer
+
+
+def _verifier_degraded(result: verifier.VerifyResult | None) -> bool:
+    """True when a verifier ran but did not fully succeed (FL-08).
+
+    `unavailable` / `failed` / `partial` / `budget_halted` are all text-only
+    degrades today; they must also raise `RunCost.partial`.
+    """
+    return result is not None and result.outcome != "succeeded"
 
 # Plan-approval HITL (M3). The plan pause reuses the shipped tool-approval
 # terminal: the orchestrator emits a pseudo `tool_call` whose name is this
@@ -203,7 +262,24 @@ class _WorkerSentinel:
     subagent_id: str
 
 
-_TOOL_CALL_NS_SEP = "::"
+@dataclass(frozen=True)
+class _WorkerSubstituted:
+    """Internal queue marker: this worker's route flipped to the fallback (FL-22).
+
+    NOT a `ProviderEvent` — it never escapes the orchestrator. Enqueued the moment
+    ``used_fallback`` flips, i.e. ahead of every event the fallback stream will
+    put, so the mid-flight kill gate prices this worker's provisional samples on
+    the binding that actually serves them. Deriving that from a relayed
+    ``Complete.substitution`` alone leaves the bare ``UsageUpdate`` samples that
+    precede the terminal priced at the primary rate.
+    """
+
+    subagent_id: str
+
+
+# Single source with the agent loop's settlement guard, which must de-namespace
+# seeded ids to match a provider reissue (FL-15).
+_TOOL_CALL_NS_SEP = TOOL_CALL_ID_NAMESPACE_SEP
 
 
 def namespace_tool_call_id(subagent_id: str, call_id: str) -> str:
@@ -321,14 +397,27 @@ class _SourceIdRemapper:
         """Return the merged global catalog in ascending citation id order."""
         return [self._catalog[i] for i in sorted(self._catalog)]
 
+    def _global_id(self, subagent_id: str, local: int) -> int:
+        """Global id for a worker-local ordinal, allocating on first sight (FL-16-a).
+
+        Every citation surface routes through here — ``Sources`` remap, both
+        AnswerDelta rewrites and ``mapped_ids_for`` — so a marker cited BEFORE its
+        own ``Sources`` event can never fall through to the raw local ordinal.
+        Falling through resolved the marker against whichever worker happened to
+        own that global id, silently misattributing a claim (FE-1).
+        """
+        key = (subagent_id, local)
+        gid = self._map.get(key)
+        if gid is None:
+            gid = self._next
+            self._map[key] = gid
+            self._next += 1
+        return gid
+
     def remap_sources(self, event: Sources, subagent_id: str) -> Sources:
         new_items: list[SourceItem] = []
         for item in event.items:
-            key = (subagent_id, int(item.id))
-            if key not in self._map:
-                self._map[key] = self._next
-                self._next += 1
-            gid = self._map[key]
+            gid = self._global_id(subagent_id, int(item.id))
             remapped = item.model_copy(update={"id": gid})
             self._catalog[gid] = remapped
             new_items.append(remapped)
@@ -351,15 +440,9 @@ class _SourceIdRemapper:
 
         if not process:
             return ""
-        if not self._map:
-            return process
 
         def _sub(match: re.Match[str]) -> str:
-            local = int(match.group(1))
-            global_id = self._map.get((subagent_id, local))
-            if global_id is None:
-                return match.group(0)
-            return f"[{global_id}]"
+            return f"[{self._global_id(subagent_id, int(match.group(1)))}]"
 
         return aggregate._CITATION_MARKER_RE.sub(_sub, process)
 
@@ -368,15 +451,9 @@ class _SourceIdRemapper:
         hold = self._answer_carry.pop(subagent_id, "")
         if not hold:
             return ""
-        if not self._map:
-            return hold
 
         def _sub(match: re.Match[str]) -> str:
-            local = int(match.group(1))
-            global_id = self._map.get((subagent_id, local))
-            if global_id is None:
-                return match.group(0)
-            return f"[{global_id}]"
+            return f"[{self._global_id(subagent_id, int(match.group(1)))}]"
 
         return aggregate._CITATION_MARKER_RE.sub(_sub, hold)
 
@@ -391,13 +468,8 @@ class _SourceIdRemapper:
                     out.append(sid)
                     seen.add(sid)
                 continue
-            gid = self._map.get((subagent_id, local_int))
-            if gid is None:
-                # Source emitted only via WorkerOutput path — allocate now.
-                self._map[(subagent_id, local_int)] = self._next
-                gid = self._next
-                self._next += 1
-            token = str(gid)
+            # Source emitted only via the WorkerOutput path — allocate now.
+            token = str(self._global_id(subagent_id, local_int))
             if token not in seen:
                 out.append(token)
                 seen.add(token)
@@ -538,6 +610,11 @@ async def _emit_planner_receipt(
     cap_usd: float,
     ledger_usd: float,
     open_bracket: bool = False,
+    used_fallback: bool = False,
+    fallback_cost_for_usage: CostForUsage | None = None,
+    fallback_provider_id: str | None = None,
+    fallback_model_id: str | None = None,
+    fallback_display_label: str | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Surface planner spend as a planner SubagentDone + mid-run RunCost tick.
 
@@ -549,8 +626,17 @@ async def _emit_planner_receipt(
     approval pause needs the planner section for the HITL tool). Otherwise the
     bracket opens only when there is real planner usage (fake/scaffolded path
     stays quiet).
+
+    ``used_fallback`` (FL-11): the planner's A-5 retry was served on the fallback
+    route, so it must be priced AND attributed on that binding — a primary price
+    permanently under-bills and reports a model the run never used (invariant 13).
     """
-    planner_cost = cost_for_usage(planner_usage)
+    pricer = (
+        fallback_cost_for_usage
+        if used_fallback and fallback_cost_for_usage is not None
+        else cost_for_usage
+    )
+    planner_cost = pricer(planner_usage)
     has_usage = bool(
         planner_usage.input_tokens
         or planner_usage.output_tokens
@@ -570,6 +656,12 @@ async def _emit_planner_receipt(
             usage=planner_usage,
             cost_usd=planner_cost,
             outcome="succeeded",
+            substitution="provider_fallback" if used_fallback else None,
+            substituted_provider=fallback_provider_id if used_fallback else None,
+            substituted_model=fallback_model_id if used_fallback else None,
+            substituted_display_label=(
+                fallback_display_label if used_fallback else None
+            ),
         )
     # Skip a zero progress tick so plan-approval's estimate RunCost remains the
     # first meter event the FE/tests see on a scaffolded pause.
@@ -736,18 +828,17 @@ def _verifier_phase_estimate(
 ) -> float:
     """USD estimate for ``sample_count`` judge samples (default: configured N).
 
-    Matches admission methodology: reasoning x fan-out multipliers (FR-26g).
+    One composition for BOTH phase gates (FL-17): reasoning multiplier only,
+    matching the aggregator gate in `_run_deep_research`. The fan-out multiplier
+    models whole-run multi-agent burn and belongs to `estimate_run_cost` (which
+    keeps both) — folding it into a single-phase call made this gate ~15x stricter
+    than the aggregator gate for an identical one-shot judge request.
     """
     if not settings.agentic_verifier:
         return 0.0
     n = max(1, sample_count if sample_count is not None else settings.agentic_verifier_n)
     expected = budget._expected_subagent_usage(settings)
-    return (
-        cost_for_usage(expected)
-        * settings.agentic_reasoning_token_multiplier
-        * settings.agentic_fanout_token_multiplier
-        * n
-    )
+    return cost_for_usage(expected) * settings.agentic_reasoning_token_multiplier * n
 
 
 def _can_fund_verifier(
@@ -873,28 +964,16 @@ async def _emit_verifier_receipt(
 
     When ``emit_started`` is False, the caller already yielded ``SubagentStarted``
     before awaiting the judge (V-009 lifecycle order).
+
+    ``outcome`` is consumed VERBATIM (FL-20). `_apply_verifier_result` owns the
+    single VerifyOutcome → wire mapping; re-deriving it here contradicted that
+    mapping for `unavailable` and left the returned value silently overridden.
     """
     if result is None and outcome == "succeeded":
         return
     usage = result.usage if result is not None else UsageUpdate()
     cost = _verifier_cost(result, cost_for_usage)
-    wire_outcome: Literal["succeeded", "failed"] = (
-        "succeeded" if outcome == "succeeded" and result is not None
-        and result.outcome == "succeeded"
-        else "failed"
-        if outcome == "failed"
-        or (result is not None and result.outcome in {"failed", "unavailable"})
-        else "succeeded"
-    )
-    # Partial / budget_halted still surface as succeeded bracket with usage —
-    # the final RunCost carries partial/budget_halted. Only hard failures use
-    # failed.
-    if (
-        result is not None
-        and result.outcome in {"partial", "budget_halted"}
-        and outcome != "failed"
-    ):
-        wire_outcome = "succeeded"
+    wire_outcome: Literal["succeeded", "failed"] = outcome
     if emit_started:
         yield SubagentStarted(
             subagent_id=_VERIFIER_ID, label=_VERIFIER_LABEL, role="verifier"
@@ -951,6 +1030,7 @@ async def _finalize_synthesis(
     cap_usd: float,
     budget_halted: bool = False,
     failed_worker_count: int = 0,
+    superseded_worker_count: int = 0,
     planned_workers: int = 0,
     completed_workers: int = 0,
     verifier_result: verifier.VerifyResult | None = None,
@@ -967,13 +1047,20 @@ async def _finalize_synthesis(
     When ``merged_sources`` is provided, emit a single aggregator-tagged
     ``Sources`` event before the synthesis answer so main-answer ``[n]``
     citations resolve against the global catalog (B12).
+
+    ``superseded_worker_count`` (FL-09) labels siblings cancelled to keep one HITL
+    continuation; `aggregate.synthesize` cannot express that clause, so it is
+    appended here and raises `partial`.
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
     )
     if merged_sources:
         yield Sources(items=list(merged_sources), subagent_id=_AGGREGATOR_ID)
-    yield AnswerDelta(text=synthesis, subagent_id=_AGGREGATOR_ID)
+    yield AnswerDelta(
+        text=synthesis + _superseded_label(superseded_worker_count),
+        subagent_id=_AGGREGATOR_ID,
+    )
     aggregator_usage = UsageUpdate()
     aggregator_cost = cost_for_usage(aggregator_usage)
     yield Complete(usage=aggregator_usage, subagent_id=_AGGREGATOR_ID)
@@ -1011,7 +1098,14 @@ async def _finalize_synthesis(
     # of every subagent's cost.
     yield Complete(usage=total_usage)
     effective_budget_halted = budget_halted or verifier_budget_halted
-    partial = effective_budget_halted or failed_worker_count > 0
+    partial = (
+        effective_budget_halted
+        or failed_worker_count > 0
+        # FL-09 / FL-08: a cancelled sibling or a degraded verification is a
+        # partial answer even when no worker failed and no cap was hit.
+        or superseded_worker_count > 0
+        or _verifier_degraded(verifier_result)
+    )
     yield RunCost(
         subtotal_usd=total_cost,
         cap_usd=cap_usd,
@@ -1041,6 +1135,7 @@ async def _finalize_synthesis_streamed(
     cap_usd: float,
     budget_halted: bool,
     failed: int = 0,
+    superseded: int = 0,
     budget_headroom_usd: float | None = None,
     scaffolded: bool = False,
     artifacts: list[aggregate.WorkerArtifact] | None = None,
@@ -1061,6 +1156,11 @@ async def _finalize_synthesis_streamed(
 
     ``merged_sources`` (B12): global catalog emitted after Started and before
     any synthesis AnswerDelta so main-answer citations resolve.
+
+    Every degrade here keeps its own label channel and its own flag (FL-06): an
+    aggregator crash labels a synthesis failure with `budget_halted=False`, a cap
+    breach labels a budget halt with `budget_halted=True`, and a degraded
+    verification caveats the answer and raises `partial`.
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
@@ -1091,6 +1191,8 @@ async def _finalize_synthesis_streamed(
     )
     quiet_provenance = False
     aggregator_failed = False
+    agg_pending_tool_name = "unknown"
+    agg_pending_tool_label: str | None = None
     # Aggregator OTel span covers only aggregator work — never the verifier.
     with invoke_agent_span(
         subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
@@ -1100,11 +1202,39 @@ async def _finalize_synthesis_streamed(
                 make_stream=agg_make,
                 settings=settings,
                 allowed_tools=agg_allowed,
+                # FL-04: the aggregator owns its recovery (`aggregate.synthesize`
+                # below), so static filler must not make an empty draft look
+                # written and shadow the degrade.
+                inject_empty_fallback=False,
             ):
-                if verify_after and isinstance(event, AwaitingApproval):
-                    # Typed failure: no aggregator continuation to attach (O-011).
-                    yield _tag(event, _AGGREGATOR_ID)
-                    return
+                if isinstance(event, ToolCall):
+                    agg_pending_tool_name = event.name
+                    agg_pending_tool_label = event.label
+                if isinstance(event, AwaitingApproval):
+                    # FL-24 / ORCH-7: aggregator HITL continuation does not exist
+                    # (O-011), so this pause can never be resumed. Returning here
+                    # ended the turn with no terminal, no RunCost and no
+                    # SubagentDone, and left an actionable card whose approval
+                    # would re-run the whole paid fan-out. Cancel the pending call
+                    # and degrade through the deterministic tail instead.
+                    yield _tag(
+                        ToolResult(
+                            tool_call_id=event.tool_call_id,
+                            name=agg_pending_tool_name,
+                            label=agg_pending_tool_label,
+                            status="cancelled",
+                            approval_state="rejected",
+                            summary="Cancelled: synthesis cannot pause for approval.",
+                            error=(
+                                "The synthesis step has no approval continuation; "
+                                "the pending tool call was cancelled and the "
+                                "answer was composed from completed sub-agents."
+                            ),
+                        ),
+                        _AGGREGATOR_ID,
+                    )
+                    aggregator_failed = True
+                    break
                 if verify_after and isinstance(
                     event, (ToolCall, ToolResult, Sources, StatusUpdate)
                 ):
@@ -1116,11 +1246,6 @@ async def _finalize_synthesis_streamed(
                     answer_parts.append(event.text)
                     if not verify_after:
                         yield _tag(event, _AGGREGATOR_ID)
-                elif isinstance(event, AwaitingApproval):
-                    # Non-verify path: also impossible under empty allowlist; treat as
-                    # terminal failure rather than a resumable pause without state.
-                    yield _tag(event, _AGGREGATOR_ID)
-                    return
                 elif not verify_after:
                     yield _tag(event, _AGGREGATOR_ID)
                 aggregator_usage = _fold_usage(event, aggregator_usage)
@@ -1151,16 +1276,24 @@ async def _finalize_synthesis_streamed(
         suffix += (
             f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"
         )
+    suffix += _superseded_label(superseded)
     if aggregator_failed or main_answer_is_empty(streamed):
         draft = aggregate.synthesize(
             outputs,
             planned=planned,
-            budget_halted=budget_halted or aggregator_failed,
+            # FL-06: only a real cap breach may claim the budget label here.
+            budget_halted=budget_halted,
             failed=failed,
         )
-        if aggregator_failed and not main_answer_is_empty(streamed):
-            # Keep any partial model text ahead of the deterministic fallback.
-            draft = streamed + "\n\n" + draft
+        draft += _superseded_label(superseded)
+        if aggregator_failed:
+            draft += _AGGREGATOR_FAILED_LABEL
+            if verify_after and not main_answer_is_empty(streamed):
+                # FL-07: only quiet-collect relayed nothing, so only it may put
+                # the partial model text back on the wire. On the live-relay path
+                # `streamed` already reached the user, and prepending it here
+                # delivered the same prose twice.
+                draft = streamed + "\n\n" + draft
     elif suffix:
         draft = streamed + suffix
 
@@ -1206,7 +1339,12 @@ async def _finalize_synthesis_streamed(
                 _log.exception("agentic.verifier_failed")
                 verifier_outcome = "failed"
                 verifier_result = None
-                final_answer = draft
+                # FL-19-b: disclose the judge failure instead of shipping a bare
+                # draft that reads as verified. Same caveat the verifier module
+                # composes for its own no-samples path (FL-02-a).
+                final_answer = verifier.compose_verified_answer(
+                    draft, verdict="pass", report="", incomplete_samples=True
+                )
             else:
                 final_answer, verifier_outcome, verifier_budget_halted = (
                     _apply_verifier_result(draft, verifier_result)
@@ -1223,6 +1361,14 @@ async def _finalize_synthesis_streamed(
                 emit_started=False,
             ):
                 yield event
+        else:
+            # FL-18: a verifier skipped for budget must say so and flag the
+            # receipt (spec `02-agent-architecture.md:255`). Silence shipped an
+            # unverified answer that looked verified.
+            final_answer = verifier.compose_verified_answer(
+                draft, verdict="pass", report="", budget_halted=True
+            )
+            verifier_budget_halted = True
         yield AnswerDelta(text=final_answer, subagent_id=_AGGREGATOR_ID)
     elif (
         aggregator_failed
@@ -1261,7 +1407,15 @@ async def _finalize_synthesis_streamed(
     total_cost = worker_total_cost + aggregator_cost + verifier_cost
     yield Complete(usage=total_usage)
     effective_budget_halted = budget_halted or verifier_budget_halted
-    partial = effective_budget_halted or failed > 0 or aggregator_failed
+    partial = (
+        effective_budget_halted
+        or failed > 0
+        or aggregator_failed
+        # FL-09 / FL-08: a cancelled sibling or a degraded verification is a
+        # partial answer even when no worker failed and no cap was hit.
+        or superseded > 0
+        or _verifier_degraded(verifier_result)
+    )
     yield RunCost(
         subtotal_usd=total_cost,
         cap_usd=cap_usd,
@@ -1392,6 +1546,40 @@ async def run_single(
     if prior_cost <= 0.0 and _has_nonzero_usage(prior_usage):
         prior_cost = cost_for_usage(prior_usage)
 
+    # FL-12: admission above prices only the FRESH estimate, so a resume whose
+    # seeded ledger is already over the cap used to open another provider stream
+    # and overrun by a whole primary turn. Refuse before `make_stream_for`, and
+    # degrade to a labeled `done` rather than an error (invariant 8).
+    if prior_cost > 0.0 and budget.exceeds_cap(
+        actual_usd=prior_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
+    ):
+        yield SubagentStarted(
+            subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary"
+        )
+        yield AnswerDelta(
+            text=EMPTY_REPLY_FALLBACK + _SINGLE_BUDGET_HALT_LABEL,
+            subagent_id=subagent_id,
+        )
+        yield Complete(usage=prior_usage, subagent_id=subagent_id)
+        yield SubagentDone(
+            subagent_id=subagent_id,
+            label=_PRIMARY_LABEL,
+            role="primary",
+            usage=prior_usage,
+            cost_usd=prior_cost,
+            outcome="budget_cancelled",
+        )
+        yield Complete(usage=prior_usage)
+        yield RunCost(
+            subtotal_usd=prior_cost,
+            cap_usd=cap,
+            confidence="exact",
+            phase="final",
+            partial=True,
+            budget_halted=True,
+        )
+        return
+
     yield SubagentStarted(subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary")
     yield RunCost(
         subtotal_usd=prior_cost,
@@ -1404,6 +1592,8 @@ async def run_single(
     session_usage = UsageUpdate()
     answer_parts: list[str] = []
     budget_halted = False
+    pending_tool_name = "unknown"
+    pending_tool_label: str | None = None
     with invoke_agent_span(subagent_id=subagent_id, role="primary", label=_PRIMARY_LABEL):
         async for event in run_agent_loop(
             make_stream=make_stream_for(user_text),
@@ -1413,6 +1603,9 @@ async def run_single(
         ):
             if isinstance(event, AnswerDelta):
                 answer_parts.append(event.text)
+            if isinstance(event, ToolCall):
+                pending_tool_name = event.name
+                pending_tool_label = event.label
             session_usage = _fold_usage(event, session_usage)
             session_cost = cost_for_usage(session_usage)
             if not budget_halted and budget.exceeds_cap(
@@ -1421,23 +1614,62 @@ async def run_single(
                 headroom_usd=budget_headroom_usd,
             ):
                 budget_halted = True
-            yield _tag(event, subagent_id)
             if isinstance(event, AwaitingApproval):
-                # Primary tool HITL: end the subagent here; handler parks the turn.
-                # HANDLING: persist session_usage + prior_cost+session_cost and
-                # pass them back as prior_run_* on resume (B5 / H-011).
+                if budget_halted:
+                    # FL-12: the cap is already breached, so an actionable card
+                    # would only buy a resume that must immediately refuse. Cancel
+                    # the pending call (AR-004 shape) and fall through to the
+                    # labeled budget tail.
+                    yield _tag(
+                        ToolResult(
+                            tool_call_id=event.tool_call_id,
+                            name=pending_tool_name,
+                            label=pending_tool_label,
+                            status="cancelled",
+                            approval_state="rejected",
+                            summary="Cancelled: run budget already exhausted.",
+                            error=(
+                                "The run reached its budget cap before this "
+                                "approval could be shown."
+                            ),
+                        ),
+                        subagent_id,
+                    )
+                    break
+                # FL-14: the handler `break`s at the pause terminal and never
+                # consumes post-pause events, so the untagged Complete (turn
+                # token roll-up) and the final RunCost receipt must precede the
+                # tagged pause. `SubagentDone` stays suppressed —
+                # `mark_unfinished_subagents_paused` deliberately keeps the
+                # primary non-terminal on a pause (B15). `partial=True` because
+                # the turn is resumable, not finished.
+                yield Complete(usage=_sum_usages([prior_usage, session_usage]))
+                yield RunCost(
+                    subtotal_usd=prior_cost + cost_for_usage(session_usage),
+                    cap_usd=cap,
+                    confidence="exact",
+                    phase="final",
+                    partial=True,
+                )
+                yield _tag(event, subagent_id)
                 return
+            yield _tag(event, subagent_id)
             if budget_halted and isinstance(event, (Complete, UsageUpdate)):
                 break
-    if main_answer_is_empty("".join(answer_parts)):
-        yield AnswerDelta(text=EMPTY_REPLY_FALLBACK, subagent_id=subagent_id)
-    elif budget_halted:
-        yield AnswerDelta(
-            text=(
-                "\n\n[Partial answer: stopped early to stay within the run budget.]"
-            ),
-            subagent_id=subagent_id,
+    # FL-13: additive, not exclusive. A halt before any prose is a budget stop —
+    # `main_answer_is_empty` winning here labeled it "didn't produce a written
+    # reply" and dropped the budget label the flag on the wire claims.
+    if budget_halted:
+        prefix = (
+            EMPTY_REPLY_FALLBACK
+            if main_answer_is_empty("".join(answer_parts))
+            else ""
         )
+        yield AnswerDelta(
+            text=prefix + _SINGLE_BUDGET_HALT_LABEL, subagent_id=subagent_id
+        )
+    elif main_answer_is_empty("".join(answer_parts)):
+        yield AnswerDelta(text=EMPTY_REPLY_FALLBACK, subagent_id=subagent_id)
     cumulative_usage = _sum_usages([prior_usage, session_usage])
     cost = prior_cost + cost_for_usage(session_usage)
     yield SubagentDone(
@@ -1505,11 +1737,16 @@ async def _resume_worker_continuation(
         w.subagent_id: WorkerOutput(
             subagent_id=w.subagent_id,
             sub_question=w.sub_question,
-            answer=w.answer,
+            # FL-09: honor the persisted `outcome` — a superseded sibling's text
+            # is a truncated partial, not a finished finding.
+            answer=_fold_completed_answer(w),
             source_ids=w.source_ids,
         )
         for w in continuation.completed_workers
     }
+    restored_superseded = sum(
+        1 for w in continuation.completed_workers if w.outcome == "cancelled"
+    )
     usages: dict[str, UsageUpdate] = {
         w.subagent_id: w.usage for w in continuation.completed_workers
     }
@@ -1599,6 +1836,7 @@ async def _resume_worker_continuation(
                 cap_usd=cap,
                 budget_halted=halted,
                 failed=failed_workers,
+                superseded=restored_superseded,
                 budget_headroom_usd=budget_headroom_usd,
                 scaffolded=scaffolded,
                 artifacts=ordered_artifacts,
@@ -1618,6 +1856,7 @@ async def _resume_worker_continuation(
                 cap_usd=cap,
                 budget_halted=halted,
                 failed_worker_count=failed_workers,
+                superseded_worker_count=restored_superseded,
                 planned_workers=len(sub_questions),
                 completed_workers=completed_count,
                 merged_sources=merged_sources or None,
@@ -1804,6 +2043,9 @@ async def _resume_worker_continuation(
             # Worker subagents never spend the empty-reply retry (amendment B):
             # synthesis / the deterministic aggregate is the recovery here.
             allow_empty_retry=False,
+            # FL-04: nor may they ship static filler as a research finding —
+            # `"(no answer)"` in synthesis is the honest degrade.
+            inject_empty_fallback=False,
         ):
             if _event_shows_external_progress(event):
                 visible_progress = True
@@ -1913,8 +2155,12 @@ async def _resume_worker_continuation(
             raise
         except Exception as exc:
             # B16: refuse transparent fallback after any externally visible event.
+            # FL-23: also refuse once usage has been BANKED — the retry replaces
+            # `resume_usage` rather than summing, so retrying after a bare
+            # `UsageUpdate` would drop the primary's tokens from the roll-up.
             if (
                 not visible_progress
+                and not _has_nonzero_usage(resume_usage)
                 and not used_fallback
                 and fallback_make_stream_for is not None
                 and is_retryable(exc)
@@ -2138,6 +2384,8 @@ async def _run_deep_research(
     )
 
     planner_usage = UsageUpdate()
+    # FL-11: True once the A-5 retry was served on the fallback route.
+    planner_used_fallback = False
     # B4: durable planner spend from the plan-approval pause (resume only).
     seeded_planner_cost = max(0.0, float(prior_planner_cost_usd or 0.0))
     seeded_planner_usage = prior_planner_usage or UsageUpdate()
@@ -2156,11 +2404,17 @@ async def _run_deep_research(
         scaffolded
         or plan_text.startswith(planner.DEEP_RESEARCH_PREFIX)
         or plan_approved is False
+        # FL-25: an APPROVED resume must never reach the model planner, even when
+        # the persisted plan is missing or malformed (a corrupted or pre-BE-039
+        # row). Re-planning would spend planner tokens on, and fan out over, a
+        # plan the user never saw — breaking the BE-039 contract above.
+        or plan_approved is True
     ):
         # Deterministic decomposition: the fake provider, an explicit
-        # `DEEP_RESEARCH:` opt-in, or a decline (sub-questions go unused — no
-        # fan-out — so skip the model planner call entirely). Uses plan_text
-        # only so clarifications never enter the pipe-split.
+        # `DEEP_RESEARCH:` opt-in, a decline (sub-questions go unused — no
+        # fan-out — so skip the model planner call entirely), or an approved
+        # resume with an unusable plan. Uses plan_text only so clarifications
+        # never enter the pipe-split.
         sub_questions = planner.decompose(plan_text, max_workers=max_workers)
     else:
         # Real-provider planner: a bounded model pass decomposes the prompt into
@@ -2187,6 +2441,10 @@ async def _run_deep_research(
                         settings,
                         planner_prompt,
                     )
+                    # FL-11: which factory answered decides the pricer AND the
+                    # attribution; discarding it under-billed the planner and
+                    # reported a primary model the run never used.
+                    planner_used_fallback = True
                 except asyncio.CancelledError:
                     raise
                 except Exception as fallback_exc:
@@ -2219,19 +2477,38 @@ async def _run_deep_research(
     # human decision BEFORE any fan-out. The resume re-enters here with
     # `plan_approved` set. Fold real planner spend BEFORE AwaitingApproval so the
     # handler persists it when the pause terminal stops the stream (BE-015).
-    planner_cost = cost_for_usage(planner_usage)
+    def _price_planner(u: UsageUpdate) -> float:
+        # FL-11: price on the binding that actually served the planner.
+        if planner_used_fallback and fallback_cost_for_usage is not None:
+            return fallback_cost_for_usage(u)
+        return cost_for_usage(u)
+
+    def _planner_receipt(
+        *, ledger_usd: float, open_bracket: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        """Planner receipt stamped with the route that actually served (FL-11)."""
+        return _emit_planner_receipt(
+            planner_usage=planner_usage,
+            cost_for_usage=cost_for_usage,
+            cap_usd=cap,
+            ledger_usd=ledger_usd,
+            open_bracket=open_bracket,
+            used_fallback=planner_used_fallback,
+            fallback_cost_for_usage=fallback_cost_for_usage,
+            fallback_provider_id=fallback_provider_id,
+            fallback_model_id=fallback_model_id,
+            fallback_display_label=fallback_display_label,
+        )
+
+    planner_cost = _price_planner(planner_usage)
     if plan_approved is True:
         # B4: seed ledger with pause-turn planner spend; do not re-bill (keep
         # live planner_usage empty so `_emit_planner_receipt` stays quiet).
         planner_cost = seeded_planner_cost
     if plan_approved is None:
         if settings.agentic_plan_approval:
-            async for event in _emit_planner_receipt(
-                planner_usage=planner_usage,
-                cost_for_usage=cost_for_usage,
-                cap_usd=cap,
-                ledger_usd=planner_cost,
-                open_bracket=True,
+            async for event in _planner_receipt(
+                ledger_usd=planner_cost, open_bracket=True
             ):
                 yield event
             async for event in _maybe_plan_approval(
@@ -2249,12 +2526,7 @@ async def _run_deep_research(
     elif plan_approved is False:
         # Declined on resume: no fan-out, a labeled (non-error) synthesis.
         # Include any planner usage from a prior real-provider plan pass.
-        async for event in _emit_planner_receipt(
-            planner_usage=planner_usage,
-            cost_for_usage=cost_for_usage,
-            cap_usd=cap,
-            ledger_usd=planner_cost,
-        ):
+        async for event in _planner_receipt(ledger_usd=planner_cost):
             yield event
         async for event in _finalize_synthesis(
             synthesis=(
@@ -2276,12 +2548,7 @@ async def _run_deep_research(
         estimate_usd=estimate, settings=settings, budget_headroom_usd=budget_headroom_usd
     )
     if not decision.admitted:
-        async for event in _emit_planner_receipt(
-            planner_usage=planner_usage,
-            cost_for_usage=cost_for_usage,
-            cap_usd=cap,
-            ledger_usd=planner_cost,
-        ):
+        async for event in _planner_receipt(ledger_usd=planner_cost):
             yield event
         async for event in _finalize_synthesis(
             synthesis=(
@@ -2293,17 +2560,16 @@ async def _run_deep_research(
             worker_total_cost=planner_cost,
             cost_for_usage=cost_for_usage,
             cap_usd=cap,
+            # FL-21: an admit-reject IS a budget refusal. Reporting it with
+            # default flags made this the only refusal that looked like a clean
+            # run, unlike its twins at the single-mode and planner-spend gates.
+            budget_halted=True,
         ):
             yield event
         return
 
     # Seed the run ledger with planner actuals before fan-out (BE-014 / SAF-004).
-    async for event in _emit_planner_receipt(
-        planner_usage=planner_usage,
-        cost_for_usage=cost_for_usage,
-        cap_usd=cap,
-        ledger_usd=planner_cost,
-    ):
+    async for event in _planner_receipt(ledger_usd=planner_cost):
         yield event
     if budget.exceeds_cap(
         actual_usd=planner_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
@@ -2324,9 +2590,9 @@ async def _run_deep_research(
         return
 
     semaphore = asyncio.Semaphore(max(1, settings.agentic_max_concurrency))
-    queue: asyncio.Queue[ProviderEvent | _WorkerSentinel | _WorkerPause] = (
-        asyncio.Queue(maxsize=_FANOUT_QUEUE_MAXSIZE)
-    )
+    queue: asyncio.Queue[
+        ProviderEvent | _WorkerSentinel | _WorkerPause | _WorkerSubstituted
+    ] = asyncio.Queue(maxsize=_FANOUT_QUEUE_MAXSIZE)
     # Worker bookkeeping, keyed by subagent_id and ordered by `worker_meta` so the
     # synthesis (and per-subagent totals) preserve sub-question order regardless
     # of the nondeterministic completion order of the parallel workers.
@@ -2385,6 +2651,10 @@ async def _run_deep_research(
                 # Worker subagents never spend the empty-reply retry (amendment
                 # B): synthesis / the deterministic aggregate is the recovery.
                 allow_empty_retry=False,
+                # FL-04: nor may a worker ship static filler as a finding. With
+                # the filler suppressed `answer_parts` comes back genuinely
+                # empty, which is what FL-05 marks as failed.
+                inject_empty_fallback=False,
             ):
                 if _event_shows_external_progress(event):
                     visible_progress = True
@@ -2397,11 +2667,25 @@ async def _run_deep_research(
                     event = source_remapper.remap_sources(event, subagent_id)
                     for item in event.items:
                         source_ids.append(str(item.id))
-                if isinstance(event, Complete) and event.substitution is not None:
-                    sub_code = event.substitution
-                    sub_provider = event.substituted_provider
-                    sub_model = event.substituted_model
-                    sub_label = event.substituted_display_label
+                if isinstance(event, Complete):
+                    if event.substitution is not None:
+                        sub_code = event.substitution
+                        sub_provider = event.substituted_provider
+                        sub_model = event.substituted_model
+                        sub_label = event.substituted_display_label
+                    elif used_fallback:
+                        # FL-22: stamp the served route onto the relayed Complete.
+                        # The mid-flight kill gate derives its pricer from this
+                        # field, so without it the provisional ledger sampled a
+                        # fallback-served worker at the primary rate.
+                        _stamp_fallback_route()
+                        event = replace(
+                            event,
+                            substitution=sub_code or "provider_fallback",
+                            substituted_provider=sub_provider,
+                            substituted_model=sub_model,
+                            substituted_display_label=sub_label,
+                        )
                 if isinstance(event, ToolCall):
                     last_tool_name = event.name
                     last_tool_label = event.label
@@ -2507,8 +2791,13 @@ async def _run_deep_research(
                         # SAF-008 / BE-024 / B16: never retry after any externally
                         # visible progress — that concatenates two attempts and
                         # drops primary spend from the roll-up.
+                        # FL-23: also refuse once usage has been BANKED. The retry
+                        # REPLACES `usage` rather than summing it, so soundness
+                        # must rest on the ledger, not on an adapter emitting a
+                        # visible event before its first `UsageUpdate`.
                         if (
                             not visible_progress
+                            and not _has_nonzero_usage(usage)
                             and fallback_make_stream_for is not None
                             and is_retryable(exc)
                         ):
@@ -2518,6 +2807,10 @@ async def _run_deep_research(
                                 sub_code = "provider_fallback"
                             used_fallback = True
                             _stamp_fallback_route()
+                            # FL-22: tell the kill gate before the fallback stream
+                            # puts anything, so its provisional samples price on
+                            # the route that serves them.
+                            await queue.put(_WorkerSubstituted(subagent_id))
                             try:
                                 paused = await _consume(
                                     fallback_make_stream_for(
@@ -2543,6 +2836,18 @@ async def _run_deep_research(
                                 error=str(exc),
                             )
                             worker_failed = True
+                    if not worker_failed and main_answer_is_empty(
+                        "".join(answer_parts)
+                    ):
+                        # FL-05: a worker that wrote no prose produced no finding.
+                        # Reporting it `succeeded` inflated the completed count and
+                        # left `partial` False on a run that lost a whole step.
+                        # Reuses the existing `failed` literal deliberately — a
+                        # sixth SubagentOutcome would fail open on the live FE.
+                        _log.warning(
+                            "agentic.worker_no_prose", subagent_id=subagent_id
+                        )
+                        worker_failed = True
                     if worker_failed:
                         failed_workers += 1
                         # Bill any partial primary/fallback usage even when the
@@ -2669,6 +2974,10 @@ async def _run_deep_research(
             if isinstance(item, _WorkerSentinel):
                 remaining -= 1
                 continue
+            if isinstance(item, _WorkerSubstituted):
+                # FL-22: internal marker only — never relayed to the client.
+                fallback_priced_workers.add(item.subagent_id)
+                continue
             if isinstance(item, _WorkerPause):
                 pause_cost = _price_pause(item)
                 if worker_pause is None:
@@ -2698,6 +3007,30 @@ async def _run_deep_research(
                             "HITL continuation is kept per fan-out."
                         ),
                         subagent_id=item.subagent_id,
+                    )
+                    # FL-09: close the row. Without a terminal the FE spins
+                    # forever and the handler defaults the outcome to `succeeded`;
+                    # without `substitution` it also prices and attributes a
+                    # fallback-served loser on the PRIMARY binding (invariant 13).
+                    yield SubagentDone(
+                        subagent_id=item.subagent_id,
+                        label=f"Worker {item.index + 1}",
+                        role="worker",
+                        usage=item.usage,
+                        cost_usd=pause_cost,
+                        outcome="cancelled",
+                        substitution=(
+                            "provider_fallback" if item.used_fallback else None
+                        ),
+                        substituted_provider=(
+                            fallback_provider_id if item.used_fallback else None
+                        ),
+                        substituted_model=(
+                            fallback_model_id if item.used_fallback else None
+                        ),
+                        substituted_display_label=(
+                            fallback_display_label if item.used_fallback else None
+                        ),
                     )
                     usages[item.subagent_id] = item.usage
                     costs[item.subagent_id] = pause_cost
@@ -2807,16 +3140,41 @@ async def _run_deep_research(
             ),
             subagent_id=worker_pause.subagent_id,
         )
+        # FL-10: attribute the pause unconditionally. Hanging the `usages` /
+        # `costs` writes off the partial-answer guard silently dropped a
+        # blank-partial pause's tokens from the run ledger.
+        pause_cost = costs.get(worker_pause.subagent_id, _price_pause(worker_pause))
+        usages[worker_pause.subagent_id] = worker_pause.usage
+        costs[worker_pause.subagent_id] = pause_cost
+        # FL-10: this worker is never resumed, so it needs its own terminal — the
+        # handler only repairs unfinished rows on stop / pause, and this turn ends
+        # `done`, leaving the row on the `succeeded` default.
+        yield SubagentDone(
+            subagent_id=worker_pause.subagent_id,
+            label=f"Worker {worker_pause.index + 1}",
+            role="worker",
+            usage=worker_pause.usage,
+            cost_usd=pause_cost,
+            outcome="budget_cancelled",
+            substitution=(
+                "provider_fallback" if worker_pause.used_fallback else None
+            ),
+            substituted_provider=(
+                fallback_provider_id if worker_pause.used_fallback else None
+            ),
+            substituted_model=(
+                fallback_model_id if worker_pause.used_fallback else None
+            ),
+            substituted_display_label=(
+                fallback_display_label if worker_pause.used_fallback else None
+            ),
+        )
         if worker_pause.partial_answer.strip():
             results[worker_pause.subagent_id] = WorkerOutput(
                 subagent_id=worker_pause.subagent_id,
                 sub_question=worker_pause.sub_question,
                 answer=worker_pause.partial_answer,
                 source_ids=worker_pause.source_ids,
-            )
-            usages[worker_pause.subagent_id] = worker_pause.usage
-            costs[worker_pause.subagent_id] = costs.get(
-                worker_pause.subagent_id, _price_pause(worker_pause)
             )
         worker_pause = None
 
@@ -2922,7 +3280,6 @@ async def _run_deep_research(
         budget_halted = True
 
     judge_factory = verifier_make_stream_for or make_stream_for
-    _ = superseded_workers
 
     if scaffolded or not ordered_outputs or cannot_fund_aggregator:
         # Deterministic synthesis: the fake-provider / test contract, the
@@ -2937,6 +3294,9 @@ async def _run_deep_research(
             failed=failed_workers,
             clarifications=answers,
         )
+        # FL-09: `aggregate.synthesize` (F3) owns only the budget-halt and
+        # failed-worker clauses, so the superseded clause is appended here.
+        draft += _superseded_label(superseded_workers)
         verifier_result: verifier.VerifyResult | None = None
         verifier_outcome: Literal["succeeded", "failed"] = "succeeded"
         synthesis = draft
@@ -2994,6 +3354,14 @@ async def _run_deep_research(
                 emit_started=False,
             ):
                 yield event
+        elif settings.agentic_verifier:
+            # FL-18: the verifier is on but unfundable. Skipping silently shipped
+            # an unverified answer that read as verified; caveat it and flag the
+            # receipt so the copy matches `budget_halted` on the wire.
+            synthesis = verifier.compose_verified_answer(
+                draft, verdict="pass", report="", budget_halted=True
+            )
+            budget_halted = True
         with invoke_agent_span(
             subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
         ):
@@ -3025,7 +3393,14 @@ async def _run_deep_research(
             cap_usd=cap,
             confidence="exact",
             phase="final",
-            partial=effective_budget_halted or failed_workers > 0,
+            partial=(
+                effective_budget_halted
+                or failed_workers > 0
+                # FL-09 / FL-08: a cancelled sibling or a degraded verification is
+                # a partial answer even with no failures and no cap breach.
+                or superseded_workers > 0
+                or _verifier_degraded(verifier_result)
+            ),
             budget_halted=effective_budget_halted,
             failed_worker_count=failed_workers,
         )
@@ -3052,6 +3427,7 @@ async def _run_deep_research(
             cap_usd=cap,
             budget_halted=budget_halted,
             failed=failed_workers,
+            superseded=superseded_workers,
             budget_headroom_usd=budget_headroom_usd,
             scaffolded=scaffolded,
             artifacts=ordered_artifacts,

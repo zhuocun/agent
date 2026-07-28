@@ -399,6 +399,26 @@ async def test_verifier_flag_on_emits_judge_and_usage(
     assert done[0].get("outcome") == "succeeded"
     # Wire SubagentDone carries costUsd (+ optional attribution), not raw usage.
     assert (done[0].get("costUsd") or 0) > 0
+
+    # FE-2: the role must survive PERSISTENCE, not just the live SSE frames.
+    # Only the wire was pinned here, so the FE's missing `verifier` case (the
+    # row rendered the raw lowercase string) had no failing test on either side.
+    refetched = await agentic_client.get(f"/api/conversations/{conv_id}")
+    assert refetched.status_code == 200
+    persisted_parts = [
+        part
+        for message in refetched.json()["messages"]
+        for part in message["parts"]
+    ]
+    verifier_parts = [
+        part
+        for part in persisted_parts
+        if part.get("type") == "subagent" and part.get("role") == "verifier"
+    ]
+    assert len(verifier_parts) == 1
+    assert verifier_parts[0]["subagentId"] == "verifier"
+    assert verifier_parts[0]["outcome"] == "succeeded"
+
     get_settings.cache_clear()
 
 
@@ -1229,6 +1249,251 @@ async def test_verifier_skips_when_budget_blocks_first_sample(
     get_settings.cache_clear()
 
 
+def _agg_draft_stream(text: str = "model synthesis draft"):
+    """Aggregator factory that quiet-collects one draft delta and completes."""
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text=text)
+                usage = UsageUpdate(input_tokens=2, output_tokens=3)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    return make_stream_for
+
+
+def _unparseable_judge_stream():
+    """Judge factory whose output can never be parsed as a verdict."""
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    def judge_factory(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="I am unable to comply with this request.")
+                usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    return judge_factory
+
+
+async def test_verifier_unavailable_sets_run_cost_partial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-08: an `unavailable` verification is a partial answer, not text-only."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import AnswerDelta, RunCost
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=_unparseable_judge_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "Verification: unavailable" in answer
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    # An unparseable judge is not a budget event.
+    assert finals[-1].budget_halted is False
+    get_settings.cache_clear()
+
+
+async def test_verifier_unavailable_wire_outcome_has_one_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-20: the emitted outcome is the one `_apply_verifier_result` returned."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import (
+        _apply_verifier_result,
+        _finalize_synthesis_streamed,
+    )
+    from app.agentic.verifier import VerifyResult
+    from app.providers.protocol import SubagentDone
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    captured: list[VerifyResult] = []
+    real_apply = _apply_verifier_result
+
+    def _spy(draft: str, result: VerifyResult | None):
+        if result is not None:
+            captured.append(result)
+        return real_apply(draft, result)
+
+    monkeypatch.setattr(
+        "app.agentic.orchestrator._apply_verifier_result", _spy
+    )
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=_unparseable_judge_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    assert captured and captured[-1].outcome == "unavailable"
+    _, mapped_outcome, _ = real_apply("draft", captured[-1])
+    verifier_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "verifier"
+    ]
+    assert verifier_done
+    assert verifier_done[-1].outcome == mapped_outcome
+    get_settings.cache_clear()
+
+
+async def test_verifier_budget_skip_emits_caveat_and_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-18: an unfundable verifier caveats the answer and flags the receipt."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import AnswerDelta, RunCost, SubagentStarted
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def judge_factory(prompt: str, **_kwargs: object):
+        raise AssertionError("judge must not run when it cannot be funded")
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=judge_factory,
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            # Judge priced far above the cap: the phase gate refuses the sample.
+            verifier_cost_for_usage=lambda _u: 100.0,
+            cap_usd=1.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "Verification: incomplete" in answer
+    assert "run budget" in answer
+    # No verifier bracket opens on a skip (V-009: no Started without a Done).
+    assert not any(
+        isinstance(e, SubagentStarted) and e.role == "verifier" for e in events
+    )
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is True
+    get_settings.cache_clear()
+
+
+async def test_orchestrator_verifier_exception_caveats_the_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-19-b: a judge exception is disclosed, not swallowed into a bare draft."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import AnswerDelta, RunCost, SubagentDone
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    async def _boom(**_kwargs: object):
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr("app.agentic.verifier.run_verifier", _boom)
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer.startswith("model synthesis draft")
+    assert "Verification: incomplete" in answer
+    assert "Verification: pass" not in answer
+    verifier_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "verifier"
+    ]
+    assert verifier_done and verifier_done[-1].outcome == "failed"
+    # A judge crash is not a budget event.
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].budget_halted is False
+    get_settings.cache_clear()
+
+
 async def test_verify_after_aggregator_uses_empty_tool_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1438,10 +1703,16 @@ async def test_planner_collect_uses_empty_allowlist_and_no_web_search(
     assert seen["web_search"] is False
 
 
-async def test_verify_after_preserves_awaiting_approval_if_emitted(
+async def test_aggregator_provider_pause_degrades_to_deterministic_synthesis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Defense: if quiet-collect still sees AwaitingApproval, yield and stop."""
+    """FL-24: an aggregator pause degrades through the tail, never ends the turn.
+
+    Replaces `test_verify_after_preserves_awaiting_approval_if_emitted`, which
+    pinned the ORCH-7 bug: relaying the pause and returning left the turn with no
+    terminal Complete, no RunCost and no aggregator SubagentDone, and shipped an
+    actionable card whose approval would re-run the whole paid fan-out.
+    """
     from collections.abc import Collection
 
     from app.agentic.aggregate import WorkerOutput
@@ -1449,8 +1720,11 @@ async def test_verify_after_preserves_awaiting_approval_if_emitted(
     from app.providers.protocol import (
         AnswerDelta,
         AwaitingApproval,
+        Complete,
         ProviderEvent,
+        RunCost,
         SubagentDone,
+        ToolCall,
     )
     from app.tools.agent_loop import ToolResult
 
@@ -1458,11 +1732,17 @@ async def test_verify_after_preserves_awaiting_approval_if_emitted(
     get_settings.cache_clear()
     settings = get_settings()
 
-    def make_stream_for(prompt: str, *, allowed_tools: Collection[str] | None = None, **_k: object):
+    def make_stream_for(
+        prompt: str, *, allowed_tools: Collection[str] | None = None, **_k: object
+    ):
         def _make(
-            _feedback: list[ToolResult], suppress_tools: bool = False
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[ProviderEvent]:
             async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield ToolCall(id="agg-hitl", name="calendar_create_event", input={})
                 yield AwaitingApproval(tool_call_id="agg-hitl")
 
             return _gen()
@@ -1487,12 +1767,27 @@ async def test_verify_after_preserves_awaiting_approval_if_emitted(
             scaffolded=False,
         )
     ]
-    assert any(isinstance(e, AwaitingApproval) for e in events)
-    # Must not continue into verify / final aggregator Done after the pause.
-    assert not any(isinstance(e, SubagentDone) and e.role == "aggregator" for e in events)
-    assert not any(
-        isinstance(e, AnswerDelta) and "Verification:" in e.text for e in events
-    )
+    # No actionable card: the pause is swallowed and the pending call cancelled.
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    cancelled = [
+        e for e in events if isinstance(e, ToolResult) and e.status == "cancelled"
+    ]
+    assert cancelled and cancelled[0].tool_call_id.endswith("agg-hitl")
+    assert cancelled[0].approval_state == "rejected"
+    # The deterministic tail still runs: worker finding, receipt, run totals.
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "finding" in answer
+    agg_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "aggregator"
+    ]
+    assert agg_done and agg_done[-1].outcome == "failed"
+    assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    # FL-06: a provider pause is not a budget event.
+    assert finals[-1].budget_halted is False
+    # No verification claim on a draft the judge never saw.
+    assert "Verification: pass" not in answer
     get_settings.cache_clear()
 
 

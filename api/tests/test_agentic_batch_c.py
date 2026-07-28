@@ -20,6 +20,7 @@ from app.providers.protocol import (
     AwaitingApproval,
     Complete,
     ProviderEvent,
+    RunCost,
     SubagentDone,
     SubagentStarted,
     ToolCall,
@@ -570,3 +571,270 @@ async def test_aclose_mid_fanout_leaves_handler_to_mark_stopped() -> None:
     assert all(a.outcome == "stopped" for a in accs.values())
     assert all(a.outcome != "budget_cancelled" for a in accs.values())
     assert all(a.outcome != "succeeded" or a.terminal for a in accs.values())
+
+
+def _real_backend_settings(**kwargs: object) -> Settings:
+    """Non-fake backend so the model planner / streamed synthesis paths run.
+
+    `provider_backend` / `openai_api_key` carry no env alias, so they must be
+    passed by field name — an uppercase kwarg is dropped by `extra="ignore"`.
+    """
+    base: dict[str, object] = {
+        "provider_backend": "openai",
+        "openai_api_key": "sk-test",
+        "AGENTIC_ENABLED": True,
+        "TOOLS_ENABLED": True,
+        "AGENTIC_PLAN_APPROVAL": False,
+        "AGENTIC_VERIFIER": False,
+        "AGENTIC_MAX_WORKERS": 2,
+        "AGENTIC_MAX_CONCURRENCY": 2,
+        "AGENTIC_RUN_BUDGET_USD": 10.0,
+    }
+    base.update(kwargs)
+    return Settings(**base)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_planner_fallback_is_priced_and_attributed_on_fallback_binding() -> None:
+    """FL-11 (COST-12): the planner's A-5 retry is billed where it was served.
+
+    Discarding which factory answered priced the planner on the PRIMARY binding
+    and reported a model the run never used — a permanent under-bill, since the
+    handler bills straight from the receipt.
+    """
+    def _primary(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _boom() -> AsyncIterator[ProviderEvent]:
+                raise RuntimeError("planner boom")
+                yield AnswerDelta(text="x")  # pragma: no cover
+
+            async def _ok() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text=f"ok:{prompt}")
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            if "You are the planner" in prompt:
+                return _boom()
+            return _ok()
+
+        return _make
+
+    def _fallback(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="alpha\nbeta")
+                yield Complete(usage=UsageUpdate(input_tokens=20, output_tokens=4))
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_primary,
+            settings=_real_backend_settings(),
+            mode="deep_research",
+            user_text="compare alpha and beta",
+            cost_for_usage=lambda u: 0.001 * float(u.input_tokens),
+            fallback_make_stream_for=_fallback,
+            fallback_cost_for_usage=lambda u: 0.01 * float(u.input_tokens),
+            fallback_provider_id="openai",
+            fallback_model_id="gpt-test",
+            fallback_display_label="GPT Test",
+            is_retryable=lambda _exc: True,
+        )
+    ]
+    planner_done = next(
+        e for e in events if isinstance(e, SubagentDone) and e.subagent_id == "planner"
+    )
+    assert planner_done.cost_usd == pytest.approx(0.01 * 20)
+    assert planner_done.substitution == "provider_fallback"
+    assert planner_done.substituted_provider == "openai"
+    assert planner_done.substituted_model == "gpt-test"
+    assert planner_done.substituted_display_label == "GPT Test"
+    # The run subtotal seeded from the planner receipt carries the same figure.
+    ticks = [e for e in events if isinstance(e, RunCost) and e.phase == "progress"]
+    assert ticks and ticks[0].subtotal_usd == pytest.approx(0.01 * 20)
+
+
+@pytest.mark.asyncio
+async def test_provisional_sample_prices_fallback_worker_on_fallback_binding() -> None:
+    """FL-22 (COST-3): the mid-flight kill gate samples at the served rate.
+
+    `fallback_priced_workers` was populated only from a provider-set
+    `Complete.substitution`, which the shipped adapters never set — so the
+    provisional ledger priced a fallback worker at the primary rate.
+    """
+    primary_calls: list[UsageUpdate] = []
+    fallback_calls: list[UsageUpdate] = []
+
+    def _primary(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _boom() -> AsyncIterator[ProviderEvent]:
+                raise RuntimeError("primary boom")
+                yield AnswerDelta(text="x")  # pragma: no cover
+
+            async def _ok() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text=f"ok:{prompt}")
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                return _boom()
+            return _ok()
+
+        return _make
+
+    def _fallback(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="fb finding")
+                # A bare provisional sample BEFORE the terminal Complete: this is
+                # what the queue-side kill gate prices.
+                yield UsageUpdate(input_tokens=9, output_tokens=0)
+                yield Complete(usage=UsageUpdate(input_tokens=9, output_tokens=2))
+
+            return _gen()
+
+        return _make
+
+    def _price_primary(u: UsageUpdate) -> float:
+        primary_calls.append(u)
+        return 0.001 * float(u.input_tokens)
+
+    def _price_fallback(u: UsageUpdate) -> float:
+        fallback_calls.append(u)
+        return 0.01 * float(u.input_tokens)
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_primary,
+            settings=Settings(  # type: ignore[call-arg]
+                PROVIDER_BACKEND="fake",
+                AGENTIC_ENABLED=True,
+                TOOLS_ENABLED=True,
+                AGENTIC_MAX_WORKERS=2,
+                AGENTIC_MAX_CONCURRENCY=2,
+                AGENTIC_RUN_BUDGET_USD=10.0,
+            ),
+            mode="deep_research",
+            user_text="DEEP_RESEARCH: alpha | beta",
+            cost_for_usage=_price_primary,
+            fallback_make_stream_for=_fallback,
+            fallback_cost_for_usage=_price_fallback,
+            fallback_provider_id="openai",
+            fallback_model_id="gpt-test",
+            fallback_display_label="GPT Test",
+            is_retryable=lambda _exc: True,
+        )
+    ]
+    # The bare 9-token sample was priced on the fallback binding, matching the
+    # final receipt rather than under-reporting it mid-flight.
+    assert any(u.input_tokens == 9 for u in fallback_calls)
+    assert not any(
+        u.input_tokens == 9 and u.output_tokens == 0 for u in primary_calls
+    )
+    worker_done = next(
+        e for e in events if isinstance(e, SubagentDone) and e.subagent_id == "worker-1"
+    )
+    assert worker_done.cost_usd == pytest.approx(0.01 * 9)
+
+
+@pytest.mark.asyncio
+async def test_fallback_retry_is_refused_after_observed_usage() -> None:
+    """FL-23 (COST-1): banked primary usage forbids a transparent retry.
+
+    The retry seam REPLACES the usage accumulator, so soundness used to rest on
+    adapter event ordering rather than on the ledger. A bare `UsageUpdate`
+    followed by a raise is invisible progress but real spend.
+    """
+    fallback_opened = {"n": 0}
+
+    def _primary(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _bank_then_raise() -> AsyncIterator[ProviderEvent]:
+                yield UsageUpdate(input_tokens=13, output_tokens=0)
+                raise RuntimeError("primary boom")
+
+            async def _ok() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text=f"ok:{prompt}")
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                return _bank_then_raise()
+            return _ok()
+
+        return _make
+
+    def _fallback(prompt: str, **_kwargs: object):
+        fallback_opened["n"] += 1
+
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:  # pragma: no cover
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="fb")
+                yield Complete(usage=UsageUpdate(input_tokens=7, output_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_primary,
+            settings=Settings(  # type: ignore[call-arg]
+                PROVIDER_BACKEND="fake",
+                AGENTIC_ENABLED=True,
+                TOOLS_ENABLED=True,
+                AGENTIC_MAX_WORKERS=2,
+                AGENTIC_MAX_CONCURRENCY=2,
+                AGENTIC_RUN_BUDGET_USD=10.0,
+            ),
+            mode="deep_research",
+            user_text="DEEP_RESEARCH: alpha | beta",
+            cost_for_usage=lambda u: 0.001 * float(u.input_tokens),
+            fallback_make_stream_for=_fallback,
+            fallback_cost_for_usage=lambda u: 0.01 * float(u.input_tokens),
+            fallback_provider_id="openai",
+            fallback_model_id="gpt-test",
+            fallback_display_label="GPT Test",
+            is_retryable=lambda _exc: True,
+        )
+    ]
+    assert fallback_opened["n"] == 0
+    worker_done = next(
+        e for e in events if isinstance(e, SubagentDone) and e.subagent_id == "worker-1"
+    )
+    # The primary tokens survive in the roll-up instead of being replaced.
+    assert worker_done.usage.input_tokens == 13
+    assert worker_done.substitution is None

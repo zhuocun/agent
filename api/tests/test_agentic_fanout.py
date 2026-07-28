@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -28,6 +28,12 @@ from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.repositories import billing as billing_repo
 from app.db.session import get_db
+from app.providers.protocol import (
+    AnswerDelta,
+    Complete,
+    ProviderEvent,
+    UsageUpdate,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -223,6 +229,136 @@ def _parts(message: Message) -> list[dict[str, object]]:
     return [p for p in raw if isinstance(p, dict)]
 
 
+# Handler-driven real-provider fan-out ----------------------------------------
+#
+# `PROVIDER_BACKEND=fake` forces `scaffolded=True`, which takes the
+# deterministic-synthesis path. The degrade paths below live in the
+# MODEL-WRITTEN synthesis (`_finalize_synthesis_streamed`), so they need a
+# non-fake backend plus a stub provider — driven through `stream_and_persist`
+# so both the wire AND the persisted transcript are observable.
+
+
+class _StubRequest:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _ScriptedProvider:
+    """Provider stub that branches on the prompt each subagent phase sends."""
+
+    def __init__(
+        self,
+        *,
+        worker: Callable[[str], AsyncIterator[ProviderEvent]],
+        aggregator: Callable[[str], AsyncIterator[ProviderEvent]],
+        plan: tuple[str, ...] = ("alpha", "beta"),
+    ) -> None:
+        self._worker = worker
+        self._aggregator = aggregator
+        self._plan = plan
+        self.prompts: list[str] = []
+
+    def stream(  # type: ignore[no-untyped-def]
+        self, *, user_text: str = "", **_kwargs: object
+    ):
+        self.prompts.append(user_text)
+        if "synthesizer for a deep-research run" in user_text:
+            return self._aggregator(user_text)
+        if "planner for a deep-research run" in user_text:
+            return self._plan_stream()
+        return self._worker(user_text)
+
+    def _plan_stream(self) -> AsyncIterator[ProviderEvent]:
+        plan = self._plan
+
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(
+                text="\n".join(f"{i + 1}. {q}" for i, q in enumerate(plan))
+            )
+            usage = UsageUpdate(input_tokens=1, output_tokens=1)
+            yield usage
+            yield Complete(usage=usage)
+
+        return _gen()
+
+
+async def _drive_deep_research_handler(
+    session_factory: async_sessionmaker[AsyncSession],
+    provider: _ScriptedProvider,
+    *,
+    user_text: str = "compare alpha | beta",
+) -> tuple[list[tuple[str, dict[str, object]]], list[dict[str, object]]]:
+    """Run one deep-research turn over `provider`; return (frames, persisted parts)."""
+    from app.providers.tiers import get_binding
+    from app.streaming.handler import stream_and_persist
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="New chat",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    frames: list[tuple[str, dict[str, object]]] = []
+    async with session_factory() as session:
+        async for ev in stream_and_persist(
+            request=_StubRequest(),  # type: ignore[arg-type]
+            db=session,
+            provider=provider,  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text=user_text,
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            agentic_mode="deep_research",
+        ):
+            payload: dict[str, object] = {}
+            if ev.data:
+                try:
+                    payload = json.loads(ev.data)
+                except json.JSONDecodeError:
+                    payload = {}
+            frames.append((ev.event or "", payload))
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+            )
+        ).scalars().first()
+    assert row is not None
+    return frames, _parts(row)
+
+
+def _plain_worker(prompt: str) -> AsyncIterator[ProviderEvent]:
+    async def _gen() -> AsyncIterator[ProviderEvent]:
+        yield AnswerDelta(text=f"finding for {prompt[-12:]}")
+        usage = UsageUpdate(input_tokens=1, output_tokens=1)
+        yield usage
+        yield Complete(usage=usage)
+
+    return _gen()
+
+
 # 1. Single mode ---------------------------------------------------------------
 
 
@@ -410,3 +546,511 @@ async def test_deep_research_without_pro_uses_platform_key_and_fans_out(
     assert "Synthesis of 2 findings" in full_answer
     assert "causes of inflation" in full_answer
     assert "effects on housing" in full_answer
+
+
+# 3. Degrade labels and terminal outcomes (F1) ---------------------------------
+
+
+@pytest.fixture
+def real_backend_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Non-fake backend so the MODEL-WRITTEN synthesis path is exercised."""
+    monkeypatch.setenv("PROVIDER_BACKEND", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("TOOLS_ENABLED", "true")
+    monkeypatch.setenv("AGENTIC_ENABLED", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER", "false")
+    monkeypatch.setenv("AGENTIC_RUN_BUDGET_USD", "10.0")
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+
+
+_BUDGET_LABEL = "stay within the run budget"
+_SYNTHESIS_FAILED_LABEL = "synthesis failed"
+
+
+async def test_aggregator_exception_labels_synthesis_failure_not_budget_halt(
+    real_backend_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """FL-06 (GAP-1): a provider crash in synthesis is not a budget halt.
+
+    `budget_halted=budget_halted or aggregator_failed` used to hand the
+    budget-halt copy to `aggregate.synthesize` while `RunCost.budget_halted`
+    stayed False — copy and flag disagreed on the same frame.
+    """
+
+    def _aggregator(_prompt: str) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            raise RuntimeError("aggregator boom")
+            yield AnswerDelta(text="never")  # pragma: no cover
+
+        return _gen()
+
+    provider = _ScriptedProvider(worker=_plain_worker, aggregator=_aggregator)
+    frames, parts = await _drive_deep_research_handler(session_factory, provider)
+
+    assert frames[-1][0] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+    answer = _answer(frames)
+    assert _SYNTHESIS_FAILED_LABEL in answer
+    assert _BUDGET_LABEL not in answer
+    # Every worker finding still reaches the user.
+    assert "finding for" in answer
+
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    final = run_costs[-1]
+    assert final.get("partial") is True
+    assert final.get("budgetHalted") is False
+    assert final.get("failedWorkerCount") == 0
+
+    summary = next(p for p in parts if p.get("type") == "agentic_run_summary")
+    assert summary["outcome"] == "partial"
+    assert summary["budgetHalted"] is False
+
+
+async def test_genuine_budget_halt_keeps_the_budget_label(
+    real_backend_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """FL-06 twin: a real cap breach still gets the budget label + flag.
+
+    Pins the two label channels apart: this one comes from
+    `aggregate.synthesize(budget_halted=True)` and must keep agreeing with
+    `RunCost.budget_halted`.
+    """
+    # High enough to be admitted (the pre-flight estimate is ~$7.2), low enough
+    # that the first worker's actual usage breaches it mid-flight.
+    monkeypatch.setenv("AGENTIC_RUN_BUDGET_USD", "8.0")
+    get_settings.cache_clear()
+
+    def _big_usage() -> UsageUpdate:
+        return UsageUpdate(input_tokens=5_000_000, output_tokens=5_000_000)
+
+    def _worker(prompt: str) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text="finding for a worker")
+            yield _big_usage()
+            yield Complete(usage=_big_usage())
+
+        return _gen()
+
+    def _aggregator(_prompt: str) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text="model draft")
+            yield _big_usage()
+            yield Complete(usage=_big_usage())
+
+        return _gen()
+
+    provider = _ScriptedProvider(worker=_worker, aggregator=_aggregator)
+    frames, _persisted = await _drive_deep_research_handler(session_factory, provider)
+
+    assert frames[-1][1]["status"] == "done"
+    answer = _answer(frames)
+    assert _BUDGET_LABEL in answer
+    assert _SYNTHESIS_FAILED_LABEL not in answer
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs[-1].get("budgetHalted") is True
+    assert run_costs[-1].get("partial") is True
+
+
+async def test_worker_with_no_prose_is_marked_failed_and_omitted(
+    real_backend_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """FL-05 (with FL-04): a silent worker is `failed`, not a successful finding.
+
+    The static `EMPTY_REPLY_FALLBACK` used to make `answer_parts` look written,
+    so a lost research step was reported `succeeded` with `partial=False`.
+    """
+    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+
+    def _worker(prompt: str) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            if "beta" in prompt:
+                yield UsageUpdate(input_tokens=1, output_tokens=0)
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=0))
+                return
+            yield AnswerDelta(text="alpha finding text")
+            usage = UsageUpdate(input_tokens=1, output_tokens=1)
+            yield usage
+            yield Complete(usage=usage)
+
+        return _gen()
+
+    def _aggregator(_prompt: str) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text="synthesis over completed work")
+            usage = UsageUpdate(input_tokens=1, output_tokens=1)
+            yield usage
+            yield Complete(usage=usage)
+
+        return _gen()
+
+    provider = _ScriptedProvider(worker=_worker, aggregator=_aggregator)
+    frames, parts = await _drive_deep_research_handler(
+        session_factory, provider, user_text="alpha | beta"
+    )
+
+    assert frames[-1][1]["status"] == "done"
+    worker_dones = [
+        d
+        for n, d in frames
+        if n == "subagent_done" and str(d.get("subagentId", "")).startswith("worker")
+    ]
+    assert len(worker_dones) == 2
+    assert sum(1 for d in worker_dones if d.get("outcome") == "failed") == 1
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs[-1].get("failedWorkerCount") == 1
+    assert run_costs[-1].get("partial") is True
+
+    # The filler never ships as a finding — neither to the user nor into the
+    # DATA envelope handed to the aggregator.
+    answer = _answer(frames)
+    assert EMPTY_REPLY_FALLBACK not in answer
+    assert all(
+        EMPTY_REPLY_FALLBACK not in str(p.get("text", ""))
+        for p in parts
+        if p.get("type") == "text"
+    )
+    assert all(EMPTY_REPLY_FALLBACK not in p for p in provider.prompts)
+
+
+# Cross-cutting terminal-outcome invariant (F1 definition of done) --------------
+
+
+_DoDStreams = Callable[[], "tuple[object, object, dict[str, object]]"]
+
+
+def _dod_settings(**kwargs: object):  # type: ignore[no-untyped-def]
+    from app.config import Settings
+
+    base: dict[str, object] = {
+        "AGENTIC_ENABLED": True,
+        "TOOLS_ENABLED": True,
+        "AGENTIC_PLAN_APPROVAL": False,
+        "AGENTIC_VERIFIER": False,
+        "AGENTIC_MAX_WORKERS": 2,
+        "AGENTIC_MAX_CONCURRENCY": 2,
+        "AGENTIC_RUN_BUDGET_USD": 10.0,
+    }
+    base.update(kwargs)
+    return Settings(**base)  # type: ignore[arg-type]
+
+
+def _dod_healthy() -> tuple[object, dict[str, object], dict[str, str]]:
+    """Both workers answer; aggregator synthesizes."""
+
+    def _factory(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[object],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="finding")
+                usage = UsageUpdate(input_tokens=2, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    return _factory, {}, {"worker-0": "succeeded", "worker-1": "succeeded"}
+
+
+def _dod_failed_worker() -> tuple[object, dict[str, object], dict[str, str]]:
+    """One worker raises non-retryably; the run still finishes."""
+
+    def _factory(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[object],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _boom() -> AsyncIterator[ProviderEvent]:
+                raise RuntimeError("worker boom")
+                yield AnswerDelta(text="never")  # pragma: no cover
+
+            async def _ok() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="finding")
+                usage = UsageUpdate(input_tokens=2, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                return _boom()
+            return _ok()
+
+        return _make
+
+    return (
+        _factory,
+        {"is_retryable": lambda _exc: False},
+        {"worker-0": "succeeded", "worker-1": "failed"},
+    )
+
+
+def _dod_superseded_pause() -> tuple[object, dict[str, object], dict[str, str]]:
+    """Two concurrent pauses: the loser must be closed as cancelled."""
+    import asyncio as _asyncio
+
+    from app.providers.protocol import AwaitingApproval, ToolCall
+
+    first_paused = _asyncio.Event()
+
+    def _pause(index: str, *, wait: bool) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            if wait:
+                await first_paused.wait()
+                # Let the winner's pause reach the fan-out queue first so this
+                # sibling is deterministically the superseded one.
+                await _asyncio.sleep(0.05)
+            yield AnswerDelta(text=f"partial from {index}")
+            yield UsageUpdate(input_tokens=2, output_tokens=0)
+            yield ToolCall(
+                id=f"cal-{index}",
+                name="calendar_create_event",
+                label="Create calendar event",
+                status="awaiting_approval",
+                approval_state="pending",
+                input={"title": index},
+            )
+            if not wait:
+                first_paused.set()
+            yield AwaitingApproval(tool_call_id=f"cal-{index}")
+
+        return _gen()
+
+    def _factory(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[object],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            if "DEEP_RESEARCH_WORKER:0:" in prompt:
+                return _pause("w0", wait=False)
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                return _pause("w1", wait=True)
+
+            async def _agg() -> AsyncIterator[ProviderEvent]:  # pragma: no cover
+                yield AnswerDelta(text="agg")
+                yield Complete(usage=UsageUpdate())
+
+            return _agg()
+
+        return _make
+
+    return _factory, {}, {"worker-1": "cancelled"}
+
+
+def _dod_budget_cancelled_pause() -> tuple[object, dict[str, object], dict[str, str]]:
+    """A parked pause the cap invalidates must close as budget_cancelled."""
+    from app.providers.protocol import AwaitingApproval, ToolCall
+
+    def _factory(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[object],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _pause() -> AsyncIterator[ProviderEvent]:
+                yield UsageUpdate(input_tokens=10, output_tokens=0)
+                yield ToolCall(
+                    id="cal-0",
+                    name="calendar_create_event",
+                    label="Create calendar event",
+                    status="awaiting_approval",
+                    approval_state="pending",
+                    input={"title": "alpha"},
+                )
+                yield AwaitingApproval(tool_call_id="cal-0")
+
+            async def _breach() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="beta finding")
+                usage = UsageUpdate(input_tokens=5_000_000, output_tokens=0)
+                yield usage
+                yield Complete(usage=usage)
+
+            async def _agg() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="agg")
+                yield Complete(usage=UsageUpdate())
+
+            if "DEEP_RESEARCH_WORKER:0:" in prompt:
+                return _pause()
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                return _breach()
+            return _agg()
+
+        return _make
+
+    return (
+        _factory,
+        {
+            "settings": _dod_settings(AGENTIC_RUN_BUDGET_USD=1.0),
+            "cost_for_usage": lambda u: 1e-6 * float(u.input_tokens),
+        },
+        {"worker-0": "budget_cancelled"},
+    )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        _dod_healthy,
+        _dod_failed_worker,
+        _dod_superseded_pause,
+        _dod_budget_cancelled_pause,
+    ],
+    ids=["healthy", "failed_worker", "superseded_pause", "budget_cancelled_pause"],
+)
+async def test_every_started_subagent_reaches_a_terminal_outcome(
+    scenario: Callable[[], tuple[object, dict[str, object], dict[str, str]]],
+) -> None:
+    """F1 DoD 3: no started subagent may be left on the `succeeded` default.
+
+    Every started subagent must reach a REAL terminal outcome on the wire, with
+    exactly one deliberate exception: the parked HITL pause, which the handler's
+    `mark_unfinished_subagents_paused` repair owns (B15).
+    """
+    from app.agentic.orchestrator import run_orchestrator
+    from app.providers.protocol import AwaitingApproval, SubagentDone, SubagentStarted
+
+    factory, overrides, expected = scenario()
+    kwargs: dict[str, object] = {
+        "make_stream_for": factory,
+        "settings": _dod_settings(),
+        "mode": "deep_research",
+        "user_text": "DEEP_RESEARCH: alpha | beta",
+        "cost_for_usage": lambda u: 0.001 * float(u.input_tokens),
+    }
+    kwargs.update(overrides)
+    events = [ev async for ev in run_orchestrator(**kwargs)]  # type: ignore[arg-type]
+
+    started = {
+        e.subagent_id for e in events if isinstance(e, SubagentStarted)
+    }
+    dones = {
+        e.subagent_id: e.outcome for e in events if isinstance(e, SubagentDone)
+    }
+    parked = {
+        e.subagent_id for e in events if isinstance(e, AwaitingApproval) and e.subagent_id
+    }
+    assert started
+    unterminated = started - set(dones) - parked
+    assert not unterminated, f"no terminal outcome for {sorted(unterminated)}"
+    for subagent_id, outcome in expected.items():
+        assert dones.get(subagent_id) == outcome, (
+            f"{subagent_id} reported {dones.get(subagent_id)!r}, want {outcome!r}"
+        )
+
+
+class _DisconnectAfterStarted:
+    """Request stub that disconnects once the fan-out is underway (stop path)."""
+
+    def __init__(self, *, after: int = 6) -> None:
+        self._polls = 0
+        self._after = after
+
+    async def is_disconnected(self) -> bool:
+        self._polls += 1
+        return self._polls > self._after
+
+
+async def test_every_started_subagent_reaches_a_terminal_outcome_on_stop(
+    real_backend_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """F1 DoD 3, stop path: the terminal arrives PERSISTED, not streamed.
+
+    Stop / disconnect `aclose`s the orchestrator generator, so a
+    `SubagentDone(stopped)` enqueued by a cancelled worker can never be yielded
+    (`orchestrator.py` teardown note). `mark_unfinished_subagents_stopped` is the
+    contract there — this pins that no row survives on the `succeeded` default.
+    """
+    import asyncio as _asyncio
+
+    from app.providers.tiers import get_binding
+    from app.streaming.handler import stream_and_persist
+
+    def _slow_worker(_prompt: str) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text="partial ")
+            yield UsageUpdate(input_tokens=3, output_tokens=1)
+            await _asyncio.sleep(30)
+            yield Complete(usage=UsageUpdate(input_tokens=3, output_tokens=1))
+
+        return _gen()
+
+    def _unused_aggregator(_prompt: str) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:  # pragma: no cover
+            yield AnswerDelta(text="agg")
+            yield Complete(usage=UsageUpdate())
+
+        return _gen()
+
+    provider = _ScriptedProvider(worker=_slow_worker, aggregator=_unused_aggregator)
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="dod-stop", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    async with session_factory() as session:
+        async for _ev in stream_and_persist(
+            request=_DisconnectAfterStarted(),  # type: ignore[arg-type]
+            db=session,
+            provider=provider,  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="compare alpha | beta",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            agentic_mode="deep_research",
+        ):
+            pass
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+            )
+        ).scalars().first()
+    assert row is not None
+    assert row.status == "stopped"
+    subagents = [p for p in _parts(row) if p.get("type") == "subagent"]
+    assert subagents, "stop path must still persist the started subagents"
+    outcomes = {str(p.get("subagentId")): p.get("outcome") for p in subagents}
+    # Both workers were mid-stream when the disconnect landed.
+    assert outcomes["worker-0"] == "stopped"
+    assert outcomes["worker-1"] == "stopped"
+    # The planner had already streamed its own terminal, so `succeeded` here is a
+    # real outcome rather than the persist-time default.
+    assert outcomes["planner"] == "succeeded"
+    assert "aggregator" not in outcomes

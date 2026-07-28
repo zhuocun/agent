@@ -376,3 +376,171 @@ def test_assert_prod_safe_rejects_nonpositive_multiplier(monkeypatch: pytest.Mon
     with pytest.raises(RuntimeError, match="AGENTIC_REASONING_TOKEN_MULTIPLIER"):
         get_settings().assert_prod_safe()
     get_settings.cache_clear()
+
+
+def test_phase_gates_use_the_same_composition() -> None:
+    """FL-17 (COST-4): one composition for both single-phase funding gates.
+
+    The verifier gate multiplied in the FAN-OUT multiplier as well, making it
+    ~15x stricter than the aggregator gate for an identical one-shot call. The
+    fan-out multiplier models whole-run burn and stays in `estimate_run_cost`.
+    """
+    from app.agentic.orchestrator import _verifier_phase_estimate
+
+    monkey_settings = get_settings()
+    binding = get_binding("smart")
+
+    def _price(usage: UsageUpdate) -> float:
+        breakdown = compute_cost_breakdown(usage=usage, binding=binding)
+        return breakdown.subtotal_usd + breakdown.session_surcharge_usd
+
+    expected = budget._expected_subagent_usage(monkey_settings)
+    aggregator_estimate = (
+        _price(expected) * monkey_settings.agentic_reasoning_token_multiplier
+    )
+    # The verifier gate is only reachable with the flag on; the composition is
+    # what this pins, so read it off a verifier-enabled copy of the settings.
+    verifier_settings = monkey_settings.model_copy(update={"agentic_verifier": True})
+    assert _verifier_phase_estimate(
+        settings=verifier_settings, cost_for_usage=_price, sample_count=1
+    ) == pytest.approx(aggregator_estimate)
+    # N samples scale linearly off that same single-phase base.
+    assert _verifier_phase_estimate(
+        settings=verifier_settings, cost_for_usage=_price, sample_count=3
+    ) == pytest.approx(aggregator_estimate * 3)
+    # Whole-run estimation still keeps BOTH multipliers (guards the pin above).
+    assert monkey_settings.agentic_fanout_token_multiplier > 1.0
+    run_estimate = budget.estimate_run_cost(
+        sub_question_count=2, binding=binding, settings=monkey_settings
+    )
+    assert run_estimate == pytest.approx(
+        _price(expected)
+        * (1 + 2 + 1)
+        * monkey_settings.agentic_reasoning_token_multiplier
+        * monkey_settings.agentic_fanout_token_multiplier
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_mode_budget_halt_with_no_prose_is_labeled() -> None:
+    """FL-13 (ORCH-4): a halt before any prose is a budget stop, not a blank turn.
+
+    `main_answer_is_empty` was tested first and short-circuited the budget label,
+    so the delivered text said the model "didn't produce a written reply" while
+    the wire flag claimed a budget halt.
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.agentic.orchestrator import run_orchestrator
+    from app.config import Settings
+    from app.providers.protocol import (
+        ProviderEvent,
+        ReasoningDelta,
+        RunCost,
+        ToolResult,
+    )
+    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            async def _gen() -> _AsyncIterator[ProviderEvent]:
+                yield ReasoningDelta(text="thinking hard")
+                yield UsageUpdate(input_tokens=1_000_000, output_tokens=0)
+
+            return _gen()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_PLAN_APPROVAL=False,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_RUN_BUDGET_USD=0.5,
+    )
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            mode="single",
+            user_text="hi",
+            cost_for_usage=lambda u: 1e-6 * float(u.input_tokens),
+        )
+    ]
+    answer = "".join(
+        e.text for e in events if type(e).__name__ == "AnswerDelta"
+    )
+    assert "stay within the run budget" in answer
+    # The no-written-reply copy may still prefix it — it must not REPLACE it.
+    assert answer.startswith(EMPTY_REPLY_FALLBACK)
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is True
+
+
+@pytest.mark.asyncio
+async def test_deep_research_admit_reject_reports_budget_halted(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-21 (COST-6): the admit-reject was the only refusal reporting a clean run.
+
+    Every other budget refusal flags `budget_halted`; this one shipped default
+    flags, so the receipt and the persisted run summary read as a complete answer.
+    """
+    from app.db.models import Message
+
+    monkeypatch.setenv("AGENTIC_RUN_BUDGET_USD", "0.000001")
+    get_settings.cache_clear()
+
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "50000000-0000-0000-0000-000000000003",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: topic a | topic b",
+            "agenticMode": "deep_research",
+        },
+    )
+    assert frames[-1][1]["status"] == "done"
+    started = [d for n, d in frames if n == "subagent_started"]
+    assert [d for d in started if d.get("role") == "worker"] == []
+
+    finals = [
+        d for n, d in frames if n == "run_cost" and d.get("phase") == "final"
+    ]
+    assert finals, "admit-reject must still emit a final receipt"
+    assert finals[-1]["partial"] is True
+    assert finals[-1]["budgetHalted"] is True
+
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(Message).where(Message.conversation_id == UUID(str(conv_id)))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assistant = next(m for m in rows if m.role == "assistant")
+    summary = next(
+        p
+        for p in (assistant.parts or [])
+        if isinstance(p, dict) and p.get("type") == "agentic_run_summary"
+    )
+    assert summary["outcome"] == "partial"
+    assert summary["budgetHalted"] is True

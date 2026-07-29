@@ -224,7 +224,7 @@ workflow, not nested under the aggregator). `execute_tool_span` wired in
 | Request | `agenticMode?: "single" \| "deep_research"` |
 | SSE | Additive `subagentId`; `subagent_started` / `subagent_done` / `run_cost`; roles `primary` \| `worker` \| `aggregator` \| `orchestrator` \| `verifier` |
 | Persist | `SubagentPart` + tagged children; share view cost-stripped |
-| UI | Deep Research toggle; `SubagentPanel`; plan-approval via tool-approval UI; `RunCostMeter` on `run_cost` (**shipped:** estimate @ plan pause + final; **target:** live mid-fan-out ticks) |
+| UI | Deep Research toggle; `SubagentPanel`; plan-approval via tool-approval UI; `RunCostMeter` on `run_cost` (**shipped:** estimate @ plan pause + live mid-fan-out progress ticks + final) |
 
 Flag-off: byte-identical stream path (proven). Flag-on `single`: behavioral
 reuse of the loop **with** subagent tags — not wire-identical.

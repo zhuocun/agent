@@ -139,7 +139,7 @@ Unbounded Consumption).
 | Max workers | `AGENTIC_MAX_WORKERS=4` | Planner truncate |
 | Concurrency | `AGENTIC_MAX_CONCURRENCY=3` | Semaphore |
 | Depth | `AGENTIC_MAX_DEPTH=1` | By construction (+ boot); raise only with eval proof |
-| Per-run USD | `AGENTIC_RUN_BUDGET_USD=1.0` | Admit + mid-flight kill (**soft** within an in-flight provider call — overshoot bounded ≈ one concurrent batch; A-10) |
+| Per-run USD | `AGENTIC_RUN_BUDGET_USD=1.0` | Admit + mid-flight kill, plus a `single`-mode pre-flight halt on an already-exhausted seeded ledger (**soft** within an in-flight provider call — overshoot bounded ≈ one concurrent batch; A-10) |
 | Tool rounds / timeout | `TOOL_MAX_ROUNDS`, `TOOL_TIMEOUT_SECONDS` | `run_agent_loop` / `execute_tool` |
 | Entitlement | Pro / BYOK for `deep_research` | Coerce to `single` |
 | Resumable buffer | `AGENTIC_RESUMABLE_BUFFER_MULTIPLIER` | Conversations route |
@@ -182,11 +182,17 @@ plan/tool ids only.
 
 - Run total = **sum of parts** (planner + workers + aggregator + verifier).
 - Persist **per-worker** `ModelAttribution` (model/tier/substitution); **no
-  silent downgrade**.
+  silent downgrade** — the planner, a superseded sibling and a HITL-paused
+  worker are each priced and attributed on the route that actually served them.
+- `subtotal_usd` **is** the charge; `session_surcharge_usd` is a disclosure
+  slice of it, never an addend. Image tokens bill on the phase that sent the
+  attachments, once per turn.
 - `run_cost` meter (`subtotalUsd` / `capUsd`) is a product feature.
-  - **Shipped:** estimate at plan pause + final at done (`orchestrator.py`;
-    matches as-built audit — not per-worker mid-fan-out).
-  - **Target:** mid-run ticks as workers complete (estimate + mid + final).
+  - **Shipped:** estimate at plan pause, progress ticks as workers complete,
+    final at done — each with `confidence` / `phase`, and each persisted, so a
+    reloaded meter keeps the label the backend emitted. A total reconstructed by
+    summing per-subagent costs falls back to `estimate` / `plan`; it may never
+    claim `exact` / `final`.
 - Multi-agent research ≈ **~15×** chat tokens (industry published figure;
   `[verify-at-build]` against Olune metering). Entitlement-gate `deep_research`.
 
@@ -246,13 +252,14 @@ No cross-turn orchestrator memory. No background agent state store.
 | Non-entitled `deep_research` | Coerce to `single` |
 | Admit reject | Explained empty / partial; no spawn |
 | Plan deny | Labeled synthesis; no fan-out |
-| One worker fails | Omit worker; synthesize survivors; `done` |
+| One worker fails, or writes no prose at all | Mark the worker `failed` (`agentic.worker_no_prose` for the silent case); omit it; synthesize survivors; `done` |
 | Retryable worker error | Optional fallback route + substitution attribution |
-| Budget breach mid-flight | Cancel unfinished; labeled partial synthesis; `done` |
+| Budget breach mid-flight | Cancel unfinished — a superseded or budget-cancelled worker pause still gets its terminal `subagent_done` — labeled partial synthesis; `done` |
+| Aggregator fails | Deterministic synthesis of survivors, labeled as a synthesis failure and never as a budget halt; already-relayed model prose is not re-sent; `partial` |
 | Stop | Cancel remaining workers; flush completed partials |
 | Disconnect (resumable on) | Continue into buffer; not cancel |
 | Verifier off | Skip judge; do not claim verification |
-| Verifier on (fail / budget / parse / truncate) | Preserve manager draft with honest caveat; bill observed usage |
+| Verifier on (fail / budget skip / first-sample refusal / parse / truncate / judge crash) | Preserve manager draft with an honest incomplete caveat on **every** non-pass path; bill observed usage |
 
 ---
 
@@ -269,6 +276,13 @@ No cross-turn orchestrator memory. No background agent state store.
 - Mid-run `run_cost` ticks with `confidence`/`phase`; FE meter labels estimates
 - Fresh-context verifier judge (default off; per-sample billed; fail/budget/quorum semantics); workers advertise+execute a scoped HITL allowlist (`request_user_confirmation`, plus fake-only `calendar_create_event`); `AGENTIC_MAX_DEPTH` boot-pinned to 1
 - Always-on per-worker served model + live substitution; partial-synthesis warning chip; chat-anchored in-turn only; reuse `run_agent_loop`
+- One degrade label per channel: an aggregator failure reads as a synthesis failure, a real cap breach keeps the budget label (including a halt before any prose, and the deep-research admit reject), and a relayed aggregator draft is delivered exactly once
+- Every started subagent reaches a terminal outcome — streamed `subagent_done` for superseded and budget-cancelled worker pauses, handler-repaired on the persisted row for stop/disconnect (which structurally cannot stream one)
+- Verifier honesty on every non-pass path: a first-sample affordability refusal reports `budget_halted`, a judge exception and a budget skip both caveat the draft, a non-success verifier *result* raises `partial`, and a budget skip raises it via `budget_halted` — the judge-exception arm caveats the draft but returns no result, so it ships `partial=False` (see Deferred)
+- `single` mode refuses a resume whose seeded ledger is already over cap before opening a provider call and cancels the pending approval instead of parking an actionable card; a `single` pause emits its untagged `Complete` + final `RunCost` before the pause terminal
+- Pause identity is server-owned: a resume runs in the orchestration mode (and tier / provider / model) it paused in, rejecting a conflicting client value without consuming the approval; a claim orphaned between claim and settle reaches a durable terminal — same-decision adoption for pseudo-tools, a persisted `failed` result for registry tools — with no side effect re-run
+- Citation markers are per-worker safe: a marker cited before its own `Sources` event allocates a fresh global id instead of resolving to another worker's source; a settled tool-call id stays consumed across the worker id namespace
+- FE contract parity: cased `verifier` role label, one ungrounded-marker rule shared by the thread and the public share, a reloaded meter that keeps its `Est.` label, persisted reasoning duration so "Thought for Ns" survives a cold render (untagged reasoning; a subagent-tagged panel renders no duration clause), non-success outcomes validated on both the live and reload path (never laundered into a green check), and no dead `plannedWorkers` / `completedWorkers` on the wire
 
 ### Target (gaps to close)
 
@@ -280,7 +294,7 @@ No cross-turn orchestrator memory. No background agent state store.
 | Mid-run `run_cost` ticks | **Shipped** — estimate + mid + final with `confidence`/`phase` + FE Est. label |
 | `execute_tool` OTel | **Shipped** — wired in `agent_loop.py` |
 | Planner / verifier `invoke_agent` spans | **Shipped** — quiet planner + verifier sibling spans |
-| FE attribution display | **Shipped** always-on served model + live substitution; fuller requested→served reason disclosure still open |
+| FE attribution display | **Shipped** always-on served model + live substitution on every served route (planner, superseded sibling, paused worker); fuller requested→served reason disclosure still open |
 | High-cost composer hint | Surface before spend (partial-synthesis chip shipped; pre-send composer hint still open) |
 | Clarify-before-plan | **Shipped** (flag-gated, default off) — `agentic_plan_clarify` HITL before plan/admit; fake marker `CLARIFY:`; real always asks 1–3 |
 | Structured worker artifacts | **Shipped** (in-turn) — `WorkerArtifact` refs + JSON DATA envelope into aggregator; length caps; no DB table |
@@ -365,7 +379,8 @@ status; this section owns **target** decisions and **deferred hard gaps**.
     copy/UX polish may continue.
 11. **Partial-synthesis chip** — **shipped** (`agentic_run_summary` + warning UI).
 12. **FE attribution display** — **shipped** always-on served model + live
-    substitution; fuller requested→served reason disclosure still open.
+    substitution, disclosed on every served route (planner, superseded sibling,
+    HITL-paused worker); fuller requested→served reason disclosure still open.
     Public per-worker identity via `PublicAttribution` on `PublicSubagentPart`.
 13. **Worker HITL resume (BE-005)** — **shipped**: tool `awaiting_approval`
     inside a worker suspends fan-out after siblings finish (wait policy),
@@ -375,18 +390,26 @@ status; this section owns **target** decisions and **deferred hard gaps**.
     pause on the approval-gated stub `calendar_create_event` (allowlisted;
     `prod_safe=False` so real providers do not advertise it) and on
     provider-emitted pauses. Reuses the shipped `toolApproval` route +
-    server-issued call ids.
+    server-issued call ids. The resume runs in the orchestration mode the pause
+    was taken in — pinned from the persisted continuation for plan, clarify and
+    single-mode pauses alike, and resolved **before** the pseudo-tool settles, so
+    a rejected mode cannot burn the approval.
 14. **Approval idempotency (BE-007)** — **shipped**: approve/deny **CAS-claims**
     the pending tool_call (pending→approved/rejected + `_approvalClaimId`) and
     **commits before execute**, then settles a `tool_result` on the paused row.
     Concurrent double-approve is serialized with `SELECT … FOR UPDATE`; only the
-    winner executes. Retries reuse the stored result; claimed-without-result
-    (crash/stop/disconnect between claim and settle) fails closed and does
-    **not** re-run the side effect.
+    winner executes. Retries reuse the stored result. Claimed-without-result
+    (crash/stop/disconnect between claim and settle) still never re-runs the side
+    effect, and no longer strands the card: a **pseudo-tool** retry carrying the
+    **same** decision adopts the row's existing claim and settles (an opposite
+    decision still conflicts), and a **registry tool** persists a terminal
+    `failed` `tool_result` under the existing claim instead of leaving the row
+    `approved` / `running`. Persisting a failure executes nothing, so the
+    fail-closed guarantee is unchanged.
 
 ---
 
-## Deferred / product notes (2026-07-18 residual pass)
+## Deferred / product notes
 
 - **A-8 (public share reasoning):** keep exposing worker reasoning / tool
   transcripts on public shares for now. Cost keys remain stripped. Revisit if
@@ -397,6 +420,30 @@ status; this section owns **target** decisions and **deferred hard gaps**.
 - **Per-run USD soft cap (A-10):** admit + mid-flight kill are hard at phase
   boundaries; overshoot within an in-flight provider call is bounded ≈ one
   concurrent batch (see Hard bounds table).
+- **Fan-out queue lost-sentinel hang (ORCH-6):** deferred as unreachable at the
+  shipped bounds — `_FANOUT_QUEUE_MAXSIZE = 256` against a worst case of two
+  protected items × `AGENTIC_MAX_WORKERS ≤ MAX_WORKER_ARTIFACTS = 16`, itself
+  boot-asserted. Threading a lost-sentinel counter through producer and consumer
+  buys nothing until a module constant moves, and the bound is now pinned by
+  `api/tests/test_agentic_resilience.py::test_fanout_queue_bound_exceeds_protected_item_worst_case`
+  so such a move fails loudly. Adjacent to AR-011 above, but not covered by it.
+- **`ModelAttribution.memory_fact_ids` on the FE (FE-10):** deferred. The memory
+  chip needs only the `memoryApplied` count, so adding an unused FE field or
+  deleting a forward-looking backend field are both churn. Revisit when the
+  per-fact deep-link the schema anticipates is built.
+- **Per-worker served-model disclosure has no E2E coverage:** the backend
+  contract — fallback pricing, persisted attribution, reason code — is covered by
+  pytest, but no Playwright spec exercises `subagent-served-model` /
+  `subagent-substitution-callout`. The fake provider has no trigger that yields a
+  *fallback-served worker*: `RETRYABLE_WORKER:` emits reasoning before raising, so
+  the visible-progress guard blocks transparent fallback and the worker simply
+  fails. Closing it means a pre-visibility worker fallback trigger in
+  `api/app/providers/fake.py`.
+- **A judge exception caveats the answer without setting `RunCost.partial`:** the
+  `partial` disjunction keys on a returned verifier result, so the exception arm
+  (which returns none) ships `[Verification: incomplete …]` with `partial=False`.
+  `budget_halted` stays correctly false, so this is an honesty-of-degree gap, not
+  a wrong number; close it by keying `partial` on the verifier *outcome*.
 
 ## Invariants (must hold)
 

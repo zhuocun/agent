@@ -39,9 +39,12 @@ export async function reloadIntoConversation(
  * copy, the per-row (label, role, outcome) tuples, the resolved citation ids,
  * and the reasoning duration clause.
  *
- * `reasoningDuration` is opt-in because the backend does not persist
- * `durationSec` yet (FL-37): including it unconditionally would assert a field
- * only the live path can produce. Flip it on once the persist lands.
+ * `reasoningDuration` is opt-in and stays off for agentic turns. The backend now
+ * persists `durationSec` (FL-37), but the "Thought for Ns" clause is rendered
+ * only by the global `ReasoningPanel`, which takes *untagged* reasoning —
+ * subagent-tagged reasoning renders as plain text inside the fan-out panel and
+ * has no duration clause. That surface is therefore asserted on a non-agentic
+ * turn in `streaming.spec.ts`, where it is observable.
  */
 export interface AgenticTurnSnapshot {
   meter: {

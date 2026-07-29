@@ -658,6 +658,51 @@ async def test_genuine_budget_halt_keeps_the_budget_label(
     assert run_costs[-1].get("partial") is True
 
 
+async def test_relayed_aggregator_draft_is_not_re_emitted_through_the_handler(
+    real_backend_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """FL-07 (C-1) at integration level: relayed synthesis prose ships once.
+
+    The FL-06 twin above raises before yielding anything, so it never covered
+    the duplication arm. Here the aggregator relays a delta and *then* crashes:
+    the degrade branch used to prepend that already-streamed text to the
+    deterministic fallback, delivering the same prose twice — live and on
+    reload. Driven through `stream_and_persist` so both the wire and the
+    persisted transcript are checked, which the fake-provider SSE tests cannot
+    do (`PROVIDER_BACKEND=fake` forces `scaffolded=True` and never enters
+    `_finalize_synthesis_streamed`).
+    """
+    marker = "PARTIAL-DRAFT-MARKER"
+
+    def _aggregator(_prompt: str) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield AnswerDelta(text=marker)
+            raise RuntimeError("aggregator boom after relaying prose")
+
+        return _gen()
+
+    provider = _ScriptedProvider(worker=_plain_worker, aggregator=_aggregator)
+    frames, parts = await _drive_deep_research_handler(session_factory, provider)
+
+    assert frames[-1][0] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    assert _answer(frames).count(marker) == 1
+
+    text_parts = [p for p in parts if p.get("type") == "text"]
+    assert text_parts
+    assert "".join(str(p.get("text", "")) for p in text_parts).count(marker) == 1
+
+    # FL-06 stays honest on this path too: a crash is not a budget event.
+    answer = _answer(frames)
+    assert _SYNTHESIS_FAILED_LABEL in answer
+    assert _BUDGET_LABEL not in answer
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs[-1].get("partial") is True
+    assert run_costs[-1].get("budgetHalted") is False
+
+
 async def test_worker_with_no_prose_is_marked_failed_and_omitted(
     real_backend_env: None,
     session_factory: async_sessionmaker[AsyncSession],

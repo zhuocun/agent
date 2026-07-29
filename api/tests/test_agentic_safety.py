@@ -422,6 +422,151 @@ async def test_verifier_flag_on_emits_judge_and_usage(
     get_settings.cache_clear()
 
 
+_BUDGET_LABEL = "stay within the run budget"
+
+
+@pytest.mark.parametrize("verifier_on", [False, True])
+async def test_deep_research_answer_reaches_the_user_exactly_once(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    verifier_on: bool,
+) -> None:
+    """End-to-end: the synthesis body is delivered once, with honest flags.
+
+    Drives the whole deep-research turn over SSE with the verifier both off and
+    on, so the duplication defects (FL-07) and the mislabeled-budget-halt
+    defects (FL-06 / FL-19-b) are pinned on the real route rather than only on
+    the unit seam.
+    """
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true" if verifier_on else "false")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+    assert get_settings().agentic_verifier is verifier_on
+
+    conv_id = await _bootstrap_pro_convo(agentic_client, session_factory)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": f"b0000000-0000-0000-0000-00000000002{int(verifier_on)}",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: one | two",
+            "agenticMode": "deep_research",
+        },
+    )
+
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    answer = _answer(frames)
+    # No stretch of the synthesis is relayed twice, live...
+    assert answer.count("Synthesis of 2 findings") == 1
+    for finding in ("1. one:", "2. two:"):
+        assert answer.count(finding) == 1
+    if verifier_on:
+        assert answer.count("Verification: pass") == 1
+
+    # ...and the main-panel (aggregator-tagged) body is itself delivered once.
+    # Worker prose legitimately appears twice across all deltas — once on its own
+    # subagent stream, once quoted inside the synthesis — so scope the strict
+    # single-delivery claim to the surface FL-07 doubled.
+    aggregator_answer = "".join(
+        str(d.get("text", ""))
+        for n, d in frames
+        if n == "answer_delta" and d.get("subagentId") == "aggregator"
+    )
+    assert aggregator_answer.strip()
+    assert answer.count(aggregator_answer) == 1
+
+    # ...nor in the persisted transcript the reload path re-derives from.
+    refetched = await agentic_client.get(f"/api/conversations/{conv_id}")
+    assert refetched.status_code == 200
+    text_parts = [
+        str(part.get("text", ""))
+        for message in refetched.json()["messages"]
+        for part in message["parts"]
+        if part.get("type") == "text"
+    ]
+    persisted = "".join(text_parts)
+    assert persisted.count("Synthesis of 2 findings") == 1
+
+    # A healthy run is not a budget halt, and says so in both channels.
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs and run_costs[-1].get("budgetHalted") is False
+    assert _BUDGET_LABEL not in answer
+
+    get_settings.cache_clear()
+
+
+async def test_deterministic_synthesis_verifier_exception_caveats_the_draft(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sibling of FL-19-b on the deterministic-synthesis path.
+
+    `_run_deep_research`'s own verifier `except` shipped the draft verbatim, so
+    a judge crash read as an unverified-but-unmarked answer. It must now carry
+    the same incomplete caveat the streamed path composes — and, because a
+    judge crash is not a cap breach, must not claim a budget halt.
+    """
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+
+    async def _boom(**_kwargs: object) -> None:
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr("app.agentic.verifier.run_verifier", _boom)
+
+    conv_id = await _bootstrap_pro_convo(agentic_client, session_factory)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "b0000000-0000-0000-0000-000000000022",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: one | two",
+            "agenticMode": "deep_research",
+        },
+    )
+
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    answer = _answer(frames)
+    assert "Synthesis of 2 findings" in answer
+    assert "Verification: incomplete" in answer
+    assert "Verification: pass" not in answer
+    # The caveat is appended once, not folded over an already-caveated draft.
+    assert answer.count("Verification: incomplete") == 1
+    assert answer.count("Synthesis of 2 findings") == 1
+
+    done = [d for n, d in frames if n == "subagent_done" and d.get("role") == "verifier"]
+    assert done and done[-1].get("outcome") == "failed"
+
+    # A judge crash is a verification degrade, never a budget event.
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs and run_costs[-1].get("budgetHalted") is False
+    assert _BUDGET_LABEL not in answer
+
+    # The caveat survives the reload path too.
+    refetched = await agentic_client.get(f"/api/conversations/{conv_id}")
+    assert refetched.status_code == 200
+    persisted = "".join(
+        str(part.get("text", ""))
+        for message in refetched.json()["messages"]
+        for part in message["parts"]
+        if part.get("type") == "text"
+    )
+    assert "Verification: incomplete" in persisted
+
+    get_settings.cache_clear()
+
+
 async def test_verifier_prompt_treats_injection_as_data() -> None:
     """Findings with injection payloads are delimited/escaped DATA, not policy."""
     from app.agentic.aggregate import WorkerOutput

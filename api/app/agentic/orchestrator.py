@@ -3337,6 +3337,12 @@ async def _run_deep_research(
                 _log.exception("agentic.verifier_failed")
                 verifier_outcome = "failed"
                 verifier_result = None
+                # Sibling of FL-19-b on the deterministic-synthesis path: a judge
+                # crash must be disclosed rather than shipping a bare draft that
+                # reads as verified.
+                synthesis = verifier.compose_verified_answer(
+                    draft, verdict="pass", report="", incomplete_samples=True
+                )
             else:
                 synthesis, verifier_outcome, v_budget_halted = (
                     _apply_verifier_result(draft, verifier_result)

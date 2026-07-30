@@ -149,6 +149,7 @@ from app.streaming.stop_registry import clear_stop_async, is_stop_requested_asyn
 from app.tools.agent_loop import MakeStream, run_agent_loop, tool_feedback_to_history
 from app.tools.approval_settlement import (
     ApprovalDecisionConflict,
+    ApprovalSettlementIncomplete,
     claim_and_settle_approval_outcome,
 )
 from app.tools.builtin import advertised_tool_specs, execute_tool
@@ -1368,20 +1369,29 @@ async def stream_and_persist(
         return _make
 
     def _phase_image_count(subagent_id: str | None, role: str | None) -> int:
-        """FL-36: only the phase that actually sent the attachments pays for them.
+        """Charging follows transport: a phase pays for what its stream sends.
 
         `image_token_formula` folds estimated image tokens into the input bucket,
-        so passing the turn's `image_attachment_count` on every agentic phase
-        bills the same attachments once per planner / worker / aggregator call.
-        Planner, worker and aggregator prompts are text-only; the single-mode
-        `primary` phase is the one that carries the attachments. Same shape as
-        the pre-existing verifier carve-out.
+        so a phase is charged the turn's `image_attachment_count` if and only if
+        that phase's stream factory actually attaches the images. Every factory
+        — `_build_raw_stream` (single primary, and the planner / worker /
+        aggregator phases via `_agentic_make_stream`) and
+        `_agentic_fallback_make_stream` — passes `attachments=attachments`
+        unconditionally, so those prompts are NOT text-only and the provider
+        re-charges the images on each of those calls.
+
+        The verifier is the sole genuinely text-only phase:
+        `_agentic_fresh_make_stream` passes `attachments=None` for its
+        fresh-context judge session, so it never pays for the turn's images.
+
+        (Supersedes FL-36, whose premise that planner / worker / aggregator
+        prompts are text-only was false and made every deep_research turn with
+        attachments under-bill the whole image component.)
         """
+        _ = subagent_id
         if role == "verifier":
             return 0
-        if agentic_mode == "single" and subagent_id == "primary":
-            return image_attachment_count
-        return 0
+        return image_attachment_count
 
     def _cost_for_usage(usage: UsageUpdate) -> float:
         """Price an accumulated usage for the active binding (agentic only).
@@ -1389,13 +1399,15 @@ async def stream_and_persist(
         FL-34-b: `subtotal_usd` **is** the total — `session_surcharge_usd` is a
         disclosure field describing part of it, so adding it double-charges the
         long-context surcharge.
-        FL-36: image tokens belong to the phase that sent the attachments only,
-        which in agentic mode is `single`'s primary pass.
+        Image tokens are charged on every phase this prices, because every
+        non-verifier stream factory sends the turn's attachments (see
+        `_phase_image_count`). The verifier is priced by
+        `_verifier_cost_for_usage` instead.
         """
         breakdown = compute_cost_breakdown(
             usage=usage,
             binding=binding,
-            image_count=image_attachment_count if agentic_mode == "single" else 0,
+            image_count=image_attachment_count,
         )
         return breakdown.subtotal_usd
 
@@ -1413,12 +1425,16 @@ async def stream_and_persist(
         return breakdown.subtotal_usd
 
     def _fallback_cost_for_usage(usage: UsageUpdate) -> float:
-        """Price usage against the fallback binding (FE-009)."""
+        """Price usage against the fallback binding (FE-009).
+
+        `_agentic_fallback_make_stream` sends the turn's attachments too, so the
+        fallback route is charged the image component exactly like the primary.
+        """
         assert fallback_binding is not None
         breakdown = compute_cost_breakdown(
             usage=usage,
             binding=fallback_binding,
-            image_count=image_attachment_count if agentic_mode == "single" else 0,
+            image_count=image_attachment_count,
         )
         return breakdown.subtotal_usd
 
@@ -1561,12 +1577,34 @@ async def stream_and_persist(
                     ),
                     status_code=409,
                 ) from exc
+            except ApprovalSettlementIncomplete as exc:
+                # A live claim elsewhere still owns the side effect: 409 so the
+                # client retries instead of resuming on a guessed result.
+                raise AppError(
+                    ErrorEnvelope(
+                        code="APPROVAL_SETTLEMENT_INCOMPLETE",
+                        severity="error",
+                        title="Approval settlement incomplete",
+                        body=str(exc),
+                    ),
+                    status_code=409,
+                ) from exc
         except ApprovalDecisionConflict as exc:
             raise AppError(
                 ErrorEnvelope(
                     code="APPROVAL_DECISION_CONFLICT",
                     severity="error",
                     title="Approval decision conflict",
+                    body=str(exc),
+                ),
+                status_code=409,
+            ) from exc
+        except ApprovalSettlementIncomplete as exc:
+            raise AppError(
+                ErrorEnvelope(
+                    code="APPROVAL_SETTLEMENT_INCOMPLETE",
+                    severity="error",
+                    title="Approval settlement incomplete",
                     body=str(exc),
                 ),
                 status_code=409,
@@ -2010,15 +2048,18 @@ async def stream_and_persist(
         was EFFECTIVE for the turn (`web_search`) — carrying the resolved items
         plus `requested=True` — so the grounded list AND the ungrounded
         (`items=[]`, `requested=True`) state both persist. On a non-web-search
-        turn none of those enrichment parts are present, so the parts are
+        turn none of those enrichment parts are present, so the part SEQUENCE is
         exactly [reasoning?] [text] as before — the regression-critical no-op
-        invariant.
+        invariant is the sequence, not byte-identical part payloads. FL-37 added
+        `durationSec` to the reasoning part, which is purely additive and is
+        omitted entirely when the wall-clock was never measured
+        (`model_dump(exclude_none=True)`).
         Shared by the terminal-success and stop-path persist sites so they can
         never drift.
 
         Agentic turns delegate to `_build_agentic_parts` (subagent-grouped); the
-        untagged single-stream layout below is byte-for-byte unchanged when NOT
-        agentic, preserving the flag-off invariant.
+        untagged single-stream layout below preserves that sequence invariant
+        when NOT agentic, preserving the flag-off behaviour.
         """
         if agentic_active:
             return _build_agentic_parts()
@@ -2093,8 +2134,8 @@ async def stream_and_persist(
                 ):
                     attr_binding = fallback_binding
                 # Verifier is fresh-context (no attachments); never inherit turn
-                # image pricing. Prefer SubagentDone.cost_usd when present.
-                # FL-36: neither does any other text-only agentic phase.
+                # image pricing. Every other phase does send them, so it is
+                # charged for them. Prefer SubagentDone.cost_usd when present.
                 attr_image_count = _phase_image_count(subagent_id, acc.role)
                 breakdown = compute_cost_breakdown(
                     usage=acc.usage,
@@ -2922,9 +2963,9 @@ async def stream_and_persist(
                         ):
                             attr_binding = fallback_binding
                         # Verifier is fresh-context (no attachments); never
-                        # inherit turn image pricing. Prefer authoritative
-                        # SubagentDone.cost_usd when present.
-                        # FL-36: same carve-out for every text-only phase.
+                        # inherit turn image pricing. Every other phase does
+                        # send them, so it is charged for them. Prefer
+                        # authoritative SubagentDone.cost_usd when present.
                         attr_image_count = _phase_image_count(ev.subagent_id, ev.role)
                         breakdown = compute_cost_breakdown(
                             usage=ev.usage,

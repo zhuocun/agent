@@ -567,6 +567,51 @@ async def test_deterministic_synthesis_verifier_exception_caveats_the_draft(
     get_settings.cache_clear()
 
 
+async def test_deterministic_synthesis_verifier_exception_raises_run_cost_partial(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deterministic path's crashed judge must reach the receipt too.
+
+    Its `except` also drops the result, so the final `run_cost` claimed a
+    complete run while the verifier span said failed — and the persisted run
+    summary inherited that from the same flag.
+    """
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+
+    async def _boom(**_kwargs: object) -> None:
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr("app.agentic.verifier.run_verifier", _boom)
+
+    conv_id = await _bootstrap_pro_convo(agentic_client, session_factory)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "b0000000-0000-0000-0000-000000000023",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: one | two",
+            "agenticMode": "deep_research",
+        },
+    )
+
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    done = [d for n, d in frames if n == "subagent_done" and d.get("role") == "verifier"]
+    assert done and done[-1].get("outcome") == "failed"
+
+    finals = [d for n, d in frames if n == "run_cost" and d.get("phase") == "final"]
+    assert finals and finals[-1].get("partial") is True
+
+    get_settings.cache_clear()
+
+
 async def test_verifier_prompt_treats_injection_as_data() -> None:
     """Findings with injection payloads are delimited/escaped DATA, not policy."""
     from app.agentic.aggregate import WorkerOutput
@@ -1844,6 +1889,168 @@ async def test_orchestrator_verifier_exception_caveats_the_draft(
     # A judge crash is not a budget event.
     finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
     assert finals and finals[-1].budget_halted is False
+    get_settings.cache_clear()
+
+
+def _passing_judge_stream():
+    """Judge factory returning a well-formed passing verdict."""
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    def judge_factory(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text='{"verdict":"pass","report":"looks right"}')
+                usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    return judge_factory
+
+
+async def test_streamed_verifier_exception_raises_run_cost_partial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crashed judge drops the result, so `partial` must key off the outcome.
+
+    The exception handler sets the wire outcome to `failed` and the result to
+    `None`; a result-only degrade check reports a clean, verified-looking run
+    while the verifier span and the answer body both say the verification
+    failed.
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import RunCost, SubagentDone
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    async def _boom(**_kwargs: object):
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr("app.agentic.verifier.run_verifier", _boom)
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    verifier_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "verifier"
+    ]
+    assert verifier_done and verifier_done[-1].outcome == "failed"
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    get_settings.cache_clear()
+
+
+async def test_successful_verification_keeps_run_cost_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control: a clean pass stays `partial=False`."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import AnswerDelta, RunCost, SubagentDone
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=_passing_judge_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "Verification: pass" in answer
+    verifier_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "verifier"
+    ]
+    assert verifier_done and verifier_done[-1].outcome == "succeeded"
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is False
+    assert finals[-1].budget_halted is False
+    get_settings.cache_clear()
+
+
+async def test_verifier_disabled_keeps_run_cost_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control: no verifier at all is not a degrade."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import RunCost, SubagentDone, SubagentStarted
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "false")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def judge_factory(prompt: str, **_kwargs: object):
+        raise AssertionError("judge must not run when the verifier is off")
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=judge_factory,
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    assert not any(
+        isinstance(e, SubagentStarted | SubagentDone) and e.role == "verifier"
+        for e in events
+    )
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is False
+    assert finals[-1].budget_halted is False
     get_settings.cache_clear()
 
 

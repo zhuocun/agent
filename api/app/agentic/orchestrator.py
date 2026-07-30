@@ -196,6 +196,20 @@ def _verifier_degraded(result: verifier.VerifyResult | None) -> bool:
     """
     return result is not None and result.outcome != "succeeded"
 
+
+def _verification_degraded(
+    result: verifier.VerifyResult | None,
+    outcome: Literal["succeeded", "failed"],
+) -> bool:
+    """True when the verification did not fully succeed, judge crashes included.
+
+    A wire `outcome` of "failed" with a `None` result is precisely the
+    crashed-judge case `_verifier_degraded` cannot see: the exception handler
+    drops the result, so result-only inspection reports a clean run while the
+    verifier span says failed and the answer body carries a failure caveat.
+    """
+    return outcome == "failed" or _verifier_degraded(result)
+
 # Plan-approval HITL (M3). The plan pause reuses the shipped tool-approval
 # terminal: the orchestrator emits a pseudo `tool_call` whose name is this
 # sentinel (NOT a real registry tool) plus the standard `AwaitingApproval`
@@ -1104,7 +1118,7 @@ async def _finalize_synthesis(
         # FL-09 / FL-08: a cancelled sibling or a degraded verification is a
         # partial answer even when no worker failed and no cap was hit.
         or superseded_worker_count > 0
-        or _verifier_degraded(verifier_result)
+        or _verification_degraded(verifier_result, verifier_outcome)
     )
     yield RunCost(
         subtotal_usd=total_cost,
@@ -1414,7 +1428,7 @@ async def _finalize_synthesis_streamed(
         # FL-09 / FL-08: a cancelled sibling or a degraded verification is a
         # partial answer even when no worker failed and no cap was hit.
         or superseded > 0
-        or _verifier_degraded(verifier_result)
+        or _verification_degraded(verifier_result, verifier_outcome)
     )
     yield RunCost(
         subtotal_usd=total_cost,
@@ -3405,7 +3419,7 @@ async def _run_deep_research(
                 # FL-09 / FL-08: a cancelled sibling or a degraded verification is
                 # a partial answer even with no failures and no cap breach.
                 or superseded_workers > 0
-                or _verifier_degraded(verifier_result)
+                or _verification_degraded(verifier_result, verifier_outcome)
             ),
             budget_halted=effective_budget_halted,
             failed_worker_count=failed_workers,

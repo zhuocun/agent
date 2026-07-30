@@ -1034,33 +1034,6 @@ export function ChatThread() {
           result.answer,
         ),
       );
-      // Carry the run-cost receipt the meter just showed into the committed
-      // parts under the SAME condition the BE persists one (AR-012, mirroring
-      // `_build_agentic_parts`): a final phase, or a partial/halted/failed run.
-      // Matching the condition — and the honesty labels with it — is what makes
-      // the settled bubble and the reloaded bubble derive an identical meter. A
-      // non-final pause deliberately persists nothing on either side, so both
-      // fall back to the reconstructed `estimate` / `plan` labels (FE-3).
-      const rc = result.runCost;
-      const isPartial =
-        !!rc &&
-        (rc.partial === true ||
-          rc.budgetHalted === true ||
-          (rc.failedWorkerCount ?? 0) > 0);
-      if (rc && (rc.phase === "final" || isPartial)) {
-        parts.push({
-          type: "agentic_run_summary",
-          outcome: isPartial ? "partial" : "complete",
-          budgetHalted: rc.budgetHalted === true,
-          failedWorkers: rc.failedWorkerCount ?? 0,
-          subtotalUsd: rc.subtotalUsd,
-          capUsd: rc.capUsd,
-          ...(rc.confidence !== undefined
-            ? { costConfidence: rc.confidence }
-            : {}),
-          ...(rc.phase !== undefined ? { costPhase: rc.phase } : {}),
-        });
-      }
     } else {
       if (result.reasoning) {
         parts.push({
@@ -1091,6 +1064,37 @@ export function ChatThread() {
           requested: result.sourcesRequested,
         });
       }
+    }
+
+    // Carry the run-cost receipt the meter just showed into the committed
+    // parts, folded by the SAME rule as the BE's
+    // `build_agentic_run_summary_part` (api/app/streaming/handler.py), which is
+    // the authority this mirrors: every `run_cost` tick persists a receipt, and
+    // a non-final phase folds to `partial` whatever the flags say, because a
+    // resumable pause must never read as a completed run. Matching that rule —
+    // and the honesty labels with it — is what makes the settled bubble and the
+    // reloaded bubble derive an identical meter and partial state.
+    // `phase` is optional only because `parseRunCost` drops values outside the
+    // union; the BE always puts one on the wire (`RunCostEvent.phase` defaults
+    // to "final" and survives `exclude_none`), so undefined is unreachable —
+    // and is treated as NON-final regardless, since a receipt whose phase we
+    // cannot confirm is not one we may label complete.
+    const rc = result.runCost;
+    if (rc) {
+      const isPartial =
+        rc.partial === true ||
+        rc.budgetHalted === true ||
+        (rc.failedWorkerCount ?? 0) > 0;
+      parts.push({
+        type: "agentic_run_summary",
+        outcome: isPartial || rc.phase !== "final" ? "partial" : "complete",
+        budgetHalted: rc.budgetHalted === true,
+        failedWorkers: rc.failedWorkerCount ?? 0,
+        subtotalUsd: rc.subtotalUsd,
+        capUsd: rc.capUsd,
+        ...(rc.confidence !== undefined ? { costConfidence: rc.confidence } : {}),
+        ...(rc.phase !== undefined ? { costPhase: rc.phase } : {}),
+      });
     }
 
     const serverAssistantId = result.serverAssistantMessageId ?? assistantId;

@@ -632,6 +632,49 @@ test.describe("agentic mode (deep research)", () => {
     );
   });
 
+  // The optimistic commit folds the run-cost receipt by the same rule as the
+  // BE's `build_agentic_run_summary_part` — every tick persists one, and a
+  // non-final phase is `partial`. A plan pause is the case where the two used
+  // to disagree: the FE committed no receipt at all, so the bubble on screen
+  // right after the pause showed no partial state while the SAME bubble after a
+  // reload (re-derived from the BE's persisted `partial` plan-phase receipt)
+  // did. Only the reload boundary exposes it — the live meter reads the
+  // in-memory run cost either way.
+  test("a plan pause commits the same run-summary receipt live and after reload", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await enableDeepResearch(page);
+
+    const convId = await sendAndPauseOnPlan(page);
+    const paused = page.getByTestId("assistant-message").last();
+    await expect(paused.getByTestId("run-cost-meter")).toBeVisible();
+
+    const live = await snapshotAgenticTurn(paused);
+
+    await reloadIntoConversation(page, convId);
+    const reloadedTurn = page.getByTestId("assistant-message").last();
+    await expect(reloadedTurn.getByTestId("run-cost-meter")).toBeVisible({
+      timeout: 15_000,
+    });
+    // Same subtotal, same honesty labelling, same partial state — the cold
+    // render derives all of it from the BE's persisted receipt, so a receipt
+    // the commit never wrote shows up here as a diff.
+    const reloaded = await snapshotAgenticTurn(reloadedTurn);
+    expect(reloaded).toEqual(live);
+
+    // ...and both sides say what a pause receipt must say, so the comparison
+    // above cannot pass by two empty renders agreeing: an estimate at plan
+    // phase, partial because the run can still resume.
+    expect(reloaded.meter?.confidence).toBe("estimate");
+    expect(reloaded.meter?.phase).toBe("plan");
+    expect(reloaded.meter?.text).toContain("Est. ");
+    expect(reloaded.partialChip).toBe(
+      "Partial answer — some research steps did not finish.",
+    );
+  });
+
   // FE-4, live half, on the path the audit measured: Stop during fan-out.
   // `orchestrator.py` `aclose`s the generator, so a cancelled worker's
   // `SubagentDone(stopped)` can never be yielded and the FE really does hold

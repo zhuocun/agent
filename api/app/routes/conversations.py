@@ -2541,9 +2541,13 @@ async def send_message(
         # expected triple here. A pause flagged as fallback-served with NO
         # fallback route on this turn validates against the primary, because
         # `_primary_make` gets `fallback_make_stream_for=None` and runs the
-        # primary stream. `binding.provider_id` is accepted alongside
-        # `selected_provider_id` as an alias for the SAME binding (the fake
-        # backend serves the canonical DeepSeek binding), never across routes.
+        # primary stream. The provider guard also accepts
+        # `expected_binding.provider_id` as a second name for that SAME binding
+        # — a checkpoint naming the binding's canonical provider rather than the
+        # selected backend id (the `fake` backend serves the canonical DeepSeek
+        # binding) still validates. handler.py stamps the selected backend id,
+        # which is never empty, so today this alias is defensive width rather
+        # than a reachable accept; either way it stays within one route.
         #
         # For an `auto` resume the served binding is bound FROM the pin (see the
         # auto-routing block above), because re-running the router is not stable

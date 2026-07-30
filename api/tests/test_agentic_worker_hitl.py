@@ -2636,6 +2636,69 @@ async def test_fallback_flagged_resume_rejects_a_primary_route_pin(
     )
 
 
+async def test_resume_rejects_a_model_only_cross_route_mix(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The narrowest cross-route mix: only `model_id` comes from the other route.
+
+    Under `PROVIDER_BACKEND=fake` the primary and its self-fallback share tier
+    AND provider and differ in nothing but `model_id` (`fake-fallback`), so the
+    tier and provider guards cannot catch this pin — only the model guard can.
+    The old set-based check accepted it, because `fake-fallback` was a member of
+    `{primary.model_id, fallback.model_id}`; with `paused_worker_used_fallback`
+    unset the resume then streamed the PRIMARY model against a checkpoint
+    written by the fallback.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    # No BYOK, so the only alternate route is `fake`'s self-fallback.
+    fallback_route = await _resolved_fallback_route(session_factory, user_id=user_id)
+    assert fallback_route is not None
+    fallback_binding, fallback_provider = fallback_route
+    primary_binding = get_binding("smart", provider_id="fake")
+    assert primary_binding is not None
+    # The premise: same tier, same provider, different model.
+    assert fallback_binding.tier.id == primary_binding.tier.id
+    assert fallback_provider == "fake"
+    assert fallback_binding.model_id != primary_binding.model_id
+
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    paused = await _pause_worker_run(
+        agentic_client,
+        session_factory,
+        conv_id=conv_id,
+        client_message_id="a6000000-0000-0000-0000-000000000001",
+    )
+    await _repin_continuation_route(
+        session_factory,
+        message_id=paused.id,
+        tool_call_id=_WORKER_CALL_ID,
+        tier_id=fallback_binding.tier.id,
+        provider_id=fallback_provider,
+        model_id=fallback_binding.model_id,
+        used_fallback=False,
+    )
+
+    resp = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "a6000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "providerId": "fake",
+            "text": "",
+            "toolApproval": {"toolCallId": _WORKER_CALL_ID, "decision": "approve"},
+        },
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "INVALID_INPUT"
+    assert body["error"]["body"] == (
+        "Resume model does not match the paused run checkpoint."
+    )
+
+
 async def test_resume_still_rejects_a_provider_the_served_route_cannot_reach(
     agentic_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

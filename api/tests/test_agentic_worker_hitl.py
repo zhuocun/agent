@@ -10,20 +10,35 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agentic.continuation import CONTINUATION_INPUT_KEY, get_continuation_from_server_state
+from app.agentic.continuation import (
+    CONTINUATION_INPUT_KEY,
+    SERVER_STATE_CONTINUATIONS_KEY,
+    get_continuation_from_server_state,
+    get_run_ledger_from_server_state,
+)
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
+from app.db.repositories import api_keys as api_keys_repo
 from app.db.repositories import billing as billing_repo
+from app.db.repositories import messages as messages_repo
 from app.db.session import get_db
+from app.errors import AppError
+from app.providers.router import route_auto
+from app.providers.tiers import get_binding
+from app.routes import conversations as conversations_route
+from app.streaming import handler as handler_mod
+from app.streaming.handler import ResumeToolSeed
 from app.tools import approval_settlement
+from app.tools.approval_settlement import ApprovalSettlementIncomplete
 from app.tools.protocol import ToolCallRequest, ToolExecutionResult
 
 pytestmark = pytest.mark.asyncio
@@ -2104,3 +2119,644 @@ async def test_paused_fallback_worker_is_billed_and_attributed_on_the_fallback_b
     assert isinstance(substitution, dict)
     assert substitution["reasonCode"] == "provider_fallback"
     assert float(part_attr["costUsd"]) == pytest.approx(paused_cost)
+
+
+# --- served-route resume guards (W5 findings 3 + 4) ---------------------------
+
+_WORKER_CALL_ID = "worker-0::fake_worker_cal_0"
+
+# Same worker-HITL prompt, plus one math cue (`probability`) so `route_auto`
+# scores it 1 — below the `smart` threshold of 2. Paused on a 7-message thread it
+# routes `fast`; on resume the thread has crossed the 8-message `deep_history`
+# line, the score reaches 2, and a re-derived route would say `smart`. That drift
+# is exactly what the pin has to override.
+_WORKER_HITL_PROMPT_DEEP_HISTORY_DRIFT = (
+    "DEEP_RESEARCH: TOOL_APPROVE schedule kickoff | sibling housing effects probability"
+)
+_PRIOR_TURNS_BELOW_DEEP_HISTORY = 7
+
+
+@contextmanager
+def _agentic_disabled() -> Iterator[None]:
+    """Kill-switch agentic mid-test; `send_message` reads settings per request."""
+    prior = os.environ.get("AGENTIC_ENABLED")
+    os.environ["AGENTIC_ENABLED"] = "false"
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        if prior is None:
+            os.environ.pop("AGENTIC_ENABLED", None)
+        else:
+            os.environ["AGENTIC_ENABLED"] = prior
+        get_settings.cache_clear()
+
+
+async def _paused_assistant(
+    session_factory: async_sessionmaker[AsyncSession], conv_id: str
+) -> Message:
+    msgs = await _load_messages(session_factory, conv_id)
+    return next(
+        m for m in msgs if m.role == "assistant" and m.status == "awaiting_approval"
+    )
+
+
+async def _repin_continuation_route(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    message_id: object,
+    tool_call_id: str,
+    provider_id: str,
+    model_id: str,
+) -> None:
+    """Rewrite the checkpoint's pinned provider/model to a fallback identity.
+
+    This is byte-for-byte what `handler.py` persists when a worker pauses on the
+    fallback route (`pausedWorkerUsedFallback` → `cont_blob["providerId"] =
+    fallback_provider_id`). The fake provider never actually falls back
+    mid-worker, so the durable shape is written directly.
+    """
+    async with session_factory() as session:
+        row = await session.get(Message, message_id)
+        assert row is not None
+        state = dict(row.server_state or {})
+        conts = dict(state.get(SERVER_STATE_CONTINUATIONS_KEY) or {})
+        blob = dict(conts[tool_call_id])
+        blob["providerId"] = provider_id
+        blob["modelId"] = model_id
+        conts[tool_call_id] = blob
+        state[SERVER_STATE_CONTINUATIONS_KEY] = conts
+        row.server_state = state
+        await session.commit()
+
+
+async def _register_user(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: object,
+    byok_provider: str | None = None,
+) -> None:
+    """Turn the bootstrap guest into a registered user, optionally with BYOK.
+
+    `_select_fallback_route` only considers a non-platform provider when the
+    caller holds a stored key for it, and it skips BYOK lookup entirely for
+    anonymous users.
+    """
+    async with session_factory() as session:
+        row = await session.get(User, user_id)
+        assert row is not None
+        row.is_anonymous = False
+        row.email = f"user-{user_id}@example.test"
+        if byok_provider is not None:
+            await api_keys_repo.upsert(
+                session,
+                user_id=UUID(str(user_id)),
+                provider=byok_provider,
+                raw_api_key=f"sk-test-{byok_provider}-key-000000",
+            )
+        await session.commit()
+
+
+async def _resolved_fallback_provider(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: object,
+    tier_id: str = "smart",
+    primary_provider_id: str = "fake",
+) -> str | None:
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        route = await conversations_route._select_fallback_route(
+            tier_id,  # type: ignore[arg-type]
+            primary_provider_id,
+            get_settings(),
+            user=user,
+            db=session,
+            resolved_api_key=None,
+        )
+    return None if route is None else route[1]
+
+
+async def _pause_worker_run(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    conv_id: str,
+    client_message_id: str,
+    tier_id: str = "smart",
+    text: str = _WORKER_HITL_PROMPT,
+) -> Message:
+    frames = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": client_message_id,
+            "tierId": tier_id,
+            "text": text,
+            "agenticMode": "deep_research",
+        },
+    )
+    assert frames[-1][1]["status"] == "awaiting_approval"
+    return await _paused_assistant(session_factory, conv_id)
+
+
+async def _seed_prior_turns(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    conv_id: str,
+    count: int,
+) -> None:
+    """Insert `count` plain prior messages so the thread is already deep.
+
+    `created_at` is set explicitly and in the past: SQLite's `CURRENT_TIMESTAMP`
+    only has second resolution, so relying on the server default would leave the
+    seeds and the real turn tied and order them by random uuid.
+    """
+    base = datetime.now(UTC) - timedelta(hours=1)
+    async with session_factory() as session:
+        for index in range(count):
+            session.add(
+                Message(
+                    conversation_id=conv_id,
+                    role="user" if index % 2 == 0 else "assistant",
+                    parts=[{"type": "text", "text": f"prior turn {index}"}],
+                    created_at=base + timedelta(seconds=index),
+                )
+            )
+        await session.commit()
+
+
+async def test_auto_tier_resume_accepts_the_router_resolved_pin(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """W5/finding 3: an `auto` run pins the CONCRETE tier the router served.
+
+    The guard compared that pin against `body.tierId`, so re-sending `auto` on
+    resume — the only thing an Auto-tier client can send — was rejected 400.
+    Every auto-tier agentic resume was blocked.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id, tier_id="auto")
+
+    paused = await _pause_worker_run(
+        agentic_client,
+        session_factory,
+        conv_id=conv_id,
+        client_message_id="a1000000-0000-0000-0000-000000000001",
+        tier_id="auto",
+    )
+    cont = get_continuation_from_server_state(paused.server_state, _WORKER_CALL_ID)
+    assert cont is not None
+    # The router resolved `auto` to a concrete tier; that is what got pinned.
+    assert cont.tier_id in {"fast", "smart", "pro"}
+
+    resume_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a1000000-0000-0000-0000-000000000002",
+            "tierId": "auto",
+            "text": "",
+            "toolApproval": {"toolCallId": _WORKER_CALL_ID, "decision": "approve"},
+        },
+    )
+    assert resume_frames[-1][0] == "terminal"
+    assert resume_frames[-1][1]["status"] == "done"
+
+
+async def test_auto_tier_resume_survives_router_drift_across_the_pause(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """W5/finding 3: `route_auto` is not stable across a pause, the pin is.
+
+    Re-deriving the served route on resume is wrong because the router reads
+    conversation depth: a run that paused just under the `deep_history` line
+    resumes above it and re-routes one tier up. Comparing the pin against that
+    re-derived route 400s a resume nothing is wrong with, so the pin — not a
+    fresh routing pass — decides the route for an `auto` resume.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id, tier_id="auto")
+    await _seed_prior_turns(
+        session_factory, conv_id=conv_id, count=_PRIOR_TURNS_BELOW_DEEP_HISTORY
+    )
+
+    paused = await _pause_worker_run(
+        agentic_client,
+        session_factory,
+        conv_id=conv_id,
+        client_message_id="a7000000-0000-0000-0000-000000000001",
+        tier_id="auto",
+        text=_WORKER_HITL_PROMPT_DEEP_HISTORY_DRIFT,
+    )
+    cont = get_continuation_from_server_state(paused.server_state, _WORKER_CALL_ID)
+    assert cont is not None
+    assert cont.tier_id == "fast"
+
+    # The drift this test exists for: with the pause turn on the thread, the
+    # router now resolves the same text to a different tier. If a router change
+    # ever removes the drift, this assertion fails rather than letting the test
+    # quietly stop covering the regression.
+    async with session_factory() as session:
+        resume_history = await messages_repo.load_history(session, UUID(conv_id))
+    assert route_auto(cont.user_text, resume_history).tier_id != cont.tier_id
+
+    resume_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a7000000-0000-0000-0000-000000000002",
+            "tierId": "auto",
+            "text": "",
+            "toolApproval": {"toolCallId": _WORKER_CALL_ID, "decision": "approve"},
+        },
+    )
+    assert resume_frames[-1][0] == "terminal"
+    assert resume_frames[-1][1]["status"] == "done"
+    # Served on the pinned tier, not the re-derived one.
+    attribution = resume_frames[-1][1]["attribution"]
+    assert isinstance(attribution, dict)
+    assert attribution["servedTierId"] == cont.tier_id
+
+
+async def test_post_fallback_resume_accepts_the_pinned_fallback_provider(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """W5/finding 3: a worker that paused on fallback pins the FALLBACK provider.
+
+    The resume carries the caller's primary provider preference, so comparing
+    the pin against `body.providerId` rejected 400 and blocked every
+    post-fallback resume. The pin is a served-route identity: the configured
+    fallback route is a legitimate match for it.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    await _register_user(session_factory, user_id=user_id, byok_provider="openai")
+    # The BYOK key is what makes `openai` a real fallback route for this caller.
+    assert (
+        await _resolved_fallback_provider(session_factory, user_id=user_id) == "openai"
+    )
+    openai_binding = get_binding("smart", provider_id="openai")
+    assert openai_binding is not None
+
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    paused = await _pause_worker_run(
+        agentic_client,
+        session_factory,
+        conv_id=conv_id,
+        client_message_id="a2000000-0000-0000-0000-000000000001",
+    )
+    await _repin_continuation_route(
+        session_factory,
+        message_id=paused.id,
+        tool_call_id=_WORKER_CALL_ID,
+        provider_id="openai",
+        model_id=openai_binding.model_id,
+    )
+
+    resume_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a2000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            # The caller's primary preference — NOT the route that served the pause.
+            "providerId": "fake",
+            "text": "",
+            "toolApproval": {"toolCallId": _WORKER_CALL_ID, "decision": "approve"},
+        },
+    )
+    assert resume_frames[-1][0] == "terminal"
+    assert resume_frames[-1][1]["status"] == "done"
+
+
+async def test_resume_still_rejects_a_provider_the_served_route_cannot_reach(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """W5/finding 3: a genuine route mismatch still gets 400.
+
+    Same checkpoint as the accepted case, minus the BYOK key that made `openai`
+    a reachable fallback. The forced `fake` route resolves to a binding the pin
+    does not name, so the resume must stay rejected.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    assert await _resolved_fallback_provider(session_factory, user_id=user_id) != "openai"
+    openai_binding = get_binding("smart", provider_id="openai")
+    assert openai_binding is not None
+
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    paused = await _pause_worker_run(
+        agentic_client,
+        session_factory,
+        conv_id=conv_id,
+        client_message_id="a3000000-0000-0000-0000-000000000001",
+    )
+    await _repin_continuation_route(
+        session_factory,
+        message_id=paused.id,
+        tool_call_id=_WORKER_CALL_ID,
+        provider_id="openai",
+        model_id=openai_binding.model_id,
+    )
+
+    resp = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "a3000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "providerId": "fake",
+            "text": "",
+            "toolApproval": {"toolCallId": _WORKER_CALL_ID, "decision": "approve"},
+        },
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "INVALID_INPUT"
+    assert body["error"]["body"] == (
+        "Resume providerId does not match the paused run checkpoint."
+    )
+
+
+async def test_agentic_disabled_refuses_a_single_mode_pause(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """W5/finding 4: a single-mode agentic pause is still an agentic pause.
+
+    FL-28 stamps `orchestrationMode` on a single-mode run's pause ledger, but
+    that pause carries no worker continuation and is neither a plan nor a
+    clarify pause — the three shapes the kill-switch guard looked for. With
+    agentic switched off mid-run, the resume slipped past the guard and
+    half-ran as a plain tool resume.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    pause_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a4000000-0000-0000-0000-000000000001",
+            "tierId": "smart",
+            "text": "TOOL_APPROVE: schedule a meeting",
+            "agenticMode": "single",
+        },
+    )
+    assert pause_frames[-1][1]["status"] == "awaiting_approval"
+
+    paused = await _paused_assistant(session_factory, conv_id)
+    call_id = next(
+        str(p["id"])
+        for p in (paused.parts or [])
+        if isinstance(p, dict) and p.get("type") == "tool_call"
+    )
+    # The pause shape the guard used to miss: mode stamped, nothing else.
+    assert get_run_ledger_from_server_state(paused.server_state).orchestration_mode == (
+        "single"
+    )
+    assert get_continuation_from_server_state(paused.server_state, call_id) is None
+
+    with _agentic_disabled():
+        resp = await agentic_client.post(
+            f"/api/conversations/{conv_id}/messages",
+            json={
+                "clientMessageId": "a4000000-0000-0000-0000-000000000002",
+                "tierId": "smart",
+                "text": "",
+                "toolApproval": {"toolCallId": call_id, "decision": "approve"},
+            },
+        )
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "AGENTIC_DISABLED"
+
+
+async def test_agentic_disabled_still_resumes_a_plain_tool_approval(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """W5 regression guard: the widened kill-switch must not catch plain HITL.
+
+    Tools on, agentic off, no agentic run ever — the pause ledger carries no
+    `orchestrationMode` stamp, so the resume has to go through untouched.
+    """
+    with _agentic_disabled():
+        await agentic_client.get("/api/bootstrap")
+        user_id = await _current_user_id(session_factory)
+        conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+        pause_frames = await _collect_sse(
+            agentic_client,
+            f"/api/conversations/{conv_id}/messages",
+            {
+                "clientMessageId": "a5000000-0000-0000-0000-000000000001",
+                "tierId": "smart",
+                "text": "TOOL_APPROVE: schedule a meeting",
+            },
+        )
+        assert pause_frames[-1][1]["status"] == "awaiting_approval"
+
+        paused = await _paused_assistant(session_factory, conv_id)
+        ledger = get_run_ledger_from_server_state(paused.server_state)
+        assert ledger.orchestration_mode is None
+
+        resume_frames = await _collect_sse(
+            agentic_client,
+            f"/api/conversations/{conv_id}/messages",
+            {
+                "clientMessageId": "a5000000-0000-0000-0000-000000000002",
+                "tierId": "smart",
+                "text": "",
+                "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+            },
+        )
+    assert resume_frames[-1][0] == "terminal"
+    assert resume_frames[-1][1]["status"] == "done"
+
+
+async def test_registry_settlement_incomplete_surfaces_as_409(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """W1's route catch: an incomplete settlement is a 409, never a 500.
+
+    `approval_settlement` raises `ApprovalSettlementIncomplete` when a retry
+    arrives while another in-process claim is still executing. The registry
+    settle site caught only `ApprovalDecisionConflict`, so that raise escaped as
+    an unhandled 500. The raise is forced here so the mapping is verified
+    independently of the settlement-side change.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a6000000-0000-0000-0000-000000000001",
+            "tierId": "smart",
+            "text": "TOOL_APPROVE: schedule a meeting",
+        },
+    )
+    # Settle the approval so the retry reaches the registry settle call site
+    # (a still-pending approval defers settlement to the producer instead).
+    approve_frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "a6000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+        },
+    )
+    assert approve_frames[-1][1]["status"] == "done"
+
+    # Drop the continuation row so the paused turn is resumable again.
+    msgs = await _load_messages(session_factory, conv_id)
+    async with session_factory() as session:
+        for row in [m for m in msgs if m.role == "assistant" and m.status == "done"]:
+            db_row = await session.get(Message, row.id)
+            if db_row is not None:
+                await session.delete(db_row)
+        await session.commit()
+
+    async def _raise_incomplete(*_args: object, **kwargs: object) -> object:
+        raise ApprovalSettlementIncomplete(
+            tool_call_id=str(kwargs.get("tool_call_id") or "fake_cal_1")
+        )
+
+    monkeypatch.setattr(
+        conversations_route, "claim_and_settle_approval_outcome", _raise_incomplete
+    )
+
+    resp = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "a6000000-0000-0000-0000-000000000003",
+            "tierId": "smart",
+            "text": "",
+            "toolApproval": {"toolCallId": "fake_cal_1", "decision": "approve"},
+        },
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "APPROVAL_SETTLEMENT_INCOMPLETE"
+
+
+async def test_producer_settlement_incomplete_surfaces_as_409(
+    agentic_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The producer-side twin of the route catch.
+
+    H-007 defers claim/settle for a still-pending approval into
+    `stream_and_persist`, so the live-claim registry can raise
+    `ApprovalSettlementIncomplete` from there too. Both producer settle sites
+    caught only `ApprovalDecisionConflict`, so that raise escaped as an
+    unhandled error instead of the 409 the route path returns.
+    """
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id,
+            title="settle",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_msg = Message(
+            id=uuid4(),
+            conversation_id=convo.id,
+            role="user",
+            parts=[{"type": "text", "text": "schedule a meeting"}],
+            status="done",
+        )
+        session.add(user_msg)
+        await session.flush()
+        paused = Message(
+            id=uuid4(),
+            conversation_id=convo.id,
+            role="assistant",
+            parts=[
+                {
+                    "type": "tool_call",
+                    "toolCallId": "fake_cal_1",
+                    "name": "calendar_create_event",
+                    "status": "awaiting_approval",
+                    "approvalState": "pending",
+                    "input": {"title": "kickoff"},
+                }
+            ],
+            status="awaiting_approval",
+            responds_to_message_id=user_msg.id,
+        )
+        session.add(paused)
+        await session.commit()
+        user_id = user.id
+        conv_id = convo.id
+        paused_id = paused.id
+        user_msg_id = user_msg.id
+
+    async def _raise_incomplete(*_args: object, **kwargs: object) -> object:
+        raise ApprovalSettlementIncomplete(
+            tool_call_id=str(kwargs.get("tool_call_id") or "fake_cal_1")
+        )
+
+    monkeypatch.setattr(
+        handler_mod, "claim_and_settle_approval_outcome", _raise_incomplete
+    )
+
+    seed = ResumeToolSeed(
+        tool_call_id="fake_cal_1",
+        name="calendar_create_event",
+        label="Create calendar event",
+        decision="approve",
+        input={"title": "kickoff"},
+        paused_message_id=paused_id,
+        pending_settle=True,
+    )
+
+    with pytest.raises(AppError) as excinfo:
+        async with session_factory() as session:
+            async for _ev in handler_mod.stream_and_persist(
+                request=_NoDisconnect(),  # type: ignore[arg-type]
+                db=session,
+                provider=_UnusedProvider(),  # type: ignore[arg-type]
+                binding=binding,
+                requested_tier_id="smart",
+                conversation_id=conv_id,
+                user_message_id=user_msg_id,
+                user_text="Tool approved: calendar_create_event",
+                history=[],
+                is_temporary=False,
+                user_id=user_id,
+                resume_seed=seed,
+            ):
+                pass
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.envelope.code == "APPROVAL_SETTLEMENT_INCOMPLETE"

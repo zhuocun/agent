@@ -2522,60 +2522,73 @@ async def send_message(
             effective_agentic_mode = "deep_research"
     if resume_seed is not None and resume_seed.agentic_continuation is not None:
         # AR-006: the checkpoint pins the route that actually SERVED the paused
-        # turn — handler.py stamps `binding.tier.id` / `binding.provider_id` /
-        # `binding.model_id` (or the fallback binding's identity when the worker
-        # paused on the fallback route). A pin is therefore a SERVED-route
-        # identity and must NEVER be compared against a REQUESTED one: an `auto`
-        # run pins the router-resolved concrete tier, and a post-fallback pause
-        # pins the fallback provider, so comparing either to `body.*` rejected
-        # exactly the resumes the pin exists to protect. All three guards below
-        # compare against the route that would now be served, accepting the
-        # active binding or a configured fallback. A client that forces a
-        # different route resolves to a different served binding and is still
-        # rejected. For an `auto` resume the served binding is bound FROM the
-        # pin (see the auto-routing block above), because re-running the router
-        # is not stable across a pause; the tier guard is then a genuine
-        # mismatch check for a client forcing a concrete tier.
-        served_tiers = {binding.tier.id}
-        if fallback_binding is not None:
-            served_tiers.add(fallback_binding.tier.id)
-        pinned_tier = getattr(resume_seed.agentic_continuation, "tier_id", None)
+        # turn — handler.py stamps the primary triple (`binding.tier.id` /
+        # `provider_id or binding.provider_id` / `binding.model_id`) or, when the
+        # worker paused on the fallback route, the fallback binding's triple. A
+        # pin is therefore a SERVED-route identity and must NEVER be compared
+        # against a REQUESTED one: an `auto` run pins the router-resolved
+        # concrete tier, and a post-fallback pause pins the fallback provider,
+        # so comparing either to `body.*` rejected exactly the resumes the pin
+        # exists to protect.
+        #
+        # The pin is one COHERENT triple, so it is validated as one. Matching
+        # tier/provider/model against three independent sets (primary plus
+        # fallback) accepted a pin whose fields came from DIFFERENT routes: a
+        # client forcing route B resumed a checkpoint pinned to route A merely
+        # because A had become B's fallback. Which route serves the resume is
+        # decided solely by `paused_worker_used_fallback` (orchestrator
+        # `_primary_make`), so that flag — not set membership — selects the one
+        # expected triple here. A pause flagged as fallback-served with NO
+        # fallback route on this turn validates against the primary, because
+        # `_primary_make` gets `fallback_make_stream_for=None` and runs the
+        # primary stream. `binding.provider_id` is accepted alongside
+        # `selected_provider_id` as an alias for the SAME binding (the fake
+        # backend serves the canonical DeepSeek binding), never across routes.
+        #
+        # For an `auto` resume the served binding is bound FROM the pin (see the
+        # auto-routing block above), because re-running the router is not stable
+        # across a pause; the tier guard is then a genuine mismatch check for a
+        # client forcing a concrete tier.
+        pin = resume_seed.agentic_continuation
+        if getattr(pin, "paused_worker_used_fallback", False) and (
+            fallback_binding is not None
+        ):
+            expected_binding = fallback_binding
+            expected_provider_id = fallback_provider_id or fallback_binding.provider_id
+        else:
+            expected_binding = binding
+            expected_provider_id = selected_provider_id or binding.provider_id
+        expected_provider_ids = {expected_provider_id, expected_binding.provider_id}
+        pinned_tier = getattr(pin, "tier_id", None)
         if (
             isinstance(pinned_tier, str)
             and pinned_tier
-            and pinned_tier not in served_tiers
+            and pinned_tier != expected_binding.tier.id
         ):
             raise _invalid_input(
                 "INVALID_INPUT",
                 "Resume tierId does not match the paused run checkpoint.",
             )
-        served_providers = {binding.provider_id}
-        if fallback_binding is not None:
-            served_providers.add(fallback_binding.provider_id)
-        if fallback_provider_id is not None:
-            served_providers.add(fallback_provider_id)
-        pinned_provider = getattr(
-            resume_seed.agentic_continuation, "provider_id", None
-        )
+        pinned_provider = getattr(pin, "provider_id", None)
         if (
             isinstance(pinned_provider, str)
             and pinned_provider
-            and pinned_provider not in served_providers
+            and pinned_provider not in expected_provider_ids
         ):
             raise _invalid_input(
                 "INVALID_INPUT",
                 "Resume providerId does not match the paused run checkpoint.",
             )
-        pinned_model = getattr(resume_seed.agentic_continuation, "model_id", None)
-        if isinstance(pinned_model, str) and pinned_model:
-            served_models = {binding.model_id}
-            if fallback_binding is not None:
-                served_models.add(fallback_binding.model_id)
-            if pinned_model not in served_models:
-                raise _invalid_input(
-                    "INVALID_INPUT",
-                    "Resume model does not match the paused run checkpoint.",
-                )
+        pinned_model = getattr(pin, "model_id", None)
+        if (
+            isinstance(pinned_model, str)
+            and pinned_model
+            and pinned_model != expected_binding.model_id
+        ):
+            raise _invalid_input(
+                "INVALID_INPUT",
+                "Resume model does not match the paused run checkpoint.",
+            )
     # Reserved for future coerce disclosure on `submitted` (FE-013). Deep Research
     # no longer coerces for entitlement; kept so stream_and_persist call sites
     # stay stable.

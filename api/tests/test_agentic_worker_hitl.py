@@ -33,7 +33,7 @@ from app.db.repositories import messages as messages_repo
 from app.db.session import get_db
 from app.errors import AppError
 from app.providers.router import route_auto
-from app.providers.tiers import get_binding
+from app.providers.tiers import TierBinding, get_binding
 from app.routes import conversations as conversations_route
 from app.streaming import handler as handler_mod
 from app.streaming.handler import ResumeToolSeed
@@ -2168,13 +2168,17 @@ async def _repin_continuation_route(
     tool_call_id: str,
     provider_id: str,
     model_id: str,
+    tier_id: str | None = None,
+    used_fallback: bool | None = None,
 ) -> None:
-    """Rewrite the checkpoint's pinned provider/model to a fallback identity.
+    """Rewrite the checkpoint's pinned route identity (and fallback flag).
 
-    This is byte-for-byte what `handler.py` persists when a worker pauses on the
-    fallback route (`pausedWorkerUsedFallback` → `cont_blob["providerId"] =
-    fallback_provider_id`). The fake provider never actually falls back
-    mid-worker, so the durable shape is written directly.
+    This is byte-for-byte what `handler.py` persists when a worker pauses
+    (`pausedWorkerUsedFallback` → the fallback binding's tier/provider/model,
+    otherwise the primary binding's). The fake provider never actually falls
+    back mid-worker, so the durable shape is written directly. `tier_id` /
+    `used_fallback` are optional so a checkpoint can be repinned to a whole
+    coherent triple — or to a deliberately incoherent one.
     """
     async with session_factory() as session:
         row = await session.get(Message, message_id)
@@ -2184,6 +2188,10 @@ async def _repin_continuation_route(
         blob = dict(conts[tool_call_id])
         blob["providerId"] = provider_id
         blob["modelId"] = model_id
+        if tier_id is not None:
+            blob["tierId"] = tier_id
+        if used_fallback is not None:
+            blob["pausedWorkerUsedFallback"] = used_fallback
         conts[tool_call_id] = blob
         state[SERVER_STATE_CONTINUATIONS_KEY] = conts
         row.server_state = state
@@ -2217,13 +2225,19 @@ async def _register_user(
         await session.commit()
 
 
-async def _resolved_fallback_provider(
+async def _resolved_fallback_route(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     user_id: object,
     tier_id: str = "smart",
     primary_provider_id: str = "fake",
-) -> str | None:
+) -> tuple[TierBinding, str] | None:
+    """The `(binding, providerId)` a fallback would actually resolve to.
+
+    The fallback binding is not `get_binding(...)`: the `fake` self-fallback
+    swaps in `model_id="fake-fallback"`. Tests derive the pinned identity from
+    here so they never hardcode a model string.
+    """
     async with session_factory() as session:
         user = await session.get(User, user_id)
         assert user is not None
@@ -2235,6 +2249,22 @@ async def _resolved_fallback_provider(
             db=session,
             resolved_api_key=None,
         )
+    return None if route is None else (route[0], route[1])
+
+
+async def _resolved_fallback_provider(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: object,
+    tier_id: str = "smart",
+    primary_provider_id: str = "fake",
+) -> str | None:
+    route = await _resolved_fallback_route(
+        session_factory,
+        user_id=user_id,
+        tier_id=tier_id,
+        primary_provider_id=primary_provider_id,
+    )
     return None if route is None else route[1]
 
 
@@ -2380,10 +2410,27 @@ async def test_auto_tier_resume_survives_router_drift_across_the_pause(
     )
     assert resume_frames[-1][0] == "terminal"
     assert resume_frames[-1][1]["status"] == "done"
-    # Served on the pinned tier, not the re-derived one.
+    # Served on the pinned tier, not the re-derived one, and on the PRIMARY
+    # route of that tier: the pause was not fallback-flagged, so no fallback
+    # binding may have served the resume.
+    pinned_binding = get_binding(cont.tier_id)  # type: ignore[arg-type]
+    assert pinned_binding is not None
     attribution = resume_frames[-1][1]["attribution"]
     assert isinstance(attribution, dict)
     assert attribution["servedTierId"] == cont.tier_id
+    assert attribution["providerId"] == pinned_binding.provider_id
+    assert attribution["servedModelLabel"] == (
+        pinned_binding.model_label or pinned_binding.model_id
+    )
+    # The fake backend serves the canonical DeepSeek binding, so the pinned
+    # provider (the selected backend) and the binding's provider are two names
+    # for the same primary route.
+    assert cont.provider_id in {
+        pinned_binding.provider_id,
+        get_settings().provider_backend,
+    }
+    assert cont.model_id == pinned_binding.model_id
+    assert attribution.get("substitution") is None
 
 
 async def test_post_fallback_resume_accepts_the_pinned_fallback_provider(
@@ -2394,19 +2441,22 @@ async def test_post_fallback_resume_accepts_the_pinned_fallback_provider(
 
     The resume carries the caller's primary provider preference, so comparing
     the pin against `body.providerId` rejected 400 and blocked every
-    post-fallback resume. The pin is a served-route identity: the configured
-    fallback route is a legitimate match for it.
+    post-fallback resume. The pin is a served-route identity, and for a
+    fallback-flagged checkpoint the fallback route is the one that serves —
+    `_primary_make` hands the worker straight to `fallback_make_stream_for`, so
+    the resumed worker's served attribution must name the fallback binding.
     """
     await agentic_client.get("/api/bootstrap")
     user_id = await _current_user_id(session_factory)
     await _grant_pro(session_factory, user_id=user_id)
-    await _register_user(session_factory, user_id=user_id, byok_provider="openai")
-    # The BYOK key is what makes `openai` a real fallback route for this caller.
-    assert (
-        await _resolved_fallback_provider(session_factory, user_id=user_id) == "openai"
-    )
-    openai_binding = get_binding("smart", provider_id="openai")
-    assert openai_binding is not None
+    # No BYOK: `fake` is its own fallback with a distinct `fake-fallback` model,
+    # so the resume streams deterministically instead of dialing a real provider.
+    fallback_route = await _resolved_fallback_route(session_factory, user_id=user_id)
+    assert fallback_route is not None
+    fallback_binding, fallback_provider = fallback_route
+    primary_binding = get_binding("smart", provider_id="fake")
+    assert primary_binding is not None
+    assert fallback_binding.model_id != primary_binding.model_id
 
     conv_id = await _seed_conversation(session_factory, user_id=user_id)
     paused = await _pause_worker_run(
@@ -2419,8 +2469,10 @@ async def test_post_fallback_resume_accepts_the_pinned_fallback_provider(
         session_factory,
         message_id=paused.id,
         tool_call_id=_WORKER_CALL_ID,
-        provider_id="openai",
-        model_id=openai_binding.model_id,
+        tier_id=fallback_binding.tier.id,
+        provider_id=fallback_provider,
+        model_id=fallback_binding.model_id,
+        used_fallback=True,
     )
 
     resume_frames = await _collect_sse(
@@ -2437,6 +2489,151 @@ async def test_post_fallback_resume_accepts_the_pinned_fallback_provider(
     )
     assert resume_frames[-1][0] == "terminal"
     assert resume_frames[-1][1]["status"] == "done"
+
+    # The terminal frame's top-level attribution names the request's binding; the
+    # per-worker attribution on the persisted row is what discloses the route the
+    # resumed worker actually streamed on.
+    resumed = (await _load_messages(session_factory, conv_id))[-1]
+    worker_part = next(
+        p
+        for p in (resumed.parts or [])
+        if isinstance(p, dict)
+        and p.get("type") == "subagent"
+        and p.get("subagentId") == "worker-0"
+    )
+    part_attr = worker_part["attribution"]
+    assert isinstance(part_attr, dict)
+    assert part_attr["servedTierId"] == fallback_binding.tier.id
+    assert part_attr["providerId"] == fallback_provider
+    assert part_attr["servedModelLabel"] == (
+        fallback_binding.model_label or fallback_binding.model_id
+    )
+    # Only a worker served by `fallback_make_stream_for` carries this disclosure.
+    substitution = part_attr.get("substitution")
+    assert isinstance(substitution, dict)
+    assert substitution["reasonCode"] == "provider_fallback"
+
+
+async def test_resume_rejects_a_pin_whose_fields_span_two_routes(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A pin is only valid against the route that will actually serve it.
+
+    The pin is one coherent served-route triple, so it has to be matched as one.
+    Checking tier, provider and model against three independent sets (primary
+    union fallback) let a checkpoint pinned to route A pass once the client
+    forced route B and A merely became B's fallback — while
+    `paused_worker_used_fallback` (unset here) sent the resume down the PRIMARY
+    stream on B.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    # The BYOK key makes `openai` a usable primary route for this caller.
+    await _register_user(session_factory, user_id=user_id, byok_provider="openai")
+    primary_binding = get_binding("smart", provider_id="openai")
+    assert primary_binding is not None
+    fallback_route = await _resolved_fallback_route(
+        session_factory, user_id=user_id, primary_provider_id="openai"
+    )
+    assert fallback_route is not None
+    fallback_binding, fallback_provider = fallback_route
+    # The two routes must genuinely differ, or the mix proves nothing.
+    assert fallback_provider != "openai"
+    assert fallback_binding.model_id != primary_binding.model_id
+
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    paused = await _pause_worker_run(
+        agentic_client,
+        session_factory,
+        conv_id=conv_id,
+        client_message_id="a4000000-0000-0000-0000-000000000001",
+    )
+    # A checkpoint that says "the FALLBACK route served me" in every field but
+    # the flag that decides which stream a resume runs on.
+    await _repin_continuation_route(
+        session_factory,
+        message_id=paused.id,
+        tool_call_id=_WORKER_CALL_ID,
+        tier_id=fallback_binding.tier.id,
+        provider_id=fallback_provider,
+        model_id=fallback_binding.model_id,
+        used_fallback=False,
+    )
+
+    resp = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "a4000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "providerId": "openai",
+            "text": "",
+            "toolApproval": {"toolCallId": _WORKER_CALL_ID, "decision": "approve"},
+        },
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "INVALID_INPUT"
+    assert body["error"]["body"] == (
+        "Resume providerId does not match the paused run checkpoint."
+    )
+
+
+async def test_fallback_flagged_resume_rejects_a_primary_route_pin(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The inverse mix: a fallback-served pause cannot resume on a primary pin.
+
+    `paused_worker_used_fallback` sends the resumed worker to
+    `fallback_make_stream_for`, so the fallback route — not the primary the
+    client asked for — is what the pin has to name.
+    """
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    await _register_user(session_factory, user_id=user_id, byok_provider="openai")
+    primary_binding = get_binding("smart", provider_id="fake")
+    assert primary_binding is not None
+    # With `fake` as the primary, the BYOK key makes `openai` the fallback.
+    assert (
+        await _resolved_fallback_provider(session_factory, user_id=user_id) == "openai"
+    )
+
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    paused = await _pause_worker_run(
+        agentic_client,
+        session_factory,
+        conv_id=conv_id,
+        client_message_id="a5000000-0000-0000-0000-000000000001",
+    )
+    await _repin_continuation_route(
+        session_factory,
+        message_id=paused.id,
+        tool_call_id=_WORKER_CALL_ID,
+        tier_id=primary_binding.tier.id,
+        provider_id=primary_binding.provider_id,
+        model_id=primary_binding.model_id,
+        used_fallback=True,
+    )
+
+    resp = await agentic_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "a5000000-0000-0000-0000-000000000002",
+            "tierId": "smart",
+            "providerId": "fake",
+            "text": "",
+            "toolApproval": {"toolCallId": _WORKER_CALL_ID, "decision": "approve"},
+        },
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "INVALID_INPUT"
+    assert body["error"]["body"] == (
+        "Resume providerId does not match the paused run checkpoint."
+    )
 
 
 async def test_resume_still_rejects_a_provider_the_served_route_cannot_reach(

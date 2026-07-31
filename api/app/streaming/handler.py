@@ -2344,7 +2344,12 @@ async def stream_and_persist(
                 target = _sub(sid).tool_parts
                 for part in target:
                     if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
+                        # AC-03: the live fold also syncs approvalState here, so a
+                        # drained sibling cancel must flip pending -> rejected
+                        # rather than persisting pending+cancelled.
                         part["status"] = ev.status
+                        if ev.approval_state is not None:
+                            part["approvalState"] = ev.approval_state
                         break
                 target.append(
                     _tool_result_part(ev).model_dump(by_alias=True, exclude_none=True)
@@ -2385,7 +2390,11 @@ async def stream_and_persist(
         elif isinstance(ev, ToolResult):
             for part in tool_parts:
                 if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
+                    # AC-03: keep the untagged drain fold in step with the live
+                    # one, which syncs approvalState alongside status.
                     part["status"] = ev.status
+                    if ev.approval_state is not None:
+                        part["approvalState"] = ev.approval_state
                     break
             tool_parts.append(_tool_result_part(ev).model_dump(by_alias=True, exclude_none=True))
         elif isinstance(ev, UsageUpdate):

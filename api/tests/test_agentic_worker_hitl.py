@@ -3195,3 +3195,132 @@ async def test_ac08_resume_does_not_reissue_a_published_citation_id() -> None:
         (1, "alpha source"),
         (3, "beta follow-up"),
     ]
+
+
+async def test_ac08_v1_checkpoint_restores_above_citations_in_surviving_answers() -> None:
+    """AC-08: a v1 pause row still holds its rendered citations.
+
+    The allocator state ships in v2 blobs, but v1 is a supported version and
+    decodes with those fields empty — so the rendered-but-uncataloged citation is
+    back. Probed directly: a v1 blob with catalog id 1 and `partialAnswer`
+    `"orphan [2]"` decoded fine and then handed id 2 to the resumed worker's new
+    source, retargeting the `[2]` the user had already read. Surviving answer text
+    is the only remaining record of those ids, so it sets the floor — the paused
+    draft AND the finished siblings' answers, since a sibling's citations were
+    rendered on the pause turn too.
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+    from typing import Any as _Any
+
+    from app.agentic.continuation import parse_continuation
+    from app.agentic.orchestrator import _resume_worker_continuation
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        ProviderEvent,
+        Sources,
+        ToolResult,
+        UsageUpdate,
+    )
+    from app.search.protocol import SourceItem
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_PLAN_APPROVAL=False,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_MAX_WORKERS=2,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+
+    def _v1_blob(*, partial_answer: str, sibling_answer: str) -> dict[str, _Any]:
+        """A pause row as older builds wrote it: no `version`, no allocator state."""
+        return {
+            "phase": "worker",
+            "pausedSubagentId": "worker-1",
+            "userText": "DEEP_RESEARCH: alpha | beta",
+            "plan": ["alpha", "beta"],
+            "completedWorkers": [
+                {
+                    "subagentId": "worker-0",
+                    "subQuestion": "alpha",
+                    "answer": sibling_answer,
+                    "usage": {"inputTokens": 1, "outputTokens": 1},
+                    "costUsd": 0.01,
+                    "outcome": "succeeded",
+                    "sourceIds": ["1"],
+                }
+            ],
+            "plannerUsage": {"inputTokens": 1, "outputTokens": 1},
+            "plannerCostUsd": 0.01,
+            "pausedWorkerIndex": 1,
+            "pausedSubQuestion": "beta",
+            "partialAnswer": partial_answer,
+            "emittedAnswerChars": len(partial_answer),
+            "sourceIds": [],
+            "sourceCatalog": [
+                {"id": 1, "title": "alpha source", "url": "https://alpha.example"}
+            ],
+            "orchestrationMode": "deep_research",
+        }
+
+    def _resume_turn(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            async def _gen() -> _AsyncIterator[ProviderEvent]:
+                yield Sources(
+                    items=[
+                        SourceItem(
+                            id=1, title="beta follow-up", url="https://beta2.example"
+                        )
+                    ]
+                )
+                yield AnswerDelta(text=" done.")
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    async def _resumed_source_ids(blob: dict[str, _Any]) -> list[tuple[int, str]]:
+        checkpoint = parse_continuation(blob)
+        assert checkpoint is not None
+        # The v1 shape is exactly what makes this hard: no allocator state.
+        assert checkpoint.source_allocations == ()
+        assert checkpoint.source_next_id == 0
+        events = [
+            ev
+            async for ev in _resume_worker_continuation(
+                make_stream_for=_resume_turn,
+                settings=settings,
+                cost_for_usage=lambda u: 0.01,
+                continuation=checkpoint,
+                resume_tool_result=ToolResult(
+                    tool_call_id="cal-w1",
+                    name="calendar_create_event",
+                    status="succeeded",
+                    approval_state="approved",
+                    output={"ok": True},
+                ),
+                server_approved_call_ids=set(),
+            )
+        ]
+        worker_sources = next(
+            e for e in events if isinstance(e, Sources) and e.subagent_id == "worker-1"
+        )
+        return [(item.id, item.title) for item in worker_sources.items]
+
+    # The reported probe: the paused draft carries the citation-only `[2]`.
+    assert await _resumed_source_ids(
+        _v1_blob(partial_answer="orphan [2]", sibling_answer="alpha rests on [1].")
+    ) == [(3, "beta follow-up")]
+    # And a finished sibling's answer counts the same — its `[4]` was rendered too.
+    assert await _resumed_source_ids(
+        _v1_blob(partial_answer="orphan [2]", sibling_answer="alpha also cites [4].")
+    ) == [(5, "beta follow-up")]

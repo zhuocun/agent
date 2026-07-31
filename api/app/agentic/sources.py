@@ -2,25 +2,24 @@
 
 Each worker numbers its own sources from 1, so a fan-out produces several
 worker-local `[1]`s that must become distinct globals before anything reaches
-the user, the aggregator, or the persisted catalog. `SourceNamespace` owns that
-allocation, and it is the ONLY implementation: a second, list-ordered remapper
-used to live in `aggregate.py` and reordered ids by worker-plan position, which
-diverged from the arrival-ordered globals the live stream had already emitted.
+the user, the aggregator, or the persisted catalog. `SourceNamespace` is the ONLY
+implementation of that allocation: a second, list-ordered remapper in
+`aggregate.py` renumbered by worker-plan position, diverging from the
+arrival-ordered globals the live stream had already emitted.
 
 Four properties the allocator has to hold, each learned from a live defect:
 
 - **Arrival order.** Ids are handed out in the order events actually arrive, not
   plan order, because the wire has already shown earlier ids to the user.
 - **Citation before source.** `[1]` can be written before the worker's own
-  `Sources` event lands. Both answer rewrites and the `Sources` remap allocate
-  through `_global_id`, so a marker can never fall through to its raw local
-  ordinal and resolve against whichever worker happens to own that global id
-  (FL-16-a / FE-1).
+  `Sources` event lands, so every surface allocates through `_global_id` and no
+  marker falls through to its raw local ordinal — which resolved against
+  whichever worker happened to own that global id (FL-16-a / FE-1).
 - **Chunk safety.** A marker splits across answer deltas (`"See ["` + `"1]."`),
   so an unfinished trailing fragment is held per subagent until it completes.
-- **Resume without reissue.** A citation-only allocation has no catalog row and
-  can sit ABOVE the catalog's largest id, so `restored()` takes the allocator's
-  own mappings and high-water mark rather than inferring them from the catalog.
+- **Resume without reissue.** A citation-only global has no catalog row and can
+  sit ABOVE the catalog's largest id, so `restored()` reads the allocator's own
+  state — or, for checkpoints predating it, the citations left in answer text.
 """
 
 from __future__ import annotations
@@ -40,14 +39,10 @@ _INCOMPLETE_CITATION_TAIL_RE = re.compile(r"\[\d*$")
 
 
 def max_source_id(ids: Iterable[str]) -> int:
-    """Largest integer citation id in ``ids`` (non-numeric ignored)."""
-    max_id = 0
-    for sid in ids:
-        try:
-            max_id = max(max_id, int(sid))
-        except (TypeError, ValueError):
-            continue
-    return max_id
+    """Largest citation ordinal in ``ids``. Persisted rows carry ids written by older
+    builds — ints, nulls, provider tokens that were never ordinals — so anything
+    non-numeric is ignored rather than raising out of a resume."""
+    return max((int(sid) for sid in ids if str(sid).strip().isdigit()), default=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,24 +73,28 @@ class SourceNamespace:
         allocations: Sequence[CitationAllocation] = (),
         next_id: int = 0,
         prior_id_groups: Iterable[Iterable[str]] = (),
+        prior_texts: Iterable[str] = (),
     ) -> SourceNamespace:
         """Reopen a paused run's namespace so nothing it published is reissued.
 
-        No single record holds every published id: the catalog holds only the
-        ones that reached a `Sources` event, so a citation-only `[n]` has no row
-        there and can sit above the catalog's maximum. `allocations` and
-        `next_id` are the allocator's own state and carry exactly those —
-        without them a resumed worker's first new source took an id the pause
-        turn had already rendered as a citation, silently pointing it at
-        unrelated content. Legacy checkpoints predate both, so the ids their
-        surviving rows still cite are the fallback floor.
+        No single record holds every published id: the catalog holds only the ones
+        that reached a `Sources` event, so a citation-only `[n]` has no row there and
+        can sit above the catalog's maximum. `allocations` and `next_id` are the
+        allocator's own state and carry exactly those — without them a resumed
+        worker's first new source took an id the pause turn had already rendered as a
+        citation, silently pointing it at unrelated content. Checkpoints predating
+        both still decode; for them every `[n]` in `prior_texts` (the paused draft and
+        the finished siblings' answers) was rendered to the user, so the floor clears
+        all of them. Those mappings are gone either way, so a re-citation allocates
+        afresh — an unresolved marker rather than one silently pointing elsewhere.
         """
         namespace = cls(start=next_id)
         namespace.seed_catalog(catalog)
         for published in allocations:
             namespace._map[(published.subagent_id, published.local_id)] = published.global_id
             namespace._next = max(namespace._next, published.global_id + 1)
-        cited = max((max_source_id(ids) for ids in prior_id_groups), default=0)
+        marked = (_CITATION_MARKER_RE.findall(text) for text in prior_texts)
+        cited = max((max_source_id(ids) for ids in (*prior_id_groups, *marked)), default=0)
         namespace._next = max(namespace._next, cited + 1)
         return namespace
 

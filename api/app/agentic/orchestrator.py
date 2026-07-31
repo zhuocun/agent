@@ -1869,6 +1869,12 @@ async def _resume_worker_continuation(
             continuation.source_ids,
             *(out.source_ids for out in results.values()),
         ],
+        # Legacy blobs carry no allocator state; every citation the pause turn
+        # left in surviving answer text is a global it already rendered.
+        prior_texts=[
+            continuation.partial_answer,
+            *(out.answer for out in results.values()),
+        ],
     )
 
     if continuation.clarifications:

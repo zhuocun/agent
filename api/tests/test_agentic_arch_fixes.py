@@ -999,6 +999,19 @@ def test_b12_legacy_checkpoint_without_allocator_state_still_clears_cited_ids() 
     )
     assert seeded.rewrite_answer_text("See [1].", "worker-0") == "See [8]."
     assert [i.id for i in seeded.merged_items()] == [7]
+    # A citation-only global survives only in the answer text that carried it,
+    # so the text is part of the floor — brackets that are not citations are not.
+    from_text = SourceNamespace.restored(
+        catalog=(SourceItem(id=1, title="old", url="https://old.example"),),
+        prior_texts=[
+            "orphan [3] with no catalog row",
+            "sibling cites [2]",
+            "a [footnote] and a [12x] are not citations",
+            "",
+        ],
+    )
+    assert from_text.next_id == 4
+    assert from_text.rewrite_answer_text("fresh [1].", "worker-9") == "fresh [4]."
 
 
 @pytest.mark.asyncio

@@ -3259,7 +3259,9 @@ async def test_ac08_v1_checkpoint_restores_above_citations_in_surviving_answers(
             "pausedSubQuestion": "beta",
             "partialAnswer": partial_answer,
             "emittedAnswerChars": len(partial_answer),
-            "sourceIds": [],
+            # Ids `int()` cannot read at all — a digit by `str.isdigit()` and an
+            # over-long digit string — decode as valid and must not raise the resume.
+            "sourceIds": ["²", "9" * 4400],
             "sourceCatalog": [
                 {"id": 1, "title": "alpha source", "url": "https://alpha.example"}
             ],

@@ -59,6 +59,7 @@ from app.agentic.continuation import (
     usage_from_wire,
     usage_to_wire,
 )
+from app.agentic.sources import SourceNamespace
 from app.config import get_settings
 from app.db.models import Conversation, Message, User
 from app.db.repositories import billing as billing_repo
@@ -468,6 +469,25 @@ def test_legacy_v1_blob_reads_through_the_one_adapter() -> None:
     # And it stays v1 on rewrite, so nothing claims a v2 guarantee it lacks.
     assert serialize_continuation(state)["version"] == 1
     assert decode_continuation(serialize_continuation(state)).state == state
+
+
+def test_a_legacy_source_id_no_int_can_read_decodes_and_restores_without_raising() -> None:
+    """Totality does not stop at the codec — the resume reads these ids next.
+
+    `sourceIds` are stringified as stored, so a legacy row's ids reach
+    `SourceNamespace.restored()`, which scans them for the citation floor. `"²"` is a
+    digit to `str.isdigit()` and not an integer to `int()`; a digit string past the
+    interpreter's conversion limit fails `int()` too. Both decode as perfectly valid
+    ids, so the floor scan has to ignore them rather than raise a 500 out of a durable
+    row on the way back in.
+    """
+    blob = {**_LEGACY_V1_BLOB, "source_ids": ["²", "9" * 4400, 5, None]}
+    state = decode_continuation(blob).state
+    assert state is not None
+    assert state.source_ids == ("²", "9" * 4400, "5")
+    namespace = SourceNamespace.restored(prior_id_groups=[state.source_ids])
+    # The one readable ordinal sets the floor; the unreadable ids are ignored.
+    assert namespace.next_id == 6
 
 
 def test_legacy_unknown_orchestration_mode_falls_back_to_caller_policy() -> None:

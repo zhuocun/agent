@@ -982,7 +982,10 @@ def test_b12_legacy_checkpoint_without_allocator_state_still_clears_cited_ids() 
     ids its surviving rows cite; allocation must resume above the highest."""
     restored = SourceNamespace.restored(
         catalog=(),
-        prior_id_groups=[("1", "not-a-number"), ("4", "2")],
+        # Legacy ids are whatever older builds wrote: `"²"` is a digit `int()` still
+        # rejects, and a digit string past the interpreter's conversion limit is one
+        # too. Reading a persisted row must never raise on either.
+        prior_id_groups=[("1", "not-a-number", "²"), ("4", "2", "9" * 4400)],
     )
     remapped = restored.remap_sources(
         Sources(items=[SourceItem(id=1, title="new", url="https://new.example")]),

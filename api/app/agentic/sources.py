@@ -39,10 +39,20 @@ _INCOMPLETE_CITATION_TAIL_RE = re.compile(r"\[\d*$")
 
 
 def max_source_id(ids: Iterable[str]) -> int:
-    """Largest citation ordinal in ``ids``. Persisted rows carry ids written by older
-    builds — ints, nulls, provider tokens that were never ordinals — so anything
-    non-numeric is ignored rather than raising out of a resume."""
-    return max((int(sid) for sid in ids if str(sid).strip().isdigit()), default=0)
+    """Largest citation ordinal in ``ids``, ignoring every entry `int` cannot read.
+
+    Guarded rather than predicated, because no predicate stands in for `int`: a stored
+    id is whatever an older build wrote, `"²"` passes `str.isdigit()`, an over-long
+    digit string passes `str.isdecimal()`, and `int` rejects both. A resume reads these
+    rows, so an unreadable id lowers the floor instead of raising out of that read.
+    """
+    floor = 0
+    for sid in ids:
+        try:
+            floor = max(floor, int(sid))
+        except (TypeError, ValueError):
+            continue
+    return floor
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,8 +125,7 @@ class SourceNamespace:
         for item in items:
             gid = int(item.id)
             self._catalog[gid] = item
-            if gid >= self._next:
-                self._next = gid + 1
+            self._next = max(self._next, gid + 1)
 
     def merged_items(self) -> list[SourceItem]:
         """Return the merged global catalog in ascending citation id order."""

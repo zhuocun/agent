@@ -1689,28 +1689,39 @@ async def run_single(
         )
         return
 
-    prior_usage = prior_run_usage or UsageUpdate()
-    prior_cost = max(0.0, float(prior_run_cost_usd or 0.0))
-    if prior_cost <= 0.0 and _has_nonzero_usage(prior_usage):
-        prior_cost = cost_for_usage(prior_usage)
-    if prior_receipt is None and (prior_cost > 0.0 or _has_nonzero_usage(prior_usage)):
-        # Legacy pause row (no persisted receipt): the B5 seeds are the only
-        # record of what the pause turn already charged.
-        ledger.hold_billed_floor(prior_cost)
-        ledger.settle(
-            subagent_id,
-            role="primary",
-            usage=prior_usage,
-            cost_usd=prior_cost,
-            already_billed=True,
-        )
+    if prior_receipt is not None:
+        # AC-02: a present receipt is the SOLE restore authority. The B5 scalars
+        # reconstruct the same pause spend from one row, so reading them here
+        # would bill their disagreement with the receipt as spend in THIS turn.
+        prior_usage = _restored_usage(ledger.usage_of(subagent_id))
+        prior_cost = ledger.cost_of(subagent_id)
+    else:
+        prior_usage = prior_run_usage or UsageUpdate()
+        prior_cost = max(0.0, float(prior_run_cost_usd or 0.0))
+        if prior_cost <= 0.0 and _has_nonzero_usage(prior_usage):
+            prior_cost = cost_for_usage(prior_usage)
+        if prior_cost > 0.0 or _has_nonzero_usage(prior_usage):
+            # Legacy pause row (no persisted receipt): the B5 seeds are the only
+            # record of what the pause turn already charged.
+            ledger.hold_billed_floor(prior_cost)
+            ledger.settle(
+                subagent_id,
+                role="primary",
+                usage=prior_usage,
+                cost_usd=prior_cost,
+                already_billed=True,
+            )
+    # The run's total before this session's tokens. `prior_cost` above is the
+    # PRIMARY PHASE's share of it; these coincide in single mode but the cap and
+    # the meter are run-level questions, so read them off the ledger.
+    restored_run_cost = ledger.cumulative_cost_usd
 
     # FL-12: admission above prices only the FRESH estimate, so a resume whose
     # seeded ledger is already over the cap used to open another provider stream
     # and overrun by a whole primary turn. Refuse before `make_stream_for`, and
     # degrade to a labeled `done` rather than an error (invariant 8).
-    if prior_cost > 0.0 and budget.exceeds_cap(
-        actual_usd=prior_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
+    if restored_run_cost > 0.0 and budget.exceeds_cap(
+        actual_usd=restored_run_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
     ):
         yield SubagentStarted(
             subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary"
@@ -1729,15 +1740,16 @@ async def run_single(
             outcome="budget_cancelled",
         )
         yield Complete(usage=prior_usage)
-        if prior_receipt is None:
-            ledger.settle(
-                subagent_id,
-                role="primary",
-                usage=prior_usage,
-                cost_usd=prior_cost,
-                outcome="budget_cancelled",
-                already_billed=True,
-            )
+        # Re-stamps the phase's outcome; the money is whatever the branch above
+        # put on the books, so this cannot move the total under either input.
+        ledger.settle(
+            subagent_id,
+            role="primary",
+            usage=prior_usage,
+            cost_usd=prior_cost,
+            outcome="budget_cancelled",
+            already_billed=True,
+        )
         yield _boundary_run_cost(
             ledger, cap_usd=cap, partial=True, budget_halted=True
         )
@@ -1745,9 +1757,9 @@ async def run_single(
 
     yield SubagentStarted(subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary")
     yield RunCost(
-        subtotal_usd=prior_cost,
+        subtotal_usd=restored_run_cost,
         cap_usd=cap,
-        confidence="estimate" if prior_cost <= 0.0 else "exact",
+        confidence="estimate" if restored_run_cost <= 0.0 else "exact",
         phase="plan",
     )
     # B5: track this session's usage separately from pre-pause seed so
@@ -1772,7 +1784,7 @@ async def run_single(
             session_usage = _fold_usage(event, session_usage)
             session_cost = cost_for_usage(session_usage)
             if not budget_halted and budget.exceeds_cap(
-                actual_usd=prior_cost + session_cost,
+                actual_usd=restored_run_cost + session_cost,
                 cap_usd=cap,
                 headroom_usd=budget_headroom_usd,
             ):
@@ -1929,37 +1941,45 @@ async def _resume_worker_continuation(
     planner_usage = continuation.planner_usage
     # Prefer durable planner cost from the checkpoint (H-009).
     planner_cost = continuation.planner_cost_usd
-    ledger_usd = float(continuation.actual_cost_usd or 0.0)
-    if ledger_usd <= 0.0:
-        ledger_usd = (
-            sum(w.cost_usd for w in continuation.completed_workers)
-            + planner_cost
-            + float(continuation.paused_worker_cost_usd or 0.0)
-        )
 
     # AC-02: one owner for this resumed run's money and tokens — there is no
-    # second per-phase dictionary. The pause receipt (or, for a legacy row, the
-    # checkpoint's own ledger total) is the already-billed floor, so every phase
-    # below re-enters the run WITHOUT being charged a second time.
+    # second per-phase dictionary. The pause receipt is the already-billed floor
+    # AND the phase history, so every phase re-enters the run without being
+    # charged a second time.
     ledger = CostLedger.restore(prior_receipt)
-    if prior_receipt is None:
+    if prior_receipt is not None:
+        # A present receipt is the SOLE restore authority: the checkpoint's
+        # `planner_cost_usd`, per-worker `cost_usd` and `actual_cost_usd` describe
+        # the same pause spend less exactly, and replaying them over the restored
+        # phases would bill the difference as spend in THIS continuation.
+        ledger_usd = ledger.cumulative_cost_usd
+    else:
+        # Legacy checkpoint (written before receipts): its own cost fields are the
+        # only record of the pause turn's spend, so replay them as billed phases.
+        ledger_usd = float(continuation.actual_cost_usd or 0.0)
+        if ledger_usd <= 0.0:
+            ledger_usd = (
+                sum(w.cost_usd for w in continuation.completed_workers)
+                + planner_cost
+                + float(continuation.paused_worker_cost_usd or 0.0)
+            )
         ledger.hold_billed_floor(ledger_usd)
-    ledger.settle(
-        _PLANNER_ID,
-        role="orchestrator",
-        usage=planner_usage,
-        cost_usd=planner_cost,
-        already_billed=True,
-    )
-    for restored in continuation.completed_workers:
         ledger.settle(
-            restored.subagent_id,
-            role="worker",
-            usage=restored.usage,
-            cost_usd=restored.cost_usd,
-            outcome=restored.outcome,
+            _PLANNER_ID,
+            role="orchestrator",
+            usage=planner_usage,
+            cost_usd=planner_cost,
             already_billed=True,
         )
+        for restored in continuation.completed_workers:
+            ledger.settle(
+                restored.subagent_id,
+                role="worker",
+                usage=restored.usage,
+                cost_usd=restored.cost_usd,
+                outcome=restored.outcome,
+                already_billed=True,
+            )
 
     worker_meta = [
         (i, f"worker-{i}", f"Worker {i + 1}", sq)
@@ -2004,7 +2024,7 @@ async def _resume_worker_continuation(
             for _, sid, _, _ in worker_meta
             if ledger.phase(sid) is not None
         ]
-        ordered_usages.append(planner_usage)
+        ordered_usages.append(_restored_usage(ledger.usage_of(_PLANNER_ID)))
         worker_total_cost = ledger.cumulative_cost_usd
         completed_count = len(ordered_outputs)
         synthesis = aggregate.synthesize(
@@ -2093,16 +2113,25 @@ async def _resume_worker_continuation(
     ]
     # B2: keep pre-pause usage immutable; fold resume-only usage separately so
     # `_fold_usage` replace semantics cannot erase pause spend from the ledger.
-    pre_pause_usage = continuation.paused_worker_usage or UsageUpdate()
-    pre_pause_cost = float(continuation.paused_worker_cost_usd or 0.0)
-    if pre_pause_cost <= 0.0 and _has_nonzero_usage(pre_pause_usage):
-        # Prefer the durable pause pricer: if the pause was on fallback, the
-        # stored paused_worker_cost_usd should already be set; otherwise price
-        # on primary (legacy blobs).
-        if continuation.paused_worker_used_fallback and fallback_cost_for_usage is not None:
-            pre_pause_cost = fallback_cost_for_usage(pre_pause_usage)
-        else:
-            pre_pause_cost = cost_for_usage(pre_pause_usage)
+    if prior_receipt is not None:
+        # AC-02: the restored phase for this worker is what the pause turn
+        # actually billed; the checkpoint's own numbers are the legacy input.
+        pre_pause_usage = _restored_usage(ledger.usage_of(paused_id))
+        pre_pause_cost = ledger.cost_of(paused_id)
+    else:
+        pre_pause_usage = continuation.paused_worker_usage or UsageUpdate()
+        pre_pause_cost = float(continuation.paused_worker_cost_usd or 0.0)
+        if pre_pause_cost <= 0.0 and _has_nonzero_usage(pre_pause_usage):
+            # Prefer the durable pause pricer: if the pause was on fallback, the
+            # stored paused_worker_cost_usd should already be set; otherwise price
+            # on primary (legacy blobs).
+            if (
+                continuation.paused_worker_used_fallback
+                and fallback_cost_for_usage is not None
+            ):
+                pre_pause_cost = fallback_cost_for_usage(pre_pause_usage)
+            else:
+                pre_pause_cost = cost_for_usage(pre_pause_usage)
     resume_usage = UsageUpdate()
     # H-010: seed prior tool results from the checkpoint, then the resume settle.
     prior_results: list[ToolResult] = []
@@ -2741,21 +2770,33 @@ async def _run_deep_research(
         )
 
     planner_cost = _price_planner(planner_usage)
-    if plan_approved is True:
-        # B4: seed ledger with pause-turn planner spend; do not re-bill (keep
-        # live planner_usage empty so `_emit_planner_receipt` stays quiet).
+    if plan_approved is not True:
+        ledger.settle(
+            _PLANNER_ID,
+            role="orchestrator",
+            usage=planner_usage,
+            cost_usd=planner_cost,
+        )
+    elif prior_receipt is not None:
+        # AC-02: a present receipt is the SOLE restore authority. `restore()`
+        # already put the planner phase back with the amount the pause terminal
+        # billed; the B4 scalar reconstructs that same spend from one row, so
+        # settling it over the restored phase would bill their disagreement as
+        # spend in THIS continuation. Read, do not write.
+        planner_cost = ledger.cost_of(_PLANNER_ID)
+    else:
+        # Legacy pause row: the B4 seed is the only record of the spend the pause
+        # terminal already charged. Keep live `planner_usage` empty so
+        # `_emit_planner_receipt` stays quiet — the plan was not re-planned.
         planner_cost = seeded_planner_cost
-        if prior_receipt is None:
-            # Legacy pause row: the B4 seed is the only record of the spend the
-            # pause terminal already charged.
-            ledger.hold_billed_floor(planner_cost)
-    ledger.settle(
-        _PLANNER_ID,
-        role="orchestrator",
-        usage=seeded_planner_usage if plan_approved is True else planner_usage,
-        cost_usd=planner_cost,
-        already_billed=plan_approved is True,
-    )
+        ledger.hold_billed_floor(planner_cost)
+        ledger.settle(
+            _PLANNER_ID,
+            role="orchestrator",
+            usage=seeded_planner_usage,
+            cost_usd=planner_cost,
+            already_billed=True,
+        )
     if plan_approved is None:
         if settings.agentic_plan_approval:
             async for event in _planner_receipt(open_bracket=True):
@@ -3527,19 +3568,15 @@ async def _run_deep_research(
     ordered_artifacts = aggregate.build_artifacts(
         ordered_outputs, max_artifacts=settings.agentic_max_workers
     )
-    # Fold planner into run totals. On plan-approved resume, live planner_usage
-    # is empty — fold seeded pause-turn usage for Complete roll-up (B4).
-    ledger_planner_usage = (
-        seeded_planner_usage
-        if plan_approved is True and _has_nonzero_usage(seeded_planner_usage)
-        else planner_usage
-    )
+    # Fold planner into run totals. On a plan-approved resume live `planner_usage`
+    # is empty and the pause-turn tokens come back off the ledger's planner phase
+    # (from the receipt, or from the B4 seed for a legacy row).
     ordered_usages = [
         _restored_usage(ledger.usage_of(sid))
         for _, sid, _, _ in worker_meta
         if ledger.phase(sid) is not None
     ]
-    ordered_usages.append(ledger_planner_usage)
+    ordered_usages.append(_restored_usage(ledger.usage_of(_PLANNER_ID)))
     worker_total_cost = ledger.cumulative_cost_usd
 
     # BE-014 residual: before starting the aggregator, refuse a model synthesis

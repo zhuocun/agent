@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -19,8 +21,11 @@ from app.agentic.continuation import (
     SERVER_STATE_PLANNER_COST_KEY,
     SERVER_STATE_PLANNER_USAGE_KEY,
     SERVER_STATE_PRIOR_RUN_COST_KEY,
+    SERVER_STATE_PRIOR_RUN_USAGE_KEY,
     SERVER_STATE_RUN_RECEIPT_KEY,
+    get_continuation_from_server_state,
     get_run_ledger_from_server_state,
+    put_continuation_in_server_state,
     put_run_ledger_in_server_state,
     usage_to_wire,
 )
@@ -32,7 +37,7 @@ from app.db.session import get_db
 from app.providers.pricing import compute_cost_breakdown
 from app.providers.protocol import RunCost, UsageUpdate
 from app.providers.tiers import get_binding
-from app.runtime.run_receipt import CostLedger, UsageTotals, decode_run_receipt
+from app.runtime.run_receipt import RunReceipt, decode_run_receipt
 from app.schemas.message import AgenticRunSummaryPart
 from app.streaming import handler as handler_module
 
@@ -73,6 +78,11 @@ async def _collect_sse(
     response = await client.post(path, json=payload, timeout=30.0)
     assert response.status_code == 200, response.text
     return _sse_frames(response.text)
+
+
+def _without_receipt(state: dict[str, Any]) -> dict[str, Any]:
+    """Age a paused row back to a pre-AC-02 shape: scalar seeds, no receipt."""
+    return {k: v for k, v in state.items() if k != SERVER_STATE_RUN_RECEIPT_KEY}
 
 
 @pytest.fixture
@@ -149,7 +159,13 @@ async def test_b4_plan_resume_seeds_nonzero_runcost_via_server_state(
     plan_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """B4: pause persists planner ledger in server_state; resume RunCost is non-zero."""
+    """B4: pause persists planner ledger in server_state; resume RunCost is non-zero.
+
+    Characterizes the LEGACY seed path, so the row is stripped of the receipt the
+    pause turn writes today (AC-02). On a row that still has its receipt the
+    scalar below is ignored on purpose — `test_ac02_a_present_receipt_outranks_*`
+    covers that.
+    """
     await plan_client.get("/api/bootstrap")
     async with session_factory() as session:
         user = (await session.execute(select(User))).scalar_one()
@@ -196,10 +212,12 @@ async def test_b4_plan_resume_seeds_nonzero_runcost_via_server_state(
                 )
             )
         ).scalar_one()
-        paused.server_state = put_run_ledger_in_server_state(
-            paused.server_state if isinstance(paused.server_state, dict) else {},
-            planner_cost_usd=0.37,
-            planner_usage=UsageUpdate(input_tokens=37, output_tokens=3),
+        paused.server_state = _without_receipt(
+            put_run_ledger_in_server_state(
+                paused.server_state if isinstance(paused.server_state, dict) else {},
+                planner_cost_usd=0.37,
+                planner_usage=UsageUpdate(input_tokens=37, output_tokens=3),
+            )
         )
         await session.commit()
         ledger = get_run_ledger_from_server_state(paused.server_state)
@@ -229,7 +247,10 @@ async def test_b5_single_mode_resume_seeds_runcost_via_api(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """B5: single-mode pause ledger in server_state seeds resume RunCost."""
+    """B5: single-mode pause ledger in server_state seeds resume RunCost.
+
+    Legacy path, so the receipt AC-02 writes is stripped first — see the B4 test.
+    """
     monkeypatch.setenv("AGENTIC_PLAN_APPROVAL", "false")
     get_settings.cache_clear()
 
@@ -262,10 +283,12 @@ async def test_b5_single_mode_resume_seeds_runcost_via_api(
                 )
             )
         ).scalar_one()
-        paused.server_state = put_run_ledger_in_server_state(
-            paused.server_state if isinstance(paused.server_state, dict) else {},
-            prior_run_cost_usd=0.2,
-            prior_run_usage=UsageUpdate(input_tokens=20, output_tokens=0),
+        paused.server_state = _without_receipt(
+            put_run_ledger_in_server_state(
+                paused.server_state if isinstance(paused.server_state, dict) else {},
+                prior_run_cost_usd=0.2,
+                prior_run_usage=UsageUpdate(input_tokens=20, output_tokens=0),
+            )
         )
         await session.commit()
 
@@ -583,21 +606,610 @@ def _capturing_run_costs() -> Iterator[list[RunCost]]:
         handler_module.build_agentic_run_summary_part = original  # type: ignore[assignment]
 
 
-async def _start_plan_approval_pause(
-    client: AsyncClient, *, conv_id: str, client_message_id: str
+
+@pytest.fixture
+def fanout_env() -> Iterator[None]:
+    """Plan approval ON, and no user spend cap, so an approved plan fans out.
+
+    `plan_approval_env`'s `USAGE_BUDGET_USD` leaves a plan-approved resume with no
+    headroom to spawn workers, which is fine for the scalar-seed tests above but
+    would make every turn here cost nothing.
+    """
+    keys = {
+        "TOOLS_ENABLED": "true",
+        "AGENTIC_ENABLED": "true",
+        "AGENTIC_PLAN_APPROVAL": "true",
+    }
+    prior = {key: os.environ.get(key) for key in (*keys, "USAGE_BUDGET_USD")}
+    os.environ.update(keys)
+    os.environ.pop("USAGE_BUDGET_USD", None)
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        get_settings.cache_clear()
+
+
+@pytest.fixture
+def fanout_app(
+    fanout_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+):  # type: ignore[no-untyped-def]
+    from fastapi import FastAPI
+
+    from app.main import create_app
+    from app.middleware.ratelimit import limiter
+    from app.routes.conversations import _TEMP_IDS
+    from app.streaming import replay_registry, stop_registry
+
+    _TEMP_IDS.clear()
+    stop_registry._STOP_REQUESTS.clear()
+    replay_registry._BUFFERS.clear()
+    storage = limiter._storage
+    if hasattr(storage, "storage"):
+        storage.storage.clear()
+    if hasattr(storage, "expirations"):
+        storage.expirations.clear()
+
+    app_: FastAPI = create_app()
+
+    async def _get_db_override() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app_.dependency_overrides[get_db] = _get_db_override
+    try:
+        yield app_
+    finally:
+        app_.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def fanout_client(fanout_app) -> AsyncIterator[AsyncClient]:  # type: ignore[no-untyped-def]
+    transport = ASGITransport(app=fanout_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+# One worker pauses on a calendar tool; its sibling finishes. So the plan-approved
+# turn spends real (fake-provider) tokens, pauses, and is billed for them.
+_PLAN_THEN_WORKER_PROMPT = (
+    "DEEP_RESEARCH: TOOL_APPROVE schedule kickoff | sibling housing effects"
+)
+
+
+def _terminal_cost(frames: list[tuple[str, dict[str, object]]]) -> float:
+    attribution = frames[-1][1]["attribution"]
+    assert isinstance(attribution, dict)
+    return float(attribution["costUsd"])
+
+
+def _final_run_cost(frames: list[tuple[str, dict[str, object]]]) -> float:
+    finals = [d for n, d in frames if n == "run_cost" and d.get("phase") == "final"]
+    assert finals, "an agentic turn ends with a final run_cost"
+    return float(finals[-1]["subtotalUsd"])
+
+
+def _awaiting_call_id(frames: list[tuple[str, dict[str, object]]]) -> str:
+    return next(
+        str(d["id"])
+        for n, d in frames
+        if n == "tool_call" and d.get("status") == "awaiting_approval"
+    )
+
+
+async def _assistant_rows(
+    session_factory: async_sessionmaker[AsyncSession], conv_id: str
+) -> list[Message]:
+    async with session_factory() as session:
+        return list(
+            (
+                await session.execute(
+                    select(Message)
+                    .where(Message.conversation_id == UUID(conv_id))
+                    .where(Message.role == "assistant")
+                    .order_by(Message.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+def _stored_receipt(row: Message) -> RunReceipt:
+    state = row.server_state if isinstance(row.server_state, dict) else {}
+    receipt = decode_run_receipt(state.get(SERVER_STATE_RUN_RECEIPT_KEY))
+    assert receipt is not None, "a paused row carries its boundary receipt"
+    return receipt
+
+
+def _phase_costs(receipt: RunReceipt) -> dict[str, float]:
+    return {phase.phase_id: phase.cost_usd for phase in receipt.phases}
+
+
+def _spend_between(before: RunReceipt, after: RunReceipt) -> float:
+    """Money that phases actually gained between two boundaries of one run.
+
+    This is the ONLY thing a continuation may charge. Deriving it from the two
+    receipts' own per-phase breakdowns — rather than subtracting two run totals —
+    is what makes "only the new phase is billed" a statement about phases.
+    """
+    was = _phase_costs(before)
+    return sum(
+        max(0.0, cost - was.get(phase_id, 0.0))
+        for phase_id, cost in _phase_costs(after).items()
+    )
+
+
+async def _plan_pause(
+    client: AsyncClient, *, conv_id: str, nonce: str
 ) -> tuple[str, list[tuple[str, dict[str, object]]]]:
+    """Turn 1: a fresh deep-research turn parks on the plan-approval gate."""
     frames = await _collect_sse(
         client,
         f"/api/conversations/{conv_id}/messages",
         {
-            "clientMessageId": client_message_id,
+            "clientMessageId": f"ac020000-0000-0000-0000-0000000000{nonce}",
             "tierId": "smart",
-            "text": "DEEP_RESEARCH: causes of inflation | effects on housing",
+            "text": _PLAN_THEN_WORKER_PROMPT,
             "agenticMode": "deep_research",
         },
     )
     assert frames[-1][1]["status"] == "awaiting_approval"
-    return next(str(d["id"]) for n, d in frames if n == "tool_call"), frames
+    return _awaiting_call_id(frames), frames
+
+
+async def _approve(
+    client: AsyncClient, *, conv_id: str, call_id: str, nonce: str
+) -> list[tuple[str, dict[str, object]]]:
+    return await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": f"ac020000-0000-0000-0000-0000000000{nonce}",
+            "tierId": "smart",
+            "text": "",
+            "agenticMode": "deep_research",
+            "toolApproval": {"toolCallId": call_id, "decision": "approve"},
+        },
+    )
+
+
+async def _new_conversation(client: AsyncClient, title: str) -> str:
+    create = await client.post(
+        "/api/conversations", json={"title": title, "selectedTierId": "smart"}
+    )
+    assert create.status_code == 201
+    return str(create.json()["id"])
+
+
+async def _rewrite_server_state(
+    session_factory: async_sessionmaker[AsyncSession],
+    message_id: UUID,
+    edit: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    """Edit a paused row's server-only state, keeping its receipt intact."""
+    async with session_factory() as session:
+        row = await session.get(Message, message_id)
+        assert row is not None
+        state = edit(dict(row.server_state or {}))
+        assert SERVER_STATE_RUN_RECEIPT_KEY in state, "the receipt must survive the edit"
+        row.server_state = state
+        await session.commit()
+
+
+def _without_scalar_seeds(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in state.items()
+        if key
+        not in (
+            SERVER_STATE_PLANNER_COST_KEY,
+            SERVER_STATE_PLANNER_USAGE_KEY,
+            SERVER_STATE_PRIOR_RUN_COST_KEY,
+            SERVER_STATE_PRIOR_RUN_USAGE_KEY,
+        )
+    }
+
+
+def _assert_charged_only_new_phase_spend(
+    folded: list[RunCost],
+    *,
+    rows: list[Message],
+    frames: list[tuple[str, dict[str, object]]],
+    before: RunReceipt,
+    billed: float,
+) -> None:
+    """The whole AC-02 billing contract for one continuation.
+
+    `before` is the receipt the resumed turn restored. Everything charged here must
+    be the phase spend that appeared after it, and the run total shown everywhere
+    must be that plus what earlier turns already banked.
+    """
+    receipt = folded[-1].receipt
+    assert receipt is not None, "the boundary RunCost carries its receipt"
+    row = rows[-1]
+    new_spend = _spend_between(before, receipt)
+    cumulative = receipt.cumulative_cost_usd
+
+    # Charged: only this continuation's phase spend, on the row and in the meter.
+    assert float(row.cost_usd or 0.0) == pytest.approx(new_spend)
+    assert receipt.newly_billable_cost_usd == pytest.approx(new_spend)
+    assert billed == pytest.approx(new_spend, abs=5e-7)
+    # Displayed: the run's whole life, identically on the wire and on the row.
+    assert cumulative == pytest.approx(before.cumulative_cost_usd + new_spend)
+    assert sum(_phase_costs(receipt).values()) == pytest.approx(cumulative)
+    assert _final_run_cost(frames) == pytest.approx(cumulative)
+    assert _terminal_cost(frames) == pytest.approx(cumulative)
+    assert float((row.attribution or {})["costUsd"]) == pytest.approx(cumulative)
+    assert cumulative == pytest.approx(
+        receipt.already_billed_cost_usd + receipt.newly_billable_cost_usd
+    )
+    # A liar seed is orders of magnitude above anything this run can really spend.
+    assert cumulative < 0.01 < _LIAR_USD
+
+
+# --- AC-02 closure ------------------------------------------------------------
+#
+# The run below is three turns of ONE conversation and is the shape the register
+# names: a plan-approval pause, then an approve that fans out and parks on a
+# worker's calendar tool, then an approve that finishes it. The middle turn is the
+# load-bearing one — it is a plan-approval RESUME that is itself a billed pause, so
+# the last turn resumes from a boundary whose money was really charged.
+
+
+async def test_ac02_each_boundary_of_a_paused_run_is_billed_exactly_once(
+    fanout_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """AC-02 closure: cumulative is the run's total everywhere it is shown, and
+    each turn charges only the phase spend that happened inside it.
+
+    Turn 2 fans out over the approved plan, spends real tokens on the sibling that
+    finishes, and pauses — and is charged for that spend. Turn 3 resumes, prices
+    one more phase (the paused worker), and must charge ONLY that phase even though
+    the run total it displays now covers both turns.
+    """
+    await fanout_client.get("/api/bootstrap")
+    user_id = await _entitle_current_user(session_factory)
+    conv_id = await _new_conversation(fanout_client, "ac02-closure")
+
+    plan_call_id, _plan_frames = await _plan_pause(
+        fanout_client, conv_id=conv_id, nonce="01"
+    )
+
+    # Turn 2: approve the plan -> workers spawn -> one parks on its tool.
+    billed_before_fanout = await _billed_to_date(session_factory, user_id)
+    fanout = await _approve(
+        fanout_client, conv_id=conv_id, call_id=plan_call_id, nonce="02"
+    )
+    assert fanout[-1][1]["status"] == "awaiting_approval"
+    fanout_billed = await _billed_to_date(session_factory, user_id) - (
+        billed_before_fanout
+    )
+    pause_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    pause_receipt = _stored_receipt(pause_row)
+    assert pause_receipt.boundary == "pause"
+
+    # The pause boundary really was charged: this is not an injected premise.
+    pause_charge = float(pause_row.cost_usd or 0.0)
+    assert pause_charge > 0.0
+    assert pause_charge == pytest.approx(pause_receipt.newly_billable_cost_usd)
+    assert fanout_billed == pytest.approx(pause_charge, abs=5e-7)
+
+    # Turn 3: approve the worker's tool -> it finishes -> synthesis.
+    worker_call_id = _awaiting_call_id(fanout)
+    with _capturing_run_costs() as folded:
+        done = await _approve(
+            fanout_client, conv_id=conv_id, call_id=worker_call_id, nonce="03"
+        )
+    assert done[-1][1]["status"] == "done"
+    resume_billed = await _billed_to_date(session_factory, user_id) - (
+        billed_before_fanout + fanout_billed
+    )
+    done_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    assert done_row.status == "done"
+
+    terminal_receipt = folded[-1].receipt
+    assert terminal_receipt is not None, "the terminal RunCost carries its receipt"
+    assert terminal_receipt.boundary == "final"
+    cumulative = terminal_receipt.cumulative_cost_usd
+    persisted_attribution = done_row.attribution or {}
+
+    # (1) The run TOTAL is one number: wire, terminal, persisted row, phase sum.
+    assert _final_run_cost(done) == pytest.approx(cumulative)
+    assert _terminal_cost(done) == pytest.approx(cumulative)
+    assert float(persisted_attribution["costUsd"]) == pytest.approx(cumulative)
+    assert sum(_phase_costs(terminal_receipt).values()) == pytest.approx(cumulative)
+    # It really is a total across both turns, not just this turn's slice.
+    assert cumulative > pause_charge
+
+    # (2) The CHARGE is only the phase spend that happened in THIS turn.
+    new_spend = _spend_between(pause_receipt, terminal_receipt)
+    assert new_spend > 0.0, "the resumed worker priced a phase"
+    assert float(done_row.cost_usd or 0.0) == pytest.approx(new_spend)
+    assert resume_billed == pytest.approx(new_spend, abs=5e-7)
+
+    # (3) cumulative == already_billed + newly_billable, and already_billed is
+    #     what the pause turn actually charged.
+    assert terminal_receipt.already_billed_cost_usd == pytest.approx(pause_charge)
+    assert terminal_receipt.newly_billable_cost_usd == pytest.approx(new_spend)
+    assert cumulative == pytest.approx(
+        terminal_receipt.already_billed_cost_usd
+        + terminal_receipt.newly_billable_cost_usd
+    )
+    # Nothing was charged twice: the two turns together bill the run's total once.
+    assert pause_charge + float(done_row.cost_usd or 0.0) == pytest.approx(cumulative)
+
+
+# --- AC-02: a present receipt outranks every legacy cost owner ----------------
+#
+# Each resume path has its OWN pre-receipt record of what the pause turn spent:
+# the plan path reads the `plannerCostUsd` seed, single mode reads
+# `priorRunCostUsd`, and a worker resume reads the checkpoint's own cost fields.
+# All three used to be settled OVER the phases restored from the receipt, so any
+# disagreement between the two records landed in `newly_billable_cost_usd` and was
+# charged as if it had been spent in the continuation. Each test below makes one of
+# those records lie by four orders of magnitude and asserts the resumed turn still
+# charges only the phase spend that happened inside it.
+
+# Under the $1.00 run cap on purpose: a lie the cap would refuse outright gets
+# halted rather than spent, which would hide the mis-charge instead of exposing it.
+_LIAR_USD = 0.50
+
+
+async def test_ac02_plan_resume_ignores_a_conflicting_planner_scalar(
+    fanout_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Plan resume: `prior_planner_cost_usd` must not re-price the restored planner."""
+    await fanout_client.get("/api/bootstrap")
+    user_id = await _entitle_current_user(session_factory)
+    conv_id = await _new_conversation(fanout_client, "ac02-plan-liar")
+
+    plan_call_id, _ = await _plan_pause(fanout_client, conv_id=conv_id, nonce="11")
+    pause_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    pause_receipt = _stored_receipt(pause_row)
+    await _rewrite_server_state(
+        session_factory,
+        pause_row.id,
+        lambda state: put_run_ledger_in_server_state(
+            state,
+            planner_cost_usd=_LIAR_USD,
+            planner_usage=UsageUpdate(input_tokens=999_999, output_tokens=999_999),
+        ),
+    )
+
+    billed_before = await _billed_to_date(session_factory, user_id)
+    with _capturing_run_costs() as folded:
+        fanout = await _approve(
+            fanout_client, conv_id=conv_id, call_id=plan_call_id, nonce="12"
+        )
+    billed = await _billed_to_date(session_factory, user_id) - billed_before
+
+    _assert_charged_only_new_phase_spend(
+        folded,
+        rows=await _assistant_rows(session_factory, conv_id),
+        frames=fanout,
+        before=pause_receipt,
+        billed=billed,
+    )
+
+
+async def test_ac02_worker_resume_ignores_conflicting_checkpoint_costs(
+    fanout_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Worker resume: the checkpoint's planner / sibling / paused-worker costs must
+    not re-price the phases the receipt restored."""
+    await fanout_client.get("/api/bootstrap")
+    user_id = await _entitle_current_user(session_factory)
+    conv_id = await _new_conversation(fanout_client, "ac02-worker-liar")
+
+    plan_call_id, _ = await _plan_pause(fanout_client, conv_id=conv_id, nonce="21")
+    fanout = await _approve(
+        fanout_client, conv_id=conv_id, call_id=plan_call_id, nonce="22"
+    )
+    assert fanout[-1][1]["status"] == "awaiting_approval"
+    worker_call_id = _awaiting_call_id(fanout)
+    pause_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    pause_receipt = _stored_receipt(pause_row)
+    assert float(pause_row.cost_usd or 0.0) > 0.0
+
+    def _lie(state: dict[str, Any]) -> dict[str, Any]:
+        checkpoint = get_continuation_from_server_state(state, worker_call_id)
+        assert checkpoint is not None
+        return put_continuation_in_server_state(
+            state,
+            worker_call_id,
+            replace(
+                checkpoint,
+                planner_cost_usd=_LIAR_USD,
+                paused_worker_cost_usd=_LIAR_USD,
+                actual_cost_usd=_LIAR_USD,
+                completed_workers=tuple(
+                    replace(worker, cost_usd=_LIAR_USD)
+                    for worker in checkpoint.completed_workers
+                ),
+            ),
+        )
+
+    await _rewrite_server_state(session_factory, pause_row.id, _lie)
+
+    billed_before = await _billed_to_date(session_factory, user_id)
+    with _capturing_run_costs() as folded:
+        done = await _approve(
+            fanout_client, conv_id=conv_id, call_id=worker_call_id, nonce="23"
+        )
+    billed = await _billed_to_date(session_factory, user_id) - billed_before
+
+    assert done[-1][1]["status"] == "done"
+    _assert_charged_only_new_phase_spend(
+        folded,
+        rows=await _assistant_rows(session_factory, conv_id),
+        frames=done,
+        before=pause_receipt,
+        billed=billed,
+    )
+
+
+async def test_ac02_single_resume_ignores_a_conflicting_prior_run_scalar(
+    fanout_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Single-mode resume: the B5 `priorRunCostUsd` seed must not re-price the
+    primary phase the receipt restored.
+
+    Plan approval is irrelevant in single mode — the uncapped fixture is here so
+    the seed stays inside the effective cap and gets spent rather than refused.
+    """
+    await fanout_client.get("/api/bootstrap")
+    user_id = await _entitle_current_user(session_factory)
+    conv_id = await _new_conversation(fanout_client, "ac02-single-liar")
+
+    pause_frames = await _collect_sse(
+        fanout_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "ac020000-0000-0000-0000-000000000031",
+            "tierId": "smart",
+            "text": "TOOL_APPROVE: schedule a meeting",
+            "agenticMode": "single",
+        },
+    )
+    assert pause_frames[-1][1]["status"] == "awaiting_approval"
+    call_id = _awaiting_call_id(pause_frames)
+    pause_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    pause_receipt = _stored_receipt(pause_row)
+    await _rewrite_server_state(
+        session_factory,
+        pause_row.id,
+        lambda state: put_run_ledger_in_server_state(
+            state,
+            prior_run_cost_usd=_LIAR_USD,
+            prior_run_usage=UsageUpdate(input_tokens=999_999, output_tokens=999_999),
+        ),
+    )
+
+    billed_before = await _billed_to_date(session_factory, user_id)
+    with _capturing_run_costs() as folded:
+        done = await _collect_sse(
+            fanout_client,
+            f"/api/conversations/{conv_id}/messages",
+            {
+                "clientMessageId": "ac020000-0000-0000-0000-000000000032",
+                "tierId": "smart",
+                "text": "",
+                "agenticMode": "single",
+                "toolApproval": {"toolCallId": call_id, "decision": "approve"},
+            },
+        )
+    billed = await _billed_to_date(session_factory, user_id) - billed_before
+
+    assert done[-1][1]["status"] == "done"
+    _assert_charged_only_new_phase_spend(
+        folded,
+        rows=await _assistant_rows(session_factory, conv_id),
+        frames=done,
+        before=pause_receipt,
+        billed=billed,
+    )
+
+
+async def test_ac02_a_plan_resume_that_spends_nothing_new_charges_nothing(
+    plan_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The sharpest form of the defect: a resume with no priced phase at all.
+
+    `plan_client`'s user spend cap leaves an approved plan with no headroom to
+    spawn workers, so this continuation buys the user nothing. With a $0.37 planner
+    scalar sitting in the row it used to charge $0.37 anyway — the seed was settled
+    over the restored planner phase and the difference became newly billable.
+    """
+    await plan_client.get("/api/bootstrap")
+    user_id = await _entitle_current_user(session_factory)
+    conv_id = await _new_conversation(plan_client, "ac02-no-new-spend")
+
+    plan_call_id, _ = await _plan_pause(plan_client, conv_id=conv_id, nonce="41")
+    pause_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    pause_receipt = _stored_receipt(pause_row)
+    await _rewrite_server_state(
+        session_factory,
+        pause_row.id,
+        lambda state: put_run_ledger_in_server_state(
+            state,
+            planner_cost_usd=0.37,
+            planner_usage=UsageUpdate(input_tokens=37, output_tokens=3),
+        ),
+    )
+
+    billed_before = await _billed_to_date(session_factory, user_id)
+    with _capturing_run_costs() as folded:
+        resumed = await _approve(
+            plan_client, conv_id=conv_id, call_id=plan_call_id, nonce="42"
+        )
+    billed = await _billed_to_date(session_factory, user_id) - billed_before
+    assert resumed[-1][1]["status"] == "done"
+    assert not [
+        d for n, d in resumed if n == "subagent_done" and float(d.get("costUsd") or 0.0)
+    ], "no phase was priced in this continuation"
+
+    done_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    terminal_receipt = folded[-1].receipt
+    assert terminal_receipt is not None
+    # $0.37 was sitting in the row. It reaches neither the meter nor the invoice.
+    assert _spend_between(pause_receipt, terminal_receipt) == pytest.approx(0.0)
+    assert terminal_receipt.cumulative_cost_usd == pytest.approx(
+        pause_receipt.cumulative_cost_usd
+    )
+    assert terminal_receipt.newly_billable_cost_usd == pytest.approx(0.0)
+    assert float(done_row.cost_usd or 0.0) == pytest.approx(0.0)
+    assert billed == pytest.approx(0.0, abs=5e-7)
+    assert _final_run_cost(resumed) == pytest.approx(
+        pause_receipt.cumulative_cost_usd
+    )
+
+
+async def test_ac02_a_receipt_backed_resume_needs_no_scalar_seeds(
+    fanout_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The receipt is sufficient on its own: with every scalar seed stripped, the
+    resumed turn bills exactly what it bills with them present."""
+    await fanout_client.get("/api/bootstrap")
+    user_id = await _entitle_current_user(session_factory)
+    conv_id = await _new_conversation(fanout_client, "ac02-no-seeds")
+
+    plan_call_id, _ = await _plan_pause(fanout_client, conv_id=conv_id, nonce="51")
+    pause_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    pause_receipt = _stored_receipt(pause_row)
+    await _rewrite_server_state(session_factory, pause_row.id, _without_scalar_seeds)
+
+    billed_before = await _billed_to_date(session_factory, user_id)
+    with _capturing_run_costs() as folded:
+        fanout = await _approve(
+            fanout_client, conv_id=conv_id, call_id=plan_call_id, nonce="52"
+        )
+    billed = await _billed_to_date(session_factory, user_id) - billed_before
+
+    _assert_charged_only_new_phase_spend(
+        folded,
+        rows=await _assistant_rows(session_factory, conv_id),
+        frames=fanout,
+        before=pause_receipt,
+        billed=billed,
+    )
 
 
 async def test_ac02_plan_pause_writes_a_boundary_receipt_to_server_state(
@@ -605,251 +1217,83 @@ async def test_ac02_plan_pause_writes_a_boundary_receipt_to_server_state(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """The plan-approval pause is an orchestrator-owned persistable boundary, so
-    the paused row carries its typed receipt in server-only state.
+    the paused row carries its typed receipt in server-only state — and only there.
 
     Before AC-02 the pause row stored only scalar seeds, so a resume had to
     reconstruct what had already been billed from one phase's cost.
     """
     await plan_client.get("/api/bootstrap")
     await _entitle_current_user(session_factory)
-    create = await plan_client.post(
-        "/api/conversations", json={"title": "ac02-pause", "selectedTierId": "smart"}
-    )
-    conv_id = create.json()["id"]
-    _call_id, pause_frames = await _start_plan_approval_pause(
+    conv_id = await _new_conversation(plan_client, "ac02-pause")
+    pause_frames = await _collect_sse(
         plan_client,
-        conv_id=conv_id,
-        client_message_id="ac020000-0000-0000-0000-000000000001",
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "ac020000-0000-0000-0000-000000000031",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: causes of inflation | effects on housing",
+            "agenticMode": "deep_research",
+        },
     )
-    pause_attribution = pause_frames[-1][1]["attribution"]
-    assert isinstance(pause_attribution, dict)
+    assert pause_frames[-1][1]["status"] == "awaiting_approval"
 
-    async with session_factory() as session:
-        paused = (
-            await session.execute(
-                select(Message).where(
-                    Message.conversation_id == UUID(conv_id),
-                    Message.role == "assistant",
-                )
-            )
-        ).scalar_one()
-    state = paused.server_state or {}
-    assert SERVER_STATE_RUN_RECEIPT_KEY in state
-    receipt = decode_run_receipt(state[SERVER_STATE_RUN_RECEIPT_KEY])
-    assert receipt is not None
+    paused = (await _assistant_rows(session_factory, conv_id))[-1]
+    receipt = _stored_receipt(paused)
     assert receipt.boundary == "pause"
     # The receipt is server-only: it must never ride out on the pause tool input.
     plan_input = next(d["input"] for n, d in pause_frames if n == "tool_call")
     assert isinstance(plan_input, dict)
     assert SERVER_STATE_RUN_RECEIPT_KEY not in plan_input
     # And the row the user sees agrees with it on both numbers.
-    assert float(pause_attribution["costUsd"]) == pytest.approx(
-        receipt.cumulative_cost_usd
-    )
+    assert _terminal_cost(pause_frames) == pytest.approx(receipt.cumulative_cost_usd)
     assert float(paused.cost_usd or 0.0) == pytest.approx(
         receipt.newly_billable_cost_usd
     )
 
 
-async def test_ac02_plan_resume_bills_only_the_receipt_increment(
-    plan_client: AsyncClient,
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    """AC-02 closure: the pause receipt round-trips, the resumed terminal receipt
-    reaches the handler, and cumulative versus newly billable stay separate.
-
-    The pause row is stamped with a receipt that has already billed $0.10 of the
-    run, plus a planner seed recording $0.37 of planner spend. The resumed turn
-    must therefore report $0.37 everywhere a run TOTAL appears — the final
-    `run_cost`, the terminal attribution, the persisted attribution, and the sum
-    of the receipt's own phases — while charging only the $0.27 that has not been
-    charged yet to `Message.cost_usd` and the usage rollup.
-
-    This is the `$0.37` versus `$0.00` regression: `_agentic_sum_cost_usd` saw no
-    `SubagentDone` for the seeded planner, so the run total collapsed to zero on
-    the row and in the terminal while the wire still said `$0.37`.
-    """
-    await plan_client.get("/api/bootstrap")
-    user_id = await _entitle_current_user(session_factory)
-    create = await plan_client.post(
-        "/api/conversations", json={"title": "ac02-resume", "selectedTierId": "smart"}
-    )
-    conv_id = create.json()["id"]
-    plan_call_id, _pause_frames = await _start_plan_approval_pause(
-        plan_client,
-        conv_id=conv_id,
-        client_message_id="ac020000-0000-0000-0000-000000000011",
-    )
-
-    planner_usage = UsageUpdate(input_tokens=37, output_tokens=3)
-    banked = CostLedger()
-    banked.settle(
-        "planner",
-        role="orchestrator",
-        usage=UsageTotals(input_tokens=10),
-        cost_usd=ALREADY_BILLED_USD,
-    )
-    pause_receipt = banked.receipt(cap_usd=1.0, boundary="pause")
-    assert pause_receipt.cumulative_cost_usd == pytest.approx(ALREADY_BILLED_USD)
-
-    async with session_factory() as session:
-        paused = (
-            await session.execute(
-                select(Message).where(
-                    Message.conversation_id == UUID(conv_id),
-                    Message.role == "assistant",
-                )
-            )
-        ).scalar_one()
-        paused.server_state = put_run_ledger_in_server_state(
-            paused.server_state if isinstance(paused.server_state, dict) else {},
-            planner_cost_usd=PLANNER_SPEND_USD,
-            planner_usage=planner_usage,
-            run_receipt=pause_receipt,
-        )
-        await session.commit()
-        # Round-trip through the JSON column, not just through the writer.
-        stored = get_run_ledger_from_server_state(paused.server_state)
-        assert stored.run_receipt == pause_receipt
-
-    billed_before = await _billed_to_date(session_factory, user_id)
-    with _capturing_run_costs() as folded:
-        resume_frames = await _collect_sse(
-            plan_client,
-            f"/api/conversations/{conv_id}/messages",
-            {
-                "clientMessageId": "ac020000-0000-0000-0000-000000000012",
-                "tierId": "smart",
-                "text": "",
-                "agenticMode": "deep_research",
-                "toolApproval": {"toolCallId": plan_call_id, "decision": "approve"},
-            },
-        )
-    assert resume_frames[-1][1]["status"] == "done"
-    final_run_cost = [d for n, d in resume_frames if n == "run_cost"][-1]
-    terminal_attribution = resume_frames[-1][1]["attribution"]
-    assert isinstance(terminal_attribution, dict)
-
-    # The resumed terminal receipt reached the handler, and its own phase
-    # breakdown accounts for the whole cumulative total.
-    terminal_receipt = folded[-1].receipt
-    assert terminal_receipt is not None
-    assert terminal_receipt.boundary == "final"
-    phase_sum = sum(phase.cost_usd for phase in terminal_receipt.phases)
-    assert phase_sum == pytest.approx(terminal_receipt.cumulative_cost_usd)
-    # Precedence, stated as a fact about this turn rather than as a claim about
-    # the code: nothing the reconstruction reads can produce $0.37. No
-    # `SubagentDone` carried it (`_agentic_sum_cost_usd` sums those), so the
-    # total below can only have come from the receipt.
-    assert not any(
-        float(d.get("costUsd") or 0.0) > 0.0
-        for n, d in resume_frames
-        if n == "subagent_done"
-    )
-
-    async with session_factory() as session:
-        done_row = (
-            await session.execute(
-                select(Message)
-                .where(Message.conversation_id == UUID(conv_id))
-                .where(Message.status == "done")
-            )
-        ).scalar_one()
-    done_attribution = done_row.attribution or {}
-    billed_after = await _billed_to_date(session_factory, user_id)
-
-    # The run TOTAL is one number on the wire, in the terminal, on the row, and
-    # in the receipt's own per-phase breakdown.
-    assert float(final_run_cost["subtotalUsd"]) == pytest.approx(PLANNER_SPEND_USD)
-    assert float(terminal_attribution["costUsd"]) == pytest.approx(PLANNER_SPEND_USD)
-    assert float(done_attribution["costUsd"]) == pytest.approx(PLANNER_SPEND_USD)
-    assert phase_sum == pytest.approx(PLANNER_SPEND_USD)
-    # The CHARGE is only what the pause turn had not already billed.
-    newly_billable = PLANNER_SPEND_USD - ALREADY_BILLED_USD
-    assert float(done_row.cost_usd or 0.0) == pytest.approx(newly_billable)
-    assert billed_after - billed_before == pytest.approx(newly_billable)
-    # cumulative == already_billed + newly_billable, read off the receipt that
-    # produced those two rows rather than restated from the fixtures.
-    assert terminal_receipt.already_billed_cost_usd == pytest.approx(ALREADY_BILLED_USD)
-    assert terminal_receipt.cumulative_cost_usd == pytest.approx(
-        terminal_receipt.already_billed_cost_usd
-        + terminal_receipt.newly_billable_cost_usd
-    )
-    assert terminal_receipt.newly_billable_cost_usd == pytest.approx(newly_billable)
-
-
 async def test_ac02_only_boundary_run_costs_are_billing_authority(
-    plan_client: AsyncClient,
+    fanout_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Exactly the boundary `RunCost` carries a receipt; plan and progress ticks
     carry none, so a mid-run display number can never be billed.
 
-    The restored planner also re-enters the run flagged `already_billed`, which is
-    what keeps it inside the cumulative total but outside this turn's charge.
+    The phases restored from the pause receipt also re-enter the run flagged
+    `already_billed`, which is what keeps them inside the cumulative total and
+    outside this turn's charge.
     """
-    await plan_client.get("/api/bootstrap")
+    await fanout_client.get("/api/bootstrap")
     await _entitle_current_user(session_factory)
-    create = await plan_client.post(
-        "/api/conversations", json={"title": "ac02-phases", "selectedTierId": "smart"}
-    )
-    conv_id = create.json()["id"]
-    plan_call_id, _frames = await _start_plan_approval_pause(
-        plan_client,
-        conv_id=conv_id,
-        client_message_id="ac020000-0000-0000-0000-000000000021",
-    )
+    conv_id = await _new_conversation(fanout_client, "ac02-ticks")
 
-    banked = CostLedger()
-    banked.settle(
-        "planner",
-        role="orchestrator",
-        usage=UsageTotals(input_tokens=10),
-        cost_usd=ALREADY_BILLED_USD,
+    plan_call_id, _ = await _plan_pause(fanout_client, conv_id=conv_id, nonce="41")
+    fanout = await _approve(
+        fanout_client, conv_id=conv_id, call_id=plan_call_id, nonce="42"
     )
-    async with session_factory() as session:
-        paused = (
-            await session.execute(
-                select(Message).where(
-                    Message.conversation_id == UUID(conv_id),
-                    Message.role == "assistant",
-                )
-            )
-        ).scalar_one()
-        paused.server_state = put_run_ledger_in_server_state(
-            paused.server_state if isinstance(paused.server_state, dict) else {},
-            planner_cost_usd=PLANNER_SPEND_USD,
-            planner_usage=UsageUpdate(input_tokens=37, output_tokens=3),
-            run_receipt=banked.receipt(cap_usd=1.0, boundary="pause"),
-        )
-        await session.commit()
+    assert fanout[-1][1]["status"] == "awaiting_approval"
+    pause_receipt = _stored_receipt(
+        (await _assistant_rows(session_factory, conv_id))[-1]
+    )
 
     with _capturing_run_costs() as folded:
-        resume_frames = await _collect_sse(
-            plan_client,
-            f"/api/conversations/{conv_id}/messages",
-            {
-                "clientMessageId": "ac020000-0000-0000-0000-000000000022",
-                "tierId": "smart",
-                "text": "",
-                "agenticMode": "deep_research",
-                "toolApproval": {"toolCallId": plan_call_id, "decision": "approve"},
-            },
+        done = await _approve(
+            fanout_client,
+            conv_id=conv_id,
+            call_id=_awaiting_call_id(fanout),
+            nonce="43",
         )
+    assert done[-1][1]["status"] == "done"
 
-    assert resume_frames[-1][1]["status"] == "done"
+    assert folded, "the resumed turn folded at least one RunCost"
     terminal = folded[-1]
     assert terminal.phase == "final"
-    receipt = terminal.receipt
-    assert receipt is not None, "a terminal RunCost must carry its receipt"
-    assert receipt.boundary == "final"
-    assert receipt.cumulative_cost_usd == pytest.approx(PLANNER_SPEND_USD)
-    assert receipt.already_billed_cost_usd == pytest.approx(ALREADY_BILLED_USD)
-    assert receipt.newly_billable_cost_usd == pytest.approx(
-        PLANNER_SPEND_USD - ALREADY_BILLED_USD
-    )
-    # The planner phase re-enters the run marked as already-billed spend.
-    planner_phase = next(p for p in receipt.phases if p.phase_id == "planner")
-    assert planner_phase.already_billed is True
+    assert terminal.receipt is not None
     # Progress / plan display ticks are never billing authority.
     assert all(ev.receipt is None for ev in folded if ev.phase != "final")
+    # Every phase the pause boundary had already accounted for comes back billed.
+    restored = _phase_costs(pause_receipt)
+    for phase in terminal.receipt.phases:
+        if phase.phase_id in restored and phase.cost_usd == pytest.approx(
+            restored[phase.phase_id]
+        ):
+            assert phase.already_billed is True, phase.phase_id

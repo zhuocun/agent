@@ -399,6 +399,216 @@ async def test_verifier_flag_on_emits_judge_and_usage(
     assert done[0].get("outcome") == "succeeded"
     # Wire SubagentDone carries costUsd (+ optional attribution), not raw usage.
     assert (done[0].get("costUsd") or 0) > 0
+
+    # FE-2: the role must survive PERSISTENCE, not just the live SSE frames.
+    # Only the wire was pinned here, so the FE's missing `verifier` case (the
+    # row rendered the raw lowercase string) had no failing test on either side.
+    refetched = await agentic_client.get(f"/api/conversations/{conv_id}")
+    assert refetched.status_code == 200
+    persisted_parts = [
+        part
+        for message in refetched.json()["messages"]
+        for part in message["parts"]
+    ]
+    verifier_parts = [
+        part
+        for part in persisted_parts
+        if part.get("type") == "subagent" and part.get("role") == "verifier"
+    ]
+    assert len(verifier_parts) == 1
+    assert verifier_parts[0]["subagentId"] == "verifier"
+    assert verifier_parts[0]["outcome"] == "succeeded"
+
+    get_settings.cache_clear()
+
+
+_BUDGET_LABEL = "stay within the run budget"
+
+
+@pytest.mark.parametrize("verifier_on", [False, True])
+async def test_deep_research_answer_reaches_the_user_exactly_once(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    verifier_on: bool,
+) -> None:
+    """End-to-end: the synthesis body is delivered once, with honest flags.
+
+    Drives the whole deep-research turn over SSE with the verifier both off and
+    on, so the duplication defects (FL-07) and the mislabeled-budget-halt
+    defects (FL-06 / FL-19-b) are pinned on the real route rather than only on
+    the unit seam.
+    """
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true" if verifier_on else "false")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+    assert get_settings().agentic_verifier is verifier_on
+
+    conv_id = await _bootstrap_pro_convo(agentic_client, session_factory)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": f"b0000000-0000-0000-0000-00000000002{int(verifier_on)}",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: one | two",
+            "agenticMode": "deep_research",
+        },
+    )
+
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    answer = _answer(frames)
+    # No stretch of the synthesis is relayed twice, live...
+    assert answer.count("Synthesis of 2 findings") == 1
+    for finding in ("1. one:", "2. two:"):
+        assert answer.count(finding) == 1
+    if verifier_on:
+        assert answer.count("Verification: pass") == 1
+
+    # ...and the main-panel (aggregator-tagged) body is itself delivered once.
+    # Worker prose legitimately appears twice across all deltas — once on its own
+    # subagent stream, once quoted inside the synthesis — so scope the strict
+    # single-delivery claim to the surface FL-07 doubled.
+    aggregator_answer = "".join(
+        str(d.get("text", ""))
+        for n, d in frames
+        if n == "answer_delta" and d.get("subagentId") == "aggregator"
+    )
+    assert aggregator_answer.strip()
+    assert answer.count(aggregator_answer) == 1
+
+    # ...nor in the persisted transcript the reload path re-derives from.
+    refetched = await agentic_client.get(f"/api/conversations/{conv_id}")
+    assert refetched.status_code == 200
+    text_parts = [
+        str(part.get("text", ""))
+        for message in refetched.json()["messages"]
+        for part in message["parts"]
+        if part.get("type") == "text"
+    ]
+    persisted = "".join(text_parts)
+    assert persisted.count("Synthesis of 2 findings") == 1
+
+    # A healthy run is not a budget halt, and says so in both channels.
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs and run_costs[-1].get("budgetHalted") is False
+    assert _BUDGET_LABEL not in answer
+
+    get_settings.cache_clear()
+
+
+async def test_deterministic_synthesis_verifier_exception_caveats_the_draft(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sibling of FL-19-b on the deterministic-synthesis path.
+
+    `_run_deep_research`'s own verifier `except` shipped the draft verbatim, so
+    a judge crash read as an unverified-but-unmarked answer. It must now carry
+    the same incomplete caveat the streamed path composes — and, because a
+    judge crash is not a cap breach, must not claim a budget halt.
+    """
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+
+    async def _boom(**_kwargs: object) -> None:
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr("app.agentic.verifier.run_verifier", _boom)
+
+    conv_id = await _bootstrap_pro_convo(agentic_client, session_factory)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "b0000000-0000-0000-0000-000000000022",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: one | two",
+            "agenticMode": "deep_research",
+        },
+    )
+
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    answer = _answer(frames)
+    assert "Synthesis of 2 findings" in answer
+    assert "Verification: incomplete" in answer
+    assert "Verification: pass" not in answer
+    # The caveat is appended once, not folded over an already-caveated draft.
+    assert answer.count("Verification: incomplete") == 1
+    assert answer.count("Synthesis of 2 findings") == 1
+
+    done = [d for n, d in frames if n == "subagent_done" and d.get("role") == "verifier"]
+    assert done and done[-1].get("outcome") == "failed"
+
+    # A judge crash is a verification degrade, never a budget event.
+    run_costs = [d for n, d in frames if n == "run_cost"]
+    assert run_costs and run_costs[-1].get("budgetHalted") is False
+    assert _BUDGET_LABEL not in answer
+
+    # The caveat survives the reload path too.
+    refetched = await agentic_client.get(f"/api/conversations/{conv_id}")
+    assert refetched.status_code == 200
+    persisted = "".join(
+        str(part.get("text", ""))
+        for message in refetched.json()["messages"]
+        for part in message["parts"]
+        if part.get("type") == "text"
+    )
+    assert "Verification: incomplete" in persisted
+
+    get_settings.cache_clear()
+
+
+async def test_deterministic_synthesis_verifier_exception_raises_run_cost_partial(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deterministic path's crashed judge must reach the receipt too.
+
+    Its `except` also drops the result, so the final `run_cost` claimed a
+    complete run while the verifier span said failed — and the persisted run
+    summary inherited that from the same flag.
+    """
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+
+    async def _boom(**_kwargs: object) -> None:
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr("app.agentic.verifier.run_verifier", _boom)
+
+    conv_id = await _bootstrap_pro_convo(agentic_client, session_factory)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "b0000000-0000-0000-0000-000000000023",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: one | two",
+            "agenticMode": "deep_research",
+        },
+    )
+
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+
+    done = [d for n, d in frames if n == "subagent_done" and d.get("role") == "verifier"]
+    assert done and done[-1].get("outcome") == "failed"
+
+    finals = [d for n, d in frames if n == "run_cost" and d.get("phase") == "final"]
+    assert finals and finals[-1].get("partial") is True
+
     get_settings.cache_clear()
 
 
@@ -1187,6 +1397,214 @@ async def test_verifier_incomplete_n_does_not_claim_pass(
     get_settings.cache_clear()
 
 
+async def test_run_verifier_first_sample_refusal_is_a_budget_halt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-01 (COST-7): an unaffordable FIRST sample is a budget halt as well.
+
+    `budget_halted or bool(samples)` left the flag False when the refusal landed
+    before any sample completed, so `run_verifier` reported `partial` and handed
+    the draft back verbatim — while its own docstring tells callers to gate on
+    that flag. The second-sample refusal already behaved
+    (`test_verifier_incomplete_n_does_not_claim_pass`).
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import run_verifier
+    from app.providers.protocol import ProviderEvent
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "2")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            raise AssertionError("judge must not run when it cannot be afforded")
+
+        return _make
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft="DRAFT BODY",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        can_afford_next_sample=lambda _u, _spent: False,
+        cost_for_usage=lambda _u: 1.0,
+    )
+    assert result.outcome == "budget_halted"
+    assert result.budget_halted is True
+    assert result.samples == ()
+    assert result.answer.startswith("DRAFT BODY")
+    assert result.answer != "DRAFT BODY"
+    assert "[Verification: incomplete" in result.answer
+    assert "run budget" in result.answer
+    # Nothing was consumed, so nothing is billed.
+    assert result.cost_usd == 0.0
+    assert result.usage.input_tokens == 0
+    get_settings.cache_clear()
+
+
+async def test_first_sample_hard_failure_caveats_the_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-02-a (COST-8, verifier arm): a judge that raises on sample 1 says so.
+
+    The no-samples hard-failure return shipped `answer=draft`, so the user saw
+    no sign verification was attempted and failed — unlike its parse-failure
+    sibling. Extends `test_verifier_preserves_usage_when_later_sample_raises`,
+    which covers a LATER sample raising.
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import run_verifier
+    from app.providers.protocol import ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield UsageUpdate(input_tokens=9, output_tokens=4)
+                raise RuntimeError("judge sample 1 boom")
+
+            return _gen()
+
+        return _make
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft="good draft",
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        cost_for_usage=lambda u: 0.001 * (u.input_tokens + u.output_tokens),
+    )
+    assert result.outcome == "failed"
+    assert result.samples == ()
+    assert result.answer.startswith("good draft")
+    assert result.answer.rstrip().endswith("run budget / sample quota.]")
+    assert "Verification: pass" not in result.answer
+    # The judge tokens it did consume are still billed.
+    assert result.usage.input_tokens == 9
+    assert result.usage.output_tokens == 4
+    assert result.cost_usd == pytest.approx(0.013)
+    get_settings.cache_clear()
+
+
+_VERIFIER_FAILURE_MODES = (
+    "budget_refusal_first_sample",
+    "budget_cap_after_sample",
+    "hard_failure_first_sample",
+    "hard_failure_later_sample",
+    "unparseable_judge",
+    "draft_past_review_window",
+)
+
+
+@pytest.mark.parametrize("mode", _VERIFIER_FAILURE_MODES)
+async def test_run_verifier_failure_modes_never_return_a_bare_draft(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F3 DoD 3: no `run_verifier` return path hands back an uncaveated draft.
+
+    One case per non-`pass` outcome — `budget_halted`, `failed`, `unavailable`,
+    `partial` — so the honesty contract at
+    `docs/plans/02-agent-architecture.md:255` is executable and a future return
+    path cannot quietly reintroduce a bare draft. Consumed judge tokens are
+    billed in every mode.
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.verifier import _MAX_DRAFT_CHARS, run_verifier
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    two_sample_modes = {"budget_cap_after_sample", "hard_failure_later_sample"}
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    monkeypatch.setenv("AGENTIC_VERIFIER_N", "2" if mode in two_sample_modes else "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    calls = {"n": 0}
+    reply = (
+        "I am unable to comply with this request."
+        if mode == "unparseable_judge"
+        else '{"verdict":"pass","report":"none"}'
+    )
+    raises_on = {
+        "hard_failure_first_sample": 1,
+        "hard_failure_later_sample": 2,
+    }.get(mode)
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            calls["n"] += 1
+            index = calls["n"]
+
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                usage = UsageUpdate(input_tokens=20, output_tokens=5)
+                if index == raises_on:
+                    yield usage
+                    raise RuntimeError("judge boom")
+                yield AnswerDelta(text=reply)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    draft = "good draft"
+    if mode == "draft_past_review_window":
+        draft = draft + "x" * (_MAX_DRAFT_CHARS + 10)
+    gates: dict[str, object] = {}
+    if mode == "budget_refusal_first_sample":
+        gates["can_afford_next_sample"] = lambda _u, _spent: False
+    if mode == "budget_cap_after_sample":
+        gates["actual_within_cap"] = lambda u, _spent: u.input_tokens <= 10
+
+    result = await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text="req",
+        draft=draft,
+        outputs=[WorkerOutput(subagent_id="w0", sub_question="q", answer="a")],
+        scaffolded=True,
+        cost_for_usage=lambda u: 0.001 * (u.input_tokens + u.output_tokens),
+        **gates,  # type: ignore[arg-type]
+    )
+
+    expected_outcome = {
+        "budget_refusal_first_sample": "budget_halted",
+        "budget_cap_after_sample": "budget_halted",
+        "hard_failure_first_sample": "failed",
+        "hard_failure_later_sample": "failed",
+        "unparseable_judge": "unavailable",
+        "draft_past_review_window": "partial",
+    }[mode]
+    assert result.outcome == expected_outcome
+    assert result.answer.startswith("good draft")
+    assert result.answer != draft, "a non-pass outcome must never return a bare draft"
+    assert "[Verification:" in result.answer
+    assert "Verification: pass" not in result.answer
+    # Every sample that opened is billed for what it consumed.
+    assert result.usage.input_tokens == 20 * calls["n"]
+    assert result.cost_usd == pytest.approx(0.025 * calls["n"])
+    get_settings.cache_clear()
+
+
 async def test_verifier_skips_when_budget_blocks_first_sample(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1226,6 +1644,413 @@ async def test_verifier_skips_when_budget_blocks_first_sample(
     )
     assert result is None
     assert calls["n"] == 0
+    get_settings.cache_clear()
+
+
+def _agg_draft_stream(text: str = "model synthesis draft"):
+    """Aggregator factory that quiet-collects one draft delta and completes."""
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    def make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text=text)
+                usage = UsageUpdate(input_tokens=2, output_tokens=3)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    return make_stream_for
+
+
+def _unparseable_judge_stream():
+    """Judge factory whose output can never be parsed as a verdict."""
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    def judge_factory(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="I am unable to comply with this request.")
+                usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    return judge_factory
+
+
+async def test_verifier_unavailable_sets_run_cost_partial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-08: an `unavailable` verification is a partial answer, not text-only."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import AnswerDelta, RunCost
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=_unparseable_judge_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "Verification: unavailable" in answer
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    # An unparseable judge is not a budget event.
+    assert finals[-1].budget_halted is False
+    get_settings.cache_clear()
+
+
+async def test_verifier_unavailable_wire_outcome_has_one_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-20: the emitted outcome is the one `_apply_verifier_result` returned."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import (
+        _apply_verifier_result,
+        _finalize_synthesis_streamed,
+    )
+    from app.agentic.verifier import VerifyResult
+    from app.providers.protocol import SubagentDone
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    captured: list[VerifyResult] = []
+    real_apply = _apply_verifier_result
+
+    def _spy(draft: str, result: VerifyResult | None):
+        if result is not None:
+            captured.append(result)
+        return real_apply(draft, result)
+
+    monkeypatch.setattr(
+        "app.agentic.orchestrator._apply_verifier_result", _spy
+    )
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=_unparseable_judge_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    assert captured and captured[-1].outcome == "unavailable"
+    _, mapped_outcome, _ = real_apply("draft", captured[-1])
+    verifier_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "verifier"
+    ]
+    assert verifier_done
+    assert verifier_done[-1].outcome == mapped_outcome
+    get_settings.cache_clear()
+
+
+async def test_verifier_budget_skip_emits_caveat_and_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-18: an unfundable verifier caveats the answer and flags the receipt."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import AnswerDelta, RunCost, SubagentStarted
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def judge_factory(prompt: str, **_kwargs: object):
+        raise AssertionError("judge must not run when it cannot be funded")
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=judge_factory,
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            # Judge priced far above the cap: the phase gate refuses the sample.
+            verifier_cost_for_usage=lambda _u: 100.0,
+            cap_usd=1.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "Verification: incomplete" in answer
+    assert "run budget" in answer
+    # No verifier bracket opens on a skip (V-009: no Started without a Done).
+    assert not any(
+        isinstance(e, SubagentStarted) and e.role == "verifier" for e in events
+    )
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is True
+    get_settings.cache_clear()
+
+
+async def test_orchestrator_verifier_exception_caveats_the_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-19-b: a judge exception is disclosed, not swallowed into a bare draft."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import AnswerDelta, RunCost, SubagentDone
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    async def _boom(**_kwargs: object):
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr("app.agentic.verifier.run_verifier", _boom)
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert answer.startswith("model synthesis draft")
+    assert "Verification: incomplete" in answer
+    assert "Verification: pass" not in answer
+    verifier_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "verifier"
+    ]
+    assert verifier_done and verifier_done[-1].outcome == "failed"
+    # A judge crash is not a budget event.
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].budget_halted is False
+    get_settings.cache_clear()
+
+
+def _passing_judge_stream():
+    """Judge factory returning a well-formed passing verdict."""
+    from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+    from app.tools.agent_loop import ToolResult
+
+    def judge_factory(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text='{"verdict":"pass","report":"looks right"}')
+                usage = UsageUpdate(input_tokens=1, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    return judge_factory
+
+
+async def test_streamed_verifier_exception_raises_run_cost_partial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crashed judge drops the result, so `partial` must key off the outcome.
+
+    The exception handler sets the wire outcome to `failed` and the result to
+    `None`; a result-only degrade check reports a clean, verified-looking run
+    while the verifier span and the answer body both say the verification
+    failed.
+    """
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import RunCost, SubagentDone
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    async def _boom(**_kwargs: object):
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr("app.agentic.verifier.run_verifier", _boom)
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    verifier_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "verifier"
+    ]
+    assert verifier_done and verifier_done[-1].outcome == "failed"
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    get_settings.cache_clear()
+
+
+async def test_successful_verification_keeps_run_cost_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control: a clean pass stays `partial=False`."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import AnswerDelta, RunCost, SubagentDone
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "true")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=_passing_judge_stream(),
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "Verification: pass" in answer
+    verifier_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "verifier"
+    ]
+    assert verifier_done and verifier_done[-1].outcome == "succeeded"
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is False
+    assert finals[-1].budget_halted is False
+    get_settings.cache_clear()
+
+
+async def test_verifier_disabled_keeps_run_cost_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control: no verifier at all is not a degrade."""
+    from app.agentic.aggregate import WorkerOutput
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.providers.protocol import RunCost, SubagentDone, SubagentStarted
+
+    monkeypatch.setenv("AGENTIC_VERIFIER", "false")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    def judge_factory(prompt: str, **_kwargs: object):
+        raise AssertionError("judge must not run when the verifier is off")
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_agg_draft_stream(),
+            verifier_make_stream_for=judge_factory,
+            settings=settings,
+            user_text="req",
+            outputs=[
+                WorkerOutput(subagent_id="w0", sub_question="q", answer="finding"),
+            ],
+            planned=1,
+            worker_usages=[],
+            worker_total_cost=0.0,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=10.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    assert not any(
+        isinstance(e, SubagentStarted | SubagentDone) and e.role == "verifier"
+        for e in events
+    )
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is False
+    assert finals[-1].budget_halted is False
     get_settings.cache_clear()
 
 
@@ -1438,10 +2263,16 @@ async def test_planner_collect_uses_empty_allowlist_and_no_web_search(
     assert seen["web_search"] is False
 
 
-async def test_verify_after_preserves_awaiting_approval_if_emitted(
+async def test_aggregator_provider_pause_degrades_to_deterministic_synthesis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Defense: if quiet-collect still sees AwaitingApproval, yield and stop."""
+    """FL-24: an aggregator pause degrades through the tail, never ends the turn.
+
+    Replaces `test_verify_after_preserves_awaiting_approval_if_emitted`, which
+    pinned the ORCH-7 bug: relaying the pause and returning left the turn with no
+    terminal Complete, no RunCost and no aggregator SubagentDone, and shipped an
+    actionable card whose approval would re-run the whole paid fan-out.
+    """
     from collections.abc import Collection
 
     from app.agentic.aggregate import WorkerOutput
@@ -1449,8 +2280,11 @@ async def test_verify_after_preserves_awaiting_approval_if_emitted(
     from app.providers.protocol import (
         AnswerDelta,
         AwaitingApproval,
+        Complete,
         ProviderEvent,
+        RunCost,
         SubagentDone,
+        ToolCall,
     )
     from app.tools.agent_loop import ToolResult
 
@@ -1458,11 +2292,17 @@ async def test_verify_after_preserves_awaiting_approval_if_emitted(
     get_settings.cache_clear()
     settings = get_settings()
 
-    def make_stream_for(prompt: str, *, allowed_tools: Collection[str] | None = None, **_k: object):
+    def make_stream_for(
+        prompt: str, *, allowed_tools: Collection[str] | None = None, **_k: object
+    ):
         def _make(
-            _feedback: list[ToolResult], suppress_tools: bool = False
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
         ) -> AsyncIterator[ProviderEvent]:
             async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield ToolCall(id="agg-hitl", name="calendar_create_event", input={})
                 yield AwaitingApproval(tool_call_id="agg-hitl")
 
             return _gen()
@@ -1487,12 +2327,27 @@ async def test_verify_after_preserves_awaiting_approval_if_emitted(
             scaffolded=False,
         )
     ]
-    assert any(isinstance(e, AwaitingApproval) for e in events)
-    # Must not continue into verify / final aggregator Done after the pause.
-    assert not any(isinstance(e, SubagentDone) and e.role == "aggregator" for e in events)
-    assert not any(
-        isinstance(e, AnswerDelta) and "Verification:" in e.text for e in events
-    )
+    # No actionable card: the pause is swallowed and the pending call cancelled.
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    cancelled = [
+        e for e in events if isinstance(e, ToolResult) and e.status == "cancelled"
+    ]
+    assert cancelled and cancelled[0].tool_call_id.endswith("agg-hitl")
+    assert cancelled[0].approval_state == "rejected"
+    # The deterministic tail still runs: worker finding, receipt, run totals.
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "finding" in answer
+    agg_done = [
+        e for e in events if isinstance(e, SubagentDone) and e.role == "aggregator"
+    ]
+    assert agg_done and agg_done[-1].outcome == "failed"
+    assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    # FL-06: a provider pause is not a budget event.
+    assert finals[-1].budget_halted is False
+    # No verification claim on a draft the judge never saw.
+    assert "Verification: pass" not in answer
     get_settings.cache_clear()
 
 

@@ -46,6 +46,7 @@ import {
   postConversationStop,
   type ApiErrorEnvelope,
 } from "@/lib/apiClient";
+import { readSubagentOutcome } from "@/lib/subagent-outcome";
 import type {
   AgenticMode,
   AttachmentPart,
@@ -554,19 +555,6 @@ interface ParsedSubagentDone {
   substitutedDisplayLabel?: string;
 }
 
-function readSubagentOutcome(value: unknown): SubagentOutcome | undefined {
-  if (
-    value === "succeeded" ||
-    value === "failed" ||
-    value === "cancelled" ||
-    value === "budget_cancelled" ||
-    value === "stopped"
-  ) {
-    return value;
-  }
-  return undefined;
-}
-
 function parseSubagentDone(value: unknown): ParsedSubagentDone | null {
   if (!isRecord(value)) return null;
   const subagentId = readStringField(value, "subagentId");
@@ -847,6 +835,16 @@ export function useApiStream(
     ): void => {
       if (terminalEmittedRef.current) return;
       terminalEmittedRef.current = true;
+      // FE-4: a subagent still `running` at terminal never got a
+      // `subagent_done` — on stop/disconnect the orchestrator acloses before a
+      // worker's terminal can be yielded, and a HITL pause deliberately leaves
+      // in-flight workers non-terminal. The committed layout drops `status`, so
+      // without this pass the row would settle on the `succeeded` default and
+      // show a green check while the persisted row (which the BE repairs to
+      // `stopped`) shows the cancelled icon after reload.
+      const subagents = subagentsRef.current.map((s) =>
+        s.status === "running" ? { ...s, outcome: "stopped" as const } : s,
+      );
       onTerminalRef.current?.({
         status,
         reasoning: reasoningRef.current,
@@ -856,7 +854,7 @@ export function useApiStream(
         sources: sourcesRef.current,
         sourcesRequested: sourcesRequestedRef.current,
         toolParts: toolPartsRef.current,
-        subagents: subagentsRef.current,
+        subagents,
         runCost: runCostRef.current,
         agenticCoercion: agenticCoercionRef.current,
         serverUserMessageId: serverUserIdRef.current,
@@ -1259,6 +1257,9 @@ export function useApiStream(
               ...(parsed.label !== undefined ? { label: parsed.label } : {}),
               ...(parsed.role !== undefined ? { role: parsed.role } : {}),
               ...(parsed.costUsd !== undefined ? { costUsd: parsed.costUsd } : {}),
+              // Absent outcome mirrors the BE accumulator default
+              // (handler.py `_SubagentAccumulator.outcome`); an unrecognized
+              // one already degraded to `stopped` in `readSubagentOutcome`.
               ...(parsed.outcome !== undefined
                 ? { outcome: parsed.outcome }
                 : { outcome: "succeeded" as const }),

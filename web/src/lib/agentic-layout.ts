@@ -12,6 +12,7 @@ import {
 } from "@/lib/tool-groups";
 import type { RunCostState } from "@/lib/stream-client";
 import { stripToolMarkup } from "@/lib/strip-tool-markup";
+import { readSubagentOutcome } from "@/lib/subagent-outcome";
 import type { MessagePart } from "@/lib/types";
 
 const PLAN_APPROVAL_TOOL_NAME = "agentic_plan_approval";
@@ -69,11 +70,16 @@ export function deriveRunCostFromParts(
       }
     }
   }
+  // FE-3: this branch ASSEMBLED the number by summing per-subagent costs, so it
+  // is not a receipt and must never claim to be one. Default to the honest
+  // estimate labels (`Est.` prefix + the "estimated" aria clause) rather than
+  // `exact` / `final`, which would contradict the plan card's own "(estimate)"
+  // line on a paused run.
   return {
     subtotalUsd: typeof summary?.subtotalUsd === "number" ? summary.subtotalUsd : subtotalUsd,
     capUsd,
-    confidence: summary?.costConfidence ?? "exact",
-    phase: summary?.costPhase ?? "final",
+    confidence: summary?.costConfidence ?? "estimate",
+    phase: summary?.costPhase ?? "plan",
     ...(summary?.outcome === "partial" ? { partial: true } : {}),
     ...(summary?.budgetHalted ? { budgetHalted: true } : {}),
     ...(typeof summary?.failedWorkers === "number"
@@ -121,7 +127,9 @@ export function buildSubagentSectionsFromParts(
         label: part.label,
         role: part.role,
         status: "done",
-        outcome: part.outcome ?? "succeeded",
+        // FE-9: validate the persisted string before it lands in a closed
+        // union — a legacy or future value must not launder into a green check.
+        outcome: readSubagentOutcome(part.outcome) ?? "succeeded",
         ...(part.costUsd !== undefined ? { costUsd: part.costUsd } : {}),
         ...(part.attribution !== undefined ? { attribution: part.attribution } : {}),
         reasoning: "",

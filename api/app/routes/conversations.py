@@ -2052,6 +2052,9 @@ async def send_message(
             custom_instructions=effective_instructions,
             supports_attachments=binding.supports_attachments,
             supports_vision=binding.supports_vision,
+            # FL-28: mode conflicts are decided before the pseudo-tool settle, so
+            # a rejected resume cannot consume the approval.
+            requested_agentic_mode=body.agentic_mode,
         )
 
     # Claim the single active stream BEFORE mutating message history. The row is
@@ -2212,8 +2215,34 @@ async def send_message(
             binding = fast_binding
             router_substitution = "auto_downgrade"
     elif body.tier_id == "auto" and settings_for_routing.auto_routing_enabled:
-        routed = route_auto(provider_user_text, history)
-        routed_tier_id = routed.tier_id
+        # AR-006: `route_auto` is NOT stable across an agentic pause. Its
+        # `deep_history` signal flips once the thread reaches eight messages,
+        # and a paused run always grew by at least the pause turn, so
+        # re-deriving the route on resume can land on a tier OTHER than the one
+        # that served the paused turn — an `auto` run that pinned `fast` re-routes
+        # to `smart` and then trips the pin-mismatch guard below on every resume.
+        # The checkpoint pin IS the served tier, so for an `auto` resume the pin
+        # is the route source of truth and no fresh routing pass runs. The guard
+        # below then only fires for a client forcing a genuinely different
+        # concrete tier. No `auto_downgrade` is seeded off a pin: replaying a
+        # pinned route is not a routing decision, and the concrete `servedTierId`
+        # still discloses the tier on the wire.
+        pinned_resume_tier: str | None = None
+        if resume_seed is not None and resume_seed.agentic_continuation is not None:
+            pin_candidate = getattr(resume_seed.agentic_continuation, "tier_id", None)
+            if isinstance(pin_candidate, str) and pin_candidate:
+                pinned_resume_tier = pin_candidate
+        routed_tier_id: ModelTierId
+        routed_is_downgrade = False
+        if pinned_resume_tier is not None:
+            # An unknown pin resolves to no binding below, keeping the `auto`
+            # binding, and the pin-mismatch guard then rejects the resume.
+            routed_tier_id = cast(ModelTierId, pinned_resume_tier)
+        else:
+            routed = route_auto(provider_user_text, history)
+            routed_tier_id = routed.tier_id
+            routed_is_downgrade = routed.is_downgrade
+        pre_gate_tier_id = routed_tier_id
         if routed_tier_id == "pro" and not await _has_platform_pro_access(
             db,
             user=user,
@@ -2229,7 +2258,7 @@ async def send_message(
         # original `auto` binding rather than 500 if the registry ever diverges.
         if routed_binding is not None:
             binding = routed_binding
-        if routed.is_downgrade and routed_tier_id == routed.tier_id:
+        if routed_is_downgrade and routed_tier_id == pre_gate_tier_id:
             router_substitution = "auto_downgrade"
 
     # The `binding` is now FINALIZED (provider override + auto-route rebind both
@@ -2292,10 +2321,9 @@ async def send_message(
             binding=binding,
             image_count=0,
         )
-        compaction_cost = (
-            compaction_breakdown.subtotal_usd
-            + compaction_breakdown.session_surcharge_usd
-        )
+        # FL-34-b: `subtotal_usd` is the total; `session_surcharge_usd` only
+        # discloses the part of it attributable to the long-context band.
+        compaction_cost = compaction_breakdown.subtotal_usd
         if compaction_cost > 0:
             await usage_repo.increment_for_period(
                 db,
@@ -2456,10 +2484,15 @@ async def send_message(
     # mid-flight agentic resumes rather than half-running them.
     effective_agentic_mode = body.agentic_mode
     agentic_feature_on = settings.agentic_enabled and settings.tools_enabled
+    # FL-28 stamps `orchestration_mode` for single-mode agentic pauses too. Those
+    # carry no worker continuation and are neither plan nor clarify pauses, so
+    # without that arm they slipped past the guard and half-ran as a plain tool
+    # resume — the outcome this guard exists to prevent.
     if not agentic_feature_on and resume_seed is not None and (
         resume_seed.agentic_continuation is not None
         or resume_seed.is_plan
         or resume_seed.is_clarify
+        or resume_seed.orchestration_mode is not None
     ):
         raise AppError(
             ErrorEnvelope(
@@ -2475,51 +2508,91 @@ async def send_message(
         )
     if not agentic_feature_on:
         effective_agentic_mode = None
-    if resume_seed is not None and resume_seed.agentic_continuation is not None:
-        pinned_mode = getattr(
-            resume_seed.agentic_continuation, "orchestration_mode", None
-        )
-        if pinned_mode in ("single", "deep_research"):
-            effective_agentic_mode = pinned_mode
-        elif effective_agentic_mode is None:
+    # FL-28: pin the mode for EVERY resumable pause shape, not just the ones
+    # carrying a worker continuation. `_prepare_resume_tool` already rejected a
+    # conflicting explicit `agenticMode` (before settling), so this only applies
+    # the checkpoint's mode; a legacy pause with no stamp keeps the historical
+    # `deep_research` default for continuation-bearing seeds.
+    if agentic_feature_on and resume_seed is not None:
+        if resume_seed.orchestration_mode is not None:
+            effective_agentic_mode = resume_seed.orchestration_mode
+        elif resume_seed.agentic_continuation is not None and (
+            effective_agentic_mode is None
+        ):
             effective_agentic_mode = "deep_research"
-        pinned_tier = getattr(resume_seed.agentic_continuation, "tier_id", None)
+    if resume_seed is not None and resume_seed.agentic_continuation is not None:
+        # AR-006: the checkpoint pins the route that actually SERVED the paused
+        # turn — handler.py stamps the primary triple (`binding.tier.id` /
+        # `provider_id or binding.provider_id` / `binding.model_id`) or, when the
+        # worker paused on the fallback route, the fallback binding's triple. A
+        # pin is therefore a SERVED-route identity and must NEVER be compared
+        # against a REQUESTED one: an `auto` run pins the router-resolved
+        # concrete tier, and a post-fallback pause pins the fallback provider,
+        # so comparing either to `body.*` rejected exactly the resumes the pin
+        # exists to protect.
+        #
+        # The pin is one COHERENT triple, so it is validated as one. Matching
+        # tier/provider/model against three independent sets (primary plus
+        # fallback) accepted a pin whose fields came from DIFFERENT routes: a
+        # client forcing route B resumed a checkpoint pinned to route A merely
+        # because A had become B's fallback. Which route serves the resume is
+        # decided solely by `paused_worker_used_fallback` (orchestrator
+        # `_primary_make`), so that flag — not set membership — selects the one
+        # expected triple here. A pause flagged as fallback-served with NO
+        # fallback route on this turn validates against the primary, because
+        # `_primary_make` gets `fallback_make_stream_for=None` and runs the
+        # primary stream. The provider guard also accepts
+        # `expected_binding.provider_id` as a second name for that SAME binding
+        # — a checkpoint naming the binding's canonical provider rather than the
+        # selected backend id (the `fake` backend serves the canonical DeepSeek
+        # binding) still validates. handler.py stamps the selected backend id,
+        # which is never empty, so today this alias is defensive width rather
+        # than a reachable accept; either way it stays within one route.
+        #
+        # For an `auto` resume the served binding is bound FROM the pin (see the
+        # auto-routing block above), because re-running the router is not stable
+        # across a pause; the tier guard is then a genuine mismatch check for a
+        # client forcing a concrete tier.
+        pin = resume_seed.agentic_continuation
+        if getattr(pin, "paused_worker_used_fallback", False) and (
+            fallback_binding is not None
+        ):
+            expected_binding = fallback_binding
+            expected_provider_id = fallback_provider_id or fallback_binding.provider_id
+        else:
+            expected_binding = binding
+            expected_provider_id = selected_provider_id or binding.provider_id
+        expected_provider_ids = {expected_provider_id, expected_binding.provider_id}
+        pinned_tier = getattr(pin, "tier_id", None)
         if (
             isinstance(pinned_tier, str)
             and pinned_tier
-            and pinned_tier != body.tier_id
+            and pinned_tier != expected_binding.tier.id
         ):
             raise _invalid_input(
                 "INVALID_INPUT",
                 "Resume tierId does not match the paused run checkpoint.",
             )
-        pinned_provider = getattr(
-            resume_seed.agentic_continuation, "provider_id", None
-        )
+        pinned_provider = getattr(pin, "provider_id", None)
         if (
             isinstance(pinned_provider, str)
             and pinned_provider
-            and body.provider_id is not None
-            and pinned_provider != body.provider_id
+            and pinned_provider not in expected_provider_ids
         ):
             raise _invalid_input(
                 "INVALID_INPUT",
                 "Resume providerId does not match the paused run checkpoint.",
             )
-        # AR-006: enforce model identity when the checkpoint pinned one.
-        pinned_model = getattr(resume_seed.agentic_continuation, "model_id", None)
-        if isinstance(pinned_model, str) and pinned_model:
-            served_model = binding.model_id
-            # If the pause was on fallback, the pin is the fallback model —
-            # accept either the active binding or a configured fallback match.
-            fallback_model = (
-                fallback_binding.model_id if fallback_binding is not None else None
+        pinned_model = getattr(pin, "model_id", None)
+        if (
+            isinstance(pinned_model, str)
+            and pinned_model
+            and pinned_model != expected_binding.model_id
+        ):
+            raise _invalid_input(
+                "INVALID_INPUT",
+                "Resume model does not match the paused run checkpoint.",
             )
-            if pinned_model not in {served_model, fallback_model}:
-                raise _invalid_input(
-                    "INVALID_INPUT",
-                    "Resume model does not match the paused run checkpoint.",
-                )
     # Reserved for future coerce disclosure on `submitted` (FE-013). Deep Research
     # no longer coerces for entitlement; kept so stream_and_persist call sites
     # stay stable.
@@ -3215,6 +3288,39 @@ def _find_any_resumable_tool_call(
     return None
 
 
+def _pin_orchestration_mode(
+    *,
+    pinned_mode: Literal["single", "deep_research"] | None,
+    requested_mode: Literal["single", "deep_research"] | None,
+    reject_conflict: bool,
+) -> Literal["single", "deep_research"] | None:
+    """FL-28: a pause resumes onto the mode it paused in, never a client-chosen one.
+
+    Resolved BEFORE any settlement so a rejected resume cannot burn the approval:
+    honouring the request consumed the approval and then discarded the approved
+    work, destroying one conversation turn unrecoverably.
+
+    ``reject_conflict`` picks the arm. Worker-continuation and single-mode pauses
+    keep H-002's silent pin (the checkpoint wins, the run continues).
+    Plan-approval / clarify pauses refuse a conflicting explicit ``agenticMode``
+    with 400, matching the tier / provider / model rejections in
+    ``send_message`` — there is no coherent way to run an approved research plan
+    in single mode.
+    """
+    if pinned_mode is None:
+        return None
+    if (
+        reject_conflict
+        and requested_mode is not None
+        and requested_mode != pinned_mode
+    ):
+        raise _invalid_input(
+            "INVALID_INPUT",
+            "Resume agenticMode does not match the paused run checkpoint.",
+        )
+    return pinned_mode
+
+
 async def _prepare_resume_tool(
     *,
     db: AsyncSession,
@@ -3225,6 +3331,7 @@ async def _prepare_resume_tool(
     custom_instructions: str | None,
     supports_attachments: bool,
     supports_vision: bool,
+    requested_agentic_mode: Literal["single", "deep_research"] | None = None,
 ) -> tuple[UUID, list[ProviderChatMessage], str, list[AttachmentPayload], ResumeToolSeed]:
     """Resolve + RE-VALIDATE a human-in-the-loop tool approval, return the seed.
 
@@ -3279,6 +3386,15 @@ async def _prepare_resume_tool(
     if tool_name == PLAN_APPROVAL_TOOL_NAME and is_plan_approval_call_id(
         decision.tool_call_id
     ):
+        # B4: planner spend lives in server_state (sanitize strips tool-input).
+        plan_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
+        # FL-28: resolve the mode BEFORE the settle. A plan approval only exists
+        # in Deep Research, so a `single` resume is a conflict, not a coercion.
+        plan_mode = _pin_orchestration_mode(
+            pinned_mode=plan_ledger.orchestration_mode or "deep_research",
+            requested_mode=requested_agentic_mode,
+            reject_conflict=True,
+        )
         user_message_id = last_assistant.responds_to_message_id
         if user_message_id is None:
             last_user = await messages_repo.get_last_user_message(db, conversation_id)
@@ -3351,8 +3467,6 @@ async def _prepare_resume_tool(
             user_message_id=user_message_id,
         ):
             raise _approval_already_settled()
-        # B4: planner spend lives in server_state (sanitize strips tool-input).
-        plan_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
         seed = ResumeToolSeed(
             tool_call_id=decision.tool_call_id,
             name=tool_name,
@@ -3372,6 +3486,7 @@ async def _prepare_resume_tool(
             settled_result=outcome.result,
             prior_planner_cost_usd=plan_ledger.planner_cost_usd,
             prior_planner_usage=plan_ledger.planner_usage,
+            orchestration_mode=plan_mode,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3382,6 +3497,14 @@ async def _prepare_resume_tool(
     if tool_name == PLAN_CLARIFY_TOOL_NAME and is_plan_clarify_call_id(
         decision.tool_call_id
     ):
+        # FL-28: same pre-settle mode resolution as plan approval — clarify
+        # before plan only runs in Deep Research.
+        clarify_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
+        clarify_mode = _pin_orchestration_mode(
+            pinned_mode=clarify_ledger.orchestration_mode or "deep_research",
+            requested_mode=requested_agentic_mode,
+            reject_conflict=True,
+        )
         user_message_id = last_assistant.responds_to_message_id
         if user_message_id is None:
             last_user = await messages_repo.get_last_user_message(db, conversation_id)
@@ -3494,6 +3617,7 @@ async def _prepare_resume_tool(
             clarify_records=clarify_records_tuple,
             clarify_answers=clarify_answers,
             settled_result=outcome.result,
+            orchestration_mode=clarify_mode,
         )
         original_text = _text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
@@ -3516,6 +3640,21 @@ async def _prepare_resume_tool(
         server_state=last_assistant.server_state,
         tool_input=raw_input,
         tool_call_id=decision.tool_call_id,
+    )
+    # B5: single-mode pause ledger from server_state (not tool input).
+    tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
+    # FL-28: pin the paused run's mode before any settlement runs. Prefer the
+    # continuation's own pin; single-mode pauses carry no continuation, so they
+    # fall back to the server_state stamp.
+    tool_mode = _pin_orchestration_mode(
+        pinned_mode=(
+            getattr(agentic_continuation, "orchestration_mode", None)
+            if agentic_continuation is not None
+            else None
+        )
+        or tool_ledger.orchestration_mode,
+        requested_mode=requested_agentic_mode,
+        reject_conflict=False,
     )
     effective_input: dict[str, object] = cleaned_input
     if decision.edited_input is not None:
@@ -3593,6 +3732,8 @@ async def _prepare_resume_tool(
             )
         except ApprovalDecisionConflict as exc:
             raise _approval_decision_conflict(exc) from exc
+        except ApprovalSettlementIncomplete as exc:
+            raise _approval_settlement_incomplete(exc) from exc
         settled_result = outcome.result
         authoritative_decision = outcome.decision
         pending_settle = False
@@ -3606,14 +3747,19 @@ async def _prepare_resume_tool(
             raise _approval_already_settled()
     elif str(pending.get("approvalState") or "") != "pending":
         # Claimed-without-result: fail closed via settlement (no re-execute).
-        outcome = await claim_and_settle_approval_outcome(
-            db,
-            paused_message=last_assistant,
-            tool_call_id=decision.tool_call_id,
-            decision=decision.decision,
-            effective_input=dict(effective_input),
-            label=label_str,
-        )
+        try:
+            outcome = await claim_and_settle_approval_outcome(
+                db,
+                paused_message=last_assistant,
+                tool_call_id=decision.tool_call_id,
+                decision=decision.decision,
+                effective_input=dict(effective_input),
+                label=label_str,
+            )
+        except ApprovalDecisionConflict as exc:
+            raise _approval_decision_conflict(exc) from exc
+        except ApprovalSettlementIncomplete as exc:
+            raise _approval_settlement_incomplete(exc) from exc
         settled_result = outcome.result
         authoritative_decision = outcome.decision
         pending_settle = False
@@ -3625,8 +3771,6 @@ async def _prepare_resume_tool(
         ):
             raise _approval_already_settled()
 
-    # B5: single-mode pause ledger from server_state (not tool input).
-    tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
     seed = ResumeToolSeed(
         tool_call_id=decision.tool_call_id,
         name=tool_name,
@@ -3644,6 +3788,7 @@ async def _prepare_resume_tool(
         prior_run_usage=tool_ledger.prior_run_usage,
         prior_planner_cost_usd=tool_ledger.planner_cost_usd,
         prior_planner_usage=tool_ledger.planner_usage,
+        orchestration_mode=tool_mode,
     )
     # Worker continuation resumes with the original user text (the orchestrator
     # continues that subagent). Aggregator continuation is not supported (O-011).

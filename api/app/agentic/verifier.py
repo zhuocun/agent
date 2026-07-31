@@ -451,6 +451,9 @@ def _finalize_samples(
 ) -> VerifyResult:
     """Compose a VerifyResult from whatever samples completed."""
     if not samples:
+        # No sample completed, so nothing was verified: caveat unconditionally.
+        # Returning the draft verbatim on the non-budget arm shipped an
+        # unverified answer that read as verified (`02-agent-architecture.md:255`).
         return VerifyResult(
             answer=compose_verified_answer(
                 draft,
@@ -458,9 +461,7 @@ def _finalize_samples(
                 report="",
                 budget_halted=budget_halted,
                 incomplete_samples=True,
-            )
-            if budget_halted
-            else draft,
+            ),
             usage=total_usage,
             verdict="fail",
             samples=(),
@@ -617,7 +618,10 @@ async def run_verifier(
         if can_afford_next_sample is not None and not can_afford_next_sample(
             total_usage, total_cost
         ):
-            budget_halted = budget_halted or bool(samples)
+            # A refusal by the afford callback IS a budget halt, whether or not a
+            # sample already completed: the caller's `budget_halted` contract
+            # (see this function's docstring) must not depend on the sample index.
+            budget_halted = True
             break
         try:
             raw, usage = await _collect_judge_sample(
@@ -645,8 +649,15 @@ async def run_verifier(
                     sample_usages=tuple(sample_usages),
                     cost_usd=total_cost,
                 )
+            # No verification claim on a hard failure — but say so, exactly as
+            # the samples-present branch above and the parse-failure sibling do.
             return VerifyResult(
-                answer=draft,  # no verification claim on hard failure
+                answer=compose_verified_answer(
+                    draft,
+                    verdict="fail",
+                    report="",
+                    incomplete_samples=True,
+                ),
                 usage=total_usage,
                 verdict="fail",
                 samples=(),

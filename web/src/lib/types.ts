@@ -249,8 +249,6 @@ export interface AgenticRunSummaryPart {
   outcome: "complete" | "partial";
   budgetHalted?: boolean;
   failedWorkers?: number;
-  plannedWorkers?: number;
-  completedWorkers?: number;
   /** AR-012: persisted run-cost receipt for reload parity. */
   subtotalUsd?: number;
   capUsd?: number;

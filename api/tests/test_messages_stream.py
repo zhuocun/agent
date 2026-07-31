@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,10 +30,18 @@ from app.providers.protocol import (
     ProviderEvent,
     ReasoningDelta,
     ReasoningDone,
+    SubagentStarted,
     UsageUpdate,
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+@dataclass(frozen=True)
+class _Pause:
+    """Script marker: let real time pass mid-stream (FL-37 duration probe)."""
+
+    seconds: float
 
 
 # Helpers ----------------------------------------------------------------------
@@ -3428,3 +3437,133 @@ async def test_no_alternate_route_surfaces_error_as_today(
             await session.execute(select(Message).where(Message.role == "assistant"))
         ).scalars().all()
         assert assistants == []
+
+
+# FL-37: reasoning duration must survive a reload -------------------------------
+
+
+class _NoDisconnect:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _UnusedProvider:
+    def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise AssertionError("the stubbed orchestrator replaces the provider")
+
+
+@pytest.mark.parametrize("shape", ["non_agentic", "agentic", "no_reasoning"])
+async def test_reasoning_part_persists_duration(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    shape: str,
+) -> None:
+    """FL-37 (FE-7): "Thought for Ns" must not vanish on reload.
+
+    The FE measures the reasoning wall-clock in-session only, and neither
+    `ReasoningPart` construction site persisted it — so a reload of any reasoning
+    turn, agentic or not, silently dropped the duration line. The handler now
+    measures it off the same monotonic base as `first_answer_ms`, per subagent on
+    agentic turns, and a turn with no reasoning still persists no duration.
+    """
+    from app.config import get_settings
+    from app.providers.tiers import get_binding
+    from app.streaming import handler as handler_mod
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    events: list[ProviderEvent | _Pause] = []
+    if shape == "no_reasoning":
+        events = [AnswerDelta(text="straight to prose"), Complete(usage=UsageUpdate())]
+    elif shape == "non_agentic":
+        events = [
+            ReasoningDelta(text="weighing options"),
+            _Pause(0.02),
+            ReasoningDone(),
+            AnswerDelta(text="answer"),
+            Complete(usage=UsageUpdate()),
+        ]
+    else:
+        monkeypatch.setenv("TOOLS_ENABLED", "true")
+        monkeypatch.setenv("AGENTIC_ENABLED", "true")
+        get_settings.cache_clear()
+        events = [
+            SubagentStarted(subagent_id="primary", label="Answer", role="primary"),
+            ReasoningDelta(text="weighing options", subagent_id="primary"),
+            _Pause(0.02),
+            ReasoningDone(subagent_id="primary"),
+            AnswerDelta(text="answer", subagent_id="primary"),
+            UsageUpdate(input_tokens=4, output_tokens=2, subagent_id="primary"),
+            Complete(usage=UsageUpdate(input_tokens=4, output_tokens=2)),
+        ]
+
+    async def _drive() -> AsyncIterator[ProviderEvent]:
+        for ev in events:
+            if isinstance(ev, _Pause):
+                await asyncio.sleep(ev.seconds)
+                continue
+            yield ev
+
+    if shape == "agentic":
+        monkeypatch.setattr(
+            handler_mod, "run_orchestrator", lambda **_kwargs: _drive()
+        )
+        provider: object = _UnusedProvider()
+    else:
+
+        class _StubProvider:
+            def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+                return _drive()
+
+        provider = _StubProvider()
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="fl37", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    async with session_factory() as session:
+        async for _ev in handler_mod.stream_and_persist(
+            request=_NoDisconnect(),  # type: ignore[arg-type]
+            db=session,
+            provider=provider,  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="think about this",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            agentic_mode="single" if shape == "agentic" else None,
+        ):
+            pass
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+            )
+        ).scalar_one()
+    parts = [p for p in (row.parts or []) if isinstance(p, dict)]
+    reasoning = [p for p in parts if p.get("type") == "reasoning"]
+
+    if shape == "no_reasoning":
+        assert reasoning == []
+        return
+    assert len(reasoning) == 1
+    duration = reasoning[0].get("durationSec")
+    assert isinstance(duration, float)
+    assert duration >= 0.02

@@ -112,49 +112,92 @@ async def test_ar005_resume_worker_propagates_cancelled_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ar004_budget_halted_skips_awaiting_approval_branch() -> None:
-    """AR-004: when budget_halted and a pause exists, emit cancel not HITL."""
-    from app.providers.protocol import AwaitingApproval
+async def test_ar004_budget_cancelled_pause_emits_subagent_done() -> None:
+    """FL-10 (ORCH-3 / FE-4): the budget-cancelled pause must reach a terminal.
 
-    budget_halted = True
-    worker_pause: object | None = type(
-        "P",
-        (),
-        {
-            "tool_call_id": "w0:call",
-            "tool_name": "calendar_create_event",
-            "tool_label": "Create",
-            "subagent_id": "worker-0",
-            "sub_question": "alpha",
-            "partial_answer": "partial",
-            "source_ids": (),
-            "usage": UsageUpdate(input_tokens=1, output_tokens=1),
-        },
-    )()
+    Replaces an inline-stub predecessor that re-implemented the branch instead of
+    driving it. The cancelled `ToolResult` shipped alone, so the FE row spun and
+    the handler left the persisted outcome on its `succeeded` default; the
+    `usages` / `costs` writes also hung off the partial-answer guard, dropping a
+    blank-partial pause's tokens from the run ledger.
+    """
+    from app.agentic.orchestrator import run_orchestrator
+    from app.providers.protocol import (
+        AwaitingApproval,
+        RunCost,
+        SubagentDone,
+        ToolCall,
+    )
 
-    emitted: list[ProviderEvent] = []
-    if worker_pause is not None and budget_halted:
-        emitted.append(
-            ToolResult(
-                tool_call_id=worker_pause.tool_call_id,  # type: ignore[attr-defined]
-                name=worker_pause.tool_name,  # type: ignore[attr-defined]
-                label=worker_pause.tool_label,  # type: ignore[attr-defined]
-                status="cancelled",
-                approval_state="rejected",
-                summary="Cancelled: run budget already exhausted.",
-                error="budget",
-                subagent_id=worker_pause.subagent_id,  # type: ignore[attr-defined]
-            )
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _pause() -> AsyncIterator[ProviderEvent]:
+                yield UsageUpdate(input_tokens=10, output_tokens=0)
+                yield ToolCall(
+                    id="cal-0",
+                    name="calendar_create_event",
+                    label="Create calendar event",
+                    status="awaiting_approval",
+                    approval_state="pending",
+                    input={"title": "alpha"},
+                )
+                yield AwaitingApproval(tool_call_id="cal-0")
+
+            async def _breach() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="beta finding")
+                usage = UsageUpdate(input_tokens=5_000_000, output_tokens=0)
+                yield usage
+                yield Complete(usage=usage)
+
+            async def _agg() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="agg")
+                yield Complete(usage=UsageUpdate())
+
+            if "DEEP_RESEARCH_WORKER:0:" in prompt:
+                return _pause()
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                return _breach()
+            return _agg()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=_settings(AGENTIC_RUN_BUDGET_USD=1.0),
+            mode="deep_research",
+            user_text="DEEP_RESEARCH: alpha | beta",
+            cost_for_usage=lambda u: 1e-6 * float(u.input_tokens),
         )
-        worker_pause = None
+    ]
+    # The parked pause is cancelled, never exposed as an actionable card.
+    cancelled = [
+        e for e in events if isinstance(e, ToolResult) and e.status == "cancelled"
+    ]
+    assert cancelled and cancelled[0].subagent_id == "worker-0"
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
 
-    if worker_pause is not None:
-        emitted.append(AwaitingApproval(tool_call_id="should-not"))
+    done = next(
+        e
+        for e in events
+        if isinstance(e, SubagentDone) and e.subagent_id == "worker-0"
+    )
+    assert done.outcome == "budget_cancelled"
+    # Attributed even though its partial answer was blank (FL-10).
+    assert done.usage.input_tokens == 10
+    assert done.cost_usd > 0.0
 
-    assert len(emitted) == 1
-    assert isinstance(emitted[0], ToolResult)
-    assert emitted[0].status == "cancelled"
-    assert not any(isinstance(e, AwaitingApproval) for e in emitted)
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is True
+    # Still a labeled `done` — never an error or a hang (invariant 8).
+    assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)
 
 
 @pytest.mark.asyncio

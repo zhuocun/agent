@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Generated istanbul coverage output (pnpm coverage:report).
     "coverage/**",
+    // Generated Playwright HTML report (pnpm test:e2e). Both are gitignored;
+    // linting the bundled report makes `pnpm lint` fail after an e2e run.
+    "playwright-report/**",
   ]),
 ]);
 

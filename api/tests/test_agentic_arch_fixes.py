@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
@@ -24,6 +25,7 @@ from app.agentic.orchestrator import (
 from app.config import Settings
 from app.providers.protocol import (
     AnswerDelta,
+    AwaitingApproval,
     Complete,
     ProviderEvent,
     ReasoningDelta,
@@ -459,6 +461,257 @@ async def test_b8_aggregator_exception_falls_back_to_synthesize() -> None:
 
 
 @pytest.mark.asyncio
+async def test_c1_aggregator_partial_draft_is_not_re_emitted() -> None:
+    """FL-07 (C-1): live-relayed aggregator text must not be prepended again.
+
+    On the verifier-off path the partial draft was already streamed to the user;
+    prepending it to the deterministic fallback delivered the same prose twice,
+    live and on reload.
+    """
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="PARTIAL-DRAFT-MARKER")
+                raise RuntimeError("aggregator boom")
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_make_stream_for,
+            settings=_settings(PROVIDER_BACKEND="openai", OPENAI_API_KEY="sk"),
+            user_text="original",
+            outputs=[
+                WorkerOutput(subagent_id="worker-0", sub_question="q", answer="finding-a")
+            ],
+            planned=1,
+            worker_usages=[UsageUpdate(input_tokens=1)],
+            worker_total_cost=0.01,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=1.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    texts = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert texts.count("PARTIAL-DRAFT-MARKER") == 1
+    # FL-06: the degrade label names a synthesis failure, and the flag agrees.
+    assert "synthesis failed" in texts
+    assert "run budget" not in texts
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is False
+
+
+@pytest.mark.asyncio
+async def test_c1_quiet_collect_still_prepends_its_unrelayed_draft() -> None:
+    """FL-07 twin: quiet-collect relayed nothing, so it MUST still prepend."""
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="QUIET-DRAFT-MARKER")
+                raise RuntimeError("aggregator boom")
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in _finalize_synthesis_streamed(
+            make_stream_for=_make_stream_for,
+            settings=_settings(
+                PROVIDER_BACKEND="openai", OPENAI_API_KEY="sk", AGENTIC_VERIFIER=True
+            ),
+            user_text="original",
+            outputs=[
+                WorkerOutput(subagent_id="worker-0", sub_question="q", answer="finding-a")
+            ],
+            planned=1,
+            worker_usages=[UsageUpdate(input_tokens=1)],
+            worker_total_cost=0.01,
+            cost_for_usage=lambda _u: 0.0,
+            cap_usd=1.0,
+            budget_halted=False,
+            scaffolded=False,
+        )
+    ]
+    texts = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert texts.count("QUIET-DRAFT-MARKER") == 1
+
+
+@pytest.mark.asyncio
+async def test_b5_single_mode_over_cap_seed_halts_before_provider_call() -> None:
+    """FL-12 (ORCH-2): a seeded ledger already over cap must not open a stream.
+
+    Admission prices only the FRESH estimate, so a resume whose prior spend is
+    already over the cap used to overrun by a whole primary turn.
+    """
+    invocations = {"n": 0}
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        invocations["n"] += 1
+
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:  # pragma: no cover
+                # Would park an actionable approval card if the stream opened.
+                yield ToolCall(
+                    id="c1",
+                    name="calendar_create_event",
+                    status="running",
+                    input={"title": "x"},
+                )
+                yield Complete(usage=UsageUpdate(input_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=_settings(AGENTIC_RUN_BUDGET_USD=1.0),
+            mode="single",
+            user_text="hi",
+            cost_for_usage=lambda u: 1e-9 * float(u.input_tokens),
+            prior_run_cost_usd=5.0,
+            prior_run_usage=UsageUpdate(input_tokens=10, output_tokens=5),
+        )
+    ]
+    assert invocations["n"] == 0
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    texts = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "stay within the run budget" in texts
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].budget_halted is True
+    assert finals[-1].partial is True
+    # Still a labeled `done`, never an error or a hang.
+    done = next(e for e in events if isinstance(e, SubagentDone) and e.role == "primary")
+    assert done.outcome == "budget_cancelled"
+    assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)
+
+
+@pytest.mark.asyncio
+async def test_b5_single_mode_midflight_halt_parks_no_approval_card() -> None:
+    """FL-12: a mid-flight halt must not hand the user an actionable card.
+
+    The gated tool is requested only after the cap-breaching `UsageUpdate`, so
+    the halt has to win over the pause. The turn still ends as a labeled `done`
+    (invariant 8) rather than an error or a parked approval.
+    """
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield UsageUpdate(input_tokens=1_000_000)
+                yield ToolCall(
+                    id="c1",
+                    name="calendar_create_event",
+                    status="running",
+                    input={"title": "x"},
+                )
+
+            return _gen()
+
+        return _make
+
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=_settings(AGENTIC_RUN_BUDGET_USD=0.5),
+            mode="single",
+            user_text="hi",
+            cost_for_usage=lambda u: 1e-6 * float(u.input_tokens),
+        )
+    ]
+    assert not any(isinstance(e, AwaitingApproval) for e in events)
+    assert not any(
+        isinstance(e, ToolCall) and e.status == "awaiting_approval" for e in events
+    )
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].budget_halted is True
+    assert finals[-1].partial is True
+    texts = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "stay within the run budget" in texts
+    done = next(e for e in events if isinstance(e, SubagentDone) and e.role == "primary")
+    assert done.outcome == "budget_cancelled"
+
+
+def test_b12_cite_before_sources_never_yields_a_foreign_global_id() -> None:
+    """FL-16-a (FE-1 / GAP-7): an unmapped marker must not resolve elsewhere.
+
+    Returning the raw local ordinal let worker-1's `[1]` render as whichever
+    source happened to own global id 1 — silent factual misattribution.
+    """
+    from app.agentic.orchestrator import _SourceIdRemapper
+
+    remapper = _SourceIdRemapper()
+    worker0 = remapper.remap_sources(
+        Sources(
+            items=[
+                SourceItem(id=1, title="A1", url="https://a1.example"),
+                SourceItem(id=2, title="A2", url="https://a2.example"),
+            ]
+        ),
+        "worker-0",
+    )
+    worker0_ids = {str(item.id) for item in worker0.items}
+    assert worker0_ids == {"1", "2"}
+
+    # worker-1 cites before emitting its own Sources event.
+    rewritten = remapper.rewrite_answer_text("Also see [1].", "worker-1")
+    cited = re.findall(r"\[(\d+)\]", rewritten)
+    assert cited
+    assert not (set(cited) & worker0_ids)
+    # The allocation is stable and unique — a later Sources event agrees.
+    worker1 = remapper.remap_sources(
+        Sources(items=[SourceItem(id=1, title="B", url="https://b.example")]),
+        "worker-1",
+    )
+    assert str(worker1.items[0].id) == cited[0]
+    assert remapper.mapped_ids_for("worker-1", ["1"]) == (cited[0],)
+
+
+def test_b12_empty_map_marker_is_allocated_not_passed_through() -> None:
+    """FL-16-a: the `if not self._map` early return took the same unsafe path."""
+    from app.agentic.orchestrator import _SourceIdRemapper
+
+    remapper = _SourceIdRemapper()
+    remapper.seed_catalog(
+        [SourceItem(id=1, title="prior", url="https://prior.example")]
+    )
+    # No live mappings yet; a cited marker must still allocate past the seed.
+    assert remapper.rewrite_answer_text("See [1].", "worker-0") == "See [2]."
+
+
+@pytest.mark.asyncio
 async def test_b14_single_mode_emits_untagged_complete() -> None:
     """B14: single mode must emit untagged Complete for handler final_usage."""
 
@@ -777,4 +1030,203 @@ def test_b23_queue_put_never_drops_sentinels() -> None:
     assert any(
         isinstance(i, _WorkerSentinel) and i.subagent_id == "worker-b" for i in items
     )
+
+
+# FL-33-a: run-summary persist gate ------------------------------------------
+#
+# Both gates live in `stream_and_persist` closures, so the only way to observe
+# them is through the handler. The orchestrator is stubbed out so the test owns
+# the exact `RunCost` shape each arm emits.
+
+
+@pytest.fixture
+def handler_agentic_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Both flags on, so `stream_and_persist` takes the agentic path."""
+    from app.config import get_settings
+
+    monkeypatch.setenv("TOOLS_ENABLED", "true")
+    monkeypatch.setenv("AGENTIC_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+
+
+class _NeverDisconnected:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _DisconnectAfterFirstFrame:
+    """Disconnect once one frame has been yielded, so the rest is DRAINED.
+
+    The first poll returns False, which parks the consumer on an empty queue —
+    that hands control to the pump, which enqueues the whole (await-free) stub
+    stream in one go. The second poll then cancels the pump with the remaining
+    events already queued, which is exactly the `_apply_event` drain path.
+    """
+
+    def __init__(self) -> None:
+        self._polls = 0
+
+    async def is_disconnected(self) -> bool:
+        self._polls += 1
+        return self._polls > 1
+
+
+class _UnusedProvider:
+    def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise AssertionError("the stubbed orchestrator replaces the provider")
+
+
+async def _drive_stubbed_orchestrator(
+    session_factory: object,
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[ProviderEvent],
+    *,
+    request_stub: object,
+    hold_open: bool = False,
+    web_search: bool = False,
+) -> list[dict[str, object]]:
+    """Run one deep-research turn over `events`; return the persisted parts."""
+    import asyncio as _asyncio
+    from uuid import uuid4
+
+    from sqlalchemy import select
+
+    from app.db.models import Conversation, Message, User
+    from app.providers.tiers import get_binding
+    from app.streaming import handler as handler_mod
+
+    def _fake_run_orchestrator(**_kwargs: object) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            for ev in events:
+                yield ev
+            if hold_open:
+                # A drained turn must not end on its own: the disconnect, not
+                # exhaustion, has to be what ends it.
+                await _asyncio.sleep(30)
+
+        return _gen()
+
+    monkeypatch.setattr(handler_mod, "run_orchestrator", _fake_run_orchestrator)
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    async with session_factory() as session:  # type: ignore[operator]
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="fl33a", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    async with session_factory() as session:  # type: ignore[operator]
+        async for _ev in handler_mod.stream_and_persist(
+            request=request_stub,  # type: ignore[arg-type]
+            db=session,
+            provider=_UnusedProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="compare alpha | beta",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            web_search=web_search,
+            agentic_mode="deep_research",
+        ):
+            pass
+
+    async with session_factory() as session:  # type: ignore[operator]
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+            )
+        ).scalars().first()
+    assert row is not None
+    raw = row.parts if isinstance(row.parts, list) else []
+    return [p for p in raw if isinstance(p, dict)]
+
+
+_GATE_MATRIX = [
+    # phase, partial, expected persisted outcome
+    ("plan", True, "partial"),
+    ("plan", False, "partial"),
+    ("progress", True, "partial"),
+    ("progress", False, "partial"),
+    ("final", True, "partial"),
+    ("final", False, "complete"),
+]
+
+
+@pytest.mark.parametrize(("phase", "partial", "expected_outcome"), _GATE_MATRIX)
+@pytest.mark.parametrize("path", ["live", "drain"])
+async def test_run_summary_persist_gate_matrix(
+    handler_agentic_env: None,
+    session_factory: object,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    partial: bool,
+    expected_outcome: str,
+    path: str,
+) -> None:
+    """FL-33-a (FE-3 / GAP-3): every receipt persists, with the emitted labels.
+
+    The old gate (`phase == "final" or partial or budget_halted or
+    failed_worker_count > 0`) dropped a plan pause's and a worker-HITL pause's
+    receipt, so reload re-derived a meter that showed a different number AND
+    claimed exact/final while the plan card above it still said "(estimate)".
+    A non-final phase is never a finished run, so it persists as `partial`.
+
+    The identical table runs through the live gate and the `_apply_event` drain
+    twin, so the two can no longer drift (F2 DoD 6).
+    """
+    confidence = "exact" if phase == "final" else "estimate"
+    events: list[ProviderEvent] = [
+        SubagentStarted(subagent_id="worker-0", label="Alpha", role="worker"),
+        AnswerDelta(text="alpha finding", subagent_id="worker-0"),
+        UsageUpdate(input_tokens=6, output_tokens=3, subagent_id="worker-0"),
+        RunCost(
+            subtotal_usd=0.25,
+            cap_usd=10.0,
+            partial=partial,
+            phase=phase,  # type: ignore[arg-type]
+            confidence=confidence,  # type: ignore[arg-type]
+        ),
+    ]
+    request_stub: object
+    if path == "live":
+        events.append(Complete(usage=UsageUpdate(input_tokens=6, output_tokens=3)))
+        request_stub = _NeverDisconnected()
+    else:
+        request_stub = _DisconnectAfterFirstFrame()
+
+    parts = await _drive_stubbed_orchestrator(
+        session_factory,
+        monkeypatch,
+        events,
+        request_stub=request_stub,
+        hold_open=path == "drain",
+    )
+    summaries = [p for p in parts if p.get("type") == "agentic_run_summary"]
+    assert len(summaries) == 1, f"{path}/{phase}/{partial} persisted no receipt"
+    summary = summaries[0]
+    assert summary["outcome"] == expected_outcome
+    assert summary["subtotalUsd"] == pytest.approx(0.25)
+    # The honesty labels are the ones the backend emitted, never re-derived.
+    assert summary["costConfidence"] == confidence
+    assert summary["costPhase"] == phase
 

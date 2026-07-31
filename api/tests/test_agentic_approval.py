@@ -358,6 +358,68 @@ async def test_plan_approval_approve_resumes_fanout(
     assert assistant[1].status == "done"
 
 
+@pytest.mark.parametrize("requested_mode", [None, "single", "deep_research"])
+async def test_plan_resume_with_omitted_or_wrong_agentic_mode_is_pinned_or_rejected(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    requested_mode: str | None,
+) -> None:
+    """FL-28: a client-chosen `agenticMode` must never discard the approved work.
+
+    The mode pin used to be gated on a worker continuation, which a plan-approval
+    pause never has. So an omitted (or `single`) `agenticMode` on the resume
+    settled the approval and then ran a plain single turn — consuming the gate and
+    destroying the approved plan unrecoverably.
+
+    Omitted pins Deep Research and fans out; an explicitly conflicting `single`
+    is a 400 that leaves the approval UNCONSUMED, proven by a correct-mode retry
+    that still succeeds instead of 409-ing on an already-settled gate.
+    """
+    conv_id, pause_frames = await _pause_on_plan(agentic_client, session_factory)
+    plan_call_id = next(str(d["id"]) for n, d in pause_frames if n == "tool_call")
+
+    body: dict[str, object] = {
+        "clientMessageId": "a0000000-0000-0000-0000-0000000000f1",
+        "tierId": "smart",
+        "text": "",
+        "toolApproval": {"toolCallId": plan_call_id, "decision": "approve"},
+    }
+    if requested_mode is not None:
+        body["agenticMode"] = requested_mode
+
+    if requested_mode == "single":
+        response = await agentic_client.post(
+            f"/api/conversations/{conv_id}/messages", json=body, timeout=30.0
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_INPUT"
+        # The gate is still pending: nothing was settled by the rejected resume.
+        msgs = await _load_messages(session_factory, conv_id)
+        paused = next(m for m in msgs if m.status == "awaiting_approval")
+        plan_part = next(
+            p
+            for p in paused.parts
+            if isinstance(p, dict) and p.get("id") == plan_call_id
+        )
+        assert plan_part["approvalState"] == "pending"
+        assert not any(
+            isinstance(p, dict) and p.get("type") == "tool_result"
+            for p in paused.parts
+        )
+        # A correct-mode retry still runs the approved plan (not 409).
+        body["clientMessageId"] = "a0000000-0000-0000-0000-0000000000f2"
+        body["agenticMode"] = "deep_research"
+
+    frames = await _collect_sse(
+        agentic_client, f"/api/conversations/{conv_id}/messages", body
+    )
+    assert frames[-1][0] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+    started_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_started"}
+    assert {"worker-0", "worker-1", "aggregator"} <= started_ids
+    assert "Synthesis of 2 findings" in _answer(frames)
+
+
 # 3. Deny declines the run -----------------------------------------------------
 
 
@@ -530,3 +592,80 @@ async def test_plan_hash_mismatch_rejects_approve(
     )
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_INPUT"
+
+
+async def test_approved_resume_with_missing_plan_never_calls_the_model_planner() -> None:
+    """FL-25 (HITL-7): an approved resume must execute a plan, never invent one.
+
+    `plan_approved is True and approved_plan is not None` fell through to the
+    model planner when the persisted `input["plan"]` was not a list (a corrupted
+    or pre-BE-039 row), spending planner tokens on — and fanning out over — a plan
+    the user never saw, against the BE-039 contract.
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.agentic.orchestrator import run_orchestrator
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        ProviderEvent,
+        SubagentStarted,
+        ToolResult,
+        UsageUpdate,
+    )
+
+    prompts: list[str] = []
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        prompts.append(prompt)
+
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            async def _gen() -> _AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="finding")
+                usage = UsageUpdate(input_tokens=2, output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    # A non-fake backend is what makes the model planner reachable at all; the
+    # `scaffolded` short-circuit would otherwise mask the bug.
+    settings = Settings(  # type: ignore[call-arg]
+        provider_backend="openai",
+        openai_api_key="sk-test",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_PLAN_APPROVAL=True,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_MAX_WORKERS=2,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            mode="deep_research",
+            user_text="compare inflation causes and housing effects",
+            cost_for_usage=lambda u: 0.001 * float(u.input_tokens),
+            plan_approved=True,
+            approved_plan=None,
+        )
+    ]
+    assert not any("You are the planner" in p for p in prompts)
+    assert not any(
+        isinstance(e, SubagentStarted) and e.subagent_id == "planner" for e in events
+    )
+    # The turn still completes as a labeled `done` over a deterministic plan.
+    assert any(
+        isinstance(e, SubagentStarted) and e.subagent_id == "worker-0" for e in events
+    )
+    assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)

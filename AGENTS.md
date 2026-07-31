@@ -191,7 +191,19 @@ In order from cheapest to most invasive.
    boot surfaces a retry instead of an unbounded spinner.
 2. **Read Fly logs** — `flyctl logs -a olune-agent-server`. Structured JSON via
    structlog. Filter for the request id from the FE's response header
-   `X-Request-ID`.
+   `X-Request-ID`. Agentic degrades span log levels, so grep the **event-name
+   prefixes** `agentic.` and `agent_loop.` rather than filtering by level. Level
+   mapping: `agentic.aggregator_failed` and `agentic.verifier_failed` are
+   `exception`, `agentic.unexpected_worker_task_error` is `error`, and everything
+   else under those two prefixes is `warning`. An `agentic.` warning degrades the
+   **run** — a worker omitted, a fallback route served, a planner fallback — and
+   the turn still ends `done`, labeled partial where the run summary says so. The
+   two `agent_loop.` warnings are **per-call, not run-level**:
+   `provider_result_for_registry_tool_ignored` drops the provider's result while
+   the call still goes through the approval gate and the server executor, and
+   `unmatched_provider_pause_id` synthesizes a failed `tool_result` for that one
+   call instead of parking an unresumable pause. Either way the request itself
+   still looks healthy.
 3. **Reproduce against the FE proxy** — `curl -i
    https://olune-agent-zhuocuns-projects.vercel.app/api/bootstrap`. Confirms
    the `vercel.app` → `fly.dev` rewrite is live (look for `via: fly.io` in

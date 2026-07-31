@@ -200,7 +200,7 @@ def _fake_worker_cost() -> float:
     binding = get_binding("smart")
     usage = UsageUpdate(input_tokens=50, output_tokens=100, reasoning_tokens=10)
     breakdown = compute_cost_breakdown(usage=usage, binding=binding)
-    return breakdown.subtotal_usd + breakdown.session_surcharge_usd
+    return breakdown.subtotal_usd
 
 
 # Unit-level budget math -------------------------------------------------------
@@ -335,7 +335,7 @@ def test_estimate_cost_defaults_unchanged() -> None:
     )
     per_subagent = budget._expected_subagent_usage(settings)
     breakdown = compute_cost_breakdown(usage=per_subagent, binding=binding)
-    base = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+    base = breakdown.subtotal_usd
     # BE-016: planner + workers + aggregator (verifier off adds 0).
     subagents = 1 + 2 + 1
     expected = (
@@ -345,6 +345,54 @@ def test_estimate_cost_defaults_unchanged() -> None:
         * settings.agentic_fanout_token_multiplier
     )
     assert estimate == pytest.approx(expected)
+
+
+def test_run_estimators_charge_subtotal_only_on_a_surcharge_binding() -> None:
+    """FL-03-a (COST-13): neither estimator re-adds the long-context surcharge.
+
+    `subtotal_usd` already contains it, so `subtotal + surcharge` inflated both
+    reservations — the pre-spawn admit and the AR-007 resume residual — by the
+    surcharge on the day a long-context binding is wired.
+    """
+    from dataclasses import replace
+
+    from app.providers.tiers import SessionMultiplierPricing
+
+    settings = get_settings()
+    smart = get_binding("smart")
+    # A threshold the expected per-subagent usage actually crosses, so the
+    # surcharge is non-zero and the double-count would be visible.
+    per_subagent = budget._expected_subagent_usage(settings)
+    binding = replace(
+        smart,
+        long_context_flat=False,
+        session_multiplier=SessionMultiplierPricing(
+            threshold_tokens=max(1, per_subagent.input_tokens // 2),
+            input=2.0,
+            output=1.5,
+        ),
+    )
+    breakdown = compute_cost_breakdown(usage=per_subagent, binding=binding)
+    assert breakdown.session_surcharge_usd > 0.0
+    doubled = breakdown.subtotal_usd + breakdown.session_surcharge_usd
+
+    multipliers = (
+        settings.agentic_reasoning_token_multiplier
+        * settings.agentic_fanout_token_multiplier
+    )
+    run_estimate = budget.estimate_run_cost(
+        sub_question_count=2, binding=binding, settings=settings
+    )
+    # planner + 2 workers + aggregator (verifier off adds 0).
+    assert run_estimate == pytest.approx(breakdown.subtotal_usd * 4 * multipliers)
+    assert run_estimate < doubled * 4 * multipliers
+
+    residual = budget.estimate_residual_run_cost(
+        remaining_workers=1, binding=binding, settings=settings
+    )
+    # 1 remaining worker + aggregator.
+    assert residual == pytest.approx(breakdown.subtotal_usd * 2 * multipliers)
+    assert residual < doubled * 2 * multipliers
 
 
 def test_subagent_count_reserves_verifier_judge_samples(
@@ -376,3 +424,282 @@ def test_assert_prod_safe_rejects_nonpositive_multiplier(monkeypatch: pytest.Mon
     with pytest.raises(RuntimeError, match="AGENTIC_REASONING_TOKEN_MULTIPLIER"):
         get_settings().assert_prod_safe()
     get_settings.cache_clear()
+
+
+def test_phase_gates_use_the_same_composition() -> None:
+    """FL-17 (COST-4): one composition for both single-phase funding gates.
+
+    The verifier gate multiplied in the FAN-OUT multiplier as well, making it
+    ~15x stricter than the aggregator gate for an identical one-shot call. The
+    fan-out multiplier models whole-run burn and stays in `estimate_run_cost`.
+    """
+    from app.agentic.orchestrator import _verifier_phase_estimate
+
+    monkey_settings = get_settings()
+    binding = get_binding("smart")
+
+    def _price(usage: UsageUpdate) -> float:
+        breakdown = compute_cost_breakdown(usage=usage, binding=binding)
+        return breakdown.subtotal_usd
+
+    expected = budget._expected_subagent_usage(monkey_settings)
+    aggregator_estimate = (
+        _price(expected) * monkey_settings.agentic_reasoning_token_multiplier
+    )
+    # The verifier gate is only reachable with the flag on; the composition is
+    # what this pins, so read it off a verifier-enabled copy of the settings.
+    verifier_settings = monkey_settings.model_copy(update={"agentic_verifier": True})
+    assert _verifier_phase_estimate(
+        settings=verifier_settings, cost_for_usage=_price, sample_count=1
+    ) == pytest.approx(aggregator_estimate)
+    # N samples scale linearly off that same single-phase base.
+    assert _verifier_phase_estimate(
+        settings=verifier_settings, cost_for_usage=_price, sample_count=3
+    ) == pytest.approx(aggregator_estimate * 3)
+    # Whole-run estimation still keeps BOTH multipliers (guards the pin above).
+    assert monkey_settings.agentic_fanout_token_multiplier > 1.0
+    run_estimate = budget.estimate_run_cost(
+        sub_question_count=2, binding=binding, settings=monkey_settings
+    )
+    assert run_estimate == pytest.approx(
+        _price(expected)
+        * (1 + 2 + 1)
+        * monkey_settings.agentic_reasoning_token_multiplier
+        * monkey_settings.agentic_fanout_token_multiplier
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_mode_budget_halt_with_no_prose_is_labeled() -> None:
+    """FL-13 (ORCH-4): a halt before any prose is a budget stop, not a blank turn.
+
+    `main_answer_is_empty` was tested first and short-circuited the budget label,
+    so the delivered text said the model "didn't produce a written reply" while
+    the wire flag claimed a budget halt.
+    """
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.agentic.orchestrator import run_orchestrator
+    from app.config import Settings
+    from app.providers.protocol import (
+        ProviderEvent,
+        ReasoningDelta,
+        RunCost,
+        ToolResult,
+    )
+    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            async def _gen() -> _AsyncIterator[ProviderEvent]:
+                yield ReasoningDelta(text="thinking hard")
+                yield UsageUpdate(input_tokens=1_000_000, output_tokens=0)
+
+            return _gen()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_PLAN_APPROVAL=False,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_RUN_BUDGET_USD=0.5,
+    )
+    events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            mode="single",
+            user_text="hi",
+            cost_for_usage=lambda u: 1e-6 * float(u.input_tokens),
+        )
+    ]
+    answer = "".join(
+        e.text for e in events if type(e).__name__ == "AnswerDelta"
+    )
+    assert "stay within the run budget" in answer
+    # The no-written-reply copy may still prefix it — it must not REPLACE it.
+    assert answer.startswith(EMPTY_REPLY_FALLBACK)
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is True
+
+
+@pytest.mark.asyncio
+async def test_deep_research_admit_reject_reports_budget_halted(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-21 (COST-6): the admit-reject was the only refusal reporting a clean run.
+
+    Every other budget refusal flags `budget_halted`; this one shipped default
+    flags, so the receipt and the persisted run summary read as a complete answer.
+    """
+    from app.db.models import Message
+
+    monkeypatch.setenv("AGENTIC_RUN_BUDGET_USD", "0.000001")
+    get_settings.cache_clear()
+
+    await agentic_client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    await _grant_pro(session_factory, user_id=user_id)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "50000000-0000-0000-0000-000000000003",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: topic a | topic b",
+            "agenticMode": "deep_research",
+        },
+    )
+    assert frames[-1][1]["status"] == "done"
+    started = [d for n, d in frames if n == "subagent_started"]
+    assert [d for d in started if d.get("role") == "worker"] == []
+
+    finals = [
+        d for n, d in frames if n == "run_cost" and d.get("phase") == "final"
+    ]
+    assert finals, "admit-reject must still emit a final receipt"
+    assert finals[-1]["partial"] is True
+    assert finals[-1]["budgetHalted"] is True
+
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(Message).where(Message.conversation_id == UUID(str(conv_id)))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assistant = next(m for m in rows if m.role == "assistant")
+    summary = next(
+        p
+        for p in (assistant.parts or [])
+        if isinstance(p, dict) and p.get("type") == "agentic_run_summary"
+    )
+    assert summary["outcome"] == "partial"
+    assert summary["budgetHalted"] is True
+
+
+class _NoDisconnect:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _UnusedProvider:
+    def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise AssertionError("the stubbed orchestrator replaces the provider")
+
+
+async def test_agentic_phase_pricers_charge_subtotal_only(
+    agentic_env: None,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FL-34-b (COST-13): the three agentic phase pricers charge the subtotal.
+
+    `subtotal_usd` already contains the long-context surcharge (FL-03-a), so
+    `subtotal + session_surcharge` charged it twice — inflating every worker,
+    judge and fallback receipt, the run-cap ledger they feed, and the persisted
+    turn cost, the day a long-context binding is wired.
+
+    The pricers are `stream_and_persist` closures handed to the orchestrator, so
+    the stub captures them off the call and prices a threshold-crossing usage
+    directly.
+    """
+    from dataclasses import replace
+    from uuid import uuid4
+
+    from app.providers.protocol import Complete, ProviderEvent
+    from app.providers.tiers import SessionMultiplierPricing
+    from app.streaming import handler as handler_mod
+
+    smart = get_binding("smart")
+    assert smart is not None
+    # A live long-context shape: the usage below crosses the threshold, so the
+    # surcharge is non-zero and a double-count is measurable.
+    usage = UsageUpdate(input_tokens=300_000, output_tokens=1_000)
+    binding = replace(
+        smart,
+        long_context_flat=False,
+        session_multiplier=SessionMultiplierPricing(
+            threshold_tokens=200_000, input=2.0, output=1.5
+        ),
+    )
+    fallback = replace(binding, session_multiplier=SessionMultiplierPricing(
+        threshold_tokens=200_000, input=3.0, output=2.0
+    ))
+    expected = compute_cost_breakdown(usage=usage, binding=binding, image_count=0)
+    expected_fallback = compute_cost_breakdown(
+        usage=usage, binding=fallback, image_count=0
+    )
+    assert expected.session_surcharge_usd > 0.0
+    assert expected_fallback.session_surcharge_usd > 0.0
+
+    captured: dict[str, object] = {}
+
+    def _fake_run_orchestrator(**kwargs: object) -> AsyncIterator[ProviderEvent]:
+        captured.update(kwargs)
+
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            yield Complete(usage=UsageUpdate())
+
+        return _gen()
+
+    monkeypatch.setattr(handler_mod, "run_orchestrator", _fake_run_orchestrator)
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="fl34b", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    async with session_factory() as session:
+        async for _ev in handler_mod.stream_and_persist(
+            request=_NoDisconnect(),  # type: ignore[arg-type]
+            db=session,
+            provider=_UnusedProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="compare alpha | beta",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            fallback_binding=fallback,
+            agentic_mode="deep_research",
+        ):
+            pass
+
+    for key, want in (
+        ("cost_for_usage", expected),
+        ("verifier_cost_for_usage", expected),
+        ("fallback_cost_for_usage", expected_fallback),
+    ):
+        pricer = captured[key]
+        assert callable(pricer)
+        charged = pricer(usage)
+        assert charged == pytest.approx(want.subtotal_usd), key
+        assert charged < want.subtotal_usd + want.session_surcharge_usd, key

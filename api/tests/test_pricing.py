@@ -13,6 +13,8 @@ Two required tests (per M1 spec):
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -447,6 +449,74 @@ def test_tiered_pricing_fields_default_to_flat_billing() -> None:
     assert bd.long_context.flat is True
 
 
+@pytest.mark.parametrize(
+    ("shape", "expected_charge"),
+    [
+        ("session_reprice", 0.084420),
+        ("overage_band", 0.056280),
+    ],
+)
+def test_subtotal_usd_is_the_total_for_both_surcharge_shapes(
+    shape: str, expected_charge: float
+) -> None:
+    """FL-03-a (COST-13): `subtotal_usd` already contains the long-context
+    surcharge, so a charge is `subtotal_usd` alone.
+
+    `session_surcharge_usd` discloses which slice of the subtotal the
+    long-context layer added. Adding it back over-charged by +49.9% (session
+    reprice) / +24.9% (overage band) on this 300K-token `smart` probe —
+    $0.126560 / $0.070280 instead of $0.084420 / $0.056280.
+    """
+    from dataclasses import replace
+
+    from app.providers.tiers import PricingBand, SessionMultiplierPricing
+
+    smart = get_binding("smart")
+    assert smart is not None
+    assert (smart.list_price_in_per_m, smart.list_price_out_per_m) == (0.14, 0.28)
+    usage = UsageUpdate(input_tokens=300_000, output_tokens=1_000)
+    baseline = (300_000 * 0.14 + 1_000 * 0.28) / 1_000_000
+    assert baseline == pytest.approx(0.042280, rel=1e-9)
+
+    if shape == "session_reprice":
+        binding = replace(
+            smart,
+            long_context_flat=False,
+            session_multiplier=SessionMultiplierPricing(
+                threshold_tokens=200_000, input=2.0, output=1.5
+            ),
+        )
+    else:
+        binding = replace(
+            smart,
+            long_context_flat=False,
+            pricing_tiers=(
+                PricingBand(
+                    threshold_tokens=200_000,
+                    price_in_per_m=0.28,
+                    price_out_per_m=0.56,
+                    label="long",
+                ),
+            ),
+        )
+
+    bd = compute_cost_breakdown(usage=usage, binding=binding)
+    assert bd.subtotal_usd == pytest.approx(expected_charge, rel=1e-9)
+    assert bd.session_surcharge_usd == pytest.approx(expected_charge - baseline, rel=1e-9)
+    assert bd.session_surcharge_usd > 0.0  # the shape is live, not inert
+
+    # The persisted, user-facing figure is the subtotal — never subtotal+surcharge.
+    attr = build_attribution(
+        requested_tier_id="smart",
+        binding=binding,
+        breakdown=bd,
+        cost_confidence="exact",
+    )
+    assert attr.cost_usd == pytest.approx(bd.subtotal_usd, rel=1e-9)
+    assert attr.cost_usd == pytest.approx(expected_charge, rel=1e-9)
+    assert attr.cost_usd < bd.subtotal_usd + bd.session_surcharge_usd
+
+
 def test_build_attribution_unrouted_auto_falls_back_to_tier_label() -> None:
     """The raw `auto` binding (unrouted safety-net) carries no model_label, so
     served_model_label falls back to the resolved tier label — never empty."""
@@ -466,3 +536,187 @@ def test_build_attribution_unrouted_auto_falls_back_to_tier_label() -> None:
     assert attr.served_tier_id == "smart"
     assert attr.served_model_label == "Smart"
     assert attr.served_model_label != ""
+
+
+# Image billing follows transport, on every phase that sends attachments -------
+
+
+class _NoDisconnect:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _UnusedProvider:
+    def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+        raise AssertionError("the stubbed orchestrator replaces the provider")
+
+
+# The subagents each mode emits, plus the verifier judge that runs in both.
+_MODE_SUBAGENTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "single": (("primary", "primary"),),
+    "deep_research": (
+        # The planner runs on role "orchestrator" (see `_PLANNER_ID` /
+        # `role="orchestrator"` in app/agentic/orchestrator.py) — it must be
+        # covered here, or carving `orchestrator` out of `_phase_image_count`
+        # would under-bill the planner undetected.
+        ("planner", "orchestrator"),
+        ("worker-0", "worker"),
+        ("worker-1", "worker"),
+        ("aggregator", "aggregator"),
+    ),
+}
+
+
+@pytest.mark.parametrize("mode", ["single", "deep_research"])
+async def test_agentic_phases_bill_image_tokens_they_actually_send(
+    session_factory: object,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """COST-10: charging follows transport — a phase pays for what it sends.
+
+    `image_token_formula` folds an estimated per-image input-token cost into the
+    subtotal, and the provider re-charges the images on every call they are
+    attached to. Every handler stream factory except the verifier's
+    (`_agentic_fresh_make_stream`, which passes `attachments=None`) sends the
+    turn's attachments unconditionally — planner, workers and aggregator
+    included. So every non-verifier phase pricer and every non-verifier
+    per-subagent attribution is charged the turn's image count, in BOTH modes,
+    and only the fresh-context judge prices text-only.
+
+    FL-36 asserted the opposite on the premise that planner / worker /
+    aggregator prompts are text-only. That premise was false: it made a
+    deep_research turn with attachments realise *less* than the same usage in
+    single mode while the provider billed the images once per phase, and it put
+    the realised charge structurally at odds with `_estimate_run_cost`, which
+    reserves the image cost per run in both modes.
+    """
+    from collections.abc import AsyncIterator
+    from dataclasses import replace
+    from uuid import uuid4
+
+    from app.config import get_settings
+    from app.providers.protocol import (
+        AttachmentPayload,
+        Complete,
+        ProviderEvent,
+        SubagentDone,
+        SubagentStarted,
+        UsageUpdate,
+    )
+    from app.providers.tiers import ImageTokenFormula
+    from app.streaming import handler as handler_mod
+
+    monkeypatch.setenv("TOOLS_ENABLED", "true")
+    monkeypatch.setenv("AGENTIC_ENABLED", "true")
+    get_settings.cache_clear()
+
+    smart = get_binding("smart")
+    assert smart is not None
+    binding = replace(
+        smart,
+        supports_vision=True,
+        supports_attachments=True,
+        image_token_formula=ImageTokenFormula(base_tokens=1_000, tokens_per_image=2_000),
+    )
+    usage = UsageUpdate(input_tokens=500, output_tokens=100)
+    with_image = compute_cost_breakdown(usage=usage, binding=binding, image_count=1)
+    text_only = compute_cost_breakdown(usage=usage, binding=binding, image_count=0)
+    image_charge = with_image.subtotal_usd - text_only.subtotal_usd
+    assert image_charge > 0.0
+
+    subagents = (*_MODE_SUBAGENTS[mode], ("verifier", "verifier"))
+    captured: dict[str, object] = {}
+
+    def _fake_run_orchestrator(**kwargs: object) -> AsyncIterator[ProviderEvent]:
+        captured.update(kwargs)
+
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            for subagent_id, role in subagents:
+                yield SubagentStarted(
+                    subagent_id=subagent_id, label=subagent_id, role=role
+                )
+                # cost_usd=None so the handler prices the usage itself; that is
+                # the code path `_phase_image_count` feeds.
+                yield SubagentDone(
+                    subagent_id=subagent_id,
+                    label=subagent_id,
+                    role=role,
+                    usage=usage,
+                    cost_usd=None,
+                )
+            yield Complete(usage=UsageUpdate())
+
+        return _gen()
+
+    monkeypatch.setattr(handler_mod, "run_orchestrator", _fake_run_orchestrator)
+
+    attributed: dict[str, float] = {}
+    async for ev in handler_mod.stream_and_persist(
+        request=_NoDisconnect(),  # type: ignore[arg-type]
+        db=None,  # type: ignore[arg-type]
+        provider=_UnusedProvider(),  # type: ignore[arg-type]
+        binding=binding,
+        requested_tier_id="smart",
+        conversation_id=None,
+        user_message_id=uuid4(),
+        user_text="what is in this picture",
+        history=[],
+        is_temporary=True,
+        attachments=[
+            AttachmentPayload(
+                id="a1",
+                name="shot.png",
+                media_type="image",
+                mime_type="image/png",
+                size_bytes=1024,
+            )
+        ],
+        fallback_binding=binding,
+        agentic_mode=mode,  # type: ignore[arg-type]
+    ):
+        if getattr(ev, "event", None) != "subagent_done":
+            continue
+        payload = json.loads(str(ev.data))
+        attribution = payload.get("attribution")
+        assert attribution is not None, payload
+        attributed[str(payload["subagentId"])] = float(attribution["costUsd"])
+
+    phase_pricer = captured["cost_for_usage"]
+    verifier_pricer = captured["verifier_cost_for_usage"]
+    fallback_pricer = captured["fallback_cost_for_usage"]
+    assert callable(phase_pricer)
+    assert callable(verifier_pricer)
+    assert callable(fallback_pricer)
+
+    # Phase pricers: every non-verifier route sends the attachments, so both the
+    # active and the fallback binding are charged the turn's image count — in
+    # deep_research exactly as in single.
+    assert phase_pricer(usage) == pytest.approx(with_image.subtotal_usd)
+    assert fallback_pricer(usage) == pytest.approx(with_image.subtotal_usd)
+    # The fresh-context judge sends `attachments=None`, so it pays nothing.
+    assert verifier_pricer(usage) == pytest.approx(text_only.subtotal_usd)
+
+    # Per-subagent attribution follows the same rule.
+    assert set(attributed) == {sid for sid, _role in subagents}
+    for subagent_id, role in subagents:
+        expected = (
+            text_only.subtotal_usd if role == "verifier" else with_image.subtotal_usd
+        )
+        assert attributed[subagent_id] == pytest.approx(expected), subagent_id
+
+    # The regression this guards: for the same usage and attachment count a
+    # deep_research turn must never realise LESS than the single-mode turn whose
+    # phases it fans out from. Compared per phase and over the whole run.
+    single_mode_phase_charge = with_image.subtotal_usd
+    worker_ids = [sid for sid, role in subagents if role != "verifier"]
+    realised_run_subtotal = sum(attributed[sid] for sid in worker_ids)
+    assert phase_pricer(usage) >= single_mode_phase_charge
+    assert realised_run_subtotal >= single_mode_phase_charge
+    if mode == "deep_research":
+        # Under FL-36 the fan-out realised 3 x text_only, which is below the
+        # single-mode charge for the same turn even before the images are added.
+        assert realised_run_subtotal > text_only.subtotal_usd * len(worker_ids)
+        assert realised_run_subtotal == pytest.approx(
+            (text_only.subtotal_usd + image_charge) * len(worker_ids)
+        )

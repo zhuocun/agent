@@ -139,8 +139,14 @@ jobs:
 
       - name: Run Playwright tests
         working-directory: web
+        # Headroom note (same rationale as the web-coverage job below): the
+        # suite has grown past ~169 specs and runs close to 10m clean, so a 10m
+        # budget left no room for Playwright's `--retries=1` to re-run a flaky
+        # spec — one retry tipped the step into a false timeout even though
+        # Playwright itself reported all tests passed. 20m absorbs a flaky
+        # retry without masking a genuine hang.
         run: pnpm test:e2e
-        timeout-minutes: 10
+        timeout-minutes: 20
 
       - name: Upload Playwright report
         if: failure()

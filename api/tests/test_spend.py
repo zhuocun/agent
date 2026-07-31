@@ -18,7 +18,9 @@ Uses the fake provider (env defaults to `PROVIDER_BACKEND=fake`).
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -475,3 +477,149 @@ async def test_preferences_round_trip_per_conversation_budget(
     assert (await client.put("/api/preferences", json=body)).status_code == 204
     boot2 = await client.get("/api/bootstrap")
     assert boot2.json()["preferences"]["perConversationBudgetUsd"] is None
+
+
+# FL-34-b: the persisted turn cost is the subtotal, never subtotal+surcharge ----
+
+
+class _NoDisconnect:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _DisconnectAfterFirstFrame:
+    def __init__(self) -> None:
+        self._polls = 0
+
+    async def is_disconnected(self) -> bool:
+        self._polls += 1
+        return self._polls > 1
+
+
+@pytest.mark.parametrize(
+    "terminal", ["done", "stopped", "awaiting_approval"]
+)
+async def test_turn_cost_does_not_double_count_the_surcharge(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: str,
+) -> None:
+    """FL-34-b (COST-13): every persist site charges `subtotal_usd` alone.
+
+    `session_surcharge_usd` discloses the slice of `subtotal_usd` the
+    long-context layer added (FL-03-a), so `subtotal + surcharge` charged the
+    surcharge twice — on the message row, the wire attribution, and the usage
+    rollup. Latent only because no wired binding sets a long-context shape yet,
+    which is exactly why this pins a synthetic one.
+
+    All three terminals persist through separate code paths, so all three are
+    exercised: success, disconnect-drain, and HITL pause.
+    """
+    from dataclasses import replace
+
+    from app.config import get_settings
+    from app.providers.pricing import compute_cost_breakdown
+    from app.providers.protocol import (
+        AnswerDelta,
+        Complete,
+        ProviderEvent,
+        ToolCall,
+        UsageUpdate,
+    )
+    from app.providers.tiers import SessionMultiplierPricing, get_binding
+    from app.streaming.handler import stream_and_persist
+
+    if terminal == "awaiting_approval":
+        monkeypatch.setenv("TOOLS_ENABLED", "true")
+        get_settings.cache_clear()
+
+    smart = get_binding("smart")
+    assert smart is not None
+    usage = UsageUpdate(input_tokens=300_000, output_tokens=1_000)
+    binding = replace(
+        smart,
+        long_context_flat=False,
+        session_multiplier=SessionMultiplierPricing(
+            threshold_tokens=200_000, input=2.0, output=1.5
+        ),
+    )
+    expected = compute_cost_breakdown(usage=usage, binding=binding, image_count=0)
+    assert expected.session_surcharge_usd > 0.0
+    doubled = expected.subtotal_usd + expected.session_surcharge_usd
+
+    class _StubProvider:
+        def stream(self, **_kwargs: object):  # type: ignore[no-untyped-def]
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                if terminal == "awaiting_approval":
+                    yield usage
+                    yield ToolCall(
+                        id="cal-1",
+                        name="calendar_create_event",
+                        status="running",
+                        input={"title": "Planning review"},
+                    )
+                    return
+                yield AnswerDelta(text="answer")
+                yield usage
+                yield Complete(usage=usage)
+                if terminal == "stopped":
+                    # Hold the stream open so the disconnect ends the turn.
+                    await asyncio.sleep(30)
+
+            return _gen()
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="fl34b", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    request_stub: object = (
+        _DisconnectAfterFirstFrame() if terminal == "stopped" else _NoDisconnect()
+    )
+    async with session_factory() as session:
+        async for _ev in stream_and_persist(
+            request=request_stub,  # type: ignore[arg-type]
+            db=session,
+            provider=_StubProvider(),  # type: ignore[arg-type]
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="a very long conversation",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+        ):
+            pass
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+            )
+        ).scalars().first()
+    assert row is not None
+    assert row.status == terminal
+    assert float(row.cost_usd or 0.0) == pytest.approx(expected.subtotal_usd)
+    assert float(row.cost_usd or 0.0) < doubled
+    attribution = row.attribution
+    assert isinstance(attribution, dict)
+    assert float(attribution["costUsd"]) == pytest.approx(expected.subtotal_usd)
+    # The disclosure field is still reported — it just is not charged again.
+    breakdown = attribution["breakdown"]
+    assert isinstance(breakdown, dict)
+    assert float(breakdown["sessionSurchargeUsd"]) == pytest.approx(
+        expected.session_surcharge_usd
+    )

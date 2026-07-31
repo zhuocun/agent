@@ -611,6 +611,77 @@ async def test_clarify_approve_resumes_fanout_with_answers_in_context(
     assert assistant[1].status == "done"
 
 
+@pytest.mark.parametrize("requested_mode", [None, "single", "deep_research"])
+async def test_clarify_resume_with_omitted_or_wrong_agentic_mode_is_pinned_or_rejected(
+    clarify_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    requested_mode: str | None,
+) -> None:
+    """FL-28, clarify twin: the typed answers must survive the resume.
+
+    The mode pin was gated on a worker continuation, which a clarify pause never
+    has. An omitted `agenticMode` therefore settled the clarify gate and then ran
+    a plain single turn — the answers the user had just typed were consumed and
+    thrown away, unrecoverably. A conflicting `single` is a 400 that leaves the
+    gate pending, so a correct-mode retry still delivers the answers.
+    """
+    conv_id, pause_frames = await _pause_on_clarify(clarify_client, session_factory)
+    call_id = next(str(d["id"]) for n, d in pause_frames if n == "tool_call")
+    questions = next(
+        d["input"]["questions"] for n, d in pause_frames if n == "tool_call"
+    )
+    assert isinstance(questions, list)
+
+    body: dict[str, object] = {
+        "clientMessageId": "c0000000-0000-0000-0000-0000000000f1",
+        "tierId": "smart",
+        "text": "",
+        "toolApproval": {
+            "toolCallId": call_id,
+            "decision": "approve",
+            "editedInput": {
+                "answers": [
+                    {
+                        "questionId": str(i),
+                        "question": q,
+                        "answer": _CLARIFY_ANSWERS[i],
+                    }
+                    for i, q in enumerate(questions)
+                ]
+            },
+        },
+    }
+    if requested_mode is not None:
+        body["agenticMode"] = requested_mode
+
+    if requested_mode == "single":
+        response = await clarify_client.post(
+            f"/api/conversations/{conv_id}/messages", json=body, timeout=30.0
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_INPUT"
+        msgs = await _load_messages(session_factory, conv_id)
+        paused = next(m for m in msgs if m.status == "awaiting_approval")
+        call, result = _settled_clarify_parts(paused.parts)
+        # Rejected before the settle: the gate is untouched, answers not burned.
+        assert call.get("approvalState") == "pending"
+        assert result is None
+        body["clientMessageId"] = "c0000000-0000-0000-0000-0000000000f2"
+        body["agenticMode"] = "deep_research"
+
+    frames = await _collect_sse(
+        clarify_client, f"/api/conversations/{conv_id}/messages", body
+    )
+    assert _names(frames)[-1] == "terminal"
+    assert frames[-1][1]["status"] == "done"
+    started_ids = {str(d["subagentId"]) for n, d in frames if n == "subagent_started"}
+    assert {"worker-0", "worker-1", "aggregator"} <= started_ids
+    # The typed answers survive: they reach the workers AND the synthesis footer.
+    full_answer = _answer(frames)
+    assert "Clarified: Focus on housing affordability; US, last 5 years" in full_answer
+    assert "Clarifications applied:" in full_answer
+
+
 async def test_clarify_deny_declines_run(
     clarify_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

@@ -15,7 +15,12 @@
 
 import { expect, test } from "./coverage-fixture";
 
-import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
+import {
+  BE_URL,
+  modelModeTrigger,
+  reloadIntoConversation,
+  waitForBootstrap,
+} from "./helpers";
 
 test.describe("streaming", () => {
   test("send a message: SSE opens, reasoning + answer stream, terminal lands, message persists", async ({
@@ -120,6 +125,26 @@ test.describe("streaming", () => {
     expect(assistantMsg.parts.some((p) => p.type === "reasoning")).toBe(true);
     expect(assistantMsg.parts.some((p) => p.type === "text" && (p.text ?? "").length > 0))
       .toBe(true);
+
+    // FE-7: the reasoning wall-clock is persisted, so "Thought for Ns" survives a
+    // cold render instead of being an in-session-only label. Asserted here rather
+    // than on an agentic turn because subagent-tagged reasoning renders inside the
+    // fan-out panel, which has no duration clause — the global ReasoningPanel is
+    // the only surface that shows one, and it takes untagged reasoning only.
+    const persistedReasoning = (
+      assistantMsg.parts as Array<{ type: string; durationSec?: number }>
+    ).find((p) => p.type === "reasoning");
+    expect(persistedReasoning?.durationSec).toBeGreaterThan(0);
+
+    await expect(reasoning).toContainText("Thought for");
+    await reloadIntoConversation(page, createdConvoId);
+    // The live label is measured in-session and the reloaded one comes off the
+    // persisted part, so assert the clause is present rather than pinning the
+    // exact number the two paths independently derive.
+    await expect(page.getByTestId("reasoning-panel").last()).toContainText(
+      "Thought for",
+      { timeout: 15_000 },
+    );
   });
 
   // Web-search path. Requires the integrated BE running the FakeProvider with

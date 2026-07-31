@@ -71,9 +71,10 @@ interface SubagentPanelProps {
 
 type LiveToolPart = Extract<MessagePart, { type: "tool_call" | "tool_result" }>;
 
-// Per-worker activity for an agentic (multi-agent) turn.
-// orchestrator (`primary` / `worker` / `aggregator` / `orchestrator`); unknown
-// future roles fall through verbatim rather than erroring.
+// Per-worker activity for an agentic (multi-agent) turn. Cases cover every role
+// the orchestrator can emit (`primary` / `worker` / `aggregator` /
+// `orchestrator` / `verifier` — the FE contract list); unknown future roles fall
+// through verbatim rather than erroring.
 function roleLabel(role: string): string {
   switch (role) {
     case "primary":
@@ -84,6 +85,8 @@ function roleLabel(role: string): string {
       return "Aggregator";
     case "orchestrator":
       return "Orchestrator";
+    case "verifier":
+      return "Verifier";
     default:
       return role;
   }
@@ -440,10 +443,16 @@ function SubagentRow({
 
   const summaryRow = (trailing?: ReactNode) => (
     <div className="flex min-w-0 flex-1 items-center gap-1.5">
-      <span className="min-w-0 truncate font-medium text-foreground">
+      <span
+        className="min-w-0 truncate font-medium text-foreground"
+        data-testid="subagent-label"
+      >
         {section.label}
       </span>
-      <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground">
+      <span
+        className="inline-flex h-5 shrink-0 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground"
+        data-testid="subagent-role-badge"
+      >
         {roleLabel(section.role)}
       </span>
       {section.status === "done" && section.attribution?.servedModelLabel ? (

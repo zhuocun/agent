@@ -285,8 +285,6 @@ class AgenticRunSummaryPart(CamelModel):
     outcome: Literal["complete", "partial"] = "complete"
     budget_halted: bool = False
     failed_workers: int = 0
-    planned_workers: int | None = None
-    completed_workers: int | None = None
     # Logical run-cost receipt (private; share projection strips cost keys).
     subtotal_usd: float | None = None
     cap_usd: float | None = None

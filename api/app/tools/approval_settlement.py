@@ -15,21 +15,28 @@ record:
    call is still in the claimed ``approved``/``rejected`` +
    ``running``/``cancelled`` window.
 
-Retry / crash recovery:
+Retry / crash recovery (AC-01, fail closed):
 - Settled ``tool_result`` present → return it (no re-execute) when the client
   decision matches the durable approval; conflicting decisions raise
   ``ApprovalDecisionConflict``.
-- Claimed (``approved``/``running``) **without** ``tool_result`` → do **not**
-  re-execute; return a failed replay so the side effect is not doubled
-  (covers kill between execute and settle, and stop/disconnect after claim).
-- That failed replay is also *written* to the row (FL-31) so a crashed claim
-  reaches a terminal state instead of rendering approved/running forever — but
-  only when the claim is **not live**. Execute runs outside the claim lock, so a
-  live winner's row is byte-for-byte indistinguishable from a crashed claim's;
-  the in-process live-claim registry below supplies the missing liveness signal.
-  When the claim is live and is not the calling invocation's own, the recovery
-  write is suppressed and ``ApprovalSettlementIncomplete`` is raised rather than
-  a failed outcome returned, so the winner's real result is what lands.
+- Claimed (``approved``/``running``) **without** ``tool_result`` → the claim
+  belongs to another invocation, so this one **always** raises
+  ``ApprovalSettlementIncomplete``: it neither re-executes nor writes. Execute
+  runs outside the claim lock, so a live winner's row is byte-for-byte what a
+  crashed claim leaves behind, and nothing observable from here distinguishes
+  them — a second Fly machine cannot see whether the claiming machine is still
+  running the side effect, and elapsed time does not prove it stopped. Writing
+  a failed replay there would clobber a side effect that may still succeed, so
+  the row stays claimed until its owner settles it. Terminalizing a genuinely
+  orphaned claim requires executor idempotency/fencing or an explicit
+  administrative reconciliation; neither exists, and no timeout/expiry branch
+  substitutes for them.
+- **Only the invocation that minted a claim may settle under it.** That includes
+  the one recovery write that remains: when the owner executed but lost the
+  settle CAS, it writes the failed replay under *its own* claim id.
+- Pseudo tools (plan approval / clarify) are separate: settlement replays no
+  external side effect, so a same-decision retry may adopt an orphaned claim and
+  finish the interrupted write (``_adoptable_claim``).
 
 Concurrency (H-005 / CAS): correctness is a **dialect-safe version CAS** on
 ``Message.parts_version`` — ``UPDATE … SET parts=…, parts_version=v+1 WHERE
@@ -45,7 +52,7 @@ import asyncio
 import secrets
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -65,16 +72,6 @@ _claim_locks: dict[tuple[str, str], asyncio.Lock] = {}
 _claim_locks_guard = asyncio.Lock()
 # When True, claim/settle skip the in-process lock (tests prove version CAS).
 _bypass_claim_locks: bool = False
-
-# In-process live-claim registry: the claim id whose side effect is currently in
-# flight in THIS process, per call. Like ``_claim_locks`` above this is a *hint*,
-# not a safety gate — safety is still the parts_version CAS plus the claim-owner
-# conditional write. A false negative (empty map after a process restart) simply
-# degrades to the FL-31 recovery write; a false positive cannot cause a double
-# execution, it can only defer a recovery write to a later retry. Deliberately
-# not disabled by ``_bypass_claim_locks``: that flag exists to prove the version
-# CAS, and liveness is orthogonal to it.
-_live_claims: dict[tuple[str, str], str] = {}
 
 
 class ApprovalDecisionConflict(Exception):  # noqa: N818
@@ -103,18 +100,6 @@ class ApprovalSettlementIncomplete(Exception):  # noqa: N818
         )
 
 
-@dataclass
-class _LiveClaimTicket:
-    """Mutable handle so a caller's ``finally`` releases only what it registered.
-
-    ``_claim_pending_locked`` registers the moment the claim CAS commits — the
-    instant the durable row starts looking claimed to everyone else — which is
-    before it can return the claim id to its caller.
-    """
-
-    claim_id: str | None = None
-
-
 @dataclass(frozen=True)
 class SettlementOutcome:
     """Authoritative settlement plus the durable human decision."""
@@ -133,26 +118,6 @@ def _decision_from_approval_state(approval_state: str) -> str:
 
 def _lock_key(message_id: UUID, tool_call_id: str) -> tuple[str, str]:
     return (str(message_id), tool_call_id)
-
-
-def _register_live_claim(message_id: UUID, tool_call_id: str, claim_id: str) -> None:
-    """Mark ``claim_id`` as in flight in this process (see ``_live_claims``)."""
-    _live_claims[_lock_key(message_id, tool_call_id)] = claim_id
-
-
-def _release_live_claim(
-    message_id: UUID, tool_call_id: str, claim_id: str | None
-) -> None:
-    """Drop the entry only when it is still the one ``claim_id`` registered."""
-    if claim_id is None:
-        return
-    key = _lock_key(message_id, tool_call_id)
-    if _live_claims.get(key) == claim_id:
-        del _live_claims[key]
-
-
-def _is_live_claim(message_id: UUID, tool_call_id: str, claim_id: str) -> bool:
-    return _live_claims.get(_lock_key(message_id, tool_call_id)) == claim_id
 
 
 async def _get_claim_lock(message_id: UUID, tool_call_id: str) -> asyncio.Lock:
@@ -316,7 +281,11 @@ def _replace_tool_call(
 def _claimed_without_result_failure(
     *, tool_call_id: str, name: str, approval_state: str
 ) -> ToolExecutionResult:
-    """Safe replay when a prior claim committed but settle never landed."""
+    """Terminal replay for a claim **this invocation owns** but could not settle.
+
+    Only reachable from the owner's post-execute recovery write. A foreign claim
+    fails closed instead (see the module docstring).
+    """
     settled_approval = "approved" if approval_state == "approved" else "rejected"
     return ToolExecutionResult(
         tool_call_id=tool_call_id,
@@ -462,8 +431,13 @@ def _raise_incomplete_or_conflict(
     tool_call_id: str,
     decision: str,
     approval_state: str,
-) -> None:
-    """Claimed-without-result: conflict on opposite decision, else incomplete."""
+) -> NoReturn:
+    """Claimed-without-result: conflict on opposite decision, else incomplete.
+
+    The single fail-closed exit for a claim this invocation does not own. It
+    never returns and never writes, so no caller can turn a foreign claim into a
+    durable outcome regardless of how long that claim has been outstanding.
+    """
     if approval_state in ("approved", "rejected"):
         claimed_decision = _decision_from_approval_state(approval_state)
         if claimed_decision != decision:
@@ -725,13 +699,13 @@ async def claim_and_settle_approval_outcome(
     """CAS claim/settle returning the durable decision for resume wiring.
 
     The in-process lock covers only the pending→claimed transition (and the
-    final settle write). Execute runs *outside* the lock so concurrent losers
-    can observe the committed claim without deadlocking behind a slow tool. The
-    live-claim ticket keeps those losers from mistaking that window for a crash
-    and writing a failure over a side effect that is still running.
+    final settle write). Execute runs *outside* the lock so concurrent losers can
+    observe the committed claim without deadlocking behind a slow tool. Those
+    losers do not own the claim, so they raise ``ApprovalSettlementIncomplete``
+    rather than settle on the winner's behalf (AC-01) — the winner's real result
+    is the only thing that ever lands on the row.
     """
     message_id = paused_message.id
-    live_claim = _LiveClaimTicket()
     try:
         lock = await _get_claim_lock(message_id, tool_call_id)
         async with lock:
@@ -742,8 +716,6 @@ async def claim_and_settle_approval_outcome(
                 decision=decision,
                 claim_id=claim_id,
                 subagent_id=subagent_id,
-                live_claim=live_claim,
-                label=label,
             )
             if isinstance(claimed, SettlementOutcome):
                 return claimed
@@ -824,22 +796,24 @@ async def claim_and_settle_approval_outcome(
             )
         if not settled_ok:
             # Executed but settlement did not land — fail closed so callers do not
-            # treat an unpersisted side effect as durable success. FL-31: still
-            # try to write that failure under our own claim so the row does not
-            # strand at approved/running (a no-op when we no longer own it).
+            # treat an unpersisted side effect as durable success. FL-31: write
+            # that failure under the claim *we* minted so the row does not strand
+            # at approved/running. ``_settle_under_claim`` no-ops if the row has
+            # moved on, so this can never overwrite anyone else's settlement.
+            failed = _claimed_without_result_failure(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                approval_state="approved" if decision == "approve" else "rejected",
+            )
             async with lock:
-                failed = await _persist_claimed_without_result(
+                await _settle_under_claim(
                     db,
                     message_id=message_id,
                     tool_call_id=tool_call_id,
-                    existing_claim=minted_claim,
-                    tool_name=tool_name,
-                    approval_state=(
-                        "approved" if decision == "approve" else "rejected"
-                    ),
+                    minted_claim=minted_claim,
+                    result=failed,
                     label=label,
                     subagent_id=part_subagent,
-                    owned_by_caller=True,
                 )
             return SettlementOutcome(
                 result=failed,
@@ -854,63 +828,8 @@ async def claim_and_settle_approval_outcome(
             already_settled=False,
         )
     finally:
-        # Liveness ends here: whatever the row now holds, this process is no
-        # longer executing under the claim, so a retry may recover it (FL-31).
-        _release_live_claim(message_id, tool_call_id, live_claim.claim_id)
         # B19: prune idle lock entries after terminal settlement (or early return).
         await _release_claim_lock_if_idle(message_id, tool_call_id)
-
-
-async def _persist_claimed_without_result(
-    db: AsyncSession,
-    *,
-    message_id: UUID,
-    tool_call_id: str,
-    existing_claim: object,
-    tool_name: str,
-    approval_state: str,
-    label: str | None,
-    subagent_id: str | None,
-    owned_by_caller: bool,
-) -> ToolExecutionResult:
-    """FL-31: make a claimed-but-unsettled registry approval terminal on the row.
-
-    The safety goal (BE-007) was already met — nothing re-executes — but the
-    durability goal was not: the ``tool_call`` stayed ``approved`` / ``running``
-    with no ``tool_result``, so every refetch kept rendering the card as in
-    flight and no retry could ever terminalize it. Persisting the *failure*
-    replay executes nothing, so fail-closed is untouched. Written under the
-    row's **existing** claim id, so ``_settle_under_claim`` refuses when this
-    session does not own the claim.
-
-    ``owned_by_caller`` says whether ``existing_claim`` was minted by the calling
-    invocation. Only the owner may write while the claim is live: a foreign
-    caller reading a live winner's row sees the same approved/running/claim-id
-    shape a crashed claim leaves behind, and writing the failure there would
-    clobber a side effect that is still running and may yet succeed. That case
-    raises ``ApprovalSettlementIncomplete`` (409) so the client retries once the
-    winner has committed its real result, instead of seeding a resume stream
-    with a bogus failed ``tool_result``.
-    """
-    failure = _claimed_without_result_failure(
-        tool_call_id=tool_call_id,
-        name=tool_name,
-        approval_state=approval_state,
-    )
-    if existing_claim is not None:
-        claim = str(existing_claim)
-        if not owned_by_caller and _is_live_claim(message_id, tool_call_id, claim):
-            raise ApprovalSettlementIncomplete(tool_call_id=tool_call_id)
-        await _settle_under_claim(
-            db,
-            message_id=message_id,
-            tool_call_id=tool_call_id,
-            minted_claim=claim,
-            result=failure,
-            label=label,
-            subagent_id=subagent_id,
-        )
-    return failure
 
 
 async def _claim_pending_locked(
@@ -921,8 +840,6 @@ async def _claim_pending_locked(
     decision: str,
     claim_id: str | None,
     subagent_id: str | None,
-    live_claim: _LiveClaimTicket,
-    label: str | None = None,
 ) -> SettlementOutcome | tuple[str, str, str | None]:
     locked = await _lock_message(db, message_id)
     parts: list[Any] = list(locked.parts or [])
@@ -973,29 +890,14 @@ async def _claim_pending_locked(
 
     approval_state = str(call_part.get("approvalState") or "")
     if approval_state != "pending":
-        # Already claimed without a result: fail closed (never re-execute), and
-        # FL-31: persist that failure so the row actually reaches a terminal
-        # state instead of rendering approved/running forever.
-        result = await _persist_claimed_without_result(
-            db,
-            message_id=message_id,
+        # AC-01: the claim is someone else's and no durable result exists. Fail
+        # closed — never re-execute, and never write a terminal failure that
+        # could clobber a side effect still running under that claim, whether it
+        # was claimed a millisecond or a week ago.
+        _raise_incomplete_or_conflict(
             tool_call_id=tool_call_id,
-            existing_claim=call_part.get(APPROVAL_CLAIM_ID_KEY),
-            tool_name=tool_name,
+            decision=decision,
             approval_state=approval_state,
-            label=label,
-            subagent_id=part_subagent,
-            owned_by_caller=False,
-        )
-        return SettlementOutcome(
-            result=result,
-            decision=_decision_from_approval_state(result.approval_state),
-            claim_id=(
-                str(call_part.get(APPROVAL_CLAIM_ID_KEY))
-                if call_part.get(APPROVAL_CLAIM_ID_KEY) is not None
-                else None
-            ),
-            already_settled=False,
         )
 
     # CAS claim: only pending → approved/rejected. Commit BEFORE execute.
@@ -1019,13 +921,9 @@ async def _claim_pending_locked(
         parts=claimed_parts,
         expected_version=expected_version,
     )
-    if won:
-        # The row now looks claimed to every other reader; publish liveness in the
-        # same breath so a concurrent retry cannot mistake us for a crashed claim.
-        live_claim.claim_id = minted_claim
-        _register_live_claim(message_id, tool_call_id, minted_claim)
-    else:
-        # Lost the version race — re-read and take settled / claimed-without-result.
+    if not won:
+        # Lost the version race — re-read durable state. Never synthesize the
+        # winner's settlement from our own request (AC-01).
         locked = await _lock_message(db, message_id)
         parts = list(locked.parts or [])
         existing = find_settled_tool_result(
@@ -1071,27 +969,11 @@ async def _claim_pending_locked(
             return SettlementOutcome(
                 result=result, decision="deny", already_settled=False
             )
-        # FL-31: same durable failure on the lost-claim-CAS exit.
-        result = await _persist_claimed_without_result(
-            db,
-            message_id=message_id,
+        # The winner holds the claim and has not settled yet: fail closed.
+        _raise_incomplete_or_conflict(
             tool_call_id=tool_call_id,
-            existing_claim=call_part.get(APPROVAL_CLAIM_ID_KEY),
-            tool_name=tool_name,
+            decision=decision,
             approval_state=str(call_part.get("approvalState") or "approved"),
-            label=label,
-            subagent_id=part_subagent,
-            owned_by_caller=False,
-        )
-        return SettlementOutcome(
-            result=result,
-            decision=_decision_from_approval_state(result.approval_state),
-            claim_id=(
-                str(call_part.get(APPROVAL_CLAIM_ID_KEY))
-                if call_part.get(APPROVAL_CLAIM_ID_KEY) is not None
-                else None
-            ),
-            already_settled=False,
         )
 
     # Re-lock after commit; confirm we still own the claim (true CAS).
@@ -1137,19 +1019,15 @@ async def _claim_pending_locked(
 
     winner_claim = call_after.get(APPROVAL_CLAIM_ID_KEY)
     if winner_claim != minted_claim:
-        result = _claimed_without_result_failure(
+        # Our claim id was replaced between commit and re-lock, so this
+        # invocation is no longer the owner and may not settle under it.
+        _raise_incomplete_or_conflict(
             tool_call_id=tool_call_id,
-            name=tool_name,
+            decision=decision,
             approval_state=str(call_after.get("approvalState") or "approved"),
-        )
-        return SettlementOutcome(
-            result=result,
-            decision=_decision_from_approval_state(result.approval_state),
-            claim_id=str(winner_claim) if winner_claim is not None else None,
         )
 
     return minted_claim, tool_name, part_subagent
-
 
 
 async def _settle_under_claim(

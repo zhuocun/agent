@@ -1056,9 +1056,9 @@ async def test_verifier_budget_callbacks_use_authoritative_per_sample_cost(
 async def test_orchestrator_verifier_budget_uses_authoritative_cost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`_run_verifier_if_enabled` must not halt on collapsed reprice when sum fits."""
+    """`verifier.run_if_enabled` must not halt on collapsed reprice when sum fits."""
     from app.agentic.aggregate import WorkerOutput
-    from app.agentic.orchestrator import _run_verifier_if_enabled
+    from app.agentic.verifier import run_if_enabled
     from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
     from app.tools.agent_loop import ToolResult
 
@@ -1094,7 +1094,7 @@ async def test_orchestrator_verifier_budget_uses_authoritative_cost(
         return tokens * 0.01
 
     # Cap fits two per-sample prices ($1.00) but not collapsed reprice ($10).
-    result = await _run_verifier_if_enabled(
+    result = await run_if_enabled(
         settings=settings,
         draft="draft",
         make_stream_for=make_stream_for,
@@ -1609,7 +1609,7 @@ async def test_verifier_skips_when_budget_blocks_first_sample(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.agentic.aggregate import WorkerOutput
-    from app.agentic.orchestrator import _run_verifier_if_enabled
+    from app.agentic.verifier import run_if_enabled
     from app.providers.protocol import UsageUpdate
 
     monkeypatch.setenv("AGENTIC_VERIFIER", "true")
@@ -1630,7 +1630,7 @@ async def test_verifier_skips_when_budget_blocks_first_sample(
 
         return _make
 
-    result = await _run_verifier_if_enabled(
+    result = await run_if_enabled(
         settings=settings,
         draft="draft",
         make_stream_for=make_stream_for,
@@ -1740,13 +1740,10 @@ async def test_verifier_unavailable_sets_run_cost_partial(
 async def test_verifier_unavailable_wire_outcome_has_one_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """FL-20: the emitted outcome is the one `_apply_verifier_result` returned."""
+    """FL-20: the emitted outcome is the one `verifier.apply_result` returned."""
     from app.agentic.aggregate import WorkerOutput
-    from app.agentic.orchestrator import (
-        _apply_verifier_result,
-        _finalize_synthesis_streamed,
-    )
-    from app.agentic.verifier import VerifyResult
+    from app.agentic.orchestrator import _finalize_synthesis_streamed
+    from app.agentic.verifier import VerifyResult, apply_result
     from app.providers.protocol import SubagentDone
 
     monkeypatch.setenv("AGENTIC_VERIFIER", "true")
@@ -1754,16 +1751,14 @@ async def test_verifier_unavailable_wire_outcome_has_one_source(
     settings = get_settings()
 
     captured: list[VerifyResult] = []
-    real_apply = _apply_verifier_result
+    real_apply = apply_result
 
     def _spy(draft: str, result: VerifyResult | None):
         if result is not None:
             captured.append(result)
         return real_apply(draft, result)
 
-    monkeypatch.setattr(
-        "app.agentic.orchestrator._apply_verifier_result", _spy
-    )
+    monkeypatch.setattr("app.agentic.verifier.apply_result", _spy)
 
     events = [
         ev

@@ -7,6 +7,13 @@ Acceptance criteria covered:
 - `add_otel_log_processor` injects `trace_id` / `span_id` when called inside
   an active span; no-op otherwise.
 - In production with no endpoint, a startup warning is emitted.
+
+Also the AC-10 primitives this packet lands ahead of the production span
+migration: `ServedRoute` and the `SpanSettlement` handle `invoke_agent_span`
+yields. Settling every production phase span with these is F2's work; what is
+proven here is that the handle records route / usage / cost / outcome, that a
+fallback overrides the served route rather than adding a second one, and that no
+content attribute can ride along.
 """
 
 from __future__ import annotations
@@ -24,10 +31,15 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from app.config import Settings
 from app.observability.tracing import (
+    SpanSettlement,
     add_otel_log_processor,
     instrument_fastapi,
+    invoke_agent_span,
     reset_tracing_for_tests,
 )
+from app.providers.tiers import get_binding
+from app.runtime.context import ServedRoute
+from app.runtime.run_receipt import UsageTotals
 
 
 @pytest.fixture(autouse=True)
@@ -165,3 +177,130 @@ def test_add_otel_log_processor_injects_ids_inside_active_span() -> None:
     assert out["span_id"] == expected_span
     assert len(out["trace_id"]) == 32  # type: ignore[arg-type]
     assert len(out["span_id"]) == 16  # type: ignore[arg-type]
+
+
+# AC-10 primitives: the served route and the span settlement handle -------------
+
+
+def test_served_route_is_immutable_and_fallback_is_a_derived_route() -> None:
+    """A fallback is one derived route carrying its reason, not a parallel set of
+    provider/model fields each consumer has to reconcile against the bound ones."""
+    bound = ServedRoute(tier_id="smart", provider_id="deepseek", model_id="v4-pro")
+    assert bound.substitution is None
+    with pytest.raises(AttributeError):
+        bound.provider_id = "anthropic"  # type: ignore[misc]
+
+    served = bound.substituted(provider_id="anthropic", model_id="claude-x")
+    assert (served.provider_id, served.model_id) == ("anthropic", "claude-x")
+    assert served.substitution == "provider_fallback"
+    # The requested tier is what the user picked, so a substitution keeps it.
+    assert served.tier_id == "smart"
+    # Unnamed parts stay as bound: a provider-only fallback keeps its model.
+    assert bound.substituted(provider_id="anthropic").model_id == "v4-pro"
+    assert bound.substitution is None
+
+
+def test_served_route_from_binding_takes_the_resolved_tier() -> None:
+    """`auto` names no servable model, so the caller supplies the concrete tier
+    it resolved to; a concrete binding needs no override."""
+    smart = get_binding("smart", settings=Settings())
+    assert smart is not None
+    route = ServedRoute.from_binding(smart)
+    assert route == ServedRoute(
+        tier_id=smart.tier.id,
+        provider_id=smart.provider_id,
+        model_id=smart.model_id,
+    )
+    auto = get_binding("auto", settings=Settings())
+    assert auto is not None
+    assert ServedRoute.from_binding(auto, served_tier_id="smart").tier_id == "smart"
+
+
+def _capture_spans() -> InMemorySpanExporter:
+    """Collect spans created from here on, whatever ran before.
+
+    OTel refuses to replace an already-registered global tracer provider, so a
+    test that sets its own would silently capture nothing when another test
+    registered one first. Attach a processor to whichever SDK provider is live
+    instead, registering one only when the global is still the no-op proxy.
+    """
+    exporter = InMemorySpanExporter()
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        provider = TracerProvider()
+        trace.set_tracer_provider(provider)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return exporter
+
+
+def test_span_settlement_records_route_usage_cost_and_outcome() -> None:
+    """The facts a phase span used to close without: what served it, the tokens
+    behind the money, the exact cost, and how it ended."""
+    exporter = _capture_spans()
+    with invoke_agent_span(subagent_id="worker-0", role="worker") as settlement:
+        assert isinstance(settlement, SpanSettlement)
+        settlement.settle(
+            route=ServedRoute(tier_id="smart", provider_id="deepseek", model_id="v4-pro"),
+            usage=UsageTotals(
+                input_tokens=11, output_tokens=7, reasoning_tokens=3, cached_input_tokens=5
+            ),
+            cost_usd=0.0125,
+            outcome="succeeded",
+        )
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes is not None
+    attrs = dict(span.attributes)
+    assert attrs["agentic.served_tier_id"] == "smart"
+    assert attrs["gen_ai.provider.name"] == "deepseek"
+    assert attrs["gen_ai.response.model"] == "v4-pro"
+    assert attrs["gen_ai.usage.input_tokens"] == 11
+    assert attrs["gen_ai.usage.output_tokens"] == 7
+    assert attrs["agentic.usage.reasoning_tokens"] == 3
+    assert attrs["agentic.usage.cached_input_tokens"] == 5
+    assert attrs["agentic.cost_usd"] == pytest.approx(0.0125)
+    assert attrs["agentic.outcome"] == "succeeded"
+    assert "agentic.route.substitution" not in attrs
+
+
+def test_span_settlement_fallback_overrides_the_bound_route() -> None:
+    """A worker that fell back must not close claiming the route it was bound to,
+    and must not close carrying both routes either — the served one wins."""
+    exporter = _capture_spans()
+    bound = ServedRoute(tier_id="smart", provider_id="deepseek", model_id="v4-pro")
+    with invoke_agent_span(subagent_id="worker-0", role="worker") as settlement:
+        settlement.settle(route=bound, outcome="running")
+        settlement.settle(
+            route=bound.substituted(provider_id="anthropic", model_id="claude-x"),
+            outcome="succeeded",
+        )
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes is not None
+    attrs = dict(span.attributes)
+    assert attrs["gen_ai.provider.name"] == "anthropic"
+    assert attrs["gen_ai.response.model"] == "claude-x"
+    assert attrs["agentic.served_tier_id"] == "smart"
+    assert attrs["agentic.route.substitution"] == "provider_fallback"
+    assert attrs["agentic.outcome"] == "succeeded"
+
+
+def test_span_settlement_records_no_content_and_needs_no_guard() -> None:
+    """Only ids, route, counts, money and outcome reach a span. And a handle over
+    no span settles silently, so no call site grows an `if span is not None`."""
+    exporter = _capture_spans()
+    with invoke_agent_span(subagent_id="aggregator", role="aggregator") as settlement:
+        settlement.settle(usage=UsageTotals(input_tokens=2), cost_usd=0.0)
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes is not None
+    for key, value in span.attributes.items():
+        assert not isinstance(value, str) or len(value) <= 64, key
+    assert not [k for k in span.attributes if "content" in k or "text" in k]
+    # Partial settlement leaves the unknown facts absent rather than guessed.
+    assert "agentic.outcome" not in span.attributes
+    assert "gen_ai.response.model" not in span.attributes
+
+    SpanSettlement().settle(
+        route=ServedRoute(tier_id="fast", provider_id="p", model_id="m"),
+        usage=UsageTotals(input_tokens=1),
+        cost_usd=1.0,
+        outcome="failed",
+    )

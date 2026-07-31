@@ -101,10 +101,10 @@ SERVER_STATE_PRIOR_RUN_USAGE_KEY = "priorRunUsage"
 # pauses have no continuation at all, and a resume onto a different mode
 # consumes the approval and discards the approved work.
 SERVER_STATE_ORCHESTRATION_MODE_KEY = "orchestrationMode"
-# AC-02: the pause boundary's `RunReceipt`. It lives beside the scalar seeds for
-# the same reason the mode pin does — plan-approval, clarify and single-mode
-# pauses have no continuation blob at all — and it SUPERSEDES them on resume:
-# the seeds reconstruct one phase, the receipt is the exact total already billed.
+# AC-02: the pause boundary's `RunReceipt`. It sits beside the scalar seeds for
+# the same reason the mode pin does (those pause shapes have no continuation blob
+# at all) and SUPERSEDES them on resume: the seeds reconstruct one phase, the
+# receipt is the exact total already billed.
 SERVER_STATE_RUN_RECEIPT_KEY = "runReceipt"
 
 

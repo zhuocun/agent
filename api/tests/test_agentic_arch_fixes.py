@@ -798,22 +798,27 @@ async def test_b16_reasoning_delta_blocks_transparent_fallback() -> None:
 def test_b12_one_source_allocator_owns_the_run() -> None:
     """AC-08: `SourceNamespace` is the only source-ID allocator left.
 
-    `aggregate.remap_worker_source_ids` renumbered the same ordinals a second
-    time in worker-plan order at the synthesis sink, so an offline caller could
+    A second, list-ordered remapper in `aggregate` renumbered the same ordinals
+    again in worker-plan order at the synthesis sink, so an offline caller could
     produce ids that disagreed with the arrival-ordered globals the live stream
-    had already shown the user. Both the duplicate and the orchestrator-private
-    class it shadowed are gone; a static read proves neither grew back.
+    had already shown the user. Two static reads prove neither it nor the
+    orchestrator-private class it shadowed grew back: only one module allocates a
+    global id, and only one compiles the citation-marker pattern a rewriter needs.
     """
-    assert not hasattr(aggregate, "remap_worker_source_ids")
-    assert not hasattr(orchestrator_mod, "_SourceIdRemapper")
     app_root = Path(orchestrator_mod.__file__ or "").parent.parent
-    sources_path = Path(sources_mod.__file__ or "")
-    allocators = {
-        path.relative_to(app_root).as_posix()
+    owner = Path(sources_mod.__file__ or "").relative_to(app_root).as_posix()
+    sources_by_marker = {
+        path.relative_to(app_root).as_posix(): text
         for path in sorted(app_root.rglob("*.py"))
-        if "def _global_id" in path.read_text(encoding="utf-8")
+        for text in [path.read_text(encoding="utf-8")]
     }
-    assert allocators == {sources_path.relative_to(app_root).as_posix()}
+    allocators = {name for name, text in sources_by_marker.items() if "_global_id" in text}
+    rewriters = {
+        name for name, text in sources_by_marker.items() if r"\[(\d+)\]" in text
+    }
+    assert allocators == {owner}
+    assert rewriters == {owner}
+    assert not [name for name in dir(aggregate) if "remap" in name]
 
 
 def test_b12_restored_namespace_reopens_above_published_ids() -> None:

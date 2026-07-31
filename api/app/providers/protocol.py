@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+from app.runtime.run_receipt import RunReceipt
 from app.schemas.common import SubstitutionReasonCode
 from app.search.protocol import SourceItem
 from app.tools.protocol import ToolApprovalState, ToolRunStatus
@@ -339,6 +340,15 @@ class RunCost:
     enforces the cap via admission + mid-flight kill; this event surfaces live
     subtotal vs cap to the FE. `confidence` / `phase` label estimates honestly
     (FE-012); `partial` flags degraded synthesis (FE-015).
+
+    `receipt` (AC-02) is INTERNAL transport, not a wire field and not a new
+    `ProviderEvent` variant: the orchestrator attaches its typed `RunReceipt` to
+    the ONE `RunCost` it emits before each persistable boundary (final completion
+    and plan / clarify / worker approval pause). When it is present it is the
+    sole accounting authority for persistence and billing — `subtotal_usd` and
+    the fields above continue to describe wire UI state. Ordinary plan/progress
+    display ticks leave it `None`, and their scalar subtotal is never persistence
+    or billing authority.
     """
 
     subtotal_usd: float
@@ -349,6 +359,7 @@ class RunCost:
     budget_halted: bool = False
     failed_worker_count: int = 0
     type: Literal["run_cost"] = "run_cost"
+    receipt: RunReceipt | None = None
 
 
 ProviderEvent = (

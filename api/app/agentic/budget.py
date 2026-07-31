@@ -66,8 +66,14 @@ def _subagent_count(sub_question_count: int, settings: Settings) -> int:
     return count
 
 
-def _expected_subagent_usage(settings: Settings) -> UsageUpdate:
-    """Worst-case per-subagent token expectation over the round bound."""
+def expected_subagent_usage(settings: Settings) -> UsageUpdate:
+    """Worst-case per-subagent token expectation over the round bound.
+
+    Public because the orchestrator's per-phase gates (verifier samples,
+    aggregator funding) size themselves against the same expectation this
+    module's whole-run estimators use. A second private copy of the arithmetic is
+    how those gates drift apart.
+    """
     rounds = max(1, settings.tool_max_rounds)
     return UsageUpdate(
         input_tokens=settings.agentic_expected_input_tokens_per_round * rounds,
@@ -89,7 +95,7 @@ def estimate_run_cost(
     `pricing.py`. This is the number the plan-approval terminal surfaces as the
     estimated cost and the number the pre-spawn reservation holds.
     """
-    per_subagent = _expected_subagent_usage(settings)
+    per_subagent = expected_subagent_usage(settings)
     breakdown = compute_cost_breakdown(
         usage=per_subagent,
         binding=binding,
@@ -119,7 +125,7 @@ def estimate_residual_run_cost(
     samples when enabled — never a full fresh planner+N-workers estimate when
     those phases are already complete.
     """
-    per_subagent = _expected_subagent_usage(settings)
+    per_subagent = expected_subagent_usage(settings)
     breakdown = compute_cost_breakdown(
         usage=per_subagent,
         binding=binding,

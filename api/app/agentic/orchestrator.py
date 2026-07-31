@@ -1184,7 +1184,6 @@ async def _finalize_synthesis(
         verifier_cost = _verifier_cost(verifier_result, cost_for_usage)
         verifier_budget_halted = verifier_result.budget_halted
     total_usage = _sum_usages([*worker_usages, aggregator_usage, v_usage])
-    total_cost = worker_total_cost + aggregator_cost + verifier_cost
     if ledger is not None:
         ledger.settle(
             _AGGREGATOR_ID,
@@ -1222,8 +1221,9 @@ async def _finalize_synthesis(
             failed_worker_count=failed_worker_count,
         )
     else:
+        # No ledger: re-derive the total from the scalars (direct unit calls only).
         yield RunCost(
-            subtotal_usd=total_cost,
+            subtotal_usd=worker_total_cost + aggregator_cost + verifier_cost,
             cap_usd=cap_usd,
             confidence="exact",
             phase="final",
@@ -1524,7 +1524,6 @@ async def _finalize_synthesis_streamed(
     elif verifier_started and verifier_outcome == "failed":
         pass  # zero cost already; bracket closed above
     total_usage = _sum_usages([*worker_usages, aggregator_usage, v_usage])
-    total_cost = worker_total_cost + aggregator_cost + verifier_cost
     if ledger is not None:
         ledger.settle(
             _AGGREGATOR_ID,
@@ -1561,8 +1560,9 @@ async def _finalize_synthesis_streamed(
             failed_worker_count=failed,
         )
     else:
+        # No ledger: re-derive the total from the scalars (direct unit calls only).
         yield RunCost(
-            subtotal_usd=total_cost,
+            subtotal_usd=worker_total_cost + aggregator_cost + verifier_cost,
             cap_usd=cap_usd,
             confidence="exact",
             phase="final",

@@ -183,6 +183,25 @@ def admit(
     )
 
 
+def admit_run(
+    *,
+    estimate_usd: float,
+    settings: Settings,
+    headroom_usd: float | None,
+) -> BudgetDecision:
+    """Pre-spawn admission for one agentic run (M3).
+
+    Reserves the worst-case ``estimate_usd`` against this deployment's per-run cap
+    composed with the caller's remaining user/platform headroom. A phase only fans
+    out when the returned decision is admitted.
+    """
+    return admit(
+        estimated_usd=estimate_usd,
+        cap_usd=settings.agentic_run_budget_usd,
+        headroom_usd=headroom_usd,
+    )
+
+
 def exceeds_cap(
     *,
     actual_usd: float,
@@ -191,6 +210,28 @@ def exceeds_cap(
 ) -> bool:
     """Mid-flight check: has the ACTUAL accumulated cost breached the cap?"""
     return actual_usd > effective_cap(cap_usd=cap_usd, headroom_usd=headroom_usd)
+
+
+@dataclass(frozen=True)
+class BudgetGate:
+    """Stop one subagent's own stream once the RUN's total breaches the cap.
+
+    ``baseline_usd`` is what the run had already banked before this stream's
+    session, so the gate asks about the run's total rather than one phase's. A
+    fresh fan-out passes no gate: its cap breach is enforced by the consumer
+    cancelling workers, not by each worker halting itself.
+    """
+
+    baseline_usd: float
+    cap_usd: float
+    headroom_usd: float | None = None
+
+    def breached(self, session_cost_usd: float) -> bool:
+        return exceeds_cap(
+            actual_usd=self.baseline_usd + session_cost_usd,
+            cap_usd=self.cap_usd,
+            headroom_usd=self.headroom_usd,
+        )
 
 
 def compose_headroom(*values: float | None) -> float | None:

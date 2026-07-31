@@ -54,7 +54,6 @@ from app.agentic.worker import (
     WORKER_ALLOWED_TOOLS,
     WORKER_FAKE_HITL_TOOLS,
     WORKER_PROD_HITL_TOOLS,
-    BudgetGate,
     CostForUsage,
     FreshWorkerSeed,
     IsRetryable,
@@ -494,26 +493,7 @@ async def _emit_planner_receipt(
         )
 
 
-# --- M3 hooks: budget admission, plan approval, verifier ----------------------
-
-
-def _admit(
-    *,
-    estimate_usd: float,
-    settings: Settings,
-    budget_headroom_usd: float | None,
-) -> budget.BudgetDecision:
-    """Pre-spawn budget admission (M3).
-
-    Reserves the worst-case `estimate_usd` against the per-run cap composed with
-    the caller's remaining user/platform headroom. The orchestrator only fans
-    out when the returned decision is `admitted`.
-    """
-    return budget.admit(
-        estimated_usd=estimate_usd,
-        cap_usd=settings.agentic_run_budget_usd,
-        headroom_usd=budget_headroom_usd,
-    )
+# --- M3 hooks: plan approval, verifier ----------------------------------------
 
 
 async def _maybe_clarify_before_plan(
@@ -1252,8 +1232,8 @@ async def run_single(
         * settings.agentic_reasoning_token_multiplier
         * settings.agentic_fanout_token_multiplier
     )
-    decision = _admit(
-        estimate_usd=estimate, settings=settings, budget_headroom_usd=budget_headroom_usd
+    decision = budget.admit_run(
+        estimate_usd=estimate, settings=settings, headroom_usd=budget_headroom_usd
     )
     if not decision.admitted:
         yield SubagentStarted(subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary")
@@ -1484,7 +1464,6 @@ async def run_single(
         partial=budget_halted,
         budget_halted=budget_halted,
     )
-
 
 
 async def _resume_worker_continuation(
@@ -1781,7 +1760,7 @@ async def _resume_worker_continuation(
         # B3: a resume has no sibling fan-out and no consumer to cancel it, so
         # the cap is enforced on this worker's own stream. The baseline is what
         # the run had already banked before this continuation.
-        budget_gate=BudgetGate(
+        budget_gate=budget.BudgetGate(
             baseline_usd=ledger_usd,
             cap_usd=cap,
             headroom_usd=budget_headroom_usd,
@@ -1899,8 +1878,6 @@ async def _resume_worker_continuation(
     # Mid-stream remapper already assigned global ids — do not remap again.
     async for event in _emit_synthesis(halted=budget_halted):
         yield event
-
-
 
 
 # --- deep_research mode (M2 + M3 budget/approval/verify) ----------------------
@@ -2249,8 +2226,8 @@ async def _run_deep_research(
     # effective cap (run cap composed with user/platform headroom), don't spawn —
     # degrade gracefully to a labeled, explained synthesis (never a silent
     # overrun, never an error). Fold planner spend into the reject exit (BE-015).
-    decision = _admit(
-        estimate_usd=estimate, settings=settings, budget_headroom_usd=budget_headroom_usd
+    decision = budget.admit_run(
+        estimate_usd=estimate, settings=settings, headroom_usd=budget_headroom_usd
     )
     if not decision.admitted:
         async for event in _planner_receipt():

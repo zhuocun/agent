@@ -33,9 +33,9 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from app.agentic.budget import BudgetGate
 from app.agentic.sources import SourceNamespace
 from app.agentic.worker import (
-    BudgetGate,
     FreshWorkerSeed,
     ResumedWorkerSeed,
     WorkerCancelled,

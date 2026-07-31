@@ -33,7 +33,7 @@ from typing import Any, ClassVar, Literal
 
 import structlog
 
-from app.agentic import budget
+from app.agentic.budget import BudgetGate
 from app.agentic.retry import is_retryable_provider_error
 from app.agentic.sources import SourceNamespace
 from app.config import Settings
@@ -369,28 +369,6 @@ class WorkerRoutes:
             provider_id=provider_id or self.fallback_provider_id or "",
             model_id=model_id or self.fallback_model_id or "",
             reason=substitution,
-        )
-
-
-@dataclass(frozen=True)
-class BudgetGate:
-    """Stop this worker's own stream once the RUN's total breaches the cap.
-
-    `baseline_usd` is what the run had already banked before this worker's
-    session, so the gate asks about the run's total rather than one phase's. A
-    fresh fan-out passes no gate: its cap breach is enforced by the consumer
-    cancelling workers, not by each worker halting itself.
-    """
-
-    baseline_usd: float
-    cap_usd: float
-    headroom_usd: float | None = None
-
-    def breached(self, session_cost_usd: float) -> bool:
-        return budget.exceeds_cap(
-            actual_usd=self.baseline_usd + session_cost_usd,
-            cap_usd=self.cap_usd,
-            headroom_usd=self.headroom_usd,
         )
 
 

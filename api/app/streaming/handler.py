@@ -753,11 +753,18 @@ async def stream_and_persist(
         Anything else at a yield is the sink giving up, which is the same
         delivery failure the wrapper reports. `close()` runs either way, in place
         of the `finally` this region does not have.
+
+        Reports nothing once the turn has an outcome. Under the detached wrapper
+        this guard runs SECOND: the sink already classified the interruption and
+        then called `aclose()`, whose `GeneratorExit` arrives here as a different
+        exception type describing the same event. The lifecycle drops a duplicate
+        report anyway; not making it keeps the classification honest.
         """
-        if isinstance(exc, asyncio.CancelledError):
-            await turn_lifecycle.hard_cancelled()
-        else:
-            await turn_lifecycle.delivery_failed(exc)
+        if turn_lifecycle.outcome is None:
+            if isinstance(exc, asyncio.CancelledError):
+                await turn_lifecycle.hard_cancelled()
+            else:
+                await turn_lifecycle.delivery_failed(exc)
         await turn_lifecycle.close()
 
     # Emit `submitted` immediately. Resumable clients need the durable stream
@@ -3307,6 +3314,16 @@ async def run_detached_producer(
                         terminal_kind = "error"
                     try:
                         await buffer.append(event)
+                    except asyncio.CancelledError:
+                        # A cancel landing on the sink is an interruption, not a
+                        # sink failure, and it must be classified here: the
+                        # generator is suspended at a `yield`, so it never sees
+                        # the `CancelledError` — only the `GeneratorExit` from
+                        # `aclose()` below. Reporting that as a delivery failure
+                        # would terminalize the row `error` while this frame's
+                        # own handler closes the buffer `stopped`.
+                        await lifecycle.hard_cancelled()
+                        raise
                     except Exception as append_exc:
                         # The sink failed while the generator sits suspended at
                         # its `yield`. Report it to the SHARED lifecycle, which
@@ -3321,9 +3338,11 @@ async def run_detached_producer(
                 # same lifecycle. Idempotent on the paths that already closed.
                 await producer.aclose()
     except asyncio.CancelledError:
-        # Shutdown/lifespan cancel. `stream_and_persist` already closed out its
-        # own durable `stream` bookkeeping in its CancelledError branch before
-        # this propagated; we just close the buffer so subscribers drain.
+        # Shutdown/lifespan cancel. The durable `stream` bookkeeping is already
+        # closed out as `stopped` — by the generator's own CancelledError branch
+        # when the cancel landed inside it, or by the `hard_cancelled()` above
+        # when it landed on the sink. Either way the buffer's kind agrees with
+        # the row; we just close the buffer so subscribers drain.
         terminal_kind = "stopped"
         with contextlib.suppress(Exception):
             await buffer.mark_done(terminal_kind=terminal_kind)

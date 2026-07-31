@@ -67,6 +67,7 @@ class TurnLifecycle:
         self._failure: BaseException | None = None
         self._failure_stage: FailureStage | None = None
         self._closed = False
+        self._terminalized = False
 
     # --- observation ---------------------------------------------------------
 
@@ -154,8 +155,16 @@ class TurnLifecycle:
                 extra={"outcome": self._outcome},
             )
             return
+        if self._outcome is not None:
+            # An outcome is already selected, so this report is the same
+            # interruption arriving a second time: the detached sink reports the
+            # append failure, then closes the generator, and the `GeneratorExit`
+            # that unwinds its suspended yield reports again. The first
+            # selection stands and the durable row is written once.
+            log.debug("turn.%s_failed_after_outcome", stage, extra={"outcome": self._outcome})
+            return
         self._outcome = "error"
-        await self._mark_stream_error()
+        await self._terminalize("error")
         await self.close()
 
     # --- cleanup -------------------------------------------------------------
@@ -187,37 +196,44 @@ class TurnLifecycle:
         AFTER the durable commit, so a cancel landing on that yield used to
         rewrite a `done` row (message id and all) to `stopped`. A committed
         outcome stands; only its last frame was lost.
+
+        Selects the outcome only if nothing else has: a cancel that reaches both
+        the detached sink and the closing generator settles once, as `stopped`,
+        rather than racing a delivery failure for the durable status.
         """
-        if self._committed or self._stream_id is None:
+        if self._committed or self._outcome is not None:
             return
         self._outcome = "stopped"
+        await self._terminalize("stopped")
+
+    async def _terminalize(self, status: Literal["error", "stopped"]) -> None:
+        """Write the durable `stream` row's terminal status — at most once.
+
+        Best-effort on a fresh session: the request session may be poisoned by
+        the same failure, and bookkeeping must never become the error the caller
+        sees instead of the real one.
+
+        Guarded rather than merely repeatable. One interruption can reach the
+        latch from two owners (sink, then generator unwind), and two writes for
+        one turn is the double-report AC-11 forbids — the second would also be
+        free to disagree with the first about the status.
+        """
+        if self._terminalized or self._stream_id is None:
+            return
+        self._terminalized = True
         try:
             async with self._runtime.session_factory() as db:
                 await streams_repo.mark_status(
                     db,
                     stream_id=self._stream_id,
-                    status="stopped",
-                    release_active_guard=True,
+                    status=status,
+                    # A `stopped` row only clears the single-active guard when
+                    # asked; without it the next turn cannot start.
+                    release_active_guard=status == "stopped",
                 )
                 await db.commit()
         except Exception as exc:  # pragma: no cover - defensive
-            log.warning("stream.mark_cancelled.failed", exc_info=exc)
-
-    async def _mark_stream_error(self) -> None:
-        """Terminalize the durable `stream` row for a pre-commit failure.
-
-        Best-effort on a fresh session: the request session may be poisoned by
-        the same failure, and bookkeeping must never become the error the caller
-        sees instead of the real one.
-        """
-        if self._stream_id is None:
-            return
-        try:
-            async with self._runtime.session_factory() as db:
-                await streams_repo.mark_status(db, stream_id=self._stream_id, status="error")
-                await db.commit()
-        except Exception as exc:  # pragma: no cover - defensive
-            log.warning("stream.mark_error.failed", exc_info=exc)
+            log.warning("stream.terminalize.failed", exc_info=exc, extra={"status": status})
 
     async def _release_reservation(self) -> None:
         """B9: drop the platform headroom hold for this stream (idempotent)."""

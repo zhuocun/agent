@@ -131,6 +131,10 @@ class _RecordingLifecycle(TurnLifecycle):
         self.calls.append("delivery_failed")
         await super().delivery_failed(exc)
 
+    async def hard_cancelled(self) -> None:
+        self.calls.append("hard_cancelled")
+        await super().hard_cancelled()
+
     @classmethod
     def reset(cls) -> None:
         cls.instances = []
@@ -141,10 +145,17 @@ class _FailingSink:
 
     The generator is suspended at that `yield` when the raise happens — which is
     precisely the state that used to leave the pump pulling forever.
+
+    `raises` picks what the sink raises there. A `CancelledError` is a different
+    event from a broken sink even though it arrives at the same seam: the turn was
+    interrupted, so it terminalizes `stopped` rather than `error`.
     """
 
-    def __init__(self, *, fail_on: str) -> None:
+    def __init__(
+        self, *, fail_on: str, raises: type[BaseException] = _InjectedError
+    ) -> None:
         self._fail_on = fail_on
+        self._raises = raises
         self.appended: list[str] = []
         self.done = False
         self.terminal_kind: str | None = None
@@ -152,7 +163,7 @@ class _FailingSink:
     async def append(self, event: Any) -> None:
         name = event.event or ""
         if name == self._fail_on:
-            raise _InjectedError(f"sink failed on {name!r}")
+            raise self._raises(f"sink failed on {name!r}")
         self.appended.append(name)
 
     async def mark_done(self, *, terminal_kind: str, now: float | None = None) -> None:
@@ -953,3 +964,138 @@ async def test_the_wrapper_and_the_generator_share_one_lifecycle(
     assert sink.appended[-1] == "terminal"
     assert sink.terminal_kind == "done"
     assert await _reservation_held(session_factory, turn.stream_id) is False
+
+
+# 5. The detached sink AT the early yields -------------------------------------
+#
+# Where the two owners of section 3 and section 4 meet. The wrapper classifies
+# the interruption it caught from `buffer.append()`, then its `finally` closes
+# the generator — and `aclose()` lands `GeneratorExit` on the early-yield guard,
+# which describes the SAME event with a different exception type. Both reach one
+# latch, so it has to settle once: two `error` writes for one failure is a double
+# report, and a cancel that arrives as a delivery failure makes the durable row
+# say `error` while the replay buffer says `stopped`.
+
+
+async def _run_detached_with_sink(
+    session_factory: async_sessionmaker[AsyncSession],
+    turn: _Turn,
+    sink: _FailingSink,
+    *,
+    resume_seed: ResumeToolSeed | None,
+) -> None:
+    await run_detached_producer(
+        buffer=sink,  # type: ignore[arg-type]
+        session_factory=session_factory,
+        provider=_StallingProvider(),  # type: ignore[arg-type]
+        binding=_binding(),
+        requested_tier_id="smart",
+        conversation_id=turn.conversation_id,
+        user_message_id=turn.user_message_id,
+        user_text="Tool approved: calendar_create_event",
+        history=[],
+        is_temporary=False,
+        user_id=turn.user_id,
+        stream_id=turn.stream_id,
+        resume_seed=resume_seed,
+    )
+
+
+@pytest.mark.parametrize("fail_on", ["submitted", "tool_result"])
+async def test_an_early_detached_sink_failure_reports_and_terminalizes_once(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_on: str,
+) -> None:
+    """One append failure, one report, one durable status write.
+
+    The wrapper reports the append failure and then closes the generator, whose
+    early-yield guard used to report the resulting `GeneratorExit` as a second
+    delivery failure — marking the stream `error` twice for a single event.
+    """
+    turn = await _seed_turn(session_factory)
+    written = _record_terminalizations(monkeypatch, turn.stream_id)
+    _RecordingLifecycle.reset()
+    monkeypatch.setattr(handler_mod, "TurnLifecycle", _RecordingLifecycle)
+    sink = _FailingSink(fail_on=fail_on)
+
+    await _run_detached_with_sink(
+        session_factory,
+        turn,
+        sink,
+        resume_seed=(
+            None if fail_on == "submitted" else _early_yield_seed(turn.paused_message_id)
+        ),
+    )
+
+    assert len(_RecordingLifecycle.instances) == 1
+    lifecycle = _RecordingLifecycle.instances[0]
+    assert lifecycle.calls.count("delivery_failed") == 1
+    assert "hard_cancelled" not in lifecycle.calls
+    assert written == ["error"]
+    # The sink's own exception is the failure, not the `GeneratorExit` that the
+    # wrapper's `aclose()` raised afterwards to unwind the generator.
+    assert isinstance(lifecycle.failure, _InjectedError)
+    assert lifecycle.outcome == "error"
+    assert lifecycle.failure_stage == "delivery"
+    assert lifecycle.committed is False
+    assert lifecycle.closed is True
+    # The pump exists only once setup got that far, and is joined either way.
+    assert len(lifecycle._registered) == (1 if fail_on == "tool_result" else 0)
+    assert all(task.done() for task in lifecycle._registered)
+    assert await _stream_status(session_factory, turn.stream_id) == "error"
+    assert await _reservation_held(session_factory, turn.stream_id) is False
+    assert await _assistant_rows(session_factory, turn.conversation_id) == []
+    assert await _rollup(session_factory) is None
+    # Lifecycle and buffer agree on what happened.
+    assert sink.terminal_kind == "error"
+
+
+@pytest.mark.parametrize("cancel_on", ["submitted", "tool_result"])
+async def test_an_early_detached_cancel_classifies_as_stopped_on_both_sides(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_on: str,
+) -> None:
+    """A cancel on the sink is an interruption, and both sides must say so.
+
+    `CancelledError` from `await buffer.append()` is not a sink failure, and the
+    generator never sees it — it is suspended at the yield, so all it gets is the
+    `GeneratorExit` from the wrapper's `aclose()`. Reported as a delivery failure,
+    that selected durable `error` while this very cancel closed the replay buffer
+    `stopped`: one turn, two stories.
+    """
+    turn = await _seed_turn(session_factory)
+    written = _record_terminalizations(monkeypatch, turn.stream_id)
+    _RecordingLifecycle.reset()
+    monkeypatch.setattr(handler_mod, "TurnLifecycle", _RecordingLifecycle)
+    sink = _FailingSink(fail_on=cancel_on, raises=asyncio.CancelledError)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_detached_with_sink(
+            session_factory,
+            turn,
+            sink,
+            resume_seed=(
+                None
+                if cancel_on == "submitted"
+                else _early_yield_seed(turn.paused_message_id)
+            ),
+        )
+
+    assert len(_RecordingLifecycle.instances) == 1
+    lifecycle = _RecordingLifecycle.instances[0]
+    assert lifecycle.calls.count("hard_cancelled") == 1
+    assert "delivery_failed" not in lifecycle.calls
+    assert written == ["stopped"]
+    assert lifecycle.outcome == "stopped"
+    assert lifecycle.committed is False
+    assert lifecycle.closed is True
+    assert len(lifecycle._registered) == (1 if cancel_on == "tool_result" else 0)
+    assert all(task.done() for task in lifecycle._registered)
+    # The durable row, the latch and the replay buffer all say `stopped`.
+    assert await _stream_status(session_factory, turn.stream_id) == "stopped"
+    assert sink.terminal_kind == "stopped"
+    assert await _reservation_held(session_factory, turn.stream_id) is False
+    assert await _assistant_rows(session_factory, turn.conversation_id) == []
+    assert await _rollup(session_factory) is None

@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import (
     AliasChoices,
@@ -48,10 +49,11 @@ from app.agentic.clarify import (
     serialize_clarification_records,
 )
 from app.agentic.sources import CitationAllocation
-from app.providers.protocol import UsageUpdate
+from app.providers.protocol import ToolResult, UsageUpdate
 from app.runtime.run_receipt import RunReceipt, decode_run_receipt
 from app.schemas.common import SubagentOutcome
 from app.search.protocol import SourceItem
+from app.tools.protocol import ToolApprovalState, ToolRunStatus
 
 # Reserved key on pending tool_call.input (legacy). Must not collide with any
 # tool's advertised JSON Schema properties.
@@ -706,6 +708,58 @@ def sanitize_message_parts_for_api(
             raw = stripped
         sanitized.append(raw)
     return sanitized
+
+
+_TOOL_RUN_STATUSES: frozenset[str] = frozenset(
+    {"running", "succeeded", "failed", "cancelled", "awaiting_approval"}
+)
+_TOOL_APPROVAL_STATES: frozenset[str] = frozenset(
+    {"not_required", "pending", "approved", "rejected"}
+)
+
+
+def _str_or_none(raw: object) -> str | None:
+    return raw if isinstance(raw, str) else None
+
+
+def tool_results_from_transcript(
+    transcript: Sequence[dict[str, Any]], *, subagent_id: str
+) -> list[ToolResult]:
+    """Read the settled tool results back out of a durable transcript (H-010).
+
+    The inverse of `worker.tool_transcript_part`, and the reason a resumed worker
+    can hand the agent loop every tool result the pause turn already settled
+    instead of re-running those calls. Rows are dicts decoded from JSON, so
+    unknown status / approval values fall back to the neutral defaults rather than
+    widening `ToolResult`'s literals.
+    """
+    results: list[ToolResult] = []
+    for part in transcript:
+        if part.get("type") != "tool_result":
+            continue
+        status = part.get("status")
+        approval = part.get("approvalState")
+        output = part.get("output")
+        results.append(
+            ToolResult(
+                tool_call_id=str(part.get("toolCallId") or ""),
+                name=str(part.get("name") or ""),
+                label=_str_or_none(part.get("label")),
+                status=cast(
+                    ToolRunStatus,
+                    status if status in _TOOL_RUN_STATUSES else "succeeded",
+                ),
+                approval_state=cast(
+                    ToolApprovalState,
+                    approval if approval in _TOOL_APPROVAL_STATES else "not_required",
+                ),
+                summary=_str_or_none(part.get("summary")),
+                output=dict(output) if isinstance(output, dict) else {},
+                error=_str_or_none(part.get("error")),
+                subagent_id=subagent_id,
+            )
+        )
+    return results
 
 
 def completed_to_worker_outputs(

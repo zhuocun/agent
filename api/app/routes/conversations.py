@@ -54,6 +54,7 @@ from app.agentic.clarify import (
 from app.agentic.continuation import (
     get_run_ledger_from_server_state,
     resolve_continuation,
+    resolve_continuation_decode,
     sanitize_message_parts_for_api,
 )
 from app.auth.dependency import current_user
@@ -561,6 +562,28 @@ def _agentic_checkpoint_pending() -> AppError:
             ),
         ),
         status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _agentic_checkpoint_invalid(reason: str | None) -> AppError:
+    """AC-06: the persisted checkpoint no longer decodes, so the run cannot resume.
+
+    Raised BEFORE any settlement: consuming the approval would burn it on a turn
+    that can never continue, leaving the conversation unrecoverable.
+    """
+    detail = f" ({reason})" if reason else ""
+    return AppError(
+        ErrorEnvelope(
+            code="AGENTIC_CHECKPOINT_INVALID",
+            severity="error",
+            title="Paused run cannot be resumed",
+            body=(
+                f"The saved checkpoint for this paused run is unreadable{detail}. "
+                "Stop the turn and send the message again — approving it would "
+                "discard the approval without resuming the run."
+            ),
+        ),
+        status.HTTP_409_CONFLICT,
     )
 
 
@@ -3373,6 +3396,17 @@ async def _prepare_resume_tool(
             "toolApproval.toolCallId does not match a tool awaiting approval.",
         )
 
+    # AC-06: decode the checkpoint before anything settles. An undecodable blob is
+    # refused here rather than read as "no checkpoint", which would consume the
+    # approval and then resume as a plain tool call with the fan-out state lost.
+    cleaned_input, checkpoint = resolve_continuation_decode(
+        server_state=last_assistant.server_state,
+        tool_input=pending.get("input"),
+        tool_call_id=decision.tool_call_id,
+    )
+    if checkpoint.invalid:
+        raise _agentic_checkpoint_invalid(checkpoint.error)
+
     tool_name = str(pending.get("name") or "")
 
     # Plan-approval HITL resume (agentic, T6). The orchestrator pauses on a
@@ -3632,15 +3666,9 @@ async def _prepare_resume_tool(
         )
 
     # Effective input: a validated `edited_input` overrides the originally
-    # requested input; otherwise reuse the pending part's input. Strip the
-    # BE-005 continuation blob before schema validation / execution.
-    # H-012: prefer Message.server_state over legacy tool-input embedding.
-    raw_input = pending.get("input")
-    cleaned_input, agentic_continuation = resolve_continuation(
-        server_state=last_assistant.server_state,
-        tool_input=raw_input,
-        tool_call_id=decision.tool_call_id,
-    )
+    # requested input; otherwise reuse the pending part's input (`cleaned_input`,
+    # already stripped of the BE-005 continuation blob by the decode above).
+    agentic_continuation = checkpoint.state
     # B5: single-mode pause ledger from server_state (not tool input).
     tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
     # FL-28: pin the paused run's mode before any settlement runs. Prefer the

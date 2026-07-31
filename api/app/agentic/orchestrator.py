@@ -2770,7 +2770,9 @@ async def _run_deep_research(
         )
 
     planner_cost = _price_planner(planner_usage)
-    if plan_approved is not True:
+    if plan_approved is None:
+        # Fresh run: the planner pass this turn just made (empty on the
+        # deterministic decompose path) is the phase.
         ledger.settle(
             _PLANNER_ID,
             role="orchestrator",
@@ -2778,16 +2780,20 @@ async def _run_deep_research(
             cost_usd=planner_cost,
         )
     elif prior_receipt is not None:
-        # AC-02: a present receipt is the SOLE restore authority. `restore()`
-        # already put the planner phase back with the amount the pause terminal
-        # billed; the B4 scalar reconstructs that same spend from one row, so
-        # settling it over the restored phase would bill their disagreement as
-        # spend in THIS continuation. Read, do not write.
+        # AC-02: approve or deny, a resume never re-plans, so the planner spend on
+        # the books belongs to the pause turn and a present receipt is its SOLE
+        # restore authority. `restore()` already put that phase back with the
+        # amount the pause terminal billed — read it, never settle over it. The B4
+        # scalar would bill its disagreement with the receipt as spend in THIS
+        # turn, and this turn's empty planner pass would erase the phase history
+        # the receipt owns, leaving the terminal receipt's phase sum below its own
+        # cumulative even though the billed floor keeps the charge at zero.
         planner_cost = ledger.cost_of(_PLANNER_ID)
     else:
         # Legacy pause row: the B4 seed is the only record of the spend the pause
-        # terminal already charged. Keep live `planner_usage` empty so
-        # `_emit_planner_receipt` stays quiet — the plan was not re-planned.
+        # terminal already charged. Live `planner_usage` is empty on either resume
+        # decision — the plan was not re-planned — so `_emit_planner_receipt`
+        # stays quiet.
         planner_cost = seeded_planner_cost
         ledger.hold_billed_floor(planner_cost)
         ledger.settle(
@@ -2815,15 +2821,17 @@ async def _run_deep_research(
                 yield event
             return
     elif plan_approved is False:
-        # Declined on resume: no fan-out, a labeled (non-error) synthesis.
-        # Include any planner usage from a prior real-provider plan pass.
+        # Declined on resume: no fan-out, a labeled (non-error) synthesis. The
+        # planner tokens of the paused run still belong in the turn's roll-up, and
+        # the ledger's planner phase is where they live (from the receipt, or from
+        # the B4 seed for a legacy row).
         async for event in _planner_receipt():
             yield event
         async for event in _finalize_synthesis(
             synthesis=(
                 "Synthesis: the research plan was declined; no sub-agents were run."
             ),
-            worker_usages=[planner_usage],
+            worker_usages=[_restored_usage(ledger.usage_of(_PLANNER_ID))],
             worker_total_cost=planner_cost,
             cost_for_usage=cost_for_usage,
             cap_usd=cap,

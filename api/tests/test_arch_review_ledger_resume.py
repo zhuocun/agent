@@ -37,7 +37,7 @@ from app.db.session import get_db
 from app.providers.pricing import compute_cost_breakdown
 from app.providers.protocol import RunCost, UsageUpdate
 from app.providers.tiers import get_binding
-from app.runtime.run_receipt import RunReceipt, decode_run_receipt
+from app.runtime.run_receipt import CostLedger, RunReceipt, decode_run_receipt
 from app.schemas.message import AgenticRunSummaryPart
 from app.streaming import handler as handler_module
 
@@ -1179,6 +1179,125 @@ async def test_ac02_a_plan_resume_that_spends_nothing_new_charges_nothing(
     assert _final_run_cost(resumed) == pytest.approx(
         pause_receipt.cumulative_cost_usd
     )
+
+
+_DENY_PLANNER_USD = 0.10
+_DENY_PLANNER_USAGE = UsageUpdate(input_tokens=400, output_tokens=120)
+
+
+def _pause_receipt_with_priced_planner() -> RunReceipt:
+    """A pause boundary whose planner really cost something.
+
+    Synthesized because the fake provider plans deterministically and for free, so
+    no route can produce a priced planner phase — and a $0.00 planner cannot show
+    whether the phase survived the resume.
+    """
+    ledger = CostLedger()
+    ledger.settle(
+        "planner",
+        role="orchestrator",
+        usage=_DENY_PLANNER_USAGE,
+        cost_usd=_DENY_PLANNER_USD,
+    )
+    return ledger.receipt(cap_usd=1.0, boundary="pause")
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param("receipt", id="planner-phase-from-a-pause-receipt"),
+        pytest.param("legacy-seed", id="planner-cost-from-a-legacy-seed"),
+    ],
+)
+async def test_ac02_a_denied_plan_keeps_the_planner_phase_it_restored(
+    fanout_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    record: str,
+) -> None:
+    """Deny is a resume decision too, so it must read the restored planner phase
+    rather than settle this turn's (empty) planner pass over it.
+
+    A denied resume never re-plans, so `planner_usage` is empty. Settling that over
+    the restored planner left the terminal receipt asserting a cumulative it could
+    no longer itemize: the phase sum fell to $0.00 while cumulative stayed pinned at
+    the billed floor. The continuation's charge stayed correct at $0.00 either way —
+    the billed floor absorbed it — so the phase history is the only thing that gives
+    the defect away, and it is exactly what the register's closure identity needs.
+    """
+    await fanout_client.get("/api/bootstrap")
+    user_id = await _entitle_current_user(session_factory)
+    conv_id = await _new_conversation(fanout_client, f"ac02-deny-{record}")
+
+    plan_call_id, _ = await _plan_pause(fanout_client, conv_id=conv_id, nonce="61")
+    pause_row = (await _assistant_rows(session_factory, conv_id))[-1]
+
+    async with session_factory() as session:
+        row = await session.get(Message, pause_row.id)
+        assert row is not None
+        state = dict(row.server_state or {})
+        if record == "receipt":
+            state = put_run_ledger_in_server_state(
+                state, run_receipt=_pause_receipt_with_priced_planner()
+            )
+        else:
+            state = _without_receipt(
+                put_run_ledger_in_server_state(
+                    state,
+                    planner_cost_usd=_DENY_PLANNER_USD,
+                    planner_usage=_DENY_PLANNER_USAGE,
+                )
+            )
+        row.server_state = state
+        await session.commit()
+
+    billed_before = await _billed_to_date(session_factory, user_id)
+    with _capturing_run_costs() as folded:
+        denied = await _collect_sse(
+            fanout_client,
+            f"/api/conversations/{conv_id}/messages",
+            {
+                "clientMessageId": "ac020000-0000-0000-0000-000000000062",
+                "tierId": "smart",
+                "text": "",
+                "agenticMode": "deep_research",
+                "toolApproval": {"toolCallId": plan_call_id, "decision": "deny"},
+            },
+        )
+    billed = await _billed_to_date(session_factory, user_id) - billed_before
+    assert denied[-1][1]["status"] == "done"
+    assert not [
+        d
+        for n, d in denied
+        if n == "subagent_started" and str(d.get("role")) == "worker"
+    ], "a declined plan runs no worker"
+
+    done_row = (await _assistant_rows(session_factory, conv_id))[-1]
+    receipt = folded[-1].receipt
+    assert receipt is not None
+    phases = _phase_costs(receipt)
+
+    # The planner phase the resume restored is still itemized on the terminal
+    # receipt, at the amount the pause turn recorded for it.
+    assert phases["planner"] == pytest.approx(_DENY_PLANNER_USD)
+    assert sum(phases.values()) == pytest.approx(_DENY_PLANNER_USD)
+    assert receipt.cumulative_cost_usd == pytest.approx(_DENY_PLANNER_USD)
+    assert sum(phases.values()) == pytest.approx(receipt.cumulative_cost_usd)
+    # A decline buys nothing, so nothing is newly billable.
+    assert receipt.newly_billable_cost_usd == pytest.approx(0.0)
+    assert receipt.already_billed_cost_usd == pytest.approx(_DENY_PLANNER_USD)
+    assert float(done_row.cost_usd or 0.0) == pytest.approx(0.0)
+    assert billed == pytest.approx(0.0, abs=5e-7)
+    # The run TOTAL is still the one number, on the wire and on the row.
+    assert _final_run_cost(denied) == pytest.approx(_DENY_PLANNER_USD)
+    assert _terminal_cost(denied) == pytest.approx(_DENY_PLANNER_USD)
+    persisted = done_row.attribution or {}
+    assert float(persisted["costUsd"]) == pytest.approx(_DENY_PLANNER_USD)
+    # And the turn's token roll-up reports the planner tokens behind that money
+    # rather than this turn's empty planner pass.
+    breakdown = persisted["breakdown"]
+    assert isinstance(breakdown, dict)
+    assert breakdown["inputTokens"] == _DENY_PLANNER_USAGE.input_tokens
+    assert breakdown["outputTokens"] == _DENY_PLANNER_USAGE.output_tokens
 
 
 async def test_ac02_a_receipt_backed_resume_needs_no_scalar_seeds(

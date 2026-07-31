@@ -14,11 +14,10 @@ runs with an empty registry tool allowlist so approval-gated tools cannot pause
 there. Re-introduce ``aggregator`` / ``primary`` phases only with a real
 checkpoint + resume path.
 
-**H-012:** The continuation blob lives in ``Message.server_state`` (server-only),
-keyed by tool-call id. Legacy rows may still embed ``_agenticContinuation`` on
-``tool_call.input``; serializers strip that key (and claim/cost keys) before
-any private or public API projection. The reserved input key is also stripped
-before ``execute_tool`` / schema validation.
+**H-012:** The continuation blob lives in ``Message.server_state`` (server-only), keyed
+by tool-call id. Legacy rows may still embed ``_agenticContinuation`` on
+``tool_call.input``; serializers strip that key (and claim/cost keys) before any private
+or public API projection, and before ``execute_tool`` / schema validation.
 """
 
 from __future__ import annotations
@@ -164,9 +163,9 @@ class AgenticContinuation:
 #
 # One Pydantic codec reads every persisted checkpoint. It is TOTAL — nothing a JSON
 # column can hand back raises; callers get a typed invalid result and the resume route
-# refuses the turn before settling the approval. It is also CLOSED: only known versions,
-# the one resumable phase, finite non-negative numbers, and known subagent outcomes
-# decode. Legacy tolerance lives only in the aliases and `to_state()`, so there is no
+# refuses the turn before settling the approval — and CLOSED: only known versions, the
+# one resumable phase, finite non-negative non-bool numbers, and known outcomes decode.
+# Legacy tolerance lives only in the aliases and `to_state()`, so nothing here has a
 # second, divergent reader.
 
 CURRENT_CONTINUATION_VERSION = 2
@@ -202,17 +201,25 @@ def _known_mode(value: object) -> object:
     return value if value in ("single", "deep_research") else None
 
 
-def _wire_version(value: object) -> object:
-    """Pre-versioning blobs (and explicit nulls) are v1. A bool is not version 1."""
+def _reject_bool(value: object) -> object:
+    """`int(True)` is 1 and `float(True)` is 1.0, so lax numeric coercion would read
+    a checkpoint amount of ``true`` as one token or one cent. It is corruption."""
     if isinstance(value, bool):
-        raise ValueError("version must be a number")
-    return 1 if value is None else value
+        raise ValueError("expected a number, not a bool")
+    return value
 
 
-# Closed numeric domains: counts and money are finite and never negative. Legacy
-# null tolerance is expressed here, once, as part of the field type.
-_Count = Annotated[int, Field(ge=0), _none_to(0)]
-_Money = Annotated[float, Field(ge=0.0, allow_inf_nan=False), _none_to(0.0)]
+def _wire_version(value: object) -> object:
+    """Pre-versioning blobs (and blobs written with an explicit null) are v1."""
+    return 1 if value is None else _reject_bool(value)
+
+
+# Closed numeric domains: counts and money are finite, never negative, and never a
+# bool. Legacy null tolerance is expressed here, once, as part of the field type.
+_NotBool = BeforeValidator(_reject_bool)
+_Count = Annotated[int, Field(ge=0), _NotBool, _none_to(0)]
+_Money = Annotated[float, Field(ge=0.0, allow_inf_nan=False), _NotBool, _none_to(0.0)]
+_Index = Annotated[int, Field(ge=0), _NotBool] | None
 _NullStr = Annotated[str, _none_to("")]
 _NullBool = Annotated[bool, _none_to(False)]
 _StrIds = Annotated[tuple[str, ...], BeforeValidator(_string_ids)]
@@ -235,11 +242,9 @@ class _UsageWire(BaseModel):
 
 
 class _CompletedWorkerWire(BaseModel):
-    """One finished sibling snapshot. A corrupt entry invalidates the blob.
-
-    Dropping an unreadable sibling would silently delete that worker's answer
-    and its cost from the resumed run, which is worse than refusing the resume.
-    """
+    """One finished sibling snapshot. A corrupt entry invalidates the whole blob:
+    dropping it would silently delete that worker's answer and its cost from the
+    resumed run, which is worse than refusing the resume."""
 
     model_config = _WIRE_CONFIG
 
@@ -258,10 +263,8 @@ class _CompletedWorkerWire(BaseModel):
 class _ContinuationWire(BaseModel):
     """The one persisted shape of `AgenticContinuation`.
 
-    `version` and `phase` are closed literals: an unsupported checkpoint fails
-    validation rather than being read with this build's field meanings. Every
-    money/count field is finite and non-negative.
-    """
+    `version` and `phase` are closed literals, so an unsupported checkpoint fails
+    validation instead of being read with this build's field meanings."""
 
     model_config = _WIRE_CONFIG
 
@@ -276,7 +279,7 @@ class _ContinuationWire(BaseModel):
     budget_halted: _NullBool = False
     failed_workers: _Count = 0
     actual_cost_usd: _Money = 0.0
-    paused_worker_index: int | None = Field(default=None, ge=0)
+    paused_worker_index: _Index = None
     paused_sub_question: str | None = None
     partial_answer: _NullStr = ""
     partial_reasoning: _NullStr = ""
@@ -317,22 +320,15 @@ class _ContinuationWire(BaseModel):
         if emitted <= 0 and self.partial_answer:
             # Legacy blobs had no cursor: the whole draft was already streamed.
             emitted = len(self.partial_answer)
+        paused = self.paused_worker_usage
         return AgenticContinuation(
             **{
                 **dict(self),
-                "completed_workers": tuple(
-                    worker.to_state() for worker in self.completed_workers
-                ),
+                "completed_workers": tuple(w.to_state() for w in self.completed_workers),
                 "planner_usage": self.planner_usage.to_usage(),
-                "paused_worker_usage": (
-                    self.paused_worker_usage.to_usage()
-                    if self.paused_worker_usage is not None
-                    else None
-                ),
+                "paused_worker_usage": paused.to_usage() if paused is not None else None,
                 "tool_transcript": tuple(dict(part) for part in self.tool_transcript),
-                "clarifications": tuple(
-                    parse_clarification_records(list(self.clarifications))
-                ),
+                "clarifications": tuple(parse_clarification_records(list(self.clarifications))),
                 "emitted_answer_chars": emitted,
             }
         )
@@ -342,10 +338,8 @@ class _ContinuationWire(BaseModel):
 class ContinuationDecode:
     """Total decode result: absent (nothing stored), valid, or invalid.
 
-    An invalid checkpoint must never be read as "no checkpoint" — that would let
-    a resume bypass the continuation contract and settle the approval as a plain
-    tool resume.
-    """
+    An invalid checkpoint must never read as "no checkpoint": that would let a resume
+    bypass the continuation contract and settle the approval as a plain tool resume."""
 
     present: bool = False
     state: AgenticContinuation | None = None
@@ -359,9 +353,14 @@ class ContinuationDecode:
 _ABSENT = ContinuationDecode()
 
 
-def decode_continuation(raw: object) -> ContinuationDecode:
-    """Decode a persisted continuation blob. Never raises."""
-    if raw is None:
+def decode_continuation(raw: object, *, stored: bool = False) -> ContinuationDecode:
+    """Decode a persisted continuation blob. Never raises.
+
+    `stored=True` means the key really was there, so a null value is a corrupt
+    checkpoint rather than an absent one. Collapsing "present but unreadable" into
+    "absent" walks a resume straight past the invalid-checkpoint gate.
+    """
+    if raw is None and not stored:
         return _ABSENT
     if not isinstance(raw, dict):
         return ContinuationDecode(present=True, error="not_an_object")
@@ -387,11 +386,8 @@ def usage_to_wire(usage: UsageUpdate) -> dict[str, int]:
 
 
 def usage_from_wire(raw: object) -> UsageUpdate:
-    """Parse a camelCase or snake_case usage dict. Never raises.
-
-    A malformed or negative count reads as empty usage rather than propagating
-    a `ValueError` out of a persisted-row read.
-    """
+    """Parse a camelCase/snake_case usage dict. Never raises — a malformed, negative or
+    bool count reads as empty usage rather than escaping a persisted-row read."""
     if not isinstance(raw, dict):
         return UsageUpdate()
     try:
@@ -401,11 +397,8 @@ def usage_from_wire(raw: object) -> UsageUpdate:
 
 
 def _seed_cost(raw: object) -> float:
-    """Read a persisted ledger amount. Never raises; nonsense reads as 0.0.
-
-    A resume must not credit itself with negative or infinite prior spend, and a
-    persisted-row read must not 500.
-    """
+    """Read a persisted ledger amount. Never raises; nonsense reads as 0.0, so a resume
+    cannot credit itself with negative, infinite or bool prior spend."""
     if raw is None or isinstance(raw, bool):
         return 0.0
     try:
@@ -440,17 +433,18 @@ def _cleaned_tool_input(tool_input: object) -> dict[str, Any]:
     return {k: v for k, v in tool_input.items() if k not in RESERVED_CONTROL_KEYS}
 
 
-def _legacy_input_blob(tool_input: object) -> object:
-    return tool_input.get(CONTINUATION_INPUT_KEY) if isinstance(tool_input, dict) else None
+def _legacy_decode(tool_input: object) -> ContinuationDecode:
+    """Decode the legacy checkpoint embedded on `tool_call.input` (H-012)."""
+    if not isinstance(tool_input, dict) or CONTINUATION_INPUT_KEY not in tool_input:
+        return _ABSENT
+    return decode_continuation(tool_input[CONTINUATION_INPUT_KEY], stored=True)
 
 
 def extract_continuation_from_tool_input(
     tool_input: object,
 ) -> tuple[dict[str, Any], AgenticContinuation | None]:
     """Split tool input into (executor_input, continuation) — legacy embedding."""
-    return _cleaned_tool_input(tool_input), parse_continuation(
-        _legacy_input_blob(tool_input)
-    )
+    return _cleaned_tool_input(tool_input), _legacy_decode(tool_input).state
 
 
 def attach_continuation_to_tool_input(
@@ -486,13 +480,24 @@ def decode_continuation_from_server_state(
     server_state: object,
     tool_call_id: str,
 ) -> ContinuationDecode:
-    """Total decode of the checkpoint stored under `tool_call_id` (H-012)."""
+    """Total decode of the checkpoint stored under `tool_call_id` (H-012).
+
+    Absent means the row genuinely holds no checkpoint for this call. A malformed
+    `continuations` container, or a key stored with a null, is corruption instead —
+    the resume must refuse it, not proceed as an ordinary tool approval.
+    """
+    if server_state is None:
+        return _ABSENT
     if not isinstance(server_state, dict):
-        return _ABSENT
+        return ContinuationDecode(present=True, error="server_state: not_an_object")
     conts = server_state.get(SERVER_STATE_CONTINUATIONS_KEY)
-    if not isinstance(conts, dict):
+    if conts is None:
         return _ABSENT
-    return decode_continuation(conts.get(tool_call_id))
+    if not isinstance(conts, dict):
+        return ContinuationDecode(present=True, error="continuations: not_an_object")
+    if tool_call_id not in conts:
+        return _ABSENT
+    return decode_continuation(conts[tool_call_id], stored=True)
 
 
 def get_continuation_from_server_state(
@@ -612,9 +617,7 @@ def resolve_continuation_decode(
         stored = decode_continuation_from_server_state(server_state, tool_call_id)
         if stored.present:
             return _cleaned_tool_input(tool_input), stored
-    return _cleaned_tool_input(tool_input), decode_continuation(
-        _legacy_input_blob(tool_input)
-    )
+    return _cleaned_tool_input(tool_input), _legacy_decode(tool_input)
 
 
 def resolve_continuation(
@@ -654,13 +657,10 @@ def sanitize_message_parts_for_api(
     for part in parts:
         raw = deepcopy(part) if isinstance(part, dict) else part.model_dump(by_alias=True)
         if raw.get("type") in {"tool_call", "tool_result"}:
+            # Recursive, so the claim id beside `input` goes with the nested keys.
             stripped = strip_reserved_keys(raw)
             assert isinstance(stripped, dict)
             raw = stripped
-            # Also strip from top-level part (claim id lives beside input).
-            for key in list(raw.keys()):
-                if key in RESERVED_CONTROL_KEYS:
-                    del raw[key]
         sanitized.append(raw)
     return sanitized
 

@@ -12,7 +12,12 @@ These tests pin the replacement:
 - **Total.** A field-by-field hostile-value matrix over a valid checkpoint never
   raises; every rejection comes back as a typed `ContinuationDecode`.
 - **Closed.** Unsupported versions and phases, wrong types, non-finite and
-  negative numbers, and unknown outcomes all decode as invalid.
+  negative numbers, booleans in numeric slots, and unknown outcomes all decode as
+  invalid.
+- **Present is never absent.** A malformed `continuations` container, a checkpoint
+  key stored with a null, and an unreadable `server_state` all decode as invalid —
+  never as "this row has no checkpoint" — while rows that genuinely carry none stay
+  absent.
 - **Round-tripping.** Every supported version survives
   serialize → decode → serialize, and legacy (v1) blobs read through the same
   single adapter.
@@ -25,7 +30,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -299,6 +304,73 @@ def test_known_worker_outcomes_decode(outcome: str) -> None:
     assert decoded.state.completed_workers[0].outcome == outcome
 
 
+# --- Booleans are not numbers -------------------------------------------------
+#
+# `int(True)` is 1 and `float(True)` is 1.0, so lax Pydantic coercion read a stored
+# `actualCostUsd: true` as one cent and `emittedAnswerChars: true` as a one-character
+# cursor. A JSON bool in a numeric slot is corruption from a disagreeing writer, and
+# the accepted finding requires type rejection, not silent reinterpretation.
+
+_NUMERIC_WIRE_FIELDS: tuple[str, ...] = (
+    "version",
+    "plannerCostUsd",
+    "actualCostUsd",
+    "pausedWorkerCostUsd",
+    "failedWorkers",
+    "emittedAnswerChars",
+    "pausedWorkerIndex",
+)
+
+
+@pytest.mark.parametrize("field", _NUMERIC_WIRE_FIELDS)
+@pytest.mark.parametrize("value", [True, False])
+def test_booleans_are_rejected_as_numeric_checkpoint_fields(field: str, value: bool) -> None:
+    assert decode_continuation({**_valid_blob(), field: value}).invalid
+
+
+@pytest.mark.parametrize("container", ["plannerUsage", "pausedWorkerUsage"])
+@pytest.mark.parametrize(
+    "token_field", ["inputTokens", "outputTokens", "reasoningTokens", "cachedInputTokens"]
+)
+def test_booleans_are_rejected_inside_nested_usage(container: str, token_field: str) -> None:
+    """A bool token count used to decode as one token deep inside the blob."""
+    blob = _valid_blob()
+    corrupted = {**blob, container: {**blob[container], token_field: True}}
+    assert decode_continuation(corrupted).invalid
+
+
+@pytest.mark.parametrize("field", ["costUsd", "usage"])
+def test_booleans_are_rejected_inside_a_completed_worker(field: str) -> None:
+    blob = _valid_blob()
+    worker = dict(blob["completedWorkers"][0])
+    worker[field] = (
+        True if field == "costUsd" else {**worker["usage"], "inputTokens": True}
+    )
+    assert decode_continuation({**blob, "completedWorkers": [worker]}).invalid
+
+
+def test_a_bool_never_becomes_a_token_or_a_cent() -> None:
+    """Every reader of a persisted amount refuses a bool, not just the wire model."""
+    for field in ("plannerCostUsd", "actualCostUsd", "failedWorkers", "emittedAnswerChars"):
+        assert decode_continuation({**_valid_blob(), field: True}).state is None
+    assert usage_from_wire({"inputTokens": True, "outputTokens": 2}) == UsageUpdate()
+    seeds = get_run_ledger_from_server_state(
+        {"plannerCostUsd": True, "plannerUsage": {"inputTokens": True}}
+    )
+    assert seeds.planner_cost_usd == 0.0
+    assert seeds.planner_usage == UsageUpdate()
+
+
+def test_real_zeros_and_ints_still_decode_beside_the_bool_rejection() -> None:
+    """Closing bools must not close JSON's habit of writing 0.0 as `0`."""
+    decoded = decode_continuation(
+        {**_valid_blob(), "actualCostUsd": 0, "failedWorkers": 0, "pausedWorkerIndex": 0}
+    )
+    assert decoded.state is not None
+    assert decoded.state.actual_cost_usd == 0.0
+    assert decoded.state.paused_worker_index == 0
+
+
 def test_a_corrupt_sibling_invalidates_the_blob_rather_than_vanishing() -> None:
     """Dropping the entry would delete that worker's answer AND its cost."""
     blob = _valid_blob()
@@ -425,6 +497,96 @@ def test_server_state_decode_distinguishes_absent_from_invalid() -> None:
     invalid = decode_continuation_from_server_state(stored, "c1")
     assert invalid.invalid
     assert invalid.error
+
+
+def test_a_malformed_continuations_container_is_invalid_not_absent() -> None:
+    """`{"continuations": []}` is a corrupt row, not a row without a checkpoint.
+
+    Reading it as absent walked the resume past the invalid-checkpoint gate and on
+    to approval settlement.
+    """
+    for container in ([], "corrupt", 7, [{"c1": {}}]):
+        decoded = decode_continuation_from_server_state(
+            {SERVER_STATE_CONTINUATIONS_KEY: container}, "c1"
+        )
+        assert decoded.invalid, container
+        assert "continuations" in (decoded.error or "")
+
+
+def test_a_checkpoint_stored_as_null_is_invalid_not_absent() -> None:
+    """A present key holding null is only indistinguishable from a missing key if
+    the decode throws the distinction away."""
+    present_null = decode_continuation_from_server_state(
+        {SERVER_STATE_CONTINUATIONS_KEY: {"c1": None}}, "c1"
+    )
+    assert present_null.invalid
+    assert present_null.error
+    missing_key = decode_continuation_from_server_state(
+        {SERVER_STATE_CONTINUATIONS_KEY: {"other": _valid_blob()}}, "c1"
+    )
+    assert not missing_key.present
+
+
+def test_a_malformed_server_state_is_invalid_not_absent() -> None:
+    """An unreadable server-only blob is not "no checkpoint" either."""
+    for server_state in ([], "corrupt", 0, 1.5):
+        assert decode_continuation_from_server_state(server_state, "c1").invalid, server_state
+
+
+@pytest.mark.parametrize(
+    "server_state",
+    [
+        None,
+        {},
+        {SERVER_STATE_CONTINUATIONS_KEY: None},
+        {SERVER_STATE_CONTINUATIONS_KEY: {}},
+        {SERVER_STATE_CONTINUATIONS_KEY: {"other": "blob"}},
+    ],
+)
+def test_absent_stays_absent_for_rows_that_hold_no_checkpoint(server_state: object) -> None:
+    """Closing the invalid-versus-absent hole must not make ordinary rows invalid —
+    a single-mode or plan-approval pause legitimately carries no continuation."""
+    assert decode_continuation_from_server_state(server_state, "c1") == ContinuationDecode()
+
+
+@pytest.mark.parametrize(
+    "server_state",
+    [
+        {SERVER_STATE_CONTINUATIONS_KEY: []},
+        {SERVER_STATE_CONTINUATIONS_KEY: {"c1": None}},
+        {SERVER_STATE_CONTINUATIONS_KEY: {"c1": "corrupt"}},
+    ],
+)
+@pytest.mark.parametrize("with_legacy", [False, True])
+def test_a_malformed_stored_checkpoint_neither_falls_back_nor_reads_as_absent(
+    server_state: dict[str, Any], with_legacy: bool
+) -> None:
+    """Without a legacy blob the route used to see `present=False` and settle."""
+    tool_input: dict[str, Any] = {"query": "kickoff"}
+    if with_legacy:
+        tool_input[CONTINUATION_INPUT_KEY] = _valid_blob()
+    cleaned, decoded = resolve_continuation_decode(
+        server_state=server_state, tool_input=tool_input, tool_call_id="c1"
+    )
+    assert cleaned == {"query": "kickoff"}
+    assert decoded.invalid
+
+
+def test_a_legacy_checkpoint_stored_as_null_is_invalid_too() -> None:
+    """The legacy tool-input embedding gets the same present-versus-absent rule."""
+    _, stored_null = resolve_continuation_decode(
+        tool_input={"query": "kickoff", CONTINUATION_INPUT_KEY: None}, tool_call_id="c1"
+    )
+    assert stored_null.invalid
+    _, no_key = resolve_continuation_decode(
+        tool_input={"query": "kickoff"}, tool_call_id="c1"
+    )
+    assert not no_key.present
+
+
+def test_decode_continuation_separates_a_stored_null_from_a_missing_one() -> None:
+    assert decode_continuation(None) == ContinuationDecode()
+    assert decode_continuation(None, stored=True).invalid
 
 
 def test_a_corrupt_server_checkpoint_does_not_fall_back_to_legacy_tool_input() -> None:
@@ -630,13 +792,34 @@ def _tool_call_part(row: Message, call_id: str) -> dict[str, Any]:
     return next(p for p in parts if p.get("type") == "tool_call" and p.get("id") == call_id)
 
 
-# Each corruption is one AC-06 rejection class, and all three are JSON-native so
-# they really survive a durable round trip through the `server_state` column.
-_ROUTE_CORRUPTIONS: dict[str, dict[str, Any]] = {
-    "unsupported_version": {"version": 99},
-    "non_numeric_cost": {"plannerCostUsd": "free"},
-    "unknown_outcome": {
-        "completedWorkers": [
+_Corrupt = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+def _in_blob(**overrides: Any) -> _Corrupt:
+    """Corrupt fields inside the stored checkpoint dictionary."""
+
+    def _apply(state: dict[str, Any]) -> dict[str, Any]:
+        conts = dict(state[SERVER_STATE_CONTINUATIONS_KEY])
+        conts[_WORKER_CALL_ID] = {**conts[_WORKER_CALL_ID], **overrides}
+        return {**state, SERVER_STATE_CONTINUATIONS_KEY: conts}
+
+    return _apply
+
+
+def _container(replacement: Any) -> _Corrupt:
+    """Replace the whole `continuations` container, or the stored value under the key."""
+    return lambda state: {**state, SERVER_STATE_CONTINUATIONS_KEY: replacement}
+
+
+# Each corruption is one AC-06 rejection class, and all are JSON-native so they really
+# survive a durable round trip through the `server_state` column.
+_ROUTE_CORRUPTIONS: dict[str, _Corrupt] = {
+    "unsupported_version": _in_blob(version=99),
+    "non_numeric_cost": _in_blob(plannerCostUsd="free"),
+    "bool_as_money": _in_blob(actualCostUsd=True),
+    "bool_as_count": _in_blob(emittedAnswerChars=True),
+    "unknown_outcome": _in_blob(
+        completedWorkers=[
             {
                 "subagentId": "worker-1",
                 "subQuestion": "effects on housing",
@@ -644,7 +827,12 @@ _ROUTE_CORRUPTIONS: dict[str, dict[str, Any]] = {
                 "outcome": "exploded",
             }
         ]
-    },
+    ),
+    # A checkpoint that is present but unreadable must not read as absent: that let
+    # the resume past the gate and settle the approval on an unresumable turn.
+    "checkpoint_stored_as_null": _container({_WORKER_CALL_ID: None}),
+    "container_is_a_list": _container([]),
+    "container_is_a_string": _container("corrupt"),
 }
 
 
@@ -687,14 +875,7 @@ async def test_invalid_checkpoint_refuses_the_resume_before_settling_the_approva
     async with session_factory() as session:
         row = await session.get(Message, paused.id)
         assert row is not None
-        state = dict(row.server_state or {})
-        conts = dict(state[SERVER_STATE_CONTINUATIONS_KEY])
-        conts[_WORKER_CALL_ID] = {
-            **conts[_WORKER_CALL_ID],
-            **_ROUTE_CORRUPTIONS[corruption],
-        }
-        state[SERVER_STATE_CONTINUATIONS_KEY] = conts
-        row.server_state = state
+        row.server_state = _ROUTE_CORRUPTIONS[corruption](dict(row.server_state or {}))
         await session.commit()
 
     settlements: list[str] = []

@@ -3020,3 +3020,178 @@ async def test_producer_settlement_incomplete_surfaces_as_409(
 
     assert excinfo.value.status_code == 409
     assert excinfo.value.envelope.code == "APPROVAL_SETTLEMENT_INCOMPLETE"
+
+
+async def test_ac08_resume_does_not_reissue_a_published_citation_id() -> None:
+    """AC-08: a citation-only global above the catalog maximum survives the pause.
+
+    Worker 0 published catalog id 1. Worker 1 then wrote `[1]` before its own
+    `Sources` arrived, so the allocator handed that marker global 2 and the user
+    read `[2]` — an id with no catalog row. The checkpoint carried only the
+    catalog, so the resumed namespace reopened at 2 and gave it to the paused
+    worker's next new source: the `[2]` already on screen silently changed which
+    source it meant, and the pause-turn mapping came back as a different id.
+    """
+    import asyncio
+    from collections.abc import AsyncIterator as _AsyncIterator
+
+    from app.agentic.continuation import parse_continuation
+    from app.agentic.orchestrator import _resume_worker_continuation, run_orchestrator
+    from app.config import Settings
+    from app.providers.protocol import (
+        AnswerDelta,
+        AwaitingApproval,
+        Complete,
+        ProviderEvent,
+        Sources,
+        ToolCall,
+        ToolResult,
+        UsageUpdate,
+    )
+    from app.search.protocol import SourceItem
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_PLAN_APPROVAL=False,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_MAX_WORKERS=2,
+        AGENTIC_RUN_BUDGET_USD=10.0,
+    )
+    worker0_sourced = asyncio.Event()
+
+    def _pause_turn(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            if "DEEP_RESEARCH_WORKER:0:" in prompt:
+
+                async def _w0() -> _AsyncIterator[ProviderEvent]:
+                    yield Sources(
+                        items=[
+                            SourceItem(
+                                id=1, title="alpha source", url="https://alpha.example"
+                            )
+                        ]
+                    )
+                    # The remap runs as the worker consumes this stream, so the
+                    # gate below releases worker 1 only once global 1 is taken.
+                    worker0_sourced.set()
+                    yield AnswerDelta(text="alpha rests on [1].")
+                    yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+                return _w0()
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+
+                async def _w1() -> _AsyncIterator[ProviderEvent]:
+                    await worker0_sourced.wait()
+                    # Cites before its own Sources event: citation-only global.
+                    yield AnswerDelta(text="beta leans on [1].")
+                    yield UsageUpdate(input_tokens=1, output_tokens=1)
+                    yield ToolCall(
+                        id="cal-w1",
+                        name="calendar_create_event",
+                        label="Create calendar event",
+                        status="awaiting_approval",
+                        approval_state="pending",
+                        input={"title": "beta"},
+                    )
+                    yield AwaitingApproval(tool_call_id="cal-w1")
+
+                return _w1()
+
+            async def _agg() -> _AsyncIterator[ProviderEvent]:  # pragma: no cover
+                yield AnswerDelta(text="agg")
+                yield Complete(usage=UsageUpdate())
+
+            return _agg()
+
+        return _make
+
+    pause_events = [
+        ev
+        async for ev in run_orchestrator(
+            make_stream_for=_pause_turn,
+            settings=settings,
+            mode="deep_research",
+            user_text="DEEP_RESEARCH: alpha | beta",
+            cost_for_usage=lambda u: 0.01,
+        )
+    ]
+    pause = next(e for e in pause_events if isinstance(e, AwaitingApproval))
+    beta_text = "".join(
+        e.text
+        for e in pause_events
+        if isinstance(e, AnswerDelta) and e.subagent_id == "worker-1"
+    )
+    # What the user has already read: a citation above every catalog id.
+    assert beta_text == "beta leans on [2]."
+    assert pause.continuation is not None
+    checkpoint = parse_continuation(pause.continuation)
+    assert checkpoint is not None
+    assert [item.id for item in checkpoint.source_catalog] == [1]
+    assert checkpoint.source_next_id == 3
+
+    def _resume_turn(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> _AsyncIterator[ProviderEvent]:
+            async def _gen() -> _AsyncIterator[ProviderEvent]:
+                # A source the paused worker had not published before: a NEW
+                # local ordinal, which must not take the id `[2]` already means.
+                yield Sources(
+                    items=[
+                        SourceItem(
+                            id=2, title="beta follow-up", url="https://beta2.example"
+                        )
+                    ]
+                )
+                yield AnswerDelta(text=" Now [1] and [2] agree.")
+                yield Complete(usage=UsageUpdate(input_tokens=1, output_tokens=1))
+
+            return _gen()
+
+        return _make
+
+    resumed = [
+        ev
+        async for ev in _resume_worker_continuation(
+            make_stream_for=_resume_turn,
+            settings=settings,
+            cost_for_usage=lambda u: 0.01,
+            continuation=checkpoint,
+            resume_tool_result=ToolResult(
+                tool_call_id="cal-w1",
+                name="calendar_create_event",
+                status="succeeded",
+                approval_state="approved",
+                output={"ok": True},
+            ),
+            server_approved_call_ids=set(),
+        )
+    ]
+    worker_sources = next(
+        e for e in resumed if isinstance(e, Sources) and e.subagent_id == "worker-1"
+    )
+    assert [(i.id, i.title) for i in worker_sources.items] == [(3, "beta follow-up")]
+    resumed_text = "".join(
+        e.text
+        for e in resumed
+        if isinstance(e, AnswerDelta) and e.subagent_id == "worker-1"
+    )
+    # `[1]` still means the global the pause turn rendered; the new local gets 3.
+    assert resumed_text == " Now [2] and [3] agree."
+    merged = next(
+        e for e in resumed if isinstance(e, Sources) and e.subagent_id != "worker-1"
+    )
+    assert [(i.id, i.title) for i in merged.items] == [
+        (1, "alpha source"),
+        (3, "beta follow-up"),
+    ]

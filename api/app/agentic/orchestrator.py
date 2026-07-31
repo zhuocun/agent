@@ -1859,10 +1859,12 @@ async def _resume_worker_continuation(
         (i, f"worker-{i}", f"Worker {i + 1}", sq)
         for i, sq in enumerate(sub_questions)
     ]
-    # B12: one namespace for the resume session, reopened above every id the
-    # pause turn published; mid-stream remap is the only mapping step.
+    # B12: one namespace for the resume session, reopened over the allocator
+    # state the pause turn published; mid-stream remap is the only mapping step.
     source_namespace = SourceNamespace.restored(
         catalog=continuation.source_catalog,
+        allocations=continuation.source_allocations,
+        next_id=continuation.source_next_id,
         prior_id_groups=[
             continuation.source_ids,
             *(out.source_ids for out in results.values()),
@@ -2118,6 +2120,8 @@ async def _resume_worker_continuation(
             partial_reasoning="".join(reasoning_parts),
             source_ids=tuple(source_ids),
             source_catalog=tuple(source_namespace.merged_items()),
+            source_allocations=source_namespace.allocations(),
+            source_next_id=source_namespace.next_id,
             tool_transcript=tuple(tool_transcript),
             emitted_answer_chars=max(
                 continuation.emitted_answer_chars, len(partial)
@@ -3410,6 +3414,8 @@ async def _run_deep_research(
             partial_reasoning=worker_pause.partial_reasoning,
             source_ids=worker_pause.source_ids,
             source_catalog=tuple(source_namespace.merged_items()),
+            source_allocations=source_namespace.allocations(),
+            source_next_id=source_namespace.next_id,
             tool_transcript=worker_pause.tool_transcript,
             emitted_answer_chars=worker_pause.emitted_answer_chars,
             clarifications=tuple(bound_records),

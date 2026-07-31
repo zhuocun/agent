@@ -7,28 +7,27 @@ allocation, and it is the ONLY implementation: a second, list-ordered remapper
 used to live in `aggregate.py` and reordered ids by worker-plan position, which
 diverged from the arrival-ordered globals the live stream had already emitted.
 
-Three properties the allocator has to hold, each learned from a live defect:
+Four properties the allocator has to hold, each learned from a live defect:
 
 - **Arrival order.** Ids are handed out in the order events actually arrive, not
   plan order, because the wire has already shown earlier ids to the user.
 - **Citation before source.** `[1]` can be written before the worker's own
-  `Sources` event lands. Every surface — `remap_sources`, both answer rewrites,
-  and `mapped_ids_for` — allocates through `_global_id`, so a marker can never
-  fall through to its raw local ordinal and resolve against whichever worker
-  happens to own that global id (FL-16-a / FE-1).
+  `Sources` event lands. Both answer rewrites and the `Sources` remap allocate
+  through `_global_id`, so a marker can never fall through to its raw local
+  ordinal and resolve against whichever worker happens to own that global id
+  (FL-16-a / FE-1).
 - **Chunk safety.** A marker splits across answer deltas (`"See ["` + `"1]."`),
   so an unfinished trailing fragment is held per subagent until it completes.
-
-On resume, `restored()` reopens the paused run's namespace above every id the
-pause turn already published, so a continuation's fresh locals cannot collide
-with a global the user has already seen cited.
+- **Resume without reissue.** A citation-only allocation has no catalog row and
+  can sit ABOVE the catalog's largest id, so `restored()` takes the allocator's
+  own mappings and high-water mark rather than inferring them from the catalog.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from app.providers.protocol import Sources
 from app.search.protocol import SourceItem
@@ -51,6 +50,15 @@ def max_source_id(ids: Iterable[str]) -> int:
     return max_id
 
 
+@dataclass(frozen=True, slots=True)
+class CitationAllocation:
+    """One worker-local to run-global citation id this run already published."""
+
+    subagent_id: str
+    local_id: int
+    global_id: int
+
+
 class SourceNamespace:
     """The run's global citation space: worker-local ordinals in, globals out."""
 
@@ -66,23 +74,42 @@ class SourceNamespace:
     def restored(
         cls,
         *,
-        catalog: Sequence[SourceItem],
+        catalog: Sequence[SourceItem] = (),
+        allocations: Sequence[CitationAllocation] = (),
+        next_id: int = 0,
         prior_id_groups: Iterable[Iterable[str]] = (),
     ) -> SourceNamespace:
-        """Reopen a paused run's namespace so new locals cannot collide.
+        """Reopen a paused run's namespace so nothing it published is reissued.
 
-        A persisted catalog is the precise record and seeds both the items and
-        the next id. Without one (a checkpoint written before catalogs were
-        persisted) the highest id any surviving row cites is the best available
-        floor: allocation resumes above it, so a continuation's `[1]` cannot
-        land on a global the pause turn already published.
+        No single record holds every published id: the catalog holds only the
+        ones that reached a `Sources` event, so a citation-only `[n]` has no row
+        there and can sit above the catalog's maximum. `allocations` and
+        `next_id` are the allocator's own state and carry exactly those —
+        without them a resumed worker's first new source took an id the pause
+        turn had already rendered as a citation, silently pointing it at
+        unrelated content. Legacy checkpoints predate both, so the ids their
+        surviving rows still cite are the fallback floor.
         """
-        namespace = cls()
-        if catalog:
-            namespace.seed_catalog(catalog)
-            return namespace
-        seed_max = max((max_source_id(ids) for ids in prior_id_groups), default=0)
-        return cls(start=seed_max + 1) if seed_max > 0 else namespace
+        namespace = cls(start=next_id)
+        namespace.seed_catalog(catalog)
+        for published in allocations:
+            namespace._map[(published.subagent_id, published.local_id)] = published.global_id
+            namespace._next = max(namespace._next, published.global_id + 1)
+        cited = max((max_source_id(ids) for ids in prior_id_groups), default=0)
+        namespace._next = max(namespace._next, cited + 1)
+        return namespace
+
+    @property
+    def next_id(self) -> int:
+        """High-water mark: the next global id this namespace will hand out."""
+        return self._next
+
+    def allocations(self) -> tuple[CitationAllocation, ...]:
+        """Every local→global mapping handed out, in allocation order."""
+        return tuple(
+            CitationAllocation(subagent_id=sid, local_id=local, global_id=gid)
+            for (sid, local), gid in self._map.items()
+        )
 
     def seed_catalog(self, items: Sequence[SourceItem]) -> None:
         """Pre-load a persisted catalog (resume) and advance the next id."""
@@ -131,25 +158,6 @@ class SourceNamespace:
         if not hold:
             return ""
         return self._rewrite_markers(hold, subagent_id)
-
-    def mapped_ids_for(self, subagent_id: str, local_ids: list[str]) -> tuple[str, ...]:
-        """Global ids for a worker output's local source ids, order-preserving."""
-        out: list[str] = []
-        seen: set[str] = set()
-        for sid in local_ids:
-            try:
-                local_int = int(sid)
-            except ValueError:
-                if sid not in seen:
-                    out.append(sid)
-                    seen.add(sid)
-                continue
-            # Source emitted only via the WorkerOutput path — allocate now.
-            token = str(self._global_id(subagent_id, local_int))
-            if token not in seen:
-                out.append(token)
-                seen.add(token)
-        return tuple(out)
 
     def _global_id(self, subagent_id: str, local: int) -> int:
         """Global id for a worker-local ordinal, allocating on first sight.

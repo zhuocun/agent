@@ -47,6 +47,7 @@ from app.agentic.clarify import (
     parse_clarification_records,
     serialize_clarification_records,
 )
+from app.agentic.sources import CitationAllocation
 from app.providers.protocol import UsageUpdate
 from app.runtime.run_receipt import RunReceipt, decode_run_receipt
 from app.schemas.common import SubagentOutcome
@@ -148,6 +149,12 @@ class AgenticContinuation:
     # resume can re-emit aggregator Sources and continue allocating ids without
     # colliding with pre-pause globals.
     source_catalog: tuple[SourceItem, ...] = ()
+    # AC-08: the citation allocator's own state. The catalog above records only
+    # ids that reached a `Sources` event, so a citation-only `[n]` published
+    # above the catalog maximum is invisible to it — these two carry the
+    # mappings and the high-water mark so a resume cannot reissue either.
+    source_allocations: tuple[CitationAllocation, ...] = ()
+    source_next_id: int = 0
     # Wire-shaped tool_call / tool_result dicts from before the pause.
     tool_transcript: tuple[dict[str, Any], ...] = ()
     # Cursor: number of answer chars already streamed to the client.
@@ -268,6 +275,20 @@ class _CompletedWorkerWire(BaseModel):
         return CompletedWorkerState(**{**dict(self), "usage": self.usage.to_usage()})
 
 
+class _CitationAllocationWire(BaseModel):
+    """One published local→global citation mapping. A global id of 0 is not a
+    citation any answer can carry, so the domain starts at 1."""
+
+    model_config = _WIRE_CONFIG
+
+    subagent_id: str = Field(min_length=1)
+    local_id: _Count
+    global_id: Annotated[int, Field(ge=1), _NotBool]
+
+    def to_state(self) -> CitationAllocation:
+        return CitationAllocation(**dict(self))
+
+
 class _ContinuationWire(BaseModel):
     """The one persisted shape of `AgenticContinuation`.
 
@@ -293,6 +314,8 @@ class _ContinuationWire(BaseModel):
     partial_reasoning: _NullStr = ""
     source_ids: _StrIds = ()
     source_catalog: tuple[SourceItem, ...] = ()
+    source_allocations: tuple[_CitationAllocationWire, ...] = ()
+    source_next_id: _Count = 0
     tool_transcript: tuple[dict[str, Any], ...] = ()
     emitted_answer_chars: _Count = 0
     clarifications: tuple[Any, ...] = ()
@@ -304,7 +327,9 @@ class _ContinuationWire(BaseModel):
     paused_worker_cost_usd: _Money = 0.0
     paused_worker_used_fallback: _NullBool = False
 
-    @field_validator("plan", "completed_workers", "clarifications", mode="before")
+    @field_validator(
+        "plan", "completed_workers", "clarifications", "source_allocations", mode="before"
+    )
     @classmethod
     def _null_sequence(cls, value: object) -> object:
         return () if value is None else value
@@ -333,6 +358,7 @@ class _ContinuationWire(BaseModel):
             **{
                 **dict(self),
                 "completed_workers": tuple(w.to_state() for w in self.completed_workers),
+                "source_allocations": tuple(a.to_state() for a in self.source_allocations),
                 "planner_usage": self.planner_usage.to_usage(),
                 "paused_worker_usage": paused.to_usage() if paused is not None else None,
                 "tool_transcript": tuple(dict(part) for part in self.tool_transcript),

@@ -68,6 +68,7 @@ from app.providers.protocol import (
     ToolResult,
     UsageUpdate,
 )
+from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.runtime.run_receipt import (
     CostLedger,
     ReceiptBoundary,
@@ -76,7 +77,6 @@ from app.runtime.run_receipt import (
 )
 from app.schemas.common import SubstitutionReasonCode
 from app.search.protocol import SourceItem
-from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.tools.agent_loop import (
     TOOL_CALL_ID_NAMESPACE_SEP,
     MakeStream,

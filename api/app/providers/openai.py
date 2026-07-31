@@ -48,7 +48,6 @@ import structlog
 from openai import AsyncOpenAI
 
 from app.errors import AppError, ErrorEnvelope
-from app.providers._tool_markup import ToolMarkupSanitizer
 from app.providers.protocol import (
     AnswerDelta,
     AttachmentPayload,
@@ -68,8 +67,12 @@ from app.providers.protocol import (
     text_with_attachment_fallback,
 )
 from app.providers.steering import steer_user_text
+from app.runtime.answer_policy import (
+    EMPTY_REPLY_FALLBACK,
+    ToolMarkupSanitizer,
+    main_answer_is_empty,
+)
 from app.search.protocol import SearchProvider, SourceItem
-from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.tools.agent_loop import parse_tool_feedback_history
 
 _log = structlog.get_logger(__name__)

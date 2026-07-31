@@ -712,7 +712,7 @@ async def test_worker_with_no_prose_is_marked_failed_and_omitted(
     The static `EMPTY_REPLY_FALLBACK` used to make `answer_parts` look written,
     so a lost research step was reported `succeeded` with `partial=False`.
     """
-    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+    from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK
 
     def _worker(prompt: str) -> AsyncIterator[ProviderEvent]:
         async def _gen() -> AsyncIterator[ProviderEvent]:

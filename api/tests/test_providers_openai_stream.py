@@ -1421,7 +1421,7 @@ async def test_stream_web_search_round_cap_forces_terminal_answer() -> None:
     nothing was relayed, and still finish with UsageUpdate + Complete.
     """
     from app.providers.openai import _MAX_SEARCH_ROUNDS
-    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+    from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK
 
     bodies = [
         _sse_response(_tool_call_stream_body(query=f"q{i}", prompt_tokens=2, completion_tokens=3))

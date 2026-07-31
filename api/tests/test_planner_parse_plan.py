@@ -14,7 +14,7 @@ clean-looking lines (e.g. closing tags) that follow the leak.
 from __future__ import annotations
 
 from app.agentic.planner import parse_plan
-from app.providers._tool_markup import contains_tool_markup
+from app.runtime.answer_policy import contains_tool_markup
 
 _DSML = "<｜｜DSML｜｜"
 _NATIVE_CALLS = "<｜tool▁calls▁begin｜>"

@@ -587,7 +587,7 @@ async def test_agent_loop_defensive_complete_when_final_pass_silent() -> None:
     settings = Settings(TOOL_MAX_ROUNDS=2)  # type: ignore[call-arg]
     events = [ev async for ev in run_agent_loop(make_stream=_make_stream, settings=settings)]
     answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
-    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+    from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK
 
     assert answer.strip() == EMPTY_REPLY_FALLBACK
     assert any(isinstance(e, Complete) for e in events)

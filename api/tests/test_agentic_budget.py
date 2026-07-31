@@ -487,7 +487,7 @@ async def test_single_mode_budget_halt_with_no_prose_is_labeled() -> None:
         RunCost,
         ToolResult,
     )
-    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+    from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK
 
     def _make_stream_for(prompt: str, **_kwargs: object):
         def _make(

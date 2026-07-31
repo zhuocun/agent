@@ -11,7 +11,7 @@ that merely contains `<`, `|`, or a bare `<｜` that is not a real tool token.
 
 from __future__ import annotations
 
-from app.providers._tool_markup import (
+from app.runtime.answer_policy import (
     ToolMarkupSanitizer,
     contains_tool_markup,
     strip_tool_markup,

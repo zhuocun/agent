@@ -22,6 +22,14 @@ inline and detached (resumable) shapes:
 AC-02: the `CostLedger` algebra and the totality of every `RunReceipt` decoder,
 tested directly rather than only through the pause/resume route (that identity
 chain lives in `test_arch_review_ledger_resume.py`).
+
+AC-07: the import direction. `app.providers`, `app.tools` and `app.agentic` used
+to reach UP into `app.streaming` for the shared answer/markup policy, making the
+delivery layer a dependency of the engines that feed it. The policy now lives in
+`app.runtime.answer_policy` and this file asserts the direction statically; the
+behavioral markup/empty/nudge/fallback coverage stays in
+`test_empty_reply_fallback.py` and `test_tool_markup_sanitizer.py`, which now
+exercise that one neutral module.
 """
 
 from __future__ import annotations
@@ -29,6 +37,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import dataclasses
+import importlib
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -50,6 +59,7 @@ from app.db.repositories import usage as usage_repo
 from app.db.session import get_db
 from app.providers.protocol import AnswerDelta, ProviderEvent, UsageUpdate
 from app.providers.tiers import get_binding
+from app.runtime import answer_policy as answer_policy_mod
 from app.runtime import run_receipt as run_receipt_mod
 from app.runtime.context import RuntimeContext, derive_session_factory
 from app.runtime.run_receipt import (
@@ -434,18 +444,24 @@ def test_handler_has_no_process_wide_session_factory_lookup() -> None:
 # AC-02 — the ledger algebra and the totality of every receipt decoder ----------
 
 
-def test_receipt_module_does_not_import_the_provider_protocol() -> None:
-    """`providers.protocol.RunCost` imports `RunReceipt` as its carrier, so an
-    import back the other way would close a cycle at module load."""
-    assert run_receipt_mod.__file__
-    tree = ast.parse(Path(run_receipt_mod.__file__).read_text(encoding="utf-8"))
+def _app_imports(path: Path) -> set[str]:
+    """Every `app.*` module `path` imports, read statically (never executed)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
-    assert not [name for name in imported if name.startswith("app.")], imported
+    return {name for name in imported if name.startswith("app.")}
+
+
+def test_receipt_module_does_not_import_the_provider_protocol() -> None:
+    """`providers.protocol.RunCost` imports `RunReceipt` as its carrier, so an
+    import back the other way would close a cycle at module load."""
+    assert run_receipt_mod.__file__
+    imported = _app_imports(Path(run_receipt_mod.__file__))
+    assert imported == set(), imported
 
 
 def test_usage_totals_copies_counts_off_a_provider_usage_event() -> None:
@@ -627,3 +643,45 @@ def test_decode_run_receipt_clamps_billed_above_cumulative() -> None:
     assert decoded is not None
     assert decoded.already_billed_cost_usd == pytest.approx(0.10)
     assert decoded.newly_billable_cost_usd == pytest.approx(0.0)
+
+
+# AC-07 — one neutral answer policy, imported downward only ---------------------
+
+
+@pytest.mark.parametrize("package", ["providers", "tools", "agentic"])
+def test_engine_packages_do_not_import_the_streaming_layer(package: str) -> None:
+    """AC-07 closure: the delivery layer is not a dependency of its engines.
+
+    Providers, the tool loop and the orchestrator all needed the shared
+    answer/markup policy, and all three used to import it from
+    `app.streaming.constants`. The policy is neutral runtime code now, so nothing
+    in these packages may name `app.streaming` at all.
+    """
+    assert answer_policy_mod.__file__
+    package_root = Path(answer_policy_mod.__file__).parent.parent / package
+    offenders = {
+        path.name: sorted(
+            name
+            for name in _app_imports(path)
+            if name == "app.streaming" or name.startswith("app.streaming.")
+        )
+        for path in sorted(package_root.rglob("*.py"))
+    }
+    assert {name: hits for name, hits in offenders.items() if hits} == {}
+
+
+def test_answer_policy_imports_nothing_it_serves() -> None:
+    """The policy is the shared leaf: it cannot import a consumer back."""
+    assert answer_policy_mod.__file__
+    imported = _app_imports(Path(answer_policy_mod.__file__))
+    assert imported == set(), imported
+
+
+@pytest.mark.parametrize(
+    "module", ["app.streaming.constants", "app.providers._tool_markup"]
+)
+def test_the_superseded_policy_owners_are_gone(module: str) -> None:
+    """Both previous owners are deleted, not shimmed: a re-export would leave two
+    import paths to one policy and let the upward dependency grow back."""
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(module)

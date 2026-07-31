@@ -94,6 +94,11 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.tiers import TierBinding, get_binding
+from app.runtime.answer_policy import (
+    EMPTY_REPLY_FALLBACK,
+    empty_reply_retry_nudge,
+    main_answer_is_empty,
+)
 from app.runtime.context import RuntimeContext
 from app.runtime.run_receipt import RunReceipt
 from app.schemas.common import ModelTierId, SubagentOutcome, SubstitutionReasonCode
@@ -124,11 +129,6 @@ from app.schemas.stream_events import (
     ToolResultEvent,
 )
 from app.search.protocol import SourceItem
-from app.streaming.constants import (
-    EMPTY_REPLY_FALLBACK,
-    empty_reply_retry_nudge,
-    main_answer_is_empty,
-)
 from app.streaming.empty_reply_retry import run_chat_with_empty_retry
 from app.streaming.replay_registry import ReplayLogBuffer
 from app.streaming.sse import (

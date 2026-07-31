@@ -290,15 +290,39 @@ async def test_foreign_claimed_without_result_always_fails_closed(
     assert await _durable_snapshot(session_factory, msg.id) == baseline
 
 
-async def test_foreign_claimed_without_result_conflicts_on_opposite_decision(
+@pytest.mark.parametrize(
+    ("claimed_approval", "claimed_status", "decision"),
+    [
+        ("approved", "running", "approve"),
+        ("approved", "running", "deny"),
+        ("rejected", "cancelled", "deny"),
+        ("rejected", "cancelled", "approve"),
+    ],
+)
+async def test_foreign_claim_is_incomplete_for_either_decision(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
+    claimed_approval: str,
+    claimed_status: str,
+    decision: str,
 ) -> None:
-    """A contradictory decision against a live claim conflicts, still no write."""
-    tool_call_id = "cal_claimed_conflict"
+    """AC-01: the requested decision cannot change a foreign claim's answer.
+
+    Every combination of what the row records and what this request asks for
+    lands on ``ApprovalSettlementIncomplete``. The opposite-decision rows are the
+    point: an earlier revision reported ``ApprovalDecisionConflict`` for those,
+    which asserts a durable decision the caller cannot actually see. A claim
+    without a ``tool_result`` records a *provisional* decision — its owner may
+    still settle succeeded, failed, or cancelled — so reading it as settled truth
+    is exactly the inference AC-01 removes, and it would hand a foreign caller a
+    branch that varies with someone else's in-flight side effect.
+    ``ApprovalDecisionConflict`` is reserved for a settled result (H-006), proven
+    separately by ``test_settled_decision_conflict_raises``.
+    """
+    tool_call_id = f"cal_foreign_{claimed_approval}_{decision}"
     parts = _pending_calendar_parts(tool_call_id=tool_call_id)
-    parts[0]["approvalState"] = "approved"
-    parts[0]["status"] = "running"
+    parts[0]["approvalState"] = claimed_approval
+    parts[0]["status"] = claimed_status
     parts[0][APPROVAL_CLAIM_ID_KEY] = "claim-prior"
     msg = await _seed_paused_message(session_factory, parts=parts)
     baseline = await _durable_snapshot(session_factory, msg.id)
@@ -309,17 +333,43 @@ async def test_foreign_claimed_without_result_conflicts_on_opposite_decision(
     async with session_factory() as session:
         row = await session.get(Message, msg.id)
         assert row is not None
-        with pytest.raises(ApprovalDecisionConflict):
+        # ApprovalDecisionConflict is not a subclass, so this also asserts the
+        # conflict branch is gone from the registry path.
+        with pytest.raises(ApprovalSettlementIncomplete) as raised:
             await claim_and_settle_approval(
                 session,
                 paused_message=row,
                 tool_call_id=tool_call_id,
-                decision="deny",
+                decision=decision,
                 effective_input={"title": "Planning review"},
                 label="Create calendar event",
             )
+    assert raised.value.tool_call_id == tool_call_id
     assert exec_count["n"] == 0
     assert await _durable_snapshot(session_factory, msg.id) == baseline
+
+
+async def test_registry_claim_path_has_no_decision_conflict_branch() -> None:
+    """Static guard: only the pseudo-tool helper may raise Conflict on a claim.
+
+    ``_raise_foreign_claim_incomplete`` takes no ``decision`` argument, so the
+    registry exits cannot reintroduce a decision-dependent answer without this
+    failing. Conflict remains reachable from settled-``tool_result`` comparisons
+    and from the pseudo-tool helper, and nowhere else.
+    """
+    registry_exit = approval_settlement._raise_foreign_claim_incomplete
+    # co_names, not the source, so the docstring's prose cannot satisfy this.
+    assert "ApprovalDecisionConflict" not in registry_exit.__code__.co_names
+    assert "decision" not in inspect.signature(registry_exit).parameters
+
+    claim_source = inspect.getsource(approval_settlement._claim_pending_locked)
+    assert "_raise_pseudo_incomplete_or_conflict" not in claim_source
+    # The surviving Conflict raises in the registry claim path all sit behind a
+    # durable settled result; none is on a claimed-without-result exit.
+    conflict_sites = claim_source.split("raise ApprovalDecisionConflict")[:-1]
+    assert conflict_sites, "expected the settled-result conflict checks to remain"
+    for preceding in conflict_sites:
+        assert "find_settled_tool_result" in preceding
 
 
 async def test_cas_second_claim_does_not_reexecute(
@@ -1566,18 +1616,21 @@ async def test_two_instances_foreign_claim_fails_closed_and_winner_settles_once(
         assert _durable_tool_results(claimed[1], tool_call_id) == []
         assert await _durable_snapshot(session_factory, msg.id) == claimed
 
+        # The third loser contradicts the winner's decision: that must read the
+        # same as any other loser, not as a decision conflict.
         losers = (
-            (other, other_factory),
-            (approval_settlement, session_factory),
-            (other, other_factory),
+            (other, other_factory, "approve"),
+            (approval_settlement, session_factory, "approve"),
+            (other, other_factory, "deny"),
         )
-        for i, (module, loser_factory) in enumerate(losers):
+        for i, (module, loser_factory, loser_decision) in enumerate(losers):
             with pytest.raises(module.ApprovalSettlementIncomplete) as raised:
                 await _approve_from(
                     loser_factory,
                     message_id=msg.id,
                     tool_call_id=tool_call_id,
                     claim_id=f"claim-loser-{i}",
+                    decision=loser_decision,
                     settlement=module,
                 )
             assert raised.value.tool_call_id == tool_call_id

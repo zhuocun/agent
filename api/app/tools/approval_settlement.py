@@ -21,16 +21,19 @@ Retry / crash recovery (AC-01, fail closed):
   ``ApprovalDecisionConflict``.
 - Claimed (``approved``/``running``) **without** ``tool_result`` → the claim
   belongs to another invocation, so this one **always** raises
-  ``ApprovalSettlementIncomplete``: it neither re-executes nor writes. Execute
-  runs outside the claim lock, so a live winner's row is byte-for-byte what a
-  crashed claim leaves behind, and nothing observable from here distinguishes
-  them — a second Fly machine cannot see whether the claiming machine is still
-  running the side effect, and elapsed time does not prove it stopped. Writing
-  a failed replay there would clobber a side effect that may still succeed, so
-  the row stays claimed until its owner settles it. Terminalizing a genuinely
-  orphaned claim requires executor idempotency/fencing or an explicit
-  administrative reconciliation; neither exists, and no timeout/expiry branch
-  substitutes for them.
+  ``ApprovalSettlementIncomplete``, whichever way it decided: it neither
+  re-executes nor writes, and it does not report a decision conflict, because an
+  unsettled claim's recorded decision is provisional and not this caller's to
+  read as durable truth (``ApprovalDecisionConflict`` needs a settled
+  ``tool_result`` — H-006). Execute runs outside the claim lock, so a live
+  winner's row is byte-for-byte what a crashed claim leaves behind, and nothing
+  observable from here distinguishes them — a second Fly machine cannot see
+  whether the claiming machine is still running the side effect, and elapsed
+  time does not prove it stopped. Writing a failed replay there would clobber a
+  side effect that may still succeed, so the row stays claimed until its owner
+  settles it. Terminalizing a genuinely orphaned claim requires executor
+  idempotency/fencing or an explicit administrative reconciliation; neither
+  exists, and no timeout/expiry branch substitutes for them.
 - **Only the invocation that minted a claim may settle under it.** That includes
   the one recovery write that remains: when the owner executed but lost the
   settle CAS, it writes the failed replay under *its own* claim id.
@@ -408,7 +411,7 @@ def _adoptable_claim(call_part: dict[str, Any], decision: str) -> str | None:
 
     A crash (or a Fly machine restart) between the claim commit and the settle
     write leaves the ``tool_call`` terminal-but-unsettled, which
-    ``_raise_incomplete_or_conflict`` turns into a permanent 409 — the pause card
+    ``_raise_pseudo_incomplete_or_conflict`` turns into a permanent 409 — the pause card
     can never be resolved again and the whole turn is stranded. Pseudo-tool
     settlement never calls ``execute_tool``
     (``settle_pseudo_tool_approval_outcome``), so re-entering under the existing
@@ -426,17 +429,41 @@ def _adoptable_claim(call_part: dict[str, Any], decision: str) -> str | None:
     return str(existing) if existing is not None else None
 
 
-def _raise_incomplete_or_conflict(
+def _raise_foreign_claim_incomplete(*, tool_call_id: str) -> NoReturn:
+    """The one exit for a registry claim this invocation does not own.
+
+    Unconditionally incomplete — the requested decision is not consulted, so an
+    opposite-decision retry gets the same answer as a matching one. A claimed but
+    unsettled row records a decision that is still *provisional*: the claim window
+    is exactly the stretch where ``approvalState`` says ``approved`` while no
+    ``tool_result`` exists, and the owner may yet settle it succeeded, failed, or
+    cancelled. Answering ``ApprovalDecisionConflict`` there would assert a durable
+    decision this caller cannot see, and it would hand a foreign caller a branch
+    that varies with the claim's contents — the first step back toward acting on
+    someone else's in-flight side effect. ``ApprovalDecisionConflict`` stays
+    reserved for a genuinely settled ``tool_result`` (H-006).
+
+    Never returns and never writes, so no caller can turn a foreign claim into a
+    durable outcome regardless of how long it has been outstanding.
+    """
+    raise ApprovalSettlementIncomplete(tool_call_id=tool_call_id)
+
+
+def _raise_pseudo_incomplete_or_conflict(
     *,
     tool_call_id: str,
     decision: str,
     approval_state: str,
 ) -> NoReturn:
-    """Claimed-without-result: conflict on opposite decision, else incomplete.
+    """Pseudo-tool claimed-without-result: conflict on opposite decision.
 
-    The single fail-closed exit for a claim this invocation does not own. It
-    never returns and never writes, so no caller can turn a foreign claim into a
-    durable outcome regardless of how long that claim has been outstanding.
+    Pseudo-tool only — the registry path uses
+    ``_raise_foreign_claim_incomplete`` and never reports a conflict from an
+    unsettled claim. A pseudo claim carries no external side effect, so its
+    recorded decision is the whole outcome and contradicting it is a real
+    conflict rather than a guess about work in flight; that is the same asymmetry
+    that lets ``_adoptable_claim`` finish a same-decision write here and nowhere
+    else.
     """
     if approval_state in ("approved", "rejected"):
         claimed_decision = _decision_from_approval_state(approval_state)
@@ -528,7 +555,7 @@ async def settle_pseudo_tool_approval_outcome(
             minted_claim = adopted_claim or claim_id or f"claim-{secrets.token_urlsafe(12)}"
             if adopted_claim is None:
                 if approval_state != "pending":
-                    _raise_incomplete_or_conflict(
+                    _raise_pseudo_incomplete_or_conflict(
                         tool_call_id=tool_call_id,
                         decision=decision,
                         approval_state=approval_state,
@@ -575,7 +602,7 @@ async def settle_pseudo_tool_approval_outcome(
                     # above would leave this window stranding the card.
                     adopted_claim = _adoptable_claim(call_part, decision)
                     if adopted_claim is None:
-                        _raise_incomplete_or_conflict(
+                        _raise_pseudo_incomplete_or_conflict(
                             tool_call_id=tool_call_id,
                             decision=decision,
                             approval_state=str(
@@ -603,7 +630,7 @@ async def settle_pseudo_tool_approval_outcome(
                     detail="Tool call disappeared after claim.",
                 )
             if call_after.get(APPROVAL_CLAIM_ID_KEY) != minted_claim:
-                _raise_incomplete_or_conflict(
+                _raise_pseudo_incomplete_or_conflict(
                     tool_call_id=tool_call_id,
                     decision=decision,
                     approval_state=str(call_after.get("approvalState") or "approved"),
@@ -636,7 +663,7 @@ async def settle_pseudo_tool_approval_outcome(
             tool_name = str((call_final or {}).get("name") or tool_name)
             if durable is None:
                 if not settled:
-                    _raise_incomplete_or_conflict(
+                    _raise_pseudo_incomplete_or_conflict(
                         tool_call_id=tool_call_id,
                         decision=decision,
                         approval_state=(
@@ -893,12 +920,9 @@ async def _claim_pending_locked(
         # AC-01: the claim is someone else's and no durable result exists. Fail
         # closed — never re-execute, and never write a terminal failure that
         # could clobber a side effect still running under that claim, whether it
-        # was claimed a millisecond or a week ago.
-        _raise_incomplete_or_conflict(
-            tool_call_id=tool_call_id,
-            decision=decision,
-            approval_state=approval_state,
-        )
+        # was claimed a millisecond or a week ago and whichever way this request
+        # decided.
+        _raise_foreign_claim_incomplete(tool_call_id=tool_call_id)
 
     # CAS claim: only pending → approved/rejected. Commit BEFORE execute.
     # Dialect-safe: UPDATE … WHERE parts_version=expected (H-005).
@@ -970,11 +994,7 @@ async def _claim_pending_locked(
                 result=result, decision="deny", already_settled=False
             )
         # The winner holds the claim and has not settled yet: fail closed.
-        _raise_incomplete_or_conflict(
-            tool_call_id=tool_call_id,
-            decision=decision,
-            approval_state=str(call_part.get("approvalState") or "approved"),
-        )
+        _raise_foreign_claim_incomplete(tool_call_id=tool_call_id)
 
     # Re-lock after commit; confirm we still own the claim (true CAS).
     locked = await _lock_message(db, message_id)
@@ -1021,11 +1041,7 @@ async def _claim_pending_locked(
     if winner_claim != minted_claim:
         # Our claim id was replaced between commit and re-lock, so this
         # invocation is no longer the owner and may not settle under it.
-        _raise_incomplete_or_conflict(
-            tool_call_id=tool_call_id,
-            decision=decision,
-            approval_state=str(call_after.get("approvalState") or "approved"),
-        )
+        _raise_foreign_claim_incomplete(tool_call_id=tool_call_id)
 
     return minted_claim, tool_name, part_subagent
 

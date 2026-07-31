@@ -1,4 +1,6 @@
-"""AC-04 closure: one immutable `RuntimeContext` owns every lifecycle session.
+"""Unit-level closure for the neutral runtime primitives (AC-04, AC-02).
+
+AC-04 closure: one immutable `RuntimeContext` owns every lifecycle session.
 
 `stream_and_persist` used to open its heartbeat and its budget-reservation
 release sessions from the process-wide session factory. Under test that factory
@@ -16,10 +18,15 @@ inline and detached (resumable) shapes:
 - no reservation row survives the turn, and
 - neither `stream.heartbeat.failed` nor `budget.reservation_release.failed` was
   logged.
+
+AC-02: the `CostLedger` algebra and the totality of every `RunReceipt` decoder,
+tested directly rather than only through the pause/resume route (that identity
+chain lives in `test_arch_review_ledger_resume.py`).
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import dataclasses
 import os
@@ -41,9 +48,17 @@ from app.db.repositories import billing as billing_repo
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
 from app.db.session import get_db
-from app.providers.protocol import AnswerDelta, ProviderEvent
+from app.providers.protocol import AnswerDelta, ProviderEvent, UsageUpdate
 from app.providers.tiers import get_binding
+from app.runtime import run_receipt as run_receipt_mod
 from app.runtime.context import RuntimeContext, derive_session_factory
+from app.runtime.run_receipt import (
+    CostLedger,
+    PhaseReceipt,
+    RunReceipt,
+    UsageTotals,
+    decode_run_receipt,
+)
 from app.streaming import handler as handler_mod
 from app.streaming import replay_registry
 
@@ -414,3 +429,201 @@ def test_handler_has_no_process_wide_session_factory_lookup() -> None:
         else ""
     )
     assert "get_session_factory" not in source
+
+
+# AC-02 — the ledger algebra and the totality of every receipt decoder ----------
+
+
+def test_receipt_module_does_not_import_the_provider_protocol() -> None:
+    """`providers.protocol.RunCost` imports `RunReceipt` as its carrier, so an
+    import back the other way would close a cycle at module load."""
+    assert run_receipt_mod.__file__
+    tree = ast.parse(Path(run_receipt_mod.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    assert not [name for name in imported if name.startswith("app.")], imported
+
+
+def test_usage_totals_copies_counts_off_a_provider_usage_event() -> None:
+    """The adapter seam: `UsageUpdate` crosses into the neutral module by value,
+    which is what lets the module stay provider-independent."""
+    totals = UsageTotals.copy_from(
+        UsageUpdate(
+            input_tokens=11,
+            output_tokens=7,
+            reasoning_tokens=3,
+            cached_input_tokens=5,
+            subagent_id="worker-1",
+        )
+    )
+    assert totals == UsageTotals(
+        input_tokens=11, output_tokens=7, reasoning_tokens=3, cached_input_tokens=5
+    )
+    # Nothing provider-shaped rides along, and a missing source is empty, not a
+    # crash — `copy_from` runs on paths where usage may never have arrived.
+    assert not hasattr(totals, "subagent_id")
+    assert UsageTotals.copy_from(None).is_empty
+
+
+def test_settle_replaces_a_provisional_sample_and_is_not_downgraded() -> None:
+    """A phase's exact amount wins over its own mid-flight estimate, and a late
+    `observe` for an already-settled phase cannot reintroduce the estimate."""
+    ledger = CostLedger()
+    ledger.observe("worker-1", role="worker", cost_usd=0.20)
+    assert ledger.cumulative_cost_usd == pytest.approx(0.20)
+    assert ledger.settled_cost_usd == pytest.approx(0.0)
+
+    ledger.settle("worker-1", role="worker", cost_usd=0.05)
+    assert ledger.cumulative_cost_usd == pytest.approx(0.05)
+    assert ledger.settled_cost_usd == pytest.approx(0.05)
+
+    ledger.observe("worker-1", role="worker", cost_usd=0.99)
+    assert ledger.cumulative_cost_usd == pytest.approx(0.05)
+
+
+def test_restore_turns_prior_spend_into_an_already_billed_floor() -> None:
+    """A resume owes only its own increment: everything the prior boundary
+    receipt accounted for counts toward cumulative but not toward the charge."""
+    first = CostLedger()
+    first.settle(
+        "planner",
+        role="orchestrator",
+        usage=UsageTotals(input_tokens=100),
+        cost_usd=0.10,
+    )
+    pause = first.receipt(cap_usd=1.0, boundary="pause")
+    assert pause.newly_billable_cost_usd == pytest.approx(0.10)
+
+    resumed = CostLedger.restore(pause)
+    assert resumed.cumulative_cost_usd == pytest.approx(0.10)
+    assert resumed.newly_billable_cost_usd == pytest.approx(0.0)
+    restored_planner = resumed.phase("planner")
+    assert restored_planner is not None
+    assert restored_planner.already_billed is True
+
+    resumed.settle(
+        "worker-1", role="worker", usage=UsageTotals(output_tokens=40), cost_usd=0.25
+    )
+    final = resumed.receipt(cap_usd=1.0, boundary="final")
+    assert final.cumulative_cost_usd == pytest.approx(0.35)
+    assert final.already_billed_cost_usd == pytest.approx(0.10)
+    assert final.newly_billable_cost_usd == pytest.approx(0.25)
+    # The identity holds by construction, not by convention.
+    assert final.cumulative_cost_usd == pytest.approx(
+        final.already_billed_cost_usd + final.newly_billable_cost_usd
+    )
+    # Usage accumulates across the boundary too.
+    assert final.cumulative_usage == UsageTotals(input_tokens=100, output_tokens=40)
+
+
+def test_cumulative_cost_never_falls_below_the_billed_floor() -> None:
+    """A checkpoint can record spend no surviving phase re-derives (the legacy
+    scalar seed case). Cumulative must not shrink below it and hand the user a
+    refund the run never earned."""
+    ledger = CostLedger()
+    ledger.hold_billed_floor(0.42)
+    assert ledger.cumulative_cost_usd == pytest.approx(0.42)
+    assert ledger.newly_billable_cost_usd == pytest.approx(0.0)
+
+    ledger.settle("worker-1", role="worker", cost_usd=0.01)
+    assert ledger.cumulative_cost_usd == pytest.approx(0.42)
+    # The floor only ever rises.
+    ledger.hold_billed_floor(0.10)
+    assert ledger.already_billed_cost_usd == pytest.approx(0.42)
+    # And the receipt says so: phases cannot account for the whole total here.
+    receipt = ledger.receipt(boundary="final")
+    assert sum(p.cost_usd for p in receipt.phases) < receipt.cumulative_cost_usd
+
+
+def test_receipt_round_trips_through_its_wire_form() -> None:
+    ledger = CostLedger.restore(
+        RunReceipt(
+            cumulative_cost_usd=0.10,
+            already_billed_cost_usd=0.10,
+            cumulative_usage=UsageTotals(input_tokens=9),
+            phases=(PhaseReceipt(phase_id="planner", role="orchestrator", cost_usd=0.10),),
+        )
+    )
+    ledger.settle(
+        "worker-1",
+        role="worker",
+        usage=UsageTotals(output_tokens=4),
+        cost_usd=0.25,
+        outcome="failed",
+    )
+    original = ledger.receipt(cap_usd=2.0, confidence="estimate", boundary="stop")
+    assert decode_run_receipt(original.to_wire()) == original
+    # Derived, so a reader that only has the JSON still sees the charge.
+    assert original.to_wire()["newlyBillableCostUsd"] == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "0.37",
+        42,
+        [],
+        {"version": 999},
+        {"version": True},
+        {"version": "1"},
+    ],
+    ids=[
+        "none",
+        "string",
+        "number",
+        "list",
+        "unsupported-version",
+        "bool-version",
+        "string-version",
+    ],
+)
+def test_decode_run_receipt_refuses_unusable_input(raw: object) -> None:
+    """A receipt is read out of a JSON column. Unusable input reads as "no
+    receipt" so the caller keeps its legacy seeds, and an unknown version is
+    refused rather than reinterpreted with this build's field meanings."""
+    assert decode_run_receipt(raw) is None
+
+
+def test_decode_run_receipt_sanitizes_impossible_amounts() -> None:
+    """Nonsense inside an otherwise-readable receipt resolves to a safe zero
+    rather than raising inside a row read."""
+    decoded = decode_run_receipt(
+        {
+            "cumulativeCostUsd": float("inf"),
+            "alreadyBilledCostUsd": -5.0,
+            "capUsd": True,
+            "cumulativeUsage": {"inputTokens": -3, "outputTokens": True},
+            "confidence": "vibes",
+            "boundary": "elsewhere",
+            "phases": [
+                None,
+                {"role": "worker"},  # no phase id: not a phase
+                {"phaseId": "worker-1", "costUsd": "free"},
+            ],
+        }
+    )
+    assert decoded is not None
+    assert decoded.cumulative_cost_usd == pytest.approx(0.0)
+    assert decoded.already_billed_cost_usd == pytest.approx(0.0)
+    assert decoded.cap_usd == pytest.approx(0.0)
+    assert decoded.cumulative_usage.is_empty
+    assert decoded.confidence == "exact"
+    assert decoded.boundary == "final"
+    assert [p.phase_id for p in decoded.phases] == ["worker-1"]
+    assert decoded.phases[0].cost_usd == pytest.approx(0.0)
+
+
+def test_decode_run_receipt_clamps_billed_above_cumulative() -> None:
+    """A stored already-billed amount above the run's own total would otherwise
+    read as a negative increment — a credit — on the next boundary."""
+    decoded = decode_run_receipt(
+        {"cumulativeCostUsd": 0.10, "alreadyBilledCostUsd": 0.99}
+    )
+    assert decoded is not None
+    assert decoded.already_billed_cost_usd == pytest.approx(0.10)
+    assert decoded.newly_billable_cost_usd == pytest.approx(0.0)

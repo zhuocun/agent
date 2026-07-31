@@ -68,6 +68,12 @@ from app.providers.protocol import (
     ToolResult,
     UsageUpdate,
 )
+from app.runtime.run_receipt import (
+    CostLedger,
+    ReceiptBoundary,
+    RunReceipt,
+    UsageTotals,
+)
 from app.schemas.common import SubstitutionReasonCode
 from app.search.protocol import SourceItem
 from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
@@ -608,6 +614,52 @@ def _fold_usage(event: ProviderEvent, current: UsageUpdate) -> UsageUpdate:
     return current
 
 
+# --- run-accounting adapters (AC-02) ------------------------------------------
+#
+# `runtime.run_receipt` is provider-independent by construction (the carrier lives
+# on `RunCost`), so the token counts are copied across the seam here rather than
+# by importing either module into the other.
+
+
+def _restored_usage(totals: UsageTotals) -> UsageUpdate:
+    """Neutral run-accounting totals -> a provider usage event."""
+    return UsageUpdate(
+        input_tokens=totals.input_tokens,
+        output_tokens=totals.output_tokens,
+        reasoning_tokens=totals.reasoning_tokens,
+        cached_input_tokens=totals.cached_input_tokens,
+    )
+
+
+def _boundary_run_cost(
+    ledger: CostLedger,
+    *,
+    cap_usd: float,
+    phase: Literal["plan", "progress", "final"] = "final",
+    boundary: ReceiptBoundary = "final",
+    partial: bool = False,
+    budget_halted: bool = False,
+    failed_worker_count: int = 0,
+) -> RunCost:
+    """The ONE receipt-bearing `RunCost` for a persistable boundary (AC-02).
+
+    `subtotal_usd` is read off the same receipt the handler bills from, so the
+    live meter and the persisted total cannot disagree. `phase` / `confidence`
+    stay wire UI state; the typed payload is the accounting truth.
+    """
+    receipt = ledger.receipt(cap_usd=cap_usd, boundary=boundary)
+    return RunCost(
+        subtotal_usd=receipt.cumulative_cost_usd,
+        cap_usd=cap_usd,
+        confidence="exact",
+        phase=phase,
+        partial=partial,
+        budget_halted=budget_halted,
+        failed_worker_count=failed_worker_count,
+        receipt=receipt,
+    )
+
+
 # --- cost estimation seam -----------------------------------------------------
 
 # Given the planner's sub-question COUNT, estimate the run's worst-case USD
@@ -716,6 +768,8 @@ async def _maybe_clarify_before_plan(
     user_text: str,
     scaffolded: bool,
     call_id: str | None = None,
+    ledger: CostLedger | None = None,
+    cap_usd: float = 0.0,
 ) -> AsyncIterator[ProviderEvent]:
     """Clarify-before-plan HITL gate — async generator of pause events.
 
@@ -723,6 +777,10 @@ async def _maybe_clarify_before_plan(
     fires, surfaces 1-3 clarifying questions on a planner pseudo-tool and
     PAUSES with `awaiting_approval` BEFORE planning / admission / fan-out.
     Yields nothing when the flag is off or clarify is not needed.
+
+    A clarify pause is a persistable boundary, so it carries the run's receipt
+    (AC-02) even though it precedes every priced phase: without one, reload
+    re-derived the paused row's meter from nothing.
     """
     if not settings.agentic_clarify_before_plan:
         return
@@ -736,6 +794,10 @@ async def _maybe_clarify_before_plan(
     yield SubagentStarted(
         subagent_id=_PLANNER_ID, label=_PLANNER_LABEL, role="orchestrator"
     )
+    if ledger is not None:
+        yield _boundary_run_cost(
+            ledger, cap_usd=cap_usd, phase="plan", boundary="pause", partial=True
+        )
     clarify_call_id = call_id or mint_plan_clarify_call_id()
     yield ToolCall(
         id=clarify_call_id,
@@ -760,6 +822,7 @@ async def _maybe_plan_approval(
     clarifications: list[str] | list[clarify.ClarificationRecord] | None = None,
     planner_cost_usd: float = 0.0,
     planner_usage: UsageUpdate | None = None,
+    ledger: CostLedger | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Plan-approval HITL gate (M3) — async generator of pause events.
 
@@ -778,6 +841,11 @@ async def _maybe_plan_approval(
     ``planner_cost_usd`` / ``planner_usage`` (B4) are server-only fields stamped
     onto the pause tool input (stripped by ``RESERVED_CONTROL_KEYS``) so a
     plan-approved resume can seed the run-cap ledger without re-billing.
+
+    ``ledger`` (AC-02) makes this pause's `RunCost` the boundary receipt carrier.
+    The wire fields keep describing UI state — the plan card shows the run's
+    ESTIMATE, labelled `estimate`/`plan` — while the typed payload carries the
+    exact planner spend the pause row must persist and bill.
     """
     if not settings.agentic_plan_approval:
         return
@@ -792,6 +860,11 @@ async def _maybe_plan_approval(
         cap_usd=cap_usd,
         confidence="estimate",
         phase="plan",
+        receipt=(
+            None
+            if ledger is None
+            else ledger.receipt(cap_usd=cap_usd, boundary="pause")
+        ),
     )
     plan_call_id = call_id or mint_plan_approval_call_id()
     plan_list = list(sub_questions)
@@ -851,7 +924,7 @@ def _verifier_phase_estimate(
     if not settings.agentic_verifier:
         return 0.0
     n = max(1, sample_count if sample_count is not None else settings.agentic_verifier_n)
-    expected = budget._expected_subagent_usage(settings)
+    expected = budget.expected_subagent_usage(settings)
     return cost_for_usage(expected) * settings.agentic_reasoning_token_multiplier * n
 
 
@@ -1051,6 +1124,7 @@ async def _finalize_synthesis(
     verifier_outcome: Literal["succeeded", "failed"] = "succeeded",
     emit_verifier_bracket: bool = False,
     merged_sources: Sequence[SourceItem] | None = None,
+    ledger: CostLedger | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Emit the `aggregator` subagent + optional verifier receipt + run totals.
 
@@ -1065,6 +1139,10 @@ async def _finalize_synthesis(
     ``superseded_worker_count`` (FL-09) labels siblings cancelled to keep one HITL
     continuation; `aggregate.synthesize` cannot express that clause, so it is
     appended here and raises `partial`.
+
+    ``ledger`` (AC-02) is the run's accounting owner: the aggregator and verifier
+    phases settle into it and the terminal `RunCost` carries its receipt. Without
+    one (direct unit calls) the terminal keeps the scalar-only shape.
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
@@ -1107,6 +1185,21 @@ async def _finalize_synthesis(
         verifier_budget_halted = verifier_result.budget_halted
     total_usage = _sum_usages([*worker_usages, aggregator_usage, v_usage])
     total_cost = worker_total_cost + aggregator_cost + verifier_cost
+    if ledger is not None:
+        ledger.settle(
+            _AGGREGATOR_ID,
+            role="aggregator",
+            usage=aggregator_usage,
+            cost_usd=aggregator_cost,
+        )
+        if verifier_result is not None or verifier_outcome == "failed":
+            ledger.settle(
+                _VERIFIER_ID,
+                role="verifier",
+                usage=v_usage,
+                cost_usd=verifier_cost,
+                outcome=verifier_outcome,
+            )
     # Final untagged `Complete`: the handler's "last Complete wins" fold makes
     # this the turn's terminal usage, so the terminal attribution cost is the SUM
     # of every subagent's cost.
@@ -1120,15 +1213,24 @@ async def _finalize_synthesis(
         or superseded_worker_count > 0
         or _verification_degraded(verifier_result, verifier_outcome)
     )
-    yield RunCost(
-        subtotal_usd=total_cost,
-        cap_usd=cap_usd,
-        confidence="exact",
-        phase="final",
-        partial=partial,
-        budget_halted=effective_budget_halted,
-        failed_worker_count=failed_worker_count,
-    )
+    if ledger is not None:
+        yield _boundary_run_cost(
+            ledger,
+            cap_usd=cap_usd,
+            partial=partial,
+            budget_halted=effective_budget_halted,
+            failed_worker_count=failed_worker_count,
+        )
+    else:
+        yield RunCost(
+            subtotal_usd=total_cost,
+            cap_usd=cap_usd,
+            confidence="exact",
+            phase="final",
+            partial=partial,
+            budget_halted=effective_budget_halted,
+            failed_worker_count=failed_worker_count,
+        )
     # planned/completed are unused on the wire today but kept in the signature
     # so call sites can pass them for future persistence without another signature
     # churn; reference to keep linters quiet.
@@ -1156,6 +1258,7 @@ async def _finalize_synthesis_streamed(
     verifier_cost_for_usage: CostForUsage | None = None,
     clarifications: list[dict[str, str]] | None = None,
     merged_sources: Sequence[SourceItem] | None = None,
+    ledger: CostLedger | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Stream a MODEL-WRITTEN synthesis as the `aggregator` subagent (real providers).
 
@@ -1175,6 +1278,9 @@ async def _finalize_synthesis_streamed(
     aggregator crash labels a synthesis failure with `budget_halted=False`, a cap
     breach labels a budget halt with `budget_halted=True`, and a degraded
     verification caveats the answer and raises `partial`.
+
+    ``ledger`` (AC-02): aggregator / verifier phases settle into the run's one
+    accounting owner and the terminal `RunCost` carries its receipt.
     """
     yield SubagentStarted(
         subagent_id=_AGGREGATOR_ID, label=_AGGREGATOR_LABEL, role="aggregator"
@@ -1419,6 +1525,22 @@ async def _finalize_synthesis_streamed(
         pass  # zero cost already; bracket closed above
     total_usage = _sum_usages([*worker_usages, aggregator_usage, v_usage])
     total_cost = worker_total_cost + aggregator_cost + verifier_cost
+    if ledger is not None:
+        ledger.settle(
+            _AGGREGATOR_ID,
+            role="aggregator",
+            usage=aggregator_usage,
+            cost_usd=aggregator_cost,
+            outcome=agg_outcome,
+        )
+        if verifier_started:
+            ledger.settle(
+                _VERIFIER_ID,
+                role="verifier",
+                usage=v_usage,
+                cost_usd=verifier_cost,
+                outcome=verifier_outcome,
+            )
     yield Complete(usage=total_usage)
     effective_budget_halted = budget_halted or verifier_budget_halted
     partial = (
@@ -1430,15 +1552,24 @@ async def _finalize_synthesis_streamed(
         or superseded > 0
         or _verification_degraded(verifier_result, verifier_outcome)
     )
-    yield RunCost(
-        subtotal_usd=total_cost,
-        cap_usd=cap_usd,
-        confidence="exact",
-        phase="final",
-        partial=partial,
-        budget_halted=effective_budget_halted,
-        failed_worker_count=failed,
-    )
+    if ledger is not None:
+        yield _boundary_run_cost(
+            ledger,
+            cap_usd=cap_usd,
+            partial=partial,
+            budget_halted=effective_budget_halted,
+            failed_worker_count=failed,
+        )
+    else:
+        yield RunCost(
+            subtotal_usd=total_cost,
+            cap_usd=cap_usd,
+            confidence="exact",
+            phase="final",
+            partial=partial,
+            budget_halted=effective_budget_halted,
+            failed_worker_count=failed,
+        )
 
 
 async def _collect_answer(
@@ -1502,6 +1633,7 @@ async def run_single(
     initial_tool_results: list[ToolResult] | None = None,
     prior_run_cost_usd: float = 0.0,
     prior_run_usage: UsageUpdate | None = None,
+    prior_receipt: RunReceipt | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """One agent loop wrapped as the `primary` subagent.
 
@@ -1514,10 +1646,16 @@ async def run_single(
     (B5) so the per-run cap ledger is not reset. Pause-turn user billing stays
     with the handler; these seeds only affect the orchestrator cap ledger +
     cumulative attribution.
+
+    ``prior_receipt`` (AC-02) is the preferred seed: restoring the pause turn's
+    boundary receipt makes the resumed run's already-billed floor exact instead
+    of reconstructed, so only this continuation's increment is billed again.
     """
     subagent_id = "primary"
     cap = settings.agentic_run_budget_usd
-    expected = budget._expected_subagent_usage(settings)
+    # AC-02: one owner for this run's money for every exit below.
+    ledger = CostLedger.restore(prior_receipt)
+    expected = budget.expected_subagent_usage(settings)
     estimate = (
         cost_for_usage(expected)
         * settings.agentic_reasoning_token_multiplier
@@ -1545,13 +1683,9 @@ async def run_single(
             outcome="failed",
         )
         yield Complete(usage=empty)
-        yield RunCost(
-            subtotal_usd=0.0,
-            cap_usd=cap,
-            confidence="exact",
-            phase="final",
-            partial=True,
-            budget_halted=True,
+        ledger.settle(subagent_id, role="primary", cost_usd=0.0, outcome="failed")
+        yield _boundary_run_cost(
+            ledger, cap_usd=cap, partial=True, budget_halted=True
         )
         return
 
@@ -1559,6 +1693,17 @@ async def run_single(
     prior_cost = max(0.0, float(prior_run_cost_usd or 0.0))
     if prior_cost <= 0.0 and _has_nonzero_usage(prior_usage):
         prior_cost = cost_for_usage(prior_usage)
+    if prior_receipt is None and (prior_cost > 0.0 or _has_nonzero_usage(prior_usage)):
+        # Legacy pause row (no persisted receipt): the B5 seeds are the only
+        # record of what the pause turn already charged.
+        ledger.hold_billed_floor(prior_cost)
+        ledger.settle(
+            subagent_id,
+            role="primary",
+            usage=prior_usage,
+            cost_usd=prior_cost,
+            already_billed=True,
+        )
 
     # FL-12: admission above prices only the FRESH estimate, so a resume whose
     # seeded ledger is already over the cap used to open another provider stream
@@ -1584,13 +1729,17 @@ async def run_single(
             outcome="budget_cancelled",
         )
         yield Complete(usage=prior_usage)
-        yield RunCost(
-            subtotal_usd=prior_cost,
-            cap_usd=cap,
-            confidence="exact",
-            phase="final",
-            partial=True,
-            budget_halted=True,
+        if prior_receipt is None:
+            ledger.settle(
+                subagent_id,
+                role="primary",
+                usage=prior_usage,
+                cost_usd=prior_cost,
+                outcome="budget_cancelled",
+                already_billed=True,
+            )
+        yield _boundary_run_cost(
+            ledger, cap_usd=cap, partial=True, budget_halted=True
         )
         return
 
@@ -1657,13 +1806,16 @@ async def run_single(
                 # `mark_unfinished_subagents_paused` deliberately keeps the
                 # primary non-terminal on a pause (B15). `partial=True` because
                 # the turn is resumable, not finished.
-                yield Complete(usage=_sum_usages([prior_usage, session_usage]))
-                yield RunCost(
-                    subtotal_usd=prior_cost + cost_for_usage(session_usage),
-                    cap_usd=cap,
-                    confidence="exact",
-                    phase="final",
-                    partial=True,
+                pause_usage = _sum_usages([prior_usage, session_usage])
+                yield Complete(usage=pause_usage)
+                ledger.settle(
+                    subagent_id,
+                    role="primary",
+                    usage=pause_usage,
+                    cost_usd=prior_cost + cost_for_usage(session_usage),
+                )
+                yield _boundary_run_cost(
+                    ledger, cap_usd=cap, boundary="pause", partial=True
                 )
                 yield _tag(event, subagent_id)
                 return
@@ -1697,11 +1849,16 @@ async def run_single(
     # B14: untagged final Complete so the handler's "last Complete wins" fold
     # captures top-level turn tokens (mirrors deep research).
     yield Complete(usage=cumulative_usage)
-    yield RunCost(
-        subtotal_usd=cost,
+    ledger.settle(
+        subagent_id,
+        role="primary",
+        usage=cumulative_usage,
+        cost_usd=cost,
+        outcome="budget_cancelled" if budget_halted else "succeeded",
+    )
+    yield _boundary_run_cost(
+        ledger,
         cap_usd=cap,
-        confidence="exact",
-        phase="final",
         partial=budget_halted,
         budget_halted=budget_halted,
     )
@@ -1725,6 +1882,7 @@ async def _resume_worker_continuation(
     is_retryable: IsRetryable = is_retryable_provider_error,
     verifier_make_stream_for: StreamFactory | None = None,
     verifier_cost_for_usage: CostForUsage | None = None,
+    prior_receipt: RunReceipt | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Continue a paused worker then synthesize (BE-005).
 
@@ -1735,6 +1893,11 @@ async def _resume_worker_continuation(
     H-009 / O-002: restores the pre-pause ledger and refuses further provider
     spend when already budget-halted or over cap. O-008: uses the same fallback
     path as fresh workers on retryable primary failure.
+
+    ``prior_receipt`` (AC-02): the pause turn's boundary receipt. Restoring it
+    makes the already-billed floor exact, so the resumed terminal charges only
+    this continuation's increment rather than re-charging the whole pre-pause
+    fan-out.
     """
     scaffolded = settings.provider_backend == "fake"
     cap = settings.agentic_run_budget_usd
@@ -1761,12 +1924,6 @@ async def _resume_worker_continuation(
     restored_superseded = sum(
         1 for w in continuation.completed_workers if w.outcome == "cancelled"
     )
-    usages: dict[str, UsageUpdate] = {
-        w.subagent_id: w.usage for w in continuation.completed_workers
-    }
-    costs: dict[str, float] = {
-        w.subagent_id: w.cost_usd for w in continuation.completed_workers
-    }
     failed_workers = continuation.failed_workers
     budget_halted = continuation.budget_halted
     planner_usage = continuation.planner_usage
@@ -1775,9 +1932,33 @@ async def _resume_worker_continuation(
     ledger_usd = float(continuation.actual_cost_usd or 0.0)
     if ledger_usd <= 0.0:
         ledger_usd = (
-            sum(costs.values())
+            sum(w.cost_usd for w in continuation.completed_workers)
             + planner_cost
             + float(continuation.paused_worker_cost_usd or 0.0)
+        )
+
+    # AC-02: one owner for this resumed run's money and tokens — there is no
+    # second per-phase dictionary. The pause receipt (or, for a legacy row, the
+    # checkpoint's own ledger total) is the already-billed floor, so every phase
+    # below re-enters the run WITHOUT being charged a second time.
+    ledger = CostLedger.restore(prior_receipt)
+    if prior_receipt is None:
+        ledger.hold_billed_floor(ledger_usd)
+    ledger.settle(
+        _PLANNER_ID,
+        role="orchestrator",
+        usage=planner_usage,
+        cost_usd=planner_cost,
+        already_billed=True,
+    )
+    for restored in continuation.completed_workers:
+        ledger.settle(
+            restored.subagent_id,
+            role="worker",
+            usage=restored.usage,
+            cost_usd=restored.cost_usd,
+            outcome=restored.outcome,
+            already_billed=True,
         )
 
     worker_meta = [
@@ -1815,12 +1996,16 @@ async def _resume_worker_continuation(
         ordered_artifacts = aggregate.build_artifacts(
             ordered_outputs, max_artifacts=settings.agentic_max_workers
         )
-        ordered_usages = [usages[sid] for _, sid, _, _ in worker_meta if sid in usages]
+        # AC-02: the ledger already holds planner + restored siblings + the
+        # resumed worker, and its cumulative can never drop below the pause
+        # turn's durable total.
+        ordered_usages = [
+            _restored_usage(ledger.usage_of(sid))
+            for _, sid, _, _ in worker_meta
+            if ledger.phase(sid) is not None
+        ]
         ordered_usages.append(planner_usage)
-        worker_total_cost = max(
-            sum(costs.get(sid, 0.0) for _, sid, _, _ in worker_meta) + planner_cost,
-            ledger_usd,
-        )
+        worker_total_cost = ledger.cumulative_cost_usd
         completed_count = len(ordered_outputs)
         synthesis = aggregate.synthesize(
             ordered_outputs,
@@ -1856,6 +2041,7 @@ async def _resume_worker_continuation(
                 artifacts=ordered_artifacts,
                 clarifications=synth_clarify,
                 merged_sources=merged_sources or None,
+                ledger=ledger,
             ):
                 yield event
             return
@@ -1874,6 +2060,7 @@ async def _resume_worker_continuation(
                 planned_workers=len(sub_questions),
                 completed_workers=completed_count,
                 merged_sources=merged_sources or None,
+                ledger=ledger,
             ):
                 yield event
 
@@ -2115,6 +2302,22 @@ async def _resume_worker_continuation(
                 if tail:
                     answer_parts.append(tail)
                     yield _tag(AnswerDelta(text=tail, subagent_id=paused_id), paused_id)
+                # AC-02: a nested pause is a persistable boundary too, so it
+                # carries the receipt for the spend banked up to it.
+                ledger.settle(
+                    paused_id,
+                    role="worker",
+                    usage=_cumulative_usage(),
+                    cost_usd=_cumulative_cost(),
+                )
+                yield _boundary_run_cost(
+                    ledger,
+                    cap_usd=cap,
+                    boundary="pause",
+                    partial=True,
+                    budget_halted=budget_halted,
+                    failed_worker_count=failed_workers,
+                )
                 yield _tag(
                     replace(
                         event, continuation=serialize_continuation(_nested_continuation())
@@ -2235,8 +2438,13 @@ async def _resume_worker_continuation(
                 substituted_model=sub_model,
                 substituted_display_label=sub_label,
             )
-            usages[paused_id] = cumulative_usage
-            costs[paused_id] = cumulative_cost
+            ledger.settle(
+                paused_id,
+                role="worker",
+                usage=cumulative_usage,
+                cost_usd=cumulative_cost,
+                outcome="failed",
+            )
         else:
             yield SubagentDone(
                 subagent_id=paused_id,
@@ -2256,8 +2464,13 @@ async def _resume_worker_continuation(
                 answer="".join(answer_parts),
                 source_ids=tuple(dict.fromkeys(source_ids)),
             )
-            usages[paused_id] = cumulative_usage
-            costs[paused_id] = cumulative_cost
+            ledger.settle(
+                paused_id,
+                role="worker",
+                usage=cumulative_usage,
+                cost_usd=cumulative_cost,
+                outcome="budget_cancelled" if budget_halted else "succeeded",
+            )
 
     # Mid-stream remapper already assigned global ids — do not remap again.
     async for event in _emit_synthesis(halted=budget_halted):
@@ -2295,6 +2508,7 @@ async def _run_deep_research(
     verifier_cost_for_usage: CostForUsage | None = None,
     prior_planner_cost_usd: float = 0.0,
     prior_planner_usage: UsageUpdate | None = None,
+    prior_receipt: RunReceipt | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Clarify? → plan → (approve) → admit → parallel fan-out → (verify) → synthesis.
 
@@ -2313,6 +2527,10 @@ async def _run_deep_research(
     ``prior_planner_cost_usd`` / ``prior_planner_usage`` (B4): on plan-approved
     resume, seed the run-cap ledger with planner spend from the pause turn
     without re-emitting a planner receipt (handler already billed pause turn).
+
+    ``prior_receipt`` (AC-02) supersedes those seeds when the pause row carries
+    one: the resumed run's already-billed floor is then the pause boundary's own
+    cumulative total rather than a reconstruction of it.
     """
     verifier_pricer = verifier_cost_for_usage or cost_for_usage
     # Provider-backend split: the FAKE provider keys on the deterministic
@@ -2340,11 +2558,16 @@ async def _run_deep_research(
             is_retryable=is_retryable,
             verifier_make_stream_for=verifier_make_stream_for,
             verifier_cost_for_usage=verifier_pricer,
+            prior_receipt=prior_receipt,
         ):
             yield event
         return
 
     scaffolded = settings.provider_backend == "fake"
+    # AC-02: one owner for this run's money and tokens, from the first gate to the
+    # terminal receipt. A resume restores the pause boundary's receipt so its
+    # spend counts toward the cumulative total but is never billed twice.
+    ledger = CostLedger.restore(prior_receipt)
 
     # Clarify-before-plan HITL (plan 02). Runs BEFORE planning so we do not spend
     # planner tokens / commit the ~15x budget on an ambiguous brief. Decline
@@ -2354,7 +2577,11 @@ async def _run_deep_research(
     if clarify_answered is None and plan_approved is None:
         clarify_paused = False
         async for event in _maybe_clarify_before_plan(
-            settings, user_text=user_text, scaffolded=scaffolded
+            settings,
+            user_text=user_text,
+            scaffolded=scaffolded,
+            ledger=ledger,
+            cap_usd=settings.agentic_run_budget_usd,
         ):
             clarify_paused = True
             yield event
@@ -2370,6 +2597,7 @@ async def _run_deep_research(
             worker_total_cost=0.0,
             cost_for_usage=cost_for_usage,
             cap_usd=settings.agentic_run_budget_usd,
+            ledger=ledger,
         ):
             yield event
         return
@@ -2497,15 +2725,13 @@ async def _run_deep_research(
             return fallback_cost_for_usage(u)
         return cost_for_usage(u)
 
-    def _planner_receipt(
-        *, ledger_usd: float, open_bracket: bool = False
-    ) -> AsyncIterator[ProviderEvent]:
+    def _planner_receipt(*, open_bracket: bool = False) -> AsyncIterator[ProviderEvent]:
         """Planner receipt stamped with the route that actually served (FL-11)."""
         return _emit_planner_receipt(
             planner_usage=planner_usage,
             cost_for_usage=cost_for_usage,
             cap_usd=cap,
-            ledger_usd=ledger_usd,
+            ledger_usd=ledger.cumulative_cost_usd,
             open_bracket=open_bracket,
             used_fallback=planner_used_fallback,
             fallback_cost_for_usage=fallback_cost_for_usage,
@@ -2519,11 +2745,20 @@ async def _run_deep_research(
         # B4: seed ledger with pause-turn planner spend; do not re-bill (keep
         # live planner_usage empty so `_emit_planner_receipt` stays quiet).
         planner_cost = seeded_planner_cost
+        if prior_receipt is None:
+            # Legacy pause row: the B4 seed is the only record of the spend the
+            # pause terminal already charged.
+            ledger.hold_billed_floor(planner_cost)
+    ledger.settle(
+        _PLANNER_ID,
+        role="orchestrator",
+        usage=seeded_planner_usage if plan_approved is True else planner_usage,
+        cost_usd=planner_cost,
+        already_billed=plan_approved is True,
+    )
     if plan_approved is None:
         if settings.agentic_plan_approval:
-            async for event in _planner_receipt(
-                ledger_usd=planner_cost, open_bracket=True
-            ):
+            async for event in _planner_receipt(open_bracket=True):
                 yield event
             async for event in _maybe_plan_approval(
                 settings,
@@ -2534,13 +2769,14 @@ async def _run_deep_research(
                 clarifications=bound_records,
                 planner_cost_usd=planner_cost,
                 planner_usage=planner_usage,
+                ledger=ledger,
             ):
                 yield event
             return
     elif plan_approved is False:
         # Declined on resume: no fan-out, a labeled (non-error) synthesis.
         # Include any planner usage from a prior real-provider plan pass.
-        async for event in _planner_receipt(ledger_usd=planner_cost):
+        async for event in _planner_receipt():
             yield event
         async for event in _finalize_synthesis(
             synthesis=(
@@ -2550,6 +2786,7 @@ async def _run_deep_research(
             worker_total_cost=planner_cost,
             cost_for_usage=cost_for_usage,
             cap_usd=cap,
+            ledger=ledger,
         ):
             yield event
         return
@@ -2562,7 +2799,7 @@ async def _run_deep_research(
         estimate_usd=estimate, settings=settings, budget_headroom_usd=budget_headroom_usd
     )
     if not decision.admitted:
-        async for event in _planner_receipt(ledger_usd=planner_cost):
+        async for event in _planner_receipt():
             yield event
         async for event in _finalize_synthesis(
             synthesis=(
@@ -2578,12 +2815,13 @@ async def _run_deep_research(
             # default flags made this the only refusal that looked like a clean
             # run, unlike its twins at the single-mode and planner-spend gates.
             budget_halted=True,
+            ledger=ledger,
         ):
             yield event
         return
 
     # Seed the run ledger with planner actuals before fan-out (BE-014 / SAF-004).
-    async for event in _planner_receipt(ledger_usd=planner_cost):
+    async for event in _planner_receipt():
         yield event
     if budget.exceeds_cap(
         actual_usd=planner_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
@@ -2599,6 +2837,7 @@ async def _run_deep_research(
             cost_for_usage=cost_for_usage,
             cap_usd=cap,
             budget_halted=True,
+            ledger=ledger,
         ):
             yield event
         return
@@ -2615,8 +2854,6 @@ async def _run_deep_research(
         for index, sub_question in enumerate(sub_questions)
     ]
     results: dict[str, WorkerOutput] = {}
-    usages: dict[str, UsageUpdate] = {}
-    costs: dict[str, float] = {}
     failed_workers = 0
     superseded_workers = 0
     source_remapper = _SourceIdRemapper()
@@ -2883,8 +3120,13 @@ async def _run_deep_research(
                         )
                         # Always record usage for the final Complete roll-up
                         # (SAF-005) — even a zero-token failure is a closed row.
-                        usages[subagent_id] = usage
-                        costs[subagent_id] = failed_cost
+                        ledger.settle(
+                            subagent_id,
+                            role="worker",
+                            usage=usage,
+                            cost_usd=failed_cost,
+                            outcome="failed",
+                        )
                     else:
                         # Price on the binding that actually served (FE-009 /
                         # BE-023 / SAF-006).
@@ -2910,8 +3152,9 @@ async def _run_deep_research(
                             source_ids=tuple(source_ids),
                         )
                         results[subagent_id] = output
-                        usages[subagent_id] = usage
-                        costs[subagent_id] = cost
+                        ledger.settle(
+                            subagent_id, role="worker", usage=usage, cost_usd=cost
+                        )
         except asyncio.CancelledError:
             # Budget mid-flight kill (or outer teardown): emit a terminal done
             # for every started worker so the FE never shows a green check for
@@ -2939,8 +3182,13 @@ async def _run_deep_research(
                         substituted_display_label=sub_label,
                     ),
                 )
-                usages[subagent_id] = usage
-                costs[subagent_id] = cancel_cost
+                ledger.settle(
+                    subagent_id,
+                    role="worker",
+                    usage=usage,
+                    cost_usd=cancel_cost,
+                    outcome="budget_cancelled" if budget_halted else "stopped",
+                )
             raise
         finally:
             # B23: sentinel must not block teardown on a full queue.
@@ -2950,11 +3198,13 @@ async def _run_deep_research(
         asyncio.create_task(_run_worker(index, subagent_id, label, sub_question))
         for index, subagent_id, label, sub_question in worker_meta
     ]
-    # Mid-flight kill (T5 / B3): ledger starts with planner actuals (BE-014),
-    # accumulates provisional UsageUpdate/Complete mid-flight, and confirms on
-    # each worker's `SubagentDone`; on a cap breach, cancel remaining workers.
+    # Mid-flight kill (T5 / B3): the ledger already holds planner actuals
+    # (BE-014), takes provisional UsageUpdate/Complete samples mid-flight, and
+    # settles on each worker's `SubagentDone`; on a cap breach, cancel remaining
+    # workers. `actual_cost` is the high-water mark of that total: an exact
+    # settlement can come in BELOW its provisional sample, and the durable
+    # checkpoint's cap floor must not fall when it does.
     actual_cost = planner_cost
-    provisional_costs: dict[str, float] = {}
     budget_halted = False
     # BE-005: at most one worker tool-HITL pause per fan-out (first wins).
     # Sibling policy = wait for others to finish before surfacing AwaitingApproval.
@@ -2970,9 +3220,9 @@ async def _run_deep_research(
             return fallback_cost_for_usage(pause.usage)
         return cost_for_usage(pause.usage)
 
-    def _maybe_budget_kill(ledger: float) -> None:
+    def _maybe_budget_kill() -> None:
         nonlocal budget_halted, actual_cost
-        actual_cost = max(actual_cost, ledger)
+        actual_cost = max(actual_cost, ledger.cumulative_cost_usd)
         if not budget_halted and budget.exceeds_cap(
             actual_usd=actual_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
         ):
@@ -2996,15 +3246,16 @@ async def _run_deep_research(
                 pause_cost = _price_pause(item)
                 if worker_pause is None:
                     worker_pause = item
-                    # Snapshot partial usage into the ledger so pause cost is billed.
-                    usages[item.subagent_id] = item.usage
-                    costs[item.subagent_id] = pause_cost
-                    provisional_costs.pop(item.subagent_id, None)
-                    _maybe_budget_kill(
-                        planner_cost
-                        + sum(costs.values())
-                        + sum(provisional_costs.values())
+                    # Settle the partial into the ledger so the pause cost is
+                    # billed and the boundary receipt below accounts for it.
+                    ledger.settle(
+                        item.subagent_id,
+                        role="worker",
+                        usage=item.usage,
+                        cost_usd=pause_cost,
+                        outcome="stopped",
                     )
+                    _maybe_budget_kill()
                 else:
                     # H-003 / O-007 / B24: cancel orphaned sibling pauses.
                     # Track as superseded (not failed) so failed_worker_count
@@ -3046,9 +3297,13 @@ async def _run_deep_research(
                             fallback_display_label if item.used_fallback else None
                         ),
                     )
-                    usages[item.subagent_id] = item.usage
-                    costs[item.subagent_id] = pause_cost
-                    provisional_costs.pop(item.subagent_id, None)
+                    ledger.settle(
+                        item.subagent_id,
+                        role="worker",
+                        usage=item.usage,
+                        cost_usd=pause_cost,
+                        outcome="cancelled",
+                    )
                     superseded_workers += 1
                     superseded_worker_ids.add(item.subagent_id)
                     if item.partial_answer.strip():
@@ -3058,11 +3313,7 @@ async def _run_deep_research(
                             answer=item.partial_answer,
                             source_ids=item.source_ids,
                         )
-                    _maybe_budget_kill(
-                        planner_cost
-                        + sum(costs.values())
-                        + sum(provisional_costs.values())
-                    )
+                    _maybe_budget_kill()
                 continue
             # B3 / AR-008: provisional mid-flight ledger from tagged usage samples.
             # Prefer the fallback pricer once a worker has substituted.
@@ -3081,39 +3332,39 @@ async def _run_deep_research(
                     )
                     else cost_for_usage
                 )
-                provisional_costs[item.subagent_id] = pricer(sample)
-                # SAF-005: snapshot so a mid-flight kill still rolls usage even if
-                # the worker's CancelledError path loses the race.
-                if item.subagent_id not in costs:
-                    usages[item.subagent_id] = sample
-                _maybe_budget_kill(
-                    planner_cost
-                    + sum(
-                        costs.get(sid, provisional_costs.get(sid, 0.0))
-                        for _, sid, _, _ in worker_meta
-                    )
+                # SAF-005: the sample also snapshots usage, so a mid-flight kill
+                # still rolls this worker's tokens up even if its CancelledError
+                # path loses the race. `observe` never downgrades a settled phase.
+                ledger.observe(
+                    item.subagent_id,
+                    role="worker",
+                    usage=sample,
+                    cost_usd=pricer(sample),
                 )
+                _maybe_budget_kill()
             yield item
             if isinstance(item, SubagentDone) and item.role == "worker":
-                provisional_costs.pop(item.subagent_id, None)
-                costs[item.subagent_id] = (
-                    item.cost_usd
-                    if item.cost_usd is not None
-                    else costs.get(item.subagent_id, 0.0)
-                )
-                actual_cost = (
-                    planner_cost
-                    + sum(costs.values())
-                    + sum(provisional_costs.values())
+                ledger.settle(
+                    item.subagent_id,
+                    role="worker",
+                    usage=item.usage,
+                    cost_usd=(
+                        item.cost_usd
+                        if item.cost_usd is not None
+                        else ledger.cost_of(item.subagent_id)
+                    ),
+                    outcome=item.outcome,
                 )
                 # Mid-run meter tick (estimate + mid + final; FE-011 / FE-012).
+                # A display tick, so it carries no receipt (AC-02) and shows only
+                # EXACTLY settled spend — never a provisional sibling sample.
                 yield RunCost(
-                    subtotal_usd=planner_cost + sum(costs.values()),
+                    subtotal_usd=ledger.settled_cost_usd,
                     cap_usd=cap,
                     confidence="exact",
                     phase="progress",
                 )
-                _maybe_budget_kill(actual_cost)
+                _maybe_budget_kill()
         # Tolerate task cancellations from the budget kill. Worker failures are
         # degraded inside `_run_worker` and must not fail the whole run.
         gathered = await asyncio.gather(*tasks, return_exceptions=True)
@@ -3154,12 +3405,19 @@ async def _run_deep_research(
             ),
             subagent_id=worker_pause.subagent_id,
         )
-        # FL-10: attribute the pause unconditionally. Hanging the `usages` /
-        # `costs` writes off the partial-answer guard silently dropped a
-        # blank-partial pause's tokens from the run ledger.
-        pause_cost = costs.get(worker_pause.subagent_id, _price_pause(worker_pause))
-        usages[worker_pause.subagent_id] = worker_pause.usage
-        costs[worker_pause.subagent_id] = pause_cost
+        # FL-10: attribute the pause unconditionally. Hanging the ledger write
+        # off the partial-answer guard silently dropped a blank-partial pause's
+        # tokens from the run total.
+        pause_cost = ledger.cost_of(
+            worker_pause.subagent_id, _price_pause(worker_pause)
+        )
+        ledger.settle(
+            worker_pause.subagent_id,
+            role="worker",
+            usage=worker_pause.usage,
+            cost_usd=pause_cost,
+            outcome="budget_cancelled",
+        )
         # FL-10: this worker is never resumed, so it needs its own terminal — the
         # handler only repairs unfinished rows on stop / pause, and this turn ends
         # `done`, leaving the row on the `succeeded` default.
@@ -3203,8 +3461,8 @@ async def _run_deep_research(
                     subagent_id=sid,
                     sub_question=sq,
                     answer=out.answer,
-                    usage=usages.get(sid, UsageUpdate()),
-                    cost_usd=costs.get(sid, 0.0),
+                    usage=_restored_usage(ledger.usage_of(sid)),
+                    cost_usd=ledger.cost_of(sid),
                     outcome=(
                         "cancelled" if sid in superseded_worker_ids else "succeeded"
                     ),
@@ -3237,10 +3495,21 @@ async def _run_deep_research(
             clarifications=tuple(bound_records),
             orchestration_mode="deep_research",
             paused_worker_usage=worker_pause.usage,
-            paused_worker_cost_usd=costs.get(
+            paused_worker_cost_usd=ledger.cost_of(
                 worker_pause.subagent_id, _price_pause(worker_pause)
             ),
             paused_worker_used_fallback=worker_pause.used_fallback,
+        )
+        # AC-02: a worker approval pause is an orchestrator-owned persistable
+        # boundary, so exactly one receipt-bearing `RunCost` precedes it. The
+        # handler `break`s at the pause terminal, so it has to come first.
+        yield _boundary_run_cost(
+            ledger,
+            cap_usd=cap,
+            boundary="pause",
+            partial=True,
+            budget_halted=budget_halted,
+            failed_worker_count=failed_workers,
         )
         yield AwaitingApproval(
             tool_call_id=worker_pause.tool_call_id,
@@ -3265,18 +3534,20 @@ async def _run_deep_research(
         if plan_approved is True and _has_nonzero_usage(seeded_planner_usage)
         else planner_usage
     )
-    ordered_usages = [usages[sid] for _, sid, _, _ in worker_meta if sid in usages]
+    ordered_usages = [
+        _restored_usage(ledger.usage_of(sid))
+        for _, sid, _, _ in worker_meta
+        if ledger.phase(sid) is not None
+    ]
     ordered_usages.append(ledger_planner_usage)
-    worker_total_cost = sum(
-        costs.get(sid, 0.0) for _, sid, _, _ in worker_meta
-    ) + planner_cost
+    worker_total_cost = ledger.cumulative_cost_usd
 
     # BE-014 residual: before starting the aggregator, refuse a model synthesis
     # call when the ledger already exceeds the cap or the aggregator phase
     # estimate cannot fit. Degrade to deterministic (zero-token) synthesis.
     # Verifier funding is a SEPARATE gate after the aggregator draft exists —
     # do not fold N judge slots into this check.
-    expected_agg = budget._expected_subagent_usage(settings)
+    expected_agg = budget.expected_subagent_usage(settings)
     aggregator_estimate = (
         cost_for_usage(expected_agg)
         * settings.agentic_reasoning_token_multiplier
@@ -3405,14 +3676,25 @@ async def _run_deep_research(
             verifier_result.budget_halted if verifier_result is not None else False
         )
         total_usage = _sum_usages([*ordered_usages, aggregator_usage, v_usage])
-        total_cost = worker_total_cost + aggregator_cost + verifier_cost
+        ledger.settle(
+            _AGGREGATOR_ID,
+            role="aggregator",
+            usage=aggregator_usage,
+            cost_usd=aggregator_cost,
+        )
+        if verifier_result is not None or verifier_outcome == "failed":
+            ledger.settle(
+                _VERIFIER_ID,
+                role="verifier",
+                usage=v_usage,
+                cost_usd=verifier_cost,
+                outcome=verifier_outcome,
+            )
         yield Complete(usage=total_usage)
         effective_budget_halted = budget_halted or verifier_budget_halted
-        yield RunCost(
-            subtotal_usd=total_cost,
+        yield _boundary_run_cost(
+            ledger,
             cap_usd=cap,
-            confidence="exact",
-            phase="final",
             partial=(
                 effective_budget_halted
                 or failed_workers > 0
@@ -3453,6 +3735,7 @@ async def _run_deep_research(
             artifacts=ordered_artifacts,
             clarifications=synth_clarify,
             merged_sources=merged_sources or None,
+            ledger=ledger,
         ):
             yield event
 
@@ -3489,6 +3772,7 @@ async def run_orchestrator(
     prior_planner_usage: UsageUpdate | None = None,
     prior_run_cost_usd: float = 0.0,
     prior_run_usage: UsageUpdate | None = None,
+    prior_receipt: RunReceipt | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive an agentic turn, yielding the handler's `ProviderEvent` union.
 
@@ -3524,6 +3808,10 @@ async def run_orchestrator(
       ledger seed (from reserved pause tool-input fields; do not re-bill).
     - `prior_run_cost_usd` / `prior_run_usage` — B5 single-mode HITL resume
       ledger seed (H-011: no primary continuation phase; handler must pass).
+    - `prior_receipt` — AC-02 boundary receipt from the paused row's server-only
+      state. When present it SUPERSEDES the scalar seeds above as the resumed
+      run's already-billed floor: those seeds reconstruct one phase's spend,
+      while the receipt is the exact total the pause turn actually charged.
     """
     if mode == "deep_research":
         async for event in _run_deep_research(
@@ -3551,6 +3839,7 @@ async def run_orchestrator(
             verifier_cost_for_usage=verifier_cost_for_usage,
             prior_planner_cost_usd=prior_planner_cost_usd,
             prior_planner_usage=prior_planner_usage,
+            prior_receipt=prior_receipt,
         ):
             yield event
     else:
@@ -3566,5 +3855,6 @@ async def run_orchestrator(
             ),
             prior_run_cost_usd=prior_run_cost_usd,
             prior_run_usage=prior_run_usage,
+            prior_receipt=prior_receipt,
         ):
             yield event

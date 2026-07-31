@@ -55,7 +55,7 @@ from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
 from app.errors import AppError
 from app.providers.fake import FakeProvider
-from app.providers.protocol import ProviderEvent
+from app.providers.protocol import AnswerDelta, ProviderEvent
 from app.providers.tiers import get_binding
 from app.runtime.context import RuntimeContext
 from app.streaming import handler as handler_mod
@@ -639,7 +639,173 @@ def _binding() -> Any:
     return binding
 
 
-# 3. Failure injection at the detached sink -----------------------------------
+# 3. The inline delivery seam at the early yields ------------------------------
+
+
+class _StallingProvider:
+    """A provider whose stream never yields, so a registered pump stays live."""
+
+    def stream(self, **_kwargs: object) -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            await asyncio.sleep(300)
+            yield AnswerDelta(text="unreachable")
+
+        return _gen()
+
+
+def _record_terminalizations(
+    monkeypatch: pytest.MonkeyPatch, stream_id: UUID
+) -> list[str]:
+    """Every durable `stream` status written for `stream_id`, in order.
+
+    The list is how "terminalized exactly once" is asserted: one entry, not a
+    second write from a path that also thought it owned the row.
+    """
+    real = streams_repo.mark_status
+    written: list[str] = []
+
+    async def _spy(db: Any, *, status: str, **kwargs: Any) -> None:
+        if kwargs.get("stream_id") == stream_id:
+            written.append(status)
+        await real(db, status=status, **kwargs)
+
+    monkeypatch.setattr(streams_repo, "mark_status", _spy)
+    return written
+
+
+def _early_yield_seed(paused_id: UUID) -> ResumeToolSeed:
+    """A resume whose settled approval makes the generator emit a seeded frame."""
+    return ResumeToolSeed(
+        tool_call_id="fake_cal_1",
+        name="calendar_create_event",
+        label="Create event",
+        decision="approve",
+        input={"title": "kickoff"},
+        paused_message_id=paused_id,
+        settled_result=_SettledResult(),
+    )
+
+
+@pytest.mark.parametrize("close_at", ["submitted", "tool_result"])
+async def test_closing_the_consumer_at_an_early_yield_unwinds_the_turn(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    close_at: str,
+) -> None:
+    """AC-11: the inline sink reports at the frames the main guard cannot cover.
+
+    `submitted` and the seeded `tool_result` are delivered before the generator's
+    own `try`/`finally` opens, so an `aclose()` landing on either used to raise
+    `GeneratorExit` straight out with nothing releasing anything. At the seeded
+    frame the pump is already registered, which made it a live task draining the
+    provider for a turn no one was reading, with the reservation still held and
+    the durable row still `active`.
+    """
+    turn = await _seed_turn(session_factory)
+    await request_stop_async(turn.stream_id)
+    written = _record_terminalizations(monkeypatch, turn.stream_id)
+    lifecycle = TurnLifecycle(
+        runtime=RuntimeContext.from_factory(session_factory),
+        stream_id=turn.stream_id,
+        user_id=turn.user_id,
+    )
+
+    frames: list[str] = []
+    async with session_factory() as session:
+        producer = handler_mod.stream_and_persist(
+            request=_NoDisconnect(),  # type: ignore[arg-type]
+            db=session,
+            lifecycle=lifecycle,
+            provider=_StallingProvider(),  # type: ignore[arg-type]
+            binding=_binding(),
+            requested_tier_id="smart",
+            conversation_id=turn.conversation_id,
+            user_message_id=turn.user_message_id,
+            user_text="Tool approved: calendar_create_event",
+            history=[],
+            is_temporary=False,
+            user_id=turn.user_id,
+            stream_id=turn.stream_id,
+            resume_seed=(
+                None if close_at == "submitted" else _early_yield_seed(turn.paused_message_id)
+            ),
+        )
+        async for frame in producer:
+            frames.append(frame.event or "")
+            if frames[-1] == close_at:
+                break
+        # The generator is suspended AT that yield right now; this is what the
+        # inline route's consumer does when it stops reading.
+        await producer.aclose()
+
+    assert frames[-1] == close_at
+    # One outcome, selected by the sink's report rather than by nothing at all.
+    assert lifecycle.outcome == "error"
+    assert lifecycle.failure_stage == "delivery"
+    assert isinstance(lifecycle.failure, GeneratorExit)
+    assert lifecycle.closed is True
+    # The pump exists only once setup got that far, and is joined either way.
+    assert len(lifecycle._registered) == (1 if close_at == "tool_result" else 0)
+    assert all(task.done() for task in lifecycle._registered)
+    assert await _reservation_held(session_factory, turn.stream_id) is False
+    assert await is_stop_requested_async(turn.stream_id) is False
+    assert written == ["error"]
+    assert await _stream_status(session_factory, turn.stream_id) == "error"
+    assert await _assistant_rows(session_factory, turn.conversation_id) == []
+    assert await _rollup(session_factory) is None
+
+
+async def test_a_cancel_at_an_early_yield_terminalizes_as_stopped(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same seam, cancel semantics: an interruption is `stopped`, not `error`.
+
+    A worker shutdown lands `CancelledError` on whichever yield the generator is
+    suspended at, and the early ones are no exception — they just had no guard to
+    route it through. The status matches the in-loop hard-cancel branch so the
+    frame it happened to land on cannot change what the row says.
+    """
+    turn = await _seed_turn(session_factory)
+    await request_stop_async(turn.stream_id)
+    written = _record_terminalizations(monkeypatch, turn.stream_id)
+    lifecycle = TurnLifecycle(
+        runtime=RuntimeContext.from_factory(session_factory),
+        stream_id=turn.stream_id,
+        user_id=turn.user_id,
+    )
+
+    async with session_factory() as session:
+        producer = handler_mod.stream_and_persist(
+            request=_NoDisconnect(),  # type: ignore[arg-type]
+            db=session,
+            lifecycle=lifecycle,
+            provider=_StallingProvider(),  # type: ignore[arg-type]
+            binding=_binding(),
+            requested_tier_id="smart",
+            conversation_id=turn.conversation_id,
+            user_message_id=turn.user_message_id,
+            user_text="hello world",
+            history=[],
+            is_temporary=False,
+            user_id=turn.user_id,
+            stream_id=turn.stream_id,
+        )
+        first = await producer.__anext__()
+        assert (first.event or "") == "submitted"
+        with pytest.raises(asyncio.CancelledError):
+            await producer.athrow(asyncio.CancelledError())
+
+    assert lifecycle.outcome == "stopped"
+    assert lifecycle.closed is True
+    assert written == ["stopped"]
+    assert await _stream_status(session_factory, turn.stream_id) == "stopped"
+    assert await _reservation_held(session_factory, turn.stream_id) is False
+    assert await is_stop_requested_async(turn.stream_id) is False
+    assert await _assistant_rows(session_factory, turn.conversation_id) == []
+
+
+# 4. Failure injection at the detached sink -----------------------------------
 
 
 async def test_a_preterminal_sink_failure_unwinds_the_turn(

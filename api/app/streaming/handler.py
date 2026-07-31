@@ -735,17 +735,46 @@ async def stream_and_persist(
         runtime=turn_runtime, stream_id=stream_id, user_id=user_id
     )
 
+    async def _delivery_interrupted(exc: BaseException) -> None:
+        """AC-11: report an interrupted EARLY yield to the shared lifecycle.
+
+        The main `try`/`finally` below cannot cover the `submitted` frame or the
+        seeded `tool_result`: both are delivered before it opens, and a consumer
+        that stops reading lands its exception ON that yield. `aclose()`
+        (`GeneratorExit`) or a task cancel there used to escape without ever
+        reaching `close()` — and by the seeded frame the pump is already
+        registered, so it kept draining the provider while the reservation stayed
+        held and the durable `stream` row stayed `active`. The detached wrapper
+        had this seam covered through `buffer.append()`; the inline route had no
+        equivalent adapter, and this is it.
+
+        A cancel is an interruption, so the row terminalizes like every other
+        hard cancel (`stopped` while uncommitted, untouched once committed).
+        Anything else at a yield is the sink giving up, which is the same
+        delivery failure the wrapper reports. `close()` runs either way, in place
+        of the `finally` this region does not have.
+        """
+        if isinstance(exc, asyncio.CancelledError):
+            await turn_lifecycle.hard_cancelled()
+        else:
+            await turn_lifecycle.delivery_failed(exc)
+        await turn_lifecycle.close()
+
     # Emit `submitted` immediately. Resumable clients need the durable stream
     # id in-band so they can reconnect to the exact producer they just started.
-    yield encode_submitted(
-        SubmittedEvent(
-            message_id=str(user_message_id),
-            stream_id=str(stream_id) if stream_id is not None else None,
-            requested_agentic_mode=requested_agentic_mode,
-            effective_agentic_mode=agentic_mode,
-            agentic_coercion_reason=agentic_coercion_reason,
+    try:
+        yield encode_submitted(
+            SubmittedEvent(
+                message_id=str(user_message_id),
+                stream_id=str(stream_id) if stream_id is not None else None,
+                requested_agentic_mode=requested_agentic_mode,
+                effective_agentic_mode=agentic_mode,
+                agentic_coercion_reason=agentic_coercion_reason,
+            )
         )
-    )
+    except BaseException as delivery_exc:
+        await _delivery_interrupted(delivery_exc)
+        raise
     turn_started_at = time.monotonic()
     # The one wire gate the fold does not own: the non-agentic stream must emit
     # exactly one `reasoning_done`, before any `answer_delta`.
@@ -2221,11 +2250,17 @@ async def stream_and_persist(
         # durable before the first provider event either way, and a sink failure
         # here is a delivery failure, not a source one. Encoded exactly as the
         # live driver encodes a provider `ToolResult`.
-        yield encode_tool_result(
-            ToolResultEvent.model_validate(
-                tool_result_part(seeded_result).model_dump(by_alias=True, exclude_none=True)
+        try:
+            yield encode_tool_result(
+                ToolResultEvent.model_validate(
+                    tool_result_part(seeded_result).model_dump(
+                        by_alias=True, exclude_none=True
+                    )
+                )
             )
-        )
+        except BaseException as delivery_exc:
+            await _delivery_interrupted(delivery_exc)
+            raise
 
     try:
         while True:

@@ -18,7 +18,8 @@ content attribute can ride along.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import pytest
 import structlog
@@ -29,7 +30,9 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from app.agentic.orchestrator import run_orchestrator
 from app.config import Settings
+from app.errors import AppError, ErrorEnvelope
 from app.observability.tracing import (
     SpanSettlement,
     add_otel_log_processor,
@@ -37,6 +40,7 @@ from app.observability.tracing import (
     invoke_agent_span,
     reset_tracing_for_tests,
 )
+from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
 from app.providers.tiers import get_binding
 from app.runtime.context import ServedRoute
 from app.runtime.run_receipt import UsageTotals
@@ -102,13 +106,12 @@ async def test_instrument_fastapi_with_in_memory_exporter_produces_spans() -> No
     captured spans without standing up a real collector. The exporter
     override flows through `instrument_fastapi`'s `span_exporter` kwarg.
     """
-    exporter = InMemorySpanExporter()
-    # Override the global provider for the duration of this test by
-    # constructing one with a SimpleSpanProcessor (synchronous flush) so we
-    # don't have to wait on the BatchSpanProcessor's batching window.
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
+    # A `SimpleSpanProcessor` (synchronous flush) so there is no batching window
+    # to wait on. Attached to whichever SDK provider is already live rather than
+    # to a fresh one: OTel refuses to replace a registered global provider, so a
+    # test that ran earlier and registered its own would leave this one asserting
+    # against an exporter nothing ever reached.
+    exporter = _capture_spans()
 
     app = FastAPI()
 
@@ -304,3 +307,213 @@ def test_span_settlement_records_no_content_and_needs_no_guard() -> None:
         cost_usd=1.0,
         outcome="failed",
     )
+
+
+# AC-10: the production phase spans, settled from a real orchestrated run --------
+
+BOUND_ROUTE = ServedRoute(tier_id="smart", provider_id="deepseek", model_id="v4-pro")
+
+# The planner span's role is `orchestrator` (pre-existing scope, preserved by
+# AC-10); every other phase's role is its own name.
+PLANNER_ROLE = "orchestrator"
+
+PHASE_USAGE = UsageUpdate(input_tokens=4, output_tokens=3)
+
+
+def _agentic_settings(**kwargs: object) -> Settings:
+    """Agentic settings on a NON-fake backend.
+
+    The fake backend takes the scaffolded route — deterministic plan, deterministic
+    aggregate — which never opens a planner or a streamed-synthesis span. Every
+    phase span AC-10 has to close only exists off that branch.
+    """
+    base: dict[str, object] = {
+        # `env` / `provider_backend` carry no alias and so populate by FIELD name;
+        # the agentic knobs are aliased and populate by their uppercase env name.
+        # Mixing them up is silently ignored under `extra="ignore"`.
+        "env": "test",
+        "provider_backend": "deepseek",
+        "AGENTIC_ENABLED": True,
+        "AGENTIC_RUN_BUDGET_USD": 10.0,
+    }
+    base.update(kwargs)
+    return Settings(**base)  # type: ignore[arg-type]
+
+
+# A token is worth a nanodollar so the whole run — planner, two workers,
+# aggregator and a judge sample — fits the run cap and every phase actually
+# executes. The assertions read the arithmetic, not the scale.
+def _nano(usage: UsageUpdate) -> float:
+    return 1e-9 * (usage.input_tokens + usage.output_tokens)
+
+
+def _phase_stream(usage: UsageUpdate = PHASE_USAGE) -> Any:
+    """A `StreamFactory` that answers every phase with what that phase parses.
+
+    The judge needs strict JSON and the planner needs a numbered list, so the
+    reply is chosen from the prompt rather than shared: one canned string would
+    make whichever phase it did not suit fail for the wrong reason.
+    """
+
+    def _make_stream_for(prompt: str, **_kwargs: object) -> Any:
+        judging = "VERIFIER" in prompt or "UNTRUSTED_VERIFIER_DATA" in prompt
+        reply = (
+            '{"verdict":"pass","report":"none"}'
+            if judging
+            else "1. alpha\n2. beta"
+        )
+
+        def _make(
+            _feedback: list[Any], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text=reply)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    return _make_stream_for
+
+
+def _settled_phases(
+    exporter: InMemorySpanExporter,
+) -> dict[str, list[dict[str, Any]]]:
+    """Every `invoke_agent` span grouped by role, in finish order, each carrying
+    its own and its parent's span id so topology stays assertable."""
+    phases: dict[str, list[dict[str, Any]]] = {}
+    for span in exporter.get_finished_spans():
+        if span.name != "invoke_agent":
+            continue
+        attrs = dict(span.attributes or {})
+        role = attrs.get("agentic.role")
+        if not isinstance(role, str):  # pragma: no cover - always set
+            continue
+        attrs["_parent_span_id"] = span.parent.span_id if span.parent else None
+        attrs["_span_id"] = span.context.span_id
+        phases.setdefault(role, []).append(attrs)
+    return phases
+
+
+def _assert_settled(
+    attrs: dict[str, Any],
+    *,
+    outcome: str,
+    provider_id: str = "deepseek",
+    model_id: str = "v4-pro",
+) -> None:
+    """The four facts AC-10 requires of every phase span, plus the content ban."""
+    assert attrs["agentic.served_tier_id"] == "smart"
+    assert attrs["gen_ai.provider.name"] == provider_id
+    assert attrs["gen_ai.response.model"] == model_id
+    assert attrs["gen_ai.usage.input_tokens"] > 0
+    assert attrs["gen_ai.usage.output_tokens"] > 0
+    assert attrs["agentic.cost_usd"] > 0.0
+    assert attrs["agentic.outcome"] == outcome
+    assert not [k for k in attrs if "content" in k or "text" in k]
+
+
+@pytest.mark.asyncio
+async def test_every_deep_research_phase_span_settles_on_the_served_route() -> None:
+    """AC-10: the planner, both workers, the aggregator and the verifier each close
+    with the route that served them, their tokens, their exact cost and how they
+    ended — and the verifier stays a SIBLING of the aggregator (V-009)."""
+    exporter = _capture_spans()
+    events = [
+        event
+        async for event in run_orchestrator(
+            make_stream_for=_phase_stream(),
+            settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=1),
+            mode="deep_research",
+            # A plain prompt (no `DEEP_RESEARCH:` marker) so the MODEL planner runs.
+            user_text="compare alpha and beta",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+        )
+    ]
+    assert any(isinstance(e, Complete) and e.subagent_id is None for e in events)
+
+    phases = _settled_phases(exporter)
+    assert len(phases["worker"]) == 2
+    for role in (PLANNER_ROLE, "worker", "aggregator", "verifier"):
+        for attrs in phases[role]:
+            _assert_settled(attrs, outcome="succeeded")
+    # V-009: the judge is not nested inside the synthesis it judges.
+    assert (
+        phases["verifier"][-1]["_parent_span_id"]
+        != phases["aggregator"][-1]["_span_id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_primary_span_settles_on_the_served_route() -> None:
+    """AC-10, single mode: the one phase there is closes with the same four facts."""
+    exporter = _capture_spans()
+    _ = [
+        event
+        async for event in run_orchestrator(
+            make_stream_for=_phase_stream(UsageUpdate(input_tokens=5, output_tokens=2)),
+            settings=_agentic_settings(),
+            mode="single",
+            user_text="a question",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+        )
+    ]
+    (primary,) = _settled_phases(exporter)["primary"]
+    _assert_settled(primary, outcome="succeeded")
+
+
+@pytest.mark.asyncio
+async def test_a_planner_fallback_is_recorded_as_the_served_route() -> None:
+    """AC-10 fallback case: the retry opens its own span carrying the substituted
+    route, and the primary attempt it replaced closes as failed rather than being
+    overwritten — one span per provider call, either way."""
+    exporter = _capture_spans()
+
+    def _failing(_prompt: str, **_kwargs: object) -> Any:
+        def _make(
+            _feedback: list[Any], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                raise AppError(
+                    ErrorEnvelope(
+                        code="PROVIDER_UPSTREAM",
+                        severity="error",
+                        title="down",
+                        body="down",
+                    ),
+                    status_code=502,
+                )
+                yield Complete(usage=UsageUpdate())  # pragma: no cover
+
+            return _gen()
+
+        return _make
+
+    _ = [
+        event
+        async for event in run_orchestrator(
+            make_stream_for=_failing,
+            settings=_agentic_settings(),
+            mode="deep_research",
+            user_text="compare alpha and beta",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+            fallback_make_stream_for=_phase_stream(),
+            fallback_cost_for_usage=_nano,
+            fallback_provider_id="anthropic",
+            fallback_model_id="claude-x",
+        )
+    ]
+
+    primary_try, retry = _settled_phases(exporter)[PLANNER_ROLE]
+    assert primary_try["gen_ai.provider.name"] == "deepseek"
+    assert primary_try["agentic.outcome"] == "failed"
+    assert "agentic.route.substitution" not in primary_try
+    _assert_settled(
+        retry, outcome="succeeded", provider_id="anthropic", model_id="claude-x"
+    )
+    assert retry["agentic.route.substitution"] == "provider_fallback"

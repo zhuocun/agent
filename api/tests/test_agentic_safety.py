@@ -787,6 +787,45 @@ async def test_verifier_lifecycle_started_before_done_and_before_answer(
     get_settings.cache_clear()
 
 
+async def test_each_worker_done_precedes_its_progress_run_cost(
+    agentic_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """AC-09: a worker's terminal is delivered before the meter tick it funds.
+
+    The progress tick reports EXACTLY settled spend, so it may only be read after
+    the runner has settled the phase and the orchestrator has minted the terminal.
+    Emitting it first would show the FE a total that omits the worker whose row
+    just closed, which is how a fan-out appears to under-count mid-run.
+    """
+    conv_id = await _bootstrap_pro_convo(agentic_client, session_factory)
+    frames = await _collect_sse(
+        agentic_client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": "b0000000-0000-0000-0000-000000000031",
+            "tierId": "smart",
+            "text": "DEEP_RESEARCH: one | two",
+            "agenticMode": "deep_research",
+        },
+    )
+
+    # Only the two frame kinds this ordering is about, in delivery order.
+    ticks: list[tuple[str, str]] = []
+    for name, data in frames:
+        if name == "subagent_done" and data.get("role") == "worker":
+            ticks.append(("worker_done", str(data.get("subagentId"))))
+        elif name == "run_cost" and data.get("phase") == "progress":
+            ticks.append(("progress", ""))
+
+    worker_dones = [i for i, (kind, _) in enumerate(ticks) if kind == "worker_done"]
+    progress = [i for i, (kind, _) in enumerate(ticks) if kind == "progress"]
+    assert len(worker_dones) == 2
+    assert len(progress) == len(worker_dones)
+    # Strict alternation: done, tick, done, tick — never a tick ahead of its worker.
+    assert [kind for kind, _ in ticks] == ["worker_done", "progress"] * 2
+
+
 async def test_verifier_span_is_sibling_of_aggregator_not_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

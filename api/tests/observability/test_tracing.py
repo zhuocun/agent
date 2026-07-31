@@ -18,6 +18,7 @@ content attribute can ride along.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -517,3 +518,93 @@ async def test_a_planner_fallback_is_recorded_as_the_served_route() -> None:
         retry, outcome="succeeded", provider_id="anthropic", model_id="claude-x"
     )
     assert retry["agentic.route.substitution"] == "provider_fallback"
+
+
+def _stream_then_raise(exc: BaseException, usage: UsageUpdate = PHASE_USAGE) -> Any:
+    """A phase that bills real tokens and THEN blows up.
+
+    The tokens come first on purpose: spend that lands before an exceptional exit
+    is still spend, and a span that reports nothing because the phase did not reach
+    its happy path is exactly the hole these tests close.
+    """
+
+    def _make_stream_for(_prompt: str, **_kwargs: object) -> Any:
+        def _make(
+            _feedback: list[Any], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="partial ")
+                yield usage
+                raise exc
+
+            return _gen()
+
+        return _make
+
+    return _make_stream_for
+
+
+_UPSTREAM_DOWN = AppError(
+    ErrorEnvelope(
+        code="PROVIDER_UPSTREAM", severity="error", title="down", body="down"
+    ),
+    status_code=502,
+)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_primary_still_closes_its_span_on_route_and_spend() -> None:
+    """AC-10 on the exceptional exit: single mode has no fallback tail, so a
+    provider raise leaves `run_single` through the span scope on its way to the
+    handler. The span has to carry the route, the tokens already billed, their cost
+    and `failed` — not the identity attributes it opened with."""
+    exporter = _capture_spans()
+    with pytest.raises(AppError):
+        async for _event in run_orchestrator(
+            make_stream_for=_stream_then_raise(_UPSTREAM_DOWN),
+            settings=_agentic_settings(),
+            mode="single",
+            user_text="a question",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+        ):
+            pass
+
+    (primary,) = _settled_phases(exporter)["primary"]
+    _assert_settled(primary, outcome="failed")
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_aggregator_closes_its_span_as_stopped() -> None:
+    """AC-10 on the cancelled exit, and AR-005 on top of it.
+
+    `GeneratorExit` and `CancelledError` are `BaseException`, so the aggregator's
+    `except Exception` degrade arm never saw them and the span closed unsettled. A
+    Stop mid-synthesis must close the span on what the aggregator actually spent,
+    labelled `stopped` — and must NOT be laundered into the deterministic-synthesis
+    degrade, which would compose an answer for a turn nobody is listening to and
+    report a failed aggregator instead of a stopped one.
+    """
+    exporter = _capture_spans()
+
+    def _cancel_the_synthesis(prompt: str, **kwargs: object) -> Any:
+        # Planner and workers answer normally; only the synthesis call is cut off.
+        if "<<<UNTRUSTED_WORKER_DATA_BEGIN>>>" in prompt:
+            return _stream_then_raise(asyncio.CancelledError())(prompt, **kwargs)
+        return _phase_stream()(prompt, **kwargs)
+
+    with pytest.raises(asyncio.CancelledError):
+        async for _event in run_orchestrator(
+            make_stream_for=_cancel_the_synthesis,
+            settings=_agentic_settings(),
+            mode="deep_research",
+            user_text="compare alpha and beta",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+        ):
+            pass
+
+    (aggregator,) = _settled_phases(exporter)["aggregator"]
+    _assert_settled(aggregator, outcome="stopped")
+    # The degrade arm did not run: a cancellation is not a synthesis failure.
+    assert aggregator["agentic.outcome"] != "failed"

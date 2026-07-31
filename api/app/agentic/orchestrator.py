@@ -854,6 +854,15 @@ async def _finalize_synthesis_streamed(
     with invoke_agent_span(
         subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
     ) as agg_span:
+
+        def _settle_aggregator(outcome: str) -> None:
+            agg_span.settle(
+                route=served_route,
+                usage=UsageTotals.copy_from(aggregator_usage),
+                cost_usd=cost_for_usage(aggregator_usage),
+                outcome=outcome,
+            )
+
         try:
             async for event in run_agent_loop(
                 make_stream=agg_make,
@@ -913,6 +922,13 @@ async def _finalize_synthesis_streamed(
                 ):
                     agg_budget_halted = True
                     break
+        except (asyncio.CancelledError, GeneratorExit):
+            # AR-005: a Stop, or a consumer that closed this generator, is NOT a
+            # synthesis failure — degrading it through the deterministic tail
+            # would compose an answer nobody is waiting for and label the turn as
+            # a failed aggregator. Close the span on what it spent and propagate.
+            _settle_aggregator("stopped")
+            raise
         except Exception:
             # B8: never raise to the generic handler error path — fall back to
             # deterministic synthesize() over completed workers and emit a failed
@@ -922,13 +938,10 @@ async def _finalize_synthesis_streamed(
         # AC-10: settle INSIDE the scope. The verifier is a sibling that runs
         # after this span closes, and the draft composition below spends nothing,
         # so everything the span reports is already known here.
-        agg_span.settle(
-            route=served_route,
-            usage=UsageTotals.copy_from(aggregator_usage),
-            cost_usd=cost_for_usage(aggregator_usage),
-            outcome=_aggregator_outcome(
+        _settle_aggregator(
+            _aggregator_outcome(
                 failed=aggregator_failed, budget_halted=agg_budget_halted
-            ),
+            )
         )
     if agg_budget_halted:
         budget_halted = True
@@ -1347,9 +1360,11 @@ async def run_single(
         def _settle_primary(outcome: str) -> None:
             """AC-10: close the primary span with what actually served and spent.
 
-            Called inside the span on every exit — the pause `return` below and
-            the normal fall-through — because a span that has already ended
-            cannot take attributes.
+            Called inside the span on EVERY exit — the pause `return`, the normal
+            fall-through, a provider raise, and a Stop — because a span that has
+            already ended cannot take attributes. Usage is whatever this session
+            folded before the exit, so a failed or stopped turn still reports the
+            tokens it really burned rather than nothing at all.
             """
             span.settle(
                 route=served_route,
@@ -1358,71 +1373,84 @@ async def run_single(
                 outcome=outcome,
             )
 
-        async for event in run_agent_loop(
-            make_stream=make_stream_for(user_text),
-            settings=settings,
-            server_approved_call_ids=server_approved_call_ids,
-            initial_tool_results=initial_tool_results,
-        ):
-            if isinstance(event, AnswerDelta):
-                answer_parts.append(event.text)
-            if isinstance(event, ToolCall):
-                pending_tool_name = event.name
-                pending_tool_label = event.label
-            session_usage = fold_usage(event, session_usage)
-            session_cost = cost_for_usage(session_usage)
-            if not budget_halted and budget.exceeds_cap(
-                actual_usd=restored_run_cost + session_cost,
-                cap_usd=cap,
-                headroom_usd=budget_headroom_usd,
+        try:
+            async for event in run_agent_loop(
+                make_stream=make_stream_for(user_text),
+                settings=settings,
+                server_approved_call_ids=server_approved_call_ids,
+                initial_tool_results=initial_tool_results,
             ):
-                budget_halted = True
-            if isinstance(event, AwaitingApproval):
-                if budget_halted:
-                    # FL-12: the cap is already breached, so an actionable card
-                    # would only buy a resume that must immediately refuse. Cancel
-                    # the pending call (AR-004 shape) and fall through to the
-                    # labeled budget tail.
-                    yield tag_event(
-                        ToolResult(
-                            tool_call_id=event.tool_call_id,
-                            name=pending_tool_name,
-                            label=pending_tool_label,
-                            status="cancelled",
-                            approval_state="rejected",
-                            summary="Cancelled: run budget already exhausted.",
-                            error=(
-                                "The run reached its budget cap before this "
-                                "approval could be shown."
+                if isinstance(event, AnswerDelta):
+                    answer_parts.append(event.text)
+                if isinstance(event, ToolCall):
+                    pending_tool_name = event.name
+                    pending_tool_label = event.label
+                session_usage = fold_usage(event, session_usage)
+                session_cost = cost_for_usage(session_usage)
+                if not budget_halted and budget.exceeds_cap(
+                    actual_usd=restored_run_cost + session_cost,
+                    cap_usd=cap,
+                    headroom_usd=budget_headroom_usd,
+                ):
+                    budget_halted = True
+                if isinstance(event, AwaitingApproval):
+                    if budget_halted:
+                        # FL-12: the cap is already breached, so an actionable card
+                        # would only buy a resume that must immediately refuse.
+                        # Cancel the pending call (AR-004 shape) and fall through
+                        # to the labeled budget tail.
+                        yield tag_event(
+                            ToolResult(
+                                tool_call_id=event.tool_call_id,
+                                name=pending_tool_name,
+                                label=pending_tool_label,
+                                status="cancelled",
+                                approval_state="rejected",
+                                summary="Cancelled: run budget already exhausted.",
+                                error=(
+                                    "The run reached its budget cap before this "
+                                    "approval could be shown."
+                                ),
                             ),
-                        ),
+                            subagent_id,
+                        )
+                        break
+                    # FL-14: the handler `break`s at the pause terminal and never
+                    # consumes post-pause events, so the untagged Complete (turn
+                    # token roll-up) and the final RunCost receipt must precede the
+                    # tagged pause. `SubagentDone` stays suppressed —
+                    # `mark_unfinished_subagents_paused` deliberately keeps the
+                    # primary non-terminal on a pause (B15). `partial=True` because
+                    # the turn is resumable, not finished.
+                    pause_usage = sum_usages([prior_usage, session_usage])
+                    yield Complete(usage=pause_usage)
+                    ledger.settle(
                         subagent_id,
+                        role="primary",
+                        usage=pause_usage,
+                        cost_usd=prior_cost + cost_for_usage(session_usage),
                     )
-                    break
-                # FL-14: the handler `break`s at the pause terminal and never
-                # consumes post-pause events, so the untagged Complete (turn
-                # token roll-up) and the final RunCost receipt must precede the
-                # tagged pause. `SubagentDone` stays suppressed —
-                # `mark_unfinished_subagents_paused` deliberately keeps the
-                # primary non-terminal on a pause (B15). `partial=True` because
-                # the turn is resumable, not finished.
-                pause_usage = sum_usages([prior_usage, session_usage])
-                yield Complete(usage=pause_usage)
-                ledger.settle(
-                    subagent_id,
-                    role="primary",
-                    usage=pause_usage,
-                    cost_usd=prior_cost + cost_for_usage(session_usage),
-                )
-                yield _boundary_run_cost(
-                    ledger, cap_usd=cap, boundary="pause", partial=True
-                )
-                _settle_primary("paused")
+                    yield _boundary_run_cost(
+                        ledger, cap_usd=cap, boundary="pause", partial=True
+                    )
+                    _settle_primary("paused")
+                    yield tag_event(event, subagent_id)
+                    return
                 yield tag_event(event, subagent_id)
-                return
-            yield tag_event(event, subagent_id)
-            if budget_halted and isinstance(event, (Complete, UsageUpdate)):
-                break
+                if budget_halted and isinstance(event, (Complete, UsageUpdate)):
+                    break
+        except (asyncio.CancelledError, GeneratorExit):
+            # AR-005: a Stop or a closed consumer is not a provider failure. The
+            # cap kill is still distinguishable, because reaching the cap is what
+            # cancels this turn in the first place.
+            _settle_primary("budget_cancelled" if budget_halted else "stopped")
+            raise
+        except BaseException:
+            # Single mode has no fallback tail: the raise reaches the handler and
+            # becomes the turn's error. The span closes on the way past so a
+            # failed provider call is still attributable to a route and a spend.
+            _settle_primary("failed")
+            raise
         _settle_primary("budget_cancelled" if budget_halted else "succeeded")
     # FL-13: additive, not exclusive. A halt before any prose is a budget stop —
     # `main_answer_is_empty` winning here labeled it "didn't produce a written
@@ -2737,9 +2765,10 @@ async def _run_deep_research(
         with invoke_agent_span(
             subagent_id=_AGGREGATOR_ID, role="aggregator", label=_AGGREGATOR_LABEL
         ) as agg_span:
-            yield AnswerDelta(text=synthesis, subagent_id=_AGGREGATOR_ID)
             # A deterministic synthesis makes no provider call, so this phase is
-            # genuinely zero-token; the span says so rather than staying silent.
+            # genuinely zero-token and every fact the span reports is known before
+            # anything is emitted. Settling first also shrinks the window in which
+            # a consumer close could end the span unsettled to nothing.
             aggregator_usage = UsageUpdate()
             aggregator_cost = cost_for_usage(aggregator_usage)
             agg_span.settle(
@@ -2748,6 +2777,7 @@ async def _run_deep_research(
                 cost_usd=aggregator_cost,
                 outcome="succeeded",
             )
+            yield AnswerDelta(text=synthesis, subagent_id=_AGGREGATOR_ID)
             yield Complete(usage=aggregator_usage, subagent_id=_AGGREGATOR_ID)
             yield SubagentDone(
                 subagent_id=_AGGREGATOR_ID,

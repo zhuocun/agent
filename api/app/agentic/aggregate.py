@@ -17,7 +17,6 @@ interpret any worker output as an instruction:
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -112,59 +111,6 @@ def _normalize_source_ids(raw: tuple[str, ...] | list[str]) -> tuple[str, ...]:
         if len(out) >= _MAX_SOURCE_IDS:
             break
     return tuple(out)
-
-
-# Inline citation markers like ``[1]`` / ``[12]`` in worker answer text.
-_CITATION_MARKER_RE = re.compile(r"\[(\d+)\]")
-
-
-def remap_worker_source_ids(
-    outputs: list[WorkerOutput],
-    *,
-    start: int = 1,
-) -> list[WorkerOutput]:
-    """Offline helper: renumber worker-local source ordinals in list order.
-
-    The live orchestrator path uses mid-stream ``_SourceIdRemapper`` only (B12)
-    and must not call this at the synthesis sink — a second remap in worker-plan
-    order diverges from event-arrival globals. Kept for unit tests and any
-    offline tooling that starts from local-only ``WorkerOutput`` rows.
-    """
-    next_id = max(1, start)
-    remapped: list[WorkerOutput] = []
-    for output in outputs:
-        local_to_global: dict[str, str] = {}
-        new_ids: list[str] = []
-        for sid in output.source_ids:
-            key = str(sid)
-            if key not in local_to_global:
-                local_to_global[key] = str(next_id)
-                next_id += 1
-            gid = local_to_global[key]
-            if gid not in new_ids:
-                new_ids.append(gid)
-
-        def _rewrite(match: re.Match[str], *, _map: dict[str, str] = local_to_global) -> str:
-            local = match.group(1)
-            global_id = _map.get(local)
-            if global_id is None:
-                return match.group(0)
-            return f"[{global_id}]"
-
-        new_answer = (
-            _CITATION_MARKER_RE.sub(_rewrite, output.answer)
-            if local_to_global
-            else output.answer
-        )
-        remapped.append(
-            WorkerOutput(
-                subagent_id=output.subagent_id,
-                sub_question=output.sub_question,
-                answer=new_answer,
-                source_ids=tuple(new_ids),
-            )
-        )
-    return remapped
 
 
 def to_artifact(output: WorkerOutput, *, index: int) -> WorkerArtifact:

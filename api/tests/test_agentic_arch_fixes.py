@@ -5,10 +5,14 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 
-from app.agentic.aggregate import WorkerOutput, remap_worker_source_ids
+from app.agentic import aggregate
+from app.agentic import orchestrator as orchestrator_mod
+from app.agentic import sources as sources_mod
+from app.agentic.aggregate import WorkerOutput
 from app.agentic.continuation import (
     RESERVED_CONTROL_KEYS,
     AgenticContinuation,
@@ -22,6 +26,7 @@ from app.agentic.orchestrator import (
     _resume_worker_continuation,
     run_orchestrator,
 )
+from app.agentic.sources import SourceNamespace
 from app.config import Settings
 from app.providers.protocol import (
     AnswerDelta,
@@ -670,9 +675,7 @@ def test_b12_cite_before_sources_never_yields_a_foreign_global_id() -> None:
     Returning the raw local ordinal let worker-1's `[1]` render as whichever
     source happened to own global id 1 — silent factual misattribution.
     """
-    from app.agentic.orchestrator import _SourceIdRemapper
-
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     worker0 = remapper.remap_sources(
         Sources(
             items=[
@@ -701,9 +704,7 @@ def test_b12_cite_before_sources_never_yields_a_foreign_global_id() -> None:
 
 def test_b12_empty_map_marker_is_allocated_not_passed_through() -> None:
     """FL-16-a: the `if not self._map` early return took the same unsafe path."""
-    from app.agentic.orchestrator import _SourceIdRemapper
-
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     remapper.seed_catalog(
         [SourceItem(id=1, title="prior", url="https://prior.example")]
     )
@@ -794,28 +795,54 @@ async def test_b16_reasoning_delta_blocks_transparent_fallback() -> None:
     )
 
 
-def test_b12_remap_worker_source_ids_globally() -> None:
-    """B12 offline helper: worker-local citation ordinals remapped in list order."""
-    outputs = [
-        WorkerOutput(
-            subagent_id="worker-0",
-            sub_question="a",
-            answer="See [1] and [2].",
-            source_ids=("1", "2"),
-        ),
-        WorkerOutput(
-            subagent_id="worker-1",
-            sub_question="b",
-            answer="Also [1].",
-            source_ids=("1",),
-        ),
-    ]
-    remapped = remap_worker_source_ids(outputs)
-    assert remapped[0].source_ids == ("1", "2")
-    assert remapped[1].source_ids == ("3",)
-    assert "[1]" in remapped[0].answer and "[2]" in remapped[0].answer
-    assert "[3]" in remapped[1].answer
-    assert "[1]" not in remapped[1].answer or remapped[1].answer.count("[1]") == 0
+def test_b12_one_source_allocator_owns_the_run() -> None:
+    """AC-08: `SourceNamespace` is the only source-ID allocator left.
+
+    `aggregate.remap_worker_source_ids` renumbered the same ordinals a second
+    time in worker-plan order at the synthesis sink, so an offline caller could
+    produce ids that disagreed with the arrival-ordered globals the live stream
+    had already shown the user. Both the duplicate and the orchestrator-private
+    class it shadowed are gone; a static read proves neither grew back.
+    """
+    assert not hasattr(aggregate, "remap_worker_source_ids")
+    assert not hasattr(orchestrator_mod, "_SourceIdRemapper")
+    app_root = Path(orchestrator_mod.__file__ or "").parent.parent
+    sources_path = Path(sources_mod.__file__ or "")
+    allocators = {
+        path.relative_to(app_root).as_posix()
+        for path in sorted(app_root.rglob("*.py"))
+        if "def _global_id" in path.read_text(encoding="utf-8")
+    }
+    assert allocators == {sources_path.relative_to(app_root).as_posix()}
+
+
+def test_b12_restored_namespace_reopens_above_published_ids() -> None:
+    """AC-08: the resume seeding the orchestrator used to inline, tested directly.
+
+    A checkpoint written before catalogs were persisted carries only cited ids,
+    so the highest one any surviving row mentions is the allocation floor —
+    otherwise a continuation's local `[1]` lands on a global the pause turn
+    already published under a different source.
+    """
+    legacy = SourceNamespace.restored(
+        catalog=(),
+        prior_id_groups=[("1", "not-a-number"), ("4", "2")],
+    )
+    remapped = legacy.remap_sources(
+        Sources(items=[SourceItem(id=1, title="new", url="https://new.example")]),
+        "worker-0",
+    )
+    assert remapped.items[0].id == 5
+    # Nothing published yet: allocation starts at 1 rather than skipping an id.
+    fresh = SourceNamespace.restored(catalog=(), prior_id_groups=[(), ("",)])
+    assert fresh.rewrite_answer_text("See [1].", "worker-0") == "See [1]."
+    # A persisted catalog is the precise record and wins over the cited floor.
+    seeded = SourceNamespace.restored(
+        catalog=(SourceItem(id=7, title="old", url="https://old.example"),),
+        prior_id_groups=[("2",)],
+    )
+    assert seeded.rewrite_answer_text("See [1].", "worker-0") == "See [8]."
+    assert [i.id for i in seeded.merged_items()] == [7]
 
 
 def test_b12_source_item_type_still_int() -> None:
@@ -826,9 +853,7 @@ def test_b12_source_item_type_still_int() -> None:
 
 def test_b12_midstream_remapper_arrival_order_and_catalog() -> None:
     """B12: mid-stream remapper assigns globals in event order and builds catalog."""
-    from app.agentic.orchestrator import _SourceIdRemapper
-
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     # worker-1 finishes first (out of plan order) with local [1].
     s1 = remapper.remap_sources(
         Sources(
@@ -858,9 +883,7 @@ def test_b12_midstream_remapper_arrival_order_and_catalog() -> None:
 
 def test_b12_rewrite_is_chunk_safe_across_answer_deltas() -> None:
     """B12: markers split across AnswerDelta chunks still remap."""
-    from app.agentic.orchestrator import _SourceIdRemapper
-
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     remapper.remap_sources(
         Sources(items=[SourceItem(id=1, title="B", url="https://b.example")]),
         "worker-1",
@@ -879,13 +902,11 @@ def test_b12_rewrite_is_chunk_safe_across_answer_deltas() -> None:
 
 def test_b12_resume_remapper_seeds_catalog_without_collision() -> None:
     """B12: resume remapper continues after seeded catalog ids."""
-    from app.agentic.orchestrator import _SourceIdRemapper
-
     prior = [
         SourceItem(id=1, title="old", url="https://old.example"),
         SourceItem(id=2, title="old2", url="https://old2.example"),
     ]
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     remapper.seed_catalog(prior)
     # Resume-session local id 1 must become global 3, not collide with 1.
     remapped = remapper.remap_sources(

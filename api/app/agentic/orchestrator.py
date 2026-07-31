@@ -32,9 +32,8 @@ import asyncio
 import contextlib
 import hashlib
 import json
-import re
 import secrets
-from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -49,6 +48,7 @@ from app.agentic.continuation import (
     usage_to_wire,
 )
 from app.agentic.retry import is_retryable_provider_error
+from app.agentic.sources import SourceNamespace
 from app.config import Settings
 from app.errors import AppError
 from app.observability.tracing import invoke_agent_span
@@ -379,132 +379,6 @@ def _event_shows_external_progress(event: ProviderEvent) -> bool:
 # unbounded number of worker events in process memory (B23). ``await put``
 # applies backpressure; teardown uses non-blocking put with drop-oldest.
 _FANOUT_QUEUE_MAXSIZE = 256
-
-
-# Trailing incomplete citation opener: `[` or `[` + digits without a closing `]`.
-_INCOMPLETE_CITATION_TAIL_RE = re.compile(r"\[\d*$")
-
-
-class _SourceIdRemapper:
-    """Globally renumber worker-local ``Sources`` ordinals mid-fan-out (B12).
-
-    A single remapper instance owns the run's global citation space. Mid-stream
-    remapping is the only mapping step — do not call
-    ``aggregate.remap_worker_source_ids`` again at the synthesis sink (that
-    reordered by worker-plan order and diverged from event-arrival globals).
-
-    AnswerDelta rewriting is chunk-safe: a marker split across deltas
-    (``"See ["`` + ``"1]."``) is held in a per-subagent carry until complete.
-    """
-
-    def __init__(self, *, start: int = 1) -> None:
-        self._next = max(1, start)
-        self._map: dict[tuple[str, int], int] = {}
-        # Global-id → remapped SourceItem (merged catalog for the aggregator).
-        self._catalog: dict[int, SourceItem] = {}
-        # Per-subagent unfinished citation fragment from the prior AnswerDelta.
-        self._answer_carry: dict[str, str] = {}
-
-    def seed_catalog(self, items: Sequence[SourceItem]) -> None:
-        """Pre-load a persisted catalog (resume) and advance the next id."""
-        for item in items:
-            gid = int(item.id)
-            self._catalog[gid] = item
-            if gid >= self._next:
-                self._next = gid + 1
-
-    def merged_items(self) -> list[SourceItem]:
-        """Return the merged global catalog in ascending citation id order."""
-        return [self._catalog[i] for i in sorted(self._catalog)]
-
-    def _global_id(self, subagent_id: str, local: int) -> int:
-        """Global id for a worker-local ordinal, allocating on first sight (FL-16-a).
-
-        Every citation surface routes through here — ``Sources`` remap, both
-        AnswerDelta rewrites and ``mapped_ids_for`` — so a marker cited BEFORE its
-        own ``Sources`` event can never fall through to the raw local ordinal.
-        Falling through resolved the marker against whichever worker happened to
-        own that global id, silently misattributing a claim (FE-1).
-        """
-        key = (subagent_id, local)
-        gid = self._map.get(key)
-        if gid is None:
-            gid = self._next
-            self._map[key] = gid
-            self._next += 1
-        return gid
-
-    def remap_sources(self, event: Sources, subagent_id: str) -> Sources:
-        new_items: list[SourceItem] = []
-        for item in event.items:
-            gid = self._global_id(subagent_id, int(item.id))
-            remapped = item.model_copy(update={"id": gid})
-            self._catalog[gid] = remapped
-            new_items.append(remapped)
-        return replace(event, items=new_items)
-
-    def rewrite_answer_text(self, text: str, subagent_id: str) -> str:
-        """Rewrite ``[n]`` markers using this subagent's local→global map.
-
-        Incomplete trailing ``[`` / ``[12`` fragments are held until the next
-        chunk (or ``flush_answer_carry``) so split markers remapped correctly.
-        """
-        combined = self._answer_carry.get(subagent_id, "") + text
-        hold = ""
-        process = combined
-        incomplete = _INCOMPLETE_CITATION_TAIL_RE.search(combined)
-        if incomplete is not None:
-            hold = combined[incomplete.start() :]
-            process = combined[: incomplete.start()]
-        self._answer_carry[subagent_id] = hold
-
-        if not process:
-            return ""
-
-        def _sub(match: re.Match[str]) -> str:
-            return f"[{self._global_id(subagent_id, int(match.group(1)))}]"
-
-        return aggregate._CITATION_MARKER_RE.sub(_sub, process)
-
-    def flush_answer_carry(self, subagent_id: str) -> str:
-        """Emit any held fragment at worker end, rewriting complete markers."""
-        hold = self._answer_carry.pop(subagent_id, "")
-        if not hold:
-            return ""
-
-        def _sub(match: re.Match[str]) -> str:
-            return f"[{self._global_id(subagent_id, int(match.group(1)))}]"
-
-        return aggregate._CITATION_MARKER_RE.sub(_sub, hold)
-
-    def mapped_ids_for(self, subagent_id: str, local_ids: list[str]) -> tuple[str, ...]:
-        out: list[str] = []
-        seen: set[str] = set()
-        for sid in local_ids:
-            try:
-                local_int = int(sid)
-            except ValueError:
-                if sid not in seen:
-                    out.append(sid)
-                    seen.add(sid)
-                continue
-            # Source emitted only via the WorkerOutput path — allocate now.
-            token = str(self._global_id(subagent_id, local_int))
-            if token not in seen:
-                out.append(token)
-                seen.add(token)
-        return tuple(out)
-
-
-def _max_source_id(ids: Iterable[str]) -> int:
-    """Largest integer citation id in ``ids`` (non-numeric ignored)."""
-    max_id = 0
-    for sid in ids:
-        try:
-            max_id = max(max_id, int(sid))
-        except (TypeError, ValueError):
-            continue
-    return max_id
 
 
 def _queue_item_is_protected(item: object) -> bool:
@@ -1985,18 +1859,15 @@ async def _resume_worker_continuation(
         (i, f"worker-{i}", f"Worker {i + 1}", sq)
         for i, sq in enumerate(sub_questions)
     ]
-    # B12: one remapper for the resume session. Seed from the pause-turn catalog
-    # (and max known ids) so new local ordinals cannot collide with pre-pause
-    # globals; mid-stream remap is the only mapping step.
-    source_remapper = _SourceIdRemapper()
-    if continuation.source_catalog:
-        source_remapper.seed_catalog(continuation.source_catalog)
-    else:
-        seed_max = _max_source_id(continuation.source_ids)
-        for out in results.values():
-            seed_max = max(seed_max, _max_source_id(out.source_ids))
-        if seed_max > 0:
-            source_remapper = _SourceIdRemapper(start=seed_max + 1)
+    # B12: one namespace for the resume session, reopened above every id the
+    # pause turn published; mid-stream remap is the only mapping step.
+    source_namespace = SourceNamespace.restored(
+        catalog=continuation.source_catalog,
+        prior_id_groups=[
+            continuation.source_ids,
+            *(out.source_ids for out in results.values()),
+        ],
+    )
 
     if continuation.clarifications:
         # C-002: keep full Q&A records — do not collapse to non-blank answers
@@ -2034,7 +1905,7 @@ async def _resume_worker_continuation(
             failed=failed_workers,
             clarifications=resume_clarification_answers,
         )
-        merged_sources = source_remapper.merged_items()
+        merged_sources = source_namespace.merged_items()
         # Streamed finalize owns aggregator (+ sibling verifier) spans — do not
         # nest them under an outer resume aggregator span (V-009 / Sol).
         if not scaffolded and ordered_outputs and not halted:
@@ -2246,7 +2117,7 @@ async def _resume_worker_continuation(
             partial_answer=partial,
             partial_reasoning="".join(reasoning_parts),
             source_ids=tuple(source_ids),
-            source_catalog=tuple(source_remapper.merged_items()),
+            source_catalog=tuple(source_namespace.merged_items()),
             tool_transcript=tuple(tool_transcript),
             emitted_answer_chars=max(
                 continuation.emitted_answer_chars, len(partial)
@@ -2280,12 +2151,12 @@ async def _resume_worker_continuation(
             if _event_shows_external_progress(event):
                 visible_progress = True
             if isinstance(event, AnswerDelta):
-                text = source_remapper.rewrite_answer_text(event.text, paused_id)
+                text = source_namespace.rewrite_answer_text(event.text, paused_id)
                 answer_parts.append(text)
                 if text != event.text:
                     event = replace(event, text=text)
             if isinstance(event, Sources):
-                event = source_remapper.remap_sources(event, paused_id)
+                event = source_namespace.remap_sources(event, paused_id)
                 for item in event.items:
                     source_ids.append(str(item.id))
             if isinstance(event, Complete) and event.substitution is not None:
@@ -2327,7 +2198,7 @@ async def _resume_worker_continuation(
                 reasoning_parts.append(event.text)
             resume_usage = _fold_usage(event, resume_usage)
             if isinstance(event, AwaitingApproval):
-                tail = source_remapper.flush_answer_carry(paused_id)
+                tail = source_namespace.flush_answer_carry(paused_id)
                 if tail:
                     answer_parts.append(tail)
                     yield _tag(AnswerDelta(text=tail, subagent_id=paused_id), paused_id)
@@ -2367,7 +2238,7 @@ async def _resume_worker_continuation(
             if budget_halted and isinstance(event, (Complete, UsageUpdate)):
                 break
         # B12: flush held citation fragment after the resume stream ends.
-        tail = source_remapper.flush_answer_carry(paused_id)
+        tail = source_namespace.flush_answer_carry(paused_id)
         if tail:
             answer_parts.append(tail)
             yield _tag(AnswerDelta(text=tail, subagent_id=paused_id), paused_id)
@@ -2905,7 +2776,7 @@ async def _run_deep_research(
     results: dict[str, WorkerOutput] = {}
     failed_workers = 0
     superseded_workers = 0
-    source_remapper = _SourceIdRemapper()
+    source_namespace = SourceNamespace()
 
     async def _run_worker(index: int, subagent_id: str, label: str, sub_question: str) -> None:
         nonlocal failed_workers
@@ -2959,12 +2830,12 @@ async def _run_deep_research(
                 if _event_shows_external_progress(event):
                     visible_progress = True
                 if isinstance(event, AnswerDelta):
-                    text = source_remapper.rewrite_answer_text(event.text, subagent_id)
+                    text = source_namespace.rewrite_answer_text(event.text, subagent_id)
                     answer_parts.append(text)
                     if text != event.text:
                         event = replace(event, text=text)
                 if isinstance(event, Sources):
-                    event = source_remapper.remap_sources(event, subagent_id)
+                    event = source_namespace.remap_sources(event, subagent_id)
                     for item in event.items:
                         source_ids.append(str(item.id))
                 if isinstance(event, Complete):
@@ -3026,7 +2897,7 @@ async def _run_deep_research(
                     # Stash pause; siblings keep running (wait policy).
                     # H-004: namespace call id to this subagent before pause.
                     # B12: flush any held citation fragment into the partial.
-                    tail = source_remapper.flush_answer_carry(subagent_id)
+                    tail = source_namespace.flush_answer_carry(subagent_id)
                     if tail:
                         answer_parts.append(tail)
                         await queue.put(
@@ -3056,7 +2927,7 @@ async def _run_deep_research(
                     return True
                 await queue.put(_tag(event, subagent_id))
             # B12: flush held citation fragment after the provider stream ends.
-            tail = source_remapper.flush_answer_carry(subagent_id)
+            tail = source_namespace.flush_answer_carry(subagent_id)
             if tail:
                 answer_parts.append(tail)
                 await queue.put(
@@ -3538,7 +3409,7 @@ async def _run_deep_research(
             partial_answer=worker_pause.partial_answer,
             partial_reasoning=worker_pause.partial_reasoning,
             source_ids=worker_pause.source_ids,
-            source_catalog=tuple(source_remapper.merged_items()),
+            source_catalog=tuple(source_namespace.merged_items()),
             tool_transcript=worker_pause.tool_transcript,
             emitted_answer_chars=worker_pause.emitted_answer_chars,
             clarifications=tuple(bound_records),
@@ -3570,7 +3441,7 @@ async def _run_deep_research(
     ordered_outputs = [results[sid] for _, sid, _, _ in worker_meta if sid in results]
     # Mid-stream remapper already assigned global citation ids (B12) — do not
     # remap again in worker-plan order (that swapped ownership vs live markers).
-    merged_sources = source_remapper.merged_items()
+    merged_sources = source_namespace.merged_items()
     # In-turn structured artifact refs (plan 02) — handed to the aggregator as
     # schema-shaped DATA rather than raw telephone stuffing.
     ordered_artifacts = aggregate.build_artifacts(

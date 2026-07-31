@@ -175,6 +175,34 @@ class TurnLifecycle:
         await self._clear_stop()
         await self._release_reservation()
 
+    async def hard_cancelled(self) -> None:
+        """Close durable stream bookkeeping for a hard cancel (worker shutdown).
+
+        A `CancelledError` mid-turn is an interruption, not a provider failure,
+        so an uncommitted turn terminalizes as `stopped` with the single-active
+        guard released — otherwise the row strands at `active` until the orphan
+        reaper sweeps it.
+
+        Commit-aware, and that is the point: the terminal frame is delivered
+        AFTER the durable commit, so a cancel landing on that yield used to
+        rewrite a `done` row (message id and all) to `stopped`. A committed
+        outcome stands; only its last frame was lost.
+        """
+        if self._committed or self._stream_id is None:
+            return
+        self._outcome = "stopped"
+        try:
+            async with self._runtime.session_factory() as db:
+                await streams_repo.mark_status(
+                    db,
+                    stream_id=self._stream_id,
+                    status="stopped",
+                    release_active_guard=True,
+                )
+                await db.commit()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("stream.mark_cancelled.failed", exc_info=exc)
+
     async def _mark_stream_error(self) -> None:
         """Terminalize the durable `stream` row for a pre-commit failure.
 

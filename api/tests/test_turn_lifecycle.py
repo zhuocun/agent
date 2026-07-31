@@ -379,6 +379,52 @@ async def test_the_first_outcome_wins_and_the_latch_is_idempotent(
     assert await _reservation_held(session_factory, turn.stream_id) is False
 
 
+async def test_a_hard_cancel_before_the_commit_terminalizes_the_stream_row(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Worker shutdown mid-turn: `stopped`, guard released, not left `active`."""
+    turn = await _seed_turn(session_factory)
+    lifecycle = TurnLifecycle(
+        runtime=RuntimeContext.from_factory(session_factory),
+        stream_id=turn.stream_id,
+        user_id=turn.user_id,
+    )
+
+    await lifecycle.hard_cancelled()
+
+    assert lifecycle.outcome == "stopped"
+    assert await _stream_status(session_factory, turn.stream_id) == "stopped"
+
+
+async def test_a_hard_cancel_after_the_commit_does_not_rewrite_the_status(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The terminal frame is delivered AFTER the commit, so this is post-commit.
+
+    A cancel landing on that yield used to rewrite the durable row from `done`
+    (message id and all) to `stopped`, leaving the stream disagreeing with the
+    assistant row it points at.
+    """
+    turn = await _seed_turn(session_factory)
+    message_id = uuid4()
+    async with session_factory() as session:
+        await streams_repo.mark_status(
+            session, stream_id=turn.stream_id, status="done", message_id=message_id
+        )
+        await session.commit()
+    lifecycle = TurnLifecycle(
+        runtime=RuntimeContext.from_factory(session_factory),
+        stream_id=turn.stream_id,
+        user_id=turn.user_id,
+    )
+    lifecycle.record_commit("done")
+
+    await lifecycle.hard_cancelled()
+
+    assert lifecycle.outcome == "done"
+    assert await _stream_status(session_factory, turn.stream_id) == "done"
+
+
 async def test_cancel_registered_joins_a_failing_pump_without_raising(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

@@ -142,7 +142,7 @@ from app.streaming.sse import (
     encode_tool_call,
     encode_tool_result,
 )
-from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
+from app.streaming.stop_registry import is_stop_requested_async
 from app.streaming.turn_lifecycle import TurnLifecycle
 from app.streaming.turn_reducer import (
     ScopeState,
@@ -1309,7 +1309,12 @@ async def stream_and_persist(
 
         Mark on the request ``db`` session (not only a fresh one) so ``get_db``'s
         final commit cannot resurrect the in-memory ``active`` identity from
-        ``create_stream``.
+        ``create_stream`` — which is why this write does not go through the
+        lifecycle's fresh-session cleanup. The outcome IS latched there, though:
+        this exit returns from the generator before the main ``try``/``finally``,
+        so without the latch nothing would record that the turn ended, and
+        without the explicit ``close()`` the reservation release and stop
+        cleanup would depend on the two writes above having succeeded.
         """
         if stream_id is not None:
             with contextlib.suppress(Exception):
@@ -1321,8 +1326,8 @@ async def stream_and_persist(
                 )
                 await usage_repo.release_platform_budget(db, stream_id=stream_id)
                 await db.commit()
-            with contextlib.suppress(Exception):
-                await clear_stop_async(stream_id)
+        turn_lifecycle.record_commit("stopped")
+        await turn_lifecycle.close()
         _struct_log.warning(
             "turn.stopped",
             status="stopped",
@@ -3051,33 +3056,18 @@ async def stream_and_persist(
 
     except asyncio.CancelledError:
         # Hard cancel: worker shutdown / deploy / ASGI task cancel mid-stream.
-        # Before re-raising we close out the durable stream bookkeeping so the
-        # `stream` row doesn't strand at `status="active"` forever and the live
-        # stop signal doesn't leak. Mirrors the `except Exception` branch's
-        # fresh-session + best-effort pattern.
-        #
-        # Terminal status here is `"stopped"`, not `"error"`: the turn was
-        # cancelled (the work was interrupted), not failed by the provider —
-        # `"stopped"` matches the disconnect/explicit-stop semantics. We do NOT
-        # persist a partial assistant row in this branch; there is no clean
-        # partial-persist contract for a hard cancel, so we only close the
-        # stream-lifecycle bookkeeping.
+        # The turn was interrupted, not failed by the provider, so the lifecycle
+        # terminalizes an uncommitted row as `stopped` (matching the
+        # disconnect/explicit-stop semantics) and leaves a committed one alone.
+        # No partial assistant row is persisted here: there is no clean
+        # partial-persist contract for a hard cancel.
         #
         # A hard worker *crash* (SIGKILL / OOM) delivers no CancelledError, so
-        # this cleanup never runs and the row would stay `active`. That gap is
-        # closed by the orphan-stream reaper (`app.streaming.reaper` +
+        # this never runs and the row would stay `active`. That gap is closed by
+        # the orphan-stream reaper (`app.streaming.reaper` +
         # `streams_repo.reap_stale_active`), which sweeps stale `active` rows to
         # `"error"` on startup and on an interval (PRD 04 §5.1).
-        if stream_id is not None:
-            with contextlib.suppress(Exception):
-                async with turn_runtime.session_factory() as cancel_db:
-                    await streams_repo.mark_status(
-                        cancel_db,
-                        stream_id=stream_id,
-                        status="stopped",
-                        release_active_guard=True,
-                    )
-                    await cancel_db.commit()
+        await turn_lifecycle.hard_cancelled()
         # Re-raise so the event loop sees the cancellation rather than
         # swallowing it into a fake `error` envelope. The cleanup above must
         # NEVER suppress the cancellation. The `finally` clause still closes the

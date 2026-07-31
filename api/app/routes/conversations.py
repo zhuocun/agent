@@ -3520,6 +3520,9 @@ async def _prepare_resume_tool(
             settled_result=outcome.result,
             prior_planner_cost_usd=plan_ledger.planner_cost_usd,
             prior_planner_usage=plan_ledger.planner_usage,
+            # AC-02: the pause boundary's own receipt, when the paused row carried
+            # one. It supersedes the planner seeds above as the already-billed floor.
+            prior_receipt=plan_ledger.run_receipt,
             orchestration_mode=plan_mode,
         )
         original_text = _text_from_parts(user_row.parts)
@@ -3651,6 +3654,7 @@ async def _prepare_resume_tool(
             clarify_records=clarify_records_tuple,
             clarify_answers=clarify_answers,
             settled_result=outcome.result,
+            prior_receipt=clarify_ledger.run_receipt,
             orchestration_mode=clarify_mode,
         )
         original_text = _text_from_parts(user_row.parts)
@@ -3816,6 +3820,7 @@ async def _prepare_resume_tool(
         prior_run_usage=tool_ledger.prior_run_usage,
         prior_planner_cost_usd=tool_ledger.planner_cost_usd,
         prior_planner_usage=tool_ledger.planner_usage,
+        prior_receipt=tool_ledger.run_receipt,
         orchestration_mode=tool_mode,
     )
     # Worker continuation resumes with the original user text (the orchestrator

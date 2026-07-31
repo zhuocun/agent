@@ -95,6 +95,7 @@ from app.providers.protocol import (
 )
 from app.providers.tiers import TierBinding, get_binding
 from app.runtime.context import RuntimeContext
+from app.runtime.run_receipt import RunReceipt
 from app.schemas.common import ModelTierId, SubagentOutcome, SubstitutionReasonCode
 from app.schemas.conversation import ToolApprovalDecision
 from app.schemas.message import (
@@ -270,6 +271,9 @@ class ResumeToolSeed:
     # B5: single-mode pause ledger (from Message.server_state).
     prior_run_cost_usd: float = 0.0
     prior_run_usage: UsageUpdate | None = None
+    # AC-02: the paused row's boundary receipt. Preferred over the two scalar
+    # seeds above — it is the exact total already billed, not a reconstruction.
+    prior_receipt: RunReceipt | None = None
     # FL-28: orchestration mode the pause was taken in, for EVERY pause shape
     # (plan approval / clarify / single / worker continuation). The route pins
     # this instead of honouring a client-chosen `agenticMode`, which would
@@ -963,6 +967,24 @@ async def stream_and_persist(
     agentic_subagents: dict[str, _SubagentAccumulator] = {}
     # Populated from the final `RunCost(partial=...)` tick for persistence (FE-015).
     agentic_run_summary: AgenticRunSummaryPart | None = None
+    # AC-02: the latest receipt-bearing `RunCost`. The orchestrator emits exactly
+    # one before each persistable boundary, so whichever one is banked here at the
+    # terminal IS this turn's accounting truth — cumulative cost for attribution,
+    # newly billable alone for `Message.cost_usd` and the usage rollup.
+    run_receipt: RunReceipt | None = None
+
+    def _fold_run_cost(ev: RunCost) -> None:
+        """Fold a `RunCost` into the persisted receipt + run accounting (AC-02).
+
+        The live gate and the stopped-drain gate both call this so they cannot
+        drift. A receipt-bearing boundary event replaces the run's accounting
+        truth; a receipt-less display tick only refreshes the wire summary and
+        must never blank a receipt already banked.
+        """
+        nonlocal agentic_run_summary, run_receipt
+        agentic_run_summary = build_agentic_run_summary_part(ev)
+        if ev.receipt is not None:
+            run_receipt = ev.receipt
 
     def _sub(subagent_id: str) -> _SubagentAccumulator:
         """Fetch (or defensively create) the accumulator for `subagent_id`.
@@ -1704,6 +1726,7 @@ async def stream_and_persist(
                     initial_tool_results=initial or None,
                     prior_run_cost_usd=resume_seed.prior_run_cost_usd,
                     prior_run_usage=resume_seed.prior_run_usage,
+                    prior_receipt=resume_seed.prior_receipt,
                 )
 
         # Non-agentic tools resume (settled result + same-round priors).
@@ -1739,11 +1762,13 @@ async def stream_and_persist(
             prior_planner_usage: UsageUpdate | None = None
             prior_run_cost = 0.0
             prior_run_usage: UsageUpdate | None = None
+            prior_receipt: RunReceipt | None = None
             if resume_seed is not None:
                 prior_planner_cost = resume_seed.prior_planner_cost_usd
                 prior_planner_usage = resume_seed.prior_planner_usage
                 prior_run_cost = resume_seed.prior_run_cost_usd
                 prior_run_usage = resume_seed.prior_run_usage
+                prior_receipt = resume_seed.prior_receipt
             if resume_seed is not None and resume_seed.agentic_continuation is not None:
                 orch_continuation = resume_seed.agentic_continuation
                 if resume_seed.resume_user_text:
@@ -1792,6 +1817,7 @@ async def stream_and_persist(
                 prior_planner_usage=prior_planner_usage,
                 prior_run_cost_usd=prior_run_cost,
                 prior_run_usage=prior_run_usage,
+                prior_receipt=prior_receipt,
             )
 
         # Plain chat (non-tools, non-agentic). Wrap the raw stream in the
@@ -2022,6 +2048,29 @@ async def stream_and_persist(
             already += float(getattr(cont, "paused_worker_cost_usd", 0.0) or 0.0)
         return max(0.0, float(logical_cost) - already)
 
+    def _resolved_turn_cost() -> tuple[float, float]:
+        """This turn's (cumulative, newly billable) money — AC-02.
+
+        A present `RunCost.receipt` is the SOLE authority and always wins: it is
+        the orchestrator's own accounting for the boundary being persisted, while
+        `_agentic_sum_cost_usd` re-derives a total from whichever `SubagentDone`
+        events happened to reach this handler and `_billable_cost_delta`
+        re-derives the already-billed part from one scalar seed. That
+        reconstruction is why a plan-approved resume whose planner spend rode in
+        on a server-state seed — and whose workers contributed no `SubagentDone`
+        receipt — reported ``$0.37`` on the wire and ``$0.00`` on the row.
+
+        The reconstruction stays as the fallback for turns that carry no receipt
+        (an agentic path that ended before any boundary emitted one).
+        """
+        if run_receipt is not None:
+            return (
+                run_receipt.cumulative_cost_usd,
+                run_receipt.newly_billable_cost_usd,
+            )
+        reconstructed = _agentic_sum_cost_usd()
+        return reconstructed, _billable_cost_delta(reconstructed)
+
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
 
@@ -2198,6 +2247,7 @@ async def stream_and_persist(
         session: AsyncSession | None = None,
         commit: bool = True,
         cost_usd: float | None = None,
+        pause_receipt: RunReceipt | None = None,
     ) -> UUID | None:
         if is_temporary or conversation_id is None:
             return None
@@ -2215,12 +2265,17 @@ async def stream_and_persist(
                     server_state, call_id, blob
                 )
         # B4/B5: ledger seeds beside continuations (sanitize strips tool-input).
+        # AC-02: `pause_receipt` rides along on the SAME server-only blob so a
+        # resume restores the run's exact already-billed floor instead of
+        # reconstructing it from the scalar seeds. Only a paused row passes one —
+        # a `done` / `stopped` row has nothing to resume into.
         if (
             pending_planner_cost_usd > 0.0
             or pending_planner_usage is not None
             or pending_prior_run_cost_usd > 0.0
             or pending_prior_run_usage is not None
             or pending_orchestration_mode is not None
+            or pause_receipt is not None
         ):
             server_state = put_run_ledger_in_server_state(
                 server_state,
@@ -2229,6 +2284,7 @@ async def stream_and_persist(
                 prior_run_cost_usd=pending_prior_run_cost_usd or None,
                 prior_run_usage=pending_prior_run_usage,
                 orchestration_mode=pending_orchestration_mode,
+                run_receipt=pause_receipt,
             )
         row = await messages_repo.create_assistant_message(
             db=target_session,
@@ -2259,7 +2315,7 @@ async def stream_and_persist(
         path so queued partials are not dropped into flat buffers.
         """
         nonlocal final_usage, first_answer_ms, sub_code, sub_provider, sub_model, sub_label
-        nonlocal latest_status, search_items, saw_sources_event, agentic_run_summary
+        nonlocal latest_status, search_items, saw_sources_event
 
         if isinstance(ev, ReasoningDone):
             # FL-37: close the reasoning clock on the drain path too, for both
@@ -2295,8 +2351,8 @@ async def stream_and_persist(
                 done_acc.substituted_display_label = ev.substituted_display_label
                 return
             if isinstance(ev, RunCost):
-                # FL-33-a: drain twin of the live gate — shared builder.
-                agentic_run_summary = build_agentic_run_summary_part(ev)
+                # FL-33-a / AC-02: drain twin of the live gate — shared fold.
+                _fold_run_cost(ev)
                 return
             sid = getattr(ev, "subagent_id", None)
             if isinstance(ev, ReasoningDelta) and sid is not None:
@@ -2515,7 +2571,7 @@ async def stream_and_persist(
                 # Agentic: sum completed/partial subagent receipts (BE-022 /
                 # BE-028) rather than repricing an arbitrary last UsageUpdate.
                 if agentic_active and agentic_subagents:
-                    turn_cost = _agentic_sum_cost_usd()
+                    turn_cost, billable_cost = _resolved_turn_cost()
                     breakdown = compute_cost_breakdown(
                         usage=final_usage,
                         binding=binding,
@@ -2535,7 +2591,7 @@ async def stream_and_persist(
                     # wire stay consistent. FL-34-b: `subtotal_usd` is the total;
                     # re-adding the surcharge charged it twice.
                     turn_cost = breakdown.subtotal_usd
-                billable_cost = _billable_cost_delta(turn_cost)
+                    billable_cost = _billable_cost_delta(turn_cost)
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
@@ -3001,8 +3057,9 @@ async def stream_and_persist(
                 # Running run-cost subtotal vs the configured cap (M3 scaffold).
                 # AR-012: always persist a terminal receipt so reload matches live.
                 # FL-33-a: a plan / progress pause receipt persists too, with the
-                # confidence + phase the backend actually emitted.
-                agentic_run_summary = build_agentic_run_summary_part(ev)
+                # confidence + phase the backend actually emitted. AC-02: a
+                # boundary event also banks its typed receipt (never on the wire).
+                _fold_run_cost(ev)
                 yield encode_run_cost(
                     RunCostEvent(
                         subtotal_usd=ev.subtotal_usd,
@@ -3059,13 +3116,19 @@ async def stream_and_persist(
                 image_count=image_attachment_count,
             )
             if agentic_active and agentic_subagents:
-                turn_cost = _agentic_sum_cost_usd()
+                # AC-02: the pause boundary receipt (when the orchestrator owns
+                # this pause) says what the run has cost cumulatively and how much
+                # of that has not been charged yet. Only the latter reaches the row
+                # and the meter, so a second pause on the same run cannot re-charge
+                # the first one's dollars.
+                turn_cost, pause_billable_cost = _resolved_turn_cost()
                 breakdown = breakdown.model_copy(
                     update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
                 )
             else:
                 # FL-34-b: charge the subtotal alone (surcharge is disclosure).
                 turn_cost = breakdown.subtotal_usd
+                pause_billable_cost = turn_cost
             # B4: if tool-input stamp was missing, fall back to planner accumulator.
             if pending_planner_cost_usd <= 0.0 and agentic_active:
                 planner_acc = agentic_subagents.get("planner")
@@ -3103,7 +3166,15 @@ async def stream_and_persist(
                     if resume_seed is not None
                     else 0.0
                 )
-                pending_prior_run_cost_usd = prior_seed_cost + float(turn_cost or 0.0)
+                # AC-02: `turn_cost` is already the run's CUMULATIVE total when a
+                # boundary receipt carried it, so re-adding the prior seed would
+                # bill the pre-pause dollars a second time on the next resume.
+                # Without a receipt it is this leg's cost and still needs the seed.
+                pending_prior_run_cost_usd = (
+                    float(turn_cost or 0.0)
+                    if run_receipt is not None
+                    else prior_seed_cost + float(turn_cost or 0.0)
+                )
                 usage_parts: list[UsageUpdate] = []
                 if resume_seed is not None and resume_seed.prior_run_usage is not None:
                     usage_parts.append(resume_seed.prior_run_usage)
@@ -3142,13 +3213,14 @@ async def stream_and_persist(
                     status="awaiting_approval",
                     attribution=attribution,
                     commit=False,
-                    cost_usd=turn_cost,
+                    cost_usd=pause_billable_cost,
+                    pause_receipt=run_receipt,
                 )
                 if user_id is not None:
                     await usage_repo.increment_for_period(
                         db,
                         user_id=user_id,
-                        cost_usd_delta=turn_cost,
+                        cost_usd_delta=pause_billable_cost,
                         is_byok=is_byok_turn,
                         monthly_quota_usd=(
                             monthly_quota_usd_override
@@ -3223,7 +3295,9 @@ async def stream_and_persist(
         # per-subagent monetary costs rather than repricing the summed tokens
         # once against the original binding.
         if agentic_active and agentic_subagents:
-            turn_cost = _agentic_sum_cost_usd()
+            # AC-02: the terminal receipt is the exact run total. AR-002: the row
+            # and the meter still take only the not-yet-billed part of it.
+            turn_cost, billable_cost = _resolved_turn_cost()
             # Keep breakdown for structure, but override the displayed total.
             breakdown = breakdown.model_copy(
                 update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
@@ -3231,8 +3305,8 @@ async def stream_and_persist(
         else:
             # FL-34-b: charge the subtotal alone (surcharge is disclosure).
             turn_cost = breakdown.subtotal_usd
-        # AR-002: rollup/message cost charge only the unbilled delta on resume.
-        billable_cost = _billable_cost_delta(turn_cost)
+            # AR-002: rollup/message cost charge only the unbilled delta on resume.
+            billable_cost = _billable_cost_delta(turn_cost)
         attribution = build_attribution(
             requested_tier_id=requested_tier_id,
             binding=binding,

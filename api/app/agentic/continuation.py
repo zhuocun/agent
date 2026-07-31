@@ -48,6 +48,7 @@ from app.agentic.clarify import (
     serialize_clarification_records,
 )
 from app.providers.protocol import UsageUpdate
+from app.runtime.run_receipt import RunReceipt, decode_run_receipt
 from app.schemas.common import SubagentOutcome
 from app.search.protocol import SourceItem
 
@@ -79,6 +80,8 @@ RESERVED_CONTROL_KEYS: frozenset[str] = frozenset(
         "prior_run_cost_usd",
         "priorRunUsage",
         "prior_run_usage",
+        "runReceipt",
+        "run_receipt",
     }
 )
 
@@ -98,6 +101,11 @@ SERVER_STATE_PRIOR_RUN_USAGE_KEY = "priorRunUsage"
 # pauses have no continuation at all, and a resume onto a different mode
 # consumes the approval and discards the approved work.
 SERVER_STATE_ORCHESTRATION_MODE_KEY = "orchestrationMode"
+# AC-02: the pause boundary's `RunReceipt`. It lives beside the scalar seeds for
+# the same reason the mode pin does — plan-approval, clarify and single-mode
+# pauses have no continuation blob at all — and it SUPERSEDES them on resume:
+# the seeds reconstruct one phase, the receipt is the exact total already billed.
+SERVER_STATE_RUN_RECEIPT_KEY = "runReceipt"
 
 
 @dataclass(frozen=True)
@@ -518,6 +526,9 @@ class RunLedgerSeeds:
     prior_run_usage: UsageUpdate | None = None
     # FL-28: mode the paused run was orchestrated in, for every pause shape.
     orchestration_mode: Literal["single", "deep_research"] | None = None
+    # AC-02: exact accounting for the pause boundary. Preferred over the scalar
+    # seeds above; `None` for legacy rows written before receipts existed.
+    run_receipt: RunReceipt | None = None
 
 
 def _usage_seed_wire(
@@ -538,6 +549,7 @@ def put_run_ledger_in_server_state(
     prior_run_cost_usd: float | None = None,
     prior_run_usage: UsageUpdate | dict[str, Any] | None = None,
     orchestration_mode: str | None = None,
+    run_receipt: RunReceipt | None = None,
 ) -> dict[str, Any]:
     """Merge B4/B5 run-cap ledger seeds into Message.server_state (H-012).
 
@@ -547,6 +559,8 @@ def put_run_ledger_in_server_state(
     out = dict(server_state or {})
     if orchestration_mode in ("single", "deep_research"):
         out[SERVER_STATE_ORCHESTRATION_MODE_KEY] = orchestration_mode
+    if run_receipt is not None:
+        out[SERVER_STATE_RUN_RECEIPT_KEY] = run_receipt.to_wire()
     for key, cost in (
         (SERVER_STATE_PLANNER_COST_KEY, planner_cost_usd),
         (SERVER_STATE_PRIOR_RUN_COST_KEY, prior_run_cost_usd),
@@ -598,6 +612,9 @@ def get_run_ledger_from_server_state(server_state: object) -> RunLedgerSeeds:
             _seed(server_state, SERVER_STATE_PRIOR_RUN_USAGE_KEY, "prior_run_usage")
         ),
         orchestration_mode=mode if mode in ("single", "deep_research") else None,
+        run_receipt=decode_run_receipt(
+            _seed(server_state, SERVER_STATE_RUN_RECEIPT_KEY, "run_receipt")
+        ),
     )
 
 

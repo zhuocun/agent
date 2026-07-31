@@ -22,7 +22,9 @@ restores, and each difference is pinned by its own test:
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import textwrap
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -799,6 +801,36 @@ async def test_worker_span_records_a_budget_halt(
 # --- static closure: the parallel engines are gone ----------------------------
 
 
+def _call_owners(module_source: str, callee: str) -> set[str]:
+    """Names of the functions that call ``callee``, attributed to the INNERMOST one.
+
+    Substring slicing cannot answer this question. `orchestrator.py` mentions
+    `_resume_worker_continuation` twice — its `def` and its call from
+    `_run_deep_research` — so splitting on the name yields the text between the two
+    mentions or the text after the call, never the function body. A nested `def`
+    (the fan-out's `_run_worker`) is not addressable by slicing at all. The AST
+    knows exactly which function a call sits in, so ask it.
+    """
+    owners: set[str] = set()
+
+    def visit(node: ast.AST, enclosing: str | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, child.name)
+                continue
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == callee
+                and enclosing is not None
+            ):
+                owners.add(enclosing)
+            visit(child, enclosing)
+
+    visit(ast.parse(module_source), None)
+    return owners
+
+
 def test_the_old_worker_engines_no_longer_exist() -> None:
     """AC-09 closure by static search: two worker lifecycle engines became one, so
     the fresh `_consume`, the resume `_drain`, `_WorkerPause` and the duplicated
@@ -817,11 +849,61 @@ def test_the_old_worker_engines_no_longer_exist() -> None:
         assert gone not in source, gone
     # One runner, driven from exactly the two places a worker can start.
     assert source.count("WorkerRunner(") == 2
-    # `_resume_worker_continuation` survives as a PHASE owner (restore, receipt
-    # boundary, synthesis) — it must not own a second agent loop.
-    assert "run_agent_loop(" not in source.split("_resume_worker_continuation")[2]
+    # The orchestrator's remaining agent loops are the three NON-worker phases.
+    # Pinning the exact set is what makes this a regression test: a worker engine
+    # reintroduced anywhere — inside `_resume_worker_continuation`, inside the
+    # fan-out's nested `_run_worker`, or in a new helper — adds a name here.
+    assert _call_owners(source, "run_agent_loop") == {
+        "_collect_answer",
+        "_finalize_synthesis_streamed",
+        "run_single",
+    }
     # And the runner did not re-import the old names: ONE agent loop lives in the
     # worker module, reached by one relay, whichever seed drives it.
     runner_source = (agentic / "worker.py").read_text()
-    assert runner_source.count("run_agent_loop(") == 1
+    assert _call_owners(runner_source, "run_agent_loop") == {"_relay"}
     assert runner_source.count("async def _relay(") == 1
+
+
+def test_the_static_engine_search_is_scoped_to_function_bodies() -> None:
+    """The assertion above is only worth its name if its scoping actually works.
+
+    The previous version sliced the module on `"_resume_worker_continuation"` and
+    read index 2. The name appears twice — the `def` and the call from
+    `_run_deep_research` — so index 2 is the text AFTER the call, and the resume
+    body sits in index 1. The assertion passed while looking at a region that
+    could not contain the thing it was searching for.
+    """
+    smuggled_into_resume = textwrap.dedent(
+        """
+        async def _resume_worker_continuation(seed):
+            async for event in run_agent_loop(make_stream=seed.stream):
+                yield event
+
+
+        async def _run_deep_research(x):
+            async for event in _resume_worker_continuation(x):
+                yield event
+        """
+    )
+    # The AST names the regression.
+    assert _call_owners(smuggled_into_resume, "run_agent_loop") == {
+        "_resume_worker_continuation"
+    }
+    # The old scoping does not see it, which is exactly the blind spot.
+    tail_after_the_call = smuggled_into_resume.split("_resume_worker_continuation")[2]
+    assert "run_agent_loop(" not in tail_after_the_call
+
+    # A nested engine is attributed to the innermost function, so hiding one inside
+    # the fan-out scheduler still changes the pinned set.
+    smuggled_into_fanout = textwrap.dedent(
+        """
+        async def _run_deep_research(x):
+            async def _run_worker(seed):
+                async for event in run_agent_loop(make_stream=seed.stream):
+                    yield event
+
+            await _run_worker(x)
+        """
+    )
+    assert _call_owners(smuggled_into_fanout, "run_agent_loop") == {"_run_worker"}

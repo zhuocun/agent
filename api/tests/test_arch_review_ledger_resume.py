@@ -39,7 +39,7 @@ from app.providers.protocol import RunCost, UsageUpdate
 from app.providers.tiers import get_binding
 from app.runtime.run_receipt import CostLedger, RunReceipt, decode_run_receipt
 from app.schemas.message import AgenticRunSummaryPart
-from app.streaming import handler as handler_module
+from app.streaming import turn_reducer as turn_reducer_module
 
 pytestmark = pytest.mark.asyncio
 
@@ -586,24 +586,25 @@ async def _billed_to_date(
 
 @contextmanager
 def _capturing_run_costs() -> Iterator[list[RunCost]]:
-    """Capture every `RunCost` the handler folds, receipt object included.
+    """Capture every `RunCost` the turn's fold sees, receipt object included.
 
     The receipt is internal transport with no wire field, so the SSE frames
-    cannot show whether one reached the handler. Wrapping the handler's fold
-    point is what makes that observable to a route test.
+    cannot show whether one reached the handler. Wrapping the ONE fold point —
+    `TurnReducer`'s, shared by live delivery and the stopped drain since F3b — is
+    what makes that observable to a route test.
     """
     captured: list[RunCost] = []
-    original = handler_module.build_agentic_run_summary_part
+    original = turn_reducer_module.build_agentic_run_summary_part
 
     def _capture(ev: RunCost) -> AgenticRunSummaryPart:
         captured.append(ev)
         return original(ev)
 
-    handler_module.build_agentic_run_summary_part = _capture  # type: ignore[assignment]
+    turn_reducer_module.build_agentic_run_summary_part = _capture  # type: ignore[assignment]
     try:
         yield captured
     finally:
-        handler_module.build_agentic_run_summary_part = original  # type: ignore[assignment]
+        turn_reducer_module.build_agentic_run_summary_part = original  # type: ignore[assignment]
 
 
 

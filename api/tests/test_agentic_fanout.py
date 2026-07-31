@@ -1139,7 +1139,7 @@ async def test_grounded_agentic_turn_emits_no_ungrounded_sources_frame(
     ungrounded honesty frame (`items=[]`, `requested=True`) — telling a
     frame-reading consumer the cited answer had no live sources.
 
-    The `drain` arm pins the `_apply_event` twin: only the success path can emit
+    The `drain` arm pins the stopped-drain twin: only the success path can emit
     the honesty frame, so what the drain has to guarantee is that a stopped turn
     folds the tagged sources identically rather than dropping them.
     """

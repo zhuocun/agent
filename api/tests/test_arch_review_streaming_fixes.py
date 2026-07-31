@@ -246,13 +246,14 @@ async def test_reaper_terminalizes_replay_buffer(
 
 # AC-03: live vs stopped-drain ToolResult fold parity ---------------------------
 #
-# `stream_and_persist` folds provider events twice: inline while delivering, and
-# again through `_apply_event` when a stop/disconnect drains whatever the pump
-# already queued. The drain twin used to sync only `status` onto the open
-# `tool_call` part, so a `pending` gate closed by a `cancelled`/`rejected` result
-# persisted as `cancelled` + `pending` — a state the live fold can never
-# produce. These tests pin the two folds together for the tagged (per-subagent)
-# and untagged (flat) tool transcripts.
+# `stream_and_persist` used to fold provider events twice: inline while
+# delivering, and again in a private `_apply_event` tree when a stop/disconnect
+# drained whatever the pump already queued. The drain twin synced only `status`
+# onto the open `tool_call` part, so a `pending` gate closed by a
+# `cancelled`/`rejected` result persisted as `cancelled` + `pending` — a state
+# the live fold can never produce. Both drivers now fold through
+# `TurnReducer`; these tests pin them together for the tagged (per-subagent) and
+# untagged (flat) tool transcripts.
 
 _GATED_CALL_ID = "gated-call-1"
 
@@ -291,7 +292,7 @@ class _DisconnectAfterFirstFrame:
     The False poll parks the consumer on an empty queue, which hands control to
     the pump; the await-free stub stream lands in the queue in one go and only
     its first event is consumed live. The next poll cancels the pump with the
-    rest still queued, which is exactly the `_apply_event` drain.
+    rest still queued, which is exactly the stopped FIFO drain.
     """
 
     def __init__(self) -> None:

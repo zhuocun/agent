@@ -99,7 +99,7 @@ from app.runtime.answer_policy import (
     empty_reply_retry_nudge,
     main_answer_is_empty,
 )
-from app.runtime.context import RuntimeContext
+from app.runtime.context import RuntimeContext, ServedRoute
 from app.runtime.run_receipt import RunReceipt
 from app.schemas.common import ModelTierId, SubagentOutcome, SubstitutionReasonCode
 from app.schemas.conversation import ToolApprovalDecision
@@ -1446,6 +1446,23 @@ async def stream_and_persist(
         )
         return breakdown.subtotal_usd
 
+    def _agentic_served_route() -> ServedRoute:
+        """The route this turn is bound to, for the phase spans (AC-10).
+
+        `binding` is already the CONCRETE tier an ``auto`` request routed to, so
+        its id is the served tier; `runtime_provider_id` carries a BYOK/explicit
+        provider override. A router-side `auto_downgrade` is the reason the served
+        route differs from the requested one, so it rides along — a per-phase
+        provider fallback later overrides it on that phase's own route, exactly
+        as provider-side substitution outranks the router seed on the wire.
+        """
+        return ServedRoute(
+            tier_id=str(binding.tier.id),
+            provider_id=runtime_provider_id,
+            model_id=binding.model_id,
+            substitution=router_substitution,
+        )
+
     def _estimate_run_cost(sub_question_count: int) -> float:
         """Worst-case run-cost estimate for pre-spawn admission (agentic only).
 
@@ -1721,6 +1738,7 @@ async def stream_and_persist(
                         else turn_user_text
                     ),
                     cost_for_usage=_cost_for_usage,
+                    served_route=_agentic_served_route(),
                     budget_headroom_usd=budget_headroom_usd,
                     server_approved_call_ids=set(),
                     initial_tool_results=initial or None,
@@ -1782,6 +1800,7 @@ async def stream_and_persist(
                 mode=agentic_mode,
                 user_text=orch_user_text,
                 cost_for_usage=_cost_for_usage,
+                served_route=_agentic_served_route(),
                 verifier_cost_for_usage=_verifier_cost_for_usage,
                 estimate_cost=_estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,

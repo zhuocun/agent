@@ -574,12 +574,18 @@ async def test_stop_wins_over_a_queued_provider_error(
     assert texts and texts[0]["text"] == "partial answer"
 
 
-async def test_a_seeded_result_precedes_every_provider_event(
+async def test_a_seeded_result_is_reduced_before_every_provider_event(
     settings_cache_reset: None,
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The resumed approval's `tool_result` leads, on the wire and in the row."""
+    """The resumed approval leads through the FOLD, then the wire, then the row.
+
+    The seeded result used to build its part and append it to the transcript
+    directly, which made it the one `tool_result` that reached persistence
+    without the reducer ever seeing it — a second durable tool-mutation path
+    beside the one this module exists to pin.
+    """
 
     class _Settled:
         tool_call_id = "resumed-call"
@@ -605,6 +611,14 @@ async def test_a_seeded_result_precedes_every_provider_event(
         agentic=False,
         live=True,
         resume_seed=seed,
+    )
+    # The reducer's FIRST event is the seed, ahead of every provider event.
+    seeded = _SpyReducer.seen[0]
+    assert isinstance(seeded, ToolResult)
+    assert (seeded.tool_call_id, seeded.status, seeded.approval_state) == (
+        "resumed-call",
+        "succeeded",
+        "approved",
     )
     assert frames[:2] == ["submitted", "tool_result"]
     assert frames.index("tool_result") < frames.index("answer_delta")

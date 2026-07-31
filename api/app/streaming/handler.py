@@ -734,6 +734,7 @@ async def stream_and_persist(
     turn_lifecycle = lifecycle or TurnLifecycle(
         runtime=turn_runtime, stream_id=stream_id, user_id=user_id
     )
+
     # Emit `submitted` immediately. Resumable clients need the durable stream
     # id in-band so they can reconnect to the exact producer they just started.
     yield encode_submitted(
@@ -2151,7 +2152,7 @@ async def stream_and_persist(
     # budget still reserved. The shared lifecycle now sees each of those
     # failures as pre-commit, and re-raising keeps a typed `AppError` (a 409
     # settlement conflict) exactly as visible to the route as before.
-    seeded_wire: dict[str, Any] | None = None
+    seeded_result: ToolResult | None = None
     try:
         if not await _settle_pending_approval():
             return
@@ -2207,18 +2208,24 @@ async def stream_and_persist(
                     summary="User denied the tool call.",
                     error="User denied the tool call.",
                 )
-            seeded_wire = tool_result_part(seeded_result).model_dump(
-                by_alias=True, exclude_none=True
-            )
-            state.tool_parts.append(seeded_wire)
+            # AC-03: a seeded result is a durable tool mutation like any other, so
+            # it folds through the SAME reducer. Appending the part here instead
+            # left a second tool-mutation path — the one place a `tool_result`
+            # reached the persisted transcript without the fold ever seeing it.
+            _fold(seeded_result)
     except BaseException as setup_exc:
         await turn_lifecycle.source_failed(setup_exc)
         raise
-    if seeded_wire is not None:
+    if seeded_result is not None:
         # Delivery, deliberately outside the setup guard: the seeded result is
         # durable before the first provider event either way, and a sink failure
-        # here is a delivery failure, not a source one.
-        yield encode_tool_result(ToolResultEvent.model_validate(seeded_wire))
+        # here is a delivery failure, not a source one. Encoded exactly as the
+        # live driver encodes a provider `ToolResult`.
+        yield encode_tool_result(
+            ToolResultEvent.model_validate(
+                tool_result_part(seeded_result).model_dump(by_alias=True, exclude_none=True)
+            )
+        )
 
     try:
         while True:

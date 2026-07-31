@@ -108,6 +108,7 @@ from app.providers.tiers import (
     tier_requires_pro,
     web_search_available_for_binding,
 )
+from app.runtime.context import RuntimeContext, derive_session_factory
 from app.safety import SafetyDecision, check_user_turn
 from app.schemas.common import ModelTierId, ReasoningEffortId, SubstitutionReasonCode
 from app.schemas.conversation import (
@@ -138,7 +139,6 @@ from app.search.protocol import SourceItem
 from app.streaming import replay_registry
 from app.streaming.handler import (
     ResumeToolSeed,
-    _derive_session_factory,
     spawn_detached_producer,
     stream_and_persist,
 )
@@ -679,7 +679,7 @@ async def _record_moderation_blocked(
         details["reasonCode"] = decision.reason_code
     if decision.source:
         details["source"] = decision.source
-    async with _derive_session_factory(db)() as event_db:
+    async with derive_session_factory(db)() as event_db:
         await audit_events_repo.record(
             event_db,
             user_id=user.id,
@@ -1900,7 +1900,7 @@ async def send_message(
                 monthly_quota_usd=effective_quota_usd,
             )
             if not has_allowance:
-                async with _derive_session_factory(db)() as event_db:
+                async with derive_session_factory(db)() as event_db:
                     await analytics_repo.record(
                         event_db,
                         user_id=user.id,
@@ -1937,7 +1937,7 @@ async def send_message(
                 db, conversation_id
             )
             if conversation_cost >= per_conversation_cap:
-                async with _derive_session_factory(db)() as event_db:
+                async with derive_session_factory(db)() as event_db:
                     await analytics_repo.record(
                         event_db,
                         user_id=user.id,
@@ -2684,7 +2684,7 @@ async def send_message(
             )
             if not reserved:
                 await _abandon_unstarted_stream_claim(db, stream_id)
-                async with _derive_session_factory(db)() as event_db:
+                async with derive_session_factory(db)() as event_db:
                     await analytics_repo.record(
                         event_db,
                         user_id=user.id,
@@ -2758,11 +2758,11 @@ async def send_message(
             )
             # The detached producer owns a FRESH session derived from THIS request's
             # engine (the request session closes when the POST returns). Using
-            # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite
+            # `RuntimeContext.from_session(db)` keeps tests bound to the per-test SQLite
             # file rather than the process-wide env DATABASE_URL factory.
             spawn_detached_producer(
                 buffer=buffer,
-                session_factory=_derive_session_factory(db),
+                session_factory=RuntimeContext.from_session(db).session_factory,
                 provider=provider,
                 binding=binding,
                 requested_tier_id=body.tier_id,

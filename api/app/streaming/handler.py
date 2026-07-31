@@ -68,7 +68,6 @@ from app.db.repositories import memory_facts as memory_facts_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
-from app.db.session import get_session_factory
 from app.errors import AppError, ErrorEnvelope
 from app.prompt_assembly import build_system_prefix, build_user_turn
 from app.providers.factory import build_provider
@@ -95,6 +94,7 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.tiers import TierBinding, get_binding
+from app.runtime.context import RuntimeContext
 from app.schemas.common import ModelTierId, SubagentOutcome, SubstitutionReasonCode
 from app.schemas.conversation import ToolApprovalDecision
 from app.schemas.message import (
@@ -494,30 +494,6 @@ def _fold_complete_substitution(
     )
 
 
-def _derive_session_factory(
-    db: AsyncSession,
-) -> async_sessionmaker[AsyncSession]:
-    """Build a sessionmaker pointing at the same engine as `db`.
-
-    The detached title-autogen task needs a fresh session — the request
-    scope is closing. We can't use `get_session_factory()` because in tests
-    that's the process-wide factory bound to env DATABASE_URL, NOT the
-    per-test SQLite file the request session was bound to.
-
-    Falls back to `get_session_factory()` if the bind can't be extracted
-    (defensive — should not happen in practice; `AsyncSession.bind`
-    is an `AsyncEngine` once the session has executed anything).
-    """
-    bind = db.bind
-    if bind is None:
-        return get_session_factory()
-    return async_sessionmaker(
-        bind=bind,
-        expire_on_commit=False,
-        autoflush=False,
-    )
-
-
 # Prompt used for title autogen. Kept short — the small/fast tier sees the
 # user's first turn plus this instruction and returns a 4-6 word title.
 # Phrased as the user side of a single turn (no system prompt seam in our
@@ -737,6 +713,7 @@ async def stream_and_persist(
     *,
     request: Request,
     db: AsyncSession,
+    runtime: RuntimeContext | None = None,
     provider: Provider,
     binding: TierBinding,
     requested_tier_id: ModelTierId,
@@ -829,7 +806,16 @@ async def stream_and_persist(
     wraps the provider when `settings.tools_enabled`; otherwise the provider
     stream is consumed directly and this whole feature is inert (the flag-off
     path is byte-for-byte unchanged).
+
+    `runtime` (AC-04) is the immutable database context for this turn's
+    lifecycle work. It is derived from `db` when the caller does not supply one,
+    so every session opened outside the request scope — heartbeat, reservation
+    release, fresh-session stop/error persistence, detached post-turn tasks —
+    lands on the SAME engine the request session is bound to. Nothing in this
+    function may reach for the process-wide session factory.
     """
+    # AC-04: one context per turn, derived once, before any lifecycle work.
+    turn_runtime = runtime if runtime is not None else RuntimeContext.from_session(db)
     # Emit `submitted` immediately. Resumable clients need the durable stream
     # id in-band so they can reconnect to the exact producer they just started.
     yield encode_submitted(
@@ -1872,8 +1858,7 @@ async def stream_and_persist(
             return
         last_stream_heartbeat_at = now
         try:
-            factory = get_session_factory()
-            async with factory() as hb_db:
+            async with turn_runtime.session_factory() as hb_db:
                 await streams_repo.heartbeat(hb_db, stream_id=stream_id)
                 await hb_db.commit()
         except Exception as hb_exc:  # pragma: no cover - defensive
@@ -1887,8 +1872,7 @@ async def stream_and_persist(
             if session is not None:
                 await usage_repo.release_platform_budget(session, stream_id=stream_id)
                 return
-            factory = get_session_factory()
-            async with factory() as rel_db:
+            async with turn_runtime.session_factory() as rel_db:
                 await usage_repo.release_platform_budget(rel_db, stream_id=stream_id)
                 await rel_db.commit()
         except Exception as rel_exc:  # pragma: no cover - defensive
@@ -2571,7 +2555,7 @@ async def stream_and_persist(
                 # single fresh_db.commit() makes both durable atomically. Mirrors
                 # the happy path (bump BEFORE its single commit) so a crash
                 # between writes can never persist a stopped row without usage.
-                async with _derive_session_factory(db)() as fresh_db:
+                async with turn_runtime.session_factory() as fresh_db:
                     stopped_assistant_id = await _persist_assistant(
                         status="stopped",
                         attribution=attribution,
@@ -3377,15 +3361,15 @@ async def stream_and_persist(
                 # close immediately after `terminal`. We do hold a reference
                 # via a module-level set to keep the task alive against GC
                 # in case the asyncio event-loop policy drops weakrefs.
-                # The session factory is derived from the request-scoped
-                # session's bind so tests can point at the per-test SQLite
-                # file. In prod the bind is the process engine; either way
-                # the factory targets the right DB.
+                # The session factory comes from this turn's RuntimeContext, so
+                # tests point at the per-test SQLite file. In prod the bind is
+                # the process engine; either way the factory targets the right
+                # DB.
                 task = asyncio.create_task(
                     _autogen_title(
                         conversation_id=conversation_id,
                         user_text=user_text,
-                        session_factory=_derive_session_factory(db),
+                        session_factory=turn_runtime.session_factory,
                         provider_id=runtime_provider_id,
                         api_key=active_api_key,
                     )
@@ -3408,7 +3392,7 @@ async def stream_and_persist(
                         user_id=user_id,
                         user_text=user_text,
                         answer_text=resolved_answer_text,
-                        session_factory=_derive_session_factory(db),
+                        session_factory=turn_runtime.session_factory,
                     )
                 )
                 _BG_TASKS.add(extract_task)
@@ -3464,7 +3448,7 @@ async def stream_and_persist(
         # `"error"` on startup and on an interval (PRD 04 §5.1).
         if stream_id is not None:
             with contextlib.suppress(Exception):
-                async with _derive_session_factory(db)() as cancel_db:
+                async with turn_runtime.session_factory() as cancel_db:
                     await streams_repo.mark_status(
                         cancel_db,
                         stream_id=stream_id,
@@ -3517,7 +3501,7 @@ async def stream_and_persist(
         # provider error into a 500 or mask the `error` frame already yielded.
         if stream_id is not None:
             try:
-                async with _derive_session_factory(db)() as err_db:
+                async with turn_runtime.session_factory() as err_db:
                     await streams_repo.mark_status(err_db, stream_id=stream_id, status="error")
                     if user_id is not None:
                         await analytics_repo.record(
@@ -3603,9 +3587,12 @@ async def run_detached_producer(
     differences are structural, not behavioral:
 
     1. It owns a FRESH DB session (the originating POST request's session closes
-       as soon as the POST returns; the producer outlives it). The session is
-       derived from the process-wide `session_factory` so persistence lands on
-       the right engine in both prod and tests.
+       as soon as the POST returns; the producer outlives it). `session_factory`
+       is the route-derived factory for the originating request's engine, so
+       persistence lands on the right engine in both prod and tests. AC-04: it
+       is also the `RuntimeContext` handed to `stream_and_persist`, so the
+       detached turn's heartbeat, reservation release, and post-turn tasks use
+       that same factory rather than the process-wide one.
     2. It hands `stream_and_persist` a `_NeverDisconnectedRequest`, so a client
        disconnect can NOT tear the turn down. The live cancel paths that remain
        are the dedicated stop endpoint (via `stop_registry`, polled inside
@@ -3620,11 +3607,13 @@ async def run_detached_producer(
     double-persist or double-count.
     """
     terminal_kind = "stopped"  # default: no terminal/error frame ⇒ stopped/cancelled
+    runtime = RuntimeContext.from_factory(session_factory)
     try:
         async with session_factory() as session:
             async for event in stream_and_persist(
                 request=_NeverDisconnectedRequest(),  # type: ignore[arg-type]
                 db=session,
+                runtime=runtime,
                 provider=provider,
                 binding=binding,
                 requested_tier_id=requested_tier_id,

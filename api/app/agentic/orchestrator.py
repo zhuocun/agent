@@ -901,12 +901,17 @@ async def _finalize_synthesis_streamed(
                     )
                     aggregator_failed = True
                     break
+                # Fold BEFORE handing the event outward, as `run_single` and the
+                # worker relay do. A consumer close lands `GeneratorExit` on the
+                # yield this generator is suspended at, so a fold placed after it
+                # never runs and the cancel arm settles the span on the previous
+                # sample — under-reporting tokens already delivered.
+                aggregator_usage = fold_usage(event, aggregator_usage)
                 if verify_after and isinstance(
                     event, (ToolCall, ToolResult, Sources, StatusUpdate)
                 ):
-                    yield tag_event(event, _AGGREGATOR_ID)
                     quiet_provenance = True
-                    aggregator_usage = fold_usage(event, aggregator_usage)
+                    yield tag_event(event, _AGGREGATOR_ID)
                     continue
                 if isinstance(event, AnswerDelta):
                     answer_parts.append(event.text)
@@ -914,7 +919,6 @@ async def _finalize_synthesis_streamed(
                         yield tag_event(event, _AGGREGATOR_ID)
                 elif not verify_after:
                     yield tag_event(event, _AGGREGATOR_ID)
-                aggregator_usage = fold_usage(event, aggregator_usage)
                 if not agg_budget_halted and budget.exceeds_cap(
                     actual_usd=worker_total_cost + cost_for_usage(aggregator_usage),
                     cap_usd=cap_usd,

@@ -31,7 +31,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from app.agentic.orchestrator import run_orchestrator
+from app.agentic.aggregate import WorkerOutput
+from app.agentic.orchestrator import (
+    _AGGREGATOR_ID,
+    _finalize_synthesis_streamed,
+    run_orchestrator,
+)
 from app.config import Settings
 from app.errors import AppError, ErrorEnvelope
 from app.observability.tracing import (
@@ -608,3 +613,96 @@ async def test_a_cancelled_aggregator_closes_its_span_as_stopped() -> None:
     _assert_settled(aggregator, outcome="stopped")
     # The degrade arm did not run: a cancellation is not a synthesis failure.
     assert aggregator["agentic.outcome"] != "failed"
+
+
+def _synthesis_stream(*events: ProviderEvent) -> Any:
+    """A synthesis that emits exactly ``events``, so a test can choose the shape."""
+
+    def _make_stream_for(_prompt: str, **_kwargs: object) -> Any:
+        def _make(
+            _feedback: list[Any], suppress_tools: bool = False
+        ) -> AsyncIterator[ProviderEvent]:
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                for event in events:
+                    yield event
+
+            return _gen()
+
+        return _make
+
+    return _make_stream_for
+
+
+# Two shapes, each closed at its own usage-bearing event. The `Complete` case
+# reports usage ONLY on the terminal frame — a real provider pattern, and the only
+# way to make that close point discriminating: `run_agent_loop` normalizes
+# `Complete.usage` onto the last `UsageUpdate` it saw, so a stream carrying both
+# would settle the same number whether the fold ran before or after the yield.
+AGG_SAMPLE = UsageUpdate(input_tokens=7, output_tokens=3)
+AGG_TOTAL = UsageUpdate(input_tokens=9, output_tokens=5)
+
+
+@pytest.mark.parametrize(
+    ("events", "close_at", "delivered"),
+    [
+        pytest.param(
+            (AnswerDelta(text="synthesis "), AGG_SAMPLE, Complete(usage=AGG_SAMPLE)),
+            UsageUpdate,
+            AGG_SAMPLE,
+            id="at-delivered-usage",
+        ),
+        pytest.param(
+            (AnswerDelta(text="synthesis "), Complete(usage=AGG_TOTAL)),
+            Complete,
+            AGG_TOTAL,
+            id="at-delivered-complete",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_closing_the_synthesis_settles_the_usage_it_already_delivered(
+    events: tuple[ProviderEvent, ...], close_at: type, delivered: UsageUpdate
+) -> None:
+    """AC-10 exactness at the consumer-close boundary.
+
+    A consumer closes a generator while it is SUSPENDED at a yield, so
+    `GeneratorExit` lands at that yield and anything the loop did AFTER handing the
+    event out never runs. Folding usage after the outward yield therefore made the
+    cancel arm settle the previous sample while the tokens it was missing had
+    already crossed the wire — a stopped synthesis reporting stale, usually zero,
+    usage and cost for work the user was billed for.
+
+    The close is driven against `_finalize_synthesis_streamed` directly because that
+    is the generator owning the span. Closing `run_orchestrator` instead throws
+    `GeneratorExit` into the outer frame and leaves this one to asynchronous
+    async-generator finalization, which is not a boundary a test can pin.
+    """
+    exporter = _capture_spans()
+    stream = _finalize_synthesis_streamed(
+        make_stream_for=_synthesis_stream(*events),
+        settings=_agentic_settings(),
+        user_text="compare alpha and beta",
+        outputs=[WorkerOutput(subagent_id="worker-0", sub_question="alpha", answer="a")],
+        planned=1,
+        worker_usages=[],
+        worker_total_cost=0.0,
+        cost_for_usage=_nano,
+        cap_usd=10.0,
+        budget_halted=False,
+        served_route=BOUND_ROUTE,
+    )
+
+    seen = None
+    async for event in stream:
+        if type(event) is close_at and event.subagent_id == _AGGREGATOR_ID:
+            seen = event
+            break
+    assert seen is not None, f"the synthesis never delivered a {close_at.__name__}"
+    # Suspended at the event above, exactly where a dropped subscriber leaves it.
+    await stream.aclose()
+
+    (aggregator,) = _settled_phases(exporter)["aggregator"]
+    _assert_settled(aggregator, outcome="stopped")
+    assert aggregator["gen_ai.usage.input_tokens"] == delivered.input_tokens
+    assert aggregator["gen_ai.usage.output_tokens"] == delivered.output_tokens
+    assert aggregator["agentic.cost_usd"] == pytest.approx(_nano(delivered))

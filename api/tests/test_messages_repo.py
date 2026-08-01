@@ -124,6 +124,98 @@ async def test_create_user_message_persists_attachment_metadata_and_history_igno
         assert [(m.role, m.text) for m in history] == [("user", "describe this")]
 
 
+async def test_load_history_carries_only_the_manager_answer_of_an_agentic_turn(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """AC-05: `load_history` reads a stored turn through the one projection, so a
+    deep-research row contributes its aggregator synthesis and nothing else. The
+    planner's plan and the workers' findings are working material — replaying
+    them as prior assistant prose would tell the provider it had already said
+    things no user ever saw."""
+    conv_id = await _seed_user_and_conversation(session_factory)
+    async with session_factory() as session:
+        await _add_message(
+            session, conversation_id=conv_id, role="user", text="q", offset_seconds=0
+        )
+        session.add(
+            Message(
+                conversation_id=conv_id,
+                role="assistant",
+                parts=[
+                    {
+                        "type": "subagent",
+                        "subagentId": "planner",
+                        "label": "Planner",
+                        "role": "orchestrator",
+                    },
+                    {"type": "text", "text": "PLAN: two lookups.", "subagentId": "planner"},
+                    {
+                        "type": "subagent",
+                        "subagentId": "worker-1",
+                        "label": "Lookup",
+                        "role": "worker",
+                    },
+                    {"type": "reasoning", "text": "worker thinking", "subagentId": "worker-1"},
+                    {"type": "text", "text": "Worker finding.", "subagentId": "worker-1"},
+                    {
+                        "type": "subagent",
+                        "subagentId": "aggregator",
+                        "label": "Synthesis",
+                        "role": "aggregator",
+                    },
+                    {"type": "text", "text": "Final synthesis.", "subagentId": "aggregator"},
+                ],
+                status="done",
+                attribution=None,
+                created_at=_BASE + timedelta(seconds=1),
+            )
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        history = await messages_repo.load_history(session, conv_id)
+    assert [(m.role, m.text) for m in history] == [
+        ("user", "q"),
+        ("assistant", "Final synthesis."),
+    ]
+    assert history[1].reasoning_content is None
+
+
+async def test_load_history_drops_a_turn_with_no_manager_answer(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A row whose only prose belongs to a worker gives the provider nothing to
+    consume, so it leaves history rather than contributing an empty turn."""
+    conv_id = await _seed_user_and_conversation(session_factory)
+    async with session_factory() as session:
+        await _add_message(
+            session, conversation_id=conv_id, role="user", text="q", offset_seconds=0
+        )
+        session.add(
+            Message(
+                conversation_id=conv_id,
+                role="assistant",
+                parts=[
+                    {
+                        "type": "subagent",
+                        "subagentId": "worker-1",
+                        "label": "Lookup",
+                        "role": "worker",
+                    },
+                    {"type": "text", "text": "Worker finding.", "subagentId": "worker-1"},
+                ],
+                status="done",
+                attribution=None,
+                created_at=_BASE + timedelta(seconds=1),
+            )
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        history = await messages_repo.load_history(session, conv_id)
+    assert [(m.role, m.text) for m in history] == [("user", "q")]
+
+
 # -- truncate_from ------------------------------------------------------------
 
 

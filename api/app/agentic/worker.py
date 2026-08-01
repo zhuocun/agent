@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 import structlog
 
@@ -63,6 +63,7 @@ from app.tools.agent_loop import (
     MakeStream,
     run_agent_loop,
 )
+from app.tools.protocol import ToolApprovalState, ToolRunStatus
 
 _log = structlog.get_logger(__name__)
 
@@ -212,10 +213,8 @@ def tool_transcript_part(
 ) -> dict[str, Any]:
     """Durable transcript row for one worker tool event (H-010 checkpoint).
 
-    `continuation.tool_results_from_transcript` is the inverse. The writer lives
-    here, next to the events it reads, and the reader lives with the codec that
-    decodes the stored blob; pairing them in one module would close an import
-    cycle over `namespace_tool_call_id`.
+    `tool_results_from_transcript` below is the inverse; the pair is one codec,
+    and both halves share this module's `namespace_tool_call_id`.
     """
     common = {
         "name": event.name,
@@ -239,6 +238,58 @@ def tool_transcript_part(
         "error": event.error,
         **common,
     }
+
+
+_TOOL_RUN_STATUSES: frozenset[str] = frozenset(
+    {"running", "succeeded", "failed", "cancelled", "awaiting_approval"}
+)
+_TOOL_APPROVAL_STATES: frozenset[str] = frozenset(
+    {"not_required", "pending", "approved", "rejected"}
+)
+
+
+def _str_or_none(raw: object) -> str | None:
+    return raw if isinstance(raw, str) else None
+
+
+def tool_results_from_transcript(
+    transcript: Sequence[dict[str, Any]], *, subagent_id: str
+) -> list[ToolResult]:
+    """Read the settled tool results back out of a durable transcript (H-010).
+
+    The inverse of `tool_transcript_part`, and the reason a resumed worker can
+    hand the agent loop every tool result the pause turn already settled instead
+    of re-running those calls. Rows are dicts decoded from JSON, so unknown
+    status / approval values fall back to the neutral defaults rather than
+    widening `ToolResult`'s literals.
+    """
+    results: list[ToolResult] = []
+    for part in transcript:
+        if part.get("type") != "tool_result":
+            continue
+        status = part.get("status")
+        approval = part.get("approvalState")
+        output = part.get("output")
+        results.append(
+            ToolResult(
+                tool_call_id=str(part.get("toolCallId") or ""),
+                name=str(part.get("name") or ""),
+                label=_str_or_none(part.get("label")),
+                status=cast(
+                    ToolRunStatus,
+                    status if status in _TOOL_RUN_STATUSES else "succeeded",
+                ),
+                approval_state=cast(
+                    ToolApprovalState,
+                    approval if approval in _TOOL_APPROVAL_STATES else "not_required",
+                ),
+                summary=_str_or_none(part.get("summary")),
+                output=dict(output) if isinstance(output, dict) else {},
+                error=_str_or_none(part.get("error")),
+                subagent_id=subagent_id,
+            )
+        )
+    return results
 
 
 # --- seeds --------------------------------------------------------------------

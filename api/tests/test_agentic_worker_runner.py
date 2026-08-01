@@ -48,6 +48,8 @@ from app.agentic.worker import (
     WorkerRoutes,
     WorkerRunner,
     WorkerSeed,
+    tool_results_from_transcript,
+    tool_transcript_part,
 )
 from app.config import Settings
 from app.errors import AppError, ErrorEnvelope
@@ -662,6 +664,56 @@ async def test_started_precedes_every_tagged_content_event() -> None:
     assert not [e for e in events if type(e).__name__ == "SubagentDone"]
     assert isinstance(outcome, WorkerCompleted)
     assert outcome.done_event.subagent_id == "worker-0"
+
+
+# --- durable tool transcript codec (H-010) ------------------------------------
+
+
+def test_the_transcript_codec_round_trips_a_settled_tool_result() -> None:
+    """H-010: the writer and the reader are one codec, so what a paused worker
+    wrote down is what a resumed worker hands back to the agent loop.
+
+    The transcript is JSON, so the reader takes dicts and cannot trust their
+    literals: an unknown stored status or approval value falls back to the
+    neutral default rather than widening `ToolResult`.
+    """
+    settled = ToolResult(
+        tool_call_id="call-1",
+        name="calendar_create_event",
+        label="Create event",
+        status="failed",
+        approval_state="approved",
+        summary="Declined by the calendar",
+        output={"eventId": "evt-9"},
+        error="upstream 409",
+    )
+    row = tool_transcript_part(settled, "worker-0")
+    # A `tool_call` row is not a result, so the reader must skip it.
+    transcript = [tool_transcript_part(ToolCall(id="call-1", name="x"), "worker-0"), row]
+
+    (read_back,) = tool_results_from_transcript(transcript, subagent_id="worker-0")
+    # The call id comes back namespaced, since that is what the approval gate and
+    # the loop's settlement guard match on (H-004).
+    assert read_back.tool_call_id == "worker-0::call-1"
+    assert read_back.name == settled.name
+    assert read_back.label == settled.label
+    assert read_back.status == "failed"
+    assert read_back.approval_state == "approved"
+    assert read_back.summary == settled.summary
+    assert read_back.output == {"eventId": "evt-9"}
+    assert read_back.error == settled.error
+    # The reader stamps the identity it was given, not one parsed from the row.
+    assert read_back.subagent_id == "worker-0"
+
+    # Values a future writer (or a hand-edited row) could store that this
+    # `ToolResult` cannot express settle on the neutral defaults.
+    (defaulted,) = tool_results_from_transcript(
+        [{**row, "status": "quantum", "approvalState": "maybe"}],
+        subagent_id="worker-1",
+    )
+    assert defaulted.status == "succeeded"
+    assert defaulted.approval_state == "not_required"
+    assert defaulted.subagent_id == "worker-1"
 
 
 # --- span settlement for both seeds (AC-10) -----------------------------------

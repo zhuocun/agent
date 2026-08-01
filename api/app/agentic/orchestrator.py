@@ -45,7 +45,6 @@ from app.agentic.continuation import (
     AgenticContinuation,
     CompletedWorkerState,
     serialize_continuation,
-    tool_results_from_transcript,
     usage_to_wire,
 )
 from app.agentic.retry import is_retryable_provider_error
@@ -67,6 +66,7 @@ from app.agentic.worker import (
     has_nonzero_usage,
     sum_usages,
     tag_event,
+    tool_results_from_transcript,
     tool_transcript_part,
 )
 from app.config import Settings

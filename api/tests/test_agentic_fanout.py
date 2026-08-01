@@ -712,7 +712,7 @@ async def test_worker_with_no_prose_is_marked_failed_and_omitted(
     The static `EMPTY_REPLY_FALLBACK` used to make `answer_parts` look written,
     so a lost research step was reported `succeeded` with `partial=False`.
     """
-    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+    from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK
 
     def _worker(prompt: str) -> AsyncIterator[ProviderEvent]:
         async def _gen() -> AsyncIterator[ProviderEvent]:
@@ -1139,7 +1139,7 @@ async def test_grounded_agentic_turn_emits_no_ungrounded_sources_frame(
     ungrounded honesty frame (`items=[]`, `requested=True`) — telling a
     frame-reading consumer the cited answer had no live sources.
 
-    The `drain` arm pins the `_apply_event` twin: only the success path can emit
+    The `drain` arm pins the stopped-drain twin: only the success path can emit
     the honesty frame, so what the drain has to guarantee is that a stopped turn
     folds the tagged sources identically rather than dropping them.
     """

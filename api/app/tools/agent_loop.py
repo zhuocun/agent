@@ -77,7 +77,7 @@ from app.providers.protocol import (
     ToolResult,
     UsageUpdate,
 )
-from app.streaming.constants import EMPTY_REPLY_FALLBACK, main_answer_is_empty
+from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolApprovalState, ToolCallRequest, ToolExecutionResult
 

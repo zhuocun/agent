@@ -54,7 +54,7 @@ from app.agentic.clarify import (
 from app.agentic.continuation import (
     get_run_ledger_from_server_state,
     resolve_continuation,
-    sanitize_message_parts_for_api,
+    resolve_continuation_decode,
 )
 from app.auth.dependency import current_user
 from app.config import Settings, get_settings
@@ -86,6 +86,7 @@ from app.guest_limits import (
     count_guest_premium_messages,
     is_premium_tier,
 )
+from app.messages.projection import parts_to_provider_history, parts_to_semantic_replay
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.pricing import compute_cost_breakdown
@@ -108,6 +109,7 @@ from app.providers.tiers import (
     tier_requires_pro,
     web_search_available_for_binding,
 )
+from app.runtime.context import RuntimeContext, derive_session_factory
 from app.safety import SafetyDecision, check_user_turn
 from app.schemas.common import ModelTierId, ReasoningEffortId, SubstitutionReasonCode
 from app.schemas.conversation import (
@@ -121,41 +123,18 @@ from app.schemas.conversation import (
     ToolApprovalDecision,
 )
 from app.schemas.conversation import Conversation as ConversationSchema
-from app.schemas.message import AttachmentPart, ModelAttribution
+from app.schemas.message import AttachmentPart
 from app.schemas.share import ShareLinkResponse
-from app.schemas.stream_events import (
-    AnswerDeltaEvent,
-    ReasoningDeltaEvent,
-    ReasoningDoneEvent,
-    SourcesEvent,
-    StatusEvent,
-    SubmittedEvent,
-    TerminalEvent,
-    ToolCallEvent,
-    ToolResultEvent,
-)
-from app.search.protocol import SourceItem
+from app.schemas.stream_events import SubmittedEvent
 from app.streaming import replay_registry
 from app.streaming.handler import (
     ResumeToolSeed,
-    _derive_session_factory,
     spawn_detached_producer,
     stream_and_persist,
 )
 from app.streaming.reaper import stream_orphaned_envelope
 from app.streaming.replay_registry import ReplayLogBuffer, ReplayLogTruncatedError
-from app.streaming.sse import (
-    encode_answer_delta,
-    encode_error,
-    encode_reasoning_delta,
-    encode_reasoning_done,
-    encode_sources,
-    encode_status,
-    encode_submitted,
-    encode_terminal,
-    encode_tool_call,
-    encode_tool_result,
-)
+from app.streaming.sse import encode_error, encode_submitted
 from app.streaming.stop_registry import request_stop_async
 from app.tools.approval_settlement import (
     ApprovalDecisionConflict,
@@ -165,6 +144,7 @@ from app.tools.approval_settlement import (
     settle_pseudo_tool_approval_outcome,
 )
 from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
+from app.tools.resume_lookup import find_any_resumable_tool_call, find_resumable_tool_call
 from app.uploads import extract_attachment_text, is_supported_attachment_type
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -564,6 +544,28 @@ def _agentic_checkpoint_pending() -> AppError:
     )
 
 
+def _agentic_checkpoint_invalid(reason: str | None) -> AppError:
+    """AC-06: the persisted checkpoint no longer decodes, so the run cannot resume.
+
+    Raised BEFORE any settlement: consuming the approval would burn it on a turn
+    that can never continue, leaving the conversation unrecoverable.
+    """
+    detail = f" ({reason})" if reason else ""
+    return AppError(
+        ErrorEnvelope(
+            code="AGENTIC_CHECKPOINT_INVALID",
+            severity="error",
+            title="Paused run cannot be resumed",
+            body=(
+                f"The saved checkpoint for this paused run is unreadable{detail}. "
+                "Stop the turn and send the message again — approving it would "
+                "discard the approval without resuming the run."
+            ),
+        ),
+        status.HTTP_409_CONFLICT,
+    )
+
+
 def _nothing_to_resume() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -679,7 +681,7 @@ async def _record_moderation_blocked(
         details["reasonCode"] = decision.reason_code
     if decision.source:
         details["source"] = decision.source
-    async with _derive_session_factory(db)() as event_db:
+    async with derive_session_factory(db)() as event_db:
         await audit_events_repo.record(
             event_db,
             user_id=user.id,
@@ -934,15 +936,10 @@ def _attachment_payloads_from_parts(parts: object) -> list[AttachmentPayload]:
     return payloads
 
 
-def _text_from_parts(parts: object) -> str:
-    """Recover concatenated text parts from a persisted message payload."""
-    if not isinstance(parts, list):
-        return ""
-    chunks: list[str] = []
-    for part in parts:
-        if isinstance(part, dict) and part.get("type") == "text":
-            chunks.append(str(part.get("text", "")))
-    return "".join(chunks)
+def _user_text_from_parts(parts: object) -> str:
+    """The user turn's text as the provider sees it, via the one projection."""
+    projected = parts_to_provider_history(parts, role="user")
+    return projected.text if projected is not None else ""
 
 
 def _ms_until_next_month(now: datetime | None = None) -> int:
@@ -1578,54 +1575,23 @@ async def _maybe_replay(
     # the done/stopped distinction.
     if assistant_row is not None and assistant_row.status in ("done", "stopped"):
         # Defensive: `attribution` is a nullable column. A done/stopped row with
-        # `attribution IS NULL` (manually-seeded or partially-migrated) would
-        # raise inside `_replay_response`'s `ModelAttribution.model_validate(...)`
-        # → generic 500. Fall through to a fresh insert instead of replaying.
+        # `attribution IS NULL` (manually-seeded or partially-migrated) has no
+        # terminal to project and would raise inside the projection's
+        # `ModelAttribution.model_validate(...)` → generic 500. Fall through to a
+        # fresh insert instead of replaying.
         if assistant_row.attribution is None:
             return None
-        # Replay path. Reconstruct prior answer text + any web-search frames
-        # (status / sources) from the persisted parts, so a reconnecting client
-        # sees the SAME sequence the original turn streamed: a grounded turn
-        # replays its `status` and `sources` frames, not just the answer.
-        reasoning_texts: list[str] = []
-        texts: list[str] = []
-        status_part: dict[str, object] | None = None
-        sources_items: list[dict[str, object]] = []
-        # Whether a `sources` part was persisted at all, and whether it marked
-        # web search as effective. An empty `items` with `requested=True` is the
-        # ungrounded turn, which must still replay its `sources` frame so a
-        # reconnecting client renders "Answered without live sources".
-        sources_requested = False
-        tool_parts: list[dict[str, object]] = []
-        for part in cast(list[dict[str, object]], assistant_row.parts or []):
-            ptype = part.get("type")
-            if ptype == "reasoning":
-                reasoning_texts.append(str(part.get("text", "")))
-            elif ptype == "text":
-                texts.append(str(part.get("text", "")))
-            elif ptype == "status":
-                status_part = part
-            elif ptype == "sources":
-                sources_items = cast(list[dict[str, object]], part.get("items", []) or [])
-                sources_requested = bool(part.get("requested", False))
-            elif ptype in ("tool_call", "tool_result"):
-                tool_parts.append(part)
-        # H-012: strip reserved control keys (incl. nested in input/output)
-        # before SSE replay — model_validate alone does not scrub dict payloads.
-        sanitized_tools = cast(
-            list[dict[str, object]],
-            sanitize_message_parts_for_api(tool_parts),
-        )
-        return _replay_response(
-            user_message_id=prior_user_msg.id,
-            assistant_message_id=assistant_row.id,
-            reasoning_text="".join(reasoning_texts),
-            answer_text="".join(texts),
-            attribution_dict=cast(dict[str, object], assistant_row.attribution),
-            status_part=status_part,
-            sources_items=sources_items,
-            sources_requested=sources_requested,
-            tool_parts=sanitized_tools,
+        # AC-05: the row's own semantics decide what replays. The projection
+        # groups persisted sections, keeps planner/worker prose inside its own
+        # subagent section, and replays the durable lifecycle + run receipt; the
+        # route only streams what it returns and writes nothing.
+        return _semantic_replay_response(
+            parts_to_semantic_replay(
+                assistant_row.parts,
+                assistant_row.attribution,
+                user_message_id=prior_user_msg.id,
+                assistant_message_id=assistant_row.id,
+            )
         )
     # User message exists but no completed assistant row: prior is in flight
     # (or crashed before persisting). With resumable streams enabled, an
@@ -1900,7 +1866,7 @@ async def send_message(
                 monthly_quota_usd=effective_quota_usd,
             )
             if not has_allowance:
-                async with _derive_session_factory(db)() as event_db:
+                async with derive_session_factory(db)() as event_db:
                     await analytics_repo.record(
                         event_db,
                         user_id=user.id,
@@ -1937,7 +1903,7 @@ async def send_message(
                 db, conversation_id
             )
             if conversation_cost >= per_conversation_cap:
-                async with _derive_session_factory(db)() as event_db:
+                async with derive_session_factory(db)() as event_db:
                     await analytics_repo.record(
                         event_db,
                         user_id=user.id,
@@ -2008,7 +1974,7 @@ async def send_message(
         if last_user is not None:
             safety_decision = check_user_turn(
                 settings,
-                text=_text_from_parts(last_user.parts),
+                text=_user_text_from_parts(last_user.parts),
                 attachments=_attachment_payloads_from_parts(last_user.parts),
                 custom_instructions=effective_instructions,
             )
@@ -2684,7 +2650,7 @@ async def send_message(
             )
             if not reserved:
                 await _abandon_unstarted_stream_claim(db, stream_id)
-                async with _derive_session_factory(db)() as event_db:
+                async with derive_session_factory(db)() as event_db:
                     await analytics_repo.record(
                         event_db,
                         user_id=user.id,
@@ -2758,11 +2724,11 @@ async def send_message(
             )
             # The detached producer owns a FRESH session derived from THIS request's
             # engine (the request session closes when the POST returns). Using
-            # `_derive_session_factory(db)` keeps tests bound to the per-test SQLite
+            # `RuntimeContext.from_session(db)` keeps tests bound to the per-test SQLite
             # file rather than the process-wide env DATABASE_URL factory.
             spawn_detached_producer(
                 buffer=buffer,
-                session_factory=_derive_session_factory(db),
+                session_factory=RuntimeContext.from_session(db).session_factory,
                 provider=provider,
                 binding=binding,
                 requested_tier_id=body.tier_id,
@@ -3018,7 +2984,7 @@ async def stop_stream(
     )
     if paused is None:
         return None
-    pending = _find_any_resumable_tool_call(
+    pending = find_any_resumable_tool_call(
         paused.parts, server_state=paused.server_state
     )
     if pending is None:
@@ -3112,7 +3078,7 @@ async def _prepare_regenerate(
         full_history = full_history[:-1]
     # Fallback: trust the persisted parts if history flattening lost data.
     if not user_text:
-        user_text = _text_from_parts(last_user.parts)
+        user_text = _user_text_from_parts(last_user.parts)
     return last_user.id, full_history, user_text, attachments
 
 
@@ -3208,86 +3174,6 @@ async def _prepare_continue(
     return user_message_id, history, _CONTINUE_INSTRUCTION, []
 
 
-def _find_pending_tool_call(
-    parts: object,
-    tool_call_id: str,
-) -> dict[str, object] | None:
-    """Find a pending, approval-awaiting `tool_call` part by id in a parts list."""
-    if not isinstance(parts, list):
-        return None
-    for part in parts:
-        if (
-            isinstance(part, dict)
-            and part.get("type") == "tool_call"
-            and part.get("id") == tool_call_id
-            and part.get("status") == "awaiting_approval"
-            and part.get("approvalState") == "pending"
-        ):
-            return part
-    return None
-
-
-def _find_resumable_tool_call(
-    parts: object,
-    tool_call_id: str,
-    *,
-    server_state: object = None,
-) -> dict[str, object] | None:
-    """Find a tool_call for resume: pending OR already settled (BE-007 retry).
-
-    H-003: a worker call cancelled as a concurrent-pause sibling is
-    ``approvalState=rejected`` without a continuation. Those are not
-    resumable — only the continuation-bearing pause (or a primary HITL
-    call) may be approved/denied.
-    """
-    pending = _find_pending_tool_call(parts, tool_call_id)
-    if pending is not None:
-        return pending
-    if not isinstance(parts, list):
-        return None
-    for part in parts:
-        if (
-            isinstance(part, dict)
-            and part.get("type") == "tool_call"
-            and part.get("id") == tool_call_id
-            and part.get("approvalState") in ("approved", "rejected")
-        ):
-            # Superseded worker pauses: rejected, no continuation → not resumable.
-            subagent = part.get("subagentId")
-            if isinstance(subagent, str) and subagent.startswith("worker-"):
-                _, cont = resolve_continuation(
-                    server_state=server_state,
-                    tool_input=part.get("input"),
-                    tool_call_id=tool_call_id,
-                )
-                if cont is None and part.get("approvalState") == "rejected":
-                    return None
-            return part
-    return None
-
-
-def _find_any_resumable_tool_call(
-    parts: object,
-    *,
-    server_state: object = None,
-) -> dict[str, object] | None:
-    """Return the first still-pending approval-gated tool_call (A-7 Stop)."""
-    if not isinstance(parts, list):
-        return None
-    for part in parts:
-        if not isinstance(part, dict) or part.get("type") != "tool_call":
-            continue
-        call_id = part.get("id")
-        if not isinstance(call_id, str) or not call_id:
-            continue
-        found = _find_resumable_tool_call(
-            parts, call_id, server_state=server_state
-        )
-        if found is not None and found.get("approvalState") == "pending":
-            return found
-    return None
-
-
 def _pin_orchestration_mode(
     *,
     pinned_mode: Literal["single", "deep_research"] | None,
@@ -3362,7 +3248,7 @@ async def _prepare_resume_tool(
     if last_assistant is None:
         raise _nothing_to_resume()
 
-    pending = _find_resumable_tool_call(
+    pending = find_resumable_tool_call(
         last_assistant.parts,
         decision.tool_call_id,
         server_state=last_assistant.server_state,
@@ -3372,6 +3258,17 @@ async def _prepare_resume_tool(
             "INVALID_INPUT",
             "toolApproval.toolCallId does not match a tool awaiting approval.",
         )
+
+    # AC-06: decode the checkpoint before anything settles. An undecodable blob is
+    # refused here rather than read as "no checkpoint", which would consume the
+    # approval and then resume as a plain tool call with the fan-out state lost.
+    cleaned_input, checkpoint = resolve_continuation_decode(
+        server_state=last_assistant.server_state,
+        tool_input=pending.get("input"),
+        tool_call_id=decision.tool_call_id,
+    )
+    if checkpoint.invalid:
+        raise _agentic_checkpoint_invalid(checkpoint.error)
 
     tool_name = str(pending.get("name") or "")
 
@@ -3486,9 +3383,12 @@ async def _prepare_resume_tool(
             settled_result=outcome.result,
             prior_planner_cost_usd=plan_ledger.planner_cost_usd,
             prior_planner_usage=plan_ledger.planner_usage,
+            # AC-02: the pause boundary's own receipt, when the paused row carried
+            # one. It supersedes the planner seeds above as the already-billed floor.
+            prior_receipt=plan_ledger.run_receipt,
             orchestration_mode=plan_mode,
         )
-        original_text = _text_from_parts(user_row.parts)
+        original_text = _user_text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
 
     # Clarify-before-plan HITL resume (plan 02). Same pseudo-tool bypass as plan
@@ -3617,9 +3517,10 @@ async def _prepare_resume_tool(
             clarify_records=clarify_records_tuple,
             clarify_answers=clarify_answers,
             settled_result=outcome.result,
+            prior_receipt=clarify_ledger.run_receipt,
             orchestration_mode=clarify_mode,
         )
-        original_text = _text_from_parts(user_row.parts)
+        original_text = _user_text_from_parts(user_row.parts)
         return user_message_id, history, original_text, attachments, seed
 
     spec = TOOL_REGISTRY.get(tool_name)
@@ -3632,15 +3533,9 @@ async def _prepare_resume_tool(
         )
 
     # Effective input: a validated `edited_input` overrides the originally
-    # requested input; otherwise reuse the pending part's input. Strip the
-    # BE-005 continuation blob before schema validation / execution.
-    # H-012: prefer Message.server_state over legacy tool-input embedding.
-    raw_input = pending.get("input")
-    cleaned_input, agentic_continuation = resolve_continuation(
-        server_state=last_assistant.server_state,
-        tool_input=raw_input,
-        tool_call_id=decision.tool_call_id,
-    )
+    # requested input; otherwise reuse the pending part's input (`cleaned_input`,
+    # already stripped of the BE-005 continuation blob by the decode above).
+    agentic_continuation = checkpoint.state
     # B5: single-mode pause ledger from server_state (not tool input).
     tool_ledger = get_run_ledger_from_server_state(last_assistant.server_state)
     # FL-28: pin the paused run's mode before any settlement runs. Prefer the
@@ -3788,6 +3683,7 @@ async def _prepare_resume_tool(
         prior_run_usage=tool_ledger.prior_run_usage,
         prior_planner_cost_usd=tool_ledger.planner_cost_usd,
         prior_planner_usage=tool_ledger.planner_usage,
+        prior_receipt=tool_ledger.run_receipt,
         orchestration_mode=tool_mode,
     )
     # Worker continuation resumes with the original user text (the orchestrator
@@ -3877,74 +3773,17 @@ async def _prepare_edit(
     return new_row.id, history, new_text
 
 
-def _replay_response(
-    *,
-    user_message_id: UUID,
-    assistant_message_id: UUID,
-    reasoning_text: str,
-    answer_text: str,
-    attribution_dict: dict[str, object],
-    status_part: dict[str, object] | None = None,
-    sources_items: list[dict[str, object]] | None = None,
-    sources_requested: bool = False,
-    tool_parts: list[dict[str, object]] | None = None,
-) -> EventSourceResponse:
-    """Replay a prior terminal as a single combined frame.
+def _semantic_replay_response(frames: list[ServerSentEvent]) -> EventSourceResponse:
+    """Stream one canonical semantic replay of a prior terminal. No DB writes.
 
-    Plan §"Behavior - Idempotency": yields `submitted` with the prior user
-    message id, replays persisted reasoning/tool/status/text/source frames in
-    canonical part order, then `terminal` with the stored attribution. No new
-    DB writes.
+    Plan §"Behavior - Idempotency": the projection already decided the frames
+    and their order, so this only delivers them.
     """
-    attribution = ModelAttribution.model_validate(attribution_dict)
-    items = sources_items or []
-    tools = tool_parts or []
 
     async def _gen() -> AsyncIterator[ServerSentEvent]:
-        yield encode_submitted(SubmittedEvent(message_id=str(user_message_id)))
-        if reasoning_text:
-            yield encode_reasoning_delta(ReasoningDeltaEvent(text=reasoning_text))
-            yield encode_reasoning_done(ReasoningDoneEvent())
-        for part in tools:
-            ptype = part.get("type")
-            if ptype == "tool_call":
-                yield encode_tool_call(ToolCallEvent.model_validate(part))
-            elif ptype == "tool_result":
-                yield encode_tool_result(ToolResultEvent.model_validate(part))
-        # Persisted `status` part (a completed search line) replays after the tool
-        # transcript, matching the canonical persisted part order.
-        if status_part is not None:
-            yield encode_status(
-                StatusEvent(
-                    label=str(status_part.get("label", "")),
-                    state="done",
-                )
-            )
-        # Single answer_delta carrying the full final text (no mid-stream resume).
-        yield encode_answer_delta(AnswerDeltaEvent(text=answer_text))
-        # Persisted `sources` part replays after the answer, mirroring the live
-        # order [text] [sources]. `SourceItem.model_validate` re-validates the
-        # stored dicts so a malformed row can't emit a broken wire frame. An
-        # ungrounded turn persists an empty `items` with `requested=True`, so we
-        # replay the frame whenever EITHER items exist OR web search was
-        # effective — never letting the ungrounded marker silently drop.
-        if items or sources_requested:
-            yield encode_sources(
-                SourcesEvent(
-                    items=[SourceItem.model_validate(it) for it in items],
-                    requested=sources_requested,
-                )
-            )
-        yield encode_terminal(
-            TerminalEvent(
-                message_id=str(assistant_message_id),
-                attribution=attribution,
-            )
-        )
+        for frame in frames:
+            yield frame
         # Yield to the event loop so the response actually streams in tests.
         await asyncio.sleep(0)
 
-    return _eventsource_response(
-        _gen(),
-        media_type="text/event-stream",
-    )
+    return _eventsource_response(_gen(), media_type="text/event-stream")

@@ -2,17 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Conversation, PlatformBudgetReservation, Stream, User
+from app.config import get_settings
+from app.db.models import Conversation, Message, PlatformBudgetReservation, Stream, User
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
-from app.providers.protocol import ToolResult
+from app.providers.protocol import (
+    AnswerDelta,
+    Complete,
+    ProviderEvent,
+    SubagentStarted,
+    ToolCall,
+    ToolResult,
+    UsageUpdate,
+)
+from app.providers.tiers import get_binding
+from app.streaming import handler as handler_mod
 from app.streaming import replay_registry
 from app.streaming.handler import (
     _PROVIDER_QUEUE_MAXSIZE,
@@ -228,3 +242,266 @@ async def test_reaper_terminalizes_replay_buffer(
             )
         ).scalars().all()
         assert holds == []
+
+
+# AC-03: live vs stopped-drain ToolResult fold parity ---------------------------
+#
+# `stream_and_persist` used to fold provider events twice: inline while
+# delivering, and again in a private `_apply_event` tree when a stop/disconnect
+# drained whatever the pump already queued. The drain twin synced only `status`
+# onto the open `tool_call` part, so a `pending` gate closed by a
+# `cancelled`/`rejected` result persisted as `cancelled` + `pending` — a state
+# the live fold can never produce. Both drivers now fold through
+# `TurnReducer`; these tests pin them together for the tagged (per-subagent) and
+# untagged (flat) tool transcripts.
+
+_GATED_CALL_ID = "gated-call-1"
+
+
+def _gated_call_and_rejection(subagent_id: str | None) -> list[ProviderEvent]:
+    """A pending approval gate, then the sibling-cancel rejection that closes it."""
+    return [
+        ToolCall(
+            id=_GATED_CALL_ID,
+            name="calendar_create_event",
+            label="Create event",
+            status="awaiting_approval",
+            approval_state="pending",
+            subagent_id=subagent_id,
+        ),
+        ToolResult(
+            tool_call_id=_GATED_CALL_ID,
+            name="calendar_create_event",
+            label="Create event",
+            status="cancelled",
+            approval_state="rejected",
+            error="Cancelled alongside a rejected sibling call.",
+            subagent_id=subagent_id,
+        ),
+    ]
+
+
+class _NeverDisconnected:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+class _DisconnectAfterFirstFrame:
+    """First poll False, every later poll True — so all but event #1 is drained.
+
+    The False poll parks the consumer on an empty queue, which hands control to
+    the pump; the await-free stub stream lands in the queue in one go and only
+    its first event is consumed live. The next poll cancels the pump with the
+    rest still queued, which is exactly the stopped FIFO drain.
+    """
+
+    def __init__(self) -> None:
+        self._polls = 0
+
+    async def is_disconnected(self) -> bool:
+        self._polls += 1
+        return self._polls > 1
+
+
+class _StubProvider:
+    """Non-agentic provider that replays a canned event list."""
+
+    def __init__(self, make_events: Callable[[], AsyncIterator[ProviderEvent]]) -> None:
+        self._make_events = make_events
+
+    def stream(self, **_kwargs: object) -> AsyncIterator[ProviderEvent]:
+        return self._make_events()
+
+
+class _UnusedProvider:
+    def stream(self, **_kwargs: object) -> AsyncIterator[ProviderEvent]:
+        raise AssertionError("the stubbed orchestrator replaces the provider")
+
+
+@pytest.fixture
+def settings_cache_reset() -> Iterator[None]:
+    """Drop the cached `Settings` so per-test flag env lands, and again after."""
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+
+
+async def _persisted_parts_for_turn(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    events: list[ProviderEvent],
+    agentic: bool,
+    live: bool,
+) -> list[dict[str, Any]]:
+    """Drive one turn over `events` and return the persisted assistant parts.
+
+    `live=True` appends a terminal `Complete` and never disconnects, so every
+    event is folded by the inline delivery loop. `live=False` holds the stub
+    stream open and disconnects after the first frame, so everything but event
+    #1 is folded by the drain instead.
+
+    `agentic=True` drives a stubbed orchestrator (tagged transcript, grouped by
+    subagent); `agentic=False` keeps both flags off so the plain-chat path folds
+    into the flat, untagged transcript.
+    """
+    monkeypatch.setenv("TOOLS_ENABLED", "true" if agentic else "false")
+    monkeypatch.setenv("AGENTIC_ENABLED", "true" if agentic else "false")
+    get_settings.cache_clear()
+
+    binding = get_binding("smart")
+    assert binding is not None
+
+    tail: list[ProviderEvent] = list(events)
+    if live:
+        tail.append(Complete(usage=UsageUpdate(input_tokens=4, output_tokens=2)))
+
+    def _make_events() -> AsyncIterator[ProviderEvent]:
+        async def _gen() -> AsyncIterator[ProviderEvent]:
+            for ev in tail:
+                yield ev
+            if not live:
+                # A drained turn must end on the disconnect, not on exhaustion.
+                await asyncio.sleep(30)
+
+        return _gen()
+
+    provider: Any
+    if agentic:
+        monkeypatch.setattr(
+            handler_mod,
+            "run_orchestrator",
+            lambda **_kwargs: _make_events(),
+        )
+        provider = _UnusedProvider()
+    else:
+        provider = _StubProvider(_make_events)
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        convo = Conversation(
+            user_id=user.id, title="ac03", selected_tier_id="smart", pinned=False
+        )
+        session.add(convo)
+        await session.commit()
+        await session.refresh(convo)
+        user_id = user.id
+        conv_id = convo.id
+
+    request_stub: Any = _NeverDisconnected() if live else _DisconnectAfterFirstFrame()
+
+    async with session_factory() as session:
+        async for _frame in handler_mod.stream_and_persist(
+            request=request_stub,
+            db=session,
+            provider=provider,
+            binding=binding,
+            requested_tier_id="smart",
+            conversation_id=conv_id,
+            user_message_id=uuid4(),
+            user_text="schedule a meeting",
+            history=[],
+            is_temporary=False,
+            user_id=user_id,
+            agentic_mode="deep_research" if agentic else None,
+        ):
+            pass
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(Message.conversation_id == conv_id)
+                .where(Message.role == "assistant")
+                .order_by(Message.created_at.desc())
+            )
+        ).scalars().first()
+    assert row is not None
+    raw = row.parts if isinstance(row.parts, list) else []
+    return [p for p in raw if isinstance(p, dict)]
+
+
+def _tool_transcript(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [p for p in parts if p.get("type") in ("tool_call", "tool_result")]
+
+
+def _assert_gate_settled_as_rejected(parts: list[dict[str, Any]]) -> None:
+    transcript = _tool_transcript(parts)
+    calls = [p for p in transcript if p.get("type") == "tool_call"]
+    results = [p for p in transcript if p.get("type") == "tool_result"]
+    assert len(calls) == 1, transcript
+    assert len(results) == 1, transcript
+    assert calls[0]["id"] == _GATED_CALL_ID
+    assert calls[0]["status"] == "cancelled"
+    # `cancelled` + `pending` is the split state this pins shut.
+    assert calls[0]["approvalState"] == "rejected"
+    assert results[0]["toolCallId"] == _GATED_CALL_ID
+    assert results[0]["status"] == "cancelled"
+    assert results[0]["approvalState"] == "rejected"
+
+
+@pytest.mark.parametrize("live", [True, False], ids=["live", "drain"])
+async def test_tagged_tool_result_syncs_approval_state(
+    settings_cache_reset: None,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    live: bool,
+) -> None:
+    """AC-03: a tagged `pending -> rejected` trace settles the same either way."""
+    events: list[ProviderEvent] = [
+        SubagentStarted(subagent_id="worker-0", label="Alpha", role="worker"),
+        *_gated_call_and_rejection("worker-0"),
+    ]
+    parts = await _persisted_parts_for_turn(
+        session_factory, monkeypatch, events=events, agentic=True, live=live
+    )
+    _assert_gate_settled_as_rejected(parts)
+
+
+@pytest.mark.parametrize("live", [True, False], ids=["live", "drain"])
+async def test_untagged_tool_result_syncs_approval_state(
+    settings_cache_reset: None,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    live: bool,
+) -> None:
+    """AC-03: same invariant for the flat, non-agentic tool transcript."""
+    events: list[ProviderEvent] = [
+        AnswerDelta(text="working on it"),
+        *_gated_call_and_rejection(None),
+    ]
+    parts = await _persisted_parts_for_turn(
+        session_factory, monkeypatch, events=events, agentic=False, live=live
+    )
+    _assert_gate_settled_as_rejected(parts)
+
+
+@pytest.mark.parametrize("agentic", [True, False], ids=["tagged", "untagged"])
+async def test_live_and_drain_tool_transcripts_are_identical(
+    settings_cache_reset: None,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    agentic: bool,
+) -> None:
+    """AC-03 parity: the two folds produce byte-identical tool transcripts."""
+    events: list[ProviderEvent] = (
+        [
+            SubagentStarted(subagent_id="worker-0", label="Alpha", role="worker"),
+            *_gated_call_and_rejection("worker-0"),
+        ]
+        if agentic
+        else [AnswerDelta(text="working on it"), *_gated_call_and_rejection(None)]
+    )
+    live_parts = await _persisted_parts_for_turn(
+        session_factory, monkeypatch, events=events, agentic=agentic, live=True
+    )
+    drain_parts = await _persisted_parts_for_turn(
+        session_factory, monkeypatch, events=events, agentic=agentic, live=False
+    )
+    assert _tool_transcript(live_parts) == _tool_transcript(drain_parts)
+    _assert_gate_settled_as_rejected(live_parts)

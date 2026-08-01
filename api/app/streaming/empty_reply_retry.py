@@ -30,7 +30,7 @@ from collections.abc import AsyncIterator
 
 from app.config import Settings
 from app.providers.protocol import AnswerDelta, Complete, ProviderEvent
-from app.streaming.constants import main_answer_is_empty
+from app.runtime.answer_policy import main_answer_is_empty
 from app.tools.agent_loop import MakeStream, make_usage_folder
 
 

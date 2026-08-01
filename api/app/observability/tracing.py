@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -38,6 +39,9 @@ from app.config import Settings, get_settings
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from opentelemetry.sdk.trace.export import SpanExporter
+
+    from app.runtime.context import ServedRoute
+    from app.runtime.run_receipt import UsageTotals
 
 _log = structlog.get_logger("observability.tracing")
 
@@ -179,6 +183,53 @@ def add_otel_log_processor(
 _AGENTIC_TRACER = "app.agentic"
 
 
+@dataclass(frozen=True, slots=True)
+class SpanSettlement:
+    """Handle for closing one phase span with the facts it ended with.
+
+    A phase span opens knowing only an id, a role and the route the caller
+    INTENDED; what a trace needs is what actually served, what it spent, and how
+    it ended, none of which is known until the end. `settle()` is where those
+    land, and it is deliberately re-callable: a fallback settles the same handle
+    again with the route that really served, overriding rather than adding a
+    competing set of attributes. It tolerates `span is None` (the shape when
+    OpenTelemetry isn't importable) so no caller guards a settle call. Token
+    counts and money are recorded; message, prompt and tool content never are.
+    """
+
+    span: Any | None = None
+
+    def settle(
+        self,
+        *,
+        route: ServedRoute | None = None,
+        usage: UsageTotals | None = None,
+        cost_usd: float | None = None,
+        outcome: str | None = None,
+    ) -> None:
+        """Record any subset of the phase's final route / usage / cost / outcome."""
+        span = self.span
+        if span is None:
+            return
+        if route is not None:
+            span.set_attribute("agentic.served_tier_id", route.tier_id)
+            span.set_attribute("gen_ai.provider.name", route.provider_id)
+            span.set_attribute("gen_ai.response.model", route.model_id)
+            if route.substitution is not None:
+                span.set_attribute("agentic.route.substitution", route.substitution)
+        if usage is not None:
+            span.set_attribute("gen_ai.usage.input_tokens", usage.input_tokens)
+            span.set_attribute("gen_ai.usage.output_tokens", usage.output_tokens)
+            span.set_attribute("agentic.usage.reasoning_tokens", usage.reasoning_tokens)
+            span.set_attribute(
+                "agentic.usage.cached_input_tokens", usage.cached_input_tokens
+            )
+        if cost_usd is not None:
+            span.set_attribute("agentic.cost_usd", float(cost_usd))
+        if outcome is not None:
+            span.set_attribute("agentic.outcome", outcome)
+
+
 @contextlib.contextmanager
 def invoke_agent_span(
     *,
@@ -190,7 +241,7 @@ def invoke_agent_span(
     provider_id: str | None = None,
     cost_usd: float | None = None,
     outcome: str | None = None,
-) -> Iterator[Any]:
+) -> Iterator[SpanSettlement]:
     """Manual OTel span for one orchestrator subagent (agentic mode, M3).
 
     One `invoke_agent` span per subagent (primary / worker / aggregator),
@@ -200,11 +251,14 @@ def invoke_agent_span(
     OpenTelemetry isn't importable, and a non-recording span (negligible cost)
     when no tracer provider is configured, so the flag-off / OTel-off paths
     are unaffected.
+
+    Yields the phase's `SpanSettlement` so the caller can close it with what
+    actually served, spent and happened.
     """
     try:
         from opentelemetry import trace
     except ImportError:  # pragma: no cover - defensive
-        yield None
+        yield SpanSettlement()
         return
     tracer = trace.get_tracer(_AGENTIC_TRACER)
     with tracer.start_as_current_span("invoke_agent") as span:
@@ -222,7 +276,7 @@ def invoke_agent_span(
             span.set_attribute("agentic.cost_usd", float(cost_usd))
         if outcome is not None:
             span.set_attribute("agentic.outcome", outcome)
-        yield span
+        yield SpanSettlement(span)
 
 
 @contextlib.contextmanager

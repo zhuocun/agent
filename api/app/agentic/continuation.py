@@ -14,18 +14,32 @@ runs with an empty registry tool allowlist so approval-gated tools cannot pause
 there. Re-introduce ``aggregator`` / ``primary`` phases only with a real
 checkpoint + resume path.
 
-**H-012:** The continuation blob lives in ``Message.server_state`` (server-only),
-keyed by tool-call id. Legacy rows may still embed ``_agenticContinuation`` on
-``tool_call.input``; serializers strip that key (and claim/cost keys) before
-any private or public API projection. The reserved input key is also stripped
-before ``execute_tool`` / schema validation.
+**H-012:** The continuation blob lives in ``Message.server_state`` (server-only), keyed
+by tool-call id. Legacy rows may still embed ``_agenticContinuation`` on
+``tool_call.input``; serializers strip that key (and claim/cost keys) before any private
+or public API projection, and before ``execute_tool`` / schema validation.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import math
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+
+from pydantic import (
+    AliasChoices,
+    AliasGenerator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
+from pydantic.alias_generators import to_camel
 
 from app.agentic.aggregate import WorkerOutput
 from app.agentic.clarify import (
@@ -33,7 +47,10 @@ from app.agentic.clarify import (
     parse_clarification_records,
     serialize_clarification_records,
 )
+from app.agentic.sources import CitationAllocation
 from app.providers.protocol import UsageUpdate
+from app.runtime.run_receipt import RunReceipt, decode_run_receipt
+from app.schemas.common import SubagentOutcome
 from app.search.protocol import SourceItem
 
 # Reserved key on pending tool_call.input (legacy). Must not collide with any
@@ -64,6 +81,8 @@ RESERVED_CONTROL_KEYS: frozenset[str] = frozenset(
         "prior_run_cost_usd",
         "priorRunUsage",
         "prior_run_usage",
+        "runReceipt",
+        "run_receipt",
     }
 )
 
@@ -83,6 +102,11 @@ SERVER_STATE_PRIOR_RUN_USAGE_KEY = "priorRunUsage"
 # pauses have no continuation at all, and a resume onto a different mode
 # consumes the approval and discards the approved work.
 SERVER_STATE_ORCHESTRATION_MODE_KEY = "orchestrationMode"
+# AC-02: the pause boundary's `RunReceipt`. It sits beside the scalar seeds for
+# the same reason the mode pin does (those pause shapes have no continuation blob
+# at all) and SUPERSEDES them on resume: the seeds reconstruct one phase, the
+# receipt is the exact total already billed.
+SERVER_STATE_RUN_RECEIPT_KEY = "runReceipt"
 
 
 @dataclass(frozen=True)
@@ -125,6 +149,12 @@ class AgenticContinuation:
     # resume can re-emit aggregator Sources and continue allocating ids without
     # colliding with pre-pause globals.
     source_catalog: tuple[SourceItem, ...] = ()
+    # AC-08: the citation allocator's own state. The catalog above records only
+    # ids that reached a `Sources` event, so a citation-only `[n]` published
+    # above the catalog maximum is invisible to it — these two carry the
+    # mappings and the high-water mark so a resume cannot reissue either.
+    source_allocations: tuple[CitationAllocation, ...] = ()
+    source_next_id: int = 0
     # Wire-shaped tool_call / tool_result dicts from before the pause.
     tool_transcript: tuple[dict[str, Any], ...] = ()
     # Cursor: number of answer chars already streamed to the client.
@@ -144,239 +174,311 @@ class AgenticContinuation:
     version: int = 2
 
 
+# --- Versioned continuation codec (AC-06) ------------------------------------
+#
+# One Pydantic codec reads every persisted checkpoint. It is TOTAL — nothing a JSON
+# column can hand back raises; callers get a typed invalid result and the resume route
+# refuses the turn before settling the approval — and CLOSED: only known versions, the
+# one resumable phase, finite non-negative non-bool numbers, and known outcomes decode.
+# Legacy tolerance lives only in the aliases and `to_state()`, so nothing here has a
+# second, divergent reader.
+
+CURRENT_CONTINUATION_VERSION = 2
+SUPPORTED_CONTINUATION_VERSIONS: frozenset[int] = frozenset({1, 2})
+
+# Every wire field reads camelCase first and snake_case second (older builds
+# wrote snake), and always writes camelCase.
+_WIRE_CONFIG = ConfigDict(
+    populate_by_name=True,
+    extra="ignore",
+    alias_generator=AliasGenerator(
+        validation_alias=lambda name: AliasChoices(to_camel(name), name),
+        serialization_alias=to_camel,
+    ),
+)
+
+
+def _none_to(default: object) -> BeforeValidator:
+    """Older writers stored explicit nulls where the field now has a plain default."""
+    return BeforeValidator(lambda value: default if value is None else value)
+
+
+def _string_ids(value: object) -> object:
+    """Source ids were written as ints (or null) by older builds; accept both."""
+    if isinstance(value, list | tuple):
+        return tuple(str(item) for item in value if item is not None)
+    return () if value is None else value
+
+
+def _known_mode(value: object) -> object:
+    """A blob written before mode pinning — or naming a mode this build does not
+    run — resolves through the caller's own mode policy instead."""
+    return value if value in ("single", "deep_research") else None
+
+
+def _reject_bool(value: object) -> object:
+    """`int(True)` is 1 and `float(True)` is 1.0, so lax numeric coercion would read
+    a checkpoint amount of ``true`` as one token or one cent. It is corruption."""
+    if isinstance(value, bool):
+        raise ValueError("expected a number, not a bool")
+    return value
+
+
+def _wire_version(value: object) -> object:
+    """Pre-versioning blobs (and blobs written with an explicit null) are v1."""
+    return 1 if value is None else _reject_bool(value)
+
+
+# Closed numeric domains: counts and money are finite, never negative, and never a
+# bool. Legacy null tolerance is expressed here, once, as part of the field type.
+_NotBool = BeforeValidator(_reject_bool)
+_Count = Annotated[int, Field(ge=0), _NotBool, _none_to(0)]
+_Money = Annotated[float, Field(ge=0.0, allow_inf_nan=False), _NotBool, _none_to(0.0)]
+_Index = Annotated[int, Field(ge=0), _NotBool] | None
+_NullStr = Annotated[str, _none_to("")]
+_NullBool = Annotated[bool, _none_to(False)]
+_StrIds = Annotated[tuple[str, ...], BeforeValidator(_string_ids)]
+_Version = Annotated[Literal[1, 2], BeforeValidator(_wire_version)]
+_PinnedMode = Annotated[Literal["single", "deep_research"] | None, BeforeValidator(_known_mode)]
+
+
+class _UsageWire(BaseModel):
+    """Token counts as they appear in server_state."""
+
+    model_config = _WIRE_CONFIG
+
+    input_tokens: _Count = 0
+    output_tokens: _Count = 0
+    reasoning_tokens: _Count = 0
+    cached_input_tokens: _Count = 0
+
+    def to_usage(self) -> UsageUpdate:
+        return UsageUpdate(**dict(self))
+
+
+class _CompletedWorkerWire(BaseModel):
+    """One finished sibling snapshot. A corrupt entry invalidates the whole blob:
+    dropping it would silently delete that worker's answer and its cost from the
+    resumed run, which is worse than refusing the resume."""
+
+    model_config = _WIRE_CONFIG
+
+    subagent_id: str = Field(min_length=1)
+    sub_question: _NullStr
+    answer: _NullStr = ""
+    usage: _UsageWire = Field(default_factory=_UsageWire)
+    cost_usd: _Money = 0.0
+    outcome: SubagentOutcome = "succeeded"
+    source_ids: _StrIds = ()
+
+    def to_state(self) -> CompletedWorkerState:
+        return CompletedWorkerState(**{**dict(self), "usage": self.usage.to_usage()})
+
+
+class _CitationAllocationWire(BaseModel):
+    """One published local→global citation mapping. A global id of 0 is not a
+    citation any answer can carry, so the domain starts at 1."""
+
+    model_config = _WIRE_CONFIG
+
+    subagent_id: str = Field(min_length=1)
+    local_id: _Count
+    global_id: Annotated[int, Field(ge=1), _NotBool]
+
+    def to_state(self) -> CitationAllocation:
+        return CitationAllocation(**dict(self))
+
+
+class _ContinuationWire(BaseModel):
+    """The one persisted shape of `AgenticContinuation`.
+
+    `version` and `phase` are closed literals, so an unsupported checkpoint fails
+    validation instead of being read with this build's field meanings."""
+
+    model_config = _WIRE_CONFIG
+
+    version: _Version = 1
+    phase: ContinuationPhase
+    paused_subagent_id: str = Field(min_length=1)
+    user_text: _NullStr
+    plan: tuple[str, ...]
+    completed_workers: tuple[_CompletedWorkerWire, ...] = ()
+    planner_usage: _UsageWire = Field(default_factory=_UsageWire)
+    planner_cost_usd: _Money = 0.0
+    budget_halted: _NullBool = False
+    failed_workers: _Count = 0
+    actual_cost_usd: _Money = 0.0
+    paused_worker_index: _Index = None
+    paused_sub_question: str | None = None
+    partial_answer: _NullStr = ""
+    partial_reasoning: _NullStr = ""
+    source_ids: _StrIds = ()
+    source_catalog: tuple[SourceItem, ...] = ()
+    source_allocations: tuple[_CitationAllocationWire, ...] = ()
+    source_next_id: _Count = 0
+    tool_transcript: tuple[dict[str, Any], ...] = ()
+    emitted_answer_chars: _Count = 0
+    clarifications: tuple[Any, ...] = ()
+    orchestration_mode: _PinnedMode = None
+    tier_id: str | None = None
+    provider_id: str | None = None
+    model_id: str | None = None
+    paused_worker_usage: _UsageWire | None = None
+    paused_worker_cost_usd: _Money = 0.0
+    paused_worker_used_fallback: _NullBool = False
+
+    @field_validator(
+        "plan", "completed_workers", "clarifications", "source_allocations", mode="before"
+    )
+    @classmethod
+    def _null_sequence(cls, value: object) -> object:
+        return () if value is None else value
+
+    @field_serializer("source_catalog")
+    def _dump_catalog(self, value: tuple[SourceItem, ...]) -> list[dict[str, Any]]:
+        return [item.model_dump(exclude_none=True) for item in value]
+
+    @classmethod
+    def from_state(cls, state: AgenticContinuation) -> _ContinuationWire:
+        """Write side. `asdict` gives snake_case, which the aliases accept."""
+        payload: dict[str, Any] = dataclasses.asdict(state)
+        # Clarification records keep their own camelCase writer so the stored
+        # shape matches what `parse_clarification_records` prefers to read.
+        payload["clarifications"] = serialize_clarification_records(state.clarifications)
+        return cls.model_validate(payload)
+
+    def to_state(self) -> AgenticContinuation:
+        """Read side. Nested wire models become their domain types."""
+        emitted = self.emitted_answer_chars
+        if emitted <= 0 and self.partial_answer:
+            # Legacy blobs had no cursor: the whole draft was already streamed.
+            emitted = len(self.partial_answer)
+        paused = self.paused_worker_usage
+        return AgenticContinuation(
+            **{
+                **dict(self),
+                "completed_workers": tuple(w.to_state() for w in self.completed_workers),
+                "source_allocations": tuple(a.to_state() for a in self.source_allocations),
+                "planner_usage": self.planner_usage.to_usage(),
+                "paused_worker_usage": paused.to_usage() if paused is not None else None,
+                "tool_transcript": tuple(dict(part) for part in self.tool_transcript),
+                "clarifications": tuple(parse_clarification_records(list(self.clarifications))),
+                "emitted_answer_chars": emitted,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class ContinuationDecode:
+    """Total decode result: absent (nothing stored), valid, or invalid.
+
+    An invalid checkpoint must never read as "no checkpoint": that would let a resume
+    bypass the continuation contract and settle the approval as a plain tool resume."""
+
+    present: bool = False
+    state: AgenticContinuation | None = None
+    error: str | None = None
+
+    @property
+    def invalid(self) -> bool:
+        return self.present and self.state is None
+
+
+_ABSENT = ContinuationDecode()
+
+
+def decode_continuation(raw: object, *, stored: bool = False) -> ContinuationDecode:
+    """Decode a persisted continuation blob. Never raises.
+
+    `stored=True` means the key really was there, so a null value is a corrupt
+    checkpoint rather than an absent one. Collapsing "present but unreadable" into
+    "absent" walks a resume straight past the invalid-checkpoint gate.
+    """
+    if raw is None and not stored:
+        return _ABSENT
+    if not isinstance(raw, dict):
+        return ContinuationDecode(present=True, error="not_an_object")
+    try:
+        state = _ContinuationWire.model_validate(raw).to_state()
+    except ValidationError as exc:
+        return ContinuationDecode(present=True, error=_first_error(exc))
+    except Exception:  # pragma: no cover - defensive totality guard
+        return ContinuationDecode(present=True, error="undecodable")
+    return ContinuationDecode(present=True, state=state)
+
+
+def _first_error(exc: ValidationError) -> str:
+    """Field path and failed rule of the first error — diagnostics only."""
+    for detail in exc.errors():
+        return f"{'.'.join(str(p) for p in detail['loc']) or 'root'}: {detail['type']}"
+    return "invalid"  # pragma: no cover - a ValidationError always has one
+
+
 def usage_to_wire(usage: UsageUpdate) -> dict[str, int]:
     """CamelCase usage dict for server_state / reserved tool-input fields."""
-    return {
-        "inputTokens": usage.input_tokens,
-        "outputTokens": usage.output_tokens,
-        "reasoningTokens": usage.reasoning_tokens,
-        "cachedInputTokens": usage.cached_input_tokens,
-    }
+    return {to_camel(name): getattr(usage, name) for name in _UsageWire.model_fields}
 
 
 def usage_from_wire(raw: object) -> UsageUpdate:
-    """Parse a camelCase or snake_case usage dict (missing → empty)."""
+    """Parse a camelCase/snake_case usage dict. Never raises — a malformed, negative or
+    bool count reads as empty usage rather than escaping a persisted-row read."""
     if not isinstance(raw, dict):
         return UsageUpdate()
-    return UsageUpdate(
-        input_tokens=int(raw.get("inputTokens") or raw.get("input_tokens") or 0),
-        output_tokens=int(raw.get("outputTokens") or raw.get("output_tokens") or 0),
-        reasoning_tokens=int(
-            raw.get("reasoningTokens") or raw.get("reasoning_tokens") or 0
-        ),
-        cached_input_tokens=int(
-            raw.get("cachedInputTokens") or raw.get("cached_input_tokens") or 0
-        ),
-    )
+    try:
+        return _UsageWire.model_validate(raw).to_usage()
+    except ValidationError:
+        return UsageUpdate()
 
 
-# Back-compat private aliases (call sites / tests may still use these names).
-_usage_to_dict = usage_to_wire
-_usage_from_dict = usage_from_wire
+def _seed_cost(raw: object) -> float:
+    """Read a persisted ledger amount. Never raises; nonsense reads as 0.0, so a resume
+    cannot credit itself with negative, infinite or bool prior spend."""
+    if raw is None or isinstance(raw, bool):
+        return 0.0
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value) or value < 0.0:
+        return 0.0
+    return value
 
 
 def serialize_continuation(state: AgenticContinuation) -> dict[str, Any]:
     """CamelCase JSON-ready dict for server_state (not client tool input)."""
-    return {
-        "version": state.version,
-        "phase": state.phase,
-        "pausedSubagentId": state.paused_subagent_id,
-        "userText": state.user_text,
-        "plan": list(state.plan),
-        "completedWorkers": [
-            {
-                "subagentId": w.subagent_id,
-                "subQuestion": w.sub_question,
-                "answer": w.answer,
-                "usage": _usage_to_dict(w.usage),
-                "costUsd": w.cost_usd,
-                "outcome": w.outcome,
-                "sourceIds": list(w.source_ids),
-            }
-            for w in state.completed_workers
-        ],
-        "plannerUsage": _usage_to_dict(state.planner_usage),
-        "plannerCostUsd": state.planner_cost_usd,
-        "budgetHalted": state.budget_halted,
-        "failedWorkers": state.failed_workers,
-        "actualCostUsd": state.actual_cost_usd,
-        "pausedWorkerIndex": state.paused_worker_index,
-        "pausedSubQuestion": state.paused_sub_question,
-        "partialAnswer": state.partial_answer,
-        "partialReasoning": state.partial_reasoning,
-        "sourceIds": list(state.source_ids),
-        "sourceCatalog": [
-            item.model_dump(exclude_none=True) for item in state.source_catalog
-        ],
-        "toolTranscript": [dict(p) for p in state.tool_transcript],
-        "emittedAnswerChars": state.emitted_answer_chars,
-        "clarifications": serialize_clarification_records(state.clarifications),
-        "orchestrationMode": state.orchestration_mode,
-        "tierId": state.tier_id,
-        "providerId": state.provider_id,
-        "modelId": state.model_id,
-        "pausedWorkerUsage": (
-            _usage_to_dict(state.paused_worker_usage)
-            if state.paused_worker_usage is not None
-            else None
-        ),
-        "pausedWorkerCostUsd": state.paused_worker_cost_usd,
-        "pausedWorkerUsedFallback": state.paused_worker_used_fallback,
-    }
+    return _ContinuationWire.from_state(state).model_dump(by_alias=True, mode="json")
 
 
 def parse_continuation(raw: object) -> AgenticContinuation | None:
     """Parse a continuation blob; None when missing or malformed.
 
-    Legacy blobs with ``phase`` in {aggregator, primary} are rejected — those
-    phases were never resumable (H-011).
+    Thin wrapper over `decode_continuation` for call sites that cannot act on the
+    invalid-versus-absent distinction. Prefer `resolve_continuation_decode` anywhere a
+    corrupt checkpoint must be refused rather than ignored. Legacy blobs with ``phase``
+    in {aggregator, primary} are rejected — those phases were never resumable (H-011).
     """
-    if not isinstance(raw, dict):
-        return None
-    phase = raw.get("phase")
-    paused_id = raw.get("pausedSubagentId") or raw.get("paused_subagent_id")
-    user_text = raw.get("userText") or raw.get("user_text")
-    plan_raw = raw.get("plan")
-    if phase != "worker":
-        return None
-    if not isinstance(paused_id, str) or not paused_id:
-        return None
-    if not isinstance(user_text, str):
-        return None
-    if not isinstance(plan_raw, list):
-        return None
-    plan = tuple(str(item) for item in plan_raw if isinstance(item, str))
-    completed_raw = raw.get("completedWorkers") or raw.get("completed_workers") or []
-    completed: list[CompletedWorkerState] = []
-    if isinstance(completed_raw, list):
-        for item in completed_raw:
-            if not isinstance(item, dict):
-                continue
-            sid = item.get("subagentId") or item.get("subagent_id")
-            sq = item.get("subQuestion") or item.get("sub_question")
-            answer = item.get("answer")
-            if not isinstance(sid, str) or not isinstance(sq, str):
-                continue
-            raw_sources = item.get("sourceIds") or item.get("source_ids") or []
-            source_ids: tuple[str, ...] = ()
-            if isinstance(raw_sources, list):
-                source_ids = tuple(str(s) for s in raw_sources if s is not None)
-            completed.append(
-                CompletedWorkerState(
-                    subagent_id=sid,
-                    sub_question=sq,
-                    answer=str(answer) if answer is not None else "",
-                    usage=_usage_from_dict(item.get("usage")),
-                    cost_usd=float(item.get("costUsd") or item.get("cost_usd") or 0.0),
-                    outcome=str(item.get("outcome") or "succeeded"),
-                    source_ids=source_ids,
-                )
-            )
-    idx_raw = raw.get("pausedWorkerIndex", raw.get("paused_worker_index"))
-    paused_index = int(idx_raw) if isinstance(idx_raw, int) else None
-    paused_sq = raw.get("pausedSubQuestion") or raw.get("paused_sub_question")
-    partial_raw = raw.get("partialAnswer") or raw.get("partial_answer") or ""
-    reasoning_raw = raw.get("partialReasoning") or raw.get("partial_reasoning") or ""
-    self_sources_raw = raw.get("sourceIds") or raw.get("source_ids") or []
-    self_sources: tuple[str, ...] = ()
-    if isinstance(self_sources_raw, list):
-        self_sources = tuple(str(s) for s in self_sources_raw if s is not None)
-    catalog_raw = raw.get("sourceCatalog") or raw.get("source_catalog") or []
-    source_catalog: list[SourceItem] = []
-    if isinstance(catalog_raw, list):
-        for item in catalog_raw:
-            if not isinstance(item, dict):
-                continue
-            try:
-                source_catalog.append(SourceItem.model_validate(item))
-            except Exception:
-                continue
-    transcript_raw = raw.get("toolTranscript") or raw.get("tool_transcript") or []
-    tool_transcript: list[dict[str, Any]] = []
-    if isinstance(transcript_raw, list):
-        for item in transcript_raw:
-            if isinstance(item, dict):
-                tool_transcript.append(dict(item))
-    emitted_raw = raw.get("emittedAnswerChars", raw.get("emitted_answer_chars"))
-    emitted_chars = int(emitted_raw) if isinstance(emitted_raw, int) else 0
-    if emitted_chars <= 0 and isinstance(partial_raw, str) and partial_raw:
-        # Legacy blobs: treat full partial_answer as already-emitted.
-        emitted_chars = len(partial_raw)
-    clarifications = tuple(
-        parse_clarification_records(
-            raw.get("clarifications") or raw.get("clarification_records") or []
-        )
-    )
-    mode_raw = raw.get("orchestrationMode") or raw.get("orchestration_mode")
-    orchestration_mode: Literal["single", "deep_research"] | None = (
-        mode_raw if mode_raw in ("single", "deep_research") else None
-    )
-    tier_raw = raw.get("tierId") or raw.get("tier_id")
-    provider_raw = raw.get("providerId") or raw.get("provider_id")
-    model_raw = raw.get("modelId") or raw.get("model_id")
-    paused_usage_raw = raw.get("pausedWorkerUsage") or raw.get("paused_worker_usage")
-    paused_cost_raw = raw.get("pausedWorkerCostUsd") or raw.get(
-        "paused_worker_cost_usd"
-    )
-    used_fallback_raw = raw.get("pausedWorkerUsedFallback")
-    if used_fallback_raw is None:
-        used_fallback_raw = raw.get("paused_worker_used_fallback")
-    return AgenticContinuation(
-        version=int(raw.get("version") or 1),
-        phase="worker",
-        paused_subagent_id=paused_id,
-        user_text=user_text,
-        plan=plan,
-        completed_workers=tuple(completed),
-        planner_usage=_usage_from_dict(
-            raw.get("plannerUsage") or raw.get("planner_usage")
-        ),
-        planner_cost_usd=float(
-            raw.get("plannerCostUsd") or raw.get("planner_cost_usd") or 0.0
-        ),
-        budget_halted=bool(raw.get("budgetHalted") or raw.get("budget_halted")),
-        failed_workers=int(raw.get("failedWorkers") or raw.get("failed_workers") or 0),
-        actual_cost_usd=float(
-            raw.get("actualCostUsd") or raw.get("actual_cost_usd") or 0.0
-        ),
-        paused_worker_index=paused_index,
-        paused_sub_question=str(paused_sq) if isinstance(paused_sq, str) else None,
-        partial_answer=str(partial_raw) if partial_raw is not None else "",
-        partial_reasoning=str(reasoning_raw) if reasoning_raw is not None else "",
-        source_ids=self_sources,
-        source_catalog=tuple(source_catalog),
-        tool_transcript=tuple(tool_transcript),
-        emitted_answer_chars=emitted_chars,
-        clarifications=clarifications,
-        orchestration_mode=orchestration_mode,
-        tier_id=str(tier_raw) if isinstance(tier_raw, str) else None,
-        provider_id=str(provider_raw) if isinstance(provider_raw, str) else None,
-        model_id=str(model_raw) if isinstance(model_raw, str) else None,
-        paused_worker_usage=(
-            _usage_from_dict(paused_usage_raw)
-            if isinstance(paused_usage_raw, dict)
-            else None
-        ),
-        paused_worker_cost_usd=float(paused_cost_raw or 0.0),
-        paused_worker_used_fallback=bool(used_fallback_raw),
-    )
+    return decode_continuation(raw).state
+
+
+def _cleaned_tool_input(tool_input: object) -> dict[str, Any]:
+    """Executor-facing shallow copy of a tool input, reserved control keys removed."""
+    if not isinstance(tool_input, dict):
+        return {}
+    return {k: v for k, v in tool_input.items() if k not in RESERVED_CONTROL_KEYS}
+
+
+def _legacy_decode(tool_input: object) -> ContinuationDecode:
+    """Decode the legacy checkpoint embedded on `tool_call.input` (H-012)."""
+    if not isinstance(tool_input, dict) or CONTINUATION_INPUT_KEY not in tool_input:
+        return _ABSENT
+    return decode_continuation(tool_input[CONTINUATION_INPUT_KEY], stored=True)
 
 
 def extract_continuation_from_tool_input(
     tool_input: object,
 ) -> tuple[dict[str, Any], AgenticContinuation | None]:
-    """Split tool input into (executor_input, continuation).
-
-    Always returns a shallow copy of the executor-facing input with reserved
-    control keys removed.
-    """
-    if not isinstance(tool_input, dict):
-        return {}, None
-    cleaned = {
-        k: v for k, v in tool_input.items() if k not in RESERVED_CONTROL_KEYS
-    }
-    continuation = parse_continuation(tool_input.get(CONTINUATION_INPUT_KEY))
-    return cleaned, continuation
+    """Split tool input into (executor_input, continuation) — legacy embedding."""
+    return _cleaned_tool_input(tool_input), _legacy_decode(tool_input).state
 
 
 def attach_continuation_to_tool_input(
@@ -401,27 +503,43 @@ def put_continuation_in_server_state(
     """Return a new server_state with the continuation stored under tool_call_id."""
     out = dict(server_state or {})
     conts = dict(out.get(SERVER_STATE_CONTINUATIONS_KEY) or {})
-    blob = (
-        serialize_continuation(state)
-        if isinstance(state, AgenticContinuation)
-        else dict(state)
+    conts[tool_call_id] = (
+        serialize_continuation(state) if isinstance(state, AgenticContinuation) else dict(state)
     )
-    conts[tool_call_id] = blob
     out[SERVER_STATE_CONTINUATIONS_KEY] = conts
     return out
+
+
+def decode_continuation_from_server_state(
+    server_state: object,
+    tool_call_id: str,
+) -> ContinuationDecode:
+    """Total decode of the checkpoint stored under `tool_call_id` (H-012).
+
+    Absent means the row genuinely holds no checkpoint for this call. A malformed
+    `continuations` container, or a key stored with a null, is corruption instead —
+    the resume must refuse it, not proceed as an ordinary tool approval.
+    """
+    if server_state is None:
+        return _ABSENT
+    if not isinstance(server_state, dict):
+        return ContinuationDecode(present=True, error="server_state: not_an_object")
+    conts = server_state.get(SERVER_STATE_CONTINUATIONS_KEY)
+    if conts is None:
+        return _ABSENT
+    if not isinstance(conts, dict):
+        return ContinuationDecode(present=True, error="continuations: not_an_object")
+    if tool_call_id not in conts:
+        return _ABSENT
+    return decode_continuation(conts[tool_call_id], stored=True)
 
 
 def get_continuation_from_server_state(
     server_state: object,
     tool_call_id: str,
 ) -> AgenticContinuation | None:
-    """Load a continuation from Message.server_state."""
-    if not isinstance(server_state, dict):
-        return None
-    conts = server_state.get(SERVER_STATE_CONTINUATIONS_KEY)
-    if not isinstance(conts, dict):
-        return None
-    return parse_continuation(conts.get(tool_call_id))
+    """Load a continuation from Message.server_state; None when absent or invalid."""
+    return decode_continuation_from_server_state(server_state, tool_call_id).state
 
 
 @dataclass(frozen=True)
@@ -434,6 +552,19 @@ class RunLedgerSeeds:
     prior_run_usage: UsageUpdate | None = None
     # FL-28: mode the paused run was orchestrated in, for every pause shape.
     orchestration_mode: Literal["single", "deep_research"] | None = None
+    # AC-02: exact accounting for the pause boundary. Preferred over the scalar
+    # seeds above; `None` for legacy rows written before receipts existed.
+    run_receipt: RunReceipt | None = None
+
+
+def _usage_seed_wire(
+    usage: UsageUpdate | dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Wire form of a ledger usage seed; None when there is nothing to store."""
+    if isinstance(usage, UsageUpdate):
+        wire = usage_to_wire(usage)
+        return wire if any(wire.values()) else None
+    return dict(usage) if isinstance(usage, dict) else None
 
 
 def put_run_ledger_in_server_state(
@@ -444,6 +575,7 @@ def put_run_ledger_in_server_state(
     prior_run_cost_usd: float | None = None,
     prior_run_usage: UsageUpdate | dict[str, Any] | None = None,
     orchestration_mode: str | None = None,
+    run_receipt: RunReceipt | None = None,
 ) -> dict[str, Any]:
     """Merge B4/B5 run-cap ledger seeds into Message.server_state (H-012).
 
@@ -453,72 +585,82 @@ def put_run_ledger_in_server_state(
     out = dict(server_state or {})
     if orchestration_mode in ("single", "deep_research"):
         out[SERVER_STATE_ORCHESTRATION_MODE_KEY] = orchestration_mode
-    if planner_cost_usd is not None and float(planner_cost_usd) > 0.0:
-        out[SERVER_STATE_PLANNER_COST_KEY] = float(planner_cost_usd)
-    if planner_usage is not None:
-        if isinstance(planner_usage, UsageUpdate):
-            if (
-                planner_usage.input_tokens
-                or planner_usage.output_tokens
-                or planner_usage.reasoning_tokens
-                or planner_usage.cached_input_tokens
-            ):
-                out[SERVER_STATE_PLANNER_USAGE_KEY] = usage_to_wire(planner_usage)
-        elif isinstance(planner_usage, dict):
-            out[SERVER_STATE_PLANNER_USAGE_KEY] = dict(planner_usage)
-    if prior_run_cost_usd is not None and float(prior_run_cost_usd) > 0.0:
-        out[SERVER_STATE_PRIOR_RUN_COST_KEY] = float(prior_run_cost_usd)
-    if prior_run_usage is not None:
-        if isinstance(prior_run_usage, UsageUpdate):
-            if (
-                prior_run_usage.input_tokens
-                or prior_run_usage.output_tokens
-                or prior_run_usage.reasoning_tokens
-                or prior_run_usage.cached_input_tokens
-            ):
-                out[SERVER_STATE_PRIOR_RUN_USAGE_KEY] = usage_to_wire(prior_run_usage)
-        elif isinstance(prior_run_usage, dict):
-            out[SERVER_STATE_PRIOR_RUN_USAGE_KEY] = dict(prior_run_usage)
+    if run_receipt is not None:
+        out[SERVER_STATE_RUN_RECEIPT_KEY] = run_receipt.to_wire()
+    for key, cost in (
+        (SERVER_STATE_PLANNER_COST_KEY, planner_cost_usd),
+        (SERVER_STATE_PRIOR_RUN_COST_KEY, prior_run_cost_usd),
+    ):
+        if cost is not None and float(cost) > 0.0:
+            out[key] = float(cost)
+    for key, usage in (
+        (SERVER_STATE_PLANNER_USAGE_KEY, planner_usage),
+        (SERVER_STATE_PRIOR_RUN_USAGE_KEY, prior_run_usage),
+    ):
+        wire = _usage_seed_wire(usage)
+        if wire is not None:
+            out[key] = wire
     return out
 
 
+def _seed(state: dict[str, Any], camel: str, snake: str) -> object:
+    """Read a ledger seed, preferring the camelCase key older builds wrote as snake."""
+    value = state.get(camel)
+    return state.get(snake) if value is None else value
+
+
+def _seed_usage(raw: object) -> UsageUpdate | None:
+    """Ledger usage seeds are absent (not empty) when nothing was stored."""
+    return usage_from_wire(raw) if isinstance(raw, dict) else None
+
+
 def get_run_ledger_from_server_state(server_state: object) -> RunLedgerSeeds:
-    """Parse B4/B5 ledger seeds from Message.server_state (missing → zeros)."""
+    """Parse B4/B5 ledger seeds from Message.server_state. Never raises.
+
+    Legacy snake_case keys are read as fallbacks. Costs go through `_seed_cost`,
+    so a corrupt or negative seed reads as 0.0 instead of raising out of a
+    persisted-row read (or crediting the resume with unverifiable spend).
+    """
     if not isinstance(server_state, dict):
         return RunLedgerSeeds()
-    planner_usage_raw = server_state.get(SERVER_STATE_PLANNER_USAGE_KEY)
-    if planner_usage_raw is None:
-        planner_usage_raw = server_state.get("planner_usage")
-    prior_usage_raw = server_state.get(SERVER_STATE_PRIOR_RUN_USAGE_KEY)
-    if prior_usage_raw is None:
-        prior_usage_raw = server_state.get("prior_run_usage")
-    planner_cost_raw = server_state.get(SERVER_STATE_PLANNER_COST_KEY)
-    if planner_cost_raw is None:
-        planner_cost_raw = server_state.get("planner_cost_usd")
-    prior_cost_raw = server_state.get(SERVER_STATE_PRIOR_RUN_COST_KEY)
-    if prior_cost_raw is None:
-        prior_cost_raw = server_state.get("prior_run_cost_usd")
-    planner_usage = (
-        usage_from_wire(planner_usage_raw)
-        if isinstance(planner_usage_raw, dict)
-        else None
-    )
-    prior_run_usage = (
-        usage_from_wire(prior_usage_raw) if isinstance(prior_usage_raw, dict) else None
-    )
-    mode_raw = server_state.get(SERVER_STATE_ORCHESTRATION_MODE_KEY)
-    if mode_raw is None:
-        mode_raw = server_state.get("orchestration_mode")
-    mode: Literal["single", "deep_research"] | None = (
-        mode_raw if mode_raw in ("single", "deep_research") else None
-    )
+    mode = _seed(server_state, SERVER_STATE_ORCHESTRATION_MODE_KEY, "orchestration_mode")
     return RunLedgerSeeds(
-        planner_cost_usd=float(planner_cost_raw or 0.0),
-        planner_usage=planner_usage,
-        prior_run_cost_usd=float(prior_cost_raw or 0.0),
-        prior_run_usage=prior_run_usage,
-        orchestration_mode=mode,
+        planner_cost_usd=_seed_cost(
+            _seed(server_state, SERVER_STATE_PLANNER_COST_KEY, "planner_cost_usd")
+        ),
+        planner_usage=_seed_usage(
+            _seed(server_state, SERVER_STATE_PLANNER_USAGE_KEY, "planner_usage")
+        ),
+        prior_run_cost_usd=_seed_cost(
+            _seed(server_state, SERVER_STATE_PRIOR_RUN_COST_KEY, "prior_run_cost_usd")
+        ),
+        prior_run_usage=_seed_usage(
+            _seed(server_state, SERVER_STATE_PRIOR_RUN_USAGE_KEY, "prior_run_usage")
+        ),
+        orchestration_mode=mode if mode in ("single", "deep_research") else None,
+        run_receipt=decode_run_receipt(
+            _seed(server_state, SERVER_STATE_RUN_RECEIPT_KEY, "run_receipt")
+        ),
     )
+
+
+def resolve_continuation_decode(
+    *,
+    server_state: object = None,
+    tool_input: object = None,
+    tool_call_id: str | None = None,
+) -> tuple[dict[str, Any], ContinuationDecode]:
+    """Resolve the checkpoint for a pending call, returning the total decode.
+
+    server_state wins whenever it holds anything for this call — including an
+    undecodable blob. Falling back to the legacy tool-input copy on a corrupt
+    server checkpoint would resume from a stale, unvalidated snapshot.
+    """
+    if tool_call_id:
+        stored = decode_continuation_from_server_state(server_state, tool_call_id)
+        if stored.present:
+            return _cleaned_tool_input(tool_input), stored
+    return _cleaned_tool_input(tool_input), _legacy_decode(tool_input)
 
 
 def resolve_continuation(
@@ -528,12 +670,10 @@ def resolve_continuation(
     tool_call_id: str | None = None,
 ) -> tuple[dict[str, Any], AgenticContinuation | None]:
     """Prefer server_state, fall back to legacy tool-input embedding."""
-    cleaned, legacy = extract_continuation_from_tool_input(tool_input)
-    if tool_call_id:
-        from_state = get_continuation_from_server_state(server_state, tool_call_id)
-        if from_state is not None:
-            return cleaned, from_state
-    return cleaned, legacy
+    cleaned, decoded = resolve_continuation_decode(
+        server_state=server_state, tool_input=tool_input, tool_call_id=tool_call_id
+    )
+    return cleaned, decoded.state
 
 
 def strip_reserved_keys(value: object) -> object:
@@ -558,19 +698,12 @@ def sanitize_message_parts_for_api(
         return []
     sanitized: list[dict[str, Any]] = []
     for part in parts:
-        raw = (
-            deepcopy(part)
-            if isinstance(part, dict)
-            else part.model_dump(by_alias=True)
-        )
+        raw = deepcopy(part) if isinstance(part, dict) else part.model_dump(by_alias=True)
         if raw.get("type") in {"tool_call", "tool_result"}:
+            # Recursive, so the claim id beside `input` goes with the nested keys.
             stripped = strip_reserved_keys(raw)
             assert isinstance(stripped, dict)
             raw = stripped
-            # Also strip from top-level part (claim id lives beside input).
-            for key in list(raw.keys()):
-                if key in RESERVED_CONTROL_KEYS:
-                    del raw[key]
         sanitized.append(raw)
     return sanitized
 

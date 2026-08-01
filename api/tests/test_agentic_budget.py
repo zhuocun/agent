@@ -333,7 +333,7 @@ def test_estimate_cost_defaults_unchanged() -> None:
         binding=binding,
         settings=settings,
     )
-    per_subagent = budget._expected_subagent_usage(settings)
+    per_subagent = budget.expected_subagent_usage(settings)
     breakdown = compute_cost_breakdown(usage=per_subagent, binding=binding)
     base = breakdown.subtotal_usd
     # BE-016: planner + workers + aggregator (verifier off adds 0).
@@ -362,7 +362,7 @@ def test_run_estimators_charge_subtotal_only_on_a_surcharge_binding() -> None:
     smart = get_binding("smart")
     # A threshold the expected per-subagent usage actually crosses, so the
     # surcharge is non-zero and the double-count would be visible.
-    per_subagent = budget._expected_subagent_usage(settings)
+    per_subagent = budget.expected_subagent_usage(settings)
     binding = replace(
         smart,
         long_context_flat=False,
@@ -442,7 +442,7 @@ def test_phase_gates_use_the_same_composition() -> None:
         breakdown = compute_cost_breakdown(usage=usage, binding=binding)
         return breakdown.subtotal_usd
 
-    expected = budget._expected_subagent_usage(monkey_settings)
+    expected = budget.expected_subagent_usage(monkey_settings)
     aggregator_estimate = (
         _price(expected) * monkey_settings.agentic_reasoning_token_multiplier
     )
@@ -487,7 +487,7 @@ async def test_single_mode_budget_halt_with_no_prose_is_labeled() -> None:
         RunCost,
         ToolResult,
     )
-    from app.streaming.constants import EMPTY_REPLY_FALLBACK
+    from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK
 
     def _make_stream_for(prompt: str, **_kwargs: object):
         def _make(

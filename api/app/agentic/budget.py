@@ -66,8 +66,14 @@ def _subagent_count(sub_question_count: int, settings: Settings) -> int:
     return count
 
 
-def _expected_subagent_usage(settings: Settings) -> UsageUpdate:
-    """Worst-case per-subagent token expectation over the round bound."""
+def expected_subagent_usage(settings: Settings) -> UsageUpdate:
+    """Worst-case per-subagent token expectation over the round bound.
+
+    Public because the orchestrator's per-phase gates (verifier samples,
+    aggregator funding) size themselves against the same expectation this
+    module's whole-run estimators use. A second private copy of the arithmetic is
+    how those gates drift apart.
+    """
     rounds = max(1, settings.tool_max_rounds)
     return UsageUpdate(
         input_tokens=settings.agentic_expected_input_tokens_per_round * rounds,
@@ -89,7 +95,7 @@ def estimate_run_cost(
     `pricing.py`. This is the number the plan-approval terminal surfaces as the
     estimated cost and the number the pre-spawn reservation holds.
     """
-    per_subagent = _expected_subagent_usage(settings)
+    per_subagent = expected_subagent_usage(settings)
     breakdown = compute_cost_breakdown(
         usage=per_subagent,
         binding=binding,
@@ -119,7 +125,7 @@ def estimate_residual_run_cost(
     samples when enabled — never a full fresh planner+N-workers estimate when
     those phases are already complete.
     """
-    per_subagent = _expected_subagent_usage(settings)
+    per_subagent = expected_subagent_usage(settings)
     breakdown = compute_cost_breakdown(
         usage=per_subagent,
         binding=binding,
@@ -177,6 +183,25 @@ def admit(
     )
 
 
+def admit_run(
+    *,
+    estimate_usd: float,
+    settings: Settings,
+    headroom_usd: float | None,
+) -> BudgetDecision:
+    """Pre-spawn admission for one agentic run (M3).
+
+    Reserves the worst-case ``estimate_usd`` against this deployment's per-run cap
+    composed with the caller's remaining user/platform headroom. A phase only fans
+    out when the returned decision is admitted.
+    """
+    return admit(
+        estimated_usd=estimate_usd,
+        cap_usd=settings.agentic_run_budget_usd,
+        headroom_usd=headroom_usd,
+    )
+
+
 def exceeds_cap(
     *,
     actual_usd: float,
@@ -185,6 +210,28 @@ def exceeds_cap(
 ) -> bool:
     """Mid-flight check: has the ACTUAL accumulated cost breached the cap?"""
     return actual_usd > effective_cap(cap_usd=cap_usd, headroom_usd=headroom_usd)
+
+
+@dataclass(frozen=True)
+class BudgetGate:
+    """Stop one subagent's own stream once the RUN's total breaches the cap.
+
+    ``baseline_usd`` is what the run had already banked before this stream's
+    session, so the gate asks about the run's total rather than one phase's. A
+    fresh fan-out passes no gate: its cap breach is enforced by the consumer
+    cancelling workers, not by each worker halting itself.
+    """
+
+    baseline_usd: float
+    cap_usd: float
+    headroom_usd: float | None = None
+
+    def breached(self, session_cost_usd: float) -> bool:
+        return exceeds_cap(
+            actual_usd=self.baseline_usd + session_cost_usd,
+            cap_usd=self.cap_usd,
+            headroom_usd=self.headroom_usd,
+        )
 
 
 def compose_headroom(*values: float | None) -> float | None:

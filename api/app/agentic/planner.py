@@ -20,7 +20,7 @@ discipline the tool seam uses.
 
 from __future__ import annotations
 
-from app.providers._tool_markup import strip_tool_markup
+from app.runtime.answer_policy import strip_tool_markup
 
 # Prefix that opts a prompt into explicit sub-question decomposition. The planner
 # splits everything AFTER this prefix on `|`. The fake provider does NOT key on

@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import Settings, get_settings
 from app.db.models import Conversation, Message, User
 from app.db.session import get_db
-from app.providers._tool_markup import contains_tool_markup, strip_tool_markup
 from app.providers.protocol import (
     AnswerDelta,
     AwaitingApproval,
@@ -29,11 +28,13 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.tiers import get_binding
-from app.streaming.constants import (
+from app.runtime.answer_policy import (
     EMPTY_REPLY_FALLBACK,
     EMPTY_REPLY_RETRY_NUDGE,
+    contains_tool_markup,
     empty_reply_retry_nudge,
     main_answer_is_empty,
+    strip_tool_markup,
 )
 from app.streaming.empty_reply_retry import run_chat_with_empty_retry
 from app.streaming.handler import stream_and_persist

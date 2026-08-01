@@ -5,10 +5,14 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 
-from app.agentic.aggregate import WorkerOutput, remap_worker_source_ids
+from app.agentic import aggregate
+from app.agentic import orchestrator as orchestrator_mod
+from app.agentic import sources as sources_mod
+from app.agentic.aggregate import WorkerOutput
 from app.agentic.continuation import (
     RESERVED_CONTROL_KEYS,
     AgenticContinuation,
@@ -22,6 +26,7 @@ from app.agentic.orchestrator import (
     _resume_worker_continuation,
     run_orchestrator,
 )
+from app.agentic.sources import CitationAllocation, SourceNamespace
 from app.config import Settings
 from app.providers.protocol import (
     AnswerDelta,
@@ -670,9 +675,7 @@ def test_b12_cite_before_sources_never_yields_a_foreign_global_id() -> None:
     Returning the raw local ordinal let worker-1's `[1]` render as whichever
     source happened to own global id 1 — silent factual misattribution.
     """
-    from app.agentic.orchestrator import _SourceIdRemapper
-
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     worker0 = remapper.remap_sources(
         Sources(
             items=[
@@ -696,14 +699,11 @@ def test_b12_cite_before_sources_never_yields_a_foreign_global_id() -> None:
         "worker-1",
     )
     assert str(worker1.items[0].id) == cited[0]
-    assert remapper.mapped_ids_for("worker-1", ["1"]) == (cited[0],)
 
 
 def test_b12_empty_map_marker_is_allocated_not_passed_through() -> None:
     """FL-16-a: the `if not self._map` early return took the same unsafe path."""
-    from app.agentic.orchestrator import _SourceIdRemapper
-
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     remapper.seed_catalog(
         [SourceItem(id=1, title="prior", url="https://prior.example")]
     )
@@ -794,28 +794,30 @@ async def test_b16_reasoning_delta_blocks_transparent_fallback() -> None:
     )
 
 
-def test_b12_remap_worker_source_ids_globally() -> None:
-    """B12 offline helper: worker-local citation ordinals remapped in list order."""
-    outputs = [
-        WorkerOutput(
-            subagent_id="worker-0",
-            sub_question="a",
-            answer="See [1] and [2].",
-            source_ids=("1", "2"),
-        ),
-        WorkerOutput(
-            subagent_id="worker-1",
-            sub_question="b",
-            answer="Also [1].",
-            source_ids=("1",),
-        ),
-    ]
-    remapped = remap_worker_source_ids(outputs)
-    assert remapped[0].source_ids == ("1", "2")
-    assert remapped[1].source_ids == ("3",)
-    assert "[1]" in remapped[0].answer and "[2]" in remapped[0].answer
-    assert "[3]" in remapped[1].answer
-    assert "[1]" not in remapped[1].answer or remapped[1].answer.count("[1]") == 0
+def test_b12_one_source_allocator_owns_the_run() -> None:
+    """AC-08: `SourceNamespace` is the only source-ID allocator left.
+
+    A second, list-ordered remapper in `aggregate` renumbered the same ordinals
+    again in worker-plan order at the synthesis sink, so an offline caller could
+    produce ids that disagreed with the arrival-ordered globals the live stream
+    had already shown the user. Two static reads prove neither it nor the
+    orchestrator-private class it shadowed grew back: only one module allocates a
+    global id, and only one compiles the citation-marker pattern a rewriter needs.
+    """
+    app_root = Path(orchestrator_mod.__file__ or "").parent.parent
+    owner = Path(sources_mod.__file__ or "").relative_to(app_root).as_posix()
+    sources_by_marker = {
+        path.relative_to(app_root).as_posix(): text
+        for path in sorted(app_root.rglob("*.py"))
+        for text in [path.read_text(encoding="utf-8")]
+    }
+    allocators = {name for name, text in sources_by_marker.items() if "_global_id" in text}
+    rewriters = {
+        name for name, text in sources_by_marker.items() if r"\[(\d+)\]" in text
+    }
+    assert allocators == {owner}
+    assert rewriters == {owner}
+    assert not [name for name in dir(aggregate) if "remap" in name]
 
 
 def test_b12_source_item_type_still_int() -> None:
@@ -826,9 +828,7 @@ def test_b12_source_item_type_still_int() -> None:
 
 def test_b12_midstream_remapper_arrival_order_and_catalog() -> None:
     """B12: mid-stream remapper assigns globals in event order and builds catalog."""
-    from app.agentic.orchestrator import _SourceIdRemapper
-
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     # worker-1 finishes first (out of plan order) with local [1].
     s1 = remapper.remap_sources(
         Sources(
@@ -858,9 +858,7 @@ def test_b12_midstream_remapper_arrival_order_and_catalog() -> None:
 
 def test_b12_rewrite_is_chunk_safe_across_answer_deltas() -> None:
     """B12: markers split across AnswerDelta chunks still remap."""
-    from app.agentic.orchestrator import _SourceIdRemapper
-
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     remapper.remap_sources(
         Sources(items=[SourceItem(id=1, title="B", url="https://b.example")]),
         "worker-1",
@@ -879,13 +877,11 @@ def test_b12_rewrite_is_chunk_safe_across_answer_deltas() -> None:
 
 def test_b12_resume_remapper_seeds_catalog_without_collision() -> None:
     """B12: resume remapper continues after seeded catalog ids."""
-    from app.agentic.orchestrator import _SourceIdRemapper
-
     prior = [
         SourceItem(id=1, title="old", url="https://old.example"),
         SourceItem(id=2, title="old2", url="https://old2.example"),
     ]
-    remapper = _SourceIdRemapper()
+    remapper = SourceNamespace()
     remapper.seed_catalog(prior)
     # Resume-session local id 1 must become global 3, not collide with 1.
     remapped = remapper.remap_sources(
@@ -896,12 +892,55 @@ def test_b12_resume_remapper_seeds_catalog_without_collision() -> None:
     assert [i.id for i in remapper.merged_items()] == [1, 2, 3]
 
 
-def test_b12_continuation_roundtrips_source_catalog() -> None:
-    """B12: pause continuation persists the merged source catalog."""
-    catalog = (
-        SourceItem(id=1, title="one", url="https://one.example"),
-        SourceItem(id=2, title="two", url="https://two.example"),
+def test_b12_restore_does_not_reissue_a_citation_only_global() -> None:
+    """AC-08: a citation-only id above the catalog maximum stays taken on resume.
+
+    Worker 0 published catalog id 1; worker 1 then cited `[1]` before its own
+    `Sources` arrived, which allocated global 2 and rendered it to the user.
+    Global 2 has no catalog row, so restoring from the catalog alone left the
+    high-water mark at 2 and handed that id to the resumed worker's first new
+    source — the reader's `[2]` then pointed at unrelated content.
+    """
+    live = SourceNamespace()
+    live.remap_sources(
+        Sources(items=[SourceItem(id=1, title="A", url="https://a.example")]), "worker-0"
     )
+    published = live.rewrite_answer_text("Also see [1].", "worker-1")
+    assert published == "Also see [2]."
+    assert max(item.id for item in live.merged_items()) == 1
+
+    resumed = SourceNamespace.restored(
+        catalog=tuple(live.merged_items()),
+        allocations=live.allocations(),
+        next_id=live.next_id,
+    )
+    fresh = resumed.remap_sources(
+        Sources(items=[SourceItem(id=9, title="new", url="https://new.example")]),
+        "worker-2",
+    )
+    assert fresh.items[0].id == 3
+    # The paused worker's own marker still resolves to the id already rendered.
+    assert resumed.rewrite_answer_text("Still [1].", "worker-1") == "Still [2]."
+    assert [item.id for item in resumed.merged_items()] == [1, 3]
+
+
+def test_b12_continuation_roundtrips_the_source_allocator_state() -> None:
+    """B12/AC-08: the checkpoint carries the catalog AND the allocator state.
+
+    The allocator state is what makes a citation-only global survive the pause,
+    so it has to cross the JSON column with the catalog rather than be inferred
+    from it on the way back.
+    """
+    live = SourceNamespace()
+    live.remap_sources(
+        Sources(items=[SourceItem(id=1, title="one", url="https://one.example")]),
+        "worker-0",
+    )
+    live.remap_sources(
+        Sources(items=[SourceItem(id=1, title="two", url="https://two.example")]),
+        "worker-1",
+    )
+    assert live.rewrite_answer_text("cite [7].", "worker-1") == "cite [3]."
     cont = AgenticContinuation(
         phase="worker",
         paused_subagent_id="worker-0",
@@ -910,16 +949,72 @@ def test_b12_continuation_roundtrips_source_catalog() -> None:
         completed_workers=(),
         planner_usage=UsageUpdate(),
         planner_cost_usd=0.0,
-        source_catalog=catalog,
+        source_catalog=tuple(live.merged_items()),
+        source_allocations=live.allocations(),
+        source_next_id=live.next_id,
     )
     blob = serialize_continuation(cont)
-    assert "sourceCatalog" in blob
     assert len(blob["sourceCatalog"]) == 2
+    assert blob["sourceNextId"] == 4
+    assert {"subagentId": "worker-1", "localId": 7, "globalId": 3} in blob[
+        "sourceAllocations"
+    ]
     parsed = parse_continuation(blob)
     assert parsed is not None
     assert len(parsed.source_catalog) == 2
     assert parsed.source_catalog[0].id == 1
     assert parsed.source_catalog[1].title == "two"
+    assert parsed.source_next_id == 4
+    assert CitationAllocation(subagent_id="worker-1", local_id=7, global_id=3) in (
+        parsed.source_allocations
+    )
+    restored = SourceNamespace.restored(
+        catalog=parsed.source_catalog,
+        allocations=parsed.source_allocations,
+        next_id=parsed.source_next_id,
+    )
+    assert restored.rewrite_answer_text("cite [7].", "worker-1") == "cite [3]."
+    assert restored.next_id == 4
+
+
+def test_b12_legacy_checkpoint_without_allocator_state_still_clears_cited_ids() -> None:
+    """A checkpoint written before the allocator state was persisted has only the
+    ids its surviving rows cite; allocation must resume above the highest."""
+    restored = SourceNamespace.restored(
+        catalog=(),
+        # Legacy ids are whatever older builds wrote: `"²"` is a digit `int()` still
+        # rejects, and a digit string past the interpreter's conversion limit is one
+        # too. Reading a persisted row must never raise on either.
+        prior_id_groups=[("1", "not-a-number", "²"), ("4", "2", "9" * 4400)],
+    )
+    remapped = restored.remap_sources(
+        Sources(items=[SourceItem(id=1, title="new", url="https://new.example")]),
+        "worker-0",
+    )
+    assert remapped.items[0].id == 5
+    # Nothing published yet: allocation starts at 1 rather than skipping an id.
+    fresh = SourceNamespace.restored(catalog=(), prior_id_groups=[(), ("",)])
+    assert fresh.rewrite_answer_text("See [1].", "worker-0") == "See [1]."
+    # A persisted catalog is a precise record and wins over the cited floor.
+    seeded = SourceNamespace.restored(
+        catalog=(SourceItem(id=7, title="old", url="https://old.example"),),
+        prior_id_groups=[("2",)],
+    )
+    assert seeded.rewrite_answer_text("See [1].", "worker-0") == "See [8]."
+    assert [i.id for i in seeded.merged_items()] == [7]
+    # A citation-only global survives only in the answer text that carried it,
+    # so the text is part of the floor — brackets that are not citations are not.
+    from_text = SourceNamespace.restored(
+        catalog=(SourceItem(id=1, title="old", url="https://old.example"),),
+        prior_texts=[
+            "orphan [3] with no catalog row",
+            "sibling cites [2]",
+            "a [footnote] and a [12x] are not citations",
+            "",
+        ],
+    )
+    assert from_text.next_id == 4
+    assert from_text.rewrite_answer_text("fresh [1].", "worker-9") == "fresh [4]."
 
 
 @pytest.mark.asyncio

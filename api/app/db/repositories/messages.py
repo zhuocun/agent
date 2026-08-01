@@ -1,39 +1,29 @@
-"""Message repository.
+"""Message repository: turn persistence, lookups and history orchestration.
 
-M1 needs:
-- `create_user_message` — persists the user turn on `submitted`.
-- `create_assistant_message` — persists the assistant turn on `terminal` or
-  on disconnect (with `status="stopped"`).
-- `get_by_client_message_id` — drives idempotency replay.
-- `load_history` — feeds the provider with the prior turns.
-
-M2 adds:
-- `truncate_from` — delete the message at a given id AND every message
-  created at/after it (drives edit-and-rerun).
-- `delete_trailing_assistants` — drop the trailing assistant turn(s) for
-  a conversation (drives regenerate). Returns the count deleted.
-- `count_assistant_messages` — gate "first terminal" for title autogen.
+Query shapes and ordering live here; what a persisted part MEANS does not.
+`load_history` delegates that to `app.messages.projection` (AC-05) so the
+provider view and the idempotency replay cannot disagree about which parts are
+the turn's answer.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Message, Vote
+from app.messages.projection import parts_to_provider_history
 from app.providers.protocol import ChatMessage as ProviderChatMessage
 from app.schemas.message import AttachmentPart
 
 # Cap on how many of the most-recent messages `load_history` replays to the
-# provider. Every turn re-sends the whole prior conversation as context, so an
-# unbounded history grows the prompt (and token cost / latency) without bound on
-# long threads. 40 messages ≈ 20 user/assistant turns — enough recent context
-# for coherent continuation while bounding the prompt. We keep the NEWEST N and
-# preserve oldest-to-newest order (we do NOT reverse the conversation).
+# provider. Every turn re-sends the prior conversation as context, so an unbounded
+# history grows the prompt (token cost / latency) without bound on long threads.
+# 40 messages ≈ 20 user/assistant turns: enough recent context, bounded prompt.
 _HISTORY_WINDOW_MESSAGES = 40
 
 
@@ -208,34 +198,17 @@ async def load_history(
         if anchor is not None:
             rows = [r for r in rows if r.created_at < anchor.created_at]
 
+    # Part semantics belong to one owner (AC-05): the projection decides which
+    # parts are the turn's answer, so an agentic row contributes its manager
+    # scopes and never its planner/worker prose. A row with nothing a provider
+    # can consume projects to None and is skipped.
     history: list[ProviderChatMessage] = []
     for row in rows:
-        if row.role not in ("user", "assistant"):
-            continue
-        # Flatten parts into text. Reasoning is replayed to DeepSeek thinking
-        # mode on follow-up turns; other providers ignore the extra field.
-        text_chunks: list[str] = []
-        reasoning_chunks: list[str] = []
-        parts = row.parts or []
-        for part in parts:
-            if part.get("type") == "text":
-                text_chunks.append(str(part.get("text", "")))
-            elif part.get("type") == "reasoning":
-                reasoning_chunks.append(str(part.get("text", "")))
-        if not text_chunks and not reasoning_chunks:
-            continue
-        role = cast(Any, row.role)  # narrowed by the role check above
-        history.append(
-            ProviderChatMessage(
-                role=role,
-                text="".join(text_chunks),
-                reasoning_content="".join(reasoning_chunks) if reasoning_chunks else None,
-            )
-        )
-    # History-window cap: keep only the most-recent N messages. Slicing the tail
-    # preserves the oldest-to-newest order (we do NOT reverse) while dropping the
-    # oldest overflow so the provider prompt stays bounded on long threads. When
-    # the conversation is shorter than the window this is a no-op.
+        message = parts_to_provider_history(row.parts, role=row.role)
+        if message is not None:
+            history.append(message)
+    # History-window cap: keep the most-recent N messages, tail-sliced so the
+    # oldest-to-newest order survives (we do NOT reverse). No-op below the cap.
     if len(history) > _HISTORY_WINDOW_MESSAGES:
         history = history[-_HISTORY_WINDOW_MESSAGES:]
     return history

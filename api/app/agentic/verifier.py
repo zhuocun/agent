@@ -24,20 +24,27 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from app.agentic import budget
 from app.agentic.aggregate import WorkerOutput
+from app.agentic.worker import fold_usage
 from app.config import Settings
-from app.observability.tracing import invoke_agent_span
+from app.observability.tracing import SpanSettlement, invoke_agent_span
 from app.providers.protocol import (
     AnswerDelta,
     Complete,
     ProviderEvent,
     ResponseFormat,
+    RunCost,
+    SubagentDone,
+    SubagentStarted,
     UsageUpdate,
 )
+from app.runtime.context import ServedRoute
+from app.runtime.run_receipt import UsageTotals
 from app.tools.agent_loop import MakeStream, run_agent_loop
 
 # Scaffolded (fake-provider) marker so tests get a deterministic judge reply.
@@ -185,16 +192,6 @@ def _cap(text: str, limit: int) -> str:
 
 def _was_truncated(text: str, limit: int) -> bool:
     return len(text) > limit
-
-
-def _fold_usage(event: ProviderEvent, usage: UsageUpdate) -> UsageUpdate:
-    # Agent-loop UsageUpdate/Complete carry absolute accumulated totals for the
-    # sample — replace, do not add (mirrors orchestrator._fold_usage).
-    if isinstance(event, Complete):
-        return event.usage
-    if isinstance(event, UsageUpdate):
-        return event
-    return usage
 
 
 def _sum_usage(left: UsageUpdate, right: UsageUpdate) -> UsageUpdate:
@@ -405,32 +402,53 @@ async def _collect_judge_sample(
     make_stream_for: StreamFactory,
     settings: Settings,
     prompt: str,
+    *,
+    route: ServedRoute | None = None,
+    cost_for_usage: Callable[[UsageUpdate], float] | None = None,
 ) -> tuple[str, UsageUpdate]:
     """Quiet agent loop for one judge sample; returns (answer_text, usage).
 
     Any exception after usage has been observed is re-raised as
     ``JudgeSampleError`` carrying that usage so callers can bill it.
+
+    ``route`` / ``cost_for_usage`` are what this sample's span closes with
+    (AC-10). A sample that raised still spent whatever it streamed, so the span
+    settles on both arms — `failed` on the raise, `succeeded` otherwise.
     """
     answer_parts: list[str] = []
     usage = UsageUpdate()
+
+    def _settle(span: SpanSettlement, outcome: str) -> None:
+        span.settle(
+            route=route,
+            usage=UsageTotals.copy_from(usage),
+            cost_usd=None if cost_for_usage is None else cost_for_usage(usage),
+            outcome=outcome,
+        )
+
     try:
         with invoke_agent_span(
             subagent_id=VERIFIER_ID, role="verifier", label=VERIFIER_LABEL
-        ):
-            async for event in run_agent_loop(
-                make_stream=make_stream_for(
-                    prompt,
+        ) as span:
+            try:
+                async for event in run_agent_loop(
+                    make_stream=make_stream_for(
+                        prompt,
+                        allowed_tools=_VERIFIER_ALLOWED_TOOLS,
+                        system_prefix=VERIFIER_SYSTEM_PREFIX,
+                        response_format=VERIFIER_RESPONSE_FORMAT,
+                        web_search=False,
+                    ),
+                    settings=settings,
                     allowed_tools=_VERIFIER_ALLOWED_TOOLS,
-                    system_prefix=VERIFIER_SYSTEM_PREFIX,
-                    response_format=VERIFIER_RESPONSE_FORMAT,
-                    web_search=False,
-                ),
-                settings=settings,
-                allowed_tools=_VERIFIER_ALLOWED_TOOLS,
-            ):
-                if isinstance(event, AnswerDelta):
-                    answer_parts.append(event.text)
-                usage = _fold_usage(event, usage)
+                ):
+                    if isinstance(event, AnswerDelta):
+                        answer_parts.append(event.text)
+                    usage = fold_usage(event, usage)
+            except BaseException:
+                _settle(span, "failed")
+                raise
+            _settle(span, "succeeded")
     except JudgeSampleError:
         raise
     except Exception as exc:
@@ -578,6 +596,7 @@ async def run_verifier(
     can_afford_next_sample: Callable[[UsageUpdate, float], bool] | None = None,
     actual_within_cap: Callable[[UsageUpdate, float], bool] | None = None,
     cost_for_usage: Callable[[UsageUpdate], float] | None = None,
+    served_route: ServedRoute | None = None,
 ) -> VerifyResult:
     """Run the fresh-context judge (N independent samples when configured).
 
@@ -592,6 +611,9 @@ async def run_verifier(
     When ``cost_for_usage`` is supplied, each sample is priced independently and
     ``VerifyResult.cost_usd`` is the sum of those per-request costs (not a
     re-price of the collapsed token totals).
+
+    ``served_route`` is the route each sample's span closes with (AC-10); the
+    judge shares the caller's binding, so there is no separate verifier route.
     """
     n = min(MAX_VERIFIER_N, max(1, settings.agentic_verifier_n))
     prompt = build_verifier_prompt(
@@ -625,7 +647,11 @@ async def run_verifier(
             break
         try:
             raw, usage = await _collect_judge_sample(
-                make_stream_for, settings, prompt
+                make_stream_for,
+                settings,
+                prompt,
+                route=served_route,
+                cost_for_usage=cost_for_usage,
             )
         except JudgeSampleError as exc:
             _bill_sample(exc.usage)
@@ -686,3 +712,231 @@ async def run_verifier(
         draft_truncated=draft_truncated,
         budget_halted=budget_halted,
     )
+
+
+# --- phase policy -------------------------------------------------------------
+#
+# What it costs to run this phase, whether the run can still afford it, what its
+# result is worth, how it reaches the wire, and how its outcome reads. Every
+# synthesis tail asks the same five questions of the verifier, so they are
+# answered here rather than once per caller in the orchestrator.
+
+
+def phase_estimate_usd(
+    *,
+    settings: Settings,
+    cost_for_usage: Callable[[UsageUpdate], float],
+    sample_count: int | None = None,
+) -> float:
+    """USD estimate for ``sample_count`` judge samples (default: configured N).
+
+    One composition for BOTH phase gates (FL-17): reasoning multiplier only,
+    matching the aggregator gate. The fan-out multiplier models whole-run
+    multi-agent burn and belongs to `budget.estimate_run_cost` (which keeps both)
+    — folding it into a single-phase call made this gate ~15x stricter than the
+    aggregator gate for an identical one-shot judge request.
+    """
+    if not settings.agentic_verifier:
+        return 0.0
+    n = max(1, sample_count if sample_count is not None else settings.agentic_verifier_n)
+    expected = budget.expected_subagent_usage(settings)
+    return cost_for_usage(expected) * settings.agentic_reasoning_token_multiplier * n
+
+
+def can_fund(
+    *,
+    ledger_usd: float,
+    settings: Settings,
+    cost_for_usage: Callable[[UsageUpdate], float],
+    cap_usd: float,
+    budget_headroom_usd: float | None,
+    sample_count: int | None = None,
+) -> bool:
+    """True when ledger + estimated judge sample(s) still fit the effective cap."""
+    if not settings.agentic_verifier:
+        return False
+    estimate = phase_estimate_usd(
+        settings=settings, cost_for_usage=cost_for_usage, sample_count=sample_count
+    )
+    return not budget.exceeds_cap(
+        actual_usd=ledger_usd + estimate,
+        cap_usd=cap_usd,
+        headroom_usd=budget_headroom_usd,
+    )
+
+
+async def run_if_enabled(
+    *,
+    settings: Settings,
+    draft: str,
+    make_stream_for: StreamFactory,
+    user_text: str,
+    outputs: list[WorkerOutput],
+    scaffolded: bool,
+    cost_for_usage: Callable[[UsageUpdate], float] | None = None,
+    ledger_usd: float = 0.0,
+    cap_usd: float = 0.0,
+    budget_headroom_usd: float | None = None,
+    served_route: ServedRoute | None = None,
+) -> VerifyResult | None:
+    """Fresh-context judge when `AGENTIC_VERIFIER` is on and budget allows.
+
+    Returns ``None`` when the flag is off or the first judge sample cannot fit
+    the remaining run cap (skip / degrade without a Verification claim).
+
+    Post-sample actual-cost is enforced inside ``run_verifier`` via
+    ``actual_within_cap`` so an over-estimate overrun cannot finish as a
+    successful verified pass while erasing the budget-halted signal.
+    """
+    if not settings.agentic_verifier:
+        return None
+    if cost_for_usage is not None and not can_fund(
+        ledger_usd=ledger_usd,
+        settings=settings,
+        cost_for_usage=cost_for_usage,
+        cap_usd=cap_usd,
+        budget_headroom_usd=budget_headroom_usd,
+        sample_count=1,
+    ):
+        return None
+
+    pricer = cost_for_usage
+
+    def _can_afford_next(_usage_so_far: UsageUpdate, spent_usd: float) -> bool:
+        # Prefer authoritative per-sample sum — never reprice collapsed usage.
+        assert pricer is not None
+        return can_fund(
+            ledger_usd=ledger_usd + spent_usd,
+            settings=settings,
+            cost_for_usage=pricer,
+            cap_usd=cap_usd,
+            budget_headroom_usd=budget_headroom_usd,
+            sample_count=1,
+        )
+
+    def _actual_within_cap(_usage_so_far: UsageUpdate, spent_usd: float) -> bool:
+        return not budget.exceeds_cap(
+            actual_usd=ledger_usd + spent_usd,
+            cap_usd=cap_usd,
+            headroom_usd=budget_headroom_usd,
+        )
+
+    return await run_verifier(
+        make_stream_for=make_stream_for,
+        settings=settings,
+        user_text=user_text,
+        draft=draft,
+        outputs=outputs,
+        scaffolded=scaffolded,
+        can_afford_next_sample=_can_afford_next if pricer is not None else None,
+        actual_within_cap=_actual_within_cap if pricer is not None else None,
+        cost_for_usage=pricer,
+        served_route=served_route,
+    )
+
+
+def result_cost_usd(
+    result: VerifyResult | None,
+    cost_for_usage: Callable[[UsageUpdate], float],
+) -> float:
+    """Prefer stored per-sample sum; fall back to pricing sample_usages or usage."""
+    if result is None:
+        return 0.0
+    if result.sample_usages:
+        # cost_usd is the authoritative sum of per-request prices.
+        return result.cost_usd
+    return cost_for_usage(result.usage)
+
+
+async def receipt_events(
+    *,
+    result: VerifyResult | None,
+    cost_for_usage: Callable[[UsageUpdate], float],
+    ledger_usd: float,
+    cap_usd: float,
+    outcome: Literal["succeeded", "failed"] = "succeeded",
+    emit_started: bool = True,
+) -> AsyncIterator[ProviderEvent]:
+    """Emit verifier SubagentStarted/Done + mid-run RunCost for attribution.
+
+    Always bills observed usage when present — including failed / partial /
+    budget-halted outcomes so already-consumed judge tokens are never erased.
+    Uses per-sample cost from ``VerifyResult.cost_usd`` when sample usages were
+    recorded (V-011).
+
+    When ``emit_started`` is False, the caller already yielded ``SubagentStarted``
+    before awaiting the judge (V-009 lifecycle order).
+
+    ``outcome`` is consumed VERBATIM (FL-20). `apply_result` owns the single
+    VerifyOutcome → wire mapping; re-deriving it here contradicted that mapping
+    for `unavailable` and left the returned value silently overridden.
+    """
+    if result is None and outcome == "succeeded":
+        return
+    usage = result.usage if result is not None else UsageUpdate()
+    cost = result_cost_usd(result, cost_for_usage)
+    if emit_started:
+        yield SubagentStarted(
+            subagent_id=VERIFIER_ID, label=VERIFIER_LABEL, role="verifier"
+        )
+    yield Complete(usage=usage, subagent_id=VERIFIER_ID)
+    yield SubagentDone(
+        subagent_id=VERIFIER_ID,
+        label=VERIFIER_LABEL,
+        role="verifier",
+        usage=usage,
+        cost_usd=cost,
+        outcome=outcome,
+    )
+    yield RunCost(
+        subtotal_usd=ledger_usd + cost,
+        cap_usd=cap_usd,
+        confidence="exact",
+        phase="progress",
+    )
+
+
+def apply_result(
+    draft: str,
+    result: VerifyResult | None,
+) -> tuple[str, Literal["succeeded", "failed"], bool]:
+    """Map a VerifyResult onto (final_answer, wire_outcome, budget_halted).
+
+    Only a full successful verification may rewrite the draft with a pass/fail
+    note. Failed / unavailable / partial results preserve the draft body (the
+    result.answer already carries an honest caveat when applicable) and keep
+    billable usage on the result object for the receipt.
+    """
+    if result is None:
+        return draft, "succeeded", False
+    budget_halted = result.budget_halted
+    if result.outcome == "succeeded":
+        return result.answer, "succeeded", budget_halted
+    if result.outcome in {"partial", "budget_halted", "unavailable"}:
+        # answer already has incomplete/unavailable caveat when samples existed
+        return result.answer if result.answer else draft, "succeeded", budget_halted
+    # failed — keep caveat answer if present, else draft; wire as failed
+    return (result.answer if result.answer else draft), "failed", budget_halted
+
+
+def degraded(result: VerifyResult | None) -> bool:
+    """True when a verifier ran but did not fully succeed (FL-08).
+
+    `unavailable` / `failed` / `partial` / `budget_halted` are all text-only
+    degrades today; they must also raise `RunCost.partial`.
+    """
+    return result is not None and result.outcome != "succeeded"
+
+
+def verification_degraded(
+    result: VerifyResult | None,
+    outcome: Literal["succeeded", "failed"],
+) -> bool:
+    """True when the verification did not fully succeed, judge crashes included.
+
+    A wire `outcome` of "failed" with a `None` result is precisely the
+    crashed-judge case `degraded` cannot see: the exception handler drops the
+    result, so result-only inspection reports a clean run while the verifier span
+    says failed and the answer body carries a failure caveat.
+    """
+    return outcome == "failed" or degraded(result)

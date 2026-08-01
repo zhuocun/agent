@@ -33,8 +33,8 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Collection
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator, AsyncIterator, Collection
+from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -68,7 +68,6 @@ from app.db.repositories import memory_facts as memory_facts_repo
 from app.db.repositories import messages as messages_repo
 from app.db.repositories import streams as streams_repo
 from app.db.repositories import usage as usage_repo
-from app.db.session import get_session_factory
 from app.errors import AppError, ErrorEnvelope
 from app.prompt_assembly import build_system_prefix, build_user_turn
 from app.providers.factory import build_provider
@@ -78,7 +77,6 @@ from app.providers.protocol import (
     AttachmentPayload,
     AwaitingApproval,
     ChatMessage,
-    Complete,
     Provider,
     ProviderEvent,
     ReasoningDelta,
@@ -95,18 +93,23 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.providers.tiers import TierBinding, get_binding
-from app.schemas.common import ModelTierId, SubagentOutcome, SubstitutionReasonCode
+from app.runtime.answer_policy import (
+    EMPTY_REPLY_FALLBACK,
+    empty_reply_retry_nudge,
+    main_answer_is_empty,
+)
+from app.runtime.context import RuntimeContext, ServedRoute
+from app.runtime.run_receipt import RunReceipt
+from app.schemas.common import ModelTierId, SubstitutionReasonCode
 from app.schemas.conversation import ToolApprovalDecision
 from app.schemas.message import (
-    AgenticRunSummaryPart,
+    CostBreakdown,
     ModelAttribution,
     ReasoningPart,
     SourcesPart,
     StatusPart,
     SubagentPart,
     TextPart,
-    ToolCallPart,
-    ToolResultPart,
 )
 from app.schemas.stream_events import (
     AnswerDeltaEvent,
@@ -121,12 +124,6 @@ from app.schemas.stream_events import (
     TerminalEvent,
     ToolCallEvent,
     ToolResultEvent,
-)
-from app.search.protocol import SourceItem
-from app.streaming.constants import (
-    EMPTY_REPLY_FALLBACK,
-    empty_reply_retry_nudge,
-    main_answer_is_empty,
 )
 from app.streaming.empty_reply_retry import run_chat_with_empty_retry
 from app.streaming.replay_registry import ReplayLogBuffer
@@ -145,7 +142,16 @@ from app.streaming.sse import (
     encode_tool_call,
     encode_tool_result,
 )
-from app.streaming.stop_registry import clear_stop_async, is_stop_requested_async
+from app.streaming.stop_registry import is_stop_requested_async
+from app.streaming.turn_lifecycle import TurnLifecycle
+from app.streaming.turn_reducer import (
+    ScopeState,
+    TurnReducer,
+    TurnState,
+    mark_unfinished_scopes_stopped,
+    tool_call_part,
+    tool_result_part,
+)
 from app.tools.agent_loop import MakeStream, run_agent_loop, tool_feedback_to_history
 from app.tools.approval_settlement import (
     ApprovalDecisionConflict,
@@ -270,6 +276,9 @@ class ResumeToolSeed:
     # B5: single-mode pause ledger (from Message.server_state).
     prior_run_cost_usd: float = 0.0
     prior_run_usage: UsageUpdate | None = None
+    # AC-02: the paused row's boundary receipt. Preferred over the two scalar
+    # seeds above — it is the exact total already billed, not a reconstruction.
+    prior_receipt: RunReceipt | None = None
     # FL-28: orchestration mode the pause was taken in, for EVERY pause shape
     # (plan approval / clarify / single / worker continuation). The route pins
     # this instead of honouring a client-chosen `agenticMode`, which would
@@ -277,100 +286,25 @@ class ResumeToolSeed:
     orchestration_mode: Literal["single", "deep_research"] | None = None
 
 
-@dataclass
-class _SubagentAccumulator:
-    """Per-subagent accumulation for an agentic turn (T3).
-
-    Mirrors the flat single-stream accumulators (reasoning / answer / tool
-    transcript) but scoped to one orchestrator subagent, so the persisted parts
-    can be grouped under a `subagent` marker. `cost_usd` / `usage` are filled from
-    the matching `SubagentDone`. Only constructed when `agentic_active`.
-    """
-
-    label: str
-    role: str
-    reasoning: list[str] = field(default_factory=list)
-    answer: list[str] = field(default_factory=list)
-    tool_parts: list[dict[str, Any]] = field(default_factory=list)
-    cost_usd: float | None = None
-    usage: UsageUpdate = field(default_factory=UsageUpdate)
-    outcome: SubagentOutcome = "succeeded"
-    # True once a `SubagentDone` has been folded in. Stop/disconnect uses this to
-    # distinguish finished workers from ones that were still in flight when the
-    # pump was cancelled (orchestrator may have enqueued SubagentDone(stopped)
-    # on its internal queue, but those events never reach the handler).
-    terminal: bool = False
-    substitution: SubstitutionReasonCode | None = None
-    substituted_provider: str | None = None
-    substituted_model: str | None = None
-    substituted_display_label: str | None = None
-    # Per-worker web-search status/sources (FE-001).
-    latest_status: tuple[str, str] | None = None
-    search_items: list[Any] = field(default_factory=list)
-    saw_sources: bool = False
-    # FL-37: per-subagent reasoning wall-clock (monotonic start, closed seconds).
-    reasoning_started_at: float | None = None
-    reasoning_duration_sec: float | None = None
+# The scope accumulator moved to `turn_reducer` with the fold that owns it.
+# `tests/test_agentic_batch_c` sits outside this packet's allowlist and still
+# constructs it by the old name, so the name stays reachable from here.
+_SubagentAccumulator = ScopeState
 
 
-def mark_unfinished_subagents_stopped(
-    subagents: dict[str, _SubagentAccumulator],
-) -> None:
-    """Rewrite in-flight subagent outcomes to ``stopped`` on stop/disconnect.
-
-    Pump cancel acloses the orchestrator before worker ``SubagentDone(stopped)``
-    events can be yielded onto the handler queue. Accumulators that never
-    received a Done would otherwise persist with the default ``succeeded``.
-    """
-    for acc in subagents.values():
-        if not acc.terminal:
-            acc.outcome = "stopped"
+def mark_unfinished_subagents_stopped(subagents: dict[str, ScopeState]) -> None:
+    """Rewrite in-flight subagent outcomes to ``stopped`` on stop/disconnect."""
+    mark_unfinished_scopes_stopped(subagents)
 
 
-def mark_unfinished_subagents_paused(
-    subagents: dict[str, _SubagentAccumulator],
-) -> None:
+def mark_unfinished_subagents_paused(subagents: dict[str, ScopeState]) -> None:
     """Mark non-terminal accumulators on HITL pause (B15).
 
     Uses ``stopped`` (already in ``SubagentOutcome`` / FE) rather than a new
     literal: unknown wire values fall through to a green check on the FE today.
     ``stopped`` renders as a non-success cancelled state.
     """
-    mark_unfinished_subagents_stopped(subagents)
-
-
-def build_agentic_run_summary_part(ev: RunCost) -> AgenticRunSummaryPart:
-    """Fold a ``RunCost`` into the persisted receipt (FL-33-a).
-
-    Every receipt persists, including a plan pause and a worker-HITL pause: the
-    old gate (``phase == "final" or partial or budget_halted or
-    failed_worker_count > 0``) dropped a paused run's receipt entirely, so reload
-    re-derived a meter that both showed a different number and claimed
-    exact/final while the plan card above it still said "(estimate)".
-
-    A non-final phase is by definition not a finished run, so it folds to
-    ``partial`` regardless of the flags — a resumable pause must never read as a
-    completed receipt. The live and drain gates both call this so they cannot
-    drift (F2 DoD 6).
-    """
-    return AgenticRunSummaryPart(
-        outcome=(
-            "partial"
-            if (
-                ev.partial
-                or ev.budget_halted
-                or ev.failed_worker_count > 0
-                or ev.phase != "final"
-            )
-            else "complete"
-        ),
-        budget_halted=ev.budget_halted,
-        failed_workers=ev.failed_worker_count,
-        subtotal_usd=ev.subtotal_usd,
-        cap_usd=ev.cap_usd,
-        cost_confidence=ev.confidence,
-        cost_phase=ev.phase,
-    )
+    mark_unfinished_scopes_stopped(subagents)
 
 
 def tool_results_from_message_parts(
@@ -463,59 +397,6 @@ _RETRYABLE_CODES = {"RATE_LIMITED", "PROVIDER_UPSTREAM"}
 def _is_retryable(exc: BaseException) -> bool:
     """Whether a provider exception qualifies for a fallback-route retry."""
     return is_retryable_provider_error(exc)
-
-
-def _fold_complete_substitution(
-    ev: Complete,
-    current: tuple[str | None, str | None, str | None, str | None],
-) -> tuple[str | None, str | None, str | None, str | None]:
-    """Fold a `Complete` event's substitution into the running sub state.
-
-    `current` is the `(sub_code, sub_provider, sub_model, sub_label)` tuple
-    accumulated so far — it may already hold a router-side `auto_downgrade`
-    seed. A provider-side fallback WINS precedence and overwrites the seed,
-    bringing the real served-model triple with it. But this only happens when
-    the provider ACTUALLY substituted: a `Complete` with `substitution is None`
-    means "no provider fallback" and MUST NOT clobber the router seed (the
-    silent-downgrade-leak invariant). In that case `current` is returned
-    unchanged.
-
-    Centralizing this so the three `Complete` consumers (the two inline
-    streaming branches AND the disconnect/stop drain branch) can never drift
-    apart on the guard.
-    """
-    if ev.substitution is None:
-        return current
-    return (
-        ev.substitution,
-        ev.substituted_provider,
-        ev.substituted_model,
-        ev.substituted_display_label,
-    )
-
-
-def _derive_session_factory(
-    db: AsyncSession,
-) -> async_sessionmaker[AsyncSession]:
-    """Build a sessionmaker pointing at the same engine as `db`.
-
-    The detached title-autogen task needs a fresh session — the request
-    scope is closing. We can't use `get_session_factory()` because in tests
-    that's the process-wide factory bound to env DATABASE_URL, NOT the
-    per-test SQLite file the request session was bound to.
-
-    Falls back to `get_session_factory()` if the bind can't be extracted
-    (defensive — should not happen in practice; `AsyncSession.bind`
-    is an `AsyncEngine` once the session has executed anything).
-    """
-    bind = db.bind
-    if bind is None:
-        return get_session_factory()
-    return async_sessionmaker(
-        bind=bind,
-        expire_on_commit=False,
-        autoflush=False,
-    )
 
 
 # Prompt used for title autogen. Kept short — the small/fast tier sees the
@@ -737,6 +618,8 @@ async def stream_and_persist(
     *,
     request: Request,
     db: AsyncSession,
+    runtime: RuntimeContext | None = None,
+    lifecycle: TurnLifecycle | None = None,
     provider: Provider,
     binding: TierBinding,
     requested_tier_id: ModelTierId,
@@ -771,7 +654,7 @@ async def stream_and_persist(
     budget_headroom_usd: float | None = None,
     requested_agentic_mode: Literal["single", "deep_research"] | None = None,
     agentic_coercion_reason: Literal["entitlement"] | None = None,
-) -> AsyncIterator[ServerSentEvent]:
+) -> AsyncGenerator[ServerSentEvent, None]:
     """Drive the provider, persist, yield wire SSE events.
 
     `conversation_id` is None for temporary chats — persistence is skipped.
@@ -829,48 +712,80 @@ async def stream_and_persist(
     wraps the provider when `settings.tools_enabled`; otherwise the provider
     stream is consumed directly and this whole feature is inert (the flag-off
     path is byte-for-byte unchanged).
+
+    `runtime` (AC-04) is the immutable database context for this turn's
+    lifecycle work. It is derived from `db` when the caller does not supply one,
+    so every session opened outside the request scope — heartbeat, reservation
+    release, fresh-session stop/error persistence, detached post-turn tasks —
+    lands on the SAME engine the request session is bound to. Nothing in this
+    function may reach for the process-wide session factory.
+
+    `lifecycle` (AC-11) is the turn's outcome latch and cleanup owner. The
+    detached producer builds it BEFORE creating this generator and passes that
+    exact instance in, so a `buffer.append()` failure at the sink reaches the
+    same object that owns this generator's registered work, reservation and stop
+    signal. When no lifecycle is supplied (the inline path) one is built here;
+    either way this generator only registers work, reports durable commits, and
+    closes it — it never selects a second outcome.
     """
+    # AC-04: one context per turn, derived once, before any lifecycle work.
+    turn_runtime = runtime if runtime is not None else RuntimeContext.from_session(db)
+    # AC-11: one lifecycle per turn, shared with the sink when there is one.
+    turn_lifecycle = lifecycle or TurnLifecycle(
+        runtime=turn_runtime, stream_id=stream_id, user_id=user_id
+    )
+
+    async def _delivery_interrupted(exc: BaseException) -> None:
+        """AC-11: report an interrupted EARLY yield to the shared lifecycle.
+
+        The main `try`/`finally` below cannot cover the `submitted` frame or the
+        seeded `tool_result`: both are delivered before it opens, and a consumer
+        that stops reading lands its exception ON that yield. `aclose()`
+        (`GeneratorExit`) or a task cancel there used to escape without ever
+        reaching `close()` — and by the seeded frame the pump is already
+        registered, so it kept draining the provider while the reservation stayed
+        held and the durable `stream` row stayed `active`. The detached wrapper
+        had this seam covered through `buffer.append()`; the inline route had no
+        equivalent adapter, and this is it.
+
+        A cancel is an interruption, so the row terminalizes like every other
+        hard cancel (`stopped` while uncommitted, untouched once committed).
+        Anything else at a yield is the sink giving up, which is the same
+        delivery failure the wrapper reports. `close()` runs either way, in place
+        of the `finally` this region does not have.
+
+        Reports nothing once the turn has an outcome. Under the detached wrapper
+        this guard runs SECOND: the sink already classified the interruption and
+        then called `aclose()`, whose `GeneratorExit` arrives here as a different
+        exception type describing the same event. The lifecycle drops a duplicate
+        report anyway; not making it keeps the classification honest.
+        """
+        if turn_lifecycle.outcome is None:
+            if isinstance(exc, asyncio.CancelledError):
+                await turn_lifecycle.hard_cancelled()
+            else:
+                await turn_lifecycle.delivery_failed(exc)
+        await turn_lifecycle.close()
+
     # Emit `submitted` immediately. Resumable clients need the durable stream
     # id in-band so they can reconnect to the exact producer they just started.
-    yield encode_submitted(
-        SubmittedEvent(
-            message_id=str(user_message_id),
-            stream_id=str(stream_id) if stream_id is not None else None,
-            requested_agentic_mode=requested_agentic_mode,
-            effective_agentic_mode=agentic_mode,
-            agentic_coercion_reason=agentic_coercion_reason,
+    try:
+        yield encode_submitted(
+            SubmittedEvent(
+                message_id=str(user_message_id),
+                stream_id=str(stream_id) if stream_id is not None else None,
+                requested_agentic_mode=requested_agentic_mode,
+                effective_agentic_mode=agentic_mode,
+                agentic_coercion_reason=agentic_coercion_reason,
+            )
         )
-    )
+    except BaseException as delivery_exc:
+        await _delivery_interrupted(delivery_exc)
+        raise
     turn_started_at = time.monotonic()
-    first_answer_ms: int | None = None
-
-    # Accumulators for parts + usage.
-    reasoning_buf: list[str] = []
-    answer_buf: list[str] = []
-    final_usage = UsageUpdate()
+    # The one wire gate the fold does not own: the non-agentic stream must emit
+    # exactly one `reasoning_done`, before any `answer_delta`.
     emitted_reasoning_done = False
-    # FL-37: reasoning wall-clock for the untagged stream, measured on the same
-    # monotonic base as `first_answer_ms` and persisted as ReasoningPart
-    # `durationSec` so "Thought for Ns" survives a reload.
-    reasoning_started_at: float | None = None
-    reasoning_duration_sec: float | None = None
-    # Web-search accumulators (only populated when the provider emits the
-    # corresponding events). `latest_status` holds the most recent
-    # (label, state) so the persisted `status` part records the final line (the
-    # `done` line for a completed search). `search_items` holds the resolved
-    # `Sources`. When neither is emitted (the common, web_search=False path) the
-    # persist sites append no status/sources parts and the stream is unchanged.
-    latest_status: tuple[str, str] | None = None
-    search_items: list[SourceItem] = []
-    # Whether a provider `Sources` event arrived this turn. Distinct from
-    # `search_items` being empty: a provider may emit `Sources([])`, and the
-    # honesty rule (PRD 07 §4.3) still needs to know that web search RAN. When
-    # web search was effective (`web_search`) but no `Sources` event ever
-    # arrived, the done-path synthesizes a final empty `sources` frame so the
-    # ungrounded state ("Answered without live sources") survives the live turn,
-    # reload, replay, and public share.
-    saw_sources_event = False
-    tool_parts: list[dict[str, Any]] = []
     # HITL pause state (tools only). Set when the agent loop emits an
     # `AwaitingApproval` sentinel: the turn ends in the NEW terminal state
     # `awaiting_approval` rather than `done`. Stays False on every non-tool path.
@@ -970,59 +885,20 @@ async def stream_and_persist(
         clarify_answered = None
         clarify_answers = None
         clarify_records = None
-    # Per-subagent accumulation for an agentic turn (T3). Ordered by first-seen
-    # `SubagentStarted` so the persisted transcript groups subagents in emission
-    # order. Empty (and unused) on every non-agentic turn.
-    agentic_order: list[str] = []
-    agentic_subagents: dict[str, _SubagentAccumulator] = {}
-    # Populated from the final `RunCost(partial=...)` tick for persistence (FE-015).
-    agentic_run_summary: AgenticRunSummaryPart | None = None
+    # AC-03: every durable fact this turn folds lives here, and `TurnReducer` is
+    # the only thing that writes it. Live delivery and the stopped/disconnect
+    # drain both push their events through that one fold, so the two drivers
+    # cannot drift on `approvalState`, a run receipt, or anything else again.
+    state = TurnState(
+        started_at=turn_started_at,
+        agentic=agentic_active,
+        substitution=router_substitution,
+    )
+    turn_reducer = TurnReducer()
 
-    def _sub(subagent_id: str) -> _SubagentAccumulator:
-        """Fetch (or defensively create) the accumulator for `subagent_id`.
-
-        `SubagentStarted` always precedes a subagent's tagged content events, so
-        the create-on-miss branch is defensive only.
-        """
-        acc = agentic_subagents.get(subagent_id)
-        if acc is None:
-            acc = _SubagentAccumulator(label=subagent_id, role="subagent")
-            agentic_subagents[subagent_id] = acc
-            agentic_order.append(subagent_id)
-        return acc
-
-    def _open_reasoning_clock(subagent_id: str | None) -> None:
-        """FL-37: start the reasoning clock on the first delta for this scope."""
-        nonlocal reasoning_started_at
-        if agentic_active and subagent_id is not None:
-            acc = _sub(subagent_id)
-            if acc.reasoning_started_at is None:
-                acc.reasoning_started_at = time.monotonic()
-            return
-        if reasoning_started_at is None:
-            reasoning_started_at = time.monotonic()
-
-    def _close_reasoning_clock(subagent_id: str | None) -> None:
-        """FL-37: close the reasoning clock at ReasoningDone / first AnswerDelta.
-
-        Scoped per subagent on agentic turns, where several reasoning blocks
-        interleave. Idempotent, and a no-op when the scope emitted no reasoning,
-        so a turn without reasoning persists no duration at all.
-        """
-        nonlocal reasoning_duration_sec
-        now = time.monotonic()
-        if agentic_active and subagent_id is not None:
-            # `get`, not `_sub`: a stray tagged done must not open a section.
-            acc = agentic_subagents.get(subagent_id)
-            if (
-                acc is not None
-                and acc.reasoning_started_at is not None
-                and acc.reasoning_duration_sec is None
-            ):
-                acc.reasoning_duration_sec = max(0.0, now - acc.reasoning_started_at)
-            return
-        if reasoning_started_at is not None and reasoning_duration_sec is None:
-            reasoning_duration_sec = max(0.0, now - reasoning_started_at)
+    def _fold(ev: ProviderEvent) -> None:
+        """Push one event through the shared fold. Delivery stays outside."""
+        turn_reducer.reduce(state, ev, time.monotonic())
 
     # Transparent long-term memory (D19): how many facts were injected into this
     # turn. Surfaced on the attribution (and thus the persisted message + the
@@ -1045,38 +921,15 @@ async def stream_and_persist(
     )
     # Working route state. These start at the primary route and are REASSIGNED in
     # place if a provider-fallback retry fires (Phase 2). The inner closures
-    # (`_persist_assistant`, `_terminal_properties`, `_apply_event`,
-    # `build_attribution` calls) all read these names at call time, so a
-    # pre-first-token rebind is transparently reflected downstream.
+    # (`_persist_assistant`, `_terminal_properties`, `build_attribution` calls)
+    # all read these names at call time, so a pre-first-token rebind is
+    # transparently reflected downstream.
     active_provider = provider
     active_api_key = api_key
     is_byok_turn = active_api_key is not None
     runtime_provider_id = provider_id or binding.provider_id
     # Single-shot fallback guard: at most ONE retry, ever.
     fallback_attempted = False
-    # Substitution metadata threaded into build_attribution(...). Two sources
-    # feed it, with provider-side winning (see below + the docstring):
-    #  1. Router-side (auto-routing): seeded here from `router_substitution`.
-    #     This is the `auto_downgrade` decided before the provider call. It has
-    #     no substituted model triple — the routed concrete `binding` already
-    #     carries the served tier/label, so the attribution renders correctly
-    #     off the binding alone.
-    #  2. Provider-side (M4 fallback): the provider's `Complete` event. When the
-    #     provider substituted, `_apply_event` / the Complete branch OVERWRITE
-    #     the router-side seed (provider fallback wins precedence) and bring the
-    #     real served-model triple with it.
-    # When both stay None the wire emits no `substitution` field.
-    sub_code: str | None = router_substitution
-    sub_provider: str | None = None
-    sub_model: str | None = None
-    sub_label: str | None = None
-    # Empty-reply retry analytics (§9 / amendment A): read off the internal,
-    # non-wire `Complete.empty_retry` / `empty_retry_recovered` markers set by
-    # the agent loop / plain-chat wrapper. `recovered` is taken straight from the
-    # marker — NOT re-derived from post-inject resolved text, which would always
-    # read True once the static fallback lands. Logged in `turn.done`.
-    empty_retry_seen = False
-    empty_retry_recovered_seen = False
 
     # Build ONE raw provider stream for the current working route + optional
     # agent-loop tool feedback. `tool_feedback` carries the results the agent
@@ -1438,6 +1291,23 @@ async def stream_and_persist(
         )
         return breakdown.subtotal_usd
 
+    def _agentic_served_route() -> ServedRoute:
+        """The route this turn is bound to, for the phase spans (AC-10).
+
+        `binding` is already the CONCRETE tier an ``auto`` request routed to, so
+        its id is the served tier; `runtime_provider_id` carries a BYOK/explicit
+        provider override. A router-side `auto_downgrade` is the reason the served
+        route differs from the requested one, so it rides along — a per-phase
+        provider fallback later overrides it on that phase's own route, exactly
+        as provider-side substitution outranks the router seed on the wire.
+        """
+        return ServedRoute(
+            tier_id=str(binding.tier.id),
+            provider_id=runtime_provider_id,
+            model_id=binding.model_id,
+            substitution=router_substitution,
+        )
+
     def _estimate_run_cost(sub_question_count: int) -> float:
         """Worst-case run-cost estimate for pre-spawn admission (agentic only).
 
@@ -1476,7 +1346,12 @@ async def stream_and_persist(
 
         Mark on the request ``db`` session (not only a fresh one) so ``get_db``'s
         final commit cannot resurrect the in-memory ``active`` identity from
-        ``create_stream``.
+        ``create_stream`` — which is why this write does not go through the
+        lifecycle's fresh-session cleanup. The outcome IS latched there, though:
+        this exit returns from the generator before the main ``try``/``finally``,
+        so without the latch nothing would record that the turn ended, and
+        without the explicit ``close()`` the reservation release and stop
+        cleanup would depend on the two writes above having succeeded.
         """
         if stream_id is not None:
             with contextlib.suppress(Exception):
@@ -1488,8 +1363,8 @@ async def stream_and_persist(
                 )
                 await usage_repo.release_platform_budget(db, stream_id=stream_id)
                 await db.commit()
-            with contextlib.suppress(Exception):
-                await clear_stop_async(stream_id)
+        turn_lifecycle.record_commit("stopped")
+        await turn_lifecycle.close()
         _struct_log.warning(
             "turn.stopped",
             status="stopped",
@@ -1506,19 +1381,27 @@ async def stream_and_persist(
             reason="approval_settle_stopped",
         )
 
-    if (
-        resume_seed is not None
-        and resume_seed.pending_settle
-        and resume_seed.paused_message_id is not None
-        and resume_seed.settled_result is None
-        and not resume_seed.is_plan
-        and not resume_seed.is_clarify
-    ):
+    async def _settle_pending_approval() -> bool:
+        """Claim + settle the gated call this resume is for. AC-11 pre-commit.
+
+        Returns False when a stop/disconnect landed around the settle, in which
+        case the caller must return without a provider pass. Every raise here is
+        a setup failure the shared lifecycle has to see.
+        """
+        if (
+            resume_seed is None
+            or not resume_seed.pending_settle
+            or resume_seed.paused_message_id is None
+            or resume_seed.settled_result is not None
+            or resume_seed.is_plan
+            or resume_seed.is_clarify
+        ):
+            return True
         if (
             stream_id is not None and await is_stop_requested_async(stream_id)
         ) or await request.is_disconnected():
             await _release_stream_after_approval_stop()
-            return
+            return False
         paused_row = await db.get(Message, resume_seed.paused_message_id)
         if paused_row is None:
             raise AppError(
@@ -1561,34 +1444,11 @@ async def stream_and_persist(
                 with contextlib.suppress(asyncio.CancelledError):
                     await settle_task
                 await _release_stream_after_approval_stop()
-                return
+                return False
             watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await watch_task
-            try:
-                outcome = settle_task.result()
-            except ApprovalDecisionConflict as exc:
-                raise AppError(
-                    ErrorEnvelope(
-                        code="APPROVAL_DECISION_CONFLICT",
-                        severity="error",
-                        title="Approval decision conflict",
-                        body=str(exc),
-                    ),
-                    status_code=409,
-                ) from exc
-            except ApprovalSettlementIncomplete as exc:
-                # A live claim elsewhere still owns the side effect: 409 so the
-                # client retries instead of resuming on a guessed result.
-                raise AppError(
-                    ErrorEnvelope(
-                        code="APPROVAL_SETTLEMENT_INCOMPLETE",
-                        severity="error",
-                        title="Approval settlement incomplete",
-                        body=str(exc),
-                    ),
-                    status_code=409,
-                ) from exc
+            outcome = settle_task.result()
         except ApprovalDecisionConflict as exc:
             raise AppError(
                 ErrorEnvelope(
@@ -1600,6 +1460,8 @@ async def stream_and_persist(
                 status_code=409,
             ) from exc
         except ApprovalSettlementIncomplete as exc:
+            # A live claim elsewhere still owns the side effect: 409 so the
+            # client retries instead of resuming on a guessed result.
             raise AppError(
                 ErrorEnvelope(
                     code="APPROVAL_SETTLEMENT_INCOMPLETE",
@@ -1612,6 +1474,7 @@ async def stream_and_persist(
         resume_seed.settled_result = outcome.result
         resume_seed.decision = outcome.decision
         resume_seed.pending_settle = False
+        return True
 
     async def _prior_tool_results_for_resume() -> list[ToolResult]:
         """B7: same-round tool_results already on the paused message."""
@@ -1713,11 +1576,13 @@ async def stream_and_persist(
                         else turn_user_text
                     ),
                     cost_for_usage=_cost_for_usage,
+                    served_route=_agentic_served_route(),
                     budget_headroom_usd=budget_headroom_usd,
                     server_approved_call_ids=set(),
                     initial_tool_results=initial or None,
                     prior_run_cost_usd=resume_seed.prior_run_cost_usd,
                     prior_run_usage=resume_seed.prior_run_usage,
+                    prior_receipt=resume_seed.prior_receipt,
                 )
 
         # Non-agentic tools resume (settled result + same-round priors).
@@ -1753,11 +1618,13 @@ async def stream_and_persist(
             prior_planner_usage: UsageUpdate | None = None
             prior_run_cost = 0.0
             prior_run_usage: UsageUpdate | None = None
+            prior_receipt: RunReceipt | None = None
             if resume_seed is not None:
                 prior_planner_cost = resume_seed.prior_planner_cost_usd
                 prior_planner_usage = resume_seed.prior_planner_usage
                 prior_run_cost = resume_seed.prior_run_cost_usd
                 prior_run_usage = resume_seed.prior_run_usage
+                prior_receipt = resume_seed.prior_receipt
             if resume_seed is not None and resume_seed.agentic_continuation is not None:
                 orch_continuation = resume_seed.agentic_continuation
                 if resume_seed.resume_user_text:
@@ -1771,6 +1638,7 @@ async def stream_and_persist(
                 mode=agentic_mode,
                 user_text=orch_user_text,
                 cost_for_usage=_cost_for_usage,
+                served_route=_agentic_served_route(),
                 verifier_cost_for_usage=_verifier_cost_for_usage,
                 estimate_cost=_estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,
@@ -1806,6 +1674,7 @@ async def stream_and_persist(
                 prior_planner_usage=prior_planner_usage,
                 prior_run_cost_usd=prior_run_cost,
                 prior_run_usage=prior_run_usage,
+                prior_receipt=prior_receipt,
             )
 
         # Plain chat (non-tools, non-agentic). Wrap the raw stream in the
@@ -1816,8 +1685,6 @@ async def stream_and_persist(
         if handler_settings.empty_reply_retry_enabled:
             return run_chat_with_empty_retry(_build_raw_stream, handler_settings)
         return _build_raw_stream([])
-
-    provider_iter = await _resolve_provider_iter()
 
     queue: asyncio.Queue[ProviderEvent | _PumpError | None] = asyncio.Queue(
         maxsize=_PROVIDER_QUEUE_MAXSIZE
@@ -1858,8 +1725,6 @@ async def stream_and_persist(
                         with contextlib.suppress(asyncio.QueueEmpty):
                             queue.get_nowait()
 
-    pump_task = asyncio.create_task(_pump(provider_iter))
-
     last_stream_heartbeat_at = time.monotonic()
 
     async def _maybe_heartbeat_stream() -> None:
@@ -1872,27 +1737,11 @@ async def stream_and_persist(
             return
         last_stream_heartbeat_at = now
         try:
-            factory = get_session_factory()
-            async with factory() as hb_db:
+            async with turn_runtime.session_factory() as hb_db:
                 await streams_repo.heartbeat(hb_db, stream_id=stream_id)
                 await hb_db.commit()
         except Exception as hb_exc:  # pragma: no cover - defensive
             log.warning("stream.heartbeat.failed", exc_info=hb_exc)
-
-    async def _release_budget_reservation(session: AsyncSession | None = None) -> None:
-        """B9: drop the platform headroom hold for this stream (idempotent)."""
-        if stream_id is None or user_id is None:
-            return
-        try:
-            if session is not None:
-                await usage_repo.release_platform_budget(session, stream_id=stream_id)
-                return
-            factory = get_session_factory()
-            async with factory() as rel_db:
-                await usage_repo.release_platform_budget(rel_db, stream_id=stream_id)
-                await rel_db.commit()
-        except Exception as rel_exc:  # pragma: no cover - defensive
-            log.warning("budget.reservation_release.failed", exc_info=rel_exc)
 
     def _no_output_yet() -> bool:
         """True iff NOTHING has been emitted/accumulated for this turn yet.
@@ -1904,11 +1753,11 @@ async def stream_and_persist(
         double-bill — we must NOT retry.
         """
         return (
-            first_answer_ms is None
-            and not reasoning_buf
-            and not answer_buf
-            and not tool_parts
-            and final_usage == UsageUpdate()
+            state.first_answer_ms is None
+            and not state.reasoning
+            and not state.answer
+            and not state.tool_parts
+            and state.usage == UsageUpdate()
         )
 
     def _fallback_pending(exc: BaseException | None) -> bool:
@@ -1939,12 +1788,12 @@ async def stream_and_persist(
         aggregator-first (the synthesized final bubble), then primary.
         """
 
-        def _kind(subagent_id: str, acc: _SubagentAccumulator) -> int:
+        def _kind(subagent_id: str, acc: ScopeState) -> int:
             return 0 if subagent_id == "aggregator" or acc.role == "aggregator" else 1
 
         main = [
             (subagent_id, acc)
-            for subagent_id, acc in agentic_subagents.items()
+            for subagent_id, acc in state.scopes.items()
             if subagent_id in ("primary", "aggregator")
             or acc.role in ("primary", "aggregator")
         ]
@@ -1960,11 +1809,11 @@ async def stream_and_persist(
         """
         if agentic_active:
             for subagent_id in _agentic_main_answer_ids():
-                text = "".join(agentic_subagents[subagent_id].answer)
+                text = "".join(state.scopes[subagent_id].answer)
                 if not main_answer_is_empty(text):
                     return text.strip()
             return ""
-        text = "".join(answer_buf)
+        text = "".join(state.answer)
         return "" if main_answer_is_empty(text) else text.strip()
 
     def _inject_empty_reply_fallback_if_needed() -> tuple[bool, str | None]:
@@ -1989,25 +1838,44 @@ async def stream_and_persist(
             if main_ids:
                 target_subagent = main_ids[0]
         if target_subagent is not None:
-            acc = agentic_subagents[target_subagent]
+            acc = state.scopes[target_subagent]
             acc.answer.clear()
             acc.answer.append(EMPTY_REPLY_FALLBACK)
         else:
-            answer_buf.clear()
-            answer_buf.append(EMPTY_REPLY_FALLBACK)
+            state.answer.clear()
+            state.answer.append(EMPTY_REPLY_FALLBACK)
         return True, target_subagent
 
-    def _agentic_sum_cost_usd() -> float:
-        """Monetary run total = sum of per-subagent receipts (BE-022 / BE-028).
+    def _already_billed_floor_usd() -> float:
+        """Spend a prior pause turn already charged, for the stop estimate only.
 
-        Prefer each accumulator's ``cost_usd`` from ``SubagentDone``. For an
-        in-flight subagent that reported usage but not yet Done (stop drain),
-        price the latest usage against the binding that served it.
+        Exact accounting reads this off the receipt's own
+        `already_billed_cost_usd`; this reconstruction exists solely so an
+        estimate cannot re-charge pre-pause dollars.
         """
-        total = 0.0
-        for acc in agentic_subagents.values():
+        if resume_seed is None:
+            return 0.0
+        if resume_seed.prior_receipt is not None:
+            return resume_seed.prior_receipt.cumulative_cost_usd
+        already = float(resume_seed.prior_run_cost_usd or 0.0)
+        cont = resume_seed.agentic_continuation
+        if cont is not None:
+            already += float(getattr(cont, "paused_worker_cost_usd", 0.0) or 0.0)
+        return already
+
+    def _estimated_agentic_cost_usd() -> float:
+        """ESTIMATE-ONLY cumulative agentic spend. Never an exact authority.
+
+        Reached only when a turn ended before the orchestrator could emit a
+        receipt-bearing boundary `RunCost` — an abrupt stop or disconnect
+        mid-run. It prices the settled phase facts the fold already holds: each
+        scope's own `SubagentDone` cost, or a still in-flight scope's latest
+        usage against the binding that served it.
+        """
+        estimated = 0.0
+        for acc in state.scopes.values():
             if acc.cost_usd is not None:
-                total += acc.cost_usd
+                estimated += acc.cost_usd
                 continue
             has_tokens = bool(
                 acc.usage.input_tokens
@@ -2018,25 +1886,59 @@ async def stream_and_persist(
             if not has_tokens:
                 continue
             if acc.substitution is not None and fallback_binding is not None:
-                total += _fallback_cost_for_usage(acc.usage)
+                estimated += _fallback_cost_for_usage(acc.usage)
             else:
-                total += _cost_for_usage(acc.usage)
-        return total
+                estimated += _cost_for_usage(acc.usage)
+        return estimated
 
-    def _billable_cost_delta(logical_cost: float) -> float:
-        """AR-002: charge only spend not already billed on a prior pause turn.
+    def _boundary_money() -> tuple[CostBreakdown, float, float]:
+        """(breakdown, cumulative, newly billable) for a persistable boundary.
 
-        Orchestrator SubagentDone receipts are cumulative (pre-pause + new) for
-        cap/UI honesty. The usage rollup must not re-increment pre-pause dollars
-        that the pause terminal already wrote via ``increment_for_period``.
+        AC-02/AC-03: a banked `RunCost.receipt` is the SOLE exact authority for
+        an agentic run, and it wins on every path. It is the orchestrator's own
+        accounting for the boundary being persisted, which is why the old
+        reconstruction — a total re-derived from whichever `SubagentDone` events
+        happened to arrive, minus an already-billed part re-derived from one
+        scalar seed — reported `$0.37` on the wire and `$0.00` on the row for a
+        plan-approved resume. A receipt-less display tick banks nothing, so it
+        can never reach this arithmetic.
+
+        Without a receipt the money is explicitly an estimate: orchestrator
+        phase costs are CUMULATIVE across a resume, so the estimate subtracts
+        the floor an earlier pause turn already charged (AR-002). Non-agentic
+        turns price their own accumulated usage and every dollar of it is new —
+        there is no prior leg to have charged.
         """
-        if resume_seed is None or not agentic_active:
-            return float(logical_cost)
-        already = float(resume_seed.prior_run_cost_usd or 0.0)
-        cont = resume_seed.agentic_continuation
-        if cont is not None:
-            already += float(getattr(cont, "paused_worker_cost_usd", 0.0) or 0.0)
-        return max(0.0, float(logical_cost) - already)
+        breakdown = compute_cost_breakdown(
+            usage=state.usage,
+            binding=binding,
+            image_count=image_attachment_count,
+        )
+
+        def _with_total(total: float) -> CostBreakdown:
+            """Keep the token structure, show the run's own total (FL-34-b)."""
+            return breakdown.model_copy(
+                update={"subtotal_usd": total, "session_surcharge_usd": 0.0}
+            )
+
+        if state.receipt is not None:
+            return (
+                _with_total(state.receipt.cumulative_cost_usd),
+                state.receipt.cumulative_cost_usd,
+                state.receipt.newly_billable_cost_usd,
+            )
+        if not agentic_active:
+            # FL-34-b: charge the subtotal alone (surcharge is disclosure).
+            return breakdown, breakdown.subtotal_usd, breakdown.subtotal_usd
+        if state.scopes:
+            estimated = _estimated_agentic_cost_usd()
+            return (
+                _with_total(estimated),
+                estimated,
+                max(0.0, estimated - _already_billed_floor_usd()),
+            )
+        flat = breakdown.subtotal_usd
+        return breakdown, flat, max(0.0, flat - _already_billed_floor_usd())
 
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
@@ -2064,53 +1966,31 @@ async def stream_and_persist(
         if agentic_active:
             return _build_agentic_parts()
         parts: list[dict[str, Any]] = []
-        if reasoning_buf:
+        if state.reasoning:
             # FL-37: carry the measured wall-clock so the reloaded panel keeps
             # the "Thought for Ns" line (omitted when it was never measured).
             parts.append(
                 ReasoningPart(
-                    text="".join(reasoning_buf),
-                    duration_sec=reasoning_duration_sec,
+                    text="".join(state.reasoning),
+                    duration_sec=state.reasoning_duration_sec,
                 ).model_dump(by_alias=True, exclude_none=True)
             )
-        parts.extend(tool_parts)
-        if latest_status is not None:
-            label, _state = latest_status
+        parts.extend(state.tool_parts)
+        if state.latest_status is not None:
+            label, _state = state.latest_status
             parts.append({"type": "status", "label": label, "state": "done"})
-        parts.append({"type": "text", "text": "".join(answer_buf)})
-        if web_search or search_items:
+        parts.append({"type": "text", "text": "".join(state.answer)})
+        if web_search or state.search_items:
             parts.append(
                 {
                     "type": "sources",
-                    "items": [it.model_dump(exclude_none=True) for it in search_items],
+                    "items": [
+                        it.model_dump(exclude_none=True) for it in state.search_items
+                    ],
                     "requested": web_search,
                 }
             )
         return parts
-
-    def _tool_call_part(ev: ToolCall) -> ToolCallPart:
-        return ToolCallPart(
-            id=ev.id,
-            name=ev.name,
-            label=ev.label,
-            status=ev.status,
-            approval_state=ev.approval_state,
-            input=ev.input,
-            subagent_id=ev.subagent_id,
-        )
-
-    def _tool_result_part(ev: ToolResult) -> ToolResultPart:
-        return ToolResultPart(
-            tool_call_id=ev.tool_call_id,
-            name=ev.name,
-            label=ev.label,
-            status=ev.status,
-            approval_state=ev.approval_state,
-            summary=ev.summary,
-            output=ev.output,
-            error=ev.error,
-            subagent_id=ev.subagent_id,
-        )
 
     def _build_agentic_parts() -> list[dict[str, Any]]:
         """Assemble persisted parts for an agentic turn, grouped by subagent (T3).
@@ -2122,8 +2002,8 @@ async def stream_and_persist(
         `agentic_run_summary` when the run was partial (FE-015).
         """
         parts: list[dict[str, Any]] = []
-        for subagent_id in agentic_order:
-            acc = agentic_subagents[subagent_id]
+        for subagent_id in state.scope_order:
+            acc = state.scopes[subagent_id]
             part_attribution: ModelAttribution | None = None
             if acc.usage.input_tokens or acc.usage.output_tokens or acc.cost_usd:
                 # Price/attribute on the binding that actually served (FE-009).
@@ -2201,9 +2081,9 @@ async def stream_and_persist(
                     text="".join(acc.answer), subagent_id=subagent_id
                 ).model_dump(by_alias=True, exclude_none=True)
             )
-        if agentic_run_summary is not None:
+        if state.run_summary is not None:
             parts.append(
-                agentic_run_summary.model_dump(by_alias=True, exclude_none=True)
+                state.run_summary.model_dump(by_alias=True, exclude_none=True)
             )
         return parts
 
@@ -2214,6 +2094,7 @@ async def stream_and_persist(
         session: AsyncSession | None = None,
         commit: bool = True,
         cost_usd: float | None = None,
+        pause_receipt: RunReceipt | None = None,
     ) -> UUID | None:
         if is_temporary or conversation_id is None:
             return None
@@ -2231,12 +2112,17 @@ async def stream_and_persist(
                     server_state, call_id, blob
                 )
         # B4/B5: ledger seeds beside continuations (sanitize strips tool-input).
+        # AC-02: `pause_receipt` rides along on the SAME server-only blob so a
+        # resume restores the run's exact already-billed floor instead of
+        # reconstructing it from the scalar seeds. Only a paused row passes one —
+        # a `done` / `stopped` row has nothing to resume into.
         if (
             pending_planner_cost_usd > 0.0
             or pending_planner_usage is not None
             or pending_prior_run_cost_usd > 0.0
             or pending_prior_run_usage is not None
             or pending_orchestration_mode is not None
+            or pause_receipt is not None
         ):
             server_state = put_run_ledger_in_server_state(
                 server_state,
@@ -2245,6 +2131,7 @@ async def stream_and_persist(
                 prior_run_cost_usd=pending_prior_run_cost_usd or None,
                 prior_run_usage=pending_prior_run_usage,
                 orchestration_mode=pending_orchestration_mode,
+                run_receipt=pause_receipt,
             )
         row = await messages_repo.create_assistant_message(
             db=target_session,
@@ -2266,141 +2153,6 @@ async def stream_and_persist(
             await target_session.flush()
         return row.id
 
-    def _apply_event(ev: ProviderEvent) -> None:
-        """Fold a queue event into accumulators (no yields).
-
-        Used to drain any remaining events after cancelling the pump on
-        disconnect/stop, so persisted parts + usage reflect work already queued
-        (BE-027). Agentic drains use the same subagent-aware fold as the live
-        path so queued partials are not dropped into flat buffers.
-        """
-        nonlocal final_usage, first_answer_ms, sub_code, sub_provider, sub_model, sub_label
-        nonlocal latest_status, search_items, saw_sources_event, agentic_run_summary
-
-        if isinstance(ev, ReasoningDone):
-            # FL-37: close the reasoning clock on the drain path too, for both
-            # the tagged and untagged scope.
-            _close_reasoning_clock(ev.subagent_id)
-            return
-
-        if agentic_active:
-            if isinstance(ev, SubagentStarted):
-                if ev.subagent_id not in agentic_subagents:
-                    agentic_subagents[ev.subagent_id] = _SubagentAccumulator(
-                        label=ev.label or ev.subagent_id,
-                        role=ev.role or "subagent",
-                    )
-                    agentic_order.append(ev.subagent_id)
-                return
-            if isinstance(ev, SubagentDone):
-                done_acc = agentic_subagents.get(ev.subagent_id)
-                if done_acc is None:
-                    done_acc = _SubagentAccumulator(
-                        label=ev.label or ev.subagent_id,
-                        role=ev.role or "subagent",
-                    )
-                    agentic_subagents[ev.subagent_id] = done_acc
-                    agentic_order.append(ev.subagent_id)
-                done_acc.cost_usd = ev.cost_usd
-                done_acc.usage = ev.usage
-                done_acc.outcome = ev.outcome
-                done_acc.terminal = True
-                done_acc.substitution = ev.substitution
-                done_acc.substituted_provider = ev.substituted_provider
-                done_acc.substituted_model = ev.substituted_model
-                done_acc.substituted_display_label = ev.substituted_display_label
-                return
-            if isinstance(ev, RunCost):
-                # FL-33-a: drain twin of the live gate — shared builder.
-                agentic_run_summary = build_agentic_run_summary_part(ev)
-                return
-            sid = getattr(ev, "subagent_id", None)
-            if isinstance(ev, ReasoningDelta) and sid is not None:
-                _open_reasoning_clock(sid)
-                _sub(sid).reasoning.append(ev.text)
-                return
-            if isinstance(ev, AnswerDelta) and sid is not None:
-                _close_reasoning_clock(sid)
-                if first_answer_ms is None:
-                    first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
-                _sub(sid).answer.append(ev.text)
-                return
-            if isinstance(ev, StatusUpdate) and sid is not None:
-                _sub(sid).latest_status = (ev.label, ev.state)
-                return
-            if isinstance(ev, Sources) and sid is not None:
-                # FL-35: drain twin — fold the turn-level flag identically.
-                saw_sources_event = True
-                acc = _sub(sid)
-                acc.search_items = list(ev.items)
-                acc.saw_sources = True
-                return
-            if isinstance(ev, ToolCall) and sid is not None:
-                _sub(sid).tool_parts.append(
-                    _tool_call_part(ev).model_dump(by_alias=True, exclude_none=True)
-                )
-                return
-            if isinstance(ev, ToolResult) and sid is not None:
-                target = _sub(sid).tool_parts
-                for part in target:
-                    if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
-                        part["status"] = ev.status
-                        break
-                target.append(
-                    _tool_result_part(ev).model_dump(by_alias=True, exclude_none=True)
-                )
-                return
-            if isinstance(ev, UsageUpdate):
-                if sid is not None:
-                    _sub(sid).usage = ev
-                else:
-                    final_usage = ev
-                return
-            if isinstance(ev, Complete):
-                if sid is not None:
-                    _sub(sid).usage = ev.usage
-                else:
-                    final_usage = ev.usage
-                    sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
-                        ev, (sub_code, sub_provider, sub_model, sub_label)
-                    )
-                return
-            # Untagged agentic content (rare): fall through to flat buffers.
-
-        if isinstance(ev, ReasoningDelta):
-            _open_reasoning_clock(None)
-            reasoning_buf.append(ev.text)
-        elif isinstance(ev, AnswerDelta):
-            _close_reasoning_clock(None)
-            if first_answer_ms is None:
-                first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
-            answer_buf.append(ev.text)
-        elif isinstance(ev, StatusUpdate):
-            latest_status = (ev.label, ev.state)
-        elif isinstance(ev, Sources):
-            search_items = list(ev.items)
-            saw_sources_event = True
-        elif isinstance(ev, ToolCall):
-            tool_parts.append(_tool_call_part(ev).model_dump(by_alias=True, exclude_none=True))
-        elif isinstance(ev, ToolResult):
-            for part in tool_parts:
-                if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
-                    part["status"] = ev.status
-                    break
-            tool_parts.append(_tool_result_part(ev).model_dump(by_alias=True, exclude_none=True))
-        elif isinstance(ev, UsageUpdate):
-            final_usage = ev
-        elif isinstance(ev, Complete):
-            final_usage = ev.usage
-            # Provider-side fallback wins over the router-side seed, but only
-            # when the provider ACTUALLY substituted (see helper docstring) —
-            # a `substitution is None` here must NOT clobber a router-side
-            # `auto_downgrade` already in `sub_code`. Shared with both inline
-            # streaming branches via `_fold_complete_substitution`.
-            sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
-                ev, (sub_code, sub_provider, sub_model, sub_label)
-            )
-
     def _terminal_properties(
         *,
         terminal_status: str,
@@ -2418,7 +2170,7 @@ async def stream_and_persist(
             "servedTierId": binding.tier.id,
             "providerId": provider_value,
             "isByok": is_byok_turn,
-            "ttftMs": first_answer_ms,
+            "ttftMs": state.first_answer_ms,
             "turnMs": int((time.monotonic() - turn_started_at) * 1000),
             "webSearch": web_search,
             "attachmentCount": len(attachments or []),
@@ -2429,62 +2181,93 @@ async def stream_and_persist(
             props["errorCode"] = error_code
         return props
 
-    # HITL resume seeding. On a resume POST the route resolved + re-validated the
-    # decision into `resume_seed`; emit the corresponding `tool_result` BEFORE
-    # consuming the post-approval provider pass so the new assistant row's parts
-    # are [tool_result, …answer]. Approve runs the (timeout-wrapped) tool; deny
-    # synthesizes a cancelled/rejected result WITHOUT executing — the side effect
-    # must never happen on a denial.
-    if resume_seed is not None and not resume_seed.is_plan and not resume_seed.is_clarify:
-        # BE-007: prefer the route's settled result (already claimed/executed).
-        if resume_seed.settled_result is not None:
-            settled = resume_seed.settled_result
-            seeded_result = ToolResult(
-                tool_call_id=getattr(settled, "tool_call_id", resume_seed.tool_call_id),
-                name=getattr(settled, "name", resume_seed.name),
-                label=resume_seed.label,
-                status=getattr(settled, "status", "succeeded"),
-                approval_state=getattr(settled, "approval_state", "approved"),
-                summary=getattr(settled, "summary", None),
-                output=getattr(settled, "output", None) or None,
-                error=getattr(settled, "error", None),
-            )
-        elif resume_seed.decision == "approve":
-            exec_result = await execute_tool(
-                ToolCallRequest(
-                    id=resume_seed.tool_call_id,
-                    name=resume_seed.name,
-                    input=resume_seed.input or {},
+    # AC-11: everything from here to the pump is fallible post-`submitted` setup
+    # — approval settlement, the prior-row load, source resolution, pump
+    # creation, seeded execution. It used to run OUTSIDE any guard, so a failure
+    # returned with the durable `stream` row still `active` and the platform
+    # budget still reserved. The shared lifecycle now sees each of those
+    # failures as pre-commit, and re-raising keeps a typed `AppError` (a 409
+    # settlement conflict) exactly as visible to the route as before.
+    seeded_result: ToolResult | None = None
+    try:
+        if not await _settle_pending_approval():
+            return
+        provider_iter = await _resolve_provider_iter()
+        pump_task = asyncio.create_task(_pump(provider_iter))
+        turn_lifecycle.register_producer(pump_task)
+        # HITL resume seeding. On a resume POST the route resolved + re-validated
+        # the decision into `resume_seed`; emit the corresponding `tool_result`
+        # BEFORE consuming the post-approval provider pass so the new assistant
+        # row's parts are [tool_result, …answer]. Approve runs the
+        # (timeout-wrapped) tool; deny synthesizes a cancelled/rejected result
+        # WITHOUT executing — the side effect must never happen on a denial.
+        if resume_seed is not None and not resume_seed.is_plan and not resume_seed.is_clarify:
+            # BE-007: prefer the route's settled result (already claimed/executed).
+            if resume_seed.settled_result is not None:
+                settled = resume_seed.settled_result
+                seeded_result = ToolResult(
+                    tool_call_id=getattr(settled, "tool_call_id", resume_seed.tool_call_id),
+                    name=getattr(settled, "name", resume_seed.name),
+                    label=resume_seed.label,
+                    status=getattr(settled, "status", "succeeded"),
+                    approval_state=getattr(settled, "approval_state", "approved"),
+                    summary=getattr(settled, "summary", None),
+                    output=getattr(settled, "output", None) or None,
+                    error=getattr(settled, "error", None),
+                )
+            elif resume_seed.decision == "approve":
+                exec_result = await execute_tool(
+                    ToolCallRequest(
+                        id=resume_seed.tool_call_id,
+                        name=resume_seed.name,
+                        input=resume_seed.input or {},
+                        approval_state="approved",
+                    )
+                )
+                seeded_result = ToolResult(
+                    tool_call_id=exec_result.tool_call_id,
+                    name=exec_result.name,
+                    label=resume_seed.label,
+                    status=exec_result.status,
                     approval_state="approved",
+                    summary=exec_result.summary,
+                    output=exec_result.output or None,
+                    error=exec_result.error,
+                )
+            else:
+                seeded_result = ToolResult(
+                    tool_call_id=resume_seed.tool_call_id,
+                    name=resume_seed.name,
+                    label=resume_seed.label,
+                    status="cancelled",
+                    approval_state="rejected",
+                    summary="User denied the tool call.",
+                    error="User denied the tool call.",
+                )
+            # AC-03: a seeded result is a durable tool mutation like any other, so
+            # it folds through the SAME reducer. Appending the part here instead
+            # left a second tool-mutation path — the one place a `tool_result`
+            # reached the persisted transcript without the fold ever seeing it.
+            _fold(seeded_result)
+    except BaseException as setup_exc:
+        await turn_lifecycle.source_failed(setup_exc)
+        raise
+    if seeded_result is not None:
+        # Delivery, deliberately outside the setup guard: the seeded result is
+        # durable before the first provider event either way, and a sink failure
+        # here is a delivery failure, not a source one. Encoded exactly as the
+        # live driver encodes a provider `ToolResult`.
+        try:
+            yield encode_tool_result(
+                ToolResultEvent.model_validate(
+                    tool_result_part(seeded_result).model_dump(
+                        by_alias=True, exclude_none=True
+                    )
                 )
             )
-            seeded_result = ToolResult(
-                tool_call_id=exec_result.tool_call_id,
-                name=exec_result.name,
-                label=resume_seed.label,
-                status=exec_result.status,
-                approval_state="approved",
-                summary=exec_result.summary,
-                output=exec_result.output or None,
-                error=exec_result.error,
-            )
-        else:
-            seeded_result = ToolResult(
-                tool_call_id=resume_seed.tool_call_id,
-                name=resume_seed.name,
-                label=resume_seed.label,
-                status="cancelled",
-                approval_state="rejected",
-                summary="User denied the tool call.",
-                error="User denied the tool call.",
-            )
-        seeded_part = _tool_result_part(seeded_result)
-        tool_parts.append(seeded_part.model_dump(by_alias=True, exclude_none=True))
-        yield encode_tool_result(
-            ToolResultEvent.model_validate(
-                seeded_part.model_dump(by_alias=True, exclude_none=True)
-            )
-        )
+        except BaseException as delivery_exc:
+            await _delivery_interrupted(delivery_exc)
+            raise
 
     try:
         while True:
@@ -2495,15 +2278,16 @@ async def stream_and_persist(
             if (
                 stream_id is not None and await is_stop_requested_async(stream_id)
             ) or await request.is_disconnected():
-                pump_task.cancel()
-                # Suppress ONLY the CancelledError from the cancel we just
-                # issued; the pump forwards real provider exceptions through
-                # the queue (drained below), so nothing genuine is hidden.
-                with contextlib.suppress(asyncio.CancelledError):
-                    await pump_task
+                # AC-11: the lifecycle owns the registered pump. It suppresses
+                # only the CancelledError from this cancel; the pump forwards
+                # real provider exceptions through the queue (drained below), so
+                # nothing genuine is hidden.
+                await turn_lifecycle.cancel_registered()
                 # Drain any events the pump already enqueued before cancel —
                 # the pump may have pushed a final UsageUpdate / Complete that
-                # we'd otherwise lose, leaving `final_usage` empty on stopped.
+                # we'd otherwise lose, leaving the turn's usage empty on stopped.
+                # AC-03: FIFO, through the SAME fold the live driver uses, with
+                # every outbound effect and pause hint discarded.
                 while not queue.empty():
                     drained = queue.get_nowait()
                     if drained is None or isinstance(drained, _PumpError):
@@ -2511,48 +2295,28 @@ async def stream_and_persist(
                         # error: we're persisting `stopped`, not erroring, so
                         # a forwarded `_PumpError` is dropped here.
                         continue
-                    _apply_event(drained)
+                    _fold(drained)
                 # Pump cancel acloses the orchestrator before in-flight workers'
                 # SubagentDone(stopped) can be yielded onto this queue. Mark any
-                # accumulator that never received Done as stopped so persist does
-                # not default them to succeeded.
+                # scope that never received Done as stopped so persist does not
+                # default it to succeeded.
                 if agentic_active:
-                    mark_unfinished_subagents_stopped(agentic_subagents)
-                # Flush accumulators, persist with status=stopped + estimate.
-                # Agentic: sum completed/partial subagent receipts (BE-022 /
-                # BE-028) rather than repricing an arbitrary last UsageUpdate.
-                if agentic_active and agentic_subagents:
-                    turn_cost = _agentic_sum_cost_usd()
-                    breakdown = compute_cost_breakdown(
-                        usage=final_usage,
-                        binding=binding,
-                        image_count=image_attachment_count,
-                    )
-                    breakdown = breakdown.model_copy(
-                        update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
-                    )
-                else:
-                    breakdown = compute_cost_breakdown(
-                        usage=final_usage,
-                        binding=binding,
-                        image_count=image_attachment_count,
-                    )
-                    # Per-turn cost: matches what build_attribution exposes as
-                    # `attribution.costUsd` (pricing.py) so the ledger and the
-                    # wire stay consistent. FL-34-b: `subtotal_usd` is the total;
-                    # re-adding the surcharge charged it twice.
-                    turn_cost = breakdown.subtotal_usd
-                billable_cost = _billable_cost_delta(turn_cost)
+                    mark_unfinished_subagents_stopped(state.scopes)
+                # An abrupt stop is the one boundary with no exact authority: the
+                # orchestrator never reached a receipt-bearing `RunCost`, so
+                # `_boundary_money` falls through to its named estimate over the
+                # settled phase facts the fold already holds.
+                breakdown, turn_cost, billable_cost = _boundary_money()
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
                     breakdown=breakdown,
                     cost_confidence="estimate",
                     is_byok=is_byok_turn,
-                    substitution=sub_code,
-                    substituted_provider=sub_provider,
-                    substituted_model=sub_model,
-                    substituted_display_label=sub_label,
+                    substitution=state.substitution,
+                    substituted_provider=state.substituted_provider,
+                    substituted_model=state.substituted_model,
+                    substituted_display_label=state.substituted_display_label,
                     memory_applied=memory_applied_count,
                     memory_fact_ids=memory_fact_ids_applied,
                 )
@@ -2562,7 +2326,7 @@ async def stream_and_persist(
                 # single fresh_db.commit() makes both durable atomically. Mirrors
                 # the happy path (bump BEFORE its single commit) so a crash
                 # between writes can never persist a stopped row without usage.
-                async with _derive_session_factory(db)() as fresh_db:
+                async with turn_runtime.session_factory() as fresh_db:
                     stopped_assistant_id = await _persist_assistant(
                         status="stopped",
                         attribution=attribution,
@@ -2615,18 +2379,19 @@ async def stream_and_persist(
                             message_id=stopped_assistant_id,
                         )
                     await fresh_db.commit()
-                # Drop the live signal now that the turn is fully torn down.
-                if stream_id is not None:
-                    await clear_stop_async(stream_id)
+                # AC-11: the durable stopped result is latched here, so the
+                # `finally` cleanup (and any later delivery failure) cannot
+                # rewrite it. The lifecycle drops the live stop signal.
+                turn_lifecycle.record_commit("stopped")
                 # M4: stop-path turn log at warn level with cost_confidence=estimate.
                 _struct_log.warning(
                     "turn.stopped",
                     status="stopped",
                     conversation_id=str(conversation_id) if conversation_id else None,
                     turn_ms=int((time.monotonic() - turn_started_at) * 1000),
-                    prompt_tokens=final_usage.input_tokens,
-                    completion_tokens=final_usage.output_tokens,
-                    reasoning_tokens=final_usage.reasoning_tokens,
+                    prompt_tokens=state.usage.input_tokens,
+                    completion_tokens=state.usage.output_tokens,
+                    reasoning_tokens=state.usage.reasoning_tokens,
                     cost_usd=breakdown.subtotal_usd,
                     cost_confidence="estimate",
                     is_byok=is_byok_turn,
@@ -2697,31 +2462,37 @@ async def stream_and_persist(
                         isinstance(ev.exc, AppError)
                         and ev.exc.envelope.code == "RATE_LIMITED"
                     ):
-                        sub_code = "rate_limited"
+                        state.substitution = "rate_limited"
                     else:
-                        sub_code = fallback_substitution or "provider_fallback"
+                        state.substitution = fallback_substitution or "provider_fallback"
                     _struct_log.warning(
                         "turn.provider_fallback",
                         conversation_id=str(conversation_id) if conversation_id else None,
                         fallback_provider_id=runtime_provider_id,
-                        reason_code=sub_code,
+                        reason_code=state.substitution,
                     )
                     provider_iter = await _resolve_provider_iter()
                     pump_task = asyncio.create_task(_pump(provider_iter))
+                    turn_lifecycle.register_producer(pump_task)
                     continue
                 raise ev.exc
 
+            # AC-03: ONE fold owns every durable mutation, and the stopped drain
+            # runs the same one. Everything below this call is delivery and
+            # control — SSE frames, the reasoning wire gates, planner-seed
+            # harvesting, continuation pinning, pause latching, and per-worker
+            # attribution projection — which is exactly what a stopped drain
+            # must NOT do.
+            scope_was_open = (
+                isinstance(ev, SubagentDone) and ev.subagent_id in state.scopes
+            )
+            _fold(ev)
+
             if isinstance(ev, ReasoningDelta):
-                _open_reasoning_clock(ev.subagent_id)
-                if agentic_active and ev.subagent_id is not None:
-                    _sub(ev.subagent_id).reasoning.append(ev.text)
-                else:
-                    reasoning_buf.append(ev.text)
                 yield encode_reasoning_delta(
                     ReasoningDeltaEvent(text=ev.text, subagent_id=ev.subagent_id)
                 )
             elif isinstance(ev, ReasoningDone):
-                _close_reasoning_clock(ev.subagent_id)
                 # Agentic turns interleave multiple subagents, each with its own
                 # reasoning block, so the single-shot global gate doesn't apply —
                 # relay every `reasoning_done` (tagged with subagent_id when set).
@@ -2736,35 +2507,14 @@ async def stream_and_persist(
                     )
                     emitted_reasoning_done = True
             elif isinstance(ev, StatusUpdate):
-                # Web-search status line (reuses the existing `status` SSE
-                # event). Emit live and remember the latest (label, state) so
-                # the persisted `status` part records the final, `done` line.
-                # Agentic: stash per-subagent when tagged (FE-001).
-                if agentic_active and ev.subagent_id is not None:
-                    _sub(ev.subagent_id).latest_status = (ev.label, ev.state)
-                else:
-                    latest_status = (ev.label, ev.state)
+                # Web-search status line (reuses the existing `status` SSE event).
                 yield encode_status(
                     StatusEvent(label=ev.label, state=ev.state, subagent_id=ev.subagent_id)
                 )
             elif isinstance(ev, Sources):
-                # Resolved citation list. Emit the `sources` SSE event and stash
-                # the items for the persisted `sources` part (appended after the
-                # text part at the persist sites). `requested` mirrors whether
-                # web search was effective for the turn (it is, here) so the FE
-                # can tell grounded from ungrounded on the live stream.
-                # FL-35: the turn is grounded whoever produced the sources. The
-                # flag used to be set only in the untagged arm, so a fully
-                # subagent-tagged agentic turn still emitted the final
-                # "ungrounded" `sources` frame (empty items, `requested=True`)
-                # below — a wire-contract violation on a cited turn.
-                saw_sources_event = True
-                if agentic_active and ev.subagent_id is not None:
-                    acc = _sub(ev.subagent_id)
-                    acc.search_items = list(ev.items)
-                    acc.saw_sources = True
-                else:
-                    search_items = list(ev.items)
+                # Resolved citation list. `requested` mirrors whether web search
+                # was effective for the turn (it is, here) so the FE can tell
+                # grounded from ungrounded on the live stream.
                 yield encode_sources(
                     SourcesEvent(
                         items=list(ev.items),
@@ -2773,9 +2523,9 @@ async def stream_and_persist(
                     )
                 )
             elif isinstance(ev, ToolCall):
-                call_part = _tool_call_part(ev)
                 # B4: harvest planner spend from reserved tool-input before
                 # sanitize-on-persist strips RESERVED_CONTROL_KEYS from parts.
+                # Delivery-side on purpose: a stopped drain takes no seeds.
                 raw_input = ev.input if isinstance(ev.input, dict) else None
                 if raw_input is not None:
                     stamped_cost = raw_input.get("plannerCostUsd")
@@ -2793,39 +2543,15 @@ async def stream_and_persist(
                         stamped_usage = raw_input.get("planner_usage")
                     if isinstance(stamped_usage, dict):
                         pending_planner_usage = usage_from_wire(stamped_usage)
-                target_tool_parts = (
-                    _sub(ev.subagent_id).tool_parts
-                    if agentic_active and ev.subagent_id is not None
-                    else tool_parts
-                )
-                target_tool_parts.append(call_part.model_dump(by_alias=True, exclude_none=True))
                 yield encode_tool_call(
                     ToolCallEvent.model_validate(
-                        call_part.model_dump(by_alias=True, exclude_none=True)
+                        tool_call_part(ev).model_dump(by_alias=True, exclude_none=True)
                     )
                 )
             elif isinstance(ev, ToolResult):
-                result_part = _tool_result_part(ev)
-                target_tool_parts = (
-                    _sub(ev.subagent_id).tool_parts
-                    if agentic_active and ev.subagent_id is not None
-                    else tool_parts
-                )
-                for part in target_tool_parts:
-                    if part.get("type") == "tool_call" and part.get("id") == ev.tool_call_id:
-                        # Keep tool_call approvalState in sync with the result
-                        # (H-003: sibling cancels must flip pending → rejected,
-                        # not leave pending+cancelled).
-                        part["status"] = ev.status
-                        if ev.approval_state is not None:
-                            part["approvalState"] = ev.approval_state
-                        break
-                target_tool_parts.append(
-                    result_part.model_dump(by_alias=True, exclude_none=True)
-                )
                 yield encode_tool_result(
                     ToolResultEvent.model_validate(
-                        result_part.model_dump(by_alias=True, exclude_none=True)
+                        tool_result_part(ev).model_dump(by_alias=True, exclude_none=True)
                     )
                 )
             elif isinstance(ev, AwaitingApproval):
@@ -2861,14 +2587,14 @@ async def stream_and_persist(
                         cont_blob["modelId"] = fallback_binding.model_id
                         # FL-30: a live pause must stay non-terminal (B15), so it
                         # never gets a `SubagentDone` to carry the served route.
-                        # Stamp the substitution onto the accumulator instead —
-                        # `_agentic_sum_cost_usd` then prices this worker with the
-                        # fallback pricer (matching the orchestrator's
+                        # Stamp the substitution onto the scope instead — the
+                        # estimate then prices this worker with the fallback
+                        # pricer (matching the orchestrator's
                         # `pausedWorkerCostUsd`, so nothing is left unbilled) and
                         # `_build_agentic_parts` attributes it to the model that
                         # actually served.
                         if agentic_active and ev.subagent_id is not None:
-                            paused_acc = _sub(ev.subagent_id)
+                            paused_acc = state.scope(ev.subagent_id)
                             paused_acc.substitution = (
                                 fallback_substitution or "provider_fallback"
                             )
@@ -2890,9 +2616,9 @@ async def stream_and_persist(
                     pending_server_continuations[ev.tool_call_id] = cont_blob
                     # Strip any legacy embedding from in-memory tool parts.
                     target_parts = (
-                        _sub(ev.subagent_id).tool_parts
+                        state.scope(ev.subagent_id).tool_parts
                         if agentic_active and ev.subagent_id is not None
-                        else tool_parts
+                        else state.tool_parts
                     )
                     for part in target_parts:
                         if (
@@ -2907,89 +2633,63 @@ async def stream_and_persist(
                 paused_tool_call_id = ev.tool_call_id
                 break
             elif isinstance(ev, AnswerDelta):
-                # Invariant: emit ReasoningDone before the first AnswerDelta,
-                # if any reasoning_delta has been seen but done hasn't fired.
-                # (Skipped for agentic turns — each subagent emits its own
-                # `reasoning_done`.)
-                if not agentic_active and reasoning_buf and not emitted_reasoning_done:
+                # Wire gate: exactly one `reasoning_done` and it precedes the
+                # first answer, for a provider that streamed reasoning and then
+                # jumped straight to prose. (Skipped for agentic turns — each
+                # subagent emits its own `reasoning_done`.)
+                if not agentic_active and state.reasoning and not emitted_reasoning_done:
                     yield encode_reasoning_done(ReasoningDoneEvent())
                     emitted_reasoning_done = True
-                # FL-37: a provider that jumps straight to prose without a
-                # ReasoningDone still ends the reasoning block here.
-                _close_reasoning_clock(ev.subagent_id)
-                if first_answer_ms is None:
-                    first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
-                if agentic_active and ev.subagent_id is not None:
-                    _sub(ev.subagent_id).answer.append(ev.text)
-                else:
-                    answer_buf.append(ev.text)
                 yield encode_answer_delta(
                     AnswerDeltaEvent(text=ev.text, subagent_id=ev.subagent_id)
                 )
             elif isinstance(ev, SubagentStarted):
-                # Open a transcript section for this subagent. Recorded in
-                # first-seen order so the persisted parts group deterministically.
-                if ev.subagent_id not in agentic_subagents:
-                    agentic_subagents[ev.subagent_id] = _SubagentAccumulator(
-                        label=ev.label, role=ev.role
-                    )
-                    agentic_order.append(ev.subagent_id)
                 yield encode_subagent_started(
                     SubagentStartedEvent(
                         subagent_id=ev.subagent_id, label=ev.label, role=ev.role
                     )
                 )
             elif isinstance(ev, SubagentDone):
-                done_acc = agentic_subagents.get(ev.subagent_id)
                 done_attribution: ModelAttribution | None = None
-                if done_acc is not None:
-                    done_acc.cost_usd = ev.cost_usd
-                    done_acc.usage = ev.usage
-                    done_acc.outcome = ev.outcome
-                    done_acc.terminal = True
-                    done_acc.substitution = ev.substitution
-                    done_acc.substituted_provider = ev.substituted_provider
-                    done_acc.substituted_model = ev.substituted_model
-                    done_acc.substituted_display_label = ev.substituted_display_label
-                    if (
-                        ev.usage.input_tokens
-                        or ev.usage.output_tokens
-                        or (ev.cost_usd is not None and ev.cost_usd > 0)
-                    ):
-                        attr_binding = binding
-                        if (
-                            ev.substitution is not None
-                            and fallback_binding is not None
-                        ):
-                            attr_binding = fallback_binding
-                        # Verifier is fresh-context (no attachments); never
-                        # inherit turn image pricing. Every other phase does
-                        # send them, so it is charged for them. Prefer
-                        # authoritative SubagentDone.cost_usd when present.
-                        attr_image_count = _phase_image_count(ev.subagent_id, ev.role)
-                        breakdown = compute_cost_breakdown(
-                            usage=ev.usage,
-                            binding=attr_binding,
-                            image_count=attr_image_count,
+                # The fold opens a scope for an untracked done so both drivers
+                # persist it identically; the WIRE projection still only
+                # attributes a worker this stream actually watched start.
+                if scope_was_open and (
+                    ev.usage.input_tokens
+                    or ev.usage.output_tokens
+                    or (ev.cost_usd is not None and ev.cost_usd > 0)
+                ):
+                    attr_binding = binding
+                    if ev.substitution is not None and fallback_binding is not None:
+                        attr_binding = fallback_binding
+                    # Verifier is fresh-context (no attachments); never inherit
+                    # turn image pricing. Every other phase does send them, so it
+                    # is charged for them. Prefer authoritative
+                    # SubagentDone.cost_usd when present.
+                    attr_image_count = _phase_image_count(ev.subagent_id, ev.role)
+                    breakdown = compute_cost_breakdown(
+                        usage=ev.usage,
+                        binding=attr_binding,
+                        image_count=attr_image_count,
+                    )
+                    if ev.role == "verifier" and ev.cost_usd is not None:
+                        breakdown = breakdown.model_copy(
+                            update={
+                                "subtotal_usd": float(ev.cost_usd),
+                                "session_surcharge_usd": 0.0,
+                            }
                         )
-                        if ev.role == "verifier" and ev.cost_usd is not None:
-                            breakdown = breakdown.model_copy(
-                                update={
-                                    "subtotal_usd": float(ev.cost_usd),
-                                    "session_surcharge_usd": 0.0,
-                                }
-                            )
-                        done_attribution = build_attribution(
-                            requested_tier_id=requested_tier_id,
-                            binding=attr_binding,
-                            breakdown=breakdown,
-                            cost_confidence="exact",
-                            is_byok=is_byok_turn,
-                            substitution=ev.substitution,
-                            substituted_provider=ev.substituted_provider,
-                            substituted_model=ev.substituted_model,
-                            substituted_display_label=ev.substituted_display_label,
-                        )
+                    done_attribution = build_attribution(
+                        requested_tier_id=requested_tier_id,
+                        binding=attr_binding,
+                        breakdown=breakdown,
+                        cost_confidence="exact",
+                        is_byok=is_byok_turn,
+                        substitution=ev.substitution,
+                        substituted_provider=ev.substituted_provider,
+                        substituted_model=ev.substituted_model,
+                        substituted_display_label=ev.substituted_display_label,
+                    )
                 yield encode_subagent_done(
                     SubagentDoneEvent(
                         subagent_id=ev.subagent_id,
@@ -3006,10 +2706,8 @@ async def stream_and_persist(
                 )
             elif isinstance(ev, RunCost):
                 # Running run-cost subtotal vs the configured cap (M3 scaffold).
-                # AR-012: always persist a terminal receipt so reload matches live.
-                # FL-33-a: a plan / progress pause receipt persists too, with the
-                # confidence + phase the backend actually emitted.
-                agentic_run_summary = build_agentic_run_summary_part(ev)
+                # The receipt the fold just banked never rides the wire; the FE
+                # meter reads these scalars, persistence reads the receipt.
                 yield encode_run_cost(
                     RunCostEvent(
                         subtotal_usd=ev.subtotal_usd,
@@ -3021,27 +2719,9 @@ async def stream_and_persist(
                         failed_worker_count=ev.failed_worker_count,
                     )
                 )
-            elif isinstance(ev, UsageUpdate):
-                if agentic_active and ev.subagent_id is not None:
-                    _sub(ev.subagent_id).usage = ev
-                else:
-                    final_usage = ev
-            elif isinstance(ev, Complete):
-                empty_retry_seen = empty_retry_seen or ev.empty_retry
-                empty_retry_recovered_seen = (
-                    empty_retry_recovered_seen or ev.empty_retry_recovered
-                )
-                if agentic_active and ev.subagent_id is not None:
-                    _sub(ev.subagent_id).usage = ev.usage
-                else:
-                    final_usage = ev.usage
-                    # Provider-side fallback wins over the router-side seed, but
-                    # only when the provider ACTUALLY substituted; a `None` here
-                    # must not clobber a router-side `auto_downgrade` seed. Shared
-                    # with the drain branch via `_fold_complete_substitution`.
-                    sub_code, sub_provider, sub_model, sub_label = _fold_complete_substitution(
-                        ev, (sub_code, sub_provider, sub_model, sub_label)
-                    )
+            # `UsageUpdate` and `Complete` are durable-only: the fold above took
+            # the usage and the provider-side substitution, and neither has a
+            # wire frame of its own.
 
         # HITL pause terminal. The agent loop hit an approval-gated tool and
         # emitted `AwaitingApproval`; end the turn in the NEW terminal state
@@ -3058,24 +2738,17 @@ async def stream_and_persist(
             # pin has to live in server_state beside the ledger seeds.
             if agentic_active and agentic_mode is not None:
                 pending_orchestration_mode = agentic_mode
-            if agentic_active and agentic_subagents:
-                mark_unfinished_subagents_paused(agentic_subagents)
-            breakdown = compute_cost_breakdown(
-                usage=final_usage,
-                binding=binding,
-                image_count=image_attachment_count,
-            )
-            if agentic_active and agentic_subagents:
-                turn_cost = _agentic_sum_cost_usd()
-                breakdown = breakdown.model_copy(
-                    update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
-                )
-            else:
-                # FL-34-b: charge the subtotal alone (surcharge is disclosure).
-                turn_cost = breakdown.subtotal_usd
+            if agentic_active and state.scopes:
+                mark_unfinished_subagents_paused(state.scopes)
+            # AC-02: when the orchestrator owns this pause its boundary receipt
+            # says what the run has cost cumulatively and how much of that has
+            # not been charged yet. Only the latter reaches the row and the
+            # meter, so a second pause on the same run cannot re-charge the first
+            # one's dollars.
+            breakdown, turn_cost, pause_billable_cost = _boundary_money()
             # B4: if tool-input stamp was missing, fall back to planner accumulator.
             if pending_planner_cost_usd <= 0.0 and agentic_active:
-                planner_acc = agentic_subagents.get("planner")
+                planner_acc = state.scopes.get("planner")
                 if planner_acc is not None:
                     if planner_acc.cost_usd is not None and planner_acc.cost_usd > 0:
                         pending_planner_cost_usd = float(planner_acc.cost_usd)
@@ -3093,7 +2766,7 @@ async def stream_and_persist(
             # Accumulate across repeated pause cycles — a second pause must not
             # discard the prior_run_* already seeded into this resume turn.
             if agentic_active and agentic_mode == "single":
-                primary_acc = agentic_subagents.get("primary")
+                primary_acc = state.scopes.get("primary")
                 pause_usage = (
                     primary_acc.usage
                     if primary_acc is not None
@@ -3103,14 +2776,22 @@ async def stream_and_persist(
                         or primary_acc.usage.reasoning_tokens
                         or primary_acc.usage.cached_input_tokens
                     )
-                    else final_usage
+                    else state.usage
                 )
                 prior_seed_cost = (
                     float(resume_seed.prior_run_cost_usd)
                     if resume_seed is not None
                     else 0.0
                 )
-                pending_prior_run_cost_usd = prior_seed_cost + float(turn_cost or 0.0)
+                # AC-02: `turn_cost` is already the run's CUMULATIVE total when a
+                # boundary receipt carried it, so re-adding the prior seed would
+                # bill the pre-pause dollars a second time on the next resume.
+                # Without a receipt it is this leg's cost and still needs the seed.
+                pending_prior_run_cost_usd = (
+                    float(turn_cost or 0.0)
+                    if state.receipt is not None
+                    else prior_seed_cost + float(turn_cost or 0.0)
+                )
                 usage_parts: list[UsageUpdate] = []
                 if resume_seed is not None and resume_seed.prior_run_usage is not None:
                     usage_parts.append(resume_seed.prior_run_usage)
@@ -3136,10 +2817,10 @@ async def stream_and_persist(
                 breakdown=breakdown,
                 cost_confidence="estimate",
                 is_byok=is_byok_turn,
-                substitution=sub_code,
-                substituted_provider=sub_provider,
-                substituted_model=sub_model,
-                substituted_display_label=sub_label,
+                substitution=state.substitution,
+                substituted_provider=state.substituted_provider,
+                substituted_model=state.substituted_model,
+                substituted_display_label=state.substituted_display_label,
                 memory_applied=memory_applied_count,
                 memory_fact_ids=memory_fact_ids_applied,
             )
@@ -3149,13 +2830,14 @@ async def stream_and_persist(
                     status="awaiting_approval",
                     attribution=attribution,
                     commit=False,
-                    cost_usd=turn_cost,
+                    cost_usd=pause_billable_cost,
+                    pause_receipt=state.receipt,
                 )
                 if user_id is not None:
                     await usage_repo.increment_for_period(
                         db,
                         user_id=user_id,
-                        cost_usd_delta=turn_cost,
+                        cost_usd_delta=pause_billable_cost,
                         is_byok=is_byok_turn,
                         monthly_quota_usd=(
                             monthly_quota_usd_override
@@ -3181,6 +2863,10 @@ async def stream_and_persist(
                         release_active_guard=True,
                     )
                 await db.commit()
+            # AC-11: the pause is durably settled (or deliberately not persisted
+            # on a temporary turn) BEFORE the terminal frame goes out, so a sink
+            # failure on that frame is post-commit and rewrites nothing.
+            turn_lifecycle.record_commit("paused")
             terminal_message_id = (
                 str(paused_assistant_id) if paused_assistant_id is not None else str(uuid4())
             )
@@ -3204,8 +2890,6 @@ async def stream_and_persist(
                     attribution=attribution,
                 )
             )
-            if stream_id is not None:
-                await clear_stop_async(stream_id)
             return
 
         # Honesty rule (PRD 07 §4.3): web search was effective for this turn but
@@ -3215,51 +2899,32 @@ async def stream_and_persist(
         # cited. The matching empty `SourcesPart` persists via `_build_parts`
         # (gated on `web_search`), so the ungrounded state survives reload,
         # replay, and public share too.
-        if web_search and not saw_sources_event:
+        if web_search and not state.saw_sources:
             yield encode_sources(SourcesEvent(items=[], requested=True))
 
-        # Provider finished cleanly. Compute attribution and emit terminal.
-        breakdown = compute_cost_breakdown(
-            usage=final_usage,
-            binding=binding,
-            image_count=image_attachment_count,
-        )
-        # Per-turn cost: matches what build_attribution exposes as
-        # `attribution.costUsd` (pricing.py) so the cost ledger row and the
-        # wire attribution agree. Agentic heterogeneous routes (BE-022): sum
-        # per-subagent monetary costs rather than repricing the summed tokens
-        # once against the original binding.
-        if agentic_active and agentic_subagents:
-            turn_cost = _agentic_sum_cost_usd()
-            # Keep breakdown for structure, but override the displayed total.
-            breakdown = breakdown.model_copy(
-                update={"subtotal_usd": turn_cost, "session_surcharge_usd": 0.0}
-            )
-        else:
-            # FL-34-b: charge the subtotal alone (surcharge is disclosure).
-            turn_cost = breakdown.subtotal_usd
-        # AR-002: rollup/message cost charge only the unbilled delta on resume.
-        billable_cost = _billable_cost_delta(turn_cost)
+        # Provider finished cleanly. AC-02: the terminal receipt is the exact run
+        # total, and AR-002 still charges only the not-yet-billed part of it.
+        breakdown, turn_cost, billable_cost = _boundary_money()
         attribution = build_attribution(
             requested_tier_id=requested_tier_id,
             binding=binding,
             breakdown=breakdown,
             cost_confidence="exact",
             is_byok=is_byok_turn,
-            substitution=sub_code,
-            substituted_provider=sub_provider,
-            substituted_model=sub_model,
-            substituted_display_label=sub_label,
+            substitution=state.substitution,
+            substituted_provider=state.substituted_provider,
+            substituted_model=state.substituted_model,
+            substituted_display_label=state.substituted_display_label,
             memory_applied=memory_applied_count,
             memory_fact_ids=memory_fact_ids_applied,
         )
         fallback_injected, fallback_subagent_id = _inject_empty_reply_fallback_if_needed()
         if fallback_injected:
-            if not agentic_active and reasoning_buf and not emitted_reasoning_done:
+            if not agentic_active and state.reasoning and not emitted_reasoning_done:
                 yield encode_reasoning_done(ReasoningDoneEvent())
                 emitted_reasoning_done = True
-            if first_answer_ms is None:
-                first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
+            if state.first_answer_ms is None:
+                state.first_answer_ms = int((time.monotonic() - turn_started_at) * 1000)
             yield encode_answer_delta(
                 AnswerDeltaEvent(
                     text=EMPTY_REPLY_FALLBACK,
@@ -3354,7 +3019,7 @@ async def stream_and_persist(
                         "providerId": attribution.provider_id,
                         "isByok": is_byok_turn,
                         "costUsd": turn_cost,
-                        "ttftMs": first_answer_ms,
+                        "ttftMs": state.first_answer_ms,
                     },
                 )
             await db.commit()
@@ -3368,15 +3033,15 @@ async def stream_and_persist(
                 # close immediately after `terminal`. We do hold a reference
                 # via a module-level set to keep the task alive against GC
                 # in case the asyncio event-loop policy drops weakrefs.
-                # The session factory is derived from the request-scoped
-                # session's bind so tests can point at the per-test SQLite
-                # file. In prod the bind is the process engine; either way
-                # the factory targets the right DB.
+                # The session factory comes from this turn's RuntimeContext, so
+                # tests point at the per-test SQLite file. In prod the bind is
+                # the process engine; either way the factory targets the right
+                # DB.
                 task = asyncio.create_task(
                     _autogen_title(
                         conversation_id=conversation_id,
                         user_text=user_text,
-                        session_factory=_derive_session_factory(db),
+                        session_factory=turn_runtime.session_factory,
                         provider_id=runtime_provider_id,
                         api_key=active_api_key,
                     )
@@ -3399,12 +3064,16 @@ async def stream_and_persist(
                         user_id=user_id,
                         user_text=user_text,
                         answer_text=resolved_answer_text,
-                        session_factory=_derive_session_factory(db),
+                        session_factory=turn_runtime.session_factory,
                     )
                 )
                 _BG_TASKS.add(extract_task)
                 extract_task.add_done_callback(_BG_TASKS.discard)
 
+        # AC-11: the turn is durably done (or, on a temporary chat, deliberately
+        # not persisted) before the terminal frame is delivered. A sink failure
+        # from here on is post-commit: it must not re-charge or rewrite status.
+        turn_lifecycle.record_commit("done")
         # Terminal frame. For temporary chats the message is never persisted,
         # so we mint a fresh uuid4 per turn — using a constant placeholder
         # would collide across consecutive temp turns in one tab and break
@@ -3417,9 +3086,9 @@ async def stream_and_persist(
             status="done",
             conversation_id=str(conversation_id) if conversation_id else None,
             turn_ms=int((time.monotonic() - turn_started_at) * 1000),
-            prompt_tokens=final_usage.input_tokens,
-            completion_tokens=final_usage.output_tokens,
-            reasoning_tokens=final_usage.reasoning_tokens,
+            prompt_tokens=state.usage.input_tokens,
+            completion_tokens=state.usage.output_tokens,
+            reasoning_tokens=state.usage.reasoning_tokens,
             cost_usd=breakdown.subtotal_usd,
             cost_confidence="exact",
             is_byok=is_byok_turn,
@@ -3427,8 +3096,8 @@ async def stream_and_persist(
             provider_id=attribution.provider_id,
             provider_label=attribution.provider_label,
             message_id=terminal_message_id,
-            empty_reply_retry=empty_retry_seen,
-            empty_reply_retry_recovered=empty_retry_recovered_seen,
+            empty_reply_retry=state.empty_retry,
+            empty_reply_retry_recovered=state.empty_retry_recovered,
         )
         yield encode_terminal(
             TerminalEvent(message_id=terminal_message_id, attribution=attribution)
@@ -3436,47 +3105,28 @@ async def stream_and_persist(
 
     except asyncio.CancelledError:
         # Hard cancel: worker shutdown / deploy / ASGI task cancel mid-stream.
-        # Before re-raising we close out the durable stream bookkeeping so the
-        # `stream` row doesn't strand at `status="active"` forever and the live
-        # stop signal doesn't leak. Mirrors the `except Exception` branch's
-        # fresh-session + best-effort pattern.
-        #
-        # Terminal status here is `"stopped"`, not `"error"`: the turn was
-        # cancelled (the work was interrupted), not failed by the provider —
-        # `"stopped"` matches the disconnect/explicit-stop semantics. We do NOT
-        # persist a partial assistant row in this branch; there is no clean
-        # partial-persist contract for a hard cancel, so we only close the
-        # stream-lifecycle bookkeeping.
+        # The turn was interrupted, not failed by the provider, so the lifecycle
+        # terminalizes an uncommitted row as `stopped` (matching the
+        # disconnect/explicit-stop semantics) and leaves a committed one alone.
+        # No partial assistant row is persisted here: there is no clean
+        # partial-persist contract for a hard cancel.
         #
         # A hard worker *crash* (SIGKILL / OOM) delivers no CancelledError, so
-        # this cleanup never runs and the row would stay `active`. That gap is
-        # closed by the orphan-stream reaper (`app.streaming.reaper` +
+        # this never runs and the row would stay `active`. That gap is closed by
+        # the orphan-stream reaper (`app.streaming.reaper` +
         # `streams_repo.reap_stale_active`), which sweeps stale `active` rows to
         # `"error"` on startup and on an interval (PRD 04 §5.1).
-        if stream_id is not None:
-            with contextlib.suppress(Exception):
-                async with _derive_session_factory(db)() as cancel_db:
-                    await streams_repo.mark_status(
-                        cancel_db,
-                        stream_id=stream_id,
-                        status="stopped",
-                        release_active_guard=True,
-                    )
-                    await cancel_db.commit()
-            with contextlib.suppress(Exception):
-                await clear_stop_async(stream_id)
+        await turn_lifecycle.hard_cancelled()
         # Re-raise so the event loop sees the cancellation rather than
         # swallowing it into a fake `error` envelope. The cleanup above must
-        # NEVER suppress the cancellation. The `finally` clause still cancels
-        # the pump task below.
+        # NEVER suppress the cancellation. The `finally` clause still closes the
+        # lifecycle (pump cancel, stop signal, reservation) below.
         raise
     except Exception as exc:
-        pump_task.cancel()
-        # Suppress ONLY CancelledError from this cleanup cancel. The provider
-        # error is already captured in `exc`; the pump forwards via the queue
-        # and never re-raises on await, so no real exception is hidden here.
-        with contextlib.suppress(asyncio.CancelledError):
-            await pump_task
+        # AC-11: the lifecycle owns the registered pump. The provider error is
+        # already captured in `exc`; the pump forwards via the queue and never
+        # re-raises on await, so no real exception is hidden here.
+        await turn_lifecycle.cancel_registered()
         if isinstance(exc, AppError):
             # Provider raised a typed error (e.g. RATE_LIMITED with
             # retryAfterMs); surface its envelope verbatim.
@@ -3499,52 +3149,38 @@ async def stream_and_persist(
                 body="The provider stream errored.",
             )
         yield encode_error(envelope)
-        # `error` does NOT persist an assistant row (plan §"Persistence" rule).
-        # But the durable `stream` row SHOULD reflect the failure so the
-        # lifecycle is observable. Best-effort + fresh session: the request
-        # session may be poisoned after the provider error (a failed flush
-        # leaves it in a rolled-back-pending state), so we open a clean one and
-        # swallow any failure — stream-status bookkeeping must never turn a
-        # provider error into a 500 or mask the `error` frame already yielded.
-        if stream_id is not None:
+        # `error` does NOT persist an assistant row (plan §"Persistence" rule),
+        # and the lifecycle terminalizes the durable `stream` row for us — on a
+        # fresh session, because the request session may be poisoned after the
+        # provider error, and only while the turn is still pre-commit, so a
+        # failure AFTER a committed terminal cannot rewrite its status. The
+        # analytics row is the one thing the lifecycle knows nothing about.
+        if stream_id is not None and user_id is not None:
             try:
-                async with _derive_session_factory(db)() as err_db:
-                    await streams_repo.mark_status(err_db, stream_id=stream_id, status="error")
-                    if user_id is not None:
-                        await analytics_repo.record(
-                            err_db,
-                            user_id=user_id,
-                            event_type="response.terminal",
-                            properties=_terminal_properties(
-                                terminal_status="error",
-                                error_code=envelope.code,
-                            ),
-                        )
+                async with turn_runtime.session_factory() as err_db:
+                    await analytics_repo.record(
+                        err_db,
+                        user_id=user_id,
+                        event_type="response.terminal",
+                        properties=_terminal_properties(
+                            terminal_status="error",
+                            error_code=envelope.code,
+                        ),
+                    )
                     await err_db.commit()
             except Exception as mark_exc:  # pragma: no cover - defensive
-                log.warning("stream.mark_error.failed", exc_info=mark_exc)
-            with contextlib.suppress(Exception):
-                await clear_stop_async(stream_id)
+                log.warning("stream.error_analytics.failed", exc_info=mark_exc)
+        await turn_lifecycle.source_failed(exc)
         return
     finally:
-        if not pump_task.done():
-            pump_task.cancel()
-            # Suppress ONLY CancelledError from this final cleanup cancel; a
-            # genuine provider exception would have surfaced via the queue.
-            with contextlib.suppress(asyncio.CancelledError):
-                await pump_task
-        # Stop-registry leak guard: every terminal path must drop the live stop
-        # signal exactly once. The stop / disconnect, CancelledError, and
-        # `error` branches each `clear_stop` before returning, but the natural
-        # `done` terminal path returns through this `finally` WITHOUT having
-        # cleared — leaving a `_STOP_REQUESTS` entry behind if a (late) stop was
-        # ever requested for this stream. `clear_stop` is idempotent (a plain
-        # `set.discard`), so re-clearing here is harmless on the paths that
-        # already cleared and closes the leak on the `done` path. Guarded on a
-        # non-None stream_id (temporary turns never register a stream).
-        if stream_id is not None:
-            await clear_stop_async(stream_id)
-        await _release_budget_reservation()
+        # AC-11: one close for every exit — natural `done`, pause, stop,
+        # hard cancel, provider error, and the `GeneratorExit` a detached sink
+        # throws in at `aclose()`. It cancels and joins the registered pump,
+        # drops the live stop signal (the `done` path never cleared it, which
+        # leaked a `_STOP_REQUESTS` entry when a late stop had been requested),
+        # and releases the platform-budget hold. Idempotent, so a pre-commit
+        # failure that already closed here changes nothing the second time.
+        await turn_lifecycle.close()
 
 
 async def run_detached_producer(
@@ -3594,9 +3230,12 @@ async def run_detached_producer(
     differences are structural, not behavioral:
 
     1. It owns a FRESH DB session (the originating POST request's session closes
-       as soon as the POST returns; the producer outlives it). The session is
-       derived from the process-wide `session_factory` so persistence lands on
-       the right engine in both prod and tests.
+       as soon as the POST returns; the producer outlives it). `session_factory`
+       is the route-derived factory for the originating request's engine, so
+       persistence lands on the right engine in both prod and tests. AC-04: it
+       is also the `RuntimeContext` handed to `stream_and_persist`, so the
+       detached turn's heartbeat, reservation release, and post-turn tasks use
+       that same factory rather than the process-wide one.
     2. It hands `stream_and_persist` a `_NeverDisconnectedRequest`, so a client
        disconnect can NOT tear the turn down. The live cancel paths that remain
        are the dedicated stop endpoint (via `stop_registry`, polled inside
@@ -3609,13 +3248,26 @@ async def run_detached_producer(
     `mark_done`s the buffer so every subscriber drains and closes. ONLY this
     producer persists; subscribers never write to the DB, so a reconnect cannot
     double-persist or double-count.
+
+    AC-11: it also owns the turn's `TurnLifecycle`, built here and passed into
+    the generator, so a sink failure and a source failure are reported to ONE
+    outcome latch. This wrapper reports; it never selects an outcome itself.
     """
     terminal_kind = "stopped"  # default: no terminal/error frame ⇒ stopped/cancelled
+    runtime = RuntimeContext.from_factory(session_factory)
+    # AC-11: build the lifecycle BEFORE the generator and hand that exact
+    # instance in. `buffer.append()` is this turn's real sink, so its failures
+    # have to reach the same object that owns the generator's registered pump,
+    # budget reservation and stop signal — which is why this wrapper reports
+    # instead of inferring: it never maps a status or writes the DB itself.
+    lifecycle = TurnLifecycle(runtime=runtime, stream_id=stream_id, user_id=user_id)
     try:
         async with session_factory() as session:
-            async for event in stream_and_persist(
+            producer = stream_and_persist(
                 request=_NeverDisconnectedRequest(),  # type: ignore[arg-type]
                 db=session,
+                runtime=runtime,
+                lifecycle=lifecycle,
                 provider=provider,
                 binding=binding,
                 requested_tier_id=requested_tier_id,
@@ -3650,27 +3302,57 @@ async def run_detached_producer(
                 budget_headroom_usd=budget_headroom_usd,
                 requested_agentic_mode=requested_agentic_mode,
                 agentic_coercion_reason=agentic_coercion_reason,
-            ):
-                # Mirror the last frame kind so the buffer's terminal_kind is
-                # observable. `terminal`/`error` are the only closing frames;
-                # absence of either means the stop-path teardown ran (stopped).
-                if event.event == "terminal":
-                    terminal_kind = "done"
-                elif event.event == "error":
-                    terminal_kind = "error"
-                await buffer.append(event)
+            )
+            try:
+                async for event in producer:
+                    # Mirror the last frame kind so the buffer's terminal_kind is
+                    # observable. `terminal`/`error` are the only closing frames;
+                    # absence of either means the stop-path teardown ran.
+                    if event.event == "terminal":
+                        terminal_kind = "done"
+                    elif event.event == "error":
+                        terminal_kind = "error"
+                    try:
+                        await buffer.append(event)
+                    except asyncio.CancelledError:
+                        # A cancel landing on the sink is an interruption, not a
+                        # sink failure, and it must be classified here: the
+                        # generator is suspended at a `yield`, so it never sees
+                        # the `CancelledError` — only the `GeneratorExit` from
+                        # `aclose()` below. Reporting that as a delivery failure
+                        # would terminalize the row `error` while this frame's
+                        # own handler closes the buffer `stopped`.
+                        await lifecycle.hard_cancelled()
+                        raise
+                    except Exception as append_exc:
+                        # The sink failed while the generator sits suspended at
+                        # its `yield`. Report it to the SHARED lifecycle, which
+                        # decides pre- vs post-commit, then let `aclose()` below
+                        # run the generator's own teardown. Swallowing this used
+                        # to leave the pump pulling and the reservation held.
+                        await lifecycle.delivery_failed(append_exc)
+                        raise
+            finally:
+                # Never leave the generator suspended: `aclose()` throws
+                # `GeneratorExit` in at the yield so its `finally` reaches the
+                # same lifecycle. Idempotent on the paths that already closed.
+                await producer.aclose()
     except asyncio.CancelledError:
-        # Shutdown/lifespan cancel. `stream_and_persist` already closed out its
-        # own durable `stream` bookkeeping in its CancelledError branch before
-        # this propagated; we just close the buffer so subscribers drain.
+        # Shutdown/lifespan cancel. The durable `stream` bookkeeping is already
+        # closed out as `stopped` — by the generator's own CancelledError branch
+        # when the cancel landed inside it, or by the `hard_cancelled()` above
+        # when it landed on the sink. Either way the buffer's kind agrees with
+        # the row; we just close the buffer so subscribers drain.
         terminal_kind = "stopped"
         with contextlib.suppress(Exception):
             await buffer.mark_done(terminal_kind=terminal_kind)
         raise
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         # `stream_and_persist` already converts provider errors into an `error`
-        # frame internally; reaching here means an unexpected failure. Surface
-        # nothing to a socket (there isn't one) — just close the buffer.
+        # frame internally; reaching here means an unexpected failure or the
+        # re-raised `buffer.append()` failure above. Surface nothing to a socket
+        # (there isn't one) — the lifecycle already settled the turn's outcome,
+        # so this only closes the buffer for the subscribers.
         log.warning("resumable.producer.failed", exc_info=exc)
         terminal_kind = "error"
     finally:

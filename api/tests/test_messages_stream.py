@@ -13,6 +13,7 @@ import base64
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -1494,8 +1495,6 @@ async def test_regenerate_rejects_persisted_attachments_for_unsupported_provider
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    from datetime import UTC, datetime
-
     from app.db.repositories import api_keys as api_keys_repo
 
     await client.get("/api/bootstrap")
@@ -2717,8 +2716,6 @@ async def test_idempotent_replay_strips_reserved_keys_from_tool_parts(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """H-012: done/stopped idempotent SSE replay sanitizes every reserved key."""
-    from datetime import UTC, datetime
-
     from app.agentic.continuation import RESERVED_CONTROL_KEYS
 
     await client.get("/api/bootstrap")
@@ -2848,6 +2845,166 @@ async def test_idempotent_replay_strips_reserved_keys_from_tool_parts(
     assert tool_call["input"] == {"title": "Kickoff"}
     tool_result = next(p for n, p in replay if n == "tool_result")
     assert tool_result["output"] == {"ok": True}
+
+
+async def test_idempotent_replay_of_an_agentic_turn_keeps_its_sections(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """AC-05 through the route: re-POSTing a persisted deep-research turn replays
+    the durable subagent lifecycle, each section's own prose, and the stored run
+    receipt. Before the projection boundary this collapsed into one untagged
+    `answer_delta` carrying the planner's plan and every worker note as though
+    the assistant had said them."""
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    client_msg_id = str(uuid4())
+
+    async with session_factory() as session:
+        convo = Conversation(
+            user_id=user_id,
+            title="Agentic replay",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.flush()
+        user_msg = Message(
+            conversation_id=convo.id,
+            client_message_id=UUID(client_msg_id),
+            role="user",
+            parts=[{"type": "text", "text": "research rust"}],
+            status=None,
+            attribution=None,
+            created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        )
+        session.add(user_msg)
+        await session.flush()
+        assistant = Message(
+            conversation_id=convo.id,
+            role="assistant",
+            parts=[
+                {
+                    "type": "subagent",
+                    "subagentId": "planner",
+                    "label": "Planner",
+                    "role": "orchestrator",
+                },
+                {"type": "text", "text": "PLAN: two lookups.", "subagentId": "planner"},
+                {
+                    "type": "subagent",
+                    "subagentId": "worker-1",
+                    "label": "Rust history",
+                    "role": "worker",
+                    "outcome": "succeeded",
+                    "costUsd": 0.002,
+                },
+                {"type": "text", "text": "Worker finding.", "subagentId": "worker-1"},
+                {
+                    "type": "subagent",
+                    "subagentId": "worker-2",
+                    "label": "Rust adoption",
+                    "role": "worker",
+                    "outcome": "failed",
+                },
+                {
+                    "type": "subagent",
+                    "subagentId": "aggregator",
+                    "label": "Synthesis",
+                    "role": "aggregator",
+                },
+                {"type": "text", "text": "Rust began in 2006.", "subagentId": "aggregator"},
+                {
+                    "type": "agentic_run_summary",
+                    "outcome": "partial",
+                    "budgetHalted": True,
+                    "failedWorkers": 1,
+                    "subtotalUsd": 0.006,
+                    "capUsd": 0.05,
+                    "costConfidence": "exact",
+                    "costPhase": "final",
+                },
+            ],
+            status="done",
+            attribution={
+                "requestedTierId": "smart",
+                "servedTierId": "smart",
+                "servedModelLabel": "Fake",
+                "providerId": "fake",
+                "providerLabel": "Fake",
+                "isByok": False,
+                "costUsd": 0.006,
+                "costConfidence": "exact",
+                "breakdown": {
+                    "currency": "USD",
+                    "listPriceInPerM": 0,
+                    "listPriceOutPerM": 0,
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "reasoningTokens": 0,
+                    "cachedInputTokens": 0,
+                    "longContext": {"flat": True, "tokensRepriced": "none"},
+                    "promoApplied": False,
+                    "subtotalUsd": 0,
+                    "sessionSurchargeUsd": 0,
+                },
+            },
+            responds_to_message_id=user_msg.id,
+            created_at=datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+        )
+        session.add(assistant)
+        await session.commit()
+        conv_id = str(convo.id)
+        assistant_id = assistant.id
+
+    replay = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": client_msg_id, "tierId": "smart", "text": "research rust"},
+    )
+    assert [name for name, _ in replay] == [
+        "submitted",
+        "subagent_started",
+        "answer_delta",
+        "subagent_done",
+        "subagent_started",
+        "answer_delta",
+        "subagent_done",
+        "subagent_started",
+        "subagent_done",
+        "subagent_started",
+        "answer_delta",
+        "subagent_done",
+        "run_cost",
+        "terminal",
+    ]
+    # Each section's prose stays tagged to the subagent that produced it; nothing
+    # is promoted into an untagged manager answer.
+    assert [(p.get("subagentId"), p["text"]) for n, p in replay if n == "answer_delta"] == [
+        ("planner", "PLAN: two lookups."),
+        ("worker-1", "Worker finding."),
+        ("aggregator", "Rust began in 2006."),
+    ]
+    done = {p["subagentId"]: p for n, p in replay if n == "subagent_done"}
+    assert done["worker-1"]["outcome"] == "succeeded"
+    assert done["worker-1"]["costUsd"] == 0.002
+    assert done["worker-2"]["outcome"] == "failed"
+    receipt = next(p for n, p in replay if n == "run_cost")
+    assert receipt["subtotalUsd"] == 0.006
+    assert receipt["capUsd"] == 0.05
+    assert receipt["partial"] is True
+    assert receipt["budgetHalted"] is True
+    assert receipt["failedWorkerCount"] == 1
+    assert replay[-1][1]["messageId"] == str(assistant_id)
+
+    # Replay writes nothing: the two seeded rows are still the only rows.
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == UUID(conv_id))
+            )
+        ).scalars().all()
+        assert len(rows) == 2
 
 
 async def test_auto_route_downgrade_surfaces_substitution(

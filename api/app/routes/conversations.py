@@ -86,12 +86,7 @@ from app.guest_limits import (
     count_guest_premium_messages,
     is_premium_tier,
 )
-from app.messages.projection import (
-    find_any_resumable_tool_call,
-    find_resumable_tool_call,
-    parts_to_provider_history,
-    parts_to_semantic_replay,
-)
+from app.messages.projection import parts_to_provider_history, parts_to_semantic_replay
 from app.middleware.ratelimit import limiter
 from app.providers.factory import build_provider
 from app.providers.pricing import compute_cost_breakdown
@@ -149,6 +144,7 @@ from app.tools.approval_settlement import (
     settle_pseudo_tool_approval_outcome,
 )
 from app.tools.builtin import TOOL_REGISTRY, ToolInputError, validate_tool_input
+from app.tools.resume_lookup import find_any_resumable_tool_call, find_resumable_tool_call
 from app.uploads import extract_attachment_text, is_supported_attachment_type
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])

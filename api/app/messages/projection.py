@@ -8,12 +8,13 @@ part is tagged with the subagent that produced it, so flattening promoted planne
 prompts and worker notes into the manager's answer while dropping the subagent
 lifecycle, per-worker attribution and run receipt entirely.
 
-This module is the one owner of what a durable part means: which parts are the
-turn's answer, how a stored row replays, and which stored `tool_call` a resume may
-act on. It is pure — no database, no clock, no delivery. Semantic replay is
-deliberately NOT a re-run of the original stream: chunk boundaries, interleaving
-and progress ticks were never persisted, so they are not invented, and
-`ReplayLogBuffer` still owns exact buffered replay.
+This module is the one owner of what a finished turn SAID: which parts are its
+answer, and how a stored row replays. Nothing else — what a parked turn may still
+DO is approval policy, and lives in the sibling `resume_lookup`. It is pure — no
+database, no clock, no delivery. Semantic replay is deliberately NOT a re-run of
+the original stream: chunk boundaries, interleaving and progress ticks were never
+persisted, so they are not invented, and `ReplayLogBuffer` still owns exact
+buffered replay.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from uuid import UUID
 from pydantic import ValidationError
 from sse_starlette import ServerSentEvent
 
-from app.agentic.continuation import resolve_continuation, sanitize_message_parts_for_api
+from app.agentic.continuation import sanitize_message_parts_for_api
 from app.providers.protocol import ChatMessage as ProviderChatMessage
 from app.schemas import stream_events as events
 from app.schemas.message import AgenticRunSummaryPart, ModelAttribution, SubagentPart
@@ -285,66 +286,3 @@ def parts_to_semantic_replay(
     )
     frames.append(sse.encode_terminal(terminal))
     return frames
-
-
-def find_pending_tool_call(parts: object, tool_call_id: str) -> dict[str, Any] | None:
-    """Find a pending, approval-awaiting `tool_call` part by id."""
-    for part in _dict_parts(parts):
-        if (
-            part.get("type") == "tool_call"
-            and part.get("id") == tool_call_id
-            and part.get("status") == "awaiting_approval"
-            and part.get("approvalState") == "pending"
-        ):
-            return part
-    return None
-
-
-def find_resumable_tool_call(
-    parts: object,
-    tool_call_id: str,
-    *,
-    server_state: object = None,
-) -> dict[str, Any] | None:
-    """Find a tool_call for resume: pending OR already settled (BE-007 retry).
-
-    H-003: a worker call cancelled as a concurrent-pause sibling is
-    `approvalState=rejected` without a continuation, and those are not resumable —
-    only a continuation-bearing pause (or a primary HITL call) may be
-    approved/denied. That decision reads the part's `subagentId`, which is why it
-    is here and not in a route.
-    """
-    pending = find_pending_tool_call(parts, tool_call_id)
-    if pending is not None:
-        return pending
-    for part in _dict_parts(parts):
-        settled = part.get("approvalState") in ("approved", "rejected")
-        if part.get("type") != "tool_call" or part.get("id") != tool_call_id or not settled:
-            continue
-        subagent_id = part.get("subagentId")
-        if isinstance(subagent_id, str) and subagent_id.startswith("worker-"):
-            _, continuation = resolve_continuation(
-                server_state=server_state,
-                tool_input=part.get("input"),
-                tool_call_id=tool_call_id,
-            )
-            if continuation is None and part.get("approvalState") == "rejected":
-                return None
-        return part
-    return None
-
-
-def find_any_resumable_tool_call(
-    parts: object,
-    *,
-    server_state: object = None,
-) -> dict[str, Any] | None:
-    """Return the first still-pending approval-gated `tool_call` (A-7 Stop)."""
-    for part in _dict_parts(parts):
-        call_id = part.get("id")
-        if part.get("type") != "tool_call" or not isinstance(call_id, str) or not call_id:
-            continue
-        found = find_resumable_tool_call(parts, call_id, server_state=server_state)
-        if found is not None and found.get("approvalState") == "pending":
-            return found
-    return None

@@ -12,7 +12,7 @@
 
 **How to read this.** **Confidence tags** attach to claims, not sections: **[high]** = independent sources, a primary spec, or an audited measurement; **[medium-high]** = one strong controlled study, or convergent primaries with a scope limit; **[medium]** = a single study, or practitioner reports without controlled comparison; **[low-medium]** = n=1 with a named mechanism; **[low]** = direction only. Tags are never raised above their source; a figure missing model, scaffold, task count, date or reporter is downgraded. **Citations** are unified across Parts A and B: every `[n]` resolves in §20 Sources, grouped there by subject area. **Synthesis inference** marks a bridging claim no single source states, never above **[medium]**.
 
-**Limitations and deferred items.** Four gaps recur unresolved: no matched-compute multi-agent comparison in the **retrieval-unbounded** regime, precisely where the strongest vendor claim lives; no public tool-count threshold at which catalog degradation warrants retrieval; undisclosed product-level reliability and cost distributions for essentially every shipped product; no accepted benchmark for multi-day interrupted work, maintainability, or calibrated clarification. The research round closed with no deferred issues of its own. §§11–20 are Part B.
+**Limitations and deferred items.** Four gaps recur unresolved: no matched-compute multi-agent comparison in the **retrieval-unbounded** regime, precisely where the strongest vendor claim lives; no public tool-count threshold at which catalog degradation warrants retrieval; undisclosed product-level reliability and cost distributions for essentially every shipped product; no accepted benchmark for multi-day interrupted work, maintainability, or calibrated clarification. No further open questions are held over beyond those four. §§11–20 are Part B.
 
 ---
 
@@ -30,8 +30,8 @@
 8. **Strict schema calling is the default; long context degrades tool use through three independent channels (§7), only one of which progressive disclosure addresses. [high]** [66][71]
 9. **Fan-out needs one aggregation bottleneck. [medium-high]** Error amplification 17.2× independent against 4.4× centralized (P=0.030, cluster-robust). [54]
 10. **Benchmark numbers are system scores, not model scores. [high]** One protocol, 106 tasks, eight backends: a 23.8-point harness spread. [143]
-11. **Environment boundaries bound capability; approvals and classifiers only lower probability. [high]** ~93% of prompts approved, ~83% classifier catch on *overeager commands* not attacks, 84% fewer prompts from an OS sandbox (usage, not efficacy) — no figure is an attack-mitigation rate. [63][64][65]
-12. **Delegated authority has token plumbing; consent does not. [medium]** *(Carry-forward D; Part B §11.5 owns the detail.)* Under RFC 8693 the **authorization server** consults `may_act` at the exchange and mints a narrowly scoped, short-lived token for that run; the **resource server** authorizes the **current actor plus top-level claims and scope**. Deeper `act` nesting is **audit evidence, not an access-control input** — the chain is not what the resource server checks. Front-channel consent naming the agent came from a draft that expired without working-group adoption. [179][176]
+11. **Three mechanism classes, not two: environment boundaries bound capability, application-level information-flow constructions add provable properties without being boundaries, and approvals plus classifiers only lower probability. [high]** ~93% of prompts approved, ~83% classifier catch on *overeager commands* not attacks, 84% fewer prompts from an OS sandbox (usage, not efficacy); CaMeL solved 77% of AgentDojo tasks with provable security — over control *and* capability-enforced data flow — against 84% undefended, while its computer-use port guarantees control-flow integrity only and leaves a residual Branch Steering class. No figure here is an attack-mitigation rate (§11.6). [63][64][65][237][239]
+12. **Delegated authority has token plumbing; consent does not. [medium]** *(Carry-forward D; Part B §11.5 owns the detail.)* Under RFC 8693 the agent keeps its own identity while acting for the user, carried in an `act` claim. `may_act` is an **optional** claim: the RFC says it *can* inform the authorization decision, and where a deployment uses it that enforcement sits with the **authorization server at the token exchange** — not with every exchange by obligation. The **resource server** authorizes the **current actor plus the token's top-level claims and scope**; nested `act` history is **audit evidence, not an access-control input**. Least privilege comes from what the exchange mints — **top-level scope, audience, lifetime and related constraints** — rather than from chain depth. Front-channel consent naming the agent came from a draft that expired without working-group adoption. [179][176]
 
 ### 1.2 What is genuinely contested
 
@@ -61,7 +61,7 @@
 | 7 | Tool interface | Strict schema calling; workflow-shaped tools; bounded results; deterministic ordering; deferred loading outside the cached prefix | Composable multi-step work, gated on local measurement | [66][3][69] | **[high]** default, **[low]** cutover |
 | 8 | Memory | Typed plane — working context, run ledger, episodic, semantic, procedural, artifacts — with separate scope, authority, retrieval and deletion | Single-tenant prototype | [91][110] | **[high]** |
 | 9 | Verification | Executable ground truth → environment observation by a separate agent → cross-family judge with mechanical debiasing → self-check, never a gate. Grader outside the agent's writable filesystem | A judge is wrong on objectively checkable tasks | [112][124][126] | **[high]** |
-| 10 | Identity and receipts | One narrowly scoped delegated token per run (`may_act` checked at the exchange); an `eval_receipt` on every reported number; version-pinned OTel GenAI spans | Never reuse user credentials | [179][143][146] | **[medium]**; receipts **[high]** |
+| 10 | Identity and receipts | One delegated token per run, scoped by audience and lifetime at the exchange (`may_act` enforced there where deployed); an `eval_receipt` on every reported number; version-pinned OTel GenAI spans | Never reuse user credentials | [179][143][146] | **[medium]**; receipts **[high]** |
 
 ---
 
@@ -77,7 +77,7 @@
 | Computer use | Screenshot → action → observation; caller owns coordinate scaling; step-capped (200 against 100 across vendors) | One loop | Memory, subagents; caps plus live-site filtering preclude cross-vendor ranking [216][217][222] |
 | Enterprise platforms | SDK-owned loop, sessions, streaming, handoffs, approvals, traces; guardrails at chain edges | Framework graphs or managed runtimes | Policy, tool semantics, evals, governance and UX stay the application's [218][219][220] |
 
-**Ceilings and standards, with scope. [high]** Long-horizon desktop autonomy: 20.6% binary / 54.8% partial at 500 steps over 108 workflows of median 1.6 human-hours (one frontier model, benchmark authors, 2026-06) — this bounds multi-application multi-hour GUI work; it does not license "GUI automation is unusable." Time-horizon fitting gives p50 320 minutes [170, 729] for one model, one harness, 228 tasks: a distribution-sensitive fit, not a constant. MCP is the tool plane, revision `2026-07-28`; A2A v1.0 is the agent plane and stays aspirational; OpenTelemetry GenAI conventions are **Development** status, so pin a schema revision; EU AI Act Article 14 attaches to **high-risk systems only** (§10.4). [74][144][145][53][57][146][178]
+**Ceilings and standards, with scope. [high]** Long-horizon desktop autonomy: 20.6% binary / 54.8% partial at 500 steps over 108 workflows of median 1.6 human-hours (one frontier model, benchmark authors, 2026-06) — this bounds multi-application multi-hour GUI work; it does not license "GUI automation is unusable." Time-horizon fitting gives p50 320 minutes, reported interval 170–729 minutes, for one model, one harness, 228 tasks: a distribution-sensitive fit, not a constant. MCP is the tool plane, revision `2026-07-28`; A2A v1.0 is the agent plane and stays aspirational; OpenTelemetry GenAI conventions are **Development** status, so pin a schema revision; EU AI Act Article 14 attaches to **high-risk systems only** (§10.4). [74][144][145][53][57][146][178]
 
 **What has *not* converged. [medium, synthesis inference across shipped-system descriptions]** Five workload tradeoffs, not an evidence hierarchy: single long-horizon workflow against breadth-first fan-out; pixel against semantic/DOM control; synchronous pairing against asynchronous PR workers; checkpoint graphs against application loops against durable engines; handoff ownership against manager-owned synthesis. [214][30][221][223]
 
@@ -279,10 +279,10 @@ Organize by plan **substrate** — it decides whether anything downstream can ch
 
 | Substrate | Wins when | Ceiling / cost | Conf |
 | --- | --- | --- | --- |
-| **Implicit (ReAct-style)** — next step recomputed each turn | Short-horizon, adaptive work | Never exposes the whole task; costly as history grows. Ceiling: agents "built with simple LM constructs (like function calling or ReAct) perform poorly" — ~61% `pass^1` on one retail suite, ~35% on an airline suite, authors' harness. **No source measures its production share, so "the default" is an impression** | **[high]** number, **[medium]** prevalence |
-| **Explicit plan-then-execute** — ordered step list up front, replanning as recovery | The plan is a contract someone else checks; must survive a context boundary; a human approves spend | Overhead on single-step tasks and wherever each step depends on the last | **[medium]** — practitioner reports only |
-| **Artifact / state-file plan** — a machine-checkable ledger: an initializer writes 200+ entries all `"passes": false` and agents may only flip that field; generalized as a **default-FAIL contract** — "the agent can't mark it passing without opening evidence first" — enforced by a pre-tool hook | You want "did it succeed?" to be a query, not a narrative | **n=1: one vendor, one prompt, one model, no controlled comparison against prose** | **[low-medium]** |
-| **Search over plans** — candidates scored by a process reward model | Math-like domains with a trained scorer | Compute-optimal allocation matched best-of-N at ~4× less test-time compute. **Says nothing about production adoption** | **[medium]**; adoption unevidenced |
+| **Implicit (ReAct-style)** — next step recomputed each turn [1] | Short-horizon, adaptive work | Never exposes the whole task; costly as history grows. Ceiling: agents "built with simple LM constructs (like function calling or ReAct) perform poorly" — ~61% `pass^1` on one retail suite, ~35% on an airline suite, authors' harness [119]. **No source measures its production share, so "the default" is an impression** | **[high]** number, **[medium]** prevalence |
+| **Explicit plan-then-execute** — ordered step list up front, replanning as recovery | The plan is a contract someone else checks — one vendor's generator and evaluator negotiate per-sprint criteria before code [120][122]; must survive a context boundary; a human approves spend | Overhead on single-step tasks and wherever each step depends on the last | **[medium]** — practitioner reports only [120][122] |
+| **Artifact / state-file plan** — a machine-checkable ledger: an initializer writes 200+ entries all `"passes": false` and agents may only flip that field, JSON chosen because "the model is less likely to inappropriately change or overwrite JSON files" [120]; generalized as a **default-FAIL contract** — "the agent can't mark it passing without opening evidence first" — enforced by a pre-tool hook [122] | You want "did it succeed?" to be a query, not a narrative | **n=1: one vendor, one prompt, one model, no controlled comparison against prose** [120][122] | **[low-medium]** |
+| **Search over plans** — candidates scored by a process reward model [23] | Math-like domains with a trained scorer | Best strategy depends on prompt difficulty; compute-optimal allocation matched best-of-N at ~4× less test-time compute, on MATH with a fine-tuned verifier [23]. **Says nothing about production adoption** | **[medium]**; adoption unevidenced |
 
 **Replanning is an escalation ladder, not a reflex. [medium]** Retry with backoff on transient errors → local step substitution on a deterministic "not found" → full replan on a **contradicting observation** → abort after K consecutive failures on one step. Guardrails: step cap, a **replan budget separate from the step budget**, progress detection, semantic deduplication. [119][136][137]
 
@@ -373,21 +373,22 @@ Bind the decision, not the intent: an `awaiting_approval` record keyed by `(run_
 **Delegated authority has token plumbing; consent does not. [medium]**
 
 - RFC 8693 separates **delegation** — the agent keeps its own identity while acting for the user, carried in an `act` claim — from **impersonation**, where the token still identifies the user [179].
-- The **authorization server** consults `may_act` **at the exchange** and mints a narrowly scoped, short-lived token for that run: `subject_token` the user, `actor_token` the agent [179].
-- The **resource server** authorizes the **current actor plus top-level claims and scope**. Deeper `act` nesting is **audit evidence, not an access-control input** [179].
-- So least privilege lives entirely in the **scope minted at the exchange**, never in chain depth; the `act` chain is what you read after an incident.
+- The exchange takes `subject_token` for the user and `actor_token` for the agent. `may_act` is an **optional** claim naming which actor may act for a subject: the RFC states it *can* be used to inform the authorization decision, so where a deployment adopts it, **enforcement sits with the authorization server at the token exchange**. Nothing in the RFC obliges every exchange to consult it [179].
+- The **resource server** authorizes the **current actor plus the token's top-level claims and scope**. Nested `act` history is **audit evidence, not an access-control input** [179].
+- Least privilege therefore comes from what the exchange mints — **top-level scope, audience, lifetime and related constraints**, the RFC recommending narrowed scope *together with* constraints such as lifetime — not from chain depth. The `act` history is what you read after an incident [179].
 - **Consent is unstandardised**: front-channel consent naming the agent came from a draft that expired 2026-02-27 without working-group adoption [176].
 
 Practice: one narrowly scoped delegated token per run, no user-credential reuse, credentials kept **outside** the sandbox and brokered behind a proxy that validates the target [62][64]. Cost: an STS plus cooperating resource servers. OWASP's agentic top ten supplies the surrounding taxonomy — a taxonomy, not a measurement — pairing privilege abuse with scoped per-agent credentials, cascading failures with blast-radius isolation and per-worker budgets, trust exploitation with untrusted-by-default tool output, and rogue agents with monitoring plus a kill switch [202]. NIST's SP 800-53 AI overlays reached annotated outline on 2026-01-08, so agent overlays remain **upstream of a final** [201].
 
 ### 11.6 The untrusted-output seam: label the mechanism, not the number
 
-Part A deferred this table. Every figure below is a usage or approval statistic; **none is an attack-mitigation rate**, and reading them as one is the most common security error in this space.
+§§1–10 pointed here for this table. Every figure below measures something other than attack mitigation — internal usage, human approval diligence, classifier accuracy on non-attacks, or task utility under enforcement; **none is an attack-mitigation rate**, and reading one as though it were is the most common security error in this space. Three mechanism classes are involved and they are not interchangeable.
 
 | Control | Mechanism class | Measured evidence |
 | --- | --- | --- |
 | OS or container sandbox (gVisor, bubblewrap/Seatbelt, local VM) | **Capability removal** | 84% fewer permission prompts — usage, not efficacy [63]. "The weakest layer is the one you built yourself": gVisor and seccomp held, the custom proxy failed [64] |
 | Hostname allowlist | **Capability grant, not a filter** | An allowlist passed a legitimate API host while an attacker's planted key uploaded user files to the attacker's account [64] |
+| CaMeL-style application-level information flow | **Provable property, not a boundary** | Control *and* data flow derived from the trusted query so untrusted data can never affect program flow, with capability policies enforced at every tool call: **77% of AgentDojo tasks solved with provable security against 84% undefended** [237]. The invariant behind it — once untrusted input is ingested, it must not be able to trigger a consequential action [238]. The computer-use port retains up to **57%** of frontier OSWorld performance but guarantees control-flow integrity **only**, leaving a residual **Branch Steering** class [239] |
 | Managed egress firewall | **Partial coverage** | Covers only Bash-tool processes; "sophisticated attacks may bypass" it [205] |
 | Human approval prompt | **Probability reduction** | ~93% of prompts approved; fatigue, not malice, is the failure [64] |
 | Command classifier | **Probability reduction** | ~83% catch rate on *overeager commands*, not attacks [64] |
@@ -395,7 +396,7 @@ Part A deferred this table. Every figure below is a usage or approval statistic;
 | Content defences for GUI agents | **Probability reduction** | Pop-ups reached 76.67–100% payload delivery across every model category; GUI-specialised grounding gave **no** security benefit [76] |
 | Memory write gate | **Capability removal plus authorization** | Poisoning succeeds through query-only interaction; retrieval-triggered backdoors demonstrated, deletion leaks benchmarked [95][104][105][106][107][108] |
 
-**Environment boundaries bound capability; approvals and classifiers only lower probability** — Part A §1.1, restated, not raised.
+The honest ordering, restating §1.1 rather than raising it: **environment boundaries are the most reliable class because they bound capability rather than tendency; CaMeL-style application-level constructions add provable properties without being boundaries; model-layer defences and human approval lower probability without bounding it** [64][237].
 
 ### 11.7 Cost, caching, rate limits and tenancy
 
@@ -438,7 +439,7 @@ Capability probes, not release gates (§12.2).
 | Web and desktop control | OSWorld 2.0 (108 workflows; 20.6% binary / 54.8% partial) [74][144]; AndroidWorld (116 tasks, 20 apps) [160]; BrowseComp (51.5%, benchmark-trained system on its own harness) [159] | Substring matching overestimated one suite by 5.2% [155]; 200- against 100-step caps and live-site filtering preclude ranking [216][217][222]; human step-cost is separate [75] |
 | Research reports with citations | DeepResearch Bench (100 bilingual expert tasks, rubric plus citation checks; 48.88 against 46.98 under one judge) [162] | Judge replacement moves the scale; web evidence mutates |
 | ML and science autonomy | MLE-bench (75 competitions, board **frozen 2026-04-24**) [163]; RE-Bench (7 environments, 71 expert attempts) [164]; PaperBench (20 papers, 8,316 rubric items; 26.0%±0.3) [165] | Scaffold–model interaction is first-order — the same scaffold *hurt* another model [165]; test feedback can leak |
-| Long-horizon and economic value | METR time-horizon fitting (228 tasks, one harness, p50 320 min [170, 729]) [145]; GDPval (1,320 occupational deliverables, one-shot) [166]; Vending-Bench 2 (year-long simulation; top five-run mean $11,181.87 ± $2,094) [167] | Human-time estimates and task composition drive the fit; cash is narrow and gameable |
+| Long-horizon and economic value | METR time-horizon fitting (228 tasks, one harness, p50 320 min, reported interval 170–729 min) [145]; GDPval (1,320 occupational deliverables, one-shot) [166]; Vending-Bench 2 (year-long simulation; top five-run mean $11,181.87 ± $2,094) [167] | Human-time estimates and task composition drive the fit; cash is narrow and gameable |
 | Safety and security | AgentHarm (110 base / 440 augmented) [168]; AgentDojo (97 tasks × 629 injection cases, reporting benign utility, utility under attack and attack success separately) [169]; Cybench (40 CTFs, documenting an answer-leaking harness incident) [170]; SecureWebArena [76] | Synthetic harms and semantic judges misgrade; CTFs are narrower than defensive work |
 | Trajectory and process quality | AgentProcessBench (two expert labels per trajectory, 89.1% raw agreement, κ=0.767 before discussion) [161] | Process rubrics can penalise novel-but-valid strategies |
 | Memory | §8's audited long-conversation set, the long-context-passable short split, incremental-ingestion suites [94][96][97][103], plus write→retrieve, deletion-leakage and lifecycle security suites [104][105][106] | Report the model's context window beside any memory result, or you measured long context |
@@ -582,19 +583,19 @@ Documented or measured failures, not style preferences.
 
 **Watch list.** MCP revision cadence and the stateless-HTTP migration, since `2026-07-28` removed sessions and SSE resumability [57]; whether A2A yields retrievable production topologies rather than membership counts [36][37]; republication of corrected benchmark splits with systems re-run [149][150][155]; OpenTelemetry GenAI conventions leaving Development [146]; the AI Act clock [178]; NIST's agent overlays reaching a draft [201]; long-duration autonomy claims shipping without task sets, harnesses or denominators [28]; memory-security benchmarks maturing into release gates [104][105][106]; and whether separate evaluators and adaptive effort become model features rather than scaffolds [5][123].
 
-**Deferred issues.** This round closed with none outstanding — the patch round applied the memory, verification and operations corrections, and the multi-agent workstream cleared with zero edits (see `deferred-issues.md` beside this document). The 2026-07-14 pass [236] stands superseded wherever §§1–10 correct it; its six corrected positions are named in the front matter.
+**Nothing else is held over.** Beyond the six questions above, no open issue is outstanding: the memory, verification and operations corrections are already folded into §§8, §10 and §11, and the multi-agent evidence needed none. The 2026-07-14 brief [236] stands superseded wherever §§1–10 correct it; its six corrected positions are named in the front matter.
 
 ---
 
 ## 17. Recommended defaults — bounds and limits
 
-**Starting values, not targets.** Provenance classes: *shipped precedent* (a vendor default), *practitioner set* (one worked configuration), *engine limit* (a hard platform constraint), *derived* (calibrate from your own p95). Every bound names its counted event (§3.1) and is enforced as a runtime invariant, never a prompt instruction.
+**Starting values, not targets.** Provenance classes: *shipped precedent* (a vendor default), *practitioner set* (one worked configuration), *engine limit* (a hard platform constraint), *derived* (calibrate from your own p95), *uncited local policy* (no retrieved source gives a value — you must pick one and own it). Every bound names its counted event (§3.1) and is enforced as a runtime invariant, never a prompt instruction. **Nothing here is averaged across counted units**: a model-invocation default and a step default measure different events, so combining them would produce a number no source supports (§3.1).
 
 | Bound | Starting value | Provenance | Move it when |
 | --- | --- | --- | --- |
-| Model invocations per run | 20–30 | Derived from defaults of 10 and 20 steps [10][11][18] | Tool-heavy work needs more; keep an absolute ceiling |
-| Tool calls per run | 100, or 30 "steps" | Practitioner set [180] | Only with a cost cap in place |
-| Wall clock | 10 min interactive, 60 min asynchronous | Practitioner set plus a 59-minute session cap [180][211] | Longer needs durable execution (§14.3) |
+| Loop length | **Pick one counted unit, anchor on a vendor default in that unit, then calibrate.** Anchors as shipped: OpenAI Agents SDK `DEFAULT_MAX_TURNS = 10` *model invocations* [10][11]; smolagents 20 *steps* [18]; Claude Agent SDK exposes `maxTurns` but leaves it **undefined** [6]; Google ADK gives no numeric default and requires an explicit maximum or escalation condition [17] | Shipped precedent | Calibrate from your own distribution. Do **not** blend these into one figure — they count different events (§3.1) |
+| Tool calls / steps per run | 30 "steps" — the one value a retrieved source states. No retrieved source gives a separate tool-call ceiling | Practitioner set [180] | Only with a cost cap in place |
+| Wall clock | 10 min per task (practitioner); the longest shipped asynchronous cap retrieved is a 59-minute session | Practitioner set [180] plus shipped precedent [211] | Longer needs durable execution (§14.3) |
 | Tokens per run | 50k, else p95 × 2 | Practitioner set [180] | Recalibrate per task class |
 | USD per run | $0.50, plus a per-tenant daily cap | Practitioner set [180] | Raise for verified high-value tasks only |
 | Consecutive failures | 3 in 5 attempts, then breaker | Practitioner set [180] | Tighten where attempts have side effects |
@@ -605,7 +606,7 @@ Documented or measured failures, not style preferences.
 | Compaction trigger | ~150k input tokens, minimum 50k | Shipped precedent [79] | Earlier only if a new cache write amortises [80] |
 | Cache TTL | 1 hour for approval-bearing runs | Shipped precedent [192][195] | Shorter when prefixes churn |
 | Retry policy | Capped exponential backoff, full jitter, one layer, idempotent only | Foundational [203] | Never add a second retry layer |
-| Approval expiry | 24 h with explicit expiry action and audit record | **No documented default** — derived [188][190] | Shorten where the argument hash goes stale fast |
+| Approval expiry | **No cited default exists — pick a duration as local policy and own it.** What the sources do supply is the mechanism: an explicit expiry *action* and a per-decision audit record, which are the load-bearing parts, not the number [188][190] | Uncited local policy | Calibrate against how fast the argument hash goes stale; a pending approval that waits indefinitely is the documented framework default [188] |
 | Computer-use step cap | 100–200 | Shipped precedent, and why vendor scores are incomparable [216][217][222] | Raise only with a cost cap and partial credit |
 | Durable payload / history | ≤256 KB payloads (2 MB errors); histories far below 51,200 events or 50 MB | Engine limit [183][184] | Claim-check codec instead of raising |
 | SSE replay window | Sized to fan-out volume and retention budget | Derived [189][199] | Grows with worker count, not users |
@@ -625,7 +626,7 @@ Each item is testable; the section reference is where its evidence lives.
 
 **Verification.** Executable ground truth where it exists, grader outside any filesystem the agent can write (§10.1, §11.6); cross-family judge with position swapping and human recalibration for subjective criteria (§10.1); self-check never a gate (§10); success machine-readable as default-FAIL criteria with evidence and weighted partial credit (§10.3).
 
-**Identity and security.** One narrowly scoped delegated token per run, `may_act` checked at the exchange, no user-credential reuse; resource servers authorize the current actor plus claims and scope, the `act` chain being audit evidence (§11.5); per-subagent least privilege, never inherited bypass (§11.4); controls labelled by mechanism class (§11.6); kill switch, per-task and global (§11.8).
+**Identity and security.** One delegated token per run, narrowed at the exchange by scope, audience and lifetime, with `may_act` enforced there where deployed and no user-credential reuse; resource servers authorize the current actor plus top-level claims and scope, nested `act` history being audit evidence (§11.5); per-subagent least privilege, never inherited bypass (§11.4); controls labelled by mechanism class (§11.6); kill switch, per-task and global (§11.8).
 
 **Streaming and HITL.** Monotonic sequence numbers with replay-from-offset above `Last-Event-ID`; disconnect, cancel and pause distinct, cancel idempotent (§11.3); durable checkpointer for pending approvals bound to `(run_id, step_id, tool_name, argument_hash, bundle_version)` with expiry and audit (§11.4); gates before the first irreversible action, showing the artifact (§10.4).
 
@@ -657,7 +658,7 @@ Each item is testable; the section reference is where its evidence lives.
 
 **Idempotency key at the callee.** A caller-supplied identifier committed atomically with the mutation by the service performing it (§11.2).
 
-**`may_act` / `act`.** `may_act` is the authorization-server check at token exchange that an actor may act for a subject; `act` names the current actor in the issued token and is audit evidence, not an access-control input (§11.5).
+**`may_act` / `act`.** `may_act` is an optional RFC 8693 claim naming which actor may act for a subject, enforced by the authorization server at token exchange where a deployment uses it; `act` names the current actor in the issued token, and nested `act` history is audit evidence, not an access-control input (§11.5).
 
 **Capability grant against filter.** A hostname allowlist grants everything reachable behind a permitted host; only capability removal bounds behaviour (§11.6).
 
@@ -671,7 +672,7 @@ Each item is testable; the section reference is where its evidence lives.
 
 ## 20. Sources
 
-**236 sources, all retrieved 2026-08-03.** Numbering is unified across the document: every `[n]` in §§1–19 resolves here, and every source is cited at least once. Grouping is by subject area, not citation order. Where a memo flagged a source as vendor-reported, undisclosed-harness, author-reported or holding a competing interest, that qualifier appears **at the claim** in the body; the type column carries its summary form.
+**239 sources, all retrieved 2026-08-03.** Numbering is unified across the document: every `[n]` in §§1–19 resolves here, and every source is cited at least once. Grouping is by subject area, not citation order; `[237]`–`[239]` were added to §20.3 after the first numbering pass, so they sit at the end of that subject group rather than in numeric sequence. Where a memo flagged a source as vendor-reported, undisclosed-harness, author-reported or holding a competing interest, that qualifier appears **at the claim** in the body; the type column carries its summary form.
 
 ### 20.1 Loop, harness and inference-time compute
 
@@ -765,6 +766,9 @@ Each item is testable; the section reference is where its evidence lives.
 | 76 | SecureWebArena: A Holistic Security Evaluation Benchmark for LVLM-based Web Agents | Ying et al., Findings of ACL 2026, pp. 11986–11998 · primary | https://aclanthology.org/2026.findings-acl.582.pdf |
 | 77 | Code Execution with MCP (replication; 2 query types, GPT-4.1, Bright Data disclosed as customer) | Sezer & Alper, AIMultiple · 2026-06-24 · secondary | https://aimultiple.com/code-execution-with-mcp |
 | 78 | Record and Replay Testing for AI Agents | dreaming.press · 2026 · secondary | https://dreaming.press/posts/record-replay-testing-for-ai-agents.html |
+| 237 | Defeating Prompt Injections by Design (CaMeL) | arXiv 2503.18813 · Mar 2025 · paper · foundational application-level construction | https://arxiv.org/abs/2503.18813 |
+| 238 | Design Patterns for Securing LLM Agents against Prompt Injections | arXiv 2506.08837 · Jun 2025 · paper | https://arxiv.org/abs/2506.08837 |
+| 239 | CaMeLs Can Use Computers Too (CaMeL-NOVA) | arXiv 2601.09923 · Jan 2026 · paper | https://arxiv.org/abs/2601.09923 |
 
 ### 20.4 Memory and context
 

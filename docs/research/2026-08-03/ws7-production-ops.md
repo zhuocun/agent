@@ -11,7 +11,7 @@
 3. **[high] Resume has two layers, one of which understands your run.** Transport `Last-Event-ID` [S18] sits under application offsets [S8, S19]; transport resume replays bytes, not run semantics — §2.2.
 4. **[high] Supervision and hostname allowlists both failed measurement at the vendor that measured them.** Anthropic: **~93% of permission prompts approved**, an OS sandbox cut prompts **84%**, a February 2026 red-team phish exfiltrated `~/.aws/credentials` in **24 of 25 retries**. Cowork's allowlist passed `api.anthropic.com` while an attacker's planted key uploaded user files to their account [S16] — an allowlist is a capability grant, not a filter.
 5. **[high] Prompt caching is a rate-limit lever before a cost lever.** Claude cache reads mostly skip ITPM, so 2M ITPM at an 80% hit rate passes ~10M input tokens/minute; reads cost 0.1×, 1-hour writes 2× [S11, S12]. OpenAI's `prompt_cache_key` took one customer 60%→87%, saturating near ~15 RPM per key [S14].
-6. **[medium] Delegated authority has plumbing; consent doesn't.** RFC 8693's `act`/`may_act` carry an enforceable delegation chain [S25]; front-channel consent naming the agent was the expired draft's contribution [S20] — §2.6.
+6. **[medium] Delegated authority has plumbing; consent doesn't.** RFC 8693 mints narrow delegated tokens — the authorization server consults `may_act` before issuing, and `act` names the current actor [S25]; front-channel consent naming the agent was the expired draft's contribution [S20] — §2.6.
 7. **[medium] The AI Act's 2026 dates are settled; what binds a general assistant is narrower than "autonomy".** Per the Commission the AI Omnibus entered force 2026-07-27, moving Annex III high-risk to **2027-12-02** and Annex I to **2028-08-02**, general application from 2026-08-02, transparency rules from August 2026 [S23]. Article 14 attaches to high-risk systems only [S21].
 
 ---
@@ -53,7 +53,7 @@
 
 ### 2.6 Identity, authorization, governance
 
-- **Delegation is about enforcement, not logging.** RFC 8693 separates *delegation* (the agent keeps its own identity while acting for the user) from *impersonation* (the token still identifies the user), carrying the former in an `act` claim that can represent a chain, with `may_act` stating who may act for whom [S25]. The chain becomes something a resource server checks, not something the app logs.
+- **Delegation has token plumbing; consent has none.** RFC 8693 separates *delegation* (the agent keeps its own identity while acting for the user) from *impersonation* (the token still identifies the user), carrying the former in an `act` claim; the *authorization server* consults `may_act` before issuing [S25]. A resource server authorizes the current actor plus top-level claims and scope — deeper nesting is informational, not an access-control input — so least privilege lives in the scope minted at exchange; the chain is audit evidence.
 - **EU AI Act** (dates in §1.7): Article 14 applies to high-risk systems and reads like an engineering spec — humans able to *remain aware of automation bias*, override output, and "interrupt the system through a 'stop' button… that allows the system to come to a halt in a safe state" [S21]. Automation bias is §1.4's 93% arriving from the regulatory side. **[high]** on the text, **[low]** on scope.
 - **NIST:** COSAiS's SP 800-53 overlays reached annotated outline on 2026-01-08, so agent overlays remain upstream of a final [S24].
 - **OWASP:** the Top 10 for Agentic Applications (2025-12-09) is the taxonomy; mine rather than WS3's are ASI03 privilege abuse, ASI08 cascading failures, ASI09 trust exploitation, ASI10 rogue agents — met with scoped short-lived per-agent credentials, blast-radius isolation and behavioural monitoring [S26, S27].
@@ -83,7 +83,7 @@ What actually changed:
 1. **Those patterns acquired first-party wire formats.** The prior advice was to build a resumable buffer; vendors now specify the format — OpenAI's `sequence_number` plus `?starting_after=N`, AG-UI's `resume` array — so this is conformance rather than design [S8, S19]. WHATWG `Last-Event-ID` was always underneath [S18].
 2. **"Skip completed activities on retry" needs correcting.** True for *completed* Activities, but an Activity may execute and partially complete more than once, so dedupe keys are load-bearing rather than hygiene, and must be enforced by the callee [S5, S22].
 3. **The durability trigger reframed** from "exceeds request or worker lifetime" to infrastructure churn, with Cursor's corrections: short task-scoped workflows and decoupled loop/machine/conversation state [S1].
-4. **Genuinely new:** quantified approval-gate failure [S16]; caching as a rate-limit multiplier [S11, S12, S14]; residency removing `background=True` [S15]; provider-side fair scheduling [S29]; the judgement SLI and its fatigue bias [S33]; session-pinned canaries [S35]; RFC 8693 as the enforceable delegation layer [S25]; the regulatory clock [S21, S23].
+4. **Genuinely new:** quantified approval-gate failure [S16]; caching as a rate-limit multiplier [S11, S12, S14]; residency removing `background=True` [S15]; provider-side fair scheduling [S29]; the judgement SLI and its fatigue bias [S33]; session-pinned canaries [S35]; RFC 8693 as the delegated-token layer [S25]; the regulatory clock [S21, S23].
 5. **Permission detail sharpened into fan-out risk.** Subagent inheritance of `bypassPermissions`, plus guardrails at chain edges only, mean a topology decision (WS2's) silently changes the safety posture of every tool call [S9, S17].
 
 ---
@@ -123,7 +123,7 @@ Normative; each with rationale and tradeoff.
 5. **Design the prompt as a cache artifact and treat hit rate as an SLI** — caching is a cheaper read, a TTFT cut and an ITPM multiplier at once [S11, S12, S14]. *Tradeoff:* prefix stability constrains personalisation.
 6. **Encode caps as runtime invariants, not prompt instructions, combining token, cost, step, error-rate and time triggers behind a labelled-partial degrade path** [S32]. *Tradeoff:* more visible partials; thresholds need a p95 baseline.
 7. **Route model traffic through one gateway owning retries, failover, per-tenant queues and substitution logging** [S9, S13, S17, S28, S31]. *Tradeoff:* a single point of failure needing backpressure load-testing; quanta need local calibration [S29].
-8. **Carry delegation as a token the resource server checks, not a log line** — RFC 8693 `act`/`may_act` makes least privilege enforceable per call [S25, S26]. *Tradeoff:* needs an STS and cooperating resource servers; consent is unstandardised [S20].
+8. **Mint a narrowly scoped delegated token per run instead of reusing user credentials** — under RFC 8693 the scope granted at exchange enforces least privilege; the `act` chain is audit evidence [S25, S26]. *Tradeoff:* needs an STS and cooperating resource servers; consent is unstandardised [S20].
 9. **Ship changes as an immutable bundle behind a flag: offline → shadow → sticky canary → ramp, session-pinned on rollback** [S35]. *Tradeoff:* shadow doubles inference cost on its slice and needs per-tool dry-run.
 
 ---
@@ -181,7 +181,7 @@ All retrieved 2026-08-03; vendor posts are primary reports of their own systems.
 - **11.2 Idempotency.** Keys at the callee, atomic token+mutation commit, equivalent replay response, ambiguous-outcome escalation [S5, S22].
 - **11.3 Streaming contract.** `Last-Event-ID` under application sequence numbers; replay-from-offset; cancel ≠ disconnect ≠ pause [S8, S18, S19].
 - **11.4 HITL.** Durable pause on a server-issued id, risk-rated gates, expiry action, per-decision audit, the four traps [S7, S9, S10, S17].
-- **11.5 Containment and identity.** Sandbox ladder, capability allowlists, credential brokering; RFC 8693 delegation enforced at the resource server; OWASP ASI03/08/09/10 [S16, S25, S26, S30].
+- **11.5 Containment and identity.** Sandbox ladder, capability allowlists, credential brokering; RFC 8693 scopes minted at exchange; OWASP ASI03/08/09/10 [S16, S25, S26, S30].
 - **11.6 Cost and isolation.** Cache layout and hit-rate SLI, the 429/529 split, one-layer full-jitter retries, per-tenant queues [S11]–[S14], [S28, S29].
 - **11.7 Degrade and SLOs.** Stop → labelled partial → explain → escalate; multi-metric trips with stop logs; judgement SLI as a floor on detected error [S31]–[S34].
 - **11.8 Governance.** AI Act dates scope-dependent; residency as two promises; NIST overlays still upstream [S15, S21, S23, S24].
@@ -189,7 +189,7 @@ All retrieved 2026-08-03; vendor posts are primary reports of their own systems.
 ### Reference deployment (part of section 14)
 
 1. **Turn path.** Client → app server → gateway → provider. The gateway owns provider credentials, one-layer retries, per-tenant queues, a declared fallback chain traced on failover, and usage capture.
-2. **Identity enforcement.** Each run mints a short-lived scoped credential for its own agent identity via RFC 8693 exchange — `subject_token` the user, `actor_token` the agent — and the resource server validates the `act` chain against `may_act` on every call. Least privilege is checked at the callee; the log is a by-product, not the control [S25, S26].
+2. **Identity enforcement.** Each run mints a short-lived credential for its own agent identity via RFC 8693 exchange — `subject_token` the user, `actor_token` the agent — with the authorization server consulting `may_act` and narrowing scope to that run's tools. The resource server authorizes the current actor, claims and scope; the `act` chain is audit evidence, not the access-control input [S25, S26].
 3. **Tenant-state isolation.** Tenant id keys run state, the event store, sandbox volumes and the cache-prefix namespace — a prefix cache shared across tenants is a cross-tenant read channel. Per-tenant queues and budgets, never a global priority queue [S29].
 4. **Approval binding.** An `awaiting_approval` row binds the decision to `(run_id, step_id, tool_name, argument_hash, bundle_version)` with expiry timestamp and action. Resume presents a server-issued token; the server re-derives the hash and refuses if it moved, so a decision authorises *that* call, not what the agent proposes next [S7, S9].
 5. **Run state and streaming.** Append-only event store keyed by `run_id` with monotonic `sequence_number`, separate from conversation storage; SSE offset resume over `Last-Event-ID`, bounded replay window, snapshot endpoint, distinct terminal events. Stop is server-side, disconnect is not [S8, S18].

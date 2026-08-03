@@ -9,7 +9,7 @@
 3. **Verification is a capability distinct from generation;** verifiers can be far smaller than generators and still select well. **[medium-high]** (§2.3–2.4)
 4. **Executable ground truth is the strongest signal and the most attackable:** a 10-line `conftest.py` resolved 500/500 SWE-bench Verified instances. **[high]** (§2.3)
 5. **Verification buys reliability, not capability:** gpt-4o goes ~61% `pass^1` to under 25% `pass^8` on τ-retail. **[high]** (§2.4; WS6 owns scores)
-6. **Separating verifier context from generator context is well-supported in principle** **[high]**; the "skeptical evaluator with browser tools" harness is one vendor experiment **[low-medium]** (§2.5)
+6. **Feedback must originate outside the generator's own reasoning** **[high]**; that *fresh-context isolation*, not merely externality, is the effective mechanism rests on one coding/UI vendor harness **[low-medium]** (§2.5)
 7. **Plans pay off when machine-checkable rather than prose** — one vendor's harness plus its companion repo. **[low-medium]** (§2.1)
 8. **At least one scaffold has been absorbed into a model** (context resets, dropped for Opus 4.5). **[medium]** (§2.6)
 9. **Agents are bad at stopping:** best AgentAbstain paired accuracy 59.5%, 13/17 models below 50%. **[medium]** (§2.7)
@@ -107,7 +107,7 @@ Two operational points follow, both weaker than usually stated. Approval rate is
 
 | Prior-pass position | Status now |
 | --- | --- |
-| §3.8 prefer fresh-context evaluator; a **transferred** coding lesson, "not research-native evidence" | **Partly upgraded.** The *separation* principle has independent support (Huang, Kamoi, CRITIC, Self-Refine's math null); the Anthropic harness stays n=1. |
+| §3.8 prefer fresh-context evaluator; a **transferred** coding lesson, "not research-native evidence" | **Partly upgraded, narrowly.** Huang, Kamoi, CRITIC and Self-Refine's math null support feedback *externality*, not context isolation; isolation as the mechanism stays n=1. |
 | Anti-pattern: majority-vote over free-form reports | **Confirmed.** Generalise to weak-verifier aggregation or verifier rank-and-select. |
 | Self-correction only as "self-verifier in same context → positive bias" | **Now has a literature.** Huang, Kamoi, CRITIC, Self-Refine and SCoRe were uncited. Intrinsic correction fails on reasoning; *trained* correction is the exception. |
 | "Single coding agent + tests as ground truth" treated as unproblematic | **Materially revised.** Apr–May 2026 benchmark-hacking results make the grader trust boundary explicit. |

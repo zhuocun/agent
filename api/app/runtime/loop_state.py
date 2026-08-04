@@ -29,8 +29,11 @@ saying so is different from omitting the label.
 This module holds pure types and pure functions only, with no imports from the
 provider, streaming, tools or agentic layers. `app/runtime/bounds.py` is its
 first consumer: the run's trip conditions latch one of these `StopReason`
-members and read both mappings to log what they counted. Wiring the vocabulary
-into the SSE schemas and tracing is still separate work.
+members and read both mappings to log what they counted.
+`app/observability/tracing.py` is the second: the agentic workflow root reads the
+same two mappings to set `agentic.stop_reason`, `agentic.counted_event` and
+`agentic.run_outcome` on its span. Wiring the vocabulary into the SSE schemas is
+still separate work.
 """
 
 from __future__ import annotations

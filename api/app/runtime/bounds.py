@@ -76,6 +76,35 @@ _REPEAT_WINDOW_MULTIPLE = 4
 # payload ends mid-object.
 _TRUNCATION_MARKER = "…[truncated: {dropped} of {total} characters omitted]"
 
+# The trips that still permit the agent loop's reserved final pass.
+#
+# That pass is `make_stream(..., suppress_tools=True)`: it advertises no tools,
+# so BY CONSTRUCTION it cannot issue another call, cannot extend the loop, and
+# cannot repeat the call that tripped. It exists to force a grounded answer out
+# of a greedy provider, and refusing it buys no safety while costing exactly that
+# answer — so a BEHAVIORAL trip runs it, which also keeps this degrade no harsher
+# than `tool_rounds_exhausted`, the bound it shares an outcome class with.
+#
+# A PHYSICAL trip does not run it: when the deadline or the token budget is what
+# ran out, one more provider stream is the one thing there is no room for. That
+# asymmetry is the whole point of the split — the run is refused more work only
+# where more work is what breached the bound.
+_BEHAVIORAL_TRIPS: frozenset[StopReason] = frozenset(
+    {"repeated_tool_calls", "consecutive_tool_failures"}
+)
+
+
+def allows_final_answer_pass(reason: StopReason | None) -> bool:
+    """Whether a run stopped for ``reason`` may still run a tool-SUPPRESSED pass.
+
+    `None` (no trip) trivially may. Anything outside `_BEHAVIORAL_TRIPS` may not,
+    so a reason added to the alias later is refused until someone decides — the
+    safe direction for a bound.
+    """
+    if reason is None:
+        return True
+    return reason in _BEHAVIORAL_TRIPS
+
 # Key a bounded tool payload is republished under. A truncated JSON dump is no
 # longer parseable as the original object, so it rides as one string field rather
 # than corrupting the result envelope the provider adapters rebuild from
@@ -98,10 +127,21 @@ def bound_tool_result_text(
     silently dropping the disclosure would be worse than overshooting a
     pathological limit). `max_chars <= 0` disables truncation.
     """
-    if max_chars <= 0 or len(text) <= max_chars:
+    total = len(text)
+    if max_chars <= 0 or total <= max_chars:
         return text
-    marker = _truncation_marker(dropped=len(text) - max_chars, total=len(text))
-    head = max(0, max_chars - len(marker))
+    # Solve for the head rather than reporting `total - max_chars`: the marker
+    # occupies part of the budget, so the characters it displaces are dropped too
+    # and that figure under-reports by the marker's own length. Each pass can only
+    # shrink the head (a larger `dropped` never shortens the marker), so the
+    # sequence is non-increasing and settles in a couple of passes.
+    head = max_chars
+    while True:
+        marker = _truncation_marker(dropped=total - head, total=total)
+        settled = max(0, max_chars - len(marker))
+        if settled == head:
+            break
+        head = settled
     return text[:head] + marker
 
 
@@ -294,6 +334,14 @@ class RunTripwire:
         Only `failed` counts. A `cancelled` result is the run degrading on
         purpose (a budget kill, a superseded pause) and must not also read as the
         tool being broken.
+
+        `failed` deliberately includes the loop's own policy refusals — the
+        per-round call cap, a tool not allowed in this context, a call id already
+        settled. Those are not tool breakage, but this breaker counts LACK OF
+        PROGRESS rather than tool health: a model spending its rounds on calls the
+        server keeps refusing is the same non-progress that makes a re-requested
+        denied tool worth counting in `note_tool_call`. Splitting the two would
+        need a distinct status on the wire, which is not this module's to add.
         """
         if self._bounds.max_consecutive_tool_failures < 1:
             return

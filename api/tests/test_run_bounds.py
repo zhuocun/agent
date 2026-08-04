@@ -27,6 +27,7 @@ construction). These tests pin the properties the runtime leans on:
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -52,6 +53,7 @@ from app.runtime.bounds import (
     TRUNCATED_OUTPUT_KEY,
     RunBounds,
     RunTripwire,
+    allows_final_answer_pass,
     bound_tool_result_payload,
     bound_tool_result_text,
     tool_call_digest,
@@ -144,6 +146,13 @@ def test_settings_defaults_resolve_to_the_documented_starting_values() -> None:
     assert resolved.loop_detection_enabled is True
     assert resolved.repeated_tool_call_threshold == 3
     assert resolved.tool_result_max_chars == DEFAULT_TOOL_RESULT_MAX_CHARS
+
+
+def test_a_tuned_payload_limit_reaches_the_resolved_bounds() -> None:
+    """`RunBounds` is the single owner of the limit the handler truncates with, so
+    an operator's `TOOL_RESULT_MAX_CHARS` has to survive the resolution."""
+    resolved = RunBounds.from_settings(Settings(TOOL_RESULT_MAX_CHARS=1_234))  # type: ignore[call-arg]
+    assert resolved.tool_result_max_chars == 1_234
 
 
 def test_bare_bounds_are_every_trip_disabled() -> None:
@@ -501,6 +510,25 @@ def test_every_tripwire_reason_degrades_to_a_named_partial() -> None:
         assert counted_event_for(reason) != "none"  # type: ignore[arg-type]
 
 
+def test_only_behavioral_trips_permit_the_tool_suppressed_final_pass() -> None:
+    """A pass that advertises no tools cannot loop, so a behavioral trip has
+    nothing to gain by refusing it. A physical bound does: when the deadline or
+    the token budget ran out, one more stream is what there is no room for."""
+    assert allows_final_answer_pass("repeated_tool_calls") is True
+    assert allows_final_answer_pass("consecutive_tool_failures") is True
+    assert allows_final_answer_pass("wall_clock_exceeded") is False
+    assert allows_final_answer_pass("token_cap_exceeded") is False
+    # No trip at all trivially permits it — that is the untripped loop's path.
+    assert allows_final_answer_pass(None) is True
+
+
+def test_an_unclassified_stop_reason_is_refused_the_final_pass() -> None:
+    """The safe direction for a bound: a reason added to the alias later is
+    refused until someone decides, rather than silently inheriting a pass."""
+    for reason in STOP_REASONS - {"repeated_tool_calls", "consecutive_tool_failures"}:
+        assert allows_final_answer_pass(reason) is False
+
+
 def test_the_usd_cap_is_not_the_tripwire_s_to_report() -> None:
     """One degrade label per channel: `usd_cap_exceeded` stays `budget.py`'s, so
     a cap breach and a trip can never be relabeled as each other."""
@@ -527,6 +555,21 @@ def test_oversize_text_is_truncated_and_visibly_marked() -> None:
     assert bounded.startswith("yyy")
     assert "truncated" in bounded
     assert "5000" in bounded
+
+
+@pytest.mark.parametrize("max_chars", [60, 200, 1_000, 4_321])
+def test_the_marker_reports_exactly_how_much_was_dropped(max_chars: int) -> None:
+    """The marker occupies part of the budget, so the characters it displaces are
+    dropped too: reporting `total - max_chars` under-stated the cut by the
+    marker's own length. Kept + dropped must equal the original."""
+    total = 9_000
+    bounded = bound_tool_result_text("k" * total, max_chars=max_chars)
+    reported = re.search(r"truncated: (\d+) of (\d+) characters", bounded)
+    assert reported is not None
+    dropped, said_total = int(reported.group(1)), int(reported.group(2))
+    assert said_total == total
+    assert bounded.count("k") + dropped == total
+    assert len(bounded) <= max_chars
 
 
 def test_truncation_is_disabled_by_a_nonpositive_limit() -> None:
@@ -604,13 +647,19 @@ def _loop_settings(**kwargs: Any) -> Settings:
 
 def _greedy_stream_factory(
     *, on_round: Any = None, tool_input: dict[str, Any] | None = None
-) -> tuple[Any, list[int]]:
+) -> tuple[Any, list[bool]]:
     """A provider that answers a little and re-requests the SAME tool forever.
 
     The realistic shape of a cheap endless loop: every round produces prose (so
     there is work to keep) and one identical tool call (so nothing progresses).
+    Answers once the loop suppresses tools — the greedy-provider recovery the
+    reserved final pass exists to compel.
+
+    Returns the stream factory and the `suppress_tools` flag of every stream it
+    opened, so a test can see both how many rounds ran and whether the reserved
+    pass was among them.
     """
-    rounds: list[int] = []
+    streams: list[bool] = []
 
     def _make_stream(
         _feedback: list[ToolResult],
@@ -618,8 +667,8 @@ def _greedy_stream_factory(
         *,
         answer_nudge: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
-        rounds.append(len(rounds) + 1)
-        index = len(rounds)
+        streams.append(suppress_tools)
+        index = len(streams)
         if on_round is not None:
             on_round(index)
 
@@ -637,13 +686,20 @@ def _greedy_stream_factory(
 
         return _gen()
 
-    return _make_stream, rounds
+    return _make_stream, streams
 
 
-async def test_loop_trips_on_repeated_tool_calls_and_keeps_the_work() -> None:
-    """Degrade ladder (§11.8): stop scheduling new actions, return the partials
-    already produced, and still leave the wire exactly one terminal Complete."""
-    make_stream, rounds = _greedy_stream_factory()
+async def test_a_behavioral_trip_still_runs_the_tool_suppressed_final_pass() -> None:
+    """Degrade ladder (§11.8): stop scheduling new ACTIONS, keep the partials
+    already produced, and leave the wire exactly one terminal Complete.
+
+    The reserved final pass is not a new action: `suppress_tools=True` advertises
+    no tools, so it cannot repeat the call that tripped or open a further round.
+    Skipping it would cost the grounded answer it exists to compel and buy no
+    safety — and would make this degrade harsher than `tool_rounds_exhausted`,
+    which shares its `partial_limit` outcome.
+    """
+    make_stream, streams = _greedy_stream_factory()
     wire = RunTripwire(
         RunBounds(loop_detection_enabled=True, repeated_tool_call_threshold=3)
     )
@@ -656,23 +712,46 @@ async def test_loop_trips_on_repeated_tool_calls_and_keeps_the_work() -> None:
         )
     ]
     assert wire.tripped == "repeated_tool_calls"
-    # Stopped opening rounds at the trip instead of burning TOOL_MAX_ROUNDS.
-    assert len(rounds) == 3
+    # Three action rounds, then the tool-suppressed rescue — and nothing after
+    # it, rather than burning TOOL_MAX_ROUNDS on more action rounds.
+    assert streams == [False, False, False, True]
     answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
-    assert answer == "finding 1. finding 2. finding 3. "
+    assert answer == "finding 1. finding 2. finding 3. finding 4. "
     assert len([e for e in events if isinstance(e, Complete)]) == 1
     assert isinstance(events[-1], Complete)
+
+
+async def test_a_behavioral_trip_with_no_reserved_pass_degrades() -> None:
+    """`TOOL_MAX_ROUNDS=1` reserves no final pass, so there is nothing to fall
+    through to and the trip degrades on the spot."""
+    make_stream, streams = _greedy_stream_factory()
+    wire = RunTripwire(
+        RunBounds(loop_detection_enabled=True, repeated_tool_call_threshold=1)
+    )
+    events = [
+        ev
+        async for ev in run_agent_loop(
+            make_stream=make_stream,
+            settings=_loop_settings(TOOL_MAX_ROUNDS=1),
+            tripwire=wire.loop_handle("primary"),
+        )
+    ]
+    assert wire.tripped == "repeated_tool_calls"
+    assert streams == [False]
+    assert len([e for e in events if isinstance(e, Complete)]) == 1
 
 
 async def test_loop_trips_on_the_wall_clock_rather_than_running_on(
     clock: _FakeClock,
 ) -> None:
-    """A run that outlives its deadline degrades — it does not hang, and it does
-    not keep opening rounds once the clock has run out."""
+    """A run that outlives its deadline degrades — it does not hang, it does not
+    keep opening rounds, and unlike a behavioral trip it does not get the rescue
+    pass: when the deadline is what ran out, one more stream is the one thing
+    there is no room for."""
     # Loop detection stays OFF, so the clock is the only bound in play even
     # though every round repeats the same call.
     wire = RunTripwire(RunBounds(wall_clock_seconds=10.0))
-    make_stream, rounds = _greedy_stream_factory(on_round=lambda _index: clock.advance(4.0))
+    make_stream, streams = _greedy_stream_factory(on_round=lambda _index: clock.advance(4.0))
     events = [
         ev
         async for ev in run_agent_loop(
@@ -682,20 +761,23 @@ async def test_loop_trips_on_the_wall_clock_rather_than_running_on(
         )
     ]
     assert wire.tripped == "wall_clock_exceeded"
-    # 4s + 4s stayed under the 10s deadline; the third round crossed it.
-    assert len(rounds) == 3
+    # 4s + 4s stayed under the 10s deadline; the third round crossed it. No
+    # tool-suppressed pass followed.
+    assert streams == [False, False, False]
     assert "finding 3. " in "".join(
         e.text for e in events if isinstance(e, AnswerDelta)
     )
     assert len([e for e in events if isinstance(e, Complete)]) == 1
 
 
-async def test_a_trip_with_no_prose_still_ends_through_the_terminal_path() -> None:
-    """The loop must never end a turn blank. A trip before any answer routes
-    through the SAME empty-terminal decision every other stop uses — and may not
-    spend the empty-reply retry, because that would open another provider
-    stream on a run that has already been told to stop."""
-    rounds: list[int] = []
+async def test_a_physical_trip_with_no_prose_still_ends_through_the_terminal_path(
+    clock: _FakeClock,
+) -> None:
+    """The loop must never end a turn blank. A physical trip before any answer
+    routes through the SAME empty-terminal decision every other stop uses — and
+    may not spend the empty-reply retry, because that would open another provider
+    stream on a run whose deadline is what stopped it."""
+    streams: list[bool] = []
 
     def _make_stream(
         _feedback: list[ToolResult],
@@ -703,17 +785,16 @@ async def test_a_trip_with_no_prose_still_ends_through_the_terminal_path() -> No
         *,
         answer_nudge: bool = False,
     ) -> AsyncIterator[ProviderEvent]:
-        rounds.append(len(rounds) + 1)
-        index = len(rounds)
+        streams.append(suppress_tools)
+        index = len(streams)
+        clock.advance(6.0)
 
         async def _gen() -> AsyncIterator[ProviderEvent]:
             yield ToolCall(id=f"c{index}", name="get_current_time", status="running")
 
         return _gen()
 
-    wire = RunTripwire(
-        RunBounds(loop_detection_enabled=True, repeated_tool_call_threshold=2)
-    )
+    wire = RunTripwire(RunBounds(wall_clock_seconds=10.0))
     events = [
         ev
         async for ev in run_agent_loop(
@@ -722,8 +803,8 @@ async def test_a_trip_with_no_prose_still_ends_through_the_terminal_path() -> No
             tripwire=wire.loop_handle("primary"),
         )
     ]
-    assert wire.tripped == "repeated_tool_calls"
-    assert rounds == [1, 2]
+    assert wire.tripped == "wall_clock_exceeded"
+    assert streams == [False, False]
     answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
     assert answer.strip() == EMPTY_REPLY_FALLBACK
     completes = [e for e in events if isinstance(e, Complete)]
@@ -766,9 +847,26 @@ def _agentic_settings(**kwargs: Any) -> Settings:
     return Settings(**base)  # type: ignore[arg-type]
 
 
-async def test_single_mode_token_cap_trip_reports_a_partial_not_a_budget_halt() -> None:
-    """A trip raises `partial` through the same field a cap breach does and
-    leaves `budget_halted` alone: one degrade label per channel."""
+async def test_default_bounds_still_deliver_a_grounded_answer_to_a_greedy_provider() -> None:
+    """The shipped defaults collide by construction, so this drives the real
+    orchestrator with the run bounds left untouched.
+
+    `TOOL_MAX_ROUNDS=4` leaves three action rounds and
+    `REPEATED_TOOL_CALL_THRESHOLD=3` means a greedy provider can only trip on the
+    LAST of them — precisely where the reserved final pass was about to force a
+    grounded answer, and not tunable away (with three action rounds a provider
+    cannot make a third identical call any earlier). Refusing that pass replaced
+    the grounded answer with the empty-reply fallback, regressing the invariant
+    `test_tool_loop_approval` pins for this exact provider shape; that test kept
+    passing because it drives the plain-chat path, which gets no tripwire.
+    """
+    settings = _agentic_settings()
+    # The collision above is what makes this the default-path case, so fail
+    # loudly if either default moves rather than testing a shape prod never sees.
+    assert settings.tool_max_rounds == 4
+    assert settings.repeated_tool_call_threshold == 3
+    assert settings.loop_detection_enabled is True
+    streams: list[bool] = []
 
     def _make_stream_for(prompt: str, **_kwargs: object) -> Any:
         def _make(
@@ -777,6 +875,74 @@ async def test_single_mode_token_cap_trip_reports_a_partial_not_a_budget_halt() 
             *,
             answer_nudge: bool = False,
         ) -> AsyncIterator[ProviderEvent]:
+            streams.append(suppress_tools)
+
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                if suppress_tools:
+                    yield AnswerDelta(
+                        text="After several tool calls, here is the grounded final answer."
+                    )
+                    yield Complete(usage=UsageUpdate(input_tokens=10))
+                    return
+                # Stay greedy: re-request the identical call every round.
+                yield ToolCall(
+                    id=f"c{len(streams)}",
+                    name="get_current_time",
+                    status="running",
+                    input={},
+                )
+
+            return _gen()
+
+        return _make
+
+    with structlog.testing.capture_logs() as captured:
+        events = [
+            ev
+            async for ev in run_orchestrator(
+                make_stream_for=_make_stream_for,
+                settings=settings,
+                mode="single",
+                user_text="hi",
+                cost_for_usage=lambda u: 1e-9 * float(u.input_tokens),
+            )
+        ]
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "grounded final answer" in answer
+    # The rescue pass ran, so the turn is a labeled partial carrying a real
+    # answer — not the fallback claiming findings that were never produced.
+    assert EMPTY_REPLY_FALLBACK not in answer
+    assert streams == [False, False, False, True]
+    tripped = [e for e in captured if str(e.get("event", "")).endswith(".tripped")]
+    assert len(tripped) == 1
+    assert tripped[0]["stop_reason"] == "repeated_tool_calls"
+    # Still a partial, and still on the trip's own channel.
+    assert "the same tool call kept repeating" in answer
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].partial is True
+    assert finals[-1].budget_halted is False
+
+
+async def test_single_mode_token_cap_trip_reports_a_partial_not_a_budget_halt() -> None:
+    """A trip raises `partial` through the same field a cap breach does and
+    leaves `budget_halted` alone: one degrade label per channel.
+
+    A token cap is a PHYSICAL bound, so unlike the behavioral trip above it
+    refuses even the tool-suppressed pass — there is no token room for it.
+    """
+    suppressed_streams = 0
+
+    def _make_stream_for(prompt: str, **_kwargs: object) -> Any:
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            nonlocal suppressed_streams
+            if suppress_tools:
+                suppressed_streams += 1
+
             async def _gen() -> AsyncIterator[ProviderEvent]:
                 yield AnswerDelta(text="partial finding")
                 yield UsageUpdate(input_tokens=5_000)
@@ -813,6 +979,7 @@ async def test_single_mode_token_cap_trip_reports_a_partial_not_a_budget_halt() 
     tripped = [e for e in captured if str(e.get("event", "")).endswith(".tripped")]
     assert len(tripped) == 1
     assert tripped[0]["stop_reason"] == "token_cap_exceeded"
+    assert suppressed_streams == 0
 
 
 async def test_deep_research_trip_cancels_workers_and_keeps_survivors(

@@ -26,9 +26,11 @@ Two invariants this module encodes:
 bound firing (a protocol stop, a provider error): those name no counted unit, and
 saying so is different from omitting the label.
 
-This module is deliberately inert — pure types and pure functions, no imports from
-the provider, streaming, tools or agentic layers, and no consumer yet. Wiring it
-into the loop, the SSE schemas and tracing is separate work.
+This module holds pure types and pure functions only, with no imports from the
+provider, streaming, tools or agentic layers. `app/runtime/bounds.py` is its
+first consumer: the run's trip conditions latch one of these `StopReason`
+members and read both mappings to log what they counted. Wiring the vocabulary
+into the SSE schemas and tracing is still separate work.
 """
 
 from __future__ import annotations

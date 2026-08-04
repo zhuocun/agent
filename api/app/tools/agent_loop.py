@@ -80,9 +80,11 @@ from app.providers.protocol import (
 from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK, main_answer_is_empty
 from app.runtime.bounds import (
     RunTripwire,
+    allows_final_answer_pass,
     bound_tool_result_payload,
     bound_tool_result_text,
 )
+from app.runtime.loop_state import StopReason
 from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolApprovalState, ToolCallRequest, ToolExecutionResult
 
@@ -384,11 +386,17 @@ async def run_agent_loop(
     cumulative tokens, repeated tool calls, tool-failure breaker. ``None`` (the
     default) means no extra bounds, so every existing caller behaves exactly as
     before; the agentic orchestrator passes one handle per loop. When a bound
-    fires the loop follows the degrade ladder: it stops opening new provider
+    fires the loop follows the degrade ladder: it stops opening new ACTION
     rounds, keeps everything already produced, and exits through the SAME
     terminal path as any other stop, so the wire still sees exactly one terminal
     ``Complete``. It never raises. A trip bounds SCHEDULING — the provider stream
     already in flight is drained normally rather than cut mid-event.
+
+    The reserved final pass is the one exception, and only for the behavioral
+    trips (`runtime.bounds.allows_final_answer_pass`): it advertises no tools, so
+    it can neither loop nor extend the run, and it is what forces a grounded
+    answer instead of the empty-reply fallback. A physical bound — the deadline,
+    the token cap — refuses even that.
 
     ``initial_tool_results`` (BE-005): pre-seeded results from a HITL resume so
     the loop continues the same subagent with validated tool feedback instead of
@@ -753,25 +761,40 @@ async def run_agent_loop(
 
         tool_feedback.extend(round_results)
 
+        tripped: StopReason | None = None
         if tripwire is not None:
             for settled in round_results:
                 tripwire.note_tool_result(settled.status)
-            if tripwire.check() is not None:
-                # Degrade ladder (doc §11.8): stop scheduling new actions — no
-                # further action round and no reserved final pass — keep the
-                # partials already produced, and end through the same terminal
-                # decision every other stop uses, so the wire sees exactly one
-                # terminal Complete. The trip is NAMED in the tripwire's log line
-                # and, for an agentic run, on the run summary's partial label.
-                if not answer_emitted:
-                    async for terminal_event in _emit_empty_terminal():
-                        yield terminal_event
-                elif not complete_relayed:
-                    yield Complete(usage=get_cumulative())
-                return
+            tripped = tripwire.check()
 
         is_last_action = _round == action_rounds - 1
-        if is_last_action and max_rounds > action_rounds:
+        # Whether a tool-suppressed pass is still available to force an answer.
+        # `max_rounds == 1` reserves none, so there is nothing for a trip to fall
+        # through to.
+        has_final_pass = max_rounds > action_rounds
+        if tripped is not None and not (
+            has_final_pass and allows_final_answer_pass(tripped)
+        ):
+            # Degrade ladder (doc §11.8): stop scheduling new actions — no further
+            # action round and, for a PHYSICAL bound, not even the reserved pass —
+            # keep the partials already produced, and end through the same terminal
+            # decision every other stop uses, so the wire sees exactly one terminal
+            # Complete. The trip is NAMED in the tripwire's log line and, for an
+            # agentic run, on the run summary's partial label.
+            if not answer_emitted:
+                async for terminal_event in _emit_empty_terminal():
+                    yield terminal_event
+            elif not complete_relayed:
+                yield Complete(usage=get_cumulative())
+            return
+
+        # A behavioral trip falls THROUGH to the reserved pass below, from
+        # whichever round it fired on: that pass advertises no tools, so it cannot
+        # repeat the call that tripped or open a further round, and skipping it
+        # would trade the grounded answer it exists to force for no safety at all
+        # (it is also the degrade `tool_rounds_exhausted` already gets, and both
+        # reasons share the `partial_limit` outcome).
+        if (is_last_action or tripped is not None) and has_final_pass:
             # Reserved final provider slot: suppress tools and force an answer.
             # UNCONDITIONAL force-final on tool exhaustion — NOT an empty retry:
             # it is nudge-free (`make_stream(..., True)` with no `answer_nudge`)

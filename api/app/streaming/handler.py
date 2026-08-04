@@ -98,6 +98,7 @@ from app.runtime.answer_policy import (
     empty_reply_retry_nudge,
     main_answer_is_empty,
 )
+from app.runtime.bounds import RunBounds
 from app.runtime.context import RuntimeContext, ServedRoute
 from app.runtime.run_receipt import RunReceipt
 from app.schemas.common import ModelTierId, SubstitutionReasonCode
@@ -804,6 +805,10 @@ async def stream_and_persist(
     # Captured once so the per-turn tools gate + agent-loop wrapping read a
     # stable value (and tests can override via a settings cache flush).
     handler_settings = get_settings()
+    # `RunBounds.from_settings` is the one place settings become bounds, so the
+    # ceiling on a model-visible tool result is read from there rather than off
+    # `handler_settings` a second time (doc §7).
+    tool_result_max_chars = RunBounds.from_settings(handler_settings).tool_result_max_chars
     tools_active = handler_settings.tools_enabled
     # Agentic mode (T1 seam): route into the orchestrator ONLY when the flag is
     # on, tools are on (the orchestrator builds on the tool seam), AND a non-None
@@ -987,7 +992,7 @@ async def stream_and_persist(
             else (turn_tool_definitions if tool_definitions is None else tool_definitions)
         )
         round_history = history + tool_feedback_to_history(
-            tool_feedback, max_chars=handler_settings.tool_result_max_chars
+            tool_feedback, max_chars=tool_result_max_chars
         )
         effective_web_search = (
             web_search if web_search_override is None else web_search_override
@@ -1092,7 +1097,7 @@ async def stream_and_persist(
             # Tool-feedback rounds (if any) stay isolated — never splice chat
             # history into the judge session.
             round_history = tool_feedback_to_history(
-                tool_feedback, max_chars=handler_settings.tool_result_max_chars
+                tool_feedback, max_chars=tool_result_max_chars
             )
             return active_provider.stream(
                 model_id=binding.model_id,
@@ -1195,7 +1200,7 @@ async def stream_and_persist(
             answer_nudge: bool = False,
         ) -> AsyncIterator[ProviderEvent]:
             round_history = history + tool_feedback_to_history(
-                tool_feedback, max_chars=handler_settings.tool_result_max_chars
+                tool_feedback, max_chars=tool_result_max_chars
             )
             fb_system_prefix = turn_system_prefix
             if answer_nudge:

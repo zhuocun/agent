@@ -44,7 +44,6 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette import ServerSentEvent
 
-from app.agentic import budget
 from app.agentic.clarify import (
     ClarificationRecord,
     nonblank_answers,
@@ -104,7 +103,6 @@ from app.runtime.run_receipt import RunReceipt
 from app.schemas.common import ModelTierId, SubstitutionReasonCode
 from app.schemas.conversation import ToolApprovalDecision
 from app.schemas.message import (
-    CostBreakdown,
     ModelAttribution,
     ReasoningPart,
     SourcesPart,
@@ -145,6 +143,7 @@ from app.streaming.sse import (
 )
 from app.streaming.stop_registry import is_stop_requested_async
 from app.streaming.turn_lifecycle import TurnLifecycle
+from app.streaming.turn_money import TurnMoney
 from app.streaming.turn_reducer import (
     ScopeState,
     TurnReducer,
@@ -1233,75 +1232,18 @@ async def stream_and_persist(
 
         return _make
 
-    def _phase_image_count(subagent_id: str | None, role: str | None) -> int:
-        """Charging follows transport: a phase pays for what its stream sends.
-
-        `image_token_formula` folds estimated image tokens into the input bucket,
-        so a phase is charged the turn's `image_attachment_count` if and only if
-        that phase's stream factory actually attaches the images. Every factory
-        — `_build_raw_stream` (single primary, and the planner / worker /
-        aggregator phases via `_agentic_make_stream`) and
-        `_agentic_fallback_make_stream` — passes `attachments=attachments`
-        unconditionally, so those prompts are NOT text-only and the provider
-        re-charges the images on each of those calls.
-
-        The verifier is the sole genuinely text-only phase:
-        `_agentic_fresh_make_stream` passes `attachments=None` for its
-        fresh-context judge session, so it never pays for the turn's images.
-
-        (Supersedes FL-36, whose premise that planner / worker / aggregator
-        prompts are text-only was false and made every deep_research turn with
-        attachments under-bill the whole image component.)
-        """
-        _ = subagent_id
-        if role == "verifier":
-            return 0
-        return image_attachment_count
-
-    def _cost_for_usage(usage: UsageUpdate) -> float:
-        """Price an accumulated usage for the active binding (agentic only).
-
-        FL-34-b: `subtotal_usd` **is** the total — `session_surcharge_usd` is a
-        disclosure field describing part of it, so adding it double-charges the
-        long-context surcharge.
-        Image tokens are charged on every phase this prices, because every
-        non-verifier stream factory sends the turn's attachments (see
-        `_phase_image_count`). The verifier is priced by
-        `_verifier_cost_for_usage` instead.
-        """
-        breakdown = compute_cost_breakdown(
-            usage=usage,
-            binding=binding,
-            image_count=image_attachment_count,
-        )
-        return breakdown.subtotal_usd
-
-    def _verifier_cost_for_usage(usage: UsageUpdate) -> float:
-        """Phase pricer for the fresh-context judge (V-011).
-
-        The verifier sends ``attachments=None``; never inherit the turn's image
-        attachment count into judge pricing.
-        """
-        breakdown = compute_cost_breakdown(
-            usage=usage,
-            binding=binding,
-            image_count=0,
-        )
-        return breakdown.subtotal_usd
-
-    def _fallback_cost_for_usage(usage: UsageUpdate) -> float:
-        """Price usage against the fallback binding (FE-009).
-
-        `_agentic_fallback_make_stream` sends the turn's attachments too, so the
-        fallback route is charged the image component exactly like the primary.
-        """
-        assert fallback_binding is not None
-        breakdown = compute_cost_breakdown(
-            usage=usage,
-            binding=fallback_binding,
-            image_count=image_attachment_count,
-        )
-        return breakdown.subtotal_usd
+    # AC-03 sibling: one owner for this turn's money. The phase pricers, the
+    # admission estimate and the boundary triple all live on it, and it tracks
+    # the working `binding` through a provider-fallback rebind (see `rebind`).
+    turn_money = TurnMoney(
+        settings=handler_settings,
+        binding=binding,
+        fallback_binding=fallback_binding,
+        image_attachment_count=image_attachment_count,
+        state=state,
+        agentic_active=agentic_active,
+        resume_seed=resume_seed,
+    )
 
     def _agentic_served_route() -> ServedRoute:
         """The route this turn is bound to, for the phase spans (AC-10).
@@ -1318,20 +1260,6 @@ async def stream_and_persist(
             provider_id=runtime_provider_id,
             model_id=binding.model_id,
             substitution=router_substitution,
-        )
-
-    def _estimate_run_cost(sub_question_count: int) -> float:
-        """Worst-case run-cost estimate for pre-spawn admission (agentic only).
-
-        Called module-qualified so the budget methodology stays in one place
-        (and stays test-overridable). Reads the working `binding` at call time so
-        a fallback rebuild re-estimates against the fallback route.
-        """
-        return budget.estimate_run_cost(
-            sub_question_count=sub_question_count,
-            binding=binding,
-            settings=handler_settings,
-            image_count=image_attachment_count,
         )
 
     # The current provider iterator. Rebuilt on a fallback retry so the pump
@@ -1587,7 +1515,7 @@ async def stream_and_persist(
                         if resume_seed.resume_user_text
                         else turn_user_text
                     ),
-                    cost_for_usage=_cost_for_usage,
+                    cost_for_usage=turn_money.cost_for_usage,
                     served_route=_agentic_served_route(),
                     budget_headroom_usd=budget_headroom_usd,
                     server_approved_call_ids=set(),
@@ -1649,10 +1577,10 @@ async def stream_and_persist(
                 settings=handler_settings,
                 mode=agentic_mode,
                 user_text=orch_user_text,
-                cost_for_usage=_cost_for_usage,
+                cost_for_usage=turn_money.cost_for_usage,
                 served_route=_agentic_served_route(),
-                verifier_cost_for_usage=_verifier_cost_for_usage,
-                estimate_cost=_estimate_run_cost,
+                verifier_cost_for_usage=turn_money.verifier_cost_for_usage,
+                estimate_cost=turn_money.estimate_run_cost,
                 budget_headroom_usd=budget_headroom_usd,
                 plan_approved=plan_approved,
                 approved_plan=approved_plan,
@@ -1666,7 +1594,9 @@ async def stream_and_persist(
                     _agentic_fallback_make_stream if fallback_binding is not None else None
                 ),
                 fallback_cost_for_usage=(
-                    _fallback_cost_for_usage if fallback_binding is not None else None
+                    turn_money.fallback_cost_for_usage
+                    if fallback_binding is not None
+                    else None
                 ),
                 fallback_provider_id=(
                     (fallback_provider_id or fallback_binding.provider_id)
@@ -1858,100 +1788,6 @@ async def stream_and_persist(
             state.answer.append(EMPTY_REPLY_FALLBACK)
         return True, target_subagent
 
-    def _already_billed_floor_usd() -> float:
-        """Spend a prior pause turn already charged, for the stop estimate only.
-
-        Exact accounting reads this off the receipt's own
-        `already_billed_cost_usd`; this reconstruction exists solely so an
-        estimate cannot re-charge pre-pause dollars.
-        """
-        if resume_seed is None:
-            return 0.0
-        if resume_seed.prior_receipt is not None:
-            return resume_seed.prior_receipt.cumulative_cost_usd
-        already = float(resume_seed.prior_run_cost_usd or 0.0)
-        cont = resume_seed.agentic_continuation
-        if cont is not None:
-            already += float(getattr(cont, "paused_worker_cost_usd", 0.0) or 0.0)
-        return already
-
-    def _estimated_agentic_cost_usd() -> float:
-        """ESTIMATE-ONLY cumulative agentic spend. Never an exact authority.
-
-        Reached only when a turn ended before the orchestrator could emit a
-        receipt-bearing boundary `RunCost` — an abrupt stop or disconnect
-        mid-run. It prices the settled phase facts the fold already holds: each
-        scope's own `SubagentDone` cost, or a still in-flight scope's latest
-        usage against the binding that served it.
-        """
-        estimated = 0.0
-        for acc in state.scopes.values():
-            if acc.cost_usd is not None:
-                estimated += acc.cost_usd
-                continue
-            has_tokens = bool(
-                acc.usage.input_tokens
-                or acc.usage.output_tokens
-                or acc.usage.reasoning_tokens
-                or acc.usage.cached_input_tokens
-            )
-            if not has_tokens:
-                continue
-            if acc.substitution is not None and fallback_binding is not None:
-                estimated += _fallback_cost_for_usage(acc.usage)
-            else:
-                estimated += _cost_for_usage(acc.usage)
-        return estimated
-
-    def _boundary_money() -> tuple[CostBreakdown, float, float]:
-        """(breakdown, cumulative, newly billable) for a persistable boundary.
-
-        AC-02/AC-03: a banked `RunCost.receipt` is the SOLE exact authority for
-        an agentic run, and it wins on every path. It is the orchestrator's own
-        accounting for the boundary being persisted, which is why the old
-        reconstruction — a total re-derived from whichever `SubagentDone` events
-        happened to arrive, minus an already-billed part re-derived from one
-        scalar seed — reported `$0.37` on the wire and `$0.00` on the row for a
-        plan-approved resume. A receipt-less display tick banks nothing, so it
-        can never reach this arithmetic.
-
-        Without a receipt the money is explicitly an estimate: orchestrator
-        phase costs are CUMULATIVE across a resume, so the estimate subtracts
-        the floor an earlier pause turn already charged (AR-002). Non-agentic
-        turns price their own accumulated usage and every dollar of it is new —
-        there is no prior leg to have charged.
-        """
-        breakdown = compute_cost_breakdown(
-            usage=state.usage,
-            binding=binding,
-            image_count=image_attachment_count,
-        )
-
-        def _with_total(total: float) -> CostBreakdown:
-            """Keep the token structure, show the run's own total (FL-34-b)."""
-            return breakdown.model_copy(
-                update={"subtotal_usd": total, "session_surcharge_usd": 0.0}
-            )
-
-        if state.receipt is not None:
-            return (
-                _with_total(state.receipt.cumulative_cost_usd),
-                state.receipt.cumulative_cost_usd,
-                state.receipt.newly_billable_cost_usd,
-            )
-        if not agentic_active:
-            # FL-34-b: charge the subtotal alone (surcharge is disclosure).
-            return breakdown, breakdown.subtotal_usd, breakdown.subtotal_usd
-        if state.scopes:
-            estimated = _estimated_agentic_cost_usd()
-            return (
-                _with_total(estimated),
-                estimated,
-                max(0.0, estimated - _already_billed_floor_usd()),
-            )
-        flat = breakdown.subtotal_usd
-        return breakdown, flat, max(0.0, flat - _already_billed_floor_usd())
-
     def _build_parts() -> list[dict[str, Any]]:
         """Assemble the persisted assistant parts in canonical order.
 
@@ -2028,7 +1864,7 @@ async def stream_and_persist(
                 # Verifier is fresh-context (no attachments); never inherit turn
                 # image pricing. Every other phase does send them, so it is
                 # charged for them. Prefer SubagentDone.cost_usd when present.
-                attr_image_count = _phase_image_count(subagent_id, acc.role)
+                attr_image_count = turn_money.phase_image_count(subagent_id, acc.role)
                 breakdown = compute_cost_breakdown(
                     usage=acc.usage,
                     binding=attr_binding,
@@ -2316,9 +2152,9 @@ async def stream_and_persist(
                     mark_unfinished_subagents_stopped(state.scopes)
                 # An abrupt stop is the one boundary with no exact authority: the
                 # orchestrator never reached a receipt-bearing `RunCost`, so
-                # `_boundary_money` falls through to its named estimate over the
-                # settled phase facts the fold already holds.
-                breakdown, turn_cost, billable_cost = _boundary_money()
+                # `TurnMoney.boundary_money` falls through to its named estimate
+                # over the settled phase facts the fold already holds.
+                breakdown, turn_cost, billable_cost = turn_money.boundary_money()
                 attribution = build_attribution(
                     requested_tier_id=requested_tier_id,
                     binding=binding,
@@ -2451,6 +2287,9 @@ async def stream_and_persist(
                     # is non-None here (checked in `_fallback_pending`).
                     assert fallback_binding is not None
                     binding = fallback_binding
+                    # `TurnMoney` holds the same working route, so the pricers
+                    # and the admission estimate follow the rebind too.
+                    turn_money.rebind(fallback_binding)
                     runtime_provider_id = (
                         fallback_provider_id or fallback_binding.provider_id
                     )
@@ -2678,7 +2517,9 @@ async def stream_and_persist(
                     # turn image pricing. Every other phase does send them, so it
                     # is charged for them. Prefer authoritative
                     # SubagentDone.cost_usd when present.
-                    attr_image_count = _phase_image_count(ev.subagent_id, ev.role)
+                    attr_image_count = turn_money.phase_image_count(
+                        ev.subagent_id, ev.role
+                    )
                     breakdown = compute_cost_breakdown(
                         usage=ev.usage,
                         binding=attr_binding,
@@ -2757,7 +2598,7 @@ async def stream_and_persist(
             # not been charged yet. Only the latter reaches the row and the
             # meter, so a second pause on the same run cannot re-charge the first
             # one's dollars.
-            breakdown, turn_cost, pause_billable_cost = _boundary_money()
+            breakdown, turn_cost, pause_billable_cost = turn_money.boundary_money()
             # B4: if tool-input stamp was missing, fall back to planner accumulator.
             if pending_planner_cost_usd <= 0.0 and agentic_active:
                 planner_acc = state.scopes.get("planner")
@@ -2916,7 +2757,7 @@ async def stream_and_persist(
 
         # Provider finished cleanly. AC-02: the terminal receipt is the exact run
         # total, and AR-002 still charges only the not-yet-billed part of it.
-        breakdown, turn_cost, billable_cost = _boundary_money()
+        breakdown, turn_cost, billable_cost = turn_money.boundary_money()
         attribution = build_attribution(
             requested_tier_id=requested_tier_id,
             binding=binding,

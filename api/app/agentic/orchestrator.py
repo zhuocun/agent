@@ -184,18 +184,20 @@ def _run_stop_reason(
 ) -> StopReason:
     """The ONE reason a fan-out run ended, ranking the degrade channels.
 
-    A parked human gate outranks everything because the run has not ended at all
-    — it is waiting. A bound trip outranks the cap: the tripwire latched first and
-    is what cancelled the fan-out. A run that reached neither ended on its own
-    final message, which is what `protocol_stop` means and all it means (doc §1.3
-    decision 2: it is not acceptance).
+    A parked human gate outranks everything, because the run has not ended at all
+    — it is waiting. A cap breach outranks a bound trip: `bounds.py` deliberately
+    leaves `usd_cap_exceeded` to `budget.py` to report so that "a cap breach and a
+    trip can never be relabeled as each other", and picking one label for the span
+    must not break that in the trip's favor. A run that reached neither ended on
+    its own final message, which is what `protocol_stop` means and all it means
+    (doc §1.3 decision 2: it is not acceptance).
     """
     if paused:
         return "awaiting_approval"
-    if tripped is not None:
-        return tripped
     if budget_halted:
         return "usd_cap_exceeded"
+    if tripped is not None:
+        return tripped
     return "protocol_stop"
 
 
@@ -1450,11 +1452,14 @@ async def run_single(
             folded before the exit, so a failed or stopped turn still reports the
             tokens it really burned rather than nothing at all.
 
-            A latched bound outranks the caller's reason: the exit that observed
-            the stop is not always the bound that caused it, and the tripwire is
-            the one owner of that answer (`bounds.py`).
+            `stop_reason` is the exit this call is taking, and it stands — except
+            for a clean `protocol_stop`, which claims the loop ended on its own
+            final message and cannot be true if a bound fired first. The tripwire
+            is the one owner of that answer (`bounds.py`).
             """
-            reason = tripwire.tripped or stop_reason
+            reason = stop_reason
+            if reason == "protocol_stop" and tripwire.tripped is not None:
+                reason = tripwire.tripped
             span.settle(
                 route=served_route,
                 usage=UsageTotals.copy_from(sum_usages([prior_usage, session_usage])),

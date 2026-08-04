@@ -889,6 +889,27 @@ async def test_the_workflow_root_records_the_whole_run() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_phase_reports_a_stop_reason_only_when_it_owns_one() -> None:
+    """Each worker's loop ends on its own terms, so its span says how — with the
+    counted event, so an operator reading one phase can tell a bound from a clean
+    finish. A phase with no reason of its own (the planner, the synthesis, a judge
+    sample) leaves the attribute absent rather than inheriting the run's."""
+    exporter = _capture_spans()
+    await _drain_deep_research(
+        settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=1),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    phases = _settled_phases(exporter)
+    for worker in phases["worker"]:
+        assert worker["agentic.stop_reason"] == "protocol_stop"
+        assert worker["agentic.counted_event"] == "none"
+        assert worker["agentic.run_outcome"] == "completed"
+    for role in (PLANNER_ROLE, "aggregator", "verifier"):
+        for attrs in phases[role]:
+            assert "agentic.stop_reason" not in attrs, role
+
+
+@pytest.mark.asyncio
 async def test_a_tripped_run_reports_the_bound_that_stopped_it() -> None:
     """A run that ended on a bound must say WHICH bound and what it counted — a
     root reporting only `partial` leaves an operator with nothing to tune."""

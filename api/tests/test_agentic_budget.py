@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -20,17 +21,27 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+import structlog
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agentic import budget
-from app.config import get_settings
+from app.agentic.orchestrator import _TRIP_REASON_COPY, run_orchestrator
+from app.config import Settings, get_settings
 from app.db.models import Conversation, User
 from app.db.repositories import billing as billing_repo
 from app.db.session import get_db
 from app.providers.pricing import compute_cost_breakdown
-from app.providers.protocol import UsageUpdate
+from app.providers.protocol import (
+    AnswerDelta,
+    Complete,
+    ProviderEvent,
+    RunCost,
+    SubagentDone,
+    ToolResult,
+    UsageUpdate,
+)
 from app.providers.tiers import get_binding
 
 # Fixtures ---------------------------------------------------------------------
@@ -479,14 +490,7 @@ async def test_single_mode_budget_halt_with_no_prose_is_labeled() -> None:
     """
     from collections.abc import AsyncIterator as _AsyncIterator
 
-    from app.agentic.orchestrator import run_orchestrator
-    from app.config import Settings
-    from app.providers.protocol import (
-        ProviderEvent,
-        ReasoningDelta,
-        RunCost,
-        ToolResult,
-    )
+    from app.providers.protocol import ReasoningDelta
     from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK
 
     def _make_stream_for(prompt: str, **_kwargs: object):
@@ -530,6 +534,96 @@ async def test_single_mode_budget_halt_with_no_prose_is_labeled() -> None:
     finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
     assert finals and finals[-1].partial is True
     assert finals[-1].budget_halted is True
+
+
+@pytest.mark.asyncio
+async def test_a_real_cap_breach_keeps_the_budget_label_and_never_the_trip_label() -> None:
+    """One degrade label per channel, from the budget's side.
+
+    The run bounds (`app/runtime/bounds.py`, doc §11.8) cancel a fan-out through
+    the same plumbing the mid-flight cap kill uses, which is exactly why the two
+    have to stay distinguishable on the wire: a cap breach must still say
+    "budget", flag `budget_halted`, close its cancelled workers as
+    `budget_cancelled`, and write no trip log line at all. The bounds ship
+    generous enough (10 min, loop detection at 3) that nothing trips here.
+    """
+    first_done = asyncio.Event()
+    cancelled = {"slow": False}
+
+    async def _fast(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        yield UsageUpdate(input_tokens=80)
+        first_done.set()
+        yield AnswerDelta(text="alpha finding")
+        yield Complete(usage=UsageUpdate(input_tokens=80, output_tokens=1))
+
+    async def _slow(
+        _feedback: list[ToolResult], suppress_tools: bool = False
+    ) -> AsyncIterator[ProviderEvent]:
+        await first_done.wait()
+        try:
+            await asyncio.sleep(60)
+            yield AnswerDelta(text="never arrives")
+        except asyncio.CancelledError:
+            cancelled["slow"] = True
+            raise
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            if "DEEP_RESEARCH_WORKER:0:" in prompt:
+                return _fast(_feedback, suppress_tools)
+            if "DEEP_RESEARCH_WORKER:1:" in prompt:
+                return _slow(_feedback, suppress_tools)
+
+            async def _agg() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="synthesis over alpha finding")
+                yield Complete(usage=UsageUpdate())
+
+            return _agg()
+
+        return _make
+
+    settings = Settings(  # type: ignore[call-arg]
+        PROVIDER_BACKEND="fake",
+        AGENTIC_ENABLED=True,
+        TOOLS_ENABLED=True,
+        AGENTIC_PLAN_APPROVAL=False,
+        AGENTIC_VERIFIER=False,
+        AGENTIC_MAX_WORKERS=2,
+        # 80 tokens * 0.01 = 0.8 > the 0.5 cap, mid-flight.
+        AGENTIC_RUN_BUDGET_USD=0.5,
+    )
+    with structlog.testing.capture_logs() as captured:
+        events = [
+            ev
+            async for ev in run_orchestrator(
+                make_stream_for=_make_stream_for,
+                settings=settings,
+                mode="deep_research",
+                user_text="DEEP_RESEARCH: alpha | beta",
+                cost_for_usage=lambda u: float(u.input_tokens) * 0.01,
+            )
+        ]
+    assert cancelled["slow"] is True
+    answer = "".join(e.text for e in events if isinstance(e, AnswerDelta))
+    assert "run budget" in answer
+    for trip_copy in _TRIP_REASON_COPY.values():
+        assert trip_copy not in answer
+    finals = [e for e in events if isinstance(e, RunCost) and e.phase == "final"]
+    assert finals and finals[-1].budget_halted is True
+    outcomes = {
+        e.subagent_id: e.outcome
+        for e in events
+        if isinstance(e, SubagentDone) and e.role == "worker"
+    }
+    assert outcomes.get("worker-1") == "budget_cancelled"
+    assert not [e for e in captured if str(e.get("event", "")).endswith(".tripped")]
 
 
 @pytest.mark.asyncio
@@ -623,7 +717,6 @@ async def test_agentic_phase_pricers_charge_subtotal_only(
     from dataclasses import replace
     from uuid import uuid4
 
-    from app.providers.protocol import Complete, ProviderEvent
     from app.providers.tiers import SessionMultiplierPricing
     from app.streaming import handler as handler_mod
 

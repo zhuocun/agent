@@ -986,7 +986,9 @@ async def stream_and_persist(
             if suppress_tools
             else (turn_tool_definitions if tool_definitions is None else tool_definitions)
         )
-        round_history = history + tool_feedback_to_history(tool_feedback)
+        round_history = history + tool_feedback_to_history(
+            tool_feedback, max_chars=handler_settings.tool_result_max_chars
+        )
         effective_web_search = (
             web_search if web_search_override is None else web_search_override
         )
@@ -1089,7 +1091,9 @@ async def stream_and_persist(
             _ = answer_nudge
             # Tool-feedback rounds (if any) stay isolated — never splice chat
             # history into the judge session.
-            round_history = tool_feedback_to_history(tool_feedback)
+            round_history = tool_feedback_to_history(
+                tool_feedback, max_chars=handler_settings.tool_result_max_chars
+            )
             return active_provider.stream(
                 model_id=binding.model_id,
                 history=round_history,
@@ -1190,7 +1194,9 @@ async def stream_and_persist(
             *,
             answer_nudge: bool = False,
         ) -> AsyncIterator[ProviderEvent]:
-            round_history = history + tool_feedback_to_history(tool_feedback)
+            round_history = history + tool_feedback_to_history(
+                tool_feedback, max_chars=handler_settings.tool_result_max_chars
+            )
             fb_system_prefix = turn_system_prefix
             if answer_nudge:
                 fb_system_prefix = (

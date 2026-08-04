@@ -98,7 +98,7 @@ def test_provider_queue_bound_is_documented() -> None:
 
 
 def test_fanout_queue_bound_matches_provider_bound() -> None:
-    from app.agentic.orchestrator import _FANOUT_QUEUE_MAXSIZE
+    from app.agentic.fanout import _FANOUT_QUEUE_MAXSIZE
 
     assert _FANOUT_QUEUE_MAXSIZE == 256
     assert _FANOUT_QUEUE_MAXSIZE == _PROVIDER_QUEUE_MAXSIZE

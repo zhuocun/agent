@@ -35,7 +35,7 @@ import json
 import secrets
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 import structlog
 
@@ -47,6 +47,7 @@ from app.agentic.continuation import (
     serialize_continuation,
     usage_to_wire,
 )
+from app.agentic.fanout import WorkerFanout
 from app.agentic.retry import is_retryable_provider_error
 from app.agentic.sources import SourceNamespace
 from app.agentic.worker import (
@@ -289,18 +290,6 @@ def hash_plan(sub_questions: list[str]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True)
-class _WorkerSentinel:
-    """Internal queue marker: a worker has put its last event and finished.
-
-    NOT a `ProviderEvent` — it never escapes the orchestrator; it only lets the
-    fan-out merge loop know when every worker has drained so it can stop reading
-    the shared queue.
-    """
-
-    subagent_id: str
-
-
 AggregatorOutcome = Literal["succeeded", "failed", "budget_cancelled"]
 
 
@@ -363,71 +352,6 @@ def _abandoned_pause_done(
         substituted_model=result.substituted_model,
         substituted_display_label=result.substituted_display_label,
     )
-
-
-# Bound the worker fan-out → consumer queue so a slow drain cannot buffer an
-# unbounded number of worker events in process memory (B23). ``await put``
-# applies backpressure; teardown uses non-blocking put with drop-oldest.
-_FANOUT_QUEUE_MAXSIZE = 256
-
-
-def _queue_item_is_protected(item: object) -> bool:
-    """Teardown must not drop completion control messages (B23)."""
-    return isinstance(item, (_WorkerSentinel, SubagentDone, WorkerPaused))
-
-
-def _queue_put_nowait_drop_oldest(
-    queue: asyncio.Queue[Any], item: object
-) -> None:
-    """Enqueue ``item`` without awaiting; drop oldest *unprotected* if full (B23).
-
-    Used on cancellation / sentinel paths so teardown cannot block forever on a
-    full fan-out queue when the consumer has already stopped draining.
-
-    Never drops ``_WorkerSentinel`` / ``SubagentDone`` / ``WorkerPaused`` already
-    queued — losing a sentinel can hang the fan-out consumer forever.
-    """
-    while True:
-        try:
-            queue.put_nowait(item)
-            return
-        except asyncio.QueueFull:
-            held_protected: list[object] = []
-            dropped = False
-            while True:
-                try:
-                    old = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                if not dropped and not _queue_item_is_protected(old):
-                    dropped = True
-                    continue
-                held_protected.append(old)
-            for old in held_protected:
-                try:
-                    queue.put_nowait(old)
-                except asyncio.QueueFull:
-                    # Only protected items remain and the queue is saturated.
-                    # maxsize (>=256) exceeds max workers, so this is unreachable
-                    # in production; keep protected items and retry put.
-                    break
-            if not dropped:
-                # Queue holds only protected control messages. If we are
-                # inserting another sentinel that is already present, skip;
-                # otherwise force one unprotected-style slot by refusing to
-                # discard sentinels and relying on maxsize >> worker count.
-                if isinstance(item, _WorkerSentinel):
-                    # Deduplicate: if an identical sentinel is already queued, done.
-                    # (We cannot peek easily after re-queue; treat as success if
-                    # put still fails after a no-drop cycle — consumer will drain.)
-                    with contextlib.suppress(asyncio.QueueFull):
-                        queue.put_nowait(item)
-                    return
-                # Non-sentinel teardown item with a protected-only full queue:
-                # drop nothing further; best-effort put and return.
-                with contextlib.suppress(asyncio.QueueFull):
-                    queue.put_nowait(item)
-                return
 
 
 # --- run-accounting adapters (AC-02) ------------------------------------------
@@ -2482,10 +2406,10 @@ async def _run_deep_research(
             yield event
         return
 
-    semaphore = asyncio.Semaphore(max(1, settings.agentic_max_concurrency))
-    queue: asyncio.Queue[ProviderEvent | _WorkerSentinel | WorkerPaused] = asyncio.Queue(
-        maxsize=_FANOUT_QUEUE_MAXSIZE
-    )
+    # The fan-out's concurrency lives in `WorkerFanout`: the bounded queue, the
+    # concurrency gate, the per-worker sentinel protocol and the task set. Every
+    # decision below — admit, pause, kill, aggregate — stays here.
+    fanout = WorkerFanout(max_concurrency=settings.agentic_max_concurrency)
     # Worker bookkeeping, keyed by subagent_id and ordered by `worker_meta` so the
     # synthesis (and per-subagent totals) preserve sub-question order regardless
     # of the nondeterministic completion order of the parallel workers.
@@ -2545,19 +2469,19 @@ async def _run_deep_research(
             parent=workflow,
         )
         try:
-            async with semaphore:
+            async with fanout.semaphore:
                 # `aclosing` so a cancel delivered while putting onto a full queue
                 # still runs the runner's cancelled settlement — leaving the
                 # generator for the loop to finalize later would lose the row.
                 async with contextlib.aclosing(runner.run(seed)) as stream:
                     async for event in stream:
-                        await queue.put(event)
+                        await fanout.put(event)
                 outcome = runner.outcome
                 if isinstance(outcome, WorkerPaused):
                     # BE-005: leave WITHOUT a terminal — a resume continues this
                     # worker. Siblings keep running (wait policy); the consumer
                     # keeps the first pause and cancels the rest.
-                    await queue.put(outcome)
+                    await fanout.put(outcome)
                     return
                 if outcome is None:
                     return
@@ -2565,7 +2489,7 @@ async def _run_deep_research(
                     failed_workers += 1
                 else:
                     results[seed.subagent_id] = _worker_output(outcome.result)
-                await queue.put(outcome.done_event)
+                await fanout.put(outcome.done_event)
         except asyncio.CancelledError:
             # Budget mid-flight kill (or outer teardown): a row that opened still
             # owes the wire a terminal so the FE never shows a green check for a
@@ -2575,11 +2499,11 @@ async def _run_deep_research(
             # B23: non-blocking put — the consumer may have stopped draining.
             cancelled = runner.outcome
             if cancelled is not None and cancelled.done_event is not None:
-                _queue_put_nowait_drop_oldest(queue, cancelled.done_event)
+                fanout.put_nowait_drop_oldest(cancelled.done_event)
             raise
         finally:
             # B23: sentinel must not block teardown on a full queue.
-            _queue_put_nowait_drop_oldest(queue, _WorkerSentinel(seed.subagent_id))
+            fanout.finish(seed.subagent_id)
 
     tasks = [
         asyncio.create_task(
@@ -2601,6 +2525,7 @@ async def _run_deep_research(
         )
         for index, subagent_id, label, sub_question in worker_meta
     ]
+    fanout.track(tasks)
     # `actual_cost` is the high-water mark of the ledger's total: an exact
     # settlement can come in BELOW its provisional sample, and the durable
     # checkpoint's cap floor must not fall when it does.
@@ -2632,17 +2557,10 @@ async def _run_deep_research(
             trip_reason = tripwire.check()
             newly_tripped = trip_reason is not None
         if newly_breached or newly_tripped:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
+            fanout.cancel_pending()
 
     try:
-        remaining = len(tasks)
-        while remaining > 0:
-            item = await queue.get()
-            if isinstance(item, _WorkerSentinel):
-                remaining -= 1
-                continue
+        async for item in fanout.drain():
             if isinstance(item, WorkerPaused):
                 paused = item.result
                 if worker_pause is None:
@@ -2709,7 +2627,7 @@ async def _run_deep_research(
                 _maybe_kill_fanout()
         # Tolerate task cancellations from the budget kill. Worker failures are
         # degraded inside `_run_worker` and must not fail the whole run.
-        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+        gathered = await fanout.join()
         for outcome in gathered:
             if isinstance(outcome, BaseException) and not isinstance(
                 outcome, asyncio.CancelledError
@@ -2724,11 +2642,9 @@ async def _run_deep_research(
         # Note: on stop/disconnect the pump acloses this generator (GeneratorExit),
         # so SubagentDone(stopped) enqueued by cancelled workers here cannot be
         # yielded — the handler stop path marks unfinished accumulators stopped.
-        for task in tasks:
-            if not task.done():
-                task.cancel()
+        fanout.cancel_pending()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await fanout.join()
 
     if workflow is not None:
         # Settled here so a pause return — or an abrupt exit in the tail — still

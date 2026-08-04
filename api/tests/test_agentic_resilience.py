@@ -237,7 +237,7 @@ async def test_fanout_queue_bound_exceeds_protected_item_worst_case() -> None:
     `MAX_WORKER_ARTIFACTS` workers that is `2 * MAX_WORKER_ARTIFACTS`. Shrinking
     the queue below that could deadlock the fan-out consumer.
     """
-    from app.agentic.orchestrator import _FANOUT_QUEUE_MAXSIZE
+    from app.agentic.fanout import _FANOUT_QUEUE_MAXSIZE
     from app.config import MAX_WORKER_ARTIFACTS, get_settings
 
     assert _FANOUT_QUEUE_MAXSIZE >= 2 * MAX_WORKER_ARTIFACTS

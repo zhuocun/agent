@@ -57,6 +57,7 @@ from app.providers.protocol import (
 from app.runtime.answer_policy import main_answer_is_empty
 from app.runtime.bounds import RunTripwire
 from app.runtime.context import ServedRoute
+from app.runtime.loop_state import StopReason
 from app.runtime.run_receipt import CostLedger, UsageTotals
 from app.schemas.common import SubstitutionReasonCode
 from app.tools.agent_loop import (
@@ -517,6 +518,36 @@ WorkerOutcomeLabel = Literal[
     "succeeded", "failed", "cancelled", "budget_cancelled", "stopped"
 ]
 
+# WHY a worker's loop ended, per closing label (`loop_state.StopReason`). The
+# wire label says what the row is; the stop reason says what ended it, and only
+# the reason names the counted event a trace consumer can tune a bound against.
+# `cancelled` is absent because it is the one label whose reason is not implied
+# by the label — see `_worker_stop_reason`.
+_LABEL_STOP_REASONS: dict[WorkerOutcomeLabel, StopReason] = {
+    # A loop that ran to its own final message. Acceptance is decided elsewhere
+    # (doc §1.3 decision 2), which is exactly what `protocol_stop` means.
+    "succeeded": "protocol_stop",
+    "failed": "provider_error",
+    "budget_cancelled": "usd_cap_exceeded",
+    "stopped": "user_stopped",
+}
+
+
+def _worker_stop_reason(
+    label: WorkerOutcomeLabel, tripped: StopReason | None
+) -> StopReason:
+    """The stop reason this worker's span reports for `label`.
+
+    `cancelled` is the label `_finish_cancelled` picks precisely BECAUSE a run
+    bound tripped, so the latch names which bound — the whole point of recording
+    a reason instead of a label. Every other label implies its own reason, and
+    the run's latch is deliberately NOT consulted for them: a worker that
+    finished before a sibling tripped the run did not stop for that trip.
+    """
+    if label == "cancelled":
+        return tripped or "user_stopped"
+    return _LABEL_STOP_REASONS[label]
+
 
 @dataclass
 class _WorkerState:
@@ -887,6 +918,9 @@ class WorkerRunner:
             usage=UsageTotals.copy_from(result.usage),
             cost_usd=result.cost_usd,
             outcome=label,
+            stop_reason=_worker_stop_reason(
+                label, None if self._tripwire is None else self._tripwire.tripped
+            ),
         )
         return SubagentDone(
             subagent_id=result.subagent_id,
@@ -916,6 +950,7 @@ class WorkerRunner:
                 usage=UsageTotals.copy_from(result.usage),
                 cost_usd=result.cost_usd,
                 outcome="paused",
+                stop_reason="awaiting_approval",
             )
             return WorkerPaused(result, call_id, tool_name, tool_label)
         if state.failed or (

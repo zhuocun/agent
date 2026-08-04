@@ -405,6 +405,7 @@ async def _collect_judge_sample(
     *,
     route: ServedRoute | None = None,
     cost_for_usage: Callable[[UsageUpdate], float] | None = None,
+    sample_index: int = 0,
 ) -> tuple[str, UsageUpdate]:
     """Quiet agent loop for one judge sample; returns (answer_text, usage).
 
@@ -414,6 +415,11 @@ async def _collect_judge_sample(
     ``route`` / ``cost_for_usage`` are what this sample's span closes with
     (AC-10). A sample that raised still spent whatever it streamed, so the span
     settles on both arms — `failed` on the raise, `succeeded` otherwise.
+
+    ``sample_index`` is this sample's position in the N independent samples.
+    Every sample streams under the one ``VERIFIER_ID`` the wire and the ledger
+    know, so the index is what keeps N spans telling N stories rather than one
+    story repeated; it reaches the span only and changes neither.
     """
     answer_parts: list[str] = []
     usage = UsageUpdate()
@@ -428,7 +434,10 @@ async def _collect_judge_sample(
 
     try:
         with invoke_agent_span(
-            subagent_id=VERIFIER_ID, role="verifier", label=VERIFIER_LABEL
+            subagent_id=VERIFIER_ID,
+            role="verifier",
+            label=VERIFIER_LABEL,
+            sample_index=sample_index,
         ) as span:
             try:
                 async for event in run_agent_loop(
@@ -636,7 +645,7 @@ async def run_verifier(
         if cost_for_usage is not None:
             total_cost += cost_for_usage(usage)
 
-    for _ in range(n):
+    for sample_index in range(n):
         if can_afford_next_sample is not None and not can_afford_next_sample(
             total_usage, total_cost
         ):
@@ -652,6 +661,7 @@ async def run_verifier(
                 prompt,
                 route=served_route,
                 cost_for_usage=cost_for_usage,
+                sample_index=sample_index,
             )
         except JudgeSampleError as exc:
             _bill_sample(exc.usage)

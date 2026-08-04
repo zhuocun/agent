@@ -34,7 +34,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import AsyncIterator, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import structlog
@@ -53,6 +53,7 @@ from app.agentic.worker import (
     WORKER_ALLOWED_TOOLS,
     WORKER_FAKE_HITL_TOOLS,
     WORKER_PROD_HITL_TOOLS,
+    WORKER_ROLE,
     CostForUsage,
     FreshWorkerSeed,
     IsRetryable,
@@ -70,7 +71,11 @@ from app.agentic.worker import (
     tool_transcript_part,
 )
 from app.config import Settings
-from app.observability.tracing import invoke_agent_span
+from app.observability.tracing import (
+    WorkflowSettlement,
+    invoke_agent_span,
+    invoke_workflow_span,
+)
 from app.providers.protocol import (
     AnswerDelta,
     AwaitingApproval,
@@ -172,6 +177,26 @@ def _trip_label(reason: StopReason | None) -> str:
         return ""
     why = _TRIP_REASON_COPY.get(reason, "a run bound was reached")
     return f"\n\n[Partial answer: stopped early because {why}; findings so far are included.]"
+
+
+def _run_stop_reason(
+    *, tripped: StopReason | None, budget_halted: bool, paused: bool
+) -> StopReason:
+    """The ONE reason a fan-out run ended, ranking the degrade channels.
+
+    A parked human gate outranks everything because the run has not ended at all
+    — it is waiting. A bound trip outranks the cap: the tripwire latched first and
+    is what cancelled the fan-out. A run that reached neither ended on its own
+    final message, which is what `protocol_stop` means and all it means (doc §1.3
+    decision 2: it is not acceptance).
+    """
+    if paused:
+        return "awaiting_approval"
+    if tripped is not None:
+        return tripped
+    if budget_halted:
+        return "usd_cap_exceeded"
+    return "protocol_stop"
 
 
 def _superseded_label(count: int) -> str:
@@ -1251,6 +1276,7 @@ async def run_single(
     prior_run_cost_usd: float = 0.0,
     prior_run_usage: UsageUpdate | None = None,
     prior_receipt: RunReceipt | None = None,
+    workflow: WorkflowSettlement | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """One agent loop wrapped as the `primary` subagent.
 
@@ -1267,6 +1293,10 @@ async def run_single(
     ``prior_receipt`` (AC-02) is the preferred seed: restoring the pause turn's
     boundary receipt makes the resumed run's already-billed floor exact instead
     of reconstructed, so only this continuation's increment is billed again.
+
+    ``workflow`` is the run root's settlement (doc §12.3). In single mode the
+    primary IS the run, so the reason that closes its phase span is the run's own
+    stop reason and both are settled together.
     """
     subagent_id = "primary"
     cap = settings.agentic_run_budget_usd
@@ -1301,10 +1331,27 @@ async def run_single(
         )
         yield Complete(usage=empty)
         ledger.settle(subagent_id, role="primary", cost_usd=0.0, outcome="failed")
+        if workflow is not None:
+            # A refused reservation is the run's whole story: nothing was spawned,
+            # and the cap is why.
+            workflow.settle_run(
+                workers_planned=0,
+                stop_reason="usd_cap_exceeded",
+                budget_reserved_usd=decision.estimated_usd,
+                budget_cap_usd=decision.effective_cap_usd,
+            )
         yield _boundary_run_cost(
             ledger, cap_usd=cap, partial=True, budget_halted=True
         )
         return
+
+    if workflow is not None:
+        # What this run reserved, recorded where the reservation is made so the
+        # root can be read against the settled total later (doc §12.3).
+        workflow.settle_run(
+            budget_reserved_usd=decision.estimated_usd,
+            budget_cap_usd=decision.effective_cap_usd,
+        )
 
     if prior_receipt is not None:
         # AC-02: a present receipt is the SOLE restore authority. The B5 scalars
@@ -1394,7 +1441,7 @@ async def run_single(
         subagent_id=subagent_id, role="primary", label=_PRIMARY_LABEL
     ) as span:
 
-        def _settle_primary(outcome: str) -> None:
+        def _settle_primary(outcome: str, *, stop_reason: StopReason) -> None:
             """AC-10: close the primary span with what actually served and spent.
 
             Called inside the span on EVERY exit — the pause `return`, the normal
@@ -1402,13 +1449,22 @@ async def run_single(
             already ended cannot take attributes. Usage is whatever this session
             folded before the exit, so a failed or stopped turn still reports the
             tokens it really burned rather than nothing at all.
+
+            A latched bound outranks the caller's reason: the exit that observed
+            the stop is not always the bound that caused it, and the tripwire is
+            the one owner of that answer (`bounds.py`).
             """
+            reason = tripwire.tripped or stop_reason
             span.settle(
                 route=served_route,
                 usage=UsageTotals.copy_from(sum_usages([prior_usage, session_usage])),
                 cost_usd=prior_cost + cost_for_usage(session_usage),
                 outcome=outcome,
+                stop_reason=reason,
             )
+            # Single mode fans out to nothing, so the primary's stop IS the run's.
+            if workflow is not None:
+                workflow.settle_run(workers_planned=0, stop_reason=reason)
 
         try:
             async for event in run_agent_loop(
@@ -1471,7 +1527,7 @@ async def run_single(
                     yield _boundary_run_cost(
                         ledger, cap_usd=cap, boundary="pause", partial=True
                     )
-                    _settle_primary("paused")
+                    _settle_primary("paused", stop_reason="awaiting_approval")
                     yield tag_event(event, subagent_id)
                     return
                 yield tag_event(event, subagent_id)
@@ -1481,15 +1537,21 @@ async def run_single(
             # AR-005: a Stop or a closed consumer is not a provider failure. The
             # cap kill is still distinguishable, because reaching the cap is what
             # cancels this turn in the first place.
-            _settle_primary("budget_cancelled" if budget_halted else "stopped")
+            _settle_primary(
+                "budget_cancelled" if budget_halted else "stopped",
+                stop_reason="usd_cap_exceeded" if budget_halted else "user_stopped",
+            )
             raise
         except BaseException:
             # Single mode has no fallback tail: the raise reaches the handler and
             # becomes the turn's error. The span closes on the way past so a
             # failed provider call is still attributable to a route and a spend.
-            _settle_primary("failed")
+            _settle_primary("failed", stop_reason="provider_error")
             raise
-        _settle_primary("budget_cancelled" if budget_halted else "succeeded")
+        _settle_primary(
+            "budget_cancelled" if budget_halted else "succeeded",
+            stop_reason="usd_cap_exceeded" if budget_halted else "protocol_stop",
+        )
     # FL-13: additive, not exclusive. A halt before any prose is a budget stop —
     # `main_answer_is_empty` winning here labeled it "didn't produce a written
     # reply" and dropped the budget label the flag on the wire claims. A trip adds
@@ -1984,6 +2046,7 @@ async def _run_deep_research(
     prior_planner_cost_usd: float = 0.0,
     prior_planner_usage: UsageUpdate | None = None,
     prior_receipt: RunReceipt | None = None,
+    workflow: WorkflowSettlement | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Clarify? → plan → (approve) → admit → parallel fan-out → (verify) → synthesis.
 
@@ -2006,6 +2069,11 @@ async def _run_deep_research(
     ``prior_receipt`` (AC-02) supersedes those seeds when the pause row carries
     one: the resumed run's already-billed floor is then the pause boundary's own
     cumulative total rather than a reconstruction of it.
+
+    ``workflow`` is the run root's settlement (doc §12.3). Only the facts that
+    never reach the wire are recorded from in here — the plan's width, the
+    reservation, the terminal stop reason; everything countable is tallied from
+    the event stream by the caller, so one observer covers every exit.
     """
     verifier_pricer = verifier_cost_for_usage or cost_for_usage
     # Provider-backend split: the FAKE provider keys on the deterministic
@@ -2189,6 +2257,11 @@ async def _run_deep_research(
         )
         if not sub_questions:
             sub_questions = planner.decompose(plan_text, max_workers=max_workers)
+    if workflow is not None:
+        # The plan's width, which nothing on the wire carries: a worker that never
+        # started emits no event, so counting started workers cannot tell a narrow
+        # plan from a wide one that was cut short.
+        workflow.settle_run(workers_planned=len(sub_questions))
     cap = settings.agentic_run_budget_usd
     estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
     # O-014: fold amplified clarification prompt chars into admission so a
@@ -2302,7 +2375,16 @@ async def _run_deep_research(
     decision = budget.admit_run(
         estimate_usd=estimate, settings=settings, headroom_usd=budget_headroom_usd
     )
+    if workflow is not None:
+        # Recorded whether or not the run is admitted: a refused reservation is
+        # the most interesting one to read against the cap.
+        workflow.settle_run(
+            budget_reserved_usd=decision.estimated_usd,
+            budget_cap_usd=decision.effective_cap_usd,
+        )
     if not decision.admitted:
+        if workflow is not None:
+            workflow.settle_run(stop_reason="usd_cap_exceeded")
         async for event in _planner_receipt():
             yield event
         async for event in _finalize_synthesis(
@@ -2592,6 +2674,18 @@ async def _run_deep_research(
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    if workflow is not None:
+        # Settled here so a pause return — or an abrupt exit in the tail — still
+        # leaves the root with a reason. The tail settles again, because a gate
+        # below can still turn a clean finish into a cap stop.
+        workflow.settle_run(
+            stop_reason=_run_stop_reason(
+                tripped=trip_reason,
+                budget_halted=budget_halted,
+                paused=worker_pause is not None,
+            )
+        )
 
     # BE-005: after siblings finish, surface the worker tool pause with continuation.
     # AR-004: if the run already breached the cap while parking the pause, do NOT
@@ -2933,8 +3027,79 @@ async def _run_deep_research(
         ):
             yield event
 
+    if workflow is not None:
+        workflow.settle_run(
+            stop_reason=_run_stop_reason(
+                tripped=trip_reason, budget_halted=budget_halted, paused=False
+            )
+        )
+
 
 # --- entry point --------------------------------------------------------------
+
+
+@dataclass
+class _RunTally:
+    """What the run's ROOT span can learn by watching the run's own events.
+
+    Every exit — a clean finish, a pause, a degrade, a raise, a Stop — leaves
+    through this one stream, so counting here settles the root once for all of
+    them instead of once per `return` inside the phases. Only counts, money and
+    enum labels are read; the content riding past is never touched.
+
+    Built only when the root span is recording, so an OTel-off run pays for no
+    tally at all.
+    """
+
+    workers_started: set[str] = field(default_factory=set)
+    workers_completed: set[str] = field(default_factory=set)
+    retries: int = 0
+    receipt: RunReceipt | None = None
+    subtotal_usd: float | None = None
+
+    def observe(self, event: ProviderEvent) -> None:
+        if isinstance(event, SubagentStarted):
+            if event.role == WORKER_ROLE:
+                self.workers_started.add(event.subagent_id)
+        elif isinstance(event, SubagentDone):
+            if event.substitution is not None:
+                # A substituted phase was re-issued on the fallback route: one
+                # provider call retried, which is what a retry count means here.
+                self.retries += 1
+            if event.role == WORKER_ROLE and event.outcome == "succeeded":
+                # By id, because a resumed worker closes its row more than once.
+                self.workers_completed.add(event.subagent_id)
+        elif isinstance(event, RunCost):
+            self.subtotal_usd = event.subtotal_usd
+            if event.receipt is not None:
+                self.receipt = event.receipt
+        elif (
+            isinstance(event, Complete)
+            and event.subagent_id is None
+            and event.empty_retry
+        ):
+            # The loop's own empty-reply retry pass: a second provider call for
+            # the same turn, counted like a route retry.
+            self.retries += 1
+
+    def settle(self, workflow: WorkflowSettlement) -> None:
+        """Close the root on the countable facts, actual spend last."""
+        receipt = self.receipt
+        workflow.settle_run(
+            workers_completed=len(self.workers_completed),
+            # Observed, not configured: on the shipped flat topology a fan-out is
+            # depth 1 (`AGENTIC_MAX_DEPTH`) and a run with no sub-agents beneath
+            # it is depth 0. A recursive topology would show up here as more.
+            depth=1 if self.workers_started else 0,
+            retries=self.retries,
+            # AC-02: the boundary receipt is the run's accounting authority, so
+            # the wire subtotal is only a fallback for a run that ended before
+            # one was emitted.
+            budget_actual_usd=(
+                self.subtotal_usd if receipt is None else receipt.cumulative_cost_usd
+            ),
+            usage=None if receipt is None else receipt.cumulative_usage,
+        )
 
 
 async def run_orchestrator(
@@ -3011,7 +3176,91 @@ async def run_orchestrator(
       turn. Every phase span closes with it, or with the fallback route derived
       from it when a phase was substituted; omitted, the spans simply carry no
       route (direct unit calls).
+
+    Doc §12.3: this is where the run's `invoke_workflow` root opens, so every
+    phase span below nests under one subtree, and where the root is settled from
+    the run's own event stream on the way past — no exit path has to remember to.
     """
+    with invoke_workflow_span(mode=mode) as workflow:
+        tally = _RunTally() if workflow.records else None
+        try:
+            async for event in _delegate_run(
+                make_stream_for=make_stream_for,
+                settings=settings,
+                mode=mode,
+                user_text=user_text,
+                cost_for_usage=cost_for_usage,
+                served_route=served_route,
+                estimate_cost=estimate_cost,
+                budget_headroom_usd=budget_headroom_usd,
+                plan_approved=plan_approved,
+                approved_plan=approved_plan,
+                clarify_answered=clarify_answered,
+                clarify_answers=clarify_answers,
+                clarify_records=clarify_records,
+                agentic_continuation=agentic_continuation,
+                resume_tool_result=resume_tool_result,
+                server_approved_call_ids=server_approved_call_ids,
+                fallback_make_stream_for=fallback_make_stream_for,
+                fallback_cost_for_usage=fallback_cost_for_usage,
+                fallback_provider_id=fallback_provider_id,
+                fallback_model_id=fallback_model_id,
+                fallback_display_label=fallback_display_label,
+                is_retryable=is_retryable,
+                verifier_make_stream_for=verifier_make_stream_for,
+                verifier_cost_for_usage=verifier_cost_for_usage,
+                prior_planner_cost_usd=prior_planner_cost_usd,
+                prior_planner_usage=prior_planner_usage,
+                prior_run_cost_usd=prior_run_cost_usd,
+                prior_run_usage=prior_run_usage,
+                prior_receipt=prior_receipt,
+                workflow=workflow,
+            ):
+                if tally is not None:
+                    tally.observe(event)
+                yield event
+        finally:
+            # In a `finally` so a raise, a Stop and a dropped consumer close the
+            # root on what the run had already done, exactly as a phase span does.
+            if tally is not None:
+                tally.settle(workflow)
+
+
+async def _delegate_run(
+    *,
+    make_stream_for: StreamFactory,
+    settings: Settings,
+    mode: AgenticMode,
+    user_text: str,
+    cost_for_usage: CostForUsage,
+    served_route: ServedRoute | None,
+    estimate_cost: CostEstimator | None,
+    budget_headroom_usd: float | None,
+    plan_approved: bool | None,
+    approved_plan: list[str] | None,
+    clarify_answered: bool | None,
+    clarify_answers: list[str] | None,
+    clarify_records: list[clarify.ClarificationRecord] | None,
+    agentic_continuation: AgenticContinuation | None,
+    resume_tool_result: ToolResult | None,
+    server_approved_call_ids: set[str] | None,
+    fallback_make_stream_for: StreamFactory | None,
+    fallback_cost_for_usage: CostForUsage | None,
+    fallback_provider_id: str | None,
+    fallback_model_id: str | None,
+    fallback_display_label: str | None,
+    is_retryable: IsRetryable,
+    verifier_make_stream_for: StreamFactory | None,
+    verifier_cost_for_usage: CostForUsage | None,
+    prior_planner_cost_usd: float,
+    prior_planner_usage: UsageUpdate | None,
+    prior_run_cost_usd: float,
+    prior_run_usage: UsageUpdate | None,
+    prior_receipt: RunReceipt | None,
+    workflow: WorkflowSettlement,
+) -> AsyncIterator[ProviderEvent]:
+    """Route one turn to its mode. Split out of `run_orchestrator` so the run
+    root can wrap the whole delegation in one place instead of once per mode."""
     if mode == "deep_research":
         async for event in _run_deep_research(
             make_stream_for=make_stream_for,
@@ -3040,6 +3289,7 @@ async def run_orchestrator(
             prior_planner_cost_usd=prior_planner_cost_usd,
             prior_planner_usage=prior_planner_usage,
             prior_receipt=prior_receipt,
+            workflow=workflow,
         ):
             yield event
     else:
@@ -3057,5 +3307,6 @@ async def run_orchestrator(
             prior_run_cost_usd=prior_run_cost_usd,
             prior_run_usage=prior_run_usage,
             prior_receipt=prior_receipt,
+            workflow=workflow,
         ):
             yield event

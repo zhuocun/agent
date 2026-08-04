@@ -30,11 +30,13 @@ import contextlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import structlog
 from structlog.typing import EventDict, WrappedLogger
 
 from app.config import Settings, get_settings
+from app.runtime.loop_state import StopReason, counted_event_for, outcome_for
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -179,8 +181,31 @@ def add_otel_log_processor(
 
 
 # Tracer name for the agentic span tree. A single named tracer so a run's
-# `invoke_agent` / `execute_tool` spans group under one instrumentation scope.
+# `invoke_workflow` / `invoke_agent` / `execute_tool` spans group under one
+# instrumentation scope.
 _AGENTIC_TRACER = "app.agentic"
+
+# Which revision of OpenTelemetry's semantic conventions the attribute names on
+# these spans target. The GenAI conventions are Development status
+# (`docs/research/2026-08-03/agent-architecture-state-of-the-art.md` §12.3: "pin
+# a schema revision and expect migration"), so the pin rides on the workflow root
+# as an attribute: a consumer reading a trace can tell which revision produced
+# the names it is reading, and moving to a newer revision is a deliberate edit
+# here — with its test — rather than a silent change of what a name means.
+GENAI_SEMCONV_REVISION = "1.41.1"
+GENAI_SEMCONV_SCHEMA_URL = f"https://opentelemetry.io/schemas/{GENAI_SEMCONV_REVISION}"
+
+
+def _record_stop_reason(span: Any, stop_reason: StopReason) -> None:
+    """Write the stop vocabulary onto one span, in one place.
+
+    A reason never lands without the unit it counted and the outcome it resolves
+    to (§3.1: "every bound must name its counted event"), so no trace consumer
+    has to re-derive either mapping from a bare label.
+    """
+    span.set_attribute("agentic.stop_reason", stop_reason)
+    span.set_attribute("agentic.counted_event", counted_event_for(stop_reason))
+    span.set_attribute("agentic.run_outcome", outcome_for(stop_reason))
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +224,17 @@ class SpanSettlement:
 
     span: Any | None = None
 
+    @property
+    def records(self) -> bool:
+        """Whether anything settled here will be kept.
+
+        False over no span and over a non-recording one, so a caller can skip
+        work whose only consumer is the trace — the OTel-off path must not pay
+        for tallies nothing will read.
+        """
+        span = self.span
+        return span is not None and bool(span.is_recording())
+
     def settle(
         self,
         *,
@@ -206,8 +242,16 @@ class SpanSettlement:
         usage: UsageTotals | None = None,
         cost_usd: float | None = None,
         outcome: str | None = None,
+        stop_reason: StopReason | None = None,
     ) -> None:
-        """Record any subset of the phase's final route / usage / cost / outcome."""
+        """Record any subset of the phase's final route / usage / cost / outcome.
+
+        `stop_reason` is for a phase that ends on its OWN reason — a bound trip,
+        a cap kill, a human gate, a provider error — and brings its counted event
+        and mapped outcome with it. Phases with no reason of their own (the
+        planner, the aggregator, a judge sample) leave it unset rather than
+        inheriting the run's.
+        """
         span = self.span
         if span is None:
             return
@@ -228,6 +272,125 @@ class SpanSettlement:
             span.set_attribute("agentic.cost_usd", float(cost_usd))
         if outcome is not None:
             span.set_attribute("agentic.outcome", outcome)
+        if stop_reason is not None:
+            _record_stop_reason(span, stop_reason)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowSettlement(SpanSettlement):
+    """Handle for closing the RUN ROOT with what the whole run ended up being.
+
+    The inherited `settle()` records one PHASE's facts; `settle_run` records the
+    run's, under the same re-callable contract. A run learns its plan width
+    before it learns its reservation and its spend, so the root is settled as
+    each fact arrives and every call records only the subset it was handed — an
+    unknown stays absent rather than being guessed at.
+    """
+
+    def settle_run(
+        self,
+        *,
+        run_id: str | None = None,
+        mode: str | None = None,
+        workers_planned: int | None = None,
+        workers_completed: int | None = None,
+        depth: int | None = None,
+        retries: int | None = None,
+        stop_reason: StopReason | None = None,
+        budget_reserved_usd: float | None = None,
+        budget_cap_usd: float | None = None,
+        budget_actual_usd: float | None = None,
+        usage: UsageTotals | None = None,
+    ) -> None:
+        """Record any subset of the run's identity, shape, stop and money.
+
+        - `workers_planned` / `workers_completed` are the run's fan-out WIDTH:
+          how many sub-questions the plan asked for against how many workers
+          actually produced an answer. Reporting only one of them cannot
+          distinguish a narrow plan from a wide plan that mostly died.
+        - `depth` is the orchestration depth REACHED, on the same scale as
+          `AGENTIC_MAX_DEPTH`: 0 for a run with no sub-agents beneath it, 1 for
+          the shipped flat worker fan-out. It is observed, not configured, so a
+          recursive topology would show up here rather than in a setting.
+        - `budget_reserved_usd` against `budget_actual_usd` is the admit-time
+          worst-case estimate against what the settled ledger really cost, both
+          held against `budget_cap_usd` (the per-run cap composed with the
+          caller's headroom). Reserved-only says what was feared; actual-only
+          says what was spent; the pair is what shows whether the reservation
+          model is calibrated.
+        - `usage` carries the token CLASSES separately (input / output /
+          reasoning / cached input) because they price differently.
+
+        Content never reaches here: this method takes ids, labels, counts and
+        money, and there is no parameter through which a prompt, an answer, a
+        plan or a citation could ride.
+        """
+        span = self.span
+        if span is None:
+            return
+        if run_id is not None:
+            span.set_attribute("agentic.run_id", run_id)
+        if mode is not None:
+            span.set_attribute("agentic.orchestration_mode", mode)
+        if workers_planned is not None:
+            span.set_attribute("agentic.workers_planned", int(workers_planned))
+        if workers_completed is not None:
+            span.set_attribute("agentic.workers_completed", int(workers_completed))
+        if depth is not None:
+            span.set_attribute("agentic.depth", int(depth))
+        if retries is not None:
+            span.set_attribute("agentic.retries", int(retries))
+        if stop_reason is not None:
+            _record_stop_reason(span, stop_reason)
+        if budget_reserved_usd is not None:
+            span.set_attribute("agentic.budget.reserved_usd", float(budget_reserved_usd))
+        if budget_cap_usd is not None:
+            span.set_attribute("agentic.budget.cap_usd", float(budget_cap_usd))
+        if budget_actual_usd is not None:
+            span.set_attribute("agentic.budget.actual_usd", float(budget_actual_usd))
+        if usage is not None:
+            span.set_attribute("gen_ai.usage.input_tokens", usage.input_tokens)
+            span.set_attribute("gen_ai.usage.output_tokens", usage.output_tokens)
+            span.set_attribute("agentic.usage.reasoning_tokens", usage.reasoning_tokens)
+            span.set_attribute(
+                "agentic.usage.cached_input_tokens", usage.cached_input_tokens
+            )
+
+
+@contextlib.contextmanager
+def invoke_workflow_span(
+    *,
+    mode: str,
+    run_id: str | None = None,
+) -> Iterator[WorkflowSettlement]:
+    """Manual OTel span for ONE agentic run — the root of the run's span tree.
+
+    Doc §12.3 asks for the tree `invoke_workflow` -> `invoke_agent` ->
+    `execute_tool`. This is that root: opened once per run, it becomes the parent
+    every phase span nests under, so a trace consumer reads one run as one
+    subtree instead of a flat list of phases it has to re-group by trace id.
+
+    `run_id` identifies the run across its spans and is minted here when the
+    caller has none — only for a RECORDING span, because an unconfigured OTel
+    must not pay for an id nothing will read. Same no-op / non-recording
+    semantics as `invoke_agent_span` otherwise.
+
+    Yields the run's `WorkflowSettlement`, which the caller closes with the
+    run's fan-out, depth, retries, stop reason and money.
+    """
+    try:
+        from opentelemetry import trace
+    except ImportError:  # pragma: no cover - defensive
+        yield WorkflowSettlement()
+        return
+    tracer = trace.get_tracer(_AGENTIC_TRACER)
+    with tracer.start_as_current_span("invoke_workflow") as span:
+        settlement = WorkflowSettlement(span)
+        if settlement.records:
+            span.set_attribute("agentic.semconv.revision", GENAI_SEMCONV_REVISION)
+            span.set_attribute("agentic.semconv.schema_url", GENAI_SEMCONV_SCHEMA_URL)
+            settlement.settle_run(run_id=run_id or uuid4().hex, mode=mode)
+        yield settlement
 
 
 @contextlib.contextmanager
@@ -241,16 +404,23 @@ def invoke_agent_span(
     provider_id: str | None = None,
     cost_usd: float | None = None,
     outcome: str | None = None,
+    sample_index: int | None = None,
 ) -> Iterator[SpanSettlement]:
     """Manual OTel span for one orchestrator subagent (agentic mode, M3).
 
     One `invoke_agent` span per subagent (primary / worker / aggregator),
-    nested under the turn's auto-instrumented request span. Carries ids +
-    role/label and optional route/cost/outcome attributes — NEVER message
-    content (matching the structured-log discipline). A no-op when
-    OpenTelemetry isn't importable, and a non-recording span (negligible cost)
-    when no tracer provider is configured, so the flag-off / OTel-off paths
-    are unaffected.
+    nested under the run's `invoke_workflow` root. Carries ids + role/label and
+    optional route/cost/outcome attributes — NEVER message content (matching the
+    structured-log discipline). A no-op when OpenTelemetry isn't importable, and
+    a non-recording span (negligible cost) when no tracer provider is
+    configured, so the flag-off / OTel-off paths are unaffected.
+
+    `sample_index` is for a phase that runs the SAME subagent id more than once
+    in one run — the N-sample verifier judge. Without it those spans are
+    indistinguishable, so a consumer cannot tell three samples of one judge from
+    one judge traced three times. The index and a suffixed `agentic.sample_id`
+    are added; `agentic.subagent_id` deliberately keeps the id the wire and the
+    ledger use, so joining a span back to its phase still works.
 
     Yields the phase's `SpanSettlement` so the caller can close it with what
     actually served, spent and happened.
@@ -264,6 +434,9 @@ def invoke_agent_span(
     with tracer.start_as_current_span("invoke_agent") as span:
         span.set_attribute("agentic.subagent_id", subagent_id)
         span.set_attribute("agentic.role", role)
+        if sample_index is not None:
+            span.set_attribute("agentic.sample_index", int(sample_index))
+            span.set_attribute("agentic.sample_id", f"{subagent_id}#{sample_index}")
         if label is not None:
             span.set_attribute("agentic.label", label)
         if run_id is not None:

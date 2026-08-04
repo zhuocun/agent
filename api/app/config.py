@@ -394,6 +394,16 @@ class Settings(BaseSettings):
     resumable_buffer_max_events: int = Field(default=1000, alias="RESUMABLE_BUFFER_MAX_EVENTS")
     resumable_buffer_max_bytes: int = Field(default=1_048_576, alias="RESUMABLE_BUFFER_MAX_BYTES")
 
+    # Context-window compaction (FR-35) low watermark. `should_compact` is the
+    # HIGH watermark (history crowds out the reply budget); when compaction runs
+    # it compacts down to this fraction of the same budget so the next several
+    # turns fit without recompacting. Batching removals this way is what keeps a
+    # single compaction from rewriting the cached provider prefix every turn.
+    # In (0, 1]; 1.0 restores the old compact-to-the-threshold thrash.
+    compaction_target_fraction: float = Field(
+        default=0.5, gt=0.0, le=1.0, alias="COMPACTION_TARGET_FRACTION"
+    )
+
     # Backend-side tool calling + human-in-the-loop (HITL) approval. DEFAULT-OFF
     # feature flag — a hard safety gate around the agent loop. When False (the
     # default), the provider advertises no tools and the streaming path is

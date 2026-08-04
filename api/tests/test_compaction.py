@@ -3,18 +3,22 @@
 Covers the cheap token estimate, the `should_compact` budget gate, and the
 `compact_history` behavior: no-op under budget, provider summary + sliding
 window over budget, the pure sliding-window fallback when no provider is
-available or the summary call fails, usage metering, cache hits, and fit
-guarantee when the recent window alone overflows.
+available or the summary call fails, usage metering, cache hits, fit
+guarantee when the recent window alone overflows, and the two-watermark
+hysteresis that keeps one compaction from re-tripping on the next turn.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 
+import pytest
+
+from app.config import get_settings
 from app.context import compaction
 from app.context.compaction import (
-    KEEP_LAST_N,
+    _MIN_KEEP_RECENT,
     compact_history,
     estimate_tokens,
     should_compact,
@@ -70,6 +74,16 @@ class _RaisingProvider(_SummaryProvider):
         raise RuntimeError("summarizer unavailable")
 
 
+@pytest.fixture
+def settings_cache_reset() -> Iterator[None]:
+    """Settings are `@lru_cache`d — bust the cache around env overrides."""
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+
+
 # estimate_tokens ---------------------------------------------------------------
 
 
@@ -121,15 +135,15 @@ async def test_compact_history_summarizes_older_and_keeps_recent() -> None:
         model_id="model-x",
     )
 
-    # A summary message is prepended; the last KEEP_LAST_N turns are kept
-    # (subject to fit-to-budget shrinking on tiny windows).
+    # A summary message is prepended; the newest turns that fit under the low
+    # watermark are kept verbatim.
     assert result.compacted is True
     assert result.usage == provider.usage
     assert result.history[0].role == "assistant"
     assert "Earlier they discussed the project plan." in result.history[0].text
     # Fitted result must aim to fit the budget.
     assert estimate_tokens(result.history) <= compaction._compaction_budget(binding)
-    assert provider.calls
+    assert provider.calls[0].startswith(compaction._SUMMARY_PROMPT)
 
 
 async def test_compact_history_sliding_window_without_provider() -> None:
@@ -141,8 +155,8 @@ async def test_compact_history_sliding_window_without_provider() -> None:
     # No provider ⇒ pure sliding window, then fit-to-budget.
     assert result.compacted is True
     assert result.usage is None
-    assert estimate_tokens(result.history) <= compaction._compaction_budget(binding)
-    assert len(result.history) <= KEEP_LAST_N
+    assert estimate_tokens(result.history) <= compaction._target_budget(binding)
+    assert len(result.history) < len(history)
 
 
 async def test_compact_history_falls_back_when_summary_raises() -> None:
@@ -206,6 +220,74 @@ async def test_compact_history_fits_when_recent_alone_overflows() -> None:
     result = await compact_history(history, binding)
     assert result.compacted is True
     assert estimate_tokens(result.history) <= compaction._compaction_budget(binding)
+
+
+# low watermark / hysteresis -----------------------------------------------------
+
+
+async def test_compaction_buys_headroom_for_the_next_turn() -> None:
+    # Recent turns each cost a sizeable share of the budget — the shape that
+    # made compact-to-the-threshold re-trip (and re-bill a summarizer call, with
+    # a fresh prefix boundary) on every subsequent turn.
+    binding = _binding(context_window=2000, max_output_tokens=500)
+    history = _history(20, text="x" * 1000)
+    compaction._summary_cache.clear()
+    assert should_compact(binding, history) is True
+
+    result = await compact_history(
+        history, binding, provider=_SummaryProvider(), model_id="model-x"
+    )
+
+    assert result.compacted is True
+    next_turn = [*result.history, ChatMessage(role="user", text="x" * 1000)]
+    assert should_compact(binding, next_turn) is False
+
+
+async def test_compacted_history_lands_under_the_low_watermark(
+    monkeypatch: pytest.MonkeyPatch, settings_cache_reset: None
+) -> None:
+    monkeypatch.setenv("COMPACTION_TARGET_FRACTION", "0.25")
+    get_settings.cache_clear()
+    binding = _binding(context_window=2000, max_output_tokens=500)
+    history = _history(40, text="x" * 200)
+    compaction._summary_cache.clear()
+    assert should_compact(binding, history) is True
+
+    result = await compact_history(
+        history, binding, provider=_SummaryProvider(), model_id="model-x"
+    )
+
+    target = compaction._target_budget(binding)
+    assert target == int(compaction._compaction_budget(binding) * 0.25)
+    assert estimate_tokens(result.history) <= target
+
+
+def test_recent_window_keeps_the_immediate_exchange() -> None:
+    # A target so small that not even one message fits: the floor still admits
+    # the last exchange, leaving the fit-to-budget backstop to truncate it.
+    binding = _binding(context_window=100, max_output_tokens=50)
+    history = _history(8, text="x" * 400)
+    assert compaction._target_budget(binding) < estimate_tokens(history[-1:])
+
+    recent = compaction._select_recent(history, binding)
+
+    assert recent == history[-_MIN_KEEP_RECENT:]
+
+
+def test_summary_prompt_carries_the_preservation_contract() -> None:
+    prompt = compaction._SUMMARY_PROMPT.lower()
+    for term in (
+        "objective",
+        "constraints",
+        "decisions",
+        "rationale",
+        "open questions",
+        "todos",
+        "evidence",
+        "pointers",
+        "pleasantries",
+    ):
+        assert term in prompt
 
 
 def test_default_binding_carries_window_budget() -> None:

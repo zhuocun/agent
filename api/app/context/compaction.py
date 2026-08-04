@@ -2,11 +2,19 @@
 
 A long conversation eventually exceeds the model's context window. Before a turn
 is sent to the provider we estimate the history's token footprint and, when it
-would crowd out the reply budget, compact it: keep the most recent N turns
+would crowd out the reply budget, compact it: keep the most recent turns
 verbatim (a sliding window) and replace the older prefix with a short
 provider-written summary. When no provider is available (or the summary call
 fails) we fall back to the pure sliding window — dropping the older prefix — so
 compaction never blocks a turn.
+
+Two watermarks, not one. `should_compact` is the HIGH watermark; compaction
+lands the result on a LOW watermark (`COMPACTION_TARGET_FRACTION` of the same
+budget) instead of shaving just enough to get back under the threshold. A
+compact-to-the-threshold pass re-trips on the very next turn with a different
+prefix boundary, which misses the summary cache, bills another summarizer call
+and rewrites the provider's cached prefix every turn. Clearing a batch of
+tokens at once amortizes that cache write over the several turns it buys.
 
 The token estimate is a deliberately cheap heuristic (~4 chars/token plus a
 small per-message overhead): it never calls a tokenizer, so `should_compact` is
@@ -16,7 +24,7 @@ conversation, leaving that path byte-for-byte unchanged.
 B13/B22: summarizer `complete()` usage is returned on `CompactionResult` so the
 route can bill it; summaries are cached by compacted-boundary hash; the result
 is remeasured and shrunk until it aims to fit the budget (including when the
-last-N window alone overflows).
+recent window alone overflows).
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ import hashlib
 from collections import OrderedDict
 from dataclasses import dataclass
 
+from app.config import get_settings
 from app.providers.protocol import ChatMessage, CompleteResult, Provider, UsageUpdate
 from app.providers.tiers import TierBinding
 
@@ -34,9 +43,11 @@ _CHARS_PER_TOKEN = 4
 # Per-message overhead (role markers, separators) the wire adds around each
 # message. A small fixed pad so a long run of tiny messages isn't undercounted.
 _PER_MESSAGE_TOKEN_OVERHEAD = 4
-# Number of most-recent messages to keep verbatim when compacting. Enough to
-# preserve the immediate back-and-forth the current turn depends on.
-KEEP_LAST_N = 6
+# Floor on the verbatim window. Below two messages the immediate exchange the
+# current turn depends on (a user turn and its reply) no longer survives, so the
+# low watermark never shrinks the window past this; `_fit_to_budget` is still
+# free to truncate text underneath it.
+_MIN_KEEP_RECENT = 2
 # Headroom (fraction of the context window) reserved on top of the reply budget
 # so the estimate's slop + the system prefix + the current user turn don't push
 # the real request over the window.
@@ -46,11 +57,21 @@ _HEADROOM_FRACTION = 0.1
 _SUMMARY_CACHE_MAX = 64
 _summary_cache: OrderedDict[str, str] = OrderedDict()
 
+# The preservation contract a compaction has to honour: what survives the lossy
+# transition is fixed, so the next turn can continue without the original text.
 _SUMMARY_PROMPT = (
-    "Summarize the following earlier conversation so it can be used as context "
-    "for what comes next. Keep durable facts, decisions, names, and open "
-    "questions; drop pleasantries. Write a compact paragraph (no preamble, no "
-    "bullet headers).\n\nConversation:\n"
+    "Summarize the earlier conversation below so a later turn can continue from "
+    "the summary alone. Preserve it under these labels, in this order, omitting "
+    "a label only when the conversation carries nothing for it:\n"
+    "Objective: what the user is trying to achieve.\n"
+    "Constraints: requirements, preferences, and limits stated so far.\n"
+    "Decisions: each decision with the rationale that produced it.\n"
+    "Open questions: what is still unresolved or was asked and not answered.\n"
+    "Todos: work agreed on but not yet done.\n"
+    "Evidence: findings, results, and data the conversation established.\n"
+    "Pointers: file names, URLs, and identifiers needed to restore detail.\n"
+    "Drop pleasantries and restatements. One or two terse lines per label; no "
+    "preamble.\n\nConversation:\n"
 )
 
 
@@ -96,10 +117,42 @@ def _compaction_budget(binding: TierBinding) -> int:
 def should_compact(binding: TierBinding, history: list[ChatMessage]) -> bool:
     """Whether `history` would crowd out the reply budget for `binding`.
 
-    False (the common case) for any conversation that comfortably fits, so the
-    caller skips the summary call entirely.
+    The HIGH watermark. False (the common case) for any conversation that
+    comfortably fits, so the caller skips the summary call entirely.
     """
     return estimate_tokens(history) > _compaction_budget(binding)
+
+
+def _target_budget(binding: TierBinding) -> int:
+    """The LOW watermark a compaction pass lands on.
+
+    A fraction of the same budget `should_compact` gates on, so one pass clears
+    enough tokens for the following turns instead of re-tripping immediately.
+    """
+    return int(_compaction_budget(binding) * get_settings().compaction_target_fraction)
+
+
+def _select_recent(
+    history: list[ChatMessage], binding: TierBinding
+) -> list[ChatMessage]:
+    """The newest messages that fit under the low watermark.
+
+    Walks backwards from the newest message, admitting while the running
+    estimate stays under the target. The newest message and the
+    `_MIN_KEEP_RECENT` floor are admitted regardless; `_fit_to_budget` is the
+    backstop that shrinks them when even that overflows.
+    """
+    target = _target_budget(binding)
+    running = 0
+    kept = 0
+    for message in reversed(history):
+        cost = estimate_tokens([message])
+        if kept and running + cost > target:
+            break
+        running += cost
+        kept += 1
+    kept = max(kept, min(_MIN_KEEP_RECENT, len(history)))
+    return history[len(history) - kept :]
 
 
 def _render_transcript(history: list[ChatMessage]) -> str:
@@ -144,15 +197,12 @@ def _truncate_message_text(message: ChatMessage, max_chars: int) -> ChatMessage:
     return ChatMessage(role=message.role, text=message.text[: max_chars - 3] + "...")
 
 
-def _fit_to_budget(
-    history: list[ChatMessage], binding: TierBinding
-) -> list[ChatMessage]:
-    """Shrink ``history`` until it aims to fit the compaction budget.
+def _fit_to_budget(history: list[ChatMessage], budget: int) -> list[ChatMessage]:
+    """Shrink ``history`` until it aims to fit ``budget`` tokens.
 
     Drops oldest messages first; if a single remaining message still overflows,
     truncates its text rather than passing an unbounded request through (B22).
     """
-    budget = _compaction_budget(binding)
     if budget <= 0:
         return []
     result = list(history)
@@ -179,26 +229,27 @@ async def compact_history(
     """Return a history that fits `binding`'s window, compacting if needed.
 
     No-op when `should_compact` is False — returns `history` unchanged. When
-    compaction is needed: keep the last `KEEP_LAST_N` messages verbatim and
-    replace the older prefix with a single summary message. The summary is
-    produced via `provider.complete`; if no provider/model is supplied or the
-    call fails, fall back to the pure sliding window (older prefix dropped) so a
-    turn is never blocked on summarization.
+    compaction is needed: keep the newest messages that fit under the low
+    watermark verbatim and replace the older prefix with a single summary
+    message. The summary is produced via `provider.complete`; if no
+    provider/model is supplied or the call fails, fall back to the pure sliding
+    window (older prefix dropped) so a turn is never blocked on summarization.
 
-    Always remeasures and fits the result so a last-N-only overflow cannot
-    pass through unbounded (B22). Summarizer usage is returned for route billing
-    (B13); summaries are cached by compacted-boundary digest.
+    Always remeasures and fits the result so a recent-window-only overflow
+    cannot pass through unbounded (B22). Summarizer usage is returned for route
+    billing (B13); summaries are cached by compacted-boundary digest.
     """
     if not should_compact(binding, history):
         return CompactionResult(history=history)
 
-    recent = history[-KEEP_LAST_N:] if KEEP_LAST_N > 0 else []
+    target = _target_budget(binding)
+    recent = _select_recent(history, binding)
     older = history[: len(history) - len(recent)]
     if not older:
         # Nothing to summarize — the recent window alone is over budget. Fit
         # rather than pass-through unbounded (B22).
         return CompactionResult(
-            history=_fit_to_budget(recent, binding),
+            history=_fit_to_budget(recent, target),
             compacted=True,
         )
 
@@ -228,7 +279,7 @@ async def compact_history(
 
     cleaned = (summary or "").strip()
     if not cleaned:
-        fitted = _fit_to_budget(recent, binding)
+        fitted = _fit_to_budget(recent, target)
         return CompactionResult(history=fitted, usage=usage, compacted=True)
 
     if cache_key is not None and not cache_hit:
@@ -238,8 +289,13 @@ async def compact_history(
         role="assistant",
         text=f"[Summary of earlier conversation]\n{cleaned}",
     )
-    compacted = [summary_message, *recent]
-    fitted = _fit_to_budget(compacted, binding)
+    # The summary stands in for everything older, so it is the last thing to
+    # give up room: the verbatim window absorbs whatever the summary leaves.
+    room = target - estimate_tokens([summary_message])
+    if room <= 0:
+        fitted = _fit_to_budget([summary_message], target)
+    else:
+        fitted = [summary_message, *_fit_to_budget(recent, room)]
     return CompactionResult(
         history=fitted,
         usage=usage,

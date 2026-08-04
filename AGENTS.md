@@ -203,7 +203,20 @@ In order from cheapest to most invasive.
    the call still goes through the approval gate and the server executor, and
    `unmatched_provider_pause_id` synthesizes a failed `tool_result` for that one
    call instead of parking an unresumable pause. Either way the request itself
-   still looks healthy.
+   still looks healthy. **Run trips** write `agent_loop.tripped` (a loop noticed
+   it) or `agentic.tripped` (the orchestrator did), both at `warning`, at most
+   **one per run** because the reason latches. Each line names `stop_reason`,
+   the `counted_event` it counted (`seconds`, `tokens`, `tool_call_hash`,
+   `tool_failures`), `observed` against `limit`, plus `scope`,
+   `elapsed_seconds`, `run_tokens` and `invocations` — those four fields are
+   what you tune the knob from (`RUN_WALL_CLOCK_SECONDS`, `RUN_MAX_TOKENS`,
+   `REPEATED_TOOL_CALL_THRESHOLD`, `RUN_MAX_CONSECUTIVE_TOOL_FAILURES` /
+   `RUN_TOOL_FAILURE_WINDOW`). Operationally a trip degrades the run to a
+   labeled partial — the answer keeps what it has and gains a suffix naming the
+   bound — and the turn still ends `done`, so as with every other degrade above
+   the request itself still looks healthy. A trip is **not** a budget halt:
+   `budget_halted` stays the USD cap's, so a run reporting a trip did not breach
+   `AGENTIC_RUN_BUDGET_USD`.
 3. **Reproduce against the FE proxy** — `curl -i
    https://olune-agent-zhuocuns-projects.vercel.app/api/bootstrap`. Confirms
    the `vercel.app` → `fly.dev` rewrite is live (look for `via: fly.io` in

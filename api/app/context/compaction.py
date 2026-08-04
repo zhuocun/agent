@@ -16,6 +16,18 @@ prefix boundary, which misses the summary cache, bills another summarizer call
 and rewrites the provider's cached prefix every turn. Clearing a batch of
 tokens at once amortizes that cache write over the several turns it buys.
 
+The cut is anchored to the LEADING prefix, not to the newest message. Nothing
+persists a compaction: the route re-projects the whole conversation from the
+database on every turn and compacts that projection afresh, so a boundary
+measured backwards from the newest message slides forward by one turn every
+turn. That hands `_boundary_cache_key` a different older prefix each time, and
+the low watermark buys nothing on the production path — every turn past the
+high watermark bills its own summarizer call. Quantizing the cut over the
+oldest-forward running total (`COMPACTION_CUT_QUANTUM_FRACTION`) instead pins
+it: appending messages leaves every existing prefix total untouched, so the
+boundary only moves once growth crosses the next quantum, and the turns in
+between hit the cache.
+
 The token estimate is a deliberately cheap heuristic (~4 chars/token plus a
 small per-message overhead): it never calls a tokenizer, so `should_compact` is
 safe to run on every turn and is a no-op (returns False) for the common short
@@ -30,6 +42,7 @@ recent window alone overflows).
 from __future__ import annotations
 
 import hashlib
+from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -132,27 +145,49 @@ def _target_budget(binding: TierBinding) -> int:
     return int(_compaction_budget(binding) * get_settings().compaction_target_fraction)
 
 
+def _cut_quantum(binding: TierBinding) -> int:
+    """Token granularity the compaction cut snaps to. At least 1 token."""
+    fraction = get_settings().compaction_cut_quantum_fraction
+    return max(int(_target_budget(binding) * fraction), 1)
+
+
 def _select_recent(
     history: list[ChatMessage], binding: TierBinding
 ) -> list[ChatMessage]:
-    """The newest messages that fit under the low watermark.
+    """The verbatim tail left after cutting the oldest messages at a quantum.
 
-    Walks backwards from the newest message, admitting while the running
-    estimate stays under the target. The newest message and the
-    `_MIN_KEEP_RECENT` floor are admitted regardless; `_fit_to_budget` is the
-    backstop that shrinks them when even that overflows.
+    Anchored to the leading prefix: the cut index is the largest index whose
+    leading prefix fits within `n * quantum` tokens, for the smallest positive
+    `n` whose resulting tail fits under the low watermark. Both quantities are
+    measured over the oldest-forward running total, so appending messages
+    cannot move the cut — only growth past the next quantum can. That is what
+    keeps the summarized older prefix (and therefore its cache key) identical
+    across the turns of one quantum; a walk backwards from the newest message
+    moved it on every turn instead.
+
+    The tail this returns is already under the target unless `_MIN_KEEP_RECENT`
+    floors it, which it does when even the immediate exchange overflows;
+    `_fit_to_budget` stays the backstop that shrinks whatever the floor forces
+    through.
     """
     target = _target_budget(binding)
-    running = 0
-    kept = 0
-    for message in reversed(history):
-        cost = estimate_tokens([message])
-        if kept and running + cost > target:
-            break
-        running += cost
-        kept += 1
-    kept = max(kept, min(_MIN_KEEP_RECENT, len(history)))
-    return history[len(history) - kept :]
+    quantum = _cut_quantum(binding)
+
+    # prefix_totals[i] == estimate_tokens(history[:i]), strictly increasing
+    # because every message costs at least the per-message overhead.
+    prefix_totals = [0]
+    for message in history:
+        prefix_totals.append(prefix_totals[-1] + estimate_tokens([message]))
+    total = prefix_totals[-1]
+
+    # The tail fits the target from `least` onwards, so the smallest admissible
+    # `n` is the one whose cap reaches that prefix; the cut is then the last
+    # index still under the cap, which can only be further along.
+    least = bisect_left(prefix_totals, total - target)
+    n = max((prefix_totals[least] + quantum - 1) // quantum, 1)
+    cut = bisect_right(prefix_totals, n * quantum) - 1
+
+    return history[min(cut, max(len(history) - _MIN_KEEP_RECENT, 0)) :]
 
 
 def _render_transcript(history: list[ChatMessage]) -> str:
@@ -229,9 +264,9 @@ async def compact_history(
     """Return a history that fits `binding`'s window, compacting if needed.
 
     No-op when `should_compact` is False — returns `history` unchanged. When
-    compaction is needed: keep the newest messages that fit under the low
-    watermark verbatim and replace the older prefix with a single summary
-    message. The summary is produced via `provider.complete`; if no
+    compaction is needed: cut the oldest messages at a quantized prefix
+    boundary, keep the tail verbatim, and replace the cut prefix with a single
+    summary message. The summary is produced via `provider.complete`; if no
     provider/model is supplied or the call fails, fall back to the pure sliding
     window (older prefix dropped) so a turn is never blocked on summarization.
 

@@ -4,12 +4,15 @@ Covers the cheap token estimate, the `should_compact` budget gate, and the
 `compact_history` behavior: no-op under budget, provider summary + sliding
 window over budget, the pure sliding-window fallback when no provider is
 available or the summary call fails, usage metering, cache hits, fit
-guarantee when the recent window alone overflows, and the two-watermark
-hysteresis that keeps one compaction from re-tripping on the next turn.
+guarantee when the recent window alone overflows, the two-watermark
+hysteresis that keeps one compaction from re-tripping on the next turn, and
+the prefix-anchored cut that keeps the boundary — and so the summary cache —
+stable while the route re-projects and recompacts the whole history each turn.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 
@@ -72,6 +75,37 @@ class _SummaryProvider:
 class _RaisingProvider(_SummaryProvider):
     async def complete(self, **_kwargs: object) -> CompleteResult:
         raise RuntimeError("summarizer unavailable")
+
+
+class _BoundaryEchoProvider(_SummaryProvider):
+    """Summary text derived from the prompt, so it identifies the boundary.
+
+    A fixed summary string would make "the same summary was emitted" true even
+    when the cut moved. Deriving it from the transcript makes byte-identical
+    summary text mean byte-identical summarized prefix.
+    """
+
+    async def complete(
+        self,
+        *,
+        model_id: str,
+        history: list[ChatMessage],
+        user_text: str,
+        api_key: str | None = None,
+        system_prefix: str | None = None,
+    ) -> CompleteResult:
+        self.calls.append(user_text)
+        digest = hashlib.sha256(user_text.encode("utf-8")).hexdigest()[:16]
+        return CompleteResult(text=f"Earlier prefix {digest}.", usage=self.usage)
+
+
+def _append_turn(history: list[ChatMessage], turn: int) -> list[ChatMessage]:
+    """One user+assistant exchange appended, as the route's re-projection sees it."""
+    return [
+        *history,
+        ChatMessage(role="user", text=f"q{turn} " + "x" * 195),
+        ChatMessage(role="assistant", text=f"a{turn} " + "x" * 195),
+    ]
 
 
 @pytest.fixture
@@ -272,6 +306,110 @@ def test_recent_window_keeps_the_immediate_exchange() -> None:
     recent = compaction._select_recent(history, binding)
 
     assert recent == history[-_MIN_KEEP_RECENT:]
+
+
+# prefix-anchored cut ------------------------------------------------------------
+
+
+async def test_reprojected_history_reuses_the_summary_across_turns() -> None:
+    # The production shape. `routes/conversations.py` never persists a
+    # compaction: it re-projects the entire conversation from the database and
+    # compacts that projection for the provider call, on every turn. A cut
+    # measured backwards from the newest message therefore moved forward every
+    # turn, handed `_boundary_cache_key` a different prefix every turn, and
+    # billed a summarizer call every turn — the low watermark alone bought
+    # nothing here. Anchored to the leading prefix, the boundary only moves once
+    # growth crosses a quantum.
+    binding = _binding(context_window=20000, max_output_tokens=2000)
+    provider = _BoundaryEchoProvider()
+    compaction._summary_cache.clear()
+    history = _history(300, text="x" * 200)
+    assert should_compact(binding, history) is True
+
+    turns = 80
+    compacting = 0
+    cache_hits = 0
+    for turn in range(turns):
+        history = _append_turn(history, turn)
+        result = await compact_history(
+            history, binding, provider=provider, model_id="model-x"
+        )
+        assert result.compacted is True
+        compacting += 1
+        cache_hits += 1 if result.cache_hit else 0
+
+    # Every turn past the high watermark compacts — that is unchanged.
+    assert compacting == turns
+    # Each compacting turn either summarizes or reuses a cached summary.
+    assert cache_hits == compacting - len(provider.calls)
+    # One summarizer call per quantum of growth, not one per turn: the quantum
+    # is half of a 8000-token target and a turn adds ~106 tokens, so a small
+    # minority of turns pay for a summary.
+    assert len(provider.calls) <= turns // 10
+    assert cache_hits >= (turns * 9) // 10
+
+
+async def test_boundary_is_stable_while_history_only_grows() -> None:
+    # Within one quantum the emitted summary is byte-identical and the verbatim
+    # tail only grows at its end: no message that was verbatim last turn has
+    # been dropped or resummarized.
+    binding = _binding(context_window=20000, max_output_tokens=2000)
+    provider = _BoundaryEchoProvider()
+    compaction._summary_cache.clear()
+    history = _history(300, text="x" * 200)
+
+    previous_summary: ChatMessage | None = None
+    previous_tail: list[ChatMessage] = []
+    for turn in range(6):
+        history = _append_turn(history, turn)
+        result = await compact_history(
+            history, binding, provider=provider, model_id="model-x"
+        )
+        summary, tail = result.history[0], result.history[1:]
+        if previous_summary is not None:
+            assert result.cache_hit is True
+            assert summary.text == previous_summary.text
+            assert summary.role == previous_summary.role
+            # Append-only: last turn's tail is a prefix of this turn's, and the
+            # difference is exactly the exchange just appended.
+            assert tail[: len(previous_tail)] == previous_tail
+            assert tail[len(previous_tail) :] == history[-2:]
+        previous_summary = summary
+        previous_tail = tail
+
+    # One summarizer call for the whole stable stretch.
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.parametrize("quantum_fraction", [None, "1.0"])
+async def test_cut_lands_under_the_low_watermark_every_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_cache_reset: None,
+    quantum_fraction: str | None,
+) -> None:
+    # At the default and at the `le=1.0` bound (where the cut can overshoot far
+    # enough to collapse the window onto the `_MIN_KEEP_RECENT` floor), the
+    # history handed to the provider never exceeds the low watermark.
+    if quantum_fraction is not None:
+        monkeypatch.setenv("COMPACTION_CUT_QUANTUM_FRACTION", quantum_fraction)
+    get_settings.cache_clear()
+    expected = float(quantum_fraction) if quantum_fraction is not None else 0.5
+    assert get_settings().compaction_cut_quantum_fraction == expected
+
+    binding = _binding(context_window=20000, max_output_tokens=2000)
+    target = compaction._target_budget(binding)
+    compaction._summary_cache.clear()
+    history = _history(300, text="x" * 200)
+
+    for turn in range(80):
+        history = _append_turn(history, turn)
+        # The selection lands under the target on its own — `_fit_to_budget` is
+        # a backstop, not the thing that makes the invariant true.
+        assert estimate_tokens(compaction._select_recent(history, binding)) <= target
+        result = await compact_history(
+            history, binding, provider=_SummaryProvider(), model_id="model-x"
+        )
+        assert estimate_tokens(result.history) <= target
 
 
 def test_summary_prompt_carries_the_preservation_contract() -> None:

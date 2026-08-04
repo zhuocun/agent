@@ -404,6 +404,22 @@ class Settings(BaseSettings):
         default=0.5, gt=0.0, le=1.0, alias="COMPACTION_TARGET_FRACTION"
     )
 
+    # Granularity the compaction cut snaps to, as a fraction of the low
+    # watermark above. The cut index is a function of the LEADING prefix's
+    # running token total, quantized this coarsely, so appending a turn cannot
+    # move it — only growth past the next quantum can. Nothing persists a
+    # compaction (the route re-projects the whole conversation every turn), so
+    # without this the boundary slid forward every turn, missed the summary
+    # cache and billed a summarizer call per turn. Smaller means a tighter
+    # verbatim window and more frequent re-summarization; larger means fewer
+    # summarizer calls and a coarser window. In (0, 1]: the upper bound is
+    # load-bearing, because at a quantum at or above the full target the cut
+    # can overshoot far enough that the tail exceeds the target and the window
+    # collapses to the `_MIN_KEEP_RECENT` floor on some turns.
+    compaction_cut_quantum_fraction: float = Field(
+        default=0.5, gt=0.0, le=1.0, alias="COMPACTION_CUT_QUANTUM_FRACTION"
+    )
+
     # Backend-side tool calling + human-in-the-loop (HITL) approval. DEFAULT-OFF
     # feature flag — a hard safety gate around the agent loop. When False (the
     # default), the provider advertises no tools and the streaming path is

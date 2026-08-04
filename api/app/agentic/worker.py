@@ -38,7 +38,11 @@ from app.agentic.retry import is_retryable_provider_error
 from app.agentic.sources import SourceNamespace
 from app.config import Settings
 from app.errors import AppError
-from app.observability.tracing import SpanSettlement, invoke_agent_span
+from app.observability.tracing import (
+    SpanHandle,
+    SpanSettlement,
+    invoke_agent_span,
+)
 from app.providers.protocol import (
     AnswerDelta,
     AwaitingApproval,
@@ -611,6 +615,7 @@ class WorkerRunner:
         allowed_tools: Collection[str] = WORKER_ALLOWED_TOOLS,
         is_run_budget_halted: Callable[[], bool] = lambda: False,
         tripwire: RunTripwire | None = None,
+        parent: SpanHandle | None = None,
     ) -> None:
         self._settings = settings
         self._routes = routes
@@ -624,6 +629,9 @@ class WorkerRunner:
         # only reads the latch to label a cancelled row honestly. None = the run
         # set no bounds, so nothing changes.
         self._tripwire = tripwire
+        # The run root this worker's phase span hangs under (doc §12.3). The root
+        # is not current — a worker runs in its own task — so parentage is passed.
+        self._parent = parent
         self._outcome: WorkerOutcome | None = None
         self._seed: WorkerSeed | None = None
         self._state = _WorkerState.restored(FreshWorkerSeed(0, "", "", "", ""))
@@ -648,7 +656,10 @@ class WorkerRunner:
         self._seed = seed
         self._state = _WorkerState.restored(seed)
         with invoke_agent_span(
-            subagent_id=seed.subagent_id, role=WORKER_ROLE, label=seed.label
+            subagent_id=seed.subagent_id,
+            role=WORKER_ROLE,
+            label=seed.label,
+            parent=self._parent,
         ) as span:
             self._span = span
             try:

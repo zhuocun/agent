@@ -26,6 +26,9 @@ without trace when OTel is unconfigured.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
+import logging
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -37,6 +40,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 from app.agentic.aggregate import WorkerOutput
 from app.agentic.orchestrator import (
@@ -418,6 +422,7 @@ def _settled_phases(
             continue
         attrs["_parent_span_id"] = span.parent.span_id if span.parent else None
         attrs["_span_id"] = span.context.span_id
+        attrs["_trace_id"] = span.context.trace_id
         phases.setdefault(role, []).append(attrs)
     return phases
 
@@ -818,6 +823,10 @@ async def test_every_phase_span_nests_under_the_one_workflow_root() -> None:
     for role, attrs_list in phases.items():
         for attrs in attrs_list:
             assert attrs["_parent_span_id"] == root.context.span_id, role
+            # The run's identity is the trace it shares, not a minted id joined to
+            # nothing: every phase is queryable from the root without one.
+            assert attrs["_trace_id"] == root.context.trace_id, role
+    assert "agentic.run_id" not in dict(root.attributes or {})
 
 
 def test_a_tool_execution_nests_under_the_phase_that_ran_it() -> None:
@@ -826,8 +835,8 @@ def test_a_tool_execution_nests_under_the_phase_that_ran_it() -> None:
     the subagent that asked for the call."""
     exporter = _capture_spans()
     with (
-        invoke_workflow_span(mode="deep_research"),
-        invoke_agent_span(subagent_id="worker-0", role="worker"),
+        invoke_workflow_span(mode="deep_research") as workflow,
+        invoke_agent_span(subagent_id="worker-0", role="worker", parent=workflow),
         execute_tool_span(tool_name="web_search", subagent_id="worker-0"),
     ):
         pass
@@ -860,7 +869,6 @@ async def test_the_workflow_root_records_the_whole_run() -> None:
     settled = receipts[-1]
 
     attrs = _root_attrs(exporter)
-    assert len(attrs["agentic.run_id"]) == 32
     assert attrs["agentic.orchestration_mode"] == "deep_research"
     # Two sub-questions planned, both answered.
     assert attrs["agentic.workers_planned"] == 2
@@ -1050,13 +1058,272 @@ async def test_the_run_is_untraced_and_byte_identical_without_otel(
         assert workflow.records is False
 
 
+async def _abandon_mid_run(
+    *, mode: str, settings: Settings, **kwargs: Any
+) -> None:
+    """Consume one run inside a task, then cancel the task mid-stream.
+
+    The handler's shape (`_pump` + `asyncio.create_task`, cancelled on Stop or
+    disconnect): the pump is awaiting something else when the cancel lands, so the
+    orchestrator is left SUSPENDED at a yield and the event loop finalizes it
+    later, from a different context than the one that drove it. Anything holding
+    an OpenTelemetry context token across that yield detaches it in the wrong
+    context. The generator reference is dropped and the collector forced so the
+    finalization really happens inside the test rather than at loop teardown.
+    """
+    # Held indirectly so the test can drop its own reference to the abandoned
+    # generator; nothing else finalizes it while a name still points at it.
+    held = [
+        run_orchestrator(
+            make_stream_for=_phase_stream(),
+            settings=settings,
+            mode=mode,  # type: ignore[arg-type]
+            user_text="compare alpha and beta",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+            **kwargs,
+        )
+    ]
+    streaming = asyncio.Event()
+
+    async def _pump() -> None:
+        async for _event in held[0]:
+            streaming.set()
+            # Whatever the real pump is doing when the cancel arrives; the point is
+            # that it is NOT inside `__anext__`.
+            await asyncio.sleep(3600)
+
+    task = asyncio.create_task(_pump())
+    await streaming.wait()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    held.clear()
+    del task
+    for _ in range(4):
+        gc.collect()
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize("mode", ["single", "deep_research"])
+@pytest.mark.parametrize("traced", [True, False], ids=["otel-on", "otel-off"])
+@pytest.mark.asyncio
+async def test_a_cancelled_turn_never_logs_a_context_error(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    traced: bool,
+) -> None:
+    """A stopped or disconnected turn must leave the log clean.
+
+    Holding the run root current across the orchestrator's `yield` attached an
+    OTel context token in the consuming task and detached it from whichever
+    context finalized the abandoned generator, which logs `Failed to detach
+    context` at ERROR out of `opentelemetry.context`. That fires with NO tracer
+    provider registered — the production OTel-off shape — because even the no-op
+    tracer attaches, and Sentry's logging integration turns each one into an event
+    for what this app treats as routine (AR-005). So the root is never made
+    current, and this asserts the consequence rather than the implementation.
+    """
+    exporter = _capture_spans()
+    if not traced:
+        monkeypatch.setattr(trace, "get_tracer", lambda *_a, **_k: trace.NoOpTracer())
+    caplog.set_level(logging.ERROR)
+
+    await _abandon_mid_run(
+        mode=mode,
+        settings=_agentic_settings(),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+
+    offenders = [
+        record
+        for record in caplog.records
+        if record.levelno >= logging.ERROR
+        and record.name.startswith("opentelemetry.")
+    ]
+    assert not offenders, [record.getMessage() for record in offenders]
+    # The run really was traced (or really was not), so neither arm passes by
+    # never opening a root at all.
+    assert bool(_spans_named(exporter, "invoke_workflow")) is traced
+
+
+def test_the_run_root_is_never_the_current_span() -> None:
+    """The mechanism behind the test above, pinned so a later edit cannot quietly
+    reintroduce it: making the root current means attaching an OTel context token,
+    and this scope is held open across the `yield`s of an async generator, which
+    is the one place a token cannot be safely detached."""
+    _capture_spans()
+    with invoke_workflow_span(mode="single") as workflow:
+        assert workflow.records
+        current = trace.get_current_span()
+        assert current is not workflow.span
+        assert current.get_span_context().span_id != workflow.span.context.span_id
+
+
+@pytest.mark.parametrize("mode", ["single", "deep_research"])
+@pytest.mark.asyncio
+async def test_an_abandoned_run_reports_itself_interrupted(mode: str) -> None:
+    """A Stop is the run class an operator most wants to tell apart from a clean
+    finish, so it cannot be the one class that reaches the root as nothing.
+
+    Every phase below the abandoned yield stays suspended and never reaches its
+    own cancel arm, so the reason has to come from the frame that IS unwinding.
+    """
+    exporter = _capture_spans()
+    await _abandon_mid_run(
+        mode=mode,
+        settings=_agentic_settings(),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "user_stopped"
+    assert attrs["agentic.counted_event"] == "human"
+    assert attrs["agentic.run_outcome"] == "interrupted"
+    # A Stop is not a failure: the root closes unerrored (AR-005).
+    assert _workflow_root(exporter).status.status_code is not StatusCode.ERROR
+
+
+def test_the_interrupt_floor_never_outranks_a_real_reason() -> None:
+    """`user_stopped` is a floor, not an override. A run that tripped, breached its
+    cap or parked a human gate before the consumer walked away ended for THAT
+    reason; relabelling it interrupted would hide the bound that fired."""
+    exporter = _capture_spans()
+    with invoke_workflow_span(mode="deep_research") as workflow:
+        workflow.settle_run(stop_reason="token_cap_exceeded")
+        assert workflow.stop_reason_settled
+        workflow.settle_interrupted()
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "token_cap_exceeded"
+    assert attrs["agentic.counted_event"] == "tokens"
+
+    # And the latch answers the same question with tracing off, so the floor
+    # cannot behave one way in production and another in a trace.
+    handle = WorkflowSettlement()
+    assert handle.stop_reason_settled is False
+    handle.settle_run(stop_reason="wall_clock_exceeded")
+    assert handle.stop_reason_settled is True
+
+
+@pytest.mark.asyncio
+async def test_a_raising_run_closes_its_root_as_errored() -> None:
+    """The root no longer rides on `start_as_current_span`, so the error status it
+    used to get for free is now recorded by hand — and still recorded."""
+    exporter = _capture_spans()
+    with pytest.raises(AppError):
+        async for _event in run_orchestrator(
+            make_stream_for=_stream_then_raise(_UPSTREAM_DOWN),
+            settings=_agentic_settings(),
+            mode="single",
+            user_text="a question",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+        ):
+            pass
+    root = _workflow_root(exporter)
+    assert root.status.status_code is StatusCode.ERROR
+    assert dict(root.attributes or {})["agentic.stop_reason"] == "provider_error"
+    assert dict(root.attributes or {})["agentic.run_outcome"] == "failed"
+
+
+def _final_run_cost(events: list[ProviderEvent]) -> RunCost:
+    """The run's terminal receipt — where the wire states its own degrade flags."""
+    (final,) = [
+        event
+        for event in events
+        if isinstance(event, RunCost) and event.phase == "final"
+    ]
+    return final
+
+
+def _tripped_log_reason(captured: list[dict[str, Any]]) -> str:
+    """The stop reason the tripwire WROTE for this run (`bounds.py`'s one line)."""
+    tripped = [
+        event
+        for event in captured
+        if str(event.get("event", "")).endswith(".tripped")
+    ]
+    assert tripped, "no trip was logged, so this run cannot test the ranking"
+    return str(tripped[0]["stop_reason"])
+
+
+@pytest.mark.asyncio
+async def test_a_trip_outranks_a_cap_degrade_that_did_not_end_the_run() -> None:
+    """Both degrade channels live: the root must report the bound, not the cap.
+
+    `budget_halted` is not the claim "the cap ended the run" — the verifier gate
+    raises it for a judge that could not be funded while the run goes on to
+    synthesize normally. Ranking that above a latched trip pointed an operator at
+    the USD cap for a run the token bound stopped, and disagreed with the
+    `agentic.tripped` line the tripwire had already written.
+    """
+    exporter = _capture_spans()
+    with structlog.testing.capture_logs() as captured:
+        events = await _drain_deep_research(
+            settings=_agentic_settings(
+                provider_backend="fake", AGENTIC_VERIFIER=True, RUN_MAX_TOKENS=1
+            ),
+            # Priced only for the judge, so the funding gate refuses the judge while
+            # the rest of the run is affordable.
+            verifier_cost_for_usage=lambda _usage: 1_000_000.0,
+        )
+    # The wire confirms the cap degrade really is live alongside the trip.
+    assert _final_run_cost(events).budget_halted is True
+
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "token_cap_exceeded"
+    assert attrs["agentic.counted_event"] == "tokens"
+    assert attrs["agentic.run_outcome"] == "partial_limit"
+    # One run, one answer: the span and the log agree on what stopped it.
+    assert attrs["agentic.stop_reason"] == _tripped_log_reason(captured)
+
+
+@pytest.mark.asyncio
+async def test_a_trip_outranks_a_cap_breach_that_killed_the_fan_out() -> None:
+    """Even when the cap breach is REAL, the latched trip is what the run reported.
+
+    The tripwire is the run's single decider and has already written its reason to
+    the log; a root naming the other channel for the same run leaves two
+    observability surfaces disagreeing, with no way to tell which knob to turn.
+    """
+    exporter = _capture_spans()
+    with structlog.testing.capture_logs() as captured:
+        events = await _drain_deep_research(
+            settings=_agentic_settings(
+                # Room for the planner, none for a worker: the fan-out really
+                # breaches the cap, and the first worker's tokens also trip.
+                AGENTIC_RUN_BUDGET_USD=1e-8,
+                RUN_MAX_TOKENS=1,
+            ),
+        )
+    assert _final_run_cost(events).budget_halted is True
+
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "token_cap_exceeded"
+    assert attrs["agentic.stop_reason"] == _tripped_log_reason(captured)
+
+
+@pytest.mark.asyncio
+async def test_a_single_sample_verifier_carries_no_sample_index() -> None:
+    """An index over one sample distinguishes it from nothing, so N=1 emits none —
+    the attribute's presence is itself the signal that samples were plural."""
+    exporter = _capture_spans()
+    await _drain_deep_research(
+        settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=1),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    (sample,) = _settled_phases(exporter)["verifier"]
+    assert "agentic.sample_index" not in sample
+    assert "agentic.sample_id" not in sample
+
+
 def test_a_workflow_settlement_over_no_span_needs_no_guard() -> None:
     """The shape when OpenTelemetry isn't importable at all: every run fact can
     be handed to a handle holding nothing, so no call site grows an `if`."""
     handle = WorkflowSettlement()
     assert handle.records is False
     handle.settle_run(
-        run_id="run-1",
         mode="deep_research",
         workers_planned=3,
         workers_completed=2,

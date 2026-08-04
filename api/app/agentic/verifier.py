@@ -32,7 +32,11 @@ from app.agentic import budget
 from app.agentic.aggregate import WorkerOutput
 from app.agentic.worker import fold_usage
 from app.config import Settings
-from app.observability.tracing import SpanSettlement, invoke_agent_span
+from app.observability.tracing import (
+    SpanHandle,
+    SpanSettlement,
+    invoke_agent_span,
+)
 from app.providers.protocol import (
     AnswerDelta,
     Complete,
@@ -405,7 +409,8 @@ async def _collect_judge_sample(
     *,
     route: ServedRoute | None = None,
     cost_for_usage: Callable[[UsageUpdate], float] | None = None,
-    sample_index: int = 0,
+    sample_index: int | None = None,
+    parent: SpanHandle | None = None,
 ) -> tuple[str, UsageUpdate]:
     """Quiet agent loop for one judge sample; returns (answer_text, usage).
 
@@ -416,10 +421,11 @@ async def _collect_judge_sample(
     (AC-10). A sample that raised still spent whatever it streamed, so the span
     settles on both arms — `failed` on the raise, `succeeded` otherwise.
 
-    ``sample_index`` is this sample's position in the N independent samples.
-    Every sample streams under the one ``VERIFIER_ID`` the wire and the ledger
-    know, so the index is what keeps N spans telling N stories rather than one
-    story repeated; it reaches the span only and changes neither.
+    ``sample_index`` is this sample's position in the N independent samples, and
+    is set only when there is more than one. Every sample streams under the one
+    ``VERIFIER_ID`` the wire and the ledger know, so the index is what keeps N
+    spans telling N stories rather than one story repeated; it reaches the span
+    only and changes neither. ``parent`` is the run root the span hangs under.
     """
     answer_parts: list[str] = []
     usage = UsageUpdate()
@@ -438,6 +444,7 @@ async def _collect_judge_sample(
             role="verifier",
             label=VERIFIER_LABEL,
             sample_index=sample_index,
+            parent=parent,
         ) as span:
             try:
                 async for event in run_agent_loop(
@@ -606,6 +613,7 @@ async def run_verifier(
     actual_within_cap: Callable[[UsageUpdate, float], bool] | None = None,
     cost_for_usage: Callable[[UsageUpdate], float] | None = None,
     served_route: ServedRoute | None = None,
+    parent: SpanHandle | None = None,
 ) -> VerifyResult:
     """Run the fresh-context judge (N independent samples when configured).
 
@@ -623,6 +631,8 @@ async def run_verifier(
 
     ``served_route`` is the route each sample's span closes with (AC-10); the
     judge shares the caller's binding, so there is no separate verifier route.
+    ``parent`` is the run root each sample's span hangs under — a SIBLING of the
+    synthesis it judges, never a child of it (V-009).
     """
     n = min(MAX_VERIFIER_N, max(1, settings.agentic_verifier_n))
     prompt = build_verifier_prompt(
@@ -661,7 +671,10 @@ async def run_verifier(
                 prompt,
                 route=served_route,
                 cost_for_usage=cost_for_usage,
-                sample_index=sample_index,
+                # One sample distinguishes itself from nothing, so an index rides
+                # only where there is another sample to tell it apart from.
+                sample_index=sample_index if n > 1 else None,
+                parent=parent,
             )
         except JudgeSampleError as exc:
             _bill_sample(exc.usage)
@@ -788,6 +801,7 @@ async def run_if_enabled(
     cap_usd: float = 0.0,
     budget_headroom_usd: float | None = None,
     served_route: ServedRoute | None = None,
+    parent: SpanHandle | None = None,
 ) -> VerifyResult | None:
     """Fresh-context judge when `AGENTIC_VERIFIER` is on and budget allows.
 
@@ -842,6 +856,7 @@ async def run_if_enabled(
         actual_within_cap=_actual_within_cap if pricer is not None else None,
         cost_for_usage=pricer,
         served_route=served_route,
+        parent=parent,
     )
 
 

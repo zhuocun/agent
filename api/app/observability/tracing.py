@@ -28,9 +28,8 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 import structlog
 from structlog.typing import EventDict, WrappedLogger
@@ -209,17 +208,16 @@ def _record_stop_reason(span: Any, stop_reason: StopReason) -> None:
 
 
 @dataclass(frozen=True, slots=True)
-class SpanSettlement:
-    """Handle for closing one phase span with the facts it ended with.
+class SpanHandle:
+    """One span — or nothing at all — plus the question every caller asks of it.
 
-    A phase span opens knowing only an id, a role and the route the caller
-    INTENDED; what a trace needs is what actually served, what it spent, and how
-    it ended, none of which is known until the end. `settle()` is where those
-    land, and it is deliberately re-callable: a fallback settles the same handle
-    again with the route that really served, overriding rather than adding a
-    competing set of attributes. It tolerates `span is None` (the shape when
-    OpenTelemetry isn't importable) so no caller guards a settle call. Token
-    counts and money are recorded; message, prompt and tool content never are.
+    Every handle in this module tolerates `span is None` (the shape when
+    OpenTelemetry isn't importable) so no call site guards a settle call, and
+    every one of them needs to know whether recording is on. What a handle
+    RECORDS differs by what the span is: a phase closes with a route and a spend
+    (`SpanSettlement`), a run root closes with a fan-out and a stop reason
+    (`WorkflowSettlement`). Those are different vocabularies, so they are
+    siblings here rather than one inheriting the other's method.
     """
 
     span: Any | None = None
@@ -234,6 +232,20 @@ class SpanSettlement:
         """
         span = self.span
         return span is not None and bool(span.is_recording())
+
+
+@dataclass(frozen=True, slots=True)
+class SpanSettlement(SpanHandle):
+    """Handle for closing one phase span with the facts it ended with.
+
+    A phase span opens knowing only an id, a role and the route the caller
+    INTENDED; what a trace needs is what actually served, what it spent, and how
+    it ended, none of which is known until the end. `settle()` is where those
+    land, and it is deliberately re-callable: a fallback settles the same handle
+    again with the route that really served, overriding rather than adding a
+    competing set of attributes. Token counts and money are recorded; message,
+    prompt and tool content never are.
+    """
 
     def settle(
         self,
@@ -277,20 +289,51 @@ class SpanSettlement:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkflowSettlement(SpanSettlement):
+class WorkflowSettlement(SpanHandle):
     """Handle for closing the RUN ROOT with what the whole run ended up being.
 
-    The inherited `settle()` records one PHASE's facts; `settle_run` records the
-    run's, under the same re-callable contract. A run learns its plan width
-    before it learns its reservation and its spend, so the root is settled as
-    each fact arrives and every call records only the subset it was handed — an
+    `settle_run` records the RUN's facts (a phase's belong on a phase span, which
+    is `SpanSettlement`'s job) under a re-callable contract. A run learns its plan
+    width before it learns its reservation and its spend, so the root is settled
+    as each fact arrives and every call records only the subset it was handed — an
     unknown stays absent rather than being guessed at.
+
+    The one fact that is NOT freely re-callable is the stop reason: the run has
+    exactly one, and the exit paths that know it are not the last code to touch
+    the handle. So the handle remembers whether a reason was ever settled, which
+    is what lets an unwinding generator supply `user_stopped` as a floor
+    (`settle_interrupted`) without overwriting the real reason a phase already
+    recorded.
     """
+
+    # A frozen handle can still remember: the list is only appended to, never
+    # rebound, and it exists so a fallback reason cannot outrank a real one.
+    _reasons: list[StopReason] = field(default_factory=list)
+
+    @property
+    def stop_reason_settled(self) -> bool:
+        """Whether any exit has already claimed why this run ended."""
+        return bool(self._reasons)
+
+    def settle_interrupted(self) -> None:
+        """Record `user_stopped` iff no exit has claimed a reason yet.
+
+        A Stop or a dropped subscriber unwinds the run's generator from the
+        OUTSIDE: `GeneratorExit` lands on whichever frame is suspended at a yield
+        and the phases below it stay suspended, so no phase ever reaches its own
+        cancel arm. Without a floor here the run class an operator most wants to
+        separate from a clean finish — `interrupted` — could never appear on a
+        root at all. It is a floor and not an override: a run that already tripped,
+        breached its cap or parked a gate keeps that reason even though the
+        consumer walked away afterwards.
+        """
+        if self.stop_reason_settled:
+            return
+        self.settle_run(stop_reason="user_stopped")
 
     def settle_run(
         self,
         *,
-        run_id: str | None = None,
         mode: str | None = None,
         workers_planned: int | None = None,
         workers_completed: int | None = None,
@@ -325,11 +368,13 @@ class WorkflowSettlement(SpanSettlement):
         money, and there is no parameter through which a prompt, an answer, a
         plan or a citation could ride.
         """
+        if stop_reason is not None:
+            # Latched before the span guard so the "was a reason ever claimed"
+            # question has the same answer with tracing on and off.
+            self._reasons.append(stop_reason)
         span = self.span
         if span is None:
             return
-        if run_id is not None:
-            span.set_attribute("agentic.run_id", run_id)
         if mode is not None:
             span.set_attribute("agentic.orchestration_mode", mode)
         if workers_planned is not None:
@@ -358,22 +403,30 @@ class WorkflowSettlement(SpanSettlement):
 
 
 @contextlib.contextmanager
-def invoke_workflow_span(
-    *,
-    mode: str,
-    run_id: str | None = None,
-) -> Iterator[WorkflowSettlement]:
+def invoke_workflow_span(*, mode: str) -> Iterator[WorkflowSettlement]:
     """Manual OTel span for ONE agentic run — the root of the run's span tree.
 
     Doc §12.3 asks for the tree `invoke_workflow` -> `invoke_agent` ->
-    `execute_tool`. This is that root: opened once per run, it becomes the parent
-    every phase span nests under, so a trace consumer reads one run as one
-    subtree instead of a flat list of phases it has to re-group by trace id.
+    `execute_tool`. This is that root: opened once per run, it is the parent every
+    phase span nests under, so a trace consumer reads one run as one subtree
+    instead of a flat list of phases it has to re-group by trace id.
 
-    `run_id` identifies the run across its spans and is minted here when the
-    caller has none — only for a RECORDING span, because an unconfigured OTel
-    must not pay for an id nothing will read. Same no-op / non-recording
-    semantics as `invoke_agent_span` otherwise.
+    The root is deliberately NOT made current. A run is an async generator, so its
+    scope is held open across `yield`s — and an async generator borrows the
+    CONSUMER's context, while the event loop finalizes an abandoned one from a
+    different context. `start_as_current_span` there attaches an OTel context token
+    in one context and detaches it in another, which raises inside
+    `opentelemetry.context.detach` and logs `Failed to detach context` at ERROR on
+    every stopped or disconnected turn — with no tracer provider registered at
+    all, because even the no-op tracer attaches. So parentage travels by hand: the
+    yielded handle carries the span, and `invoke_agent_span(parent=...)` reads it.
+    The cost of that choice is that code running between phases has no current
+    span, so its logs correlate to the enclosing request span rather than to this
+    root; the phase spans stay current within themselves, which is where tool
+    spans and per-phase log correlation come from.
+
+    The run's identity is its trace id — no separate id is minted here, because an
+    id joined to nothing else is noise in every query that would use it.
 
     Yields the run's `WorkflowSettlement`, which the caller closes with the
     run's fan-out, depth, retries, stop reason and money.
@@ -384,13 +437,27 @@ def invoke_workflow_span(
         yield WorkflowSettlement()
         return
     tracer = trace.get_tracer(_AGENTIC_TRACER)
-    with tracer.start_as_current_span("invoke_workflow") as span:
-        settlement = WorkflowSettlement(span)
-        if settlement.records:
-            span.set_attribute("agentic.semconv.revision", GENAI_SEMCONV_REVISION)
-            span.set_attribute("agentic.semconv.schema_url", GENAI_SEMCONV_SCHEMA_URL)
-            settlement.settle_run(run_id=run_id or uuid4().hex, mode=mode)
+    span = tracer.start_span("invoke_workflow")
+    settlement = WorkflowSettlement(span)
+    if settlement.records:
+        span.set_attribute("agentic.semconv.revision", GENAI_SEMCONV_REVISION)
+        span.set_attribute("agentic.semconv.schema_url", GENAI_SEMCONV_SCHEMA_URL)
+        settlement.settle_run(mode=mode)
+    try:
         yield settlement
+    except Exception as exc:
+        # What `start_as_current_span` would have done, kept by hand so a raising
+        # run still has an errored root. `Exception`, not `BaseException`: a Stop
+        # or a dropped consumer is not a failure (AR-005), and it is the run's
+        # stop reason that says so.
+        if settlement.records:
+            span.record_exception(exc)
+            span.set_status(
+                trace.Status(trace.StatusCode.ERROR, f"{type(exc).__name__}: {exc}")
+            )
+        raise
+    finally:
+        span.end()
 
 
 @contextlib.contextmanager
@@ -405,6 +472,7 @@ def invoke_agent_span(
     cost_usd: float | None = None,
     outcome: str | None = None,
     sample_index: int | None = None,
+    parent: SpanHandle | None = None,
 ) -> Iterator[SpanSettlement]:
     """Manual OTel span for one orchestrator subagent (agentic mode, M3).
 
@@ -415,12 +483,21 @@ def invoke_agent_span(
     a non-recording span (negligible cost) when no tracer provider is
     configured, so the flag-off / OTel-off paths are unaffected.
 
+    `parent` is the run root's handle. The root cannot be made current (see
+    `invoke_workflow_span`), so a phase that wants to nest under it says so, and a
+    phase given no parent nests wherever the current context points — which is how
+    the direct unit calls in the tests still work. This span IS made current, so
+    the `execute_tool` spans beneath it and the logs written inside it still find
+    it implicitly.
+
     `sample_index` is for a phase that runs the SAME subagent id more than once
-    in one run — the N-sample verifier judge. Without it those spans are
+    in one run — the N-sample verifier judge with N > 1. Without it those spans are
     indistinguishable, so a consumer cannot tell three samples of one judge from
     one judge traced three times. The index and a suffixed `agentic.sample_id`
     are added; `agentic.subagent_id` deliberately keeps the id the wire and the
-    ledger use, so joining a span back to its phase still works.
+    ledger use, so joining a span back to its phase still works. A phase that runs
+    once passes nothing: an index over a single sample distinguishes it from
+    nothing.
 
     Yields the phase's `SpanSettlement` so the caller can close it with what
     actually served, spent and happened.
@@ -431,7 +508,16 @@ def invoke_agent_span(
         yield SpanSettlement()
         return
     tracer = trace.get_tracer(_AGENTIC_TRACER)
-    with tracer.start_as_current_span("invoke_agent") as span:
+    parent_span = None if parent is None else parent.span
+    # A parent with an invalid context (the no-op tracer's span) carries no
+    # parentage to inherit, so fall back to the current context rather than
+    # pinning this span to nothing and re-rooting it.
+    parent_context = (
+        trace.set_span_in_context(parent_span)
+        if parent_span is not None and parent_span.get_span_context().is_valid
+        else None
+    )
+    with tracer.start_as_current_span("invoke_agent", context=parent_context) as span:
         span.set_attribute("agentic.subagent_id", subagent_id)
         span.set_attribute("agentic.role", role)
         if sample_index is not None:

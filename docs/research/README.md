@@ -38,6 +38,15 @@ Industry patterns + Olune as-built audit grounding the normative design at
 - [agent-architecture-industry.md](./2026-07-14/agent-architecture-industry.md) — mid-2026 runtime patterns, bounds, HITL, cost, OTel, anti-patterns.
 - [agent-architecture-as-built.md](./2026-07-14/agent-architecture-as-built.md) — shipped topology, invariants, and gaps vs plan 01.
 
+### 2026-08-03 — Agent architecture state of the art
+
+Extends the 2026-07-14 agent-architecture pass: eight parallel workstreams
+reorganized by decision surface, with a scope limit on every number and six
+prior positions corrected.
+
+- [Pass index](./2026-08-03/README.md)
+- [agent-architecture-state-of-the-art.md](./2026-08-03/agent-architecture-state-of-the-art.md) — loop, compute, topologies, tools, memory, planning, verification, production ops, evaluation, framework selection.
+
 ## Related canon
 
 - [Docs index](../README.md)

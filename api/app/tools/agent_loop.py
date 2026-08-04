@@ -64,7 +64,7 @@ from typing import Any, Protocol
 
 import structlog
 
-from app.config import Settings
+from app.config import DEFAULT_TOOL_RESULT_MAX_CHARS, Settings
 from app.observability.tracing import execute_tool_span
 from app.providers.protocol import (
     AnswerDelta,
@@ -78,6 +78,11 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK, main_answer_is_empty
+from app.runtime.bounds import (
+    RunTripwire,
+    bound_tool_result_payload,
+    bound_tool_result_text,
+)
 from app.tools.builtin import TOOL_REGISTRY, execute_tool
 from app.tools.protocol import ToolApprovalState, ToolCallRequest, ToolExecutionResult
 
@@ -123,7 +128,9 @@ class MakeStream(Protocol):
     ) -> AsyncIterator[ProviderEvent]: ...
 
 
-def make_usage_folder() -> tuple[
+def make_usage_folder(
+    tripwire: RunTripwire | None = None,
+) -> tuple[
     Callable[[ProviderEvent], ProviderEvent],
     Callable[[], None],
     Callable[[], UsageUpdate],
@@ -140,15 +147,25 @@ def make_usage_folder() -> tuple[
     ``get_cumulative`` reads the running total (e.g. for a synthesized terminal
     ``Complete``). Both `run_agent_loop` and `run_chat_with_empty_retry` use this
     so the XOR fold is identical across the two empty-retry paths.
+
+    ``tripwire``: fed this loop's cumulative token total on every usage-bearing
+    event. Feeding it HERE rather than at each call site is what keeps the run's
+    token count exact — the fold is already the one place every provider usage
+    sample passes through. ``None`` (plain chat) counts nothing.
     """
     accumulated = UsageUpdate()
     round_usage_folded = False
+
+    def _note(usage: UsageUpdate) -> None:
+        if tripwire is not None:
+            tripwire.note_usage(usage)
 
     def _fold(event: ProviderEvent) -> ProviderEvent:
         nonlocal accumulated, round_usage_folded
         if isinstance(event, UsageUpdate):
             accumulated = _add_usage(accumulated, event)
             round_usage_folded = True
+            _note(accumulated)
             return UsageUpdate(
                 input_tokens=accumulated.input_tokens,
                 output_tokens=accumulated.output_tokens,
@@ -159,6 +176,7 @@ def make_usage_folder() -> tuple[
         if isinstance(event, Complete):
             if not round_usage_folded:
                 accumulated = _add_usage(accumulated, event.usage)
+            _note(accumulated)
             return replace(event, usage=accumulated)
         return event
 
@@ -181,12 +199,22 @@ def make_usage_folder() -> tuple[
 TOOL_FEEDBACK_SENTINEL = "[tool-results]"
 
 
-def tool_feedback_to_history(results: list[ToolResult]) -> list[ChatMessage]:
+def tool_feedback_to_history(
+    results: list[ToolResult],
+    *,
+    max_chars: int = DEFAULT_TOOL_RESULT_MAX_CHARS,
+) -> list[ChatMessage]:
     """Encode accumulated tool results as appended chat-history turns.
 
     One sentinel-prefixed assistant turn carrying the JSON results. Empty list
     when there are no results yet (round 1), so the first provider pass sees the
     unmodified history.
+
+    This is where a tool result becomes model-visible, so it is also where each
+    result's payload and error text are bounded to ``max_chars`` by construction
+    (`runtime.bounds`): a result under the limit is passed through byte-for-byte,
+    an over-size one is truncated with a visible marker rather than reaching the
+    provider unbounded. ``max_chars <= 0`` disables the bound.
     """
     if not results:
         return []
@@ -195,8 +223,12 @@ def tool_feedback_to_history(results: list[ToolResult]) -> list[ChatMessage]:
             "toolCallId": r.tool_call_id,
             "name": r.name,
             "status": r.status,
-            "output": r.output,
-            "error": r.error,
+            "output": bound_tool_result_payload(r.output, max_chars=max_chars),
+            "error": (
+                bound_tool_result_text(r.error, max_chars=max_chars)
+                if r.error is not None
+                else None
+            ),
         }
         for r in results
     ]
@@ -306,6 +338,7 @@ async def run_agent_loop(
     initial_tool_results: list[ToolResult] | None = None,
     allow_empty_retry: bool = True,
     inject_empty_fallback: bool = True,
+    tripwire: RunTripwire | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Drive a bounded tool-calling loop over a provider event stream.
 
@@ -347,6 +380,16 @@ async def run_agent_loop(
     **single-use**: consuming it to execute removes it from the set. Provider-
     emitted ``approval_state="approved"`` is never trusted on its own.
 
+    ``tripwire`` (doc §11.8): the run's plural trip conditions — wall clock,
+    cumulative tokens, repeated tool calls, tool-failure breaker. ``None`` (the
+    default) means no extra bounds, so every existing caller behaves exactly as
+    before; the agentic orchestrator passes one handle per loop. When a bound
+    fires the loop follows the degrade ladder: it stops opening new provider
+    rounds, keeps everything already produced, and exits through the SAME
+    terminal path as any other stop, so the wire still sees exactly one terminal
+    ``Complete``. It never raises. A trip bounds SCHEDULING — the provider stream
+    already in flight is drained normally rather than cut mid-event.
+
     ``initial_tool_results`` (BE-005): pre-seeded results from a HITL resume so
     the loop continues the same subagent with validated tool feedback instead of
     re-requesting the gated tool. Empty/None on every fresh run. Call ids that
@@ -368,7 +411,7 @@ async def run_agent_loop(
     # `invocations < max_rounds`, so it can never stack on the reserved pass
     # (which consumes the last slot) or on N=1 (the sole round exhausts it).
     invocations = 0
-    fold_usage, reset_usage, get_cumulative = make_usage_folder()
+    fold_usage, reset_usage, get_cumulative = make_usage_folder(tripwire)
     allowed: set[str] | None = None if allowed_tools is None else set(allowed_tools)
     approved_ids: set[str] = (
         set(server_approved_call_ids) if server_approved_call_ids is not None else set()
@@ -399,6 +442,9 @@ async def run_agent_loop(
             and allow_empty_retry
             and not empty_retry_spent
             and invocations < max_rounds
+            # A tripped run may not open another provider stream, and the retry
+            # is one: the empty terminal falls straight to the static fallback.
+            and (tripwire is None or tripwire.tripped is None)
         )
 
     async def _emit_empty_terminal() -> AsyncIterator[ProviderEvent]:
@@ -418,6 +464,8 @@ async def run_agent_loop(
         if _can_retry():
             empty_retry_spent = True
             invocations += 1
+            if tripwire is not None:
+                tripwire.note_invocation()
             reset_usage()
             retry_stream = make_stream(list(tool_feedback), True, answer_nudge=True)
             async for event in retry_stream:
@@ -463,11 +511,17 @@ async def run_agent_loop(
     for _round in range(action_rounds):
         stream = make_stream(list(tool_feedback), False)
         invocations += 1
+        if tripwire is not None:
+            tripwire.note_invocation()
         reset_usage()
 
         pending_calls: list[ToolCall] = []
         provider_resolved: set[str] = set()
         relayed_terminal = False
+        # Narrower than `relayed_terminal` (which an AnswerDelta also raises):
+        # whether THIS round already put a `Complete` on the wire. Only a trip
+        # reads it, to decide whether the degrade still owes the wire a terminal.
+        complete_relayed = False
         round_reasoning_parts: list[str] = []
         paused_by_provider = False
         async for event in stream:
@@ -557,6 +611,7 @@ async def run_agent_loop(
                     fold_usage(event)
                     continue
                 relayed_terminal = True
+                complete_relayed = True
             yield fold_usage(event)
         if paused_by_provider:
             return
@@ -575,6 +630,11 @@ async def run_agent_loop(
         round_reasoning = "".join(round_reasoning_parts) or None
         max_calls = max(1, settings.tool_max_calls_per_round)
         for i, call in enumerate(unresolved):
+            if tripwire is not None:
+                # Every call the provider asked for, whether it goes on to
+                # execute or is refused: a model that keeps re-requesting a
+                # denied tool is exactly the cheap loop this detects.
+                tripwire.note_tool_call(call.name, call.input)
             # BE-012: reject excess calls in this round as failed results.
             if i >= max_calls:
                 exec_result = ToolExecutionResult(
@@ -693,6 +753,23 @@ async def run_agent_loop(
 
         tool_feedback.extend(round_results)
 
+        if tripwire is not None:
+            for settled in round_results:
+                tripwire.note_tool_result(settled.status)
+            if tripwire.check() is not None:
+                # Degrade ladder (doc §11.8): stop scheduling new actions — no
+                # further action round and no reserved final pass — keep the
+                # partials already produced, and end through the same terminal
+                # decision every other stop uses, so the wire sees exactly one
+                # terminal Complete. The trip is NAMED in the tripwire's log line
+                # and, for an agentic run, on the run summary's partial label.
+                if not answer_emitted:
+                    async for terminal_event in _emit_empty_terminal():
+                        yield terminal_event
+                elif not complete_relayed:
+                    yield Complete(usage=get_cumulative())
+                return
+
         is_last_action = _round == action_rounds - 1
         if is_last_action and max_rounds > action_rounds:
             # Reserved final provider slot: suppress tools and force an answer.
@@ -704,6 +781,8 @@ async def run_agent_loop(
             # second compelled pass.
             final_stream = make_stream(list(tool_feedback), True)
             invocations += 1
+            if tripwire is not None:
+                tripwire.note_invocation()
             reset_usage()
             relayed_terminal = False
             async for event in final_stream:

@@ -27,6 +27,15 @@ _DEV_BYOK_KEK_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 # ``aggregate`` imports this same value.
 MAX_WORKER_ARTIFACTS = 16
 
+# Default ceiling on the characters of one tool result fed back to the model
+# (`TOOL_RESULT_MAX_CHARS` below). Owned here — same reason as
+# MAX_WORKER_ARTIFACTS — because `app.runtime.bounds` and
+# `app.tools.agent_loop.tool_feedback_to_history` both need the number and
+# neither may import the other's owner. Bounding the payload BY CONSTRUCTION is
+# `docs/research/2026-08-03/agent-architecture-state-of-the-art.md` §7: a tool
+# response growing 10K -> 80K tokens costs 7-91% answer retrieval.
+DEFAULT_TOOL_RESULT_MAX_CHARS = 8000
+
 
 class Settings(BaseSettings):
     """Process-wide settings. Use `get_settings()` to access."""
@@ -527,6 +536,46 @@ class Settings(BaseSettings):
     agentic_verifier: bool = Field(default=False, alias="AGENTIC_VERIFIER")
     agentic_verifier_n: int = Field(default=1, ge=1, le=5, alias="AGENTIC_VERIFIER_N")
 
+    # Run trip conditions (`app/runtime/bounds.py`). Doc §11.8: "Trips must be
+    # plural — token count alone misses cheap endless loops, step count alone
+    # misses few-but-expensive calls". These five sit alongside the bounds that
+    # already shipped (TOOL_MAX_ROUNDS = invocations, TOOL_MAX_CALLS_PER_ROUND,
+    # TOOL_TIMEOUT_SECONDS, AGENTIC_RUN_BUDGET_USD = the USD cap) and each names
+    # the event it counts, because a bound whose counted unit is unnamed cannot
+    # be tuned from a log line.
+    #
+    # Wall-clock deadline for one run, counted in `seconds` from the first
+    # tripwire construction. Doc §17's practitioner value is 10 min/task. `0`
+    # disables. Bounds when a NEW provider round / worker may start — an
+    # in-flight stream is the transport's own timeout to bound.
+    run_wall_clock_seconds: float = Field(default=600.0, alias="RUN_WALL_CLOCK_SECONDS")
+    # Cumulative token cap for one run, counted in `tokens` (input + output +
+    # reasoning + cached-read, all of which bill). Doc §17 offers 50k as a
+    # STARTING value and says "recalibrate per task class" — this repo ships it
+    # OFF (`0` disables) until a p95 per task class is actually measured, because
+    # a cap guessed below a normal run's usage converts healthy turns into
+    # labeled partials.
+    run_max_tokens: int = Field(default=0, alias="RUN_MAX_TOKENS")
+    # Tool-failure breaker, counted in `tool_failures`: trip once this many
+    # results in the last RUN_TOOL_FAILURE_WINDOW attempts came back `failed`
+    # (doc §17's starting value is 3 in 5). `0` disables.
+    run_max_consecutive_tool_failures: int = Field(
+        default=3, alias="RUN_MAX_CONSECUTIVE_TOOL_FAILURES"
+    )
+    run_tool_failure_window: int = Field(default=5, alias="RUN_TOOL_FAILURE_WINDOW")
+    # Loop detection on a hash of recent (tool, arguments) pairs, counted in
+    # `tool_call_hash`. Doc §17: "always on — cheap loops evade token caps".
+    loop_detection_enabled: bool = Field(default=True, alias="LOOP_DETECTION_ENABLED")
+    repeated_tool_call_threshold: int = Field(
+        default=3, alias="REPEATED_TOOL_CALL_THRESHOLD"
+    )
+    # Ceiling on the characters of ONE tool result fed back to the model. Not a
+    # trip: an over-size payload is truncated with a visible marker and the run
+    # continues (doc §7 "bound results by construction"). `0` disables.
+    tool_result_max_chars: int = Field(
+        default=DEFAULT_TOOL_RESULT_MAX_CHARS, alias="TOOL_RESULT_MAX_CHARS"
+    )
+
     # Public platform-status derivation (PRD 08 §10). The `/api/status` route
     # derives platform health from recent `Stream` telemetry with one COUNT
     # query: it reports `degraded` only when the recent window holds a MEANINGFUL
@@ -670,6 +719,42 @@ class Settings(BaseSettings):
             raise RuntimeError("AGENTIC_VERIFIER_N must be >= 1")
         if self.agentic_verifier_n > 5:
             raise RuntimeError("AGENTIC_VERIFIER_N must be <= 5")
+
+        # Run trip conditions (`app/runtime/bounds.py`). Validated at EVERY env,
+        # not just production: an unusable bound is a bound that silently does
+        # not fire, which is worse than no bound at all because the run reports
+        # as healthy. No production-only assertion is added — the shipped
+        # defaults are prod-safe as they stand, and a deployment that turns a
+        # trip off is making a deliberate, legible choice.
+        if not math.isfinite(float(self.run_wall_clock_seconds)):
+            raise RuntimeError("RUN_WALL_CLOCK_SECONDS must be a finite number")
+        if self.run_wall_clock_seconds < 0:
+            raise RuntimeError("RUN_WALL_CLOCK_SECONDS must be >= 0 (0 disables)")
+        if self.run_max_tokens < 0:
+            raise RuntimeError("RUN_MAX_TOKENS must be >= 0 (0 disables)")
+        if self.run_max_consecutive_tool_failures < 0:
+            raise RuntimeError(
+                "RUN_MAX_CONSECUTIVE_TOOL_FAILURES must be >= 0 (0 disables)"
+            )
+        if self.run_tool_failure_window < 1:
+            raise RuntimeError("RUN_TOOL_FAILURE_WINDOW must be >= 1")
+        # N failures in a window of M attempts is unreachable when N > M, so the
+        # breaker would be configured on and never fire.
+        if self.run_max_consecutive_tool_failures > self.run_tool_failure_window:
+            raise RuntimeError(
+                "RUN_MAX_CONSECUTIVE_TOOL_FAILURES must be <= "
+                "RUN_TOOL_FAILURE_WINDOW (N failures in a window of M attempts)"
+            )
+        # Same shape of mistake: detection on with a zero threshold is off.
+        if self.loop_detection_enabled and self.repeated_tool_call_threshold < 1:
+            raise RuntimeError(
+                "REPEATED_TOOL_CALL_THRESHOLD must be >= 1 when "
+                "LOOP_DETECTION_ENABLED is true"
+            )
+        if self.repeated_tool_call_threshold < 0:
+            raise RuntimeError("REPEATED_TOOL_CALL_THRESHOLD must be >= 0")
+        if self.tool_result_max_chars < 0:
+            raise RuntimeError("TOOL_RESULT_MAX_CHARS must be >= 0 (0 disables)")
 
         if self.env != "production":
             return

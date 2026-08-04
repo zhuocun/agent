@@ -55,6 +55,7 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.runtime.answer_policy import main_answer_is_empty
+from app.runtime.bounds import RunTripwire
 from app.runtime.context import ServedRoute
 from app.runtime.run_receipt import CostLedger, UsageTotals
 from app.schemas.common import SubstitutionReasonCode
@@ -496,7 +497,8 @@ class WorkerFailed:
 
 @dataclass(frozen=True)
 class WorkerCancelled:
-    """The worker was cancelled — by the budget kill, a Stop, or teardown.
+    """The worker was cancelled — by the budget kill, a run-bound trip, a Stop,
+    or teardown.
 
     `done_event` exists so a cancelled row still reaches a terminal (FE-002), but
     the caller must enqueue it WITHOUT awaiting: the consumer may already have
@@ -505,7 +507,7 @@ class WorkerCancelled:
 
     result: WorkerResult
     done_event: SubagentDone
-    outcome: Literal["budget_cancelled", "stopped"] = "stopped"
+    outcome: Literal["budget_cancelled", "cancelled", "stopped"] = "stopped"
 
 
 WorkerOutcome = WorkerCompleted | WorkerPaused | WorkerFailed | WorkerCancelled
@@ -577,6 +579,7 @@ class WorkerRunner:
         budget_gate: BudgetGate | None = None,
         allowed_tools: Collection[str] = WORKER_ALLOWED_TOOLS,
         is_run_budget_halted: Callable[[], bool] = lambda: False,
+        tripwire: RunTripwire | None = None,
     ) -> None:
         self._settings = settings
         self._routes = routes
@@ -585,6 +588,11 @@ class WorkerRunner:
         self._budget_gate = budget_gate
         self._allowed_tools = allowed_tools
         self._is_run_budget_halted = is_run_budget_halted
+        # This worker's handle on the RUN's trip conditions (doc §11.8). Passed
+        # straight through to the agent loop, which owns the degrade; the runner
+        # only reads the latch to label a cancelled row honestly. None = the run
+        # set no bounds, so nothing changes.
+        self._tripwire = tripwire
         self._outcome: WorkerOutcome | None = None
         self._seed: WorkerSeed | None = None
         self._state = _WorkerState.restored(FreshWorkerSeed(0, "", "", "", ""))
@@ -715,6 +723,7 @@ class WorkerRunner:
             # With the filler suppressed the answer comes back genuinely empty,
             # which is what FL-05 marks as failed.
             inject_empty_fallback=False,
+            tripwire=self._tripwire,
         ):
             if event_shows_external_progress(event):
                 state.visible_progress = True
@@ -921,14 +930,20 @@ class WorkerRunner:
         return WorkerCompleted(result, self._close(result, label), outcome=label)
 
     def _finish_cancelled(self) -> WorkerCancelled:
-        """Close a cancelled worker. A budget kill and a Stop stay distinguishable
-        (FE-002), and either way its reported spend survives into the roll-up."""
+        """Close a cancelled worker. A budget kill, a bound trip and a Stop stay
+        distinguishable (FE-002), and either way its reported spend survives into
+        the roll-up."""
         result = self._result()
         if not has_nonzero_usage(result.usage):
             result = replace(result, cost_usd=0.0)
-        label: Literal["budget_cancelled", "stopped"] = (
-            "budget_cancelled"
-            if self._state.budget_halted or self._is_run_budget_halted()
-            else "stopped"
-        )
+        label: Literal["budget_cancelled", "cancelled", "stopped"]
+        if self._state.budget_halted or self._is_run_budget_halted():
+            label = "budget_cancelled"
+        elif self._tripwire is not None and self._tripwire.tripped is not None:
+            # A run bound cancelled this worker. Not `budget_cancelled` (no cap
+            # was breached) and not `stopped` (nobody pressed Stop) — reusing
+            # either would report one degrade channel as another.
+            label = "cancelled"
+        else:
+            label = "stopped"
         return WorkerCancelled(result, self._close(result, label), outcome=label)

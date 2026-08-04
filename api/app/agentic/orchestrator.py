@@ -86,7 +86,9 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.runtime.answer_policy import EMPTY_REPLY_FALLBACK, main_answer_is_empty
+from app.runtime.bounds import RunTripwire
 from app.runtime.context import ServedRoute
+from app.runtime.loop_state import StopReason
 from app.runtime.run_receipt import (
     CostLedger,
     ReceiptBoundary,
@@ -149,6 +151,27 @@ _SINGLE_BUDGET_HALT_LABEL = (
 _TRUNCATED_PARTIAL_SUFFIX = (
     " […partial: this sub-agent was cancelled before finishing.]"
 )
+
+
+# Doc §11.8 degrade ladder, step 3: "name what tripped". A run bound firing is
+# its OWN label channel — `_SINGLE_BUDGET_HALT_LABEL` / `RunCost.budget_halted`
+# stay the USD cap's, so a trip never borrows the budget's copy or its flag and a
+# real cap breach is never reported as a trip. Only the four reasons the tripwire
+# can latch appear here; the USD cap and the human stops are other owners'.
+_TRIP_REASON_COPY: dict[StopReason, str] = {
+    "wall_clock_exceeded": "the run reached its time limit",
+    "token_cap_exceeded": "the run reached its token limit",
+    "repeated_tool_calls": "the same tool call kept repeating",
+    "consecutive_tool_failures": "too many tool calls failed in a row",
+}
+
+
+def _trip_label(reason: StopReason | None) -> str:
+    """Suffix naming the bound that stopped this run; empty when none tripped."""
+    if reason is None:
+        return ""
+    why = _TRIP_REASON_COPY.get(reason, "a run bound was reached")
+    return f"\n\n[Partial answer: stopped early because {why}; findings so far are included.]"
 
 
 def _superseded_label(count: int) -> str:
@@ -788,6 +811,7 @@ async def _finalize_synthesis_streamed(
     budget_halted: bool,
     failed: int = 0,
     superseded: int = 0,
+    tripped: StopReason | None = None,
     budget_headroom_usd: float | None = None,
     scaffolded: bool = False,
     artifacts: list[aggregate.WorkerArtifact] | None = None,
@@ -813,8 +837,9 @@ async def _finalize_synthesis_streamed(
 
     Every degrade here keeps its own label channel and its own flag (FL-06): an
     aggregator crash labels a synthesis failure with `budget_halted=False`, a cap
-    breach labels a budget halt with `budget_halted=True`, and a degraded
-    verification caveats the answer and raises `partial`.
+    breach labels a budget halt with `budget_halted=True`, a degraded
+    verification caveats the answer and raises `partial`, and ``tripped`` (doc
+    §11.8) names the run bound that fired while leaving `budget_halted` untouched.
 
     ``ledger`` (AC-02): aggregator / verifier phases settle into the run's one
     accounting owner and the terminal `RunCost` carries its receipt.
@@ -962,6 +987,7 @@ async def _finalize_synthesis_streamed(
             f"\n\n[{failed} sub-agent(s) failed and were omitted from this answer.]"
         )
     suffix += _superseded_label(superseded)
+    suffix += _trip_label(tripped)
     if aggregator_failed or main_answer_is_empty(streamed):
         draft = aggregate.synthesize(
             outputs,
@@ -971,6 +997,7 @@ async def _finalize_synthesis_streamed(
             failed=failed,
         )
         draft += _superseded_label(superseded)
+        draft += _trip_label(tripped)
         if aggregator_failed:
             draft += _AGGREGATOR_FAILED_LABEL
             if verify_after and not main_answer_is_empty(streamed):
@@ -1109,8 +1136,10 @@ async def _finalize_synthesis_streamed(
         or failed > 0
         or aggregator_failed
         # FL-09 / FL-08: a cancelled sibling or a degraded verification is a
-        # partial answer even when no worker failed and no cap was hit.
+        # partial answer even when no worker failed and no cap was hit. So is a
+        # trip: same `partial` field, `budget_halted` untouched.
         or superseded > 0
+        or tripped is not None
         or verifier.verification_degraded(verifier_result, verifier_outcome)
     )
     if ledger is not None:
@@ -1355,6 +1384,10 @@ async def run_single(
     session_usage = UsageUpdate()
     answer_parts: list[str] = []
     budget_halted = False
+    # Doc §11.8: the run's plural trip conditions, one owner for the whole run.
+    # A trip is a SEPARATE degrade channel from the USD cap above — the loop stops
+    # opening rounds and the tail labels it; `budget_halted` stays the cap's.
+    tripwire = RunTripwire.from_settings(settings)
     pending_tool_name = "unknown"
     pending_tool_label: str | None = None
     with invoke_agent_span(
@@ -1383,6 +1416,7 @@ async def run_single(
                 settings=settings,
                 server_approved_call_ids=server_approved_call_ids,
                 initial_tool_results=initial_tool_results,
+                tripwire=tripwire.loop_handle(subagent_id),
             ):
                 if isinstance(event, AnswerDelta):
                     answer_parts.append(event.text)
@@ -1458,15 +1492,20 @@ async def run_single(
         _settle_primary("budget_cancelled" if budget_halted else "succeeded")
     # FL-13: additive, not exclusive. A halt before any prose is a budget stop —
     # `main_answer_is_empty` winning here labeled it "didn't produce a written
-    # reply" and dropped the budget label the flag on the wire claims.
-    if budget_halted:
+    # reply" and dropped the budget label the flag on the wire claims. A trip adds
+    # its own clause the same additive way: both can be true, and each channel
+    # then says its own truth rather than one masking the other.
+    trip_reason = tripwire.tripped
+    if budget_halted or trip_reason is not None:
         prefix = (
             EMPTY_REPLY_FALLBACK
             if main_answer_is_empty("".join(answer_parts))
             else ""
         )
+        halt_label = _SINGLE_BUDGET_HALT_LABEL if budget_halted else ""
         yield AnswerDelta(
-            text=prefix + _SINGLE_BUDGET_HALT_LABEL, subagent_id=subagent_id
+            text=prefix + halt_label + _trip_label(trip_reason),
+            subagent_id=subagent_id,
         )
     elif main_answer_is_empty("".join(answer_parts)):
         yield AnswerDelta(text=EMPTY_REPLY_FALLBACK, subagent_id=subagent_id)
@@ -1493,7 +1532,9 @@ async def run_single(
     yield _boundary_run_cost(
         ledger,
         cap_usd=cap,
-        partial=budget_halted,
+        # A trip raises `partial` through the SAME field a cap breach does, and
+        # leaves `budget_halted` alone: one degrade channel per flag.
+        partial=budget_halted or trip_reason is not None,
         budget_halted=budget_halted,
     )
 
@@ -2336,6 +2377,15 @@ async def _run_deep_research(
     # worker, and is settled by the runner on that worker's terminal; on a cap
     # breach, cancel the remaining workers.
     budget_halted = False
+    # Doc §11.8: ONE tripwire for this run. Each worker gets its own handle, so
+    # the wall clock and the token total are shared while loop detection stays
+    # per-worker (two workers issuing the same call are not a loop). A trip
+    # cancels the fan-out exactly as a cap breach does, and is labeled through its
+    # own channel — never as `budget_halted`. Its clock starts here, at fan-out:
+    # everything before this point is gated by admission instead, and a
+    # plan-approval pause resumes as a fresh turn with a fresh deadline.
+    tripwire = RunTripwire.from_settings(settings)
+    trip_reason: StopReason | None = None
 
     async def _run_worker(seed: FreshWorkerSeed) -> None:
         """Schedule ONE worker and relay its stream onto the fan-out queue.
@@ -2355,6 +2405,7 @@ async def _run_deep_research(
             # A fresh worker does not halt itself: the consumer below cancels the
             # fan-out on a cap breach, so the gate is the run's, not the row's.
             is_run_budget_halted=lambda: budget_halted,
+            tripwire=tripwire.loop_handle(seed.subagent_id),
         )
         try:
             async with semaphore:
@@ -2423,13 +2474,27 @@ async def _run_deep_research(
     # AR-023: sibling pauses cancelled as superseded — not "succeeded".
     superseded_worker_ids: set[str] = set()
 
-    def _maybe_budget_kill() -> None:
-        nonlocal budget_halted, actual_cost
+    def _maybe_kill_fanout() -> None:
+        """Cancel the remaining workers when EITHER kill channel fires.
+
+        The USD cap and the run bounds cancel the fan-out identically but are
+        never the same event: `budget_halted` labels a cap breach (and only a real
+        breach may set it), `trip_reason` labels a bound trip, and each carries its
+        own copy on the answer. Cancellation runs only on the transition, so a
+        latched channel does not re-cancel on every later sample.
+        """
+        nonlocal budget_halted, actual_cost, trip_reason
         actual_cost = max(actual_cost, ledger.cumulative_cost_usd)
-        if not budget_halted and budget.exceeds_cap(
+        newly_breached = not budget_halted and budget.exceeds_cap(
             actual_usd=actual_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
-        ):
+        )
+        if newly_breached:
             budget_halted = True
+        newly_tripped = False
+        if trip_reason is None:
+            trip_reason = tripwire.check()
+            newly_tripped = trip_reason is not None
+        if newly_breached or newly_tripped:
             for task in tasks:
                 if not task.done():
                     task.cancel()
@@ -2455,7 +2520,7 @@ async def _run_deep_research(
                         cost_usd=paused.cost_usd,
                         outcome="stopped",
                     )
-                    _maybe_budget_kill()
+                    _maybe_kill_fanout()
                 else:
                     # H-003 / O-007 / B24: cancel orphaned sibling pauses.
                     # Track as superseded (not failed) so failed_worker_count
@@ -2485,13 +2550,13 @@ async def _run_deep_research(
                     superseded_worker_ids.add(paused.subagent_id)
                     if paused.answer.strip():
                         results[paused.subagent_id] = _worker_output(paused)
-                    _maybe_budget_kill()
+                    _maybe_kill_fanout()
                 continue
             # B3 / AR-008 / SAF-005: the runner already observed this sample into
             # the ledger, priced on the route serving it, so the kill gate only
             # has to read the total back.
             if isinstance(item, (UsageUpdate, Complete)) and item.subagent_id:
-                _maybe_budget_kill()
+                _maybe_kill_fanout()
             yield item
             if isinstance(item, SubagentDone) and item.role == "worker":
                 # Mid-run meter tick (estimate + mid + final; FE-011 / FE-012).
@@ -2504,7 +2569,7 @@ async def _run_deep_research(
                     confidence="exact",
                     phase="progress",
                 )
-                _maybe_budget_kill()
+                _maybe_kill_fanout()
         # Tolerate task cancellations from the budget kill. Worker failures are
         # degraded inside `_run_worker` and must not fail the whole run.
         gathered = await asyncio.gather(*tasks, return_exceptions=True)
@@ -2692,8 +2757,10 @@ async def _run_deep_research(
             clarifications=answers,
         )
         # FL-09: `aggregate.synthesize` (F3) owns only the budget-halt and
-        # failed-worker clauses, so the superseded clause is appended here.
+        # failed-worker clauses, so the superseded and trip clauses are appended
+        # here — each its own channel, none of them borrowing another's copy.
         draft += _superseded_label(superseded_workers)
+        draft += _trip_label(trip_reason)
         verifier_result: verifier.VerifyResult | None = None
         verifier_outcome: Literal["succeeded", "failed"] = "succeeded"
         synthesis = draft
@@ -2822,8 +2889,10 @@ async def _run_deep_research(
                 effective_budget_halted
                 or failed_workers > 0
                 # FL-09 / FL-08: a cancelled sibling or a degraded verification is
-                # a partial answer even with no failures and no cap breach.
+                # a partial answer even with no failures and no cap breach. So is
+                # a trip: same `partial` field, and `budget_halted` left alone.
                 or superseded_workers > 0
+                or trip_reason is not None
                 or verifier.verification_degraded(verifier_result, verifier_outcome)
             ),
             budget_halted=effective_budget_halted,
@@ -2853,6 +2922,7 @@ async def _run_deep_research(
             budget_halted=budget_halted,
             failed=failed_workers,
             superseded=superseded_workers,
+            tripped=trip_reason,
             budget_headroom_usd=budget_headroom_usd,
             scaffolded=scaffolded,
             artifacts=ordered_artifacts,

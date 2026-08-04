@@ -937,12 +937,13 @@ async def stream_and_persist(
     # (the `Provider.stream` Protocol intentionally has no tool params). Empty on
     # round 1 / the non-tool path, so the provider stream is byte-for-byte
     # unchanged there.
-    # System prefix (current UTC datetime + custom instructions + long-term
-    # memory) and the clean per-turn user text, assembled once via
-    # `prompt_assembly` (T20). Hoisting memory + instructions into the system
-    # prefix (instead of wrapping them into the user turn) keeps the user turn
-    # clean. The datetime block always leads, so `turn_system_prefix` is always
-    # a non-None string and every real-provider turn carries a system role.
+    # System prefix (long-term memory + custom instructions, then the current
+    # UTC datetime last so the stable bytes lead and a provider prefix cache can
+    # hit) and the clean per-turn user text, assembled once via `prompt_assembly`
+    # (T20). Hoisting memory + instructions into the system prefix (instead of
+    # wrapping them into the user turn) keeps the user turn clean. The datetime
+    # block is unconditional, so `turn_system_prefix` is always a non-None string
+    # and every real-provider turn carries a system role.
     turn_system_prefix = build_system_prefix(custom_instructions, memory_facts or [])
     turn_user_text = build_user_turn(user_text)
 

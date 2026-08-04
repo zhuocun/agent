@@ -4,15 +4,16 @@ Splits a turn into two pieces so a cache-aware provider can reuse the stable
 part across turns:
 
 - `build_system_prefix(custom_instructions, memory_facts, *, now)` — the system
-  preamble. It always leads with the current UTC date and time so the model can
-  answer "what day is it?" / time-relative questions, then carries the user's
-  saved custom instructions and long-term memory facts (D19/D20). Because the
-  datetime block is always present, the prefix is now ALWAYS a non-None string,
-  and its leading bytes change every minute. That deliberately trades away the
-  byte-for-byte cache stability the memory/instructions blocks enjoyed: a
-  prompt-cache hit on the prefix is no longer expected turn-to-turn (the
-  datetime moves), so the cache benefit is limited to within the same minute.
-  We accept that so the model is never stranded without a clock.
+  preamble. Stable content leads: the user's long-term memory facts, then their
+  saved custom instructions (D19/D20). The current UTC date and time comes LAST,
+  immediately before the user turn, so the model always has a clock without the
+  volatile bytes poisoning the prefix. Ordering matters because the production
+  provider (DeepSeek via the OpenAI-compatible binding) caches on the longest
+  common prefix across requests: a minute-resolution timestamp in the leading
+  bytes drives that common prefix to zero and no turn-to-turn hit is possible,
+  whereas a trailing timestamp leaves the memory/instructions bytes cacheable.
+  The datetime block is unconditional, so the prefix is ALWAYS a non-None
+  string.
 - `build_user_turn(text)` — the per-turn user message. Identity today; kept as
   a seam so future per-turn framing has one obvious home and every call site
   routes through it.
@@ -107,18 +108,15 @@ def build_system_prefix(
 ) -> str:
     """Assemble the system prefix; ALWAYS returns a non-None string.
 
-    The current UTC date and time leads the prefix (so the model always has a
-    clock), followed by memory facts and then custom instructions — the more
-    volatile instructions sit closest to the user turn. Whitespace-only facts
-    and blank instructions are dropped, so an enabled-but-empty ledger or an
-    empty instructions string contributes nothing; the datetime block keeps the
-    result non-None even then.
+    Stable blocks lead — memory facts, then custom instructions — and the
+    current UTC date and time trails them, so everything ahead of the timestamp
+    is byte-identical turn-to-turn and a provider's automatic prefix cache can
+    hit on it. Whitespace-only facts and blank instructions are dropped, so an
+    enabled-but-empty ledger or an empty instructions string contributes
+    nothing; the trailing datetime block keeps the result non-None even then.
 
     ``now`` defaults to ``datetime.now(timezone.utc)`` and is normalized to UTC
-    (a naive datetime is assumed to already be UTC). Because the rendered
-    minute-resolution timestamp changes the prefix bytes every minute, the
-    prefix is no longer byte-stable across turns — see the module docstring for
-    the prompt-cache trade-off.
+    (a naive datetime is assumed to already be UTC).
     """
     if now is None:
         now = datetime.now(UTC)
@@ -127,7 +125,7 @@ def build_system_prefix(
     else:
         now = now.astimezone(UTC)
 
-    blocks: list[str] = [_DATETIME_BLOCK.format(dt=now.strftime("%A, %Y-%m-%d %H:%M UTC"))]
+    blocks: list[str] = []
     cleaned_facts = [fact.strip() for fact in (memory_facts or []) if fact and fact.strip()]
     if cleaned_facts:
         rendered = "\n".join(
@@ -141,6 +139,7 @@ def build_system_prefix(
                 instructions=escape_prompt_delimiters(instructions)
             )
         )
+    blocks.append(_DATETIME_BLOCK.format(dt=now.strftime("%A, %Y-%m-%d %H:%M UTC")))
     return "\n\n".join(blocks)
 
 

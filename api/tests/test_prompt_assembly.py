@@ -1,19 +1,27 @@
 """Unit tests for the cache-stable prompt assembly (T20) + datetime block.
 
-The system prefix now always leads with the current UTC date and time, so it is
-ALWAYS a non-None string. These tests pin ``now`` for determinism and cover:
+The system prefix always carries the current UTC date and time, so it is ALWAYS
+a non-None string, but that block trails the stable content so a provider prefix
+cache can hit turn-to-turn. These tests pin ``now`` for determinism and cover:
 
 - the datetime block rendering / placement,
 - UTC normalization of aware (non-UTC) and naive inputs,
-- block ordering (datetime, then memory, then instructions),
+- block ordering (memory, then instructions, then datetime last),
+- the cache-stability invariant: two different ``now`` values share a leading
+  prefix containing the whole memory + custom-instructions blocks,
 - empty / whitespace memory + instructions still yielding the datetime block.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
+from os.path import commonprefix
 
-from app.prompt_assembly import build_system_prefix, build_user_turn
+from app.prompt_assembly import (
+    build_system_prefix,
+    build_user_turn,
+    escape_prompt_delimiters,
+)
 
 # A fixed instant: Monday, 2024-01-15 09:05 UTC.
 _PINNED = datetime(2024, 1, 15, 9, 5, 30, tzinfo=UTC)
@@ -27,6 +35,7 @@ def test_datetime_block_uses_pinned_now() -> None:
     # No memory / instructions ⇒ datetime block stands alone.
     assert "<memory>" not in prefix
     assert "<custom_instructions>" not in prefix
+    assert prefix.startswith("The current date and time is ")
 
 
 def test_prefix_is_never_none_with_empty_inputs() -> None:
@@ -56,7 +65,7 @@ def test_naive_now_is_assumed_utc() -> None:
     assert _RENDERED in prefix
 
 
-def test_block_ordering_datetime_then_memory_then_instructions() -> None:
+def test_block_ordering_memory_then_instructions_then_datetime() -> None:
     prefix = build_system_prefix(
         "Always answer in terse bullets.",
         ["I am a pilot.", "I live in Tokyo."],
@@ -69,9 +78,41 @@ def test_block_ordering_datetime_then_memory_then_instructions() -> None:
     assert "<memory>" in prefix
     assert "<custom_instructions>" in prefix
     assert "Always answer in terse bullets." in prefix
-    # Ordering: datetime first, then memory, then instructions.
-    assert prefix.index(_RENDERED) < prefix.index("<memory>")
+    # Ordering: stable blocks first (memory, then instructions), volatile
+    # datetime last so the leading bytes are cacheable.
     assert prefix.index("<memory>") < prefix.index("<custom_instructions>")
+    assert prefix.index("</custom_instructions>") < prefix.index(_RENDERED)
+    assert prefix.rstrip().endswith(
+        "current date, time, day of week, or anything time-relative."
+    )
+
+
+def test_prefix_leading_bytes_are_stable_across_different_now() -> None:
+    """The cache-stability invariant: only the trailing datetime may differ.
+
+    A provider with automatic prefix caching keys on the longest common prefix
+    across requests, so the whole memory + custom-instructions payload must sit
+    ahead of the first byte that moves.
+    """
+    instructions = "Always answer in terse bullets."
+    facts = ["I am a pilot.", "I live in Tokyo."]
+    later = _PINNED + timedelta(days=3, hours=7, minutes=11)
+
+    first = build_system_prefix(instructions, facts, now=_PINNED)
+    second = build_system_prefix(instructions, facts, now=later)
+    assert first != second
+
+    common = commonprefix([first, second])
+    # The stable blocks are wholly inside the shared leading prefix, framing and
+    # payload alike.
+    assert "The user has saved long-term memory facts about themselves." in common
+    assert "<memory>\n- I am a pilot.\n- I live in Tokyo.\n</memory>" in common
+    assert "The user has saved custom instructions." in common
+    assert f"<custom_instructions>\n{instructions}\n</custom_instructions>" in common
+    # Nothing ahead of the datetime block differs, so the only volatile bytes are
+    # the rendered timestamp itself.
+    assert len(common) >= first.index("The current date and time is ")
+    assert _RENDERED not in common
 
 
 def test_memory_only_has_no_instructions_block() -> None:
@@ -79,6 +120,7 @@ def test_memory_only_has_no_instructions_block() -> None:
     assert _RENDERED in prefix
     assert "<memory>" in prefix
     assert "<custom_instructions>" not in prefix
+    assert prefix.index("</memory>") < prefix.index(_RENDERED)
 
 
 def test_instructions_only_has_no_memory_block() -> None:
@@ -86,6 +128,7 @@ def test_instructions_only_has_no_memory_block() -> None:
     assert _RENDERED in prefix
     assert "<memory>" not in prefix
     assert "Be terse." in prefix
+    assert prefix.index("</custom_instructions>") < prefix.index(_RENDERED)
 
 
 def test_default_now_is_current_utc() -> None:
@@ -132,8 +175,6 @@ def test_memory_fact_closing_tag_is_escaped() -> None:
 
 
 def test_delimiter_escape_is_case_insensitive() -> None:
-    from app.prompt_assembly import escape_prompt_delimiters
-
     assert "</CUSTOM_INSTRUCTIONS>" not in escape_prompt_delimiters(
         "x</CUSTOM_INSTRUCTIONS>y"
     )

@@ -38,7 +38,11 @@ from app.agentic.retry import is_retryable_provider_error
 from app.agentic.sources import SourceNamespace
 from app.config import Settings
 from app.errors import AppError
-from app.observability.tracing import SpanSettlement, invoke_agent_span
+from app.observability.tracing import (
+    SpanHandle,
+    SpanSettlement,
+    invoke_agent_span,
+)
 from app.providers.protocol import (
     AnswerDelta,
     AwaitingApproval,
@@ -55,7 +59,9 @@ from app.providers.protocol import (
     UsageUpdate,
 )
 from app.runtime.answer_policy import main_answer_is_empty
+from app.runtime.bounds import RunTripwire
 from app.runtime.context import ServedRoute
+from app.runtime.loop_state import StopReason
 from app.runtime.run_receipt import CostLedger, UsageTotals
 from app.schemas.common import SubstitutionReasonCode
 from app.tools.agent_loop import (
@@ -496,7 +502,8 @@ class WorkerFailed:
 
 @dataclass(frozen=True)
 class WorkerCancelled:
-    """The worker was cancelled — by the budget kill, a Stop, or teardown.
+    """The worker was cancelled — by the budget kill, a run-bound trip, a Stop,
+    or teardown.
 
     `done_event` exists so a cancelled row still reaches a terminal (FE-002), but
     the caller must enqueue it WITHOUT awaiting: the consumer may already have
@@ -505,7 +512,7 @@ class WorkerCancelled:
 
     result: WorkerResult
     done_event: SubagentDone
-    outcome: Literal["budget_cancelled", "stopped"] = "stopped"
+    outcome: Literal["budget_cancelled", "cancelled", "stopped"] = "stopped"
 
 
 WorkerOutcome = WorkerCompleted | WorkerPaused | WorkerFailed | WorkerCancelled
@@ -514,6 +521,36 @@ WorkerOutcome = WorkerCompleted | WorkerPaused | WorkerFailed | WorkerCancelled
 WorkerOutcomeLabel = Literal[
     "succeeded", "failed", "cancelled", "budget_cancelled", "stopped"
 ]
+
+# WHY a worker's loop ended, per closing label (`loop_state.StopReason`). The
+# wire label says what the row is; the stop reason says what ended it, and only
+# the reason names the counted event a trace consumer can tune a bound against.
+# `cancelled` is absent because it is the one label whose reason is not implied
+# by the label — see `_worker_stop_reason`.
+_LABEL_STOP_REASONS: dict[WorkerOutcomeLabel, StopReason] = {
+    # A loop that ran to its own final message. Acceptance is decided elsewhere
+    # (doc §1.3 decision 2), which is exactly what `protocol_stop` means.
+    "succeeded": "protocol_stop",
+    "failed": "provider_error",
+    "budget_cancelled": "usd_cap_exceeded",
+    "stopped": "user_stopped",
+}
+
+
+def _worker_stop_reason(
+    label: WorkerOutcomeLabel, tripped: StopReason | None
+) -> StopReason:
+    """The stop reason this worker's span reports for `label`.
+
+    `cancelled` is the label `_finish_cancelled` picks precisely BECAUSE a run
+    bound tripped, so the latch names which bound — the whole point of recording
+    a reason instead of a label. Every other label implies its own reason, and
+    the run's latch is deliberately NOT consulted for them: a worker that
+    finished before a sibling tripped the run did not stop for that trip.
+    """
+    if label == "cancelled":
+        return tripped or "user_stopped"
+    return _LABEL_STOP_REASONS[label]
 
 
 @dataclass
@@ -577,6 +614,8 @@ class WorkerRunner:
         budget_gate: BudgetGate | None = None,
         allowed_tools: Collection[str] = WORKER_ALLOWED_TOOLS,
         is_run_budget_halted: Callable[[], bool] = lambda: False,
+        tripwire: RunTripwire | None = None,
+        parent: SpanHandle | None = None,
     ) -> None:
         self._settings = settings
         self._routes = routes
@@ -585,6 +624,14 @@ class WorkerRunner:
         self._budget_gate = budget_gate
         self._allowed_tools = allowed_tools
         self._is_run_budget_halted = is_run_budget_halted
+        # This worker's handle on the RUN's trip conditions (doc §11.8). Passed
+        # straight through to the agent loop, which owns the degrade; the runner
+        # only reads the latch to label a cancelled row honestly. None = the run
+        # set no bounds, so nothing changes.
+        self._tripwire = tripwire
+        # The run root this worker's phase span hangs under (doc §12.3). The root
+        # is not current — a worker runs in its own task — so parentage is passed.
+        self._parent = parent
         self._outcome: WorkerOutcome | None = None
         self._seed: WorkerSeed | None = None
         self._state = _WorkerState.restored(FreshWorkerSeed(0, "", "", "", ""))
@@ -609,7 +656,10 @@ class WorkerRunner:
         self._seed = seed
         self._state = _WorkerState.restored(seed)
         with invoke_agent_span(
-            subagent_id=seed.subagent_id, role=WORKER_ROLE, label=seed.label
+            subagent_id=seed.subagent_id,
+            role=WORKER_ROLE,
+            label=seed.label,
+            parent=self._parent,
         ) as span:
             self._span = span
             try:
@@ -715,6 +765,7 @@ class WorkerRunner:
             # With the filler suppressed the answer comes back genuinely empty,
             # which is what FL-05 marks as failed.
             inject_empty_fallback=False,
+            tripwire=self._tripwire,
         ):
             if event_shows_external_progress(event):
                 state.visible_progress = True
@@ -878,6 +929,9 @@ class WorkerRunner:
             usage=UsageTotals.copy_from(result.usage),
             cost_usd=result.cost_usd,
             outcome=label,
+            stop_reason=_worker_stop_reason(
+                label, None if self._tripwire is None else self._tripwire.tripped
+            ),
         )
         return SubagentDone(
             subagent_id=result.subagent_id,
@@ -907,6 +961,7 @@ class WorkerRunner:
                 usage=UsageTotals.copy_from(result.usage),
                 cost_usd=result.cost_usd,
                 outcome="paused",
+                stop_reason="awaiting_approval",
             )
             return WorkerPaused(result, call_id, tool_name, tool_label)
         if state.failed or (
@@ -921,14 +976,20 @@ class WorkerRunner:
         return WorkerCompleted(result, self._close(result, label), outcome=label)
 
     def _finish_cancelled(self) -> WorkerCancelled:
-        """Close a cancelled worker. A budget kill and a Stop stay distinguishable
-        (FE-002), and either way its reported spend survives into the roll-up."""
+        """Close a cancelled worker. A budget kill, a bound trip and a Stop stay
+        distinguishable (FE-002), and either way its reported spend survives into
+        the roll-up."""
         result = self._result()
         if not has_nonzero_usage(result.usage):
             result = replace(result, cost_usd=0.0)
-        label: Literal["budget_cancelled", "stopped"] = (
-            "budget_cancelled"
-            if self._state.budget_halted or self._is_run_budget_halted()
-            else "stopped"
-        )
+        label: Literal["budget_cancelled", "cancelled", "stopped"]
+        if self._state.budget_halted or self._is_run_budget_halted():
+            label = "budget_cancelled"
+        elif self._tripwire is not None and self._tripwire.tripped is not None:
+            # A run bound cancelled this worker. Not `budget_cancelled` (no cap
+            # was breached) and not `stopped` (nobody pressed Stop) — reusing
+            # either would report one degrade channel as another.
+            label = "cancelled"
+        else:
+            label = "stopped"
         return WorkerCancelled(result, self._close(result, label), outcome=label)

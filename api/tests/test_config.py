@@ -301,3 +301,85 @@ def test_assert_prod_safe_no_op_for_resumable_streams_in_development() -> None:
         STREAM_STATE_BACKEND="memory",  # type: ignore[call-arg]
     )
     dev.assert_prod_safe()  # must not raise
+
+
+# --- run trip conditions (`app/runtime/bounds.py`) ----------------------------
+#
+# These are validated at EVERY env, not just production: a bound configured into
+# a shape that can never fire is worse than no bound, because the run then
+# reports as healthy. The shipped defaults are prod-safe as they stand, so no
+# production-only assertion was added — which is what the first test pins.
+
+
+def test_shipped_trip_defaults_are_prod_safe() -> None:
+    """`assert_prod_safe()` stays coherent: the defaults pass a prod build."""
+    good = _prod_settings(provider_backend="anthropic", anthropic_api_key="real-key")
+    good.assert_prod_safe()  # must not raise
+
+
+def test_trip_validation_runs_outside_production_too() -> None:
+    dev = Settings(env="dev", RUN_WALL_CLOCK_SECONDS=-1.0)  # type: ignore[call-arg]
+    with pytest.raises(RuntimeError, match=re.escape("RUN_WALL_CLOCK_SECONDS")):
+        dev.assert_prod_safe()
+
+
+def test_failure_breaker_rejects_an_unreachable_window() -> None:
+    """N failures in a window of M attempts can never fire when N > M, so the
+    breaker would read as configured on and never trip."""
+    bad = Settings(  # type: ignore[call-arg]
+        env="dev",
+        RUN_MAX_CONSECUTIVE_TOOL_FAILURES=6,
+        RUN_TOOL_FAILURE_WINDOW=5,
+    )
+    with pytest.raises(
+        RuntimeError, match=re.escape("RUN_MAX_CONSECUTIVE_TOOL_FAILURES must be <=")
+    ):
+        bad.assert_prod_safe()
+
+
+def test_loop_detection_on_rejects_a_zero_threshold() -> None:
+    """Same shape of mistake: detection on with a zero threshold is detection
+    off, while the flag claims otherwise."""
+    bad = Settings(  # type: ignore[call-arg]
+        env="dev",
+        LOOP_DETECTION_ENABLED=True,
+        REPEATED_TOOL_CALL_THRESHOLD=0,
+    )
+    with pytest.raises(
+        RuntimeError, match=re.escape("REPEATED_TOOL_CALL_THRESHOLD must be >= 1")
+    ):
+        bad.assert_prod_safe()
+
+
+def test_loop_detection_off_may_leave_the_threshold_at_zero() -> None:
+    """Turning a trip off is a deliberate, legible choice, not a misconfiguration."""
+    good = Settings(  # type: ignore[call-arg]
+        env="dev",
+        LOOP_DETECTION_ENABLED=False,
+        REPEATED_TOOL_CALL_THRESHOLD=0,
+        RUN_WALL_CLOCK_SECONDS=0.0,
+        RUN_MAX_CONSECUTIVE_TOOL_FAILURES=0,
+        TOOL_RESULT_MAX_CHARS=0,
+    )
+    good.assert_prod_safe()  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("RUN_MAX_TOKENS", -1),
+        ("RUN_TOOL_FAILURE_WINDOW", 0),
+        ("TOOL_RESULT_MAX_CHARS", -1),
+    ],
+)
+def test_trip_settings_reject_out_of_range_values(field: str, value: int) -> None:
+    bad = Settings(env="dev", **{field: value})  # type: ignore[call-arg]
+    with pytest.raises(RuntimeError, match=re.escape(field)):
+        bad.assert_prod_safe()
+
+
+def test_wall_clock_rejects_a_non_finite_deadline() -> None:
+    """`inf` reads as "no deadline" while claiming one is set."""
+    bad = Settings(env="dev", RUN_WALL_CLOCK_SECONDS=float("inf"))  # type: ignore[call-arg]
+    with pytest.raises(RuntimeError, match=re.escape("finite")):
+        bad.assert_prod_safe()

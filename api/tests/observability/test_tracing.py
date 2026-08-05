@@ -14,11 +14,21 @@ yields. Settling every production phase span with these is F2's work; what is
 proven here is that the handle records route / usage / cost / outcome, that a
 fallback overrides the served route rather than adding a second one, and that no
 content attribute can ride along.
+
+The last section covers doc §12.3: the run's `invoke_workflow` root — the shape
+of the tree beneath it, the pinned semantic-convention revision, the run-level
+attributes (stop reason with its counted event, fan-out width, depth, retries,
+budget reserved against actual, token classes), distinguishable N>1 verifier
+samples, the absolute content ban, and the fact that all of it disappears
+without trace when OTel is unconfigured.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
+import logging
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -30,6 +40,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 from app.agentic.aggregate import WorkerOutput
 from app.agentic.orchestrator import (
@@ -40,13 +51,25 @@ from app.agentic.orchestrator import (
 from app.config import Settings
 from app.errors import AppError, ErrorEnvelope
 from app.observability.tracing import (
+    GENAI_SEMCONV_REVISION,
+    GENAI_SEMCONV_SCHEMA_URL,
     SpanSettlement,
+    WorkflowSettlement,
     add_otel_log_processor,
+    execute_tool_span,
     instrument_fastapi,
     invoke_agent_span,
+    invoke_workflow_span,
     reset_tracing_for_tests,
 )
-from app.providers.protocol import AnswerDelta, Complete, ProviderEvent, UsageUpdate
+from app.providers.protocol import (
+    AnswerDelta,
+    Complete,
+    ProviderEvent,
+    RunCost,
+    SubagentDone,
+    UsageUpdate,
+)
 from app.providers.tiers import get_binding
 from app.runtime.context import ServedRoute
 from app.runtime.run_receipt import UsageTotals
@@ -399,6 +422,7 @@ def _settled_phases(
             continue
         attrs["_parent_span_id"] = span.parent.span_id if span.parent else None
         attrs["_span_id"] = span.context.span_id
+        attrs["_trace_id"] = span.context.trace_id
         phases.setdefault(role, []).append(attrs)
     return phases
 
@@ -706,3 +730,608 @@ async def test_closing_the_synthesis_settles_the_usage_it_already_delivered(
     assert aggregator["gen_ai.usage.input_tokens"] == delivered.input_tokens
     assert aggregator["gen_ai.usage.output_tokens"] == delivered.output_tokens
     assert aggregator["agentic.cost_usd"] == pytest.approx(_nano(delivered))
+
+
+# Doc §12.3: the run root, the tree beneath it, and the pinned convention --------
+
+# Everything the fixture run says out loud. No span attribute may contain any of
+# it: the prompt, the plan the planner wrote, the sub-questions it decomposed to
+# and the judge's own JSON verdict are all content.
+RUN_CONTENT = (
+    "compare alpha and beta",
+    "1. alpha\n2. beta",
+    '{"verdict":"pass","report":"none"}',
+    "alpha",
+    "beta",
+)
+
+
+def _spans_named(exporter: InMemorySpanExporter, name: str) -> list[Any]:
+    return [span for span in exporter.get_finished_spans() if span.name == name]
+
+
+def _workflow_root(exporter: InMemorySpanExporter) -> Any:
+    """The run's ONE root span. Two would mean a run traced as two runs."""
+    (root,) = _spans_named(exporter, "invoke_workflow")
+    return root
+
+
+def _root_attrs(exporter: InMemorySpanExporter) -> dict[str, Any]:
+    return dict(_workflow_root(exporter).attributes or {})
+
+
+async def _drain_deep_research(
+    *, settings: Settings, estimate_cost: Any = None, **kwargs: Any
+) -> list[ProviderEvent]:
+    """One deep-research run over the fixture streams, collected in order."""
+    return [
+        event
+        async for event in run_orchestrator(
+            make_stream_for=_phase_stream(),
+            settings=settings,
+            mode="deep_research",
+            # A plain prompt (no `DEEP_RESEARCH:` marker) so the MODEL planner runs.
+            user_text="compare alpha and beta",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+            estimate_cost=estimate_cost,
+            **kwargs,
+        )
+    ]
+
+
+def test_the_semantic_convention_revision_is_pinned() -> None:
+    """§12.3: "pin a schema revision and expect migration". The pin is a literal
+    here as well as in the module, so moving the module constant is a deliberate
+    migration that fails this test rather than a silent change of what an
+    attribute name means."""
+    assert GENAI_SEMCONV_REVISION == "1.41.1"
+    assert GENAI_SEMCONV_SCHEMA_URL == "https://opentelemetry.io/schemas/1.41.1"
+
+
+def test_the_workflow_root_emits_the_pinned_revision() -> None:
+    """A trace consumer can only trust an attribute name if the trace says which
+    revision produced it, so the pin rides on the root of every run."""
+    exporter = _capture_spans()
+    with invoke_workflow_span(mode="single"):
+        pass
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.semconv.revision"] == GENAI_SEMCONV_REVISION
+    assert attrs["agentic.semconv.schema_url"] == GENAI_SEMCONV_SCHEMA_URL
+
+
+@pytest.mark.asyncio
+async def test_every_phase_span_nests_under_the_one_workflow_root() -> None:
+    """§12.3's tree shape: `invoke_workflow` -> `invoke_agent` per phase.
+
+    One root per run, and every phase — planner, both workers, aggregator, judge
+    — a DIRECT child of it. The verifier keeps its deliberate sibling placement
+    (V-009): a judge nested inside the synthesis it judges would read as part of
+    that synthesis.
+    """
+    exporter = _capture_spans()
+    await _drain_deep_research(
+        settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=1),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    root = _workflow_root(exporter)
+    assert root.parent is None or root.parent.span_id != root.context.span_id
+
+    phases = _settled_phases(exporter)
+    assert set(phases) == {PLANNER_ROLE, "worker", "aggregator", "verifier"}
+    assert len(phases["worker"]) == 2
+    for role, attrs_list in phases.items():
+        for attrs in attrs_list:
+            assert attrs["_parent_span_id"] == root.context.span_id, role
+            # The run's identity is the trace it shares, not a minted id joined to
+            # nothing: every phase is queryable from the root without one.
+            assert attrs["_trace_id"] == root.context.trace_id, role
+    assert "agentic.run_id" not in dict(root.attributes or {})
+
+
+def test_a_tool_execution_nests_under_the_phase_that_ran_it() -> None:
+    """The bottom of §12.3's tree: `invoke_workflow` -> `invoke_agent` ->
+    `execute_tool`. A tool span parented anywhere else cannot be attributed to
+    the subagent that asked for the call."""
+    exporter = _capture_spans()
+    with (
+        invoke_workflow_span(mode="deep_research") as workflow,
+        invoke_agent_span(subagent_id="worker-0", role="worker", parent=workflow),
+        execute_tool_span(tool_name="web_search", subagent_id="worker-0"),
+    ):
+        pass
+    root = _workflow_root(exporter)
+    (phase,) = _spans_named(exporter, "invoke_agent")
+    (tool,) = _spans_named(exporter, "execute_tool")
+    assert phase.parent is not None and phase.parent.span_id == root.context.span_id
+    assert tool.parent is not None and tool.parent.span_id == phase.context.span_id
+
+
+@pytest.mark.asyncio
+async def test_the_workflow_root_records_the_whole_run() -> None:
+    """§12.3's run-level facts, from a real orchestrated run.
+
+    Fan-out width is BOTH numbers (a narrow plan and a wide plan that mostly died
+    are not the same run), the reservation is recorded next to what the run
+    actually cost, and the stop reason arrives with the unit it counted.
+    """
+    exporter = _capture_spans()
+    events = await _drain_deep_research(
+        settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=1),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    receipts = [
+        event.receipt
+        for event in events
+        if isinstance(event, RunCost) and event.receipt is not None
+    ]
+    assert receipts, "the run never emitted a boundary receipt to settle against"
+    settled = receipts[-1]
+
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.orchestration_mode"] == "deep_research"
+    # Two sub-questions planned, both answered.
+    assert attrs["agentic.workers_planned"] == 2
+    assert attrs["agentic.workers_completed"] == 2
+    # The shipped topology is flat: workers ran, so depth is 1, not 2.
+    assert attrs["agentic.depth"] == 1
+    assert attrs["agentic.retries"] == 0
+    # A clean finish is a PROTOCOL stop and counts nothing — "none" is an answer,
+    # not a gap (doc §3.1).
+    assert attrs["agentic.stop_reason"] == "protocol_stop"
+    assert attrs["agentic.counted_event"] == "none"
+    assert attrs["agentic.run_outcome"] == "completed"
+    # Reserved against actual: the worst case admitted, and the settled truth.
+    assert attrs["agentic.budget.reserved_usd"] == pytest.approx(0.5)
+    assert attrs["agentic.budget.cap_usd"] == pytest.approx(10.0)
+    assert attrs["agentic.budget.actual_usd"] == pytest.approx(
+        settled.cumulative_cost_usd
+    )
+    assert attrs["agentic.budget.actual_usd"] < attrs["agentic.budget.reserved_usd"]
+    # Token classes, separately, because they price separately.
+    assert attrs["gen_ai.usage.input_tokens"] == settled.cumulative_usage.input_tokens
+    assert attrs["gen_ai.usage.output_tokens"] == settled.cumulative_usage.output_tokens
+    assert attrs["gen_ai.usage.input_tokens"] > 0
+    assert attrs["agentic.usage.reasoning_tokens"] == 0
+    assert attrs["agentic.usage.cached_input_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_phase_reports_a_stop_reason_only_when_it_owns_one() -> None:
+    """Each worker's loop ends on its own terms, so its span says how — with the
+    counted event, so an operator reading one phase can tell a bound from a clean
+    finish. A phase with no reason of its own (the planner, the synthesis, a judge
+    sample) leaves the attribute absent rather than inheriting the run's."""
+    exporter = _capture_spans()
+    await _drain_deep_research(
+        settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=1),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    phases = _settled_phases(exporter)
+    for worker in phases["worker"]:
+        assert worker["agentic.stop_reason"] == "protocol_stop"
+        assert worker["agentic.counted_event"] == "none"
+        assert worker["agentic.run_outcome"] == "completed"
+    for role in (PLANNER_ROLE, "aggregator", "verifier"):
+        for attrs in phases[role]:
+            assert "agentic.stop_reason" not in attrs, role
+
+
+@pytest.mark.asyncio
+async def test_a_tripped_run_reports_the_bound_that_stopped_it() -> None:
+    """A run that ended on a bound must say WHICH bound and what it counted — a
+    root reporting only `partial` leaves an operator with nothing to tune."""
+    exporter = _capture_spans()
+    await _drain_deep_research(
+        # One token of headroom: the first worker's usage trips the run.
+        settings=_agentic_settings(RUN_MAX_TOKENS=1),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "token_cap_exceeded"
+    assert attrs["agentic.counted_event"] == "tokens"
+    # A bound firing is a LABELED partial, never a failure (doc §3.1).
+    assert attrs["agentic.run_outcome"] == "partial_limit"
+
+
+@pytest.mark.asyncio
+async def test_a_single_mode_run_reports_no_fan_out() -> None:
+    """Single mode plans no workers and reaches no sub-agent depth, and says so
+    rather than leaving a consumer to infer it from missing attributes."""
+    exporter = _capture_spans()
+    _ = [
+        event
+        async for event in run_orchestrator(
+            make_stream_for=_phase_stream(),
+            settings=_agentic_settings(),
+            mode="single",
+            user_text="a question",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+        )
+    ]
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.orchestration_mode"] == "single"
+    assert attrs["agentic.workers_planned"] == 0
+    assert attrs["agentic.workers_completed"] == 0
+    assert attrs["agentic.depth"] == 0
+    assert attrs["agentic.stop_reason"] == "protocol_stop"
+    # The primary phase carries the same reason: in single mode it IS the run.
+    (primary,) = _settled_phases(exporter)["primary"]
+    assert primary["agentic.stop_reason"] == "protocol_stop"
+    assert primary["agentic.run_outcome"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_multi_sample_verifier_spans_are_distinguishable() -> None:
+    """N judge samples all stream under the one `verifier` id the wire and the
+    ledger use, so without an index N spans read as one judge traced N times.
+
+    The index and a suffixed sample id are span-only: the wire still closes ONE
+    verifier row, and its cost is still the sum of the per-sample prices rather
+    than a re-price of collapsed tokens.
+    """
+    exporter = _capture_spans()
+    events = await _drain_deep_research(
+        settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=2),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    samples = _settled_phases(exporter)["verifier"]
+    assert len(samples) == 2
+    assert sorted(s["agentic.sample_index"] for s in samples) == [0, 1]
+    assert {s["agentic.sample_id"] for s in samples} == {"verifier#0", "verifier#1"}
+    # The wire id is untouched, so a span still joins back to its phase.
+    assert {s["agentic.subagent_id"] for s in samples} == {"verifier"}
+    # Each sample is priced on its own, and the row's cost is their sum.
+    (verifier_done,) = [
+        event
+        for event in events
+        if isinstance(event, SubagentDone) and event.role == "verifier"
+    ]
+    assert verifier_done.cost_usd == pytest.approx(
+        sum(s["agentic.cost_usd"] for s in samples)
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_span_attribute_carries_any_run_content() -> None:
+    """§12.3 keeps content "metadata-only by default"; here it is metadata-only
+    unconditionally. Nothing the run said — the prompt, the plan, a sub-question,
+    the judge's verdict JSON — may appear in any attribute of any span."""
+    exporter = _capture_spans()
+    await _drain_deep_research(
+        settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=2),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    spans = exporter.get_finished_spans()
+    assert spans
+    for span in spans:
+        for key, value in dict(span.attributes or {}).items():
+            assert not any(
+                banned in key for banned in ("content", "text", "prompt", "message")
+            ), f"{span.name}.{key} names content"
+            if not isinstance(value, str):
+                continue
+            for content in RUN_CONTENT:
+                assert content not in value, f"{span.name}.{key} leaked {content!r}"
+
+
+@pytest.mark.asyncio
+async def test_the_run_is_untraced_and_byte_identical_without_otel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OTel-off path: no span is produced, no tally is built, and the stream
+    the handler sees is the same stream event for event.
+
+    A no-op tracer is what an unconfigured process really has, so the run is
+    driven twice — once traced, once against `NoOpTracer` — and the two event
+    lists compared. Single mode because its ordering is deterministic; a fan-out
+    completes in whatever order the event loop picks.
+    """
+    exporter = _capture_spans()
+
+    async def _run() -> list[ProviderEvent]:
+        return [
+            event
+            async for event in run_orchestrator(
+                make_stream_for=_phase_stream(),
+                settings=_agentic_settings(),
+                mode="single",
+                user_text="a question",
+                cost_for_usage=_nano,
+                served_route=BOUND_ROUTE,
+            )
+        ]
+
+    traced = await _run()
+    assert _spans_named(exporter, "invoke_workflow")
+
+    exporter.clear()
+    monkeypatch.setattr(trace, "get_tracer", lambda *_a, **_k: trace.NoOpTracer())
+    untraced = await _run()
+
+    assert not exporter.get_finished_spans()
+    assert untraced == traced
+    # Nothing settled here is kept, so the caller can skip the work entirely.
+    with invoke_workflow_span(mode="single") as workflow:
+        assert isinstance(workflow, WorkflowSettlement)
+        assert workflow.records is False
+
+
+async def _abandon_mid_run(
+    *, mode: str, settings: Settings, **kwargs: Any
+) -> None:
+    """Consume one run inside a task, then cancel the task mid-stream.
+
+    The handler's shape (`_pump` + `asyncio.create_task`, cancelled on Stop or
+    disconnect): the pump is awaiting something else when the cancel lands, so the
+    orchestrator is left SUSPENDED at a yield and the event loop finalizes it
+    later, from a different context than the one that drove it. Anything holding
+    an OpenTelemetry context token across that yield detaches it in the wrong
+    context. The generator reference is dropped and the collector forced so the
+    finalization really happens inside the test rather than at loop teardown.
+    """
+    # Held indirectly so the test can drop its own reference to the abandoned
+    # generator; nothing else finalizes it while a name still points at it.
+    held = [
+        run_orchestrator(
+            make_stream_for=_phase_stream(),
+            settings=settings,
+            mode=mode,  # type: ignore[arg-type]
+            user_text="compare alpha and beta",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+            **kwargs,
+        )
+    ]
+    streaming = asyncio.Event()
+
+    async def _pump() -> None:
+        async for _event in held[0]:
+            streaming.set()
+            # Whatever the real pump is doing when the cancel arrives; the point is
+            # that it is NOT inside `__anext__`.
+            await asyncio.sleep(3600)
+
+    task = asyncio.create_task(_pump())
+    await streaming.wait()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    held.clear()
+    del task
+    for _ in range(4):
+        gc.collect()
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize("mode", ["single", "deep_research"])
+@pytest.mark.parametrize("traced", [True, False], ids=["otel-on", "otel-off"])
+@pytest.mark.asyncio
+async def test_a_cancelled_turn_never_logs_a_context_error(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    traced: bool,
+) -> None:
+    """A stopped or disconnected turn must leave the log clean.
+
+    Holding the run root current across the orchestrator's `yield` attached an
+    OTel context token in the consuming task and detached it from whichever
+    context finalized the abandoned generator, which logs `Failed to detach
+    context` at ERROR out of `opentelemetry.context`. That fires with NO tracer
+    provider registered — the production OTel-off shape — because even the no-op
+    tracer attaches, and Sentry's logging integration turns each one into an event
+    for what this app treats as routine (AR-005). So the root is never made
+    current, and this asserts the consequence rather than the implementation.
+    """
+    exporter = _capture_spans()
+    if not traced:
+        monkeypatch.setattr(trace, "get_tracer", lambda *_a, **_k: trace.NoOpTracer())
+    caplog.set_level(logging.ERROR)
+
+    await _abandon_mid_run(
+        mode=mode,
+        settings=_agentic_settings(),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+
+    offenders = [
+        record
+        for record in caplog.records
+        if record.levelno >= logging.ERROR
+        and record.name.startswith("opentelemetry.")
+    ]
+    assert not offenders, [record.getMessage() for record in offenders]
+    # The run really was traced (or really was not), so neither arm passes by
+    # never opening a root at all.
+    assert bool(_spans_named(exporter, "invoke_workflow")) is traced
+
+
+def test_the_run_root_is_never_the_current_span() -> None:
+    """The mechanism behind the test above, pinned so a later edit cannot quietly
+    reintroduce it: making the root current means attaching an OTel context token,
+    and this scope is held open across the `yield`s of an async generator, which
+    is the one place a token cannot be safely detached."""
+    _capture_spans()
+    with invoke_workflow_span(mode="single") as workflow:
+        assert workflow.records
+        current = trace.get_current_span()
+        assert current is not workflow.span
+        assert current.get_span_context().span_id != workflow.span.context.span_id
+
+
+@pytest.mark.parametrize("mode", ["single", "deep_research"])
+@pytest.mark.asyncio
+async def test_an_abandoned_run_reports_itself_interrupted(mode: str) -> None:
+    """A Stop is the run class an operator most wants to tell apart from a clean
+    finish, so it cannot be the one class that reaches the root as nothing.
+
+    Every phase below the abandoned yield stays suspended and never reaches its
+    own cancel arm, so the reason has to come from the frame that IS unwinding.
+    """
+    exporter = _capture_spans()
+    await _abandon_mid_run(
+        mode=mode,
+        settings=_agentic_settings(),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "user_stopped"
+    assert attrs["agentic.counted_event"] == "human"
+    assert attrs["agentic.run_outcome"] == "interrupted"
+    # A Stop is not a failure: the root closes unerrored (AR-005).
+    assert _workflow_root(exporter).status.status_code is not StatusCode.ERROR
+
+
+def test_the_interrupt_floor_never_outranks_a_real_reason() -> None:
+    """`user_stopped` is a floor, not an override. A run that tripped, breached its
+    cap or parked a human gate before the consumer walked away ended for THAT
+    reason; relabelling it interrupted would hide the bound that fired."""
+    exporter = _capture_spans()
+    with invoke_workflow_span(mode="deep_research") as workflow:
+        workflow.settle_run(stop_reason="token_cap_exceeded")
+        assert workflow.stop_reason_settled
+        workflow.settle_interrupted()
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "token_cap_exceeded"
+    assert attrs["agentic.counted_event"] == "tokens"
+
+    # And the latch answers the same question with tracing off, so the floor
+    # cannot behave one way in production and another in a trace.
+    handle = WorkflowSettlement()
+    assert handle.stop_reason_settled is False
+    handle.settle_run(stop_reason="wall_clock_exceeded")
+    assert handle.stop_reason_settled is True
+
+
+@pytest.mark.asyncio
+async def test_a_raising_run_closes_its_root_as_errored() -> None:
+    """The root no longer rides on `start_as_current_span`, so the error status it
+    used to get for free is now recorded by hand — and still recorded."""
+    exporter = _capture_spans()
+    with pytest.raises(AppError):
+        async for _event in run_orchestrator(
+            make_stream_for=_stream_then_raise(_UPSTREAM_DOWN),
+            settings=_agentic_settings(),
+            mode="single",
+            user_text="a question",
+            cost_for_usage=_nano,
+            served_route=BOUND_ROUTE,
+        ):
+            pass
+    root = _workflow_root(exporter)
+    assert root.status.status_code is StatusCode.ERROR
+    assert dict(root.attributes or {})["agentic.stop_reason"] == "provider_error"
+    assert dict(root.attributes or {})["agentic.run_outcome"] == "failed"
+
+
+def _final_run_cost(events: list[ProviderEvent]) -> RunCost:
+    """The run's terminal receipt — where the wire states its own degrade flags."""
+    (final,) = [
+        event
+        for event in events
+        if isinstance(event, RunCost) and event.phase == "final"
+    ]
+    return final
+
+
+def _tripped_log_reason(captured: list[dict[str, Any]]) -> str:
+    """The stop reason the tripwire WROTE for this run (`bounds.py`'s one line)."""
+    tripped = [
+        event
+        for event in captured
+        if str(event.get("event", "")).endswith(".tripped")
+    ]
+    assert tripped, "no trip was logged, so this run cannot test the ranking"
+    return str(tripped[0]["stop_reason"])
+
+
+@pytest.mark.asyncio
+async def test_a_trip_outranks_a_cap_degrade_that_did_not_end_the_run() -> None:
+    """Both degrade channels live: the root must report the bound, not the cap.
+
+    `budget_halted` is not the claim "the cap ended the run" — the verifier gate
+    raises it for a judge that could not be funded while the run goes on to
+    synthesize normally. Ranking that above a latched trip pointed an operator at
+    the USD cap for a run the token bound stopped, and disagreed with the
+    `agentic.tripped` line the tripwire had already written.
+    """
+    exporter = _capture_spans()
+    with structlog.testing.capture_logs() as captured:
+        events = await _drain_deep_research(
+            settings=_agentic_settings(
+                provider_backend="fake", AGENTIC_VERIFIER=True, RUN_MAX_TOKENS=1
+            ),
+            # Priced only for the judge, so the funding gate refuses the judge while
+            # the rest of the run is affordable.
+            verifier_cost_for_usage=lambda _usage: 1_000_000.0,
+        )
+    # The wire confirms the cap degrade really is live alongside the trip.
+    assert _final_run_cost(events).budget_halted is True
+
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "token_cap_exceeded"
+    assert attrs["agentic.counted_event"] == "tokens"
+    assert attrs["agentic.run_outcome"] == "partial_limit"
+    # One run, one answer: the span and the log agree on what stopped it.
+    assert attrs["agentic.stop_reason"] == _tripped_log_reason(captured)
+
+
+@pytest.mark.asyncio
+async def test_a_trip_outranks_a_cap_breach_that_killed_the_fan_out() -> None:
+    """Even when the cap breach is REAL, the latched trip is what the run reported.
+
+    The tripwire is the run's single decider and has already written its reason to
+    the log; a root naming the other channel for the same run leaves two
+    observability surfaces disagreeing, with no way to tell which knob to turn.
+    """
+    exporter = _capture_spans()
+    with structlog.testing.capture_logs() as captured:
+        events = await _drain_deep_research(
+            settings=_agentic_settings(
+                # Room for the planner, none for a worker: the fan-out really
+                # breaches the cap, and the first worker's tokens also trip.
+                AGENTIC_RUN_BUDGET_USD=1e-8,
+                RUN_MAX_TOKENS=1,
+            ),
+        )
+    assert _final_run_cost(events).budget_halted is True
+
+    attrs = _root_attrs(exporter)
+    assert attrs["agentic.stop_reason"] == "token_cap_exceeded"
+    assert attrs["agentic.stop_reason"] == _tripped_log_reason(captured)
+
+
+@pytest.mark.asyncio
+async def test_a_single_sample_verifier_carries_no_sample_index() -> None:
+    """An index over one sample distinguishes it from nothing, so N=1 emits none —
+    the attribute's presence is itself the signal that samples were plural."""
+    exporter = _capture_spans()
+    await _drain_deep_research(
+        settings=_agentic_settings(AGENTIC_VERIFIER=True, AGENTIC_VERIFIER_N=1),
+        estimate_cost=lambda workers: 0.25 * workers,
+    )
+    (sample,) = _settled_phases(exporter)["verifier"]
+    assert "agentic.sample_index" not in sample
+    assert "agentic.sample_id" not in sample
+
+
+def test_a_workflow_settlement_over_no_span_needs_no_guard() -> None:
+    """The shape when OpenTelemetry isn't importable at all: every run fact can
+    be handed to a handle holding nothing, so no call site grows an `if`."""
+    handle = WorkflowSettlement()
+    assert handle.records is False
+    handle.settle_run(
+        mode="deep_research",
+        workers_planned=3,
+        workers_completed=2,
+        depth=1,
+        retries=1,
+        stop_reason="wall_clock_exceeded",
+        budget_reserved_usd=1.0,
+        budget_cap_usd=2.0,
+        budget_actual_usd=0.5,
+        usage=UsageTotals(input_tokens=1),
+    )

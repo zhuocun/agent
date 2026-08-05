@@ -1085,7 +1085,7 @@ async def test_b12_fanout_emits_aggregator_merged_sources() -> None:
 
 
 def test_b23_fanout_queue_bound_is_documented() -> None:
-    from app.agentic.orchestrator import _FANOUT_QUEUE_MAXSIZE
+    from app.agentic.fanout import _FANOUT_QUEUE_MAXSIZE
 
     assert _FANOUT_QUEUE_MAXSIZE == 256
 
@@ -1094,7 +1094,7 @@ def test_b23_queue_put_nowait_drop_oldest() -> None:
     """B23: teardown put drops oldest unprotected events instead of blocking."""
     import asyncio
 
-    from app.agentic.orchestrator import _queue_put_nowait_drop_oldest
+    from app.agentic.fanout import _queue_put_nowait_drop_oldest
 
     queue: asyncio.Queue[object] = asyncio.Queue(maxsize=2)
     queue.put_nowait(1)
@@ -1109,7 +1109,7 @@ def test_b23_queue_put_never_drops_sentinels() -> None:
     """B23: a queued worker sentinel must survive a full-queue teardown put."""
     import asyncio
 
-    from app.agentic.orchestrator import (
+    from app.agentic.fanout import (
         _queue_put_nowait_drop_oldest,
         _WorkerSentinel,
     )

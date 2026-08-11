@@ -36,7 +36,7 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 
 ### 4. Narrating instead of reporting — streaming the work rather than its milestones
 
-- Emit an update only when it advances the reader's understanding: real progress, a milestone, an important finding, or something that informs a decision they face.
+- Emit an update between tool calls only when it advances the reader's understanding: real progress, a milestone, an important finding, or something that informs a decision they face.
 - Do not stream routine steps, tool calls, or blow-by-blow commentary. That chatter buries the main thread and exhausts the reader.
 - Keep the spine of the work legible: someone reading only your updates should be able to track where you are and what you have learned, without wading through working detail.
 

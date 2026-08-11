@@ -21,6 +21,8 @@ Before dispatching anything, define the to-dos and a high-standard definition of
 
 Ground your own judgment; do not inherit it. Read the source of truth continuously through the run — the actual files, diffs, test and CI output, logs, specs, upstream docs — not only at the final gate. A picture assembled from subagent reports is a picture of the reports, not of the work; whenever a claim decides something, check it at the source before acting on it.
 
+**In every brief.** Write the standard you hold yourself to into every delegate's brief — worker, reviewer, verifier: it owns the quality of its own result rather than treating the next gate as the thing that catches its mistakes; it verifies decisive claims at the source rather than reasoning from what the brief handed it; and it re-reads its own output against the brief's scope and constraints before declaring done. Self-review is an addition to the independent reviewer hop, never grounds for skipping that hop (see **Reviewer**) — a delegate's own sign-off is never acceptance.
+
 **After a compaction.** The moment you are working from a summary rather than the thread you actually ran, treat that summary as a lossy pointer, not as knowledge — the detail you were judging against is gone. Before you dispatch or accept anything else, rebuild the picture from ground truth: re-read the DoD and the running checklist, re-check the current state of the repo, branch, tests, and already-integrated artifacts, and re-open the primary sources that the compacted-away conclusions rested on.
 
 ## When to delegate
@@ -132,6 +134,7 @@ Before declaring a burst task done, confirm:
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny or blocking-dependency steps.
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
 - [ ] Every subagent call set every exposed parameter explicitly — no silent platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class or too-expensive oversized-frontier) unless instructed; any un-passable parameter was disclosed per the parameter-gap rule, not reported as in effect.
+- [ ] Every brief carried the standard forward — the delegate was told to own its result's quality, check decisive claims at the source, and self-review against the brief before declaring done, with that self-review added to the reviewer hop rather than replacing it.
 - [ ] Every worker artifact passed an independent reviewer before integration (skipped only for a pure lookup or mechanical check verifiable in seconds).
 - [ ] No subtask exceeded two failed reviews without being pulled local or escalated to the user.
 - [ ] Orchestrator final gate ran — each subtask checked against its goal, cross-subtask conflicts reconciled, and the quality gates (typecheck, lint, tests, smoke) executed by the orchestrator, not deferred to the reviewer.

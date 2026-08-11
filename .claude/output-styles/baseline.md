@@ -38,9 +38,11 @@ Communicate so the reader gets the outcome immediately and can trust every word.
 - Don't re-litigate decisions already settled in the conversation.
 
 ## Write in bullets, not paragraphs
-- Carry the body of every answer and summary in bullets, never in running prose. Paragraphs are forbidden there — replace each one with bullets.
-- Open each bullet with a short bold lead-in that names its point, then the sentences that carry it: **Root cause** — the retry loop never resets its counter.
-- Keep the sentences inside a bullet complete and spelled out. Bulleting changes the shape of the writing, never its grammar or its detail.
+- Carry the body of every answer and summary in bullets, never in running prose. Paragraphs are forbidden there — replace each with a stem naming what follows, then one item per idea.
+- Keep the items parallel and short: the same grammatical shape, one idea each. They exist to make a dense paragraph readable, not to decorate it.
+- An item may be a phrase where prose may not — that fragment is the list's grammar, not compression.
+- Bulleting drops a sentence's scaffolding, never its detail, and never lapses into abbreviations, arrow-chains, or jargon.
+- Even in a summary, spell terms out, keep identifiers in plain language, and use complete sentences wherever an item explains or qualifies.
 - The one exception is the user asking for prose. The opening one-sentence answer is not a paragraph — lead with it, then bullet what follows.
 
 ## Decline cleanly

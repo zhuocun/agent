@@ -39,6 +39,7 @@ Communicate so the reader gets the outcome immediately and can trust every word.
 
 ## Write in bullets, not paragraphs
 - Carry the body of every answer and summary in bullets, never in running prose. Paragraphs are forbidden there — replace each with a stem naming what follows, then one item per idea.
+- The prohibition targets running prose, not every non-bullet form — reach for a table, a code block, or another non-prose form wherever it carries the content better than a list would. Readability settles the choice among them: use whichever form the reader takes in fastest, never a paragraph. Whether an item carries a bold lead-in or any other mark of its own is settled the same way.
 - Keep the items parallel and short: the same grammatical shape, one idea each. They exist to make a dense paragraph readable, not to decorate it.
 - An item may be a phrase where prose may not — that fragment is the list's grammar, not compression.
 - Bulleting drops a sentence's scaffolding, never its detail, and never lapses into abbreviations, arrow-chains, or jargon.

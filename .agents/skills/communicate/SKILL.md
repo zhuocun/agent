@@ -57,6 +57,7 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 ### 7. Writing prose where bullets belong — running paragraphs in the body of an answer
 
 - Carry the body of every answer and every summary in bullets. Replace each paragraph with a short stem that names what follows, then one item per idea.
+- The prohibition is on running prose, not on every form that is not a bullet. Use a table, a code block, or another non-prose form wherever it carries the content better than a list would — a comparison across several dimensions lands faster as a table than as nested items. Readability settles the choice among those forms; a paragraph is never one of them. Whether an item carries a bold lead-in or any other mark of its own is settled the same way.
 - Keep items parallel in grammatical form and short in length. They exist to make a dense paragraph readable, not to decorate it.
 - A list item may be a phrase where a sentence in prose may not. That licence is the list's grammar and nothing more: it never authorizes abbreviations, arrow chains, or jargon, and bulleting drops a sentence's scaffolding, never its detail.
 - Spell terms out and keep identifiers in plain language, summaries included, and use complete sentences wherever an item explains or qualifies.
@@ -85,7 +86,7 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 Before sending, confirm:
 
 - [ ] The first sentence is the answer, and the message's length matches the size of the question.
-- [ ] The body is in bullets — a stem, then one idea per item, items parallel and short — with prose only where the user asked for it.
+- [ ] The body is in bullets — a stem, then one idea per item, items parallel and short — or in a table or code block where that carries it better, with prose only where the user asked for it.
 - [ ] No compression artifacts survive: no invented abbreviations, arrow chains, or coined shorthand, and every file, command, or flag named gets a plain-language clause.
 - [ ] Every "done" points at a result that proves it; anything unconfirmed is labeled unverified; no status, number, citation, or result is invented.
 - [ ] The message does not end on a promise — the work is carried out and reported, or the blocker is named.

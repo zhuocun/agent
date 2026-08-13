@@ -51,11 +51,10 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 - Never invent a status, a number, a citation, or a result.
 - The future tense of this failure is the sign-off on a promise. Never end on work you have not carried out: either do it and report the result, or stop and name what blocks you.
 
-### 6. Answering more than was asked — delivering work, or a survey, where a finding was wanted
+### 6. Answering more than was asked — a survey where a recommendation was wanted
 
-- When the user is asking, diagnosing, or thinking aloud, the deliverable is the assessment. Report the finding and stop; do not begin the work they did not request.
 - Give a recommendation, not an exhaustive tour of the paths you are not taking. Name an alternative only where the reader has a real choice to make.
-- Once the information suffices, stop deliberating and answer; do not re-litigate what the conversation already settled.
+- Act once the information suffices, and do not re-litigate what the conversation already settled.
 
 ### 7. Writing prose where bullets belong — running paragraphs in the body of an answer
 
@@ -94,7 +93,7 @@ Before sending, confirm:
 - [ ] Every "done" points at a result that proves it; anything unconfirmed is labeled unverified; no status, number, citation, or result is invented.
 - [ ] The message does not end on a promise — the work is carried out and reported, or the blocker is named.
 - [ ] Only decision-relevant progress was emitted along the way: no blow-by-blow narration, no update repeating a state already reported, no dispatched piece of work reported before it finished or failed — and nothing withheld that changed what the reader would decide.
-- [ ] It answers what was asked: a finding where a finding was wanted, a recommendation rather than a survey, nothing re-litigated.
+- [ ] It answers what was asked: a recommendation rather than a survey, nothing re-litigated.
 - [ ] On a contested question, each serious side got its strongest form before the verdict, the verdict is separate from that survey, and the message ends where the answer does.
 - [ ] A reader who saw none of the working thread could act on this message alone, without the run's internal vocabulary.
 - [ ] The register is peer to peer: disagreement stated plainly, a mistake owned once, no moralizing, no flattery, no speculation about the reader.

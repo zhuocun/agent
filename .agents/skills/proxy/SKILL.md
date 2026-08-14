@@ -219,8 +219,7 @@ In the summary itself, drop the working shorthand. Write complete sentences.
 Spell out terms. Don't use arrow chains, hyphen-stacked compounds, or labels you
 made up mid-run. When you mention files, commits, flags, or other identifiers,
 give each one its own plain-language clause. Open with the outcome: one sentence
-on what happened or what was found. Then the supporting detail. If you have to
-choose between short and clear, choose clear.
+on what happened or what was found. Then the supporting detail.
 
 ## Self-check
 

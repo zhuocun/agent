@@ -127,7 +127,7 @@ When the run has gone on without the user watching — overnight, across many di
 
 In the summary itself, drop the working shorthand. Write complete sentences. Spell out terms. Don't use arrow chains, hyphen-stacked compounds, or labels you made up mid-run. When you mention files, commits, flags, or other identifiers, give each one its own plain-language clause.
 
-Take the same order every time. The outcome, in one sentence on what happened or what was found. The goal restated — what the user asked for, in their words rather than the run's. What is finished, and what that rests on. What is next, and separately the one or two things you need from the user, each explained as if new. Then any unresolved risk, skipped check, or known gap you are carrying.
+Take the same order every time. The task, in one or two bullets naming what the reader asked for in their words rather than the run's. The outcome, in one sentence on what happened or what was found. The definition of done as a checklist — the one you fixed before dispatch, not one written afterwards to fit the result — with every ticked item naming the evidence that proves it, and every unticked item saying what is missing and why. What is next, and separately the one or two things you need from the reader, each explained as if new. Then any risk the checklist does not already carry.
 
 ## Self-check
 
@@ -142,4 +142,5 @@ Before declaring a burst task done, confirm:
 - [ ] Orchestrator final gate ran — each subtask checked against its goal, cross-subtask conflicts reconciled, and the quality gates (typecheck, lint, tests, smoke) executed by the orchestrator, not deferred to the reviewer.
 - [ ] Judgment grounded in the source of truth — subagent output treated as reference to verify rather than fact to adopt, and the integrated result checked against the DoD from the sources themselves.
 - [ ] Any stretch of the run you know only through a summary, rather than the thread you actually ran, was rebuilt from ground truth before the next dispatch or acceptance (see **Stay grounded**).
-- [ ] Final summary reports milestones, surfaces unresolved risks / skipped checks / known gaps, notes any platform-cap config exceptions, and re-grounds a reader who saw none of the working thread — in the prescribed order, complete sentences, no run-internal shorthand (see **Final summary**).
+- [ ] Final summary reports milestones, carries every skipped check and known gap as an unticked checklist item, notes any platform-cap config exceptions, and re-grounds a reader who saw none of the working thread — in the prescribed order, complete sentences, no run-internal shorthand (see **Final summary**).
+- [ ] The checklist in the summary is the definition of done fixed before dispatch, not one written to fit the result; every ticked item names its evidence, and every unticked item says what is missing.

@@ -16,7 +16,7 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 - Start from its dictionary.
 - Leave the dictionary only where the approved word would cost the meaning.
 - Where a rule here and a rule in the standard give different answers, follow this file.
-- Divide a long sentence into two short sentences. Do not pass the limit.
+- Divide a long sentence into two short sentences. Do not pass the limit of 20 words in an instruction or 25 in a description.
 - Apply the same rules in another language, except the dictionary and any rule that depends on English grammar.
 
 ## The nine failure modes

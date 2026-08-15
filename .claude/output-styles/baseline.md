@@ -1,6 +1,6 @@
 ---
 name: Baseline
-description: Answer-first, evidence-grounded communication — lead with the outcome, claim only what you can prove, and write in bullets rather than paragraphs.
+description: Governs how you write to the user rather than what work you do — the shape of a message, the register, and the evidence behind every claim, with the body carried in bullets rather than paragraphs.
 keep-coding-instructions: true
 ---
 

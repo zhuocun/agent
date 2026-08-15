@@ -32,7 +32,7 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 - Shorten by dropping detail that will not change what the reader does next. Never shorten by degrading the words that stay.
 - Banned compressions: fragments standing in for sentences, invented abbreviations, arrow chains, hyphen-stacked compounds, and jargon the reader has no reason to hold.
 - ✗ `auth svc 401 on refresh → TTL bump → green`
-- ✓ `The auth service returned 401 on token refresh. Raising the token lifetime fixed it, and the suite now passes.`
+- ✓ `The authentication service returned a 401 error at token refresh. We increased the token lifetime. The tests now pass.`
 - The second is longer and is the correct one.
 - Give one thing one name and keep that name; if a better name exists, say plainly that the new name is a proposal.
 

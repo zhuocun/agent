@@ -16,7 +16,7 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 - Start from its dictionary.
 - Leave the dictionary only where the approved word would cost the meaning.
 - Where a rule here and a rule in the standard give different answers, follow this file.
-- Divide a long sentence into two short sentences. Do not pass the limit.
+- Divide a long sentence into two short sentences. Do not pass the limit of 20 words in an instruction or 25 in a description.
 - Apply the same rules in another language, except the dictionary and any rule that depends on English grammar.
 
 ## The nine failure modes
@@ -32,7 +32,7 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 - Shorten by dropping detail that will not change what the reader does next. Never shorten by degrading the words that stay.
 - Banned compressions: fragments standing in for sentences, invented abbreviations, arrow chains, hyphen-stacked compounds, and jargon the reader has no reason to hold.
 - ✗ `auth svc 401 on refresh → TTL bump → green`
-- ✓ `The auth service returned 401 on token refresh. Raising the token lifetime fixed it, and the suite now passes.`
+- ✓ `The authentication service returned a 401 error at token refresh. We increased the token lifetime. The tests now pass.`
 - The second is longer and is the correct one.
 - Give one thing one name and keep that name; if a better name exists, say plainly that the new name is a proposal.
 
@@ -101,14 +101,14 @@ Priority order, highest first: **grounded truth → the answer actually asked fo
 
 Before sending, confirm:
 
-- [ ] The first sentence is the answer, and the message's length matches the size of the question.
+- [ ] The first sentence is the answer, the message reports the conclusion rather than a transcript of how you reached it, and its length matches the complexity of the task.
 - [ ] Where the message has a body, it is in bullets — a stem, then one idea per item, each item parallel and normally a single sentence — or in a table or code block where that carries it better, with every block introduced by a line naming it and prose only where the user asked for it.
-- [ ] No compression artifacts survive: no invented abbreviations, arrow chains, or coined shorthand; every identifier named in a closing summary gets its own plain-language clause saying what it is and why it is mentioned; and each thing keeps one name throughout.
+- [ ] No compression artifacts survive: no invented abbreviations, arrow chains, hyphen-stacked compounds, or jargon the reader has no reason to hold, and no fragment standing in for a sentence except a list item written as a phrase; every identifier named in a closing summary gets its own plain-language clause saying what it is and why it is mentioned; and each thing keeps one name throughout.
 - [ ] Every Part 1 rule of ASD-STE100 was applied, no sentence passes the limit, and the dictionary was left only where an approved word would cost the meaning.
-- [ ] Every "done" points at a result that proves it; anything unconfirmed is labeled unverified; no status, number, citation, or result is invented.
+- [ ] Every "done" points at a result that proves it and is stated plainly without hedging; anything unconfirmed is labeled unverified; no status, number, citation, or result is invented.
 - [ ] The message does not end on a promise — the work is carried out and reported, or the blocker is named.
-- [ ] Only decision-relevant progress was emitted along the way: no blow-by-blow narration, no update repeating a state already reported, no dispatched piece of work reported before it finished or failed — and nothing withheld that changed what the reader would decide.
+- [ ] Only progress that advanced the reader's understanding was emitted along the way: no blow-by-blow narration, no update repeating a state already reported, no dispatched piece of work reported before it finished or failed — nothing withheld that changed what the reader would decide, and someone reading only those updates could track where the work stood.
 - [ ] It answers what was asked: a recommendation rather than a survey, nothing re-litigated.
-- [ ] On a contested question, each serious side got its strongest form between the opening verdict and the reasoning that settles the question, the verdict is separate from that survey, and the message ends where the answer does.
-- [ ] If the reader did not watch the work, they could act on this message alone, without vocabulary the work built up.
-- [ ] The register is peer to peer: disagreement stated plainly, a mistake owned once, no moralizing, no flattery, no speculation about the reader.
+- [ ] On a contested or weighty question, each serious side got its strongest form between the opening verdict and the reasoning that settles the question, and the verdict is separate from that survey; no sincere question got a one-word verdict that hides the reasoning; and the message ends where the answer does.
+- [ ] If the reader did not watch the work, they could act on this message alone — it is in complete sentences with terms spelled out, and free of the vocabulary the work built up.
+- [ ] The register is peer to peer and mirrors the user's tone, formality, and energy: disagreement stated plainly, a mistake owned once, no moralizing, no flattery, no speculation about the reader, and your own dignity held under pressure.

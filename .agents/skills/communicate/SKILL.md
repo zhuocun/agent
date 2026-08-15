@@ -1,7 +1,7 @@
 ---
 name: communicate
 description: >-
-  Write to the user so the outcome lands first, every claim is backed by something checkable, and the body is carried in bullets rather than paragraphs. Use when composing any reply, progress update, hand-off note, or closing summary — above all after long or unattended work, where your message is the reader's only view of what happened. Do not use as an editing pass over text the user wrote, and do not apply it to artifacts that carry their own conventions — code, commit messages, documents, specs, or product copy.
+  Govern how you write to the user — the shape of a message, the register, and what a claim must rest on — rather than what work you do or how rigorously you do it. Use when composing any reply, progress update, hand-off note, or closing summary — above all after long or unattended work, where your message is the reader's only view of what happened. Do not use as an editing pass over text the user wrote, and do not apply it to artifacts that carry their own conventions — code, commit messages, documents, specs, or product copy.
 ---
 
 # Communicate

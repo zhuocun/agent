@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,8 @@ from app.schemas.analytics import (
     analytics_property_key_is_blocked,
     analytics_value_looks_sensitive,
 )
+
+_log = structlog.get_logger(__name__)
 
 _MAX_PROPERTY_KEYS = 24
 _MAX_PROPERTY_KEY_LENGTH = 80
@@ -96,6 +99,11 @@ async def record_once_per_user(
             db.add(row)
             await db.flush()
     except IntegrityError:
+        _log.debug(
+            "analytics.duplicate_event",
+            user_id=str(user_id),
+            event_type=event_type,
+        )
         return None
     return row
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +38,8 @@ from app.schemas.memory import (
     MemoryFactCreateRequest,
     MemoryFactUpdateRequest,
 )
+
+_log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/account/memory", tags=["account"])
 
@@ -88,6 +91,10 @@ async def add_memory(
         try:
             source_conversation_id = UUID(body.source_conversation_id)
         except ValueError:
+            _log.warning(
+                "memory.invalid_source_conversation_id",
+                raw_value=body.source_conversation_id,
+            )
             source_conversation_id = None
     row = await memory_repo.add(
         db,

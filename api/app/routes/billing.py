@@ -12,6 +12,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import httpx
+import structlog
 from fastapi import APIRouter, Depends, Header, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +28,8 @@ from app.schemas.billing import (
     BillingSessionResponse,
     BillingWebhookResponse,
 )
+
+_log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 
@@ -345,6 +348,7 @@ def _timestamp_to_datetime(value: Any) -> datetime | None:
         try:
             return datetime.fromtimestamp(value, tz=UTC)
         except (OverflowError, OSError, ValueError):
+            _log.warning("billing.timestamp_invalid", value=repr(value))
             return None
     return None
 
@@ -358,6 +362,7 @@ def _metadata_user_id(metadata: Any) -> UUID | None:
     try:
         return UUID(raw)
     except ValueError:
+        _log.warning("billing.metadata_user_id_invalid", raw_value=raw)
         return None
 
 
@@ -365,6 +370,7 @@ def _credit_amount_usd(raw: Any, *, fallback: float) -> float | None:
     try:
         amount = float(raw) if raw is not None else fallback
     except (TypeError, ValueError):
+        _log.warning("billing.credit_amount_invalid", raw_value=repr(raw), fallback=fallback)
         amount = fallback
     if amount <= 0:
         amount = fallback

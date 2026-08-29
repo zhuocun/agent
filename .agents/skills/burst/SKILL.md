@@ -38,7 +38,7 @@ When delegation is allowed, **subagents are the default executor**. Treat stayin
 
 Stay local only for genuinely tiny or tightly coupled work, and for the immediate blocking step whose result the next local action depends on.
 
-Prefer one subagent per distinct subtask. **Maximize concurrency: run independent work in parallel rather than serializing it.** Bias toward spawning earlier rather than waiting for local exploration to finish, and launch concurrent subagents as early as dependencies allow — never hold back a strand that does not depend on one still in flight. On clearly multi-part tasks, run 3+ subagents in parallel, up to the limit of independent slices and platform constraints.
+Prefer one subagent per distinct subtask. **Maximize concurrency: run independent work in parallel rather than serializing it.** Bias toward spawning earlier rather than waiting for local exploration to finish, and launch concurrent subagents as early as dependencies allow — never hold back a strand that does not depend on one still in flight. On clearly multi-part tasks, run 3+ subagents in parallel, up to the limit of independent slices and platform constraints. Never serialize independent writers merely because they share one working tree — that is concurrency you gave up, not a limit you found. Where the shared environment is what caps parallelism, give each writing strand its own `git worktree` and record where each one is. A worktree holds tracked content only — dependencies and other ignored files do not come across — so isolate where that setup costs less than the parallelism it buys, and not for a strand that only reads.
 
 ## Cursor subagent source
 

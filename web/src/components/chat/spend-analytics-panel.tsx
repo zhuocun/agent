@@ -120,7 +120,7 @@ export function SpendAnalyticsPanel({
       </div>
 
       <div
-        className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5"
+        className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
         role="group"
         aria-label="Spend range"
       >
@@ -134,7 +134,7 @@ export function SpendAnalyticsPanel({
               onClick={() => setDays(option.days)}
               data-testid={`spend-range-${option.days}`}
               className={cn(
-                "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
+                "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
                 selected
                   ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground",

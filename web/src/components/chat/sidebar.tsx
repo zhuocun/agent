@@ -803,7 +803,7 @@ function ConversationRow({
                         onSetRetention(conversation.id, option.value)
                       }
                       className={cn(
-                        "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                        "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)]",
                         index > 0 && "border-t border-border/60",
                       )}
                     >
@@ -847,7 +847,7 @@ function ConversationRow({
                             onAssignProject(conversation.id, value)
                           }
                           className={cn(
-                            "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                            "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)]",
                             index > 0 && "border-t border-border/60",
                           )}
                         >
@@ -897,7 +897,7 @@ function ConversationRow({
                           onAssignTags(conversation.id, next);
                         }}
                         className={cn(
-                          "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04]",
+                          "flex min-h-11 w-full items-center gap-2 px-3.5 py-3 text-left ui-list-row outline-none transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)]",
                           index > 0 && "border-t border-border/60",
                         )}
                         data-testid="sidebar-conversation-tag-option"
@@ -1835,7 +1835,7 @@ export function Sidebar({
                       aria-expanded={collectionsOpen}
                       aria-controls="sidebar-collections-panel"
                       data-testid="sidebar-collections-toggle"
-                      className="flex min-h-9 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left ui-eyebrow font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+                      className="flex min-h-9 [@media(hover:none)]:min-h-11 min-w-0 flex-1 items-center gap-1.5 rounded-lg px-1 py-1 text-left ui-eyebrow font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
                     >
                       {collectionsOpen ? (
                         <ChevronDown className="size-3.5 shrink-0" aria-hidden />

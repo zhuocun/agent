@@ -126,7 +126,7 @@ function WebSearchRunRow({ run }: { run: ToolRun }) {
     case "failed":
       icon = <Search aria-hidden className="mt-0.5 size-3.5 shrink-0" />;
       errorLine = (
-        <p className="mt-0.5 text-destructive/80">
+        <p className="mt-0.5 text-destructive-text">
           {run.result?.error ?? "Search failed"}
         </p>
       );

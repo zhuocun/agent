@@ -164,9 +164,9 @@ export function UsageMeter({ usage }: UsageMeterProps) {
       className={cn(
         "inline-flex min-w-0 items-center gap-2 ui-caption",
         isCritical
-          ? "text-destructive"
+          ? "text-destructive-text"
           : isWarning
-            ? "text-warning"
+            ? "text-warning-text"
             : "text-muted-foreground",
       )}
       title={presentation.accessibleLabel}

@@ -2,9 +2,8 @@
 //
 // Every surface that renders a dollar amount imports from here — no local
 // copies, no inline `$${n.toFixed(...)}`. Two grammars remain:
-// usage-meter (`formatUsdMeter`), settings/analytics ledger
-// (`formatUsdCurrency` / `formatUsdCurrencyOrNa`) and model-directory list
-// prices (`formatUsdPerMillionTokens`).
+// usage-meter (`formatUsdMeter`) and settings/analytics ledger
+// (`formatUsdCurrency` / `formatUsdCurrencyOrNa`).
 
 /** Usage-meter spend remaining: 4 decimals below $1, else 2. */
 export function formatUsdMeter(amount: number): string {
@@ -18,16 +17,6 @@ export function formatUsdCurrency(amount: number): string {
     currency: "USD",
     minimumFractionDigits: 2,
     maximumFractionDigits: 6,
-  }).format(amount);
-}
-
-/** Model-directory list prices, quoted per million tokens. */
-export function formatUsdPerMillionTokens(amount: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 3,
   }).format(amount);
 }
 

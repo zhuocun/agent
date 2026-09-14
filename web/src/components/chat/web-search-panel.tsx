@@ -114,7 +114,7 @@ function WebSearchRunRow({ run }: { run: ToolRun }) {
       icon = (
         <ShieldQuestion
           aria-hidden
-          className="mt-0.5 size-3.5 shrink-0 text-warning"
+          className="mt-0.5 size-3.5 shrink-0 text-warning-text"
         />
       );
       statusSuffix = <span> · awaiting approval</span>;

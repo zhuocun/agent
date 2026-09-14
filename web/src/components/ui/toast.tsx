@@ -120,7 +120,7 @@ const SEVERITY_LABEL: Record<ToastSeverity, string> = {
 const SEVERITY_TONE: Record<ToastSeverity, string> = {
   info: "text-foreground [&_[data-toast-glyph]]:text-muted-foreground",
   warning:
-    "text-foreground [&_[data-toast-glyph]]:text-warning before:absolute before:inset-y-3 before:left-0 before:w-[2px] before:rounded-r-full before:bg-warning/70",
+    "text-foreground [&_[data-toast-glyph]]:text-warning-text before:absolute before:inset-y-3 before:left-0 before:w-[2px] before:rounded-r-full before:bg-warning/70",
   error:
     "text-foreground [&_[data-toast-glyph]]:text-destructive before:absolute before:inset-y-3 before:left-0 before:w-[2px] before:rounded-r-full before:bg-destructive/70",
   success:
@@ -192,7 +192,7 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
                     action.onClick();
                     dismiss(toast.id);
                   }}
-                  className="rounded-full ui-body font-medium text-foreground underline-offset-4 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+                  className="inline-flex items-center rounded-full ui-body font-medium text-foreground underline-offset-4 [@media(hover:none)]:-mx-3 [@media(hover:none)]:min-h-11 [@media(hover:none)]:px-3 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                 >
                   {action.label}
                 </button>

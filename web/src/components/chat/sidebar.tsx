@@ -1501,7 +1501,7 @@ export function Sidebar({
 
   return (
     <nav
-      aria-label="Sidebar"
+      aria-label="Conversation history"
       className={cn(
         "flex h-full flex-col bg-sidebar text-sidebar-foreground",
         className
@@ -2050,7 +2050,7 @@ export function Sidebar({
                         return (
                           <div
                             key={tag.id}
-                            className="group/tag flex items-center gap-1 rounded-lg px-1"
+                            className="group/tag flex items-center gap-1 rounded-lg px-1 [@media(hover:none)]:gap-2"
                             data-testid="sidebar-tag"
                           >
                             <button
@@ -2063,7 +2063,7 @@ export function Sidebar({
                               aria-pressed={isActiveFilter}
                               data-testid="sidebar-tag-filter"
                               className={cn(
-                                "flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left ui-list-row outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]",
+                                "flex min-h-9 [@media(hover:none)]:min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left ui-list-row outline-none transition-colors hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)]",
                                 isActiveFilter
                                   ? "text-foreground"
                                   : "text-sidebar-foreground",
@@ -2187,7 +2187,7 @@ export function Sidebar({
                         onClick={() => setArchivedOpen((v) => !v)}
                         aria-expanded={archivedOpen}
                         data-testid="sidebar-archived-toggle"
-                        className="flex w-full items-center gap-1 rounded-lg px-2 pb-2 pt-1 text-left ui-eyebrow font-semibold text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
+                        className="flex w-full items-center gap-1 rounded-lg px-2 pb-2 pt-1 text-left ui-eyebrow font-semibold text-muted-foreground outline-none transition-colors [@media(hover:none)]:min-h-11 hover:text-foreground focus-visible:shadow-[var(--focus-ring)]"
                       >
                         {archivedOpen ? (
                           <ChevronDown className="size-3.5" aria-hidden />
@@ -2372,7 +2372,7 @@ export function Sidebar({
               }
             }}
             // text-base on mobile keeps iOS Safari from auto-zooming on focus.
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
           <DialogFooter>
             <Button
@@ -2468,7 +2468,7 @@ export function Sidebar({
               }
             }}
             // text-base on mobile keeps iOS Safari from auto-zooming on focus.
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
           <DialogFooter>
             <Button

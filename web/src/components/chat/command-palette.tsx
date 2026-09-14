@@ -741,7 +741,7 @@ export function CommandPalette({
                 </div>
 
                 {filterError ? (
-                  <p role="alert" className="ui-body text-destructive">
+                  <p role="alert" className="ui-body text-destructive-text">
                     {filterError}
                   </p>
                 ) : null}

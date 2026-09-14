@@ -16,14 +16,14 @@ export default function NotFound() {
           className="mb-8 rounded-sm font-medium text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
           aria-label="Olune home"
         >
-          <span className="font-heading text-2xl tracking-tight text-foreground/90">
+          <span className="text-2xl font-semibold tracking-tight text-foreground/90">
             Olune
           </span>
         </Link>
         <p className="text-sm font-medium tracking-wide text-muted-foreground">
           404
         </p>
-        <h1 className="mt-2 font-heading text-3xl tracking-tight text-balance md:text-4xl">
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-balance md:text-4xl">
           Page not found
         </h1>
         <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
@@ -31,7 +31,7 @@ export default function NotFound() {
         </p>
         <Link
           href="/"
-          className="mt-8 inline-flex h-11 items-center rounded-full bg-brand px-5 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand/90 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          className="mt-8 inline-flex h-11 items-center rounded-full bg-brand-fill px-5 text-sm font-medium text-brand-foreground transition-colors hover:bg-brand-fill/90 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         >
           Back to chat
         </Link>

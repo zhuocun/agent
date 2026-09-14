@@ -6,6 +6,7 @@ import { Check, Database, Minus, ShieldCheck, ShieldOff } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { fetchModelDirectory } from "@/lib/apiClient";
+import { formatUsdPerMillionTokens } from "@/lib/money";
 import type {
   ModelDirectoryEntry,
   ModelDirectoryTier,
@@ -96,7 +97,7 @@ function PolicyBlock({
     <div className="space-y-1.5" data-testid="data-policy">
       <p className="flex items-center gap-1.5 ui-caption font-medium">
         {policy.trainsOnData ? (
-          <ShieldOff aria-hidden className="size-3.5 text-warning" />
+          <ShieldOff aria-hidden className="size-3.5 text-warning-text" />
         ) : (
           <ShieldCheck aria-hidden className="size-3.5 text-muted-foreground" />
         )}
@@ -139,11 +140,39 @@ function TierRow({ tier }: { tier: ModelDirectoryTier }): JSX.Element {
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <TierPrice tier={tier} />
         <Capability on={tier.supportsWebSearch} label="Web" />
         <Capability on={tier.supportsAttachments} label="Files" />
         <Capability on={tier.supportsVision} label="Vision" />
       </div>
     </li>
+  );
+}
+
+// The surface's own copy promises list prices and the registry ships them, so
+// render them rather than leave the claim unbacked. Labelled as a list price,
+// not an estimate of what this user will pay (PRD 07 transparency contract).
+function TierPrice({ tier }: { tier: ModelDirectoryTier }): JSX.Element {
+  const hasPrice = tier.listPriceInPerM > 0 || tier.listPriceOutPerM > 0;
+  if (!hasPrice) {
+    return (
+      <span className="ui-caption text-muted-foreground">
+        List price not published
+      </span>
+    );
+  }
+  const inPrice = formatUsdPerMillionTokens(tier.listPriceInPerM);
+  const outPrice = formatUsdPerMillionTokens(tier.listPriceOutPerM);
+  return (
+    <span
+      className="font-mono ui-caption tabular-nums text-muted-foreground"
+      data-testid="directory-tier-price"
+      aria-label={`List price ${inPrice} in, ${outPrice} out, per million tokens`}
+    >
+      <span aria-hidden>
+        {inPrice} in · {outPrice} out / 1M
+      </span>
+    </span>
   );
 }
 
@@ -236,7 +265,7 @@ export function ModelDirectoryBody({
         {loading ? (
           <p className="ui-body text-muted-foreground">Loading…</p>
         ) : error ? (
-          <p role="alert" className="ui-body text-destructive">
+          <p role="alert" className="ui-body text-destructive-text">
             {error}
           </p>
         ) : (

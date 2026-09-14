@@ -207,7 +207,7 @@ export function MemoryBody({
           </div>
 
           {error ? (
-            <p role="alert" className="ui-body text-destructive">
+            <p role="alert" className="ui-body text-destructive-text">
               {error}
             </p>
           ) : null}

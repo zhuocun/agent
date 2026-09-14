@@ -155,7 +155,7 @@ export function MessageActions({
   );
 
   return (
-    <div role="toolbar" aria-label="Message actions" className="group/actions inline-flex items-center gap-0.5 rounded-full p-0.5">
+    <div role="toolbar" aria-label="Message actions" className="group/actions inline-flex items-center gap-0.5 rounded-full p-0.5 [@media(hover:none)]:gap-2">
       <IconAction
         label={copied ? "Copied" : copyFailed ? "Copy failed" : "Copy"}
         onClick={handleCopy}

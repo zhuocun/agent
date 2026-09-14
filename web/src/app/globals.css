@@ -48,6 +48,7 @@
   --color-destructive-text: var(--destructive-text);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
+  --color-success-text: var(--success-text);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
   /* Warning *text* only — never fills. --warning is tuned as a fill and pairs
@@ -75,6 +76,7 @@
 
   /* Brand accent */
   --color-brand: var(--brand);
+  --color-brand-fill: var(--brand-fill);
   --color-brand-foreground: var(--brand-foreground);
   --color-brand-muted: var(--brand-muted);
 
@@ -211,10 +213,13 @@
   /* Semantic warning/success/info/destructive — hues preserved, chroma trimmed ~10%. */
   --destructive: oklch(0.577 0.220 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  /* Light error text equals the fill token — already AA on the light canvas. */
-  --destructive-text: var(--destructive);
+  /* Error and success *text* run darker than the fills: the status pills paint
+     each label on a 10% tint of its own hue, where the fill tokens measure
+     4.14:1 and 3.11:1. These land at 4.86:1 and 5.09:1 on that tint. */
+  --destructive-text: oklch(0.54 0.22 27.325);
   --success: oklch(0.62 0.126 152);
   --success-foreground: oklch(0.985 0 0);
+  --success-text: oklch(0.50 0.12 152);
   --warning: oklch(0.72 0.135 75);
   --warning-foreground: oklch(0.27 0.05 75);
   --warning-text: oklch(0.50 0.12 75);
@@ -227,6 +232,11 @@
 
   /* Brand: default system blue (close to iOS #007AFF — hue 247, saturated). */
   --brand: oklch(0.59 0.20 247);
+  /* --brand is tuned as an accent surface: white on it measures 3.87:1, under
+     the body-text floor. --brand-fill is the same hue darkened for filled
+     buttons, where the label is body-size text — 4.91:1 against
+     --brand-foreground. */
+  --brand-fill: oklch(0.53 0.20 247);
   --link: oklch(0.50 0.19 247);
   --brand-foreground: oklch(0.99 0 0);
   --brand-muted: oklch(0.95 0.04 247);
@@ -405,6 +415,8 @@
   --destructive-text: oklch(0.8 0.15 22.216);
   --success: oklch(0.7 0.126 152);
   --success-foreground: oklch(0.18 0.02 152);
+  /* 6.10:1 as text on the dark success/10 pill — alias rather than add a hue. */
+  --success-text: var(--success);
   --warning: oklch(0.8 0.126 80);
   --warning-foreground: oklch(0.25 0.04 80);
   /* Already 10.41:1 as text on the dark canvas — alias rather than add a hue. */
@@ -418,6 +430,8 @@
 
   --brand: oklch(0.72 0.18 247);
   --brand-foreground: oklch(0.16 0.01 247);
+  /* 7.69:1 against --brand-foreground already — alias rather than add a hue. */
+  --brand-fill: var(--brand);
   /* 7.80:1 as text on the dark canvas — alias rather than add a hue. */
   --link: var(--brand);
   --brand-muted: oklch(0.38 0.11 247);

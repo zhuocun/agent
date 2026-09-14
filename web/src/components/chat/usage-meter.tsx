@@ -179,11 +179,11 @@ export function UsageMeter({ usage }: UsageMeterProps) {
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuetext={presentation.detailText}
-          className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted shadow-[inset_0_0_0_1px_var(--border)]"
+          className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted shadow-[inset_0_0_0_1px_var(--border)] forced-colors:border forced-colors:border-[CanvasText]"
         >
           <div
             className={cn(
-              "relative h-full rounded-full transition-[width] duration-300 ease-out",
+              "relative h-full rounded-full transition-[width] duration-300 ease-out motion-reduce:transition-none forced-colors:bg-[Highlight]",
               // Nominal fill uses the brand tint — iOS capacity bars colour
               // normal fill with the tint, not gray (gray reads inert/
               // disabled). `/80` keeps it calm rather than fully saturated.

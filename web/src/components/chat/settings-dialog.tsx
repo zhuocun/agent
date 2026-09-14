@@ -259,7 +259,10 @@ function SettingRow({
   control: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex items-center justify-between gap-4">
+    // The control groups lay out at max-content, so a `shrink-0` control on a
+    // single row pushes the row wider than a 320px sheet. Stack below `sm` and
+    // give the control a real width to wrap inside.
+    <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <div className="min-w-0">
         {htmlFor ? (
           <label htmlFor={htmlFor} className="ui-list-row font-medium">
@@ -272,7 +275,7 @@ function SettingRow({
           <p className="mt-0.5 ui-caption text-muted-foreground">{helper}</p>
         ) : null}
       </div>
-      <div className="shrink-0">{control}</div>
+      <div className="w-full min-w-0 sm:w-auto sm:shrink-0">{control}</div>
     </div>
   );
 }
@@ -343,7 +346,7 @@ function RetentionPicker({
             title={option.description}
             onClick={() => onChange(option.value)}
             className={cn(
-              "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
+              "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium outline-none transition-colors [@media(hover:none)]:min-h-11 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
               selected
                 ? "bg-background text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground",
@@ -415,7 +418,7 @@ function BudgetEditor({
             placeholder="No cap"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="budget-cap-input"
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
         </div>
         <Button
@@ -494,7 +497,7 @@ function PerConversationBudgetEditor({
             placeholder="No cap"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="conversation-cap-input"
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
         </div>
         <Button
@@ -574,7 +577,7 @@ function ProjectSettingsPanel({
             value={selected.id}
             onChange={(event) => setSelectedId(event.currentTarget.value)}
             data-testid="project-settings-select"
-            className="h-9 max-w-[12rem] truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="h-9 [@media(hover:none)]:h-11 max-w-[12rem] truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           >
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
@@ -639,7 +642,7 @@ function ProjectSettingsPanel({
                     onUpdate(selected.id, { retentionDays: option.value })
                   }
                   className={cn(
-                    "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
+                    "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium outline-none transition-colors [@media(hover:none)]:min-h-11 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
                     active
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",
@@ -767,7 +770,7 @@ function ProjectBudgetEditor({
             placeholder="Inherit"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="project-cap-input"
-            className="h-9 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
           />
         </div>
         <Button
@@ -864,7 +867,7 @@ function UsageDetails({
             isExhausted
               ? "text-destructive"
               : isNearLimit
-                ? "text-warning"
+                ? "text-warning-text"
                 : "text-muted-foreground",
           )}
         />
@@ -1087,7 +1090,7 @@ export function SettingsDialog({
             data-testid="settings-back-button"
             aria-label="Back to Settings"
             onClick={() => setMobileShowList(true)}
-            className="-ml-1 inline-flex shrink-0 items-center gap-1 ui-list-row font-medium text-muted-foreground transition-colors hover:text-foreground"
+            className="-my-2 -ml-1 inline-flex min-h-11 shrink-0 items-center gap-1 ui-list-row font-medium text-muted-foreground transition-colors hover:text-foreground"
           >
             <ChevronLeft aria-hidden className="size-4" />
             <span>Settings</span>

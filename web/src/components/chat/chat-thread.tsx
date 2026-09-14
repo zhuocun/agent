@@ -3221,7 +3221,10 @@ export function ChatThread() {
   .turn { margin: 0 0 1.5rem; padding: 0 0 1.25rem; border-bottom: 1px solid #e5e7eb; }
   .turn:last-child { border-bottom: none; }
   .turn h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin: 0 0 0.5rem; }
-  .turn-user h2 { color: #2563eb; }
+  /* Literal colours: the export is a standalone document where the app's
+     custom properties do not exist. This is the resolved value of --link, the
+     product's blue tuned for text — 5.76:1 on white. */
+  .turn-user h2 { color: #0064c7; }
   p { margin: 0 0 0.75rem; white-space: normal; }
   @media print {
     body { margin: 0; max-width: none; }
@@ -3697,11 +3700,11 @@ export function ChatThread() {
     return (
       <div className="flex h-full min-h-svh flex-col items-center justify-center bg-background p-6 text-foreground">
         <div className="max-w-sm space-y-4 text-center">
-          <p className="font-heading text-2xl tracking-tight text-foreground/90">
+          <p className="text-2xl font-semibold tracking-tight text-foreground/90">
             Olune
           </p>
           <div className="space-y-2">
-            <h1 className="font-heading text-2xl tracking-tight text-balance md:text-3xl">
+            <h1 className="text-2xl font-semibold tracking-tight text-balance md:text-3xl">
               {title}
             </h1>
             <p className="ui-body text-muted-foreground">{body}</p>
@@ -3718,7 +3721,7 @@ export function ChatThread() {
               setBootstrapError(null);
               setBootstrapAttempt((n) => n + 1);
             }}
-            className="h-11 rounded-full bg-brand px-5 text-brand-foreground hover:bg-brand/90"
+            className="h-11 rounded-full bg-brand-fill px-5 text-brand-foreground hover:bg-brand-fill/90"
           >
             Try again
           </Button>

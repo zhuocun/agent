@@ -1500,7 +1500,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                       // working surface (Decision 07).
                       canSubmit
                         ? heroGlow
-                          ? "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
+                          ? "bg-brand-fill text-brand-foreground shadow-pill hover:bg-brand-fill/90"
                           : "bg-foreground text-background shadow-pill hover:bg-foreground/90"
                         : justStopped
                           ? "bg-foreground/10 text-foreground"

@@ -118,7 +118,7 @@ export function WelcomeScreen({
           <button
             type="button"
             onClick={onConnect}
-            className="animate-welcome-enter glass-clear mb-5 inline-flex min-h-11 items-center gap-1.5 rounded-full px-4 py-2.5 ui-eyebrow font-medium tracking-wide text-muted-foreground transition-colors duration-200 ease-out md:mb-7 [@media(hover:hover)]:min-h-0 [@media(hover:hover)]:py-1.5 [@media(hover:hover)]:hover:bg-foreground/5 [@media(hover:hover)]:hover:text-foreground active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="animate-welcome-enter glass-clear mb-5 inline-flex min-h-11 items-center gap-1.5 rounded-full px-4 py-2.5 ui-eyebrow font-medium tracking-wide text-muted-foreground transition-colors duration-200 ease-out md:mb-7 [@media(hover:hover)]:min-h-0 [@media(hover:hover)]:py-1.5 [@media(hover:hover)]:hover:bg-foreground/5 [@media(hover:hover)]:hover:text-foreground active:bg-foreground/[0.08] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
             style={{ animationDelay: "0ms" }}
           >
             Connect your API key
@@ -175,7 +175,7 @@ export function WelcomeScreen({
                     <button
                       type="button"
                       onClick={() => onPromptSelect?.(s.prompt)}
-                      className="animate-welcome-enter glass-clear inline-flex items-center gap-2 rounded-full px-4 py-3 text-[0.9375rem] leading-5 text-foreground [@media(hover:hover)]:py-2.5 transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/5 active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="animate-welcome-enter glass-clear inline-flex items-center gap-2 rounded-full px-4 py-3 ui-body text-foreground [@media(hover:hover)]:py-2.5 transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/5 active:bg-foreground/[0.08] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                       style={{ animationDelay: `${100 + index * 50}ms` }}
                     >
                       <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -189,7 +189,7 @@ export function WelcomeScreen({
                   <button
                     type="button"
                     onClick={() => onPromptSelect?.(label)}
-                    className="animate-welcome-enter glass-clear inline-flex items-center gap-2 rounded-full px-4 py-3 text-[0.9375rem] leading-5 text-foreground [@media(hover:hover)]:py-2.5 transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/5 active:bg-foreground/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="animate-welcome-enter glass-clear inline-flex items-center gap-2 rounded-full px-4 py-3 ui-body text-foreground [@media(hover:hover)]:py-2.5 transition-colors duration-200 ease-out [@media(hover:hover)]:hover:bg-foreground/5 active:bg-foreground/[0.08] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
                     style={{ animationDelay: `${100 + index * 50}ms` }}
                   >
                     <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />

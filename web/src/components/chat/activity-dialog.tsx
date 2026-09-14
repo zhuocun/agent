@@ -237,7 +237,7 @@ export function ActivityBody({
             {loading ? (
               <p className="ui-body text-muted-foreground">Loading…</p>
             ) : error ? (
-              <p role="alert" className="ui-body text-destructive">
+              <p role="alert" className="ui-body text-destructive-text">
                 {error}
               </p>
             ) : showEmptyActivity ? (

@@ -188,7 +188,7 @@ function EditableRow({
         <span className="min-w-0 truncate ui-list-row text-foreground">
           {row.label}
         </span>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5 [@media(hover:none)]:gap-2">
           {row.isOverridden ? (
             <Button
               type="button"
@@ -219,8 +219,8 @@ function EditableRow({
             onBlur={() => onStopCapture()}
             className={
               capturing
-                ? "flex min-w-24 items-center justify-center rounded-md border border-ring bg-ring/10 px-2 py-1 ui-list-row font-medium text-foreground ring-2 ring-ring/25 outline-none"
-                : "flex min-w-24 items-center justify-center rounded-md border border-border bg-muted/40 px-2 py-1 outline-none transition-colors hover:bg-muted focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25"
+                ? "flex min-w-24 items-center justify-center rounded-md border border-ring bg-ring/10 px-2 py-1 ui-list-row font-medium text-foreground ring-2 ring-ring/25 outline-none [@media(hover:none)]:min-h-11"
+                : "flex min-w-24 items-center justify-center rounded-md border border-border bg-muted/40 px-2 py-1 outline-none transition-colors [@media(hover:none)]:min-h-11 hover:bg-muted focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25"
             }
           >
             {capturing ? (
@@ -234,7 +234,7 @@ function EditableRow({
       {capturing && error ? (
         <p
           role="alert"
-          className="text-right ui-caption text-destructive"
+          className="text-right ui-caption text-destructive-text"
           data-testid={`shortcut-error-${id}`}
         >
           {error}

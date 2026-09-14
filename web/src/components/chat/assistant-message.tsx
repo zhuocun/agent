@@ -610,7 +610,7 @@ function StatusLine({ label, state }: { label: string; state: "active" | "done" 
 function StoppedChip() {
   return (
     <span
-      className="inline-flex items-center gap-1 ui-caption text-muted-foreground/80"
+      className="inline-flex items-center gap-1 ui-caption text-muted-foreground"
       data-testid="stopped-chip"
     >
       <CircleStop aria-hidden className="size-3" />
@@ -643,7 +643,7 @@ function MemoryUsedChip({
       aria-label={`${label}. Open memory manager.`}
       data-testid="memory-used-chip"
       className={cn(
-        "inline-flex items-center gap-1 ui-caption text-muted-foreground/80",
+        "inline-flex items-center gap-1 ui-caption text-muted-foreground",
         "outline-none transition-colors hover:text-foreground",
         "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
         // 44pt touch floor on coarse pointers; visual size unchanged on desktop.
@@ -765,7 +765,7 @@ function ErrorFooter({
           className={cn(
             "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 ui-caption",
             isDestructive
-              ? "border-destructive/30 bg-destructive/10 text-destructive"
+              ? "border-destructive/30 bg-destructive/10 text-destructive-text"
               : "border-warning-foreground/20 bg-warning text-warning-foreground",
           )}
         >
@@ -790,12 +790,24 @@ function ErrorFooter({
               data-testid="assistant-error-retry"
             >
               <RotateCcw aria-hidden />
-              <span>
-                {retryDisabled ? `Try again in ${secondsLeft}s` : "Retry"}
-              </span>
+              <span>Retry</span>
             </Button>
             {retryDisabled ? (
-              <span className="sr-only" role="status" aria-live="polite">
+              <span
+                aria-hidden
+                className="ui-caption text-muted-foreground tabular-nums"
+                data-testid="assistant-retry-countdown"
+              >
+                Try again in {secondsLeft}s
+              </span>
+            ) : null}
+            {retryDisabled ? (
+              <span
+                className="sr-only"
+                role="status"
+                aria-live="polite"
+                aria-label="Retry countdown"
+              >
                 Try again in {secondsLeft} seconds
               </span>
             ) : null}
@@ -864,7 +876,7 @@ function ErrorFooter({
               </Button>
             )}
             {appealStatus === "error" ? (
-              <p role="alert" className="ui-body text-destructive">
+              <p role="alert" className="ui-body text-destructive-text">
                 Couldn&apos;t send your request. Please try again.
               </p>
             ) : null}

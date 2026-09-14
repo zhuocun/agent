@@ -79,7 +79,9 @@ export function ReasoningPanel({
               isStreaming ? "opacity-100" : "opacity-0",
               "bg-gradient-to-r from-muted-foreground/70 via-foreground/80 to-muted-foreground/70",
               "bg-[length:200%_100%] bg-clip-text text-transparent",
-              "motion-safe:animate-shimmer",
+              // Stop the keyframe when the turn settles: the label fades to
+              // opacity 0 but an infinite animation keeps the compositor busy.
+              isStreaming && "motion-safe:animate-shimmer",
             )}
           >
             {streamingLabel}

@@ -78,7 +78,7 @@ function StatusHeader() {
       />
       <Link
         href="/"
-        className="flex items-center gap-2 rounded-sm font-medium text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+        className="flex items-center gap-2 rounded-sm font-medium text-foreground outline-none [@media(hover:none)]:min-h-11 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         aria-label="Olune home"
       >
         <span className="font-heading text-base tracking-tight">Olune</span>

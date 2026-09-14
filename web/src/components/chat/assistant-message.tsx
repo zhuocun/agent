@@ -524,7 +524,7 @@ export function AssistantMessage({
         />
       ) : null}
 
-      {isFinal && !isErrored ? (
+      {isFinal && (!isErrored || effectiveAnswerText.trim()) ? (
         <div className="space-y-2 pt-1">
           {/* Single-row footer: the always-visible metadata byline
               (served-model attribution, MemoryUsed / Stopped indicators —

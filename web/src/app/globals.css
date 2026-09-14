@@ -1157,6 +1157,15 @@ input[type="search"]::-webkit-search-decoration {
     box-shadow: none;
   }
 
+  /* The substitution callout draws its boundary with ring-1, which is a
+     box-shadow and is stripped here, flattening the callout into plain prose.
+     It is a trust surface, so it must keep a visible edge. */
+  [data-testid="attribution-substitution"] {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    box-shadow: none;
+  }
+
   /* The user bubble is a flat brand-muted wash with no border — forced-colors
      flattens the fill so the bubble loses its boundary. Restore a real border
      for both the display bubble and its edit-mode twin. */

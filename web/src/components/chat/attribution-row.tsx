@@ -90,6 +90,7 @@ export function AttributionRow({
           </span>
         </span>
       ) : null}
+      {substitution ? null : <span>{servedModelLabel}</span>}
       <span>{tierLabel}</span>
       {isByok ? (
         <span className="inline-flex items-center gap-1 text-muted-foreground/80">

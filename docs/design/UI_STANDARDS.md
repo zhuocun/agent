@@ -78,6 +78,7 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 ### UI-TYPE-2 [must] — Display serif is welcome-only
 **Assertion.** `--font-heading` is applied only to the welcome greeting at display size; no body, chrome, message or attribution text resolves to it.
 **Source.** `docs/prd/06-design-system-visual-spec.md` §3.2 ("display sizes only"); Decision 16 in `docs/design/04-rationale.md`; `docs/design/03-anti-patterns.md` §G, "Personality bleeding into the working surface".
+**A wordmark is not an exception.** The product name set in the display serif at chrome size was argued as a logotype rather than UI text. It is not carved out, for a reason that is about type rather than about branding: Instrument Serif is drawn for hero sizes, and at 1.25 rem its hairlines muddy, so the header was using a display face below its optical size. The brand moment stays where the face reads — the hero greeting. A wordmark that needs to appear in the chrome appears in the UI sans.
 **Verify.** `rg -n 'font-heading' web/src` — every hit must be inside `welcome-screen.tsx`.
 
 ### UI-TYPE-3 [must] — Every size is rem-based

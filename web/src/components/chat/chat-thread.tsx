@@ -3892,14 +3892,18 @@ export function ChatThread() {
                 centerSlot={
                   // Welcome-only centered wordmark — the brand moment lives on
                   // the first-run surface (the sidebar wordmark stays demoted
-                  // per anti-pattern G). Serif to rhyme with the hero greeting;
-                  // fades with the same 200ms welcome-exit seam, and aria-hidden
+                  // per anti-pattern G). Set in the UI sans, NOT the display
+                  // serif: Instrument Serif is drawn for hero sizes, and its
+                  // hairlines muddy at 1.25rem, so the header would be using a
+                  // display face below its optical size. The serif moment stays
+                  // where it reads — the hero greeting two rows down. Fades
+                  // with the same 200ms welcome-exit seam, and aria-hidden
                   // because the sr-only <h1> already names the surface.
                   showWelcome ? (
                     <span
                       aria-hidden
                       className={cn(
-                        "font-heading text-xl tracking-tight text-foreground/90 transition-opacity duration-200 ease-[var(--ease-welcome)] starting:opacity-0 motion-reduce:transition-none",
+                        "text-xl font-medium tracking-tight text-foreground transition-opacity duration-200 ease-[var(--ease-welcome)] starting:opacity-0 motion-reduce:transition-none",
                         welcomeExiting ? "opacity-0" : "opacity-100",
                       )}
                     >

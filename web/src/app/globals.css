@@ -61,6 +61,7 @@
   --color-info: var(--info);
   --color-info-foreground: var(--info-foreground);
   --color-border: var(--border);
+  --color-control-border: var(--control-border);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-card: var(--card);
@@ -227,6 +228,17 @@
   --info-foreground: oklch(0.985 0 0);
 
   --border: oklch(0.916 0.004 250);
+  /* Separator role vs control-boundary role. `--border` is the hairline that
+     divides two regions of the same surface (cards, dividers, table rules): it
+     is deliberately quiet and carries no obligation, because nothing depends on
+     seeing it. `--control-border` is the boundary that MAKES something read as
+     an interactive control — the follow-up chips are the case in point, where a
+     sentence-shaped label sits directly under body prose and only the pill
+     boundary says "this is a button". WCAG 2.2 SC 1.4.11 puts that boundary at
+     3:1, so this role is measured against BOTH adjacent surfaces (the page and
+     the control's own fill, at rest and on hover). Light: 3.47:1 on the page,
+     3.40:1 on the chip fill, 3.37:1 on the hover fill. */
+  --control-border: oklch(0.62 0.01 250);
   --input: oklch(0.916 0.004 250);
   --ring: oklch(0.59 0.20 247);
 
@@ -425,6 +437,11 @@
   --info-foreground: oklch(0.16 0.02 245);
 
   --border: oklch(1 0 0 / 11%);
+  /* Opaque, not a white alpha: an alpha boundary reads differently over the
+     page than over a control's own fill, and this role has to clear 3:1 on
+     both. Dark: 3.88:1 on the page, 3.37:1 on the chip fill, 3.26:1 on the
+     hover fill. */
+  --control-border: oklch(0.54 0.01 250);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.72 0.18 247);
 

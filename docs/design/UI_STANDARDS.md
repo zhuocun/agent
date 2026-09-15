@@ -131,8 +131,9 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 
 ### UI-COLOR-4 [must] — Non-text UI meets 3:1
 **Assertion.** Control boundaries, the focus indicator, the usage-meter fill, checkbox/switch states and the substitution-callout ring meet 3:1 against their adjacent surface in both themes.
+**Scope of "control boundary".** Not every drawn line. The obligation attaches to a boundary a user needs in order to perceive that something is a control, or to perceive its state. A card edge, a table rule or a list divider separates two regions of the same surface and carries no obligation, because nothing depends on seeing it; those stay on `--border`, which is deliberately quiet. A boundary that is the only signal of interactivity is load-bearing and takes `--control-border`, the 3:1 role. The decisive case is the follow-up chip: its label is a sentence sitting directly beneath body prose, so the pill outline is the sole thing that reads as "button", and SC 1.4.11's "identifiable by other means" exception does not apply. Shipped ratios for `--control-border`: light 3.47:1 on the page and 3.40:1 on the chip fill; dark 3.88:1 and 3.37:1.
 **Source.** WCAG 2.2 SC 1.4.11 Non-text Contrast (AA); `docs/ux-best-practices/desktop-ux.md` §10 platform note ("focus ring must meet ... 3:1 contrast; audit `--focus-ring` token").
-**Verify.** Compute the ratio between the resolved `--ring` / `--color-border` values and the surface they sit on, per theme.
+**Verify.** Compute the ratio between the resolved `--ring` / `--color-control-border` values and both surfaces they sit between (the page and the control's own fill, at rest and on hover), per theme.
 
 ### UI-COLOR-5 [must] — Color is never the sole carrier of state
 **Assertion.** Every state distinction (JSON valid vs invalid, approaching vs exceeded limit, playing vs paused, selected vs unselected) is carried by text or glyph in addition to color.

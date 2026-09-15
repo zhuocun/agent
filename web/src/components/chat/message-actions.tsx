@@ -11,6 +11,7 @@ import {
   Minus,
   MoreHorizontal,
   Plus,
+  Receipt,
   RotateCcw,
   Square,
   ThumbsDown,
@@ -74,6 +75,13 @@ interface MessageActionsProps {
   };
   onContinue?: () => void;
   onFeedback?: (next: Feedback) => void;
+  // Opens the spend breakdown (Settings → General, scrolled to the panel).
+  // PRD 07 §6.1 keeps cost OUT of the thread — no per-turn figure, no cost
+  // popover — so this is the route from a finished answer to what it cost. It
+  // lives in the overflow menu, not the inline strip: the strip is deliberately
+  // two hit-targets, and a "View spend" control repeated under every message
+  // would be the same visual noise the no-inline-cost rule exists to avoid.
+  onViewSpend?: () => void;
 }
 
 // Legacy clipboard fallback for insecure origins / denied permission, where
@@ -112,6 +120,7 @@ export function MessageActions({
   regenerateOptions,
   onContinue,
   onFeedback,
+  onViewSpend,
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
@@ -176,6 +185,7 @@ export function MessageActions({
         canBranch={canBranch}
         isBranching={isBranching}
         onBranch={onBranch}
+        onViewSpend={onViewSpend}
         primary={{
           canRegenerate: !!canRegenerate,
           onRegenerate,
@@ -208,6 +218,7 @@ function OverflowMenu({
   canBranch,
   isBranching,
   onBranch,
+  onViewSpend,
   primary,
   modelChoice,
 }: {
@@ -218,6 +229,7 @@ function OverflowMenu({
   canBranch?: boolean;
   isBranching?: boolean;
   onBranch?: () => void;
+  onViewSpend?: () => void;
   // The inline strip is just Copy + "…" on every device. Regenerate and the
   // two ratings live at the top of the menu so they stay one tap/click deep.
   primary?: {

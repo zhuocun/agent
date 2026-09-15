@@ -629,6 +629,12 @@ export function ChatThread() {
   // "Memory used here" chip, the shortcuts hotkey) set this before opening.
   const [settingsInitialTab, setSettingsInitialTab] =
     useState<SettingsTab>("general");
+  // A deep link that lands PAST the tab, on one surface inside it. The
+  // per-message "View spend" control uses it to land on the spend breakdown
+  // rather than at the top of a long General tab.
+  const [settingsInitialFocus, setSettingsInitialFocus] = useState<
+    "spend" | undefined
+  >(undefined);
   // Advanced history search is now folded into the command palette's filter
   // mode (no separate dialog). When the host summons the palette for search —
   // from the sidebar "Advanced search" affordance or the search-history
@@ -2817,8 +2823,12 @@ export function ChatThread() {
   // Open the Settings hub, optionally deep-linked to a tab. Memory/Templates/
   // Models/Shortcuts/Activity are tabs in the hub now, so their entry points
   // pass the target tab here instead of opening a sibling dialog.
-  const openSettings = (tab: SettingsTab = "general") => {
+  const openSettings = (
+    tab: SettingsTab = "general",
+    focus?: "spend",
+  ) => {
     setSettingsInitialTab(tab);
+    setSettingsInitialFocus(focus);
     if (!settingsOpenRef.current) {
       settingsOpenRef.current = true;
       reportTelemetry(preferences, "settings.opened");
@@ -4042,6 +4052,7 @@ export function ChatThread() {
                         !isStreaming && m.id === lastAssistantId
                       }
                       onMemoryOpen={() => openSettings("memory")}
+                      onViewSpend={() => openSettings("general", "spend")}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
                       liveRunCost={m.runCost ?? null}
@@ -4159,6 +4170,7 @@ export function ChatThread() {
         open={settingsOpen}
         onOpenChange={handleSettingsOpenChange}
         initialTab={settingsInitialTab}
+        initialFocus={settingsInitialFocus}
         preferences={preferences}
         onPreferencesChange={handlePreferencesChange}
         account={account}

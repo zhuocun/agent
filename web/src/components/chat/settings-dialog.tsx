@@ -117,6 +117,11 @@ export interface SettingsDialogProps {
   // Deep-link the hub to a specific tab on open (e.g. the "Memory used here"
   // chip opens straight to Memory). Defaults to the General tab.
   initialTab?: SettingsTab;
+  // Deep-link PAST the tab, to one surface inside it. "spend" lands on the
+  // General tab and scrolls the spend breakdown into view; it also skips the
+  // mobile grouped list, which a plain `initialTab="general"` would show. The
+  // per-message "View spend" control (UI-TRUST-3) is the caller.
+  initialFocus?: "spend";
   // Memory tab (D19): the opt-in state + a persister wired through the parent's
   // existing preferences flow (so the toggle round-trips to the BE).
   memoryEnabled: boolean;
@@ -913,6 +918,7 @@ export function SettingsDialog({
   projects = [],
   onUpdateProject,
   initialTab = "general",
+  initialFocus,
   memoryEnabled,
   onMemoryEnabledChange,
   onActivitySwitchRoute,
@@ -965,16 +971,38 @@ export function SettingsDialog({
   // On mobile, whether we're showing the grouped list (true) or a tab's content
   // (false). Deep links (initialTab !== "general") skip straight to content.
   const [mobileShowList, setMobileShowList] = useState(
-    initialTab === "general",
+    initialTab === "general" && !initialFocus,
   );
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
       setActiveTab(initialTab);
-      setMobileShowList(initialTab === "general");
+      setMobileShowList(initialTab === "general" && !initialFocus);
     }
   }
+
+  // Deep-link to a surface inside the General tab. The panel is a scroll
+  // container and the spend breakdown sits below the account block, so landing
+  // on the tab is not the same as landing on the thing the user asked for.
+  // Runs after paint so the panel has laid out; honours reduced motion.
+  useEffect(() => {
+    if (!open || initialFocus !== "spend") return;
+    const frame = requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(
+        '[data-testid="spend-analytics-panel"]',
+      );
+      if (!target) return;
+      const reduced = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      target.scrollIntoView({
+        block: "start",
+        behavior: reduced ? "auto" : "smooth",
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, initialFocus]);
 
   function selectTab(tab: SettingsTab): void {
     haptic("selection");

@@ -110,6 +110,10 @@ interface AssistantMessageProps {
   // Open the Memory manager (D19). Wired to the "Memory used here" chip that
   // appears when this turn injected saved facts.
   onMemoryOpen?: () => void;
+  // Open the spend breakdown for this finished turn (UI-TRUST-3 / PRD 07 §8
+  // AC 9). Cost never renders in the thread, so this is the route to it. It
+  // surfaces in the message overflow menu.
+  onViewSpend?: () => void;
   defaultReasoningOpen?: boolean;
   // Set only when `status === "error"` — the canonical ApiErrorEnvelope from
   // the terminal frame. Drives the inline chip + Details + Retry.
@@ -184,6 +188,7 @@ export function AssistantMessage({
   onFollowUp,
   showFollowUps,
   onMemoryOpen,
+  onViewSpend,
   defaultReasoningOpen = false,
   error,
   onOpenSettings,
@@ -564,6 +569,7 @@ export function AssistantMessage({
                 regenerateOptions={regenerateOptions}
                 onContinue={onContinue}
                 onFeedback={onFeedback}
+                onViewSpend={onViewSpend}
               />
             </div>
           </div>

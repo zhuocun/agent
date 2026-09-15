@@ -629,6 +629,12 @@ export function ChatThread() {
   // "Memory used here" chip, the shortcuts hotkey) set this before opening.
   const [settingsInitialTab, setSettingsInitialTab] =
     useState<SettingsTab>("general");
+  // A deep link that lands PAST the tab, on one surface inside it. The
+  // per-message "View spend" control uses it to land on the spend breakdown
+  // rather than at the top of a long General tab.
+  const [settingsInitialFocus, setSettingsInitialFocus] = useState<
+    "spend" | undefined
+  >(undefined);
   // Advanced history search is now folded into the command palette's filter
   // mode (no separate dialog). When the host summons the palette for search —
   // from the sidebar "Advanced search" affordance or the search-history
@@ -2817,8 +2823,12 @@ export function ChatThread() {
   // Open the Settings hub, optionally deep-linked to a tab. Memory/Templates/
   // Models/Shortcuts/Activity are tabs in the hub now, so their entry points
   // pass the target tab here instead of opening a sibling dialog.
-  const openSettings = (tab: SettingsTab = "general") => {
+  const openSettings = (
+    tab: SettingsTab = "general",
+    focus?: "spend",
+  ) => {
     setSettingsInitialTab(tab);
+    setSettingsInitialFocus(focus);
     if (!settingsOpenRef.current) {
       settingsOpenRef.current = true;
       reportTelemetry(preferences, "settings.opened");
@@ -3892,14 +3902,18 @@ export function ChatThread() {
                 centerSlot={
                   // Welcome-only centered wordmark — the brand moment lives on
                   // the first-run surface (the sidebar wordmark stays demoted
-                  // per anti-pattern G). Serif to rhyme with the hero greeting;
-                  // fades with the same 200ms welcome-exit seam, and aria-hidden
+                  // per anti-pattern G). Set in the UI sans, NOT the display
+                  // serif: Instrument Serif is drawn for hero sizes, and its
+                  // hairlines muddy at 1.25rem, so the header would be using a
+                  // display face below its optical size. The serif moment stays
+                  // where it reads — the hero greeting two rows down. Fades
+                  // with the same 200ms welcome-exit seam, and aria-hidden
                   // because the sr-only <h1> already names the surface.
                   showWelcome ? (
                     <span
                       aria-hidden
                       className={cn(
-                        "font-heading text-xl tracking-tight text-foreground/90 transition-opacity duration-200 ease-[var(--ease-welcome)] starting:opacity-0 motion-reduce:transition-none",
+                        "text-xl font-medium tracking-tight text-foreground transition-opacity duration-200 ease-[var(--ease-welcome)] starting:opacity-0 motion-reduce:transition-none",
                         welcomeExiting ? "opacity-0" : "opacity-100",
                       )}
                     >
@@ -4038,6 +4052,7 @@ export function ChatThread() {
                         !isStreaming && m.id === lastAssistantId
                       }
                       onMemoryOpen={() => openSettings("memory")}
+                      onViewSpend={() => openSettings("general", "spend")}
                       defaultReasoningOpen={preferences.autoExpandReasoning}
                       error={m.error}
                       liveRunCost={m.runCost ?? null}
@@ -4155,6 +4170,7 @@ export function ChatThread() {
         open={settingsOpen}
         onOpenChange={handleSettingsOpenChange}
         initialTab={settingsInitialTab}
+        initialFocus={settingsInitialFocus}
         preferences={preferences}
         onPreferencesChange={handlePreferencesChange}
         account={account}
@@ -4287,7 +4303,7 @@ export function ChatThread() {
                 paletteCreate === "tag" ? "Tag name" : "Project name"
               }
               placeholder={paletteCreate === "tag" ? "Tag name" : "Project name"}
-              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] sm:h-9 md:text-sm"
+              className="block h-9 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:h-11 md:text-sm"
             />
             <DialogFooter className="mt-4">
               <Button
@@ -4382,7 +4398,7 @@ export function ChatThread() {
               onChange={(e) => setDeleteConfirmText(e.target.value)}
               data-testid="delete-account-confirm-input"
               aria-label={`Type ${deleteConfirmExpected} to confirm account deletion`}
-              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] sm:h-9 md:text-sm"
+              className="block h-9 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:h-11 md:text-sm"
             />
           </div>
           <DialogFooter>

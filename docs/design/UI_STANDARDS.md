@@ -78,6 +78,7 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 ### UI-TYPE-2 [must] — Display serif is welcome-only
 **Assertion.** `--font-heading` is applied only to the welcome greeting at display size; no body, chrome, message or attribution text resolves to it.
 **Source.** `docs/prd/06-design-system-visual-spec.md` §3.2 ("display sizes only"); Decision 16 in `docs/design/04-rationale.md`; `docs/design/03-anti-patterns.md` §G, "Personality bleeding into the working surface".
+**A wordmark is not an exception.** The product name set in the display serif at chrome size was argued as a logotype rather than UI text. It is not carved out, for a reason that is about type rather than about branding: Instrument Serif is drawn for hero sizes, and at 1.25 rem its hairlines muddy, so the header was using a display face below its optical size. The brand moment stays where the face reads — the hero greeting. A wordmark that needs to appear in the chrome appears in the UI sans.
 **Verify.** `rg -n 'font-heading' web/src` — every hit must be inside `welcome-screen.tsx`.
 
 ### UI-TYPE-3 [must] — Every size is rem-based
@@ -131,8 +132,9 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 
 ### UI-COLOR-4 [must] — Non-text UI meets 3:1
 **Assertion.** Control boundaries, the focus indicator, the usage-meter fill, checkbox/switch states and the substitution-callout ring meet 3:1 against their adjacent surface in both themes.
+**Scope of "control boundary".** Not every drawn line. The obligation attaches to a boundary a user needs in order to perceive that something is a control, or to perceive its state. A card edge, a table rule or a list divider separates two regions of the same surface and carries no obligation, because nothing depends on seeing it; those stay on `--border`, which is deliberately quiet. A boundary that is the only signal of interactivity is load-bearing and takes `--control-border`, the 3:1 role. The decisive case is the follow-up chip: its label is a sentence sitting directly beneath body prose, so the pill outline is the sole thing that reads as "button", and SC 1.4.11's "identifiable by other means" exception does not apply. Shipped ratios for `--control-border`: light 3.47:1 on the page and 3.40:1 on the chip fill; dark 3.88:1 and 3.37:1.
 **Source.** WCAG 2.2 SC 1.4.11 Non-text Contrast (AA); `docs/ux-best-practices/desktop-ux.md` §10 platform note ("focus ring must meet ... 3:1 contrast; audit `--focus-ring` token").
-**Verify.** Compute the ratio between the resolved `--ring` / `--color-border` values and the surface they sit on, per theme.
+**Verify.** Compute the ratio between the resolved `--ring` / `--color-control-border` values and both surfaces they sit between (the page and the control's own fill, at rest and on hover), per theme.
 
 ### UI-COLOR-5 [must] — Color is never the sole carrier of state
 **Assertion.** Every state distinction (JSON valid vs invalid, approaching vs exceeded limit, playing vs paused, selected vs unselected) is carried by text or glyph in addition to color.
@@ -230,11 +232,13 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 ### UI-TOUCH-5 [must] — Touch floors are gated on pointer capability, not width
 **Assertion.** The 44 px floor is selected by `hover: none` / `pointer: coarse`, so a touch tablet at ≥768 px keeps 44 px targets while receiving the desktop layout.
 **Source.** `docs/ux-best-practices/desktop-ux.md` §13 D13 and `docs/ux-best-practices/mobile-ux.md` §13 M17; shipped in `web/src/components/ui/button.tsx` `buttonVariants` (`[@media(hover:none)]:size-11` / `:min-h-11`).
+**How to write it.** The dense size is the base and the 44 px floor is the pointer-gated override: `size-9 [@media(hover:none)]:size-11`. The inverted form — a 44 px base with a width-gated reset, `size-11 md:size-9` — is the failure this clause names, and reads as correct until a tablet opens it. `rg -n 'md:size-|md:min-h-0|(md|sm):h-9' web/src` must return nothing.
 **Verify.** Playwright at 1024×768 with `hasTouch: true`: assert icon buttons measure 44 px and the desktop two-pane shell is rendered.
 
 ### UI-TOUCH-6 [must] — Hover is never the sole affordance
 **Assertion.** Any control revealed on hover on a pointer device is persistently visible (or reachable through a labeled overflow control) on a touch device, and is revealed by `:focus-visible` for keyboard users.
 **Source.** `docs/design/02-patterns.md`, "Density splits by input modality"; `docs/design/03-anti-patterns.md` §F, "One disclosure rule for both desktop and touch"; `docs/ux-best-practices/desktop-ux.md` §13 D3.
+**How to write it.** Persistent visibility is the base and the hover hide is the pointer-gated override: `opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/x:opacity-100`. A width-gated hide (`md:opacity-0`) leaves the control invisible at rest on a touch tablet, which is this clause's failure. `rg -n '(md|sm|lg):opacity-0' web/src` must return nothing.
 **Verify.** Playwright with `hasTouch: true`: assert message footer actions and conversation-row controls are visible without any hover event; then on desktop, Tab to the row and assert the same controls become visible.
 
 ### UI-TOUCH-7 [should] — Press feedback within 100 ms
@@ -389,9 +393,10 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 **Verify.** Playwright against forced `rate_limited`, `auto_downgrade` and `capacity_reroute` fixtures: assert `[data-testid="attribution-substitution"]` is visible and its text contains requested, served and reason.
 
 ### UI-TRUST-3 [must] — No per-turn cost figure in the thread
-**Assertion.** No assistant message renders an inline cost figure or cost-breakdown popover in the thread; each finished assistant message instead exposes a keyboard-reachable, accessibly named **View spend** affordance that opens the Spend hub.
-**Source.** `docs/prd/07-transparency-contract.md` §6.1, §8 AC 9 and §10 open question 2 (D41); `docs/prd/06-design-system-visual-spec.md` §5.4 and §8 open question 2. **This clause currently fails against shipped code** — no View-spend affordance exists in `web/src/components/` (see §14 C1). It is stated here as the bar, not as a description.
-**Verify.** Playwright on a finished turn: assert the attribution row contains no `$` figure, and `expect(row.getByRole('link', { name: /view spend/i })).toBeVisible()`.
+**Assertion.** No assistant message renders an inline cost figure or cost-breakdown popover in the thread; each finished assistant message instead exposes a keyboard-reachable, accessibly named **View spend** affordance that opens the spend breakdown.
+**Source.** `docs/prd/07-transparency-contract.md` §6.1, §8 AC 9 and §10 open question 2 (D41); `docs/prd/06-design-system-visual-spec.md` §5.4 and §8 open question 2. Shipped as the **View spend** item in the message overflow menu (`web/src/components/chat/message-actions.tsx`), which opens the Settings hub on its General tab and scrolls the spend breakdown into view.
+**Where it lives, and why not the byline.** It is a button in the message overflow menu, not a link in the attribution row. Two reasons. It opens a dialog rather than navigating, so `role="link"` would tell a screen-reader user the wrong thing about what happens next. And the footer already splits into a metadata byline (facts, always visible) and an action cluster (verbs, in the overflow); a "View spend" control repeated visibly under every answer is the same thread noise that the no-inline-cost rule exists to prevent.
+**Verify.** Playwright on a finished turn: assert the attribution row contains no `$` figure; open `[data-testid="message-actions-overflow"]`, click `[data-testid="view-spend"]`, and assert `[data-testid="spend-analytics-panel"]` is visible. Landing on the tab is not enough — the General tab is a scroll container and the breakdown sits below the account block, so the check is that the breakdown itself is on screen.
 
 ### UI-TRUST-4 [must] — Cost that is shown labels its confidence
 **Assertion.** Wherever a cost figure is displayed (Spend hub, usage meter, model-picker list prices, agentic run meter), a non-exact computation is explicitly labeled as an estimate or as unavailable; a route with no published rate never renders an exact `$0.00`.
@@ -580,7 +585,7 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 
 Recorded while writing this document. Each entry names the disagreement, the ruling, and what a reviewer should do.
 
-**C1 — Canon requires an affordance that is not shipped.** `docs/prd/07-transparency-contract.md` §6.1 and §8 AC 9, and `docs/prd/06-design-system-visual-spec.md` §5.4 (D41), require a per-message **View spend** link on every finished assistant message. No such affordance exists in `web/src/components/` (`rg -i 'view spend' web/src` returns nothing), and `web/src/components/chat/attribution-row.tsx` renders no cost element at all. **Ruling:** UI-TRUST-3 states the canon bar; it fails today, and that is a defect against PRD 07, not a defect in this document.
+**C1 — Canon requires an affordance that is not shipped. RESOLVED.** `docs/prd/07-transparency-contract.md` §6.1 and §8 AC 9, and `docs/prd/06-design-system-visual-spec.md` §5.4 (D41), require a per-message **View spend** affordance on every finished assistant message. None existed when this document was written. **Ruling:** the affordance ships — a **View spend** item in the message overflow menu that opens the Settings hub on its General tab, scrolled to the spend breakdown (and skipping the mobile grouped list, which a plain tab deep-link would show). Two departures from the canon wording, both recorded in UI-TRUST-3: it is a button, not a link, because it opens a dialog rather than navigating; and it lives in the action cluster rather than the metadata byline, because the byline states facts and the cluster holds verbs. PRD 07 §8 AC 9 should be amended to say "affordance" rather than "link".
 
 **C2 — WCAG version is stated two ways.** `docs/prd/06-design-system-visual-spec.md` §2 sets the goal at "WCAG 2.1 AA (stretch 2.2 AA where cheap)", while `docs/prd/03-mobile-cross-platform.md` §4.8 makes WCAG 2.2 SC 2.5.8 a P0 floor and `docs/ux-best-practices/desktop-ux.md` §10 / `docs/ux-best-practices/mobile-ux.md` §10 target 2.2 AA including 2.4.11, 2.5.7 and 2.5.8 — with shipped implementations (the `.chat-message-row` scroll margins in `globals.css` are commented "WCAG 2.4.11"). **Ruling:** repo canon prevails over external canon, but here repo canon contradicts itself; this document takes **WCAG 2.2 AA** as the bar, because PRD 03 §4.8 is the more specific clause and is the one that shipped. PRD 06 §2 should be amended to match.
 
@@ -595,6 +600,10 @@ Recorded while writing this document. Each entry names the disagreement, the rul
 **C7 — Two supporting documents carry stale paths.** `docs/mobile-ux/ST5-spec.md` §(c) lists `web/src/components/layout/app-shell.tsx` and `.../layout/app-header.tsx`; no `layout/` directory exists — both files live under `web/src/components/chat/`. Separately, `web/.nycrc.json` excludes three files that no longer exist (`src/components/chat/history-search-dialog.tsx`, `src/components/chat/spend-dialog.tsx`, `src/components/ui/skeleton.tsx`). **Ruling:** neither changes a standard, but a reviewer following ST5's file list will not find the files, and the stale nyc excludes quietly widen the coverage exemptions. Both are cleanup items.
 
 **C8 — Repo canon is deliberately stricter than external canon in two places.** Touch target: Apple HIG and repo canon set 44 pt where WCAG 2.2 SC 2.5.8 sets 24 px — repo wins (UI-TOUCH-1), with 24 px retained only as the pointer-device floor (UI-TOUCH-2). Motion: `prefers-reduced-motion` support corresponds to SC 2.3.3, a AAA criterion, but `docs/prd/06-design-system-visual-spec.md` §7 AC 8 makes it release-blocking — repo wins (UI-MOTION-5). Both are noted inside the clauses so no reviewer relaxes them by citing the weaker external number.
+
+**C9 — "Control boundaries" did not say which boundaries. RESOLVED.** The first review against UI-COLOR-4 measured the follow-up chip outline at 1.15:1 and could not tell whether the clause meant every drawn boundary or only a boundary a control depends on. **Ruling:** only load-bearing boundaries, as UI-COLOR-4's new scope paragraph now states. Two roles exist: `--border` for separators that carry no obligation, `--control-border` for a boundary that is the sole signal of interactivity or of state.
+
+**C10 — Touch floors were width-gated across the app. RESOLVED.** A sweep found 37 sites writing the 44 px floor as a base with a width-gated reset (`size-11 md:size-9`, `min-h-11 md:min-h-0`) and 8 sites hiding hover-revealed controls the same way (`md:opacity-0`). Every one satisfied UI-TOUCH-4 as it was then worded and broke UI-TOUCH-5 and UI-TOUCH-6 on any touch tablet at >= 768 px. **Ruling:** the inverted form is the defect, not the exception. UI-TOUCH-4 no longer lists `md:` as an acceptable gate, and UI-TOUCH-5 and UI-TOUCH-6 each carry a "How to write it" line with the `rg` check that catches a regression.
 
 ---
 

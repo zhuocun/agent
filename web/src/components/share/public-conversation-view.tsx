@@ -131,7 +131,7 @@ function PublicHeader() {
           nativeButton={false}
           render={<Link href="/" />}
           variant="outline"
-          className="h-11 rounded-full border-brand/25 bg-brand/10 px-3.5 ui-list-row text-foreground hover:bg-brand/15 sm:h-9"
+          className="h-9 rounded-full border-brand/25 bg-brand/10 px-3.5 ui-list-row text-foreground hover:bg-brand/15 [@media(hover:none)]:h-11"
         >
           Start your own chat
         </Button>

@@ -660,9 +660,9 @@ function ConversationRow({
               aria-label="Conversation actions"
               onClick={stopBubble}
               className={cn(
-                "size-11 shrink-0 rounded-full p-0 text-muted-foreground transition-opacity hover:text-foreground md:size-7",
+                "size-7 shrink-0 rounded-full p-0 text-muted-foreground transition-opacity hover:text-foreground [@media(hover:none)]:size-11",
                 // Always visible on touch; reveal on hover/focus on desktop.
-                "opacity-100 md:opacity-0 md:group-hover/conv:opacity-100 md:focus-within:opacity-100 md:aria-expanded:opacity-100",
+                "opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/conv:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:aria-expanded:opacity-100",
               )}
             >
               <MoreHorizontal className="size-4" aria-hidden />
@@ -1525,7 +1525,7 @@ export function Sidebar({
             data-sidebar-collapse
             aria-label={t("sidebar.collapse")}
             onClick={onCollapse}
-            className="size-11 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground md:size-9"
+            className="size-9 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground [@media(hover:none)]:size-11"
           >
             <PanelLeftClose className="size-4" aria-hidden />
           </Button>
@@ -1584,7 +1584,7 @@ export function Sidebar({
               type="button"
               aria-label="Clear search"
               onClick={() => onSearchChange("")}
-              className="absolute right-0 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:right-1 md:size-9"
+              className="absolute right-0 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:right-1 [@media(hover:none)]:size-11"
             >
               <X aria-hidden className="size-3.5" />
             </button>
@@ -1601,7 +1601,7 @@ export function Sidebar({
               "mt-1 hidden items-center gap-1.5 rounded-full px-2.5 py-1 ui-caption text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:inline-flex",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users reach advanced search via Cmd+K instead.
-              "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+              "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/toolbar:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100",
             )}
           >
             <SlidersHorizontal aria-hidden className="size-3" />
@@ -1624,7 +1624,7 @@ export function Sidebar({
               "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left ui-caption font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users use the conversation row's overflow menu.
-              "md:opacity-0 md:group-hover/toolbar:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+              "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/toolbar:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100",
             )}
           >
             <Check className="size-3.5" aria-hidden />
@@ -1658,7 +1658,7 @@ export function Sidebar({
                   data-testid="sidebar-bulk-archive"
                   disabled={!hasSelection}
                   onClick={() => runBulk((ids) => onBulkArchive(ids, true))}
-                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
+                  className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
                 >
                   <Archive className="size-4" aria-hidden />
                 </Button>
@@ -1669,7 +1669,7 @@ export function Sidebar({
                   data-testid="sidebar-bulk-unarchive"
                   disabled={!hasSelection}
                   onClick={() => runBulk((ids) => onBulkArchive(ids, false))}
-                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
+                  className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
                 >
                   <ArchiveRestore className="size-4" aria-hidden />
                 </Button>
@@ -1685,7 +1685,7 @@ export function Sidebar({
                       aria-label="Tag selected"
                       data-testid="sidebar-bulk-tag"
                       disabled={!hasSelection}
-                      className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
+                      className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
                     >
                       <Tags className="size-4" aria-hidden />
                     </Button>
@@ -1757,7 +1757,7 @@ export function Sidebar({
                 data-testid="sidebar-bulk-delete"
                 disabled={!hasSelection}
                 onClick={() => runBulk(onBulkDelete)}
-                className="size-11 rounded-full p-0 text-destructive hover:text-destructive md:size-8"
+                className="size-8 rounded-full p-0 text-destructive hover:text-destructive [@media(hover:none)]:size-11"
               >
                 <Trash2 className="size-4" aria-hidden />
               </Button>
@@ -1768,7 +1768,7 @@ export function Sidebar({
               aria-label="Cancel selection"
               data-testid="sidebar-bulk-cancel"
               onClick={exitSelection}
-              className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-8"
+              className="size-8 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
             >
               <X className="size-4" aria-hidden />
             </Button>
@@ -1878,7 +1878,7 @@ export function Sidebar({
                         aria-label={`Clear ${activeFilterTag.name} filter`}
                         data-testid="sidebar-collections-clear-filter"
                         onClick={() => onSetTagFilter?.(null)}
-                        className="size-11 shrink-0 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground md:size-7"
+                        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground transition-colors hover:text-foreground [@media(hover:none)]:size-11"
                       >
                         <X className="size-4" aria-hidden />
                       </Button>
@@ -1903,11 +1903,11 @@ export function Sidebar({
                         data-testid="sidebar-new-project"
                         onClick={openCreateProject}
                         className={cn(
-                          "size-11 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground md:size-7",
+                          "size-7 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground [@media(hover:none)]:size-11",
                           // Persistent on touch; hover/focus-revealed on desktop
                           // (reveals on hover of the section header row). Stays
                           // mounted (opacity only) so it's clickable + e2e-safe.
-                          "opacity-100 md:opacity-0 md:group-hover/proj-head:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+                          "opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/proj-head:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100",
                         )}
                       >
                         <FolderPlus className="size-4" aria-hidden />
@@ -1950,7 +1950,7 @@ export function Sidebar({
                                     variant="ghost"
                                     aria-label="Project actions"
                                     onClick={(e) => e.stopPropagation()}
-                                    className="size-11 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground md:size-7 md:opacity-0 md:group-hover/proj:opacity-100 md:aria-expanded:opacity-100"
+                                    className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground [@media(hover:none)]:size-11 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/proj:opacity-100 [@media(hover:hover)]:aria-expanded:opacity-100"
                                   >
                                     <MoreHorizontal
                                       className="size-4"
@@ -2028,11 +2028,11 @@ export function Sidebar({
                         data-testid="sidebar-new-tag"
                         onClick={openCreateTag}
                         className={cn(
-                          "size-11 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground md:size-7",
+                          "size-7 rounded-full p-0 text-muted-foreground transition-[color,opacity] motion-reduce:transition-none hover:text-foreground [@media(hover:none)]:size-11",
                           // Persistent on touch; hover/focus-revealed on desktop
                           // (reveals on hover of the section header row). Stays
                           // mounted (opacity only) so it's clickable + e2e-safe.
-                          "opacity-100 md:opacity-0 md:group-hover/tags-head:opacity-100 md:focus-within:opacity-100 md:focus-visible:opacity-100",
+                          "opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/tags-head:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100",
                         )}
                       >
                         <Plus className="size-4" aria-hidden />
@@ -2098,7 +2098,7 @@ export function Sidebar({
                                       variant="ghost"
                                       aria-label="Tag actions"
                                       onClick={(e) => e.stopPropagation()}
-                                      className="size-11 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground md:size-7 md:opacity-0 md:group-hover/tag:opacity-100 md:aria-expanded:opacity-100"
+                                      className="size-7 shrink-0 rounded-full p-0 text-muted-foreground opacity-100 transition-opacity hover:text-foreground [@media(hover:none)]:size-11 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/tag:opacity-100 [@media(hover:hover)]:aria-expanded:opacity-100"
                                     >
                                       <MoreHorizontal
                                         className="size-4"

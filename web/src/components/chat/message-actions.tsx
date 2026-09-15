@@ -11,6 +11,7 @@ import {
   Minus,
   MoreHorizontal,
   Plus,
+  Receipt,
   RotateCcw,
   Square,
   ThumbsDown,
@@ -74,6 +75,13 @@ interface MessageActionsProps {
   };
   onContinue?: () => void;
   onFeedback?: (next: Feedback) => void;
+  // Opens the spend breakdown (Settings → General, scrolled to the panel).
+  // PRD 07 §6.1 keeps cost OUT of the thread — no per-turn figure, no cost
+  // popover — so this is the route from a finished answer to what it cost. It
+  // lives in the overflow menu, not the inline strip: the strip is deliberately
+  // two hit-targets, and a "View spend" control repeated under every message
+  // would be the same visual noise the no-inline-cost rule exists to avoid.
+  onViewSpend?: () => void;
 }
 
 // Legacy clipboard fallback for insecure origins / denied permission, where
@@ -112,6 +120,7 @@ export function MessageActions({
   regenerateOptions,
   onContinue,
   onFeedback,
+  onViewSpend,
 }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
@@ -176,6 +185,7 @@ export function MessageActions({
         canBranch={canBranch}
         isBranching={isBranching}
         onBranch={onBranch}
+        onViewSpend={onViewSpend}
         primary={{
           canRegenerate: !!canRegenerate,
           onRegenerate,
@@ -208,6 +218,7 @@ function OverflowMenu({
   canBranch,
   isBranching,
   onBranch,
+  onViewSpend,
   primary,
   modelChoice,
 }: {
@@ -218,6 +229,7 @@ function OverflowMenu({
   canBranch?: boolean;
   isBranching?: boolean;
   onBranch?: () => void;
+  onViewSpend?: () => void;
   // The inline strip is just Copy + "…" on every device. Regenerate and the
   // two ratings live at the top of the menu so they stay one tap/click deep.
   primary?: {
@@ -282,7 +294,7 @@ function OverflowMenu({
                   variant="ghost"
                   aria-label="More actions"
                   data-testid="message-actions-overflow"
-                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
+                  className="size-9 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
                 >
                   <MoreHorizontal className="size-4" />
                 </Button>
@@ -462,6 +474,24 @@ function OverflowMenu({
               </span>
             </DropdownMenuItem>
           ) : null}
+
+          {onViewSpend ? (
+            <DropdownMenuItem
+              label="View spend"
+              aria-label="View spend"
+              onClick={onViewSpend}
+              data-testid="view-spend"
+              className="py-2"
+            >
+              <Receipt className="size-4" />
+              <div className="min-w-0 flex-1">
+                <span className="truncate font-medium">View spend</span>
+                <p className="mt-0.5 text-pretty ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                  Opens your usage and cost breakdown
+                </p>
+              </div>
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuGroup>
 
         {modelChoice ? (
@@ -559,7 +589,7 @@ function IconAction({
             aria-label={label}
             aria-pressed={typeof pressed === "boolean" ? pressed : undefined}
             className={cn(
-              "size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9",
+              "size-9 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11",
               pressed && "bg-foreground/[0.06] text-foreground",
             )}
           >

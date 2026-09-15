@@ -196,7 +196,7 @@ export function WebSearchPanel({ group, embedded = false }: WebSearchPanelProps)
           data-testid="web-search-trigger"
           className={cn(
             "group/web-search-trigger flex w-full min-w-0 items-center gap-1.5 text-left",
-            "min-h-11 bg-transparent py-2 -my-2 outline-none md:min-h-0 md:py-0 md:my-0",
+            "bg-transparent outline-none [@media(hover:none)]:min-h-11 [@media(hover:none)]:py-2 [@media(hover:none)]:-my-2",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
           aria-label={`Web search, ${summary} — toggle details`}

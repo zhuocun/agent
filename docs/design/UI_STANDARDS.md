@@ -601,6 +601,10 @@ Recorded while writing this document. Each entry names the disagreement, the rul
 
 **C8 — Repo canon is deliberately stricter than external canon in two places.** Touch target: Apple HIG and repo canon set 44 pt where WCAG 2.2 SC 2.5.8 sets 24 px — repo wins (UI-TOUCH-1), with 24 px retained only as the pointer-device floor (UI-TOUCH-2). Motion: `prefers-reduced-motion` support corresponds to SC 2.3.3, a AAA criterion, but `docs/prd/06-design-system-visual-spec.md` §7 AC 8 makes it release-blocking — repo wins (UI-MOTION-5). Both are noted inside the clauses so no reviewer relaxes them by citing the weaker external number.
 
+**C9 — "Control boundaries" did not say which boundaries. RESOLVED.** The first review against UI-COLOR-4 measured the follow-up chip outline at 1.15:1 and could not tell whether the clause meant every drawn boundary or only a boundary a control depends on. **Ruling:** only load-bearing boundaries, as UI-COLOR-4's new scope paragraph now states. Two roles exist: `--border` for separators that carry no obligation, `--control-border` for a boundary that is the sole signal of interactivity or of state.
+
+**C10 — Touch floors were width-gated across the app. RESOLVED.** A sweep found 37 sites writing the 44 px floor as a base with a width-gated reset (`size-11 md:size-9`, `min-h-11 md:min-h-0`) and 8 sites hiding hover-revealed controls the same way (`md:opacity-0`). Every one satisfied UI-TOUCH-4 as it was then worded and broke UI-TOUCH-5 and UI-TOUCH-6 on any touch tablet at >= 768 px. **Ruling:** the inverted form is the defect, not the exception. UI-TOUCH-4 no longer lists `md:` as an acceptable gate, and UI-TOUCH-5 and UI-TOUCH-6 each carry a "How to write it" line with the `rg` check that catches a regression.
+
 ---
 
 ## 15. Running a review

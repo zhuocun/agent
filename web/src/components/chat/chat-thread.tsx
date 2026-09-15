@@ -4287,7 +4287,7 @@ export function ChatThread() {
                 paletteCreate === "tag" ? "Tag name" : "Project name"
               }
               placeholder={paletteCreate === "tag" ? "Tag name" : "Project name"}
-              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] sm:h-9 md:text-sm"
+              className="block h-9 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:h-11 md:text-sm"
             />
             <DialogFooter className="mt-4">
               <Button
@@ -4382,7 +4382,7 @@ export function ChatThread() {
               onChange={(e) => setDeleteConfirmText(e.target.value)}
               data-testid="delete-account-confirm-input"
               aria-label={`Type ${deleteConfirmExpected} to confirm account deletion`}
-              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] sm:h-9 md:text-sm"
+              className="block h-9 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:h-11 md:text-sm"
             />
           </div>
           <DialogFooter>

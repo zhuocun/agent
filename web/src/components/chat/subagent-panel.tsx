@@ -145,7 +145,7 @@ export function SubagentPanel({
           data-testid="subagent-panel-trigger"
           className={cn(
             "group/subagent-panel-trigger flex w-full min-w-0 items-center gap-x-2 gap-y-1 text-left",
-            "min-h-11 bg-transparent py-2 -my-2 outline-none md:min-h-0 md:py-0 md:my-0",
+            "bg-transparent outline-none [@media(hover:none)]:min-h-11 [@media(hover:none)]:py-2 [@media(hover:none)]:-my-2",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
           aria-label={`${title} — toggle details`}
@@ -580,7 +580,7 @@ function SubagentRow({
         <CollapsibleTrigger
           className={cn(
             "group/subagent-trigger flex w-full min-w-0 items-center text-left",
-            "min-h-11 bg-transparent py-2 -my-2 outline-none md:min-h-0 md:py-0 md:my-0",
+            "bg-transparent outline-none [@media(hover:none)]:min-h-11 [@media(hover:none)]:py-2 [@media(hover:none)]:-my-2",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
           aria-label={`${section.label}, ${roleLabel(section.role)} — toggle details`}

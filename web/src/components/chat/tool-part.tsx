@@ -213,7 +213,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
               });
             }}
             data-testid="tool-approve"
-            className="min-h-11 rounded-full bg-brand-fill px-4 text-brand-foreground hover:bg-brand-fill/90 md:min-h-0"
+            className="rounded-full bg-brand-fill px-4 text-brand-foreground hover:bg-brand-fill/90 [@media(hover:none)]:min-h-11"
           >
             <Check aria-hidden />
             <span>Approve</span>
@@ -228,7 +228,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
               onDecision({ toolCallId, decision: "deny" });
             }}
             data-testid="tool-deny"
-            className="min-h-11 rounded-full px-4 md:min-h-0"
+            className="rounded-full px-4 [@media(hover:none)]:min-h-11"
           >
             <X aria-hidden />
             <span>Deny</span>
@@ -269,7 +269,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
         <CollapsibleTrigger
           className={cn(
             "group/tool-trigger flex w-full min-w-0 items-center gap-1.5 text-left",
-            "min-h-11 bg-transparent py-2 -my-2 outline-none md:min-h-0 md:py-0 md:my-0",
+            "bg-transparent outline-none [@media(hover:none)]:min-h-11 [@media(hover:none)]:py-2 [@media(hover:none)]:-my-2",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
           aria-label={`${label}, ${statusLabel(status)} — toggle details`}
@@ -452,7 +452,7 @@ function PlanClarifyForm({
             });
           }}
           data-testid="tool-approve"
-          className="min-h-11 rounded-full bg-brand-fill px-4 text-brand-foreground hover:bg-brand-fill/90 md:min-h-0"
+          className="rounded-full bg-brand-fill px-4 text-brand-foreground hover:bg-brand-fill/90 [@media(hover:none)]:min-h-11"
         >
           <Check aria-hidden />
           <span>Continue</span>
@@ -467,7 +467,7 @@ function PlanClarifyForm({
             onDecision({ toolCallId, decision: "deny" });
           }}
           data-testid="tool-deny"
-          className="min-h-11 rounded-full px-4 md:min-h-0"
+          className="rounded-full px-4 [@media(hover:none)]:min-h-11"
         >
           <X aria-hidden />
           <span>Skip research</span>

@@ -230,11 +230,13 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 ### UI-TOUCH-5 [must] — Touch floors are gated on pointer capability, not width
 **Assertion.** The 44 px floor is selected by `hover: none` / `pointer: coarse`, so a touch tablet at ≥768 px keeps 44 px targets while receiving the desktop layout.
 **Source.** `docs/ux-best-practices/desktop-ux.md` §13 D13 and `docs/ux-best-practices/mobile-ux.md` §13 M17; shipped in `web/src/components/ui/button.tsx` `buttonVariants` (`[@media(hover:none)]:size-11` / `:min-h-11`).
+**How to write it.** The dense size is the base and the 44 px floor is the pointer-gated override: `size-9 [@media(hover:none)]:size-11`. The inverted form — a 44 px base with a width-gated reset, `size-11 md:size-9` — is the failure this clause names, and reads as correct until a tablet opens it. `rg -n 'md:size-|md:min-h-0|(md|sm):h-9' web/src` must return nothing.
 **Verify.** Playwright at 1024×768 with `hasTouch: true`: assert icon buttons measure 44 px and the desktop two-pane shell is rendered.
 
 ### UI-TOUCH-6 [must] — Hover is never the sole affordance
 **Assertion.** Any control revealed on hover on a pointer device is persistently visible (or reachable through a labeled overflow control) on a touch device, and is revealed by `:focus-visible` for keyboard users.
 **Source.** `docs/design/02-patterns.md`, "Density splits by input modality"; `docs/design/03-anti-patterns.md` §F, "One disclosure rule for both desktop and touch"; `docs/ux-best-practices/desktop-ux.md` §13 D3.
+**How to write it.** Persistent visibility is the base and the hover hide is the pointer-gated override: `opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/x:opacity-100`. A width-gated hide (`md:opacity-0`) leaves the control invisible at rest on a touch tablet, which is this clause's failure. `rg -n '(md|sm|lg):opacity-0' web/src` must return nothing.
 **Verify.** Playwright with `hasTouch: true`: assert message footer actions and conversation-row controls are visible without any hover event; then on desktop, Tab to the row and assert the same controls become visible.
 
 ### UI-TOUCH-7 [should] — Press feedback within 100 ms

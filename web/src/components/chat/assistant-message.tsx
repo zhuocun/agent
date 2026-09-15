@@ -505,7 +505,7 @@ export function AssistantMessage({
               variant="ghost"
               size="sm"
               onClick={onRegenerate}
-              className="min-h-11 rounded-full px-4 md:min-h-0"
+              className="rounded-full px-4 [@media(hover:none)]:min-h-11"
               data-testid="assistant-empty-regenerate"
             >
               <RotateCcw aria-hidden />
@@ -550,7 +550,7 @@ export function AssistantMessage({
                 coarse pointers for parity with the hover path. Opacity-only
                 transition — pointer-events stay auto so toolbar buttons remain
                 hit-testable without a prior synthetic hover. */}
-            <div className="ml-auto flex flex-wrap items-center gap-2 opacity-100 transition-opacity focus-within:opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
+            <div className="ml-auto flex flex-wrap items-center gap-2 opacity-100 transition-opacity focus-within:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
               <MessageActions
                 text={effectiveAnswerText}
                 feedback={message.feedback ?? null}
@@ -647,7 +647,7 @@ function MemoryUsedChip({
         "outline-none transition-colors hover:text-foreground",
         "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
         // 44pt touch floor on coarse pointers; visual size unchanged on desktop.
-        "min-h-11 py-2 -my-2 md:min-h-0 md:py-0 md:my-0",
+        "[@media(hover:none)]:min-h-11 [@media(hover:none)]:py-2 [@media(hover:none)]:-my-2",
       )}
     >
       <Brain aria-hidden className="size-3" />
@@ -786,7 +786,7 @@ function ErrorFooter({
                 onRetry();
               }}
               aria-disabled={retryDisabled}
-              className="min-h-11 rounded-full px-4 md:min-h-0 aria-disabled:pointer-events-none aria-disabled:opacity-50"
+              className="rounded-full px-4 [@media(hover:none)]:min-h-11 aria-disabled:pointer-events-none aria-disabled:opacity-50"
               data-testid="assistant-error-retry"
             >
               <RotateCcw aria-hidden />
@@ -822,7 +822,7 @@ function ErrorFooter({
               variant="ghost"
               size="sm"
               onClick={() => handleAction(action)}
-              className="min-h-11 rounded-full px-4 md:min-h-0"
+              className="rounded-full px-4 [@media(hover:none)]:min-h-11"
               data-testid={`assistant-error-action-${action.kind}`}
             >
               <span>{action.label}</span>
@@ -835,7 +835,7 @@ function ErrorFooter({
             render={<Link href="/status" />}
             variant="ghost"
             size="sm"
-            className="min-h-11 rounded-full px-4 md:min-h-0"
+            className="rounded-full px-4 [@media(hover:none)]:min-h-11"
             data-testid="assistant-error-status"
           >
             <Activity aria-hidden />
@@ -869,7 +869,7 @@ function ErrorFooter({
                 size="sm"
                 onClick={() => void requestReview()}
                 disabled={appealStatus === "pending"}
-                className="min-h-11 rounded-full px-4 md:min-h-0"
+                className="rounded-full px-4 [@media(hover:none)]:min-h-11"
                 data-testid="safety-request-review"
               >
                 {appealStatus === "pending" ? "Sending…" : "Request review"}

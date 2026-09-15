@@ -282,7 +282,7 @@ function OverflowMenu({
                   variant="ghost"
                   aria-label="More actions"
                   data-testid="message-actions-overflow"
-                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
+                  className="size-9 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
                 >
                   <MoreHorizontal className="size-4" />
                 </Button>
@@ -462,6 +462,24 @@ function OverflowMenu({
               </span>
             </DropdownMenuItem>
           ) : null}
+
+          {onViewSpend ? (
+            <DropdownMenuItem
+              label="View spend"
+              aria-label="View spend"
+              onClick={onViewSpend}
+              data-testid="view-spend"
+              className="py-2"
+            >
+              <Receipt className="size-4" />
+              <div className="min-w-0 flex-1">
+                <span className="truncate font-medium">View spend</span>
+                <p className="mt-0.5 text-pretty ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/80">
+                  Opens your usage and cost breakdown
+                </p>
+              </div>
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuGroup>
 
         {modelChoice ? (
@@ -559,7 +577,7 @@ function IconAction({
             aria-label={label}
             aria-pressed={typeof pressed === "boolean" ? pressed : undefined}
             className={cn(
-              "size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9",
+              "size-9 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11",
               pressed && "bg-foreground/[0.06] text-foreground",
             )}
           >

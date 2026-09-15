@@ -322,7 +322,7 @@ export function UserMessage({
                 variant="ghost"
                 onClick={handleCopy}
                 aria-label={copied ? "Copied" : copyFailed ? "Copy failed" : "Copy"}
-                className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
+                className="size-9 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
               >
                 {copied ? (
                   <Check className="size-4 text-success" />
@@ -348,7 +348,7 @@ export function UserMessage({
                   variant="ghost"
                   onClick={enterEdit}
                   aria-label="Edit"
-                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
+                  className="size-9 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
                 >
                   <Pencil className="size-4" />
                 </Button>
@@ -368,7 +368,7 @@ export function UserMessage({
                   onClick={onBranch}
                   disabled={!canBranch || isBranching}
                   aria-label={isBranching ? "Branching" : "Branch in new chat"}
-                  className="size-11 rounded-full p-0 text-muted-foreground hover:text-foreground md:size-9"
+                  className="size-9 rounded-full p-0 text-muted-foreground hover:text-foreground [@media(hover:none)]:size-11"
                 >
                   {isBranching ? (
                     <Loader2 className="size-4 motion-safe:animate-spin" />

@@ -207,13 +207,13 @@ export function ShareDialog({
                     readOnly
                     onFocus={(e) => e.currentTarget.select()}
                     aria-label="Public share link"
-                    className="block h-11 w-full min-w-0 flex-1 rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] sm:h-9 md:text-sm"
+                    className="block h-9 w-full min-w-0 flex-1 rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:h-11 md:text-sm"
                   />
                   <Button
                     type="button"
                     variant="secondary"
                     onClick={handleCopy}
-                    className="h-11 shrink-0 rounded-full px-3 sm:h-9"
+                    className="h-9 shrink-0 rounded-full px-3 [@media(hover:none)]:h-11"
                   >
                     {copied ? (
                       <>

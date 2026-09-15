@@ -1129,7 +1129,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               <span
                 key={attachment.id}
                 className={cn(
-                  "glass-regular inline-flex h-11 max-w-full items-center gap-2 rounded-full px-3 text-xs text-foreground shadow-[var(--glass-highlight)] md:h-9",
+                  "glass-regular inline-flex h-9 max-w-full items-center gap-2 rounded-full px-3 text-xs text-foreground shadow-[var(--glass-highlight)] [@media(hover:none)]:h-11",
                   (attachedSendBlocked || attachmentReadPending) &&
                     "text-muted-foreground",
                 )}
@@ -1150,7 +1150,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   type="button"
                   aria-label={`Remove ${attachment.name}`}
                   onClick={() => removeAttachment(attachment.id)}
-                  className="-mr-1 ml-0.5 inline-flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:size-7"
+                  className="-mr-1 ml-0.5 inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none [@media(hover:none)]:size-11"
                 >
                   <X className="size-3.5" />
                 </button>
@@ -1161,7 +1161,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 role="status"
                 aria-live="polite"
                 aria-atomic="true"
-                className="glass-regular inline-flex h-11 max-w-full items-center gap-2 rounded-full px-3 text-xs text-muted-foreground shadow-[var(--glass-highlight)] md:h-9"
+                className="glass-regular inline-flex h-9 max-w-full items-center gap-2 rounded-full px-3 text-xs text-muted-foreground shadow-[var(--glass-highlight)] [@media(hover:none)]:h-11"
               >
                 <LoaderCircle
                   aria-hidden
@@ -1176,7 +1176,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   type="button"
                   aria-label="Cancel attachment read"
                   onClick={() => clearAttachments("manual")}
-                  className="-mr-1 ml-0.5 inline-flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:size-7"
+                  className="-mr-1 ml-0.5 inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none [@media(hover:none)]:size-11"
                 >
                   <X className="size-3.5" />
                 </button>

@@ -151,7 +151,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
       : cn(
           "rounded-xl border px-3 py-2.5",
           destructive
-            ? "border-destructive/20 bg-destructive/5 text-destructive"
+            ? "border-destructive/20 bg-destructive/5 text-destructive-text"
             : "border-foreground/[0.06] bg-foreground/[0.02] text-muted-foreground",
         ),
   );
@@ -213,7 +213,7 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
               });
             }}
             data-testid="tool-approve"
-            className="min-h-11 rounded-full bg-brand px-4 text-brand-foreground hover:bg-brand/90 md:min-h-0"
+            className="min-h-11 rounded-full bg-brand-fill px-4 text-brand-foreground hover:bg-brand-fill/90 md:min-h-0"
           >
             <Check aria-hidden />
             <span>Approve</span>
@@ -452,7 +452,7 @@ function PlanClarifyForm({
             });
           }}
           data-testid="tool-approve"
-          className="min-h-11 rounded-full bg-brand px-4 text-brand-foreground hover:bg-brand/90 md:min-h-0"
+          className="min-h-11 rounded-full bg-brand-fill px-4 text-brand-foreground hover:bg-brand-fill/90 md:min-h-0"
         >
           <Check aria-hidden />
           <span>Continue</span>
@@ -506,7 +506,7 @@ function StatusIcon({
   if (status === "awaiting_approval") {
     return (
       <ShieldQuestion
-        className="mt-0.5 size-4 shrink-0 text-warning"
+        className="mt-0.5 size-4 shrink-0 text-warning-text"
         aria-hidden
       />
     );
@@ -532,8 +532,8 @@ function ApprovalPill({ state }: { state: ToolApprovalState }) {
     <span
       className={cn(
         "inline-flex h-5 items-center gap-1 rounded-full px-2 ui-caption",
-        approved && "bg-success/10 text-success",
-        rejected && "bg-destructive/10 text-destructive",
+        approved && "bg-success/10 text-success-text",
+        rejected && "bg-destructive/10 text-destructive-text",
         !approved && !rejected && "bg-warning text-warning-foreground",
       )}
     >

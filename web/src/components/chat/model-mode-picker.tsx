@@ -93,7 +93,7 @@ export interface ModelModePickerProps {
 // circles flanking it, while staying quiet enough not to compete with the send
 // button. Hover/expanded deepen the fill; focus shows the ring.
 const TRIGGER_CLASS =
-  "inline-flex h-11 min-w-0 max-w-[min(12rem,calc(100vw-16rem))] items-center gap-1 rounded-full px-3 ui-list-row outline-none transition-colors bg-foreground/[0.04] shadow-[inset_0_0_0_1px_var(--glass-border)] hover:bg-foreground/[0.08] focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/[0.08] md:max-w-80";
+  "inline-flex h-11 min-w-0 max-w-[min(12rem,calc(100vw-11rem))] sm:max-w-[min(12rem,calc(100vw-16rem))] items-center gap-1 rounded-full px-3 ui-list-row outline-none transition-colors bg-foreground/[0.04] shadow-[inset_0_0_0_1px_var(--glass-border)] hover:bg-foreground/[0.08] focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/[0.08] md:max-w-80";
 
 export function ModelModePicker({
   tiers,
@@ -284,7 +284,8 @@ export function ModelModePicker({
           <Collapsible className="mt-1">
             <CollapsibleTrigger
               data-testid="picker-advanced"
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
+              tabIndex={-1}
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase outline-none transition-colors [@media(hover:none)]:min-h-11 hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
             >
               <ChevronRight
                 aria-hidden

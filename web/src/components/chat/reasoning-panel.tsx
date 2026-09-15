@@ -65,21 +65,26 @@ export function ReasoningPanel({
           // layout (the assistant bubble's gap stack) is unchanged — only the
           // clickable region grows.
           "bg-transparent py-3.5 -my-3.5 underline-offset-2 md:py-1.5 md:-my-1.5",
-          "outline-none focus-visible:underline",
+          "outline-none focus-visible:underline focus-visible:shadow-[var(--focus-ring)]",
         )}
       >
         {/* Both labels share the same grid cell so the trigger's intrinsic
             width snaps to the longer one and the cross-fade has no horizontal
             shift; opacity tweens in lockstep with the body collapse below. */}
         <span className="relative inline-grid">
+          {/* Visibility rides the same transition as opacity so the faded-out
+              label leaves the text layer at the end of the fade: otherwise a
+              settled turn still copies "Thinking…" and matches find-in-page. */}
           <span
             aria-hidden={!isStreaming}
             className={cn(
-              "[grid-area:1/1] transition-opacity duration-200 ease-out",
-              isStreaming ? "opacity-100" : "opacity-0",
-              "bg-gradient-to-r from-muted-foreground/70 via-foreground/80 to-muted-foreground/70",
+              "[grid-area:1/1] transition-[opacity,visibility] duration-200 ease-out",
+              isStreaming ? "opacity-100" : "invisible opacity-0",
+              "bg-gradient-to-r from-muted-foreground via-foreground to-muted-foreground",
               "bg-[length:200%_100%] bg-clip-text text-transparent",
-              "motion-safe:animate-shimmer",
+              // Stop the keyframe when the turn settles: the label fades to
+              // opacity 0 but an infinite animation keeps the compositor busy.
+              isStreaming && "motion-safe:animate-shimmer",
             )}
           >
             {streamingLabel}
@@ -87,8 +92,8 @@ export function ReasoningPanel({
           <span
             aria-hidden={isStreaming}
             className={cn(
-              "[grid-area:1/1] transition-opacity duration-200 ease-out",
-              isStreaming ? "opacity-0" : "opacity-100",
+              "[grid-area:1/1] transition-[opacity,visibility] duration-200 ease-out",
+              isStreaming ? "invisible opacity-0" : "opacity-100",
             )}
           >
             {settledLabel}

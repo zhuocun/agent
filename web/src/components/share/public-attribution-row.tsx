@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Key } from "lucide-react";
+import { Info, Key } from "lucide-react";
 
 import type { ModelTierId, PublicAttribution } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -15,9 +15,11 @@ export interface PublicAttributionRowProps {
 // cost (web/src/lib/types.ts `PublicAttribution`), so reusing that component
 // would force fabricated cost props. Instead this is a trimmed, static byline
 // that keeps the SAME typography and the SAME model-identity semantics — served
-// model label, optional BYOK chip — minus the interactive cost popover and the
-// private row's substitution callout ("Rerouted from … tier"). Public strangers
-// get a quiet "Answered with {label}" line instead of router jargon.
+// model label, substitution callout, optional BYOK chip — minus the interactive
+// cost popover. The callout is NOT optional here: PRD 07 §6.4 ships
+// `substitution` on the public payload precisely so a stranger sees when the
+// served model differed from the one asked for, and UI-TRUST-5 makes rendering
+// it a must. Only cost is stripped on this surface.
 
 type ServedTierId = Exclude<ModelTierId, "auto">;
 
@@ -33,7 +35,7 @@ function assertServedTier(id: ModelTierId): ServedTierId {
 export function PublicAttributionRow({
   attribution,
 }: PublicAttributionRowProps): React.JSX.Element {
-  const { isByok, servedModelLabel } = attribution;
+  const { isByok, servedModelLabel, substitution } = attribution;
   const servedTierId = assertServedTier(attribution.servedTierId);
   const tierLabel = MODEL_TIERS_BY_ID[servedTierId].label;
   const providerLabel = attribution.providerLabel?.trim() || undefined;
@@ -44,6 +46,7 @@ export function PublicAttributionRow({
   const answerLabel = servedModelLabel.trim() || tierLabel;
   const answerLine = `Answered with ${answerLabel}`;
   const ariaLabel = [
+    substitution ? `Rerouted: ${substitution.reasonText}` : null,
     answerLine,
     providerLabel ? `provider ${providerLabel}` : null,
     isByok ? byokLabel : null,
@@ -57,6 +60,19 @@ export function PublicAttributionRow({
       data-testid="public-attribution"
       aria-label={ariaLabel}
     >
+      {substitution ? (
+        <span
+          className={cn(
+            "inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 ui-caption font-medium",
+            "bg-substitution-callout text-substitution-callout-foreground",
+            "ring-1 ring-substitution-callout-border",
+          )}
+          data-testid="public-attribution-substitution"
+        >
+          <Info aria-hidden className="size-3 shrink-0" />
+          <span className="min-w-0 text-pretty">{substitution.reasonText}</span>
+        </span>
+      ) : null}
       <span>{answerLine}</span>
 
       {isByok ? (

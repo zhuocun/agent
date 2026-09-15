@@ -86,7 +86,7 @@ const FLOAT_BUTTON = cn(
 const FLOAT_BUTTON_TOUCH = cn(FLOAT_BUTTON, "md:hidden");
 
 const PILL_HALF =
-  "inline-flex h-[45px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none active:not-aria-[haspopup]:scale-[0.97] motion-reduce:transition-none motion-reduce:active:not-aria-[haspopup]:scale-100";
+  "inline-flex h-[45px] w-[54px] select-none items-center justify-center rounded-full text-muted-foreground [@media(hover:none)]:mx-0.5 outline-none transition-[transform,background-color,color] duration-100 touch-manipulation hover:text-foreground hover:bg-foreground/5 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none active:not-aria-[haspopup]:scale-[0.97] motion-reduce:transition-none motion-reduce:active:not-aria-[haspopup]:scale-100";
 
 export function AppHeader({
   onNewChat,
@@ -108,7 +108,9 @@ export function AppHeader({
   centerSlot,
 }: AppHeaderProps) {
   return (
-    <header className="relative flex h-[52px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
+    <header
+      aria-label="Chat toolbar"
+      className="relative flex h-[52px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
       {centerSlot ? (
         <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 select-none">
           {centerSlot}

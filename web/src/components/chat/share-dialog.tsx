@@ -253,7 +253,7 @@ export function ShareDialog({
           )}
 
           {error ? (
-            <p id={errorId} role="alert" className="ui-body text-destructive">
+            <p id={errorId} role="alert" className="ui-body text-destructive-text">
               {error}
             </p>
           ) : null}

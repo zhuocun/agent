@@ -120,7 +120,7 @@ export function SpendAnalyticsPanel({
       </div>
 
       <div
-        className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5"
+        className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
         role="group"
         aria-label="Spend range"
       >
@@ -134,7 +134,7 @@ export function SpendAnalyticsPanel({
               onClick={() => setDays(option.days)}
               data-testid={`spend-range-${option.days}`}
               className={cn(
-                "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors",
+                "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
                 selected
                   ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground",
@@ -187,6 +187,30 @@ export function SpendAnalyticsPanel({
         <h5 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
           Daily spend
         </h5>
+        {/* Table first, chart second: the bars are aria-hidden and carry their
+            values only in a title tooltip, so the series needs a real text
+            equivalent — the shape the By model list below already has. */}
+        {data && data.daily.length > 0 ? (
+          <table className="sr-only" data-testid="spend-daily-table">
+            <caption>Daily spend</caption>
+            <thead>
+              <tr>
+                <th scope="col">Day</th>
+                <th scope="col">Cost</th>
+                <th scope="col">Messages</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.daily.map((day) => (
+                <tr key={day.date}>
+                  <th scope="row">{formatDayLabel(day.date)}</th>
+                  <td>{formatUsdCurrency(day.costUsd)}</td>
+                  <td>{day.messageCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
         {data && data.daily.length > 0 ? (
           <div
             className="flex h-28 items-end gap-0.5"
@@ -203,7 +227,7 @@ export function SpendAnalyticsPanel({
                   title={`${formatDayLabel(day.date)}: ${formatUsdCurrency(day.costUsd)} (${day.messageCount} msg)`}
                 >
                   <div
-                    className="w-full rounded-t bg-brand/70 transition-colors group-hover:bg-brand"
+                    className="w-full rounded-t border border-transparent bg-brand/70 transition-colors group-hover:bg-brand forced-colors:border-[CanvasText] forced-colors:bg-[Highlight]"
                     style={{
                       height: `${Math.max(heightPct, day.costUsd > 0 ? 4 : 0)}%`,
                     }}

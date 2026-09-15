@@ -96,7 +96,7 @@ function PolicyBlock({
     <div className="space-y-1.5" data-testid="data-policy">
       <p className="flex items-center gap-1.5 ui-caption font-medium">
         {policy.trainsOnData ? (
-          <ShieldOff aria-hidden className="size-3.5 text-warning" />
+          <ShieldOff aria-hidden className="size-3.5 text-warning-text" />
         ) : (
           <ShieldCheck aria-hidden className="size-3.5 text-muted-foreground" />
         )}
@@ -227,8 +227,8 @@ export function ModelDirectoryBody({
           Models &amp; data policies
         </h2>
         <p className="ui-body text-muted-foreground">
-          Compare each provider route&apos;s data handling, capabilities, and
-          list prices. Facts come straight from the live model registry.
+          Compare each provider route&apos;s data handling and capabilities.
+          Facts come straight from the live model registry.
         </p>
       </div>
 
@@ -236,7 +236,7 @@ export function ModelDirectoryBody({
         {loading ? (
           <p className="ui-body text-muted-foreground">Loading…</p>
         ) : error ? (
-          <p role="alert" className="ui-body text-destructive">
+          <p role="alert" className="ui-body text-destructive-text">
             {error}
           </p>
         ) : (

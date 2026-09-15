@@ -236,13 +236,13 @@ export function UserMessage({
               aria-label="Save and resubmit"
               // Brand fill (matching the composer's primary send) so "submit a
               // turn" has one consistent primary color across the surface.
-              className="h-11 rounded-full bg-brand px-4 ui-list-row text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
+              className="h-11 rounded-full bg-brand-fill px-4 ui-list-row text-brand-foreground hover:bg-brand-fill/90 disabled:opacity-40"
             >
               Save
             </Button>
           </div>
           {editSaveFailed ? (
-            <p className="text-right ui-caption text-destructive" role="alert">
+            <p className="text-right ui-caption text-destructive-text" role="alert">
               Couldn&apos;t save — try again
             </p>
           ) : null}
@@ -305,8 +305,13 @@ export function UserMessage({
           (keyboard), on hover (desktop mouse), or when the bubble is tapped
           active (touch). Opacity-only — pointer-events stay auto so the
           actions remain hit-testable without a prior synthetic hover. */}
-      <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
-        <span className="sr-only" role="status" aria-live="polite">
+      <div className="opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 focus-within:opacity-100 [@media(hover:hover)]:group-hover/msg:opacity-100 group-data-[active=true]/msg:opacity-100">
+        <span
+          className="sr-only"
+          role="status"
+          aria-live="polite"
+          aria-label="Copy status"
+        >
           {copied ? "Copied" : copyFailed ? "Copy failed" : ""}
         </span>
         <Tooltip>

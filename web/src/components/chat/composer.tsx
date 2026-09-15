@@ -1278,6 +1278,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             data-testid="composer-textarea"
             ref={ref}
             rows={1}
+            // iOS shows a generic return key unless the intent is declared.
+            // `sentences` + autocorrect match a prose composer; `text` keeps the
+            // full keyboard for a multiline field.
+            enterKeyHint="send"
+            inputMode="text"
+            autoCapitalize="sentences"
+            autoCorrect="on"
+            spellCheck
             // Bind to message locale, not document/`?rtl=1` dir. Keeps the
             // English placeholder LTR under the RTL shell test hook; switches
             // when catalogs for ar/he/fa/ur land.
@@ -1295,7 +1303,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             aria-expanded={comboboxOpen}
             aria-controls={comboboxControls}
             aria-activedescendant={comboboxActiveOptionId}
-            className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground/70 md:text-[0.9375rem]"
+            className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
           />
           {/* Toolbar row beneath the textarea: the "+" disclosure and the
             model/mode picker sit left; the quick mic and the circular
@@ -1304,7 +1312,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             ("+") disclosure, mounted in ONE place so there are never duplicate
             testid hooks or stray hidden tab stops. The disclosure expands with
             a zoom/fade; motion-reduce makes the open instant. */}
-          <div className="flex min-w-0 items-center gap-1">
+          <div className="flex min-w-0 items-center gap-1 [@media(hover:none)]:gap-2">
             {(() => {
                 const moreActionsTrigger = (
                   <Button
@@ -1427,7 +1435,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             {modelPicker ? (
               <div className="flex min-w-0 items-center">{modelPicker}</div>
             ) : null}
-            <div className="ml-auto flex shrink-0 items-center gap-1">
+            <div className="ml-auto flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
               <Tooltip>
                 <TooltipTrigger render={toolbarDictateButton} />
                 <TooltipContent>
@@ -1492,7 +1500,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                       // working surface (Decision 07).
                       canSubmit
                         ? heroGlow
-                          ? "bg-brand text-brand-foreground shadow-pill hover:bg-brand/90"
+                          ? "bg-brand-fill text-brand-foreground shadow-pill hover:bg-brand-fill/90"
                           : "bg-foreground text-background shadow-pill hover:bg-foreground/90"
                         : justStopped
                           ? "bg-foreground/10 text-foreground"
@@ -1512,7 +1520,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             // fades in while the composer is focused. Touch devices (no hover)
             // always show it since they have no persistent focus-within signal.
             className={cn(
-              "mt-1 max-h-0 overflow-hidden px-2 text-right text-2xs leading-snug tabular-nums text-muted-foreground/80",
+              "mt-1 max-h-0 overflow-hidden px-2 text-right ui-eyebrow leading-snug font-mono tabular-nums text-muted-foreground",
               "opacity-0 transition-[max-height,opacity] duration-300 ease-out motion-reduce:transition-none",
               "group-focus-within/composer:max-h-8 group-focus-within/composer:opacity-100",
               "[@media(hover:none)]:max-h-8 [@media(hover:none)]:opacity-100",

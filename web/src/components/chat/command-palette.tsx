@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState, type JSX } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type JSX,
+} from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
   ChevronLeft,
@@ -507,17 +515,19 @@ export function CommandPalette({
           // unaffected.
           data-testid={filterMode ? "search-dialog" : undefined}
           data-slot="dialog-content"
-          // Override glass-regular's blur with the denser dialog blur (same
-          // trick as DialogContent so the popup reads as the canonical "modal"
-          // glass surface).
-          style={{
-            backdropFilter:
-              "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
-            WebkitBackdropFilter:
-              "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
-            // Keyboard-safe lift on mobile (no-op on desktop / no keyboard).
-            ...mobileKeyboardStyle,
-          }}
+          // Retune the glass utility to the denser dialog blur (same trick as
+          // DialogContent, so the popup reads as the canonical "modal" glass
+          // surface). Variables, not an inline `backdrop-filter`: the
+          // reduced-transparency, forced-colors and `@supports` resets in
+          // `globals.css` match by class and cannot reach an inline property.
+          style={
+            {
+              "--glass-blur": "var(--glass-blur-xl)",
+              "--glass-brightness": "1",
+              // Keyboard-safe lift on mobile (no-op on desktop / no keyboard).
+              ...mobileKeyboardStyle,
+            } as CSSProperties
+          }
           {...sheetContentProps}
           className={cn(
             // Mobile (default): iOS bottom sheet — full-width, bottom-pinned,

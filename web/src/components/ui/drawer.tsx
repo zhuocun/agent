@@ -77,15 +77,14 @@ function DrawerContent({
       <DialogPrimitive.Popup
         data-slot="drawer-content"
         data-side={resolvedSide}
-        // Override glass-strong's blur with the larger drawer blur. Keep the
-        // saturate/contrast/brightness chain identical to the glass utilities
-        // so the only difference is the heavier blur radius.
-        style={{
-          backdropFilter:
-            "blur(var(--glass-blur-lg)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness))",
-          WebkitBackdropFilter:
-            "blur(var(--glass-blur-lg)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast)) brightness(var(--glass-brightness))",
-        }}
+        // Override glass-strong's blur with the larger drawer blur. Retune the
+        // radius through `--glass-blur`, which the utility already reads, so
+        // the saturate/contrast/brightness chain stays identical AND the
+        // element keeps a class-set `backdrop-filter`. An inline
+        // `backdrop-filter` here would be unreachable by the
+        // `prefers-reduced-transparency`, `forced-colors` and `@supports`
+        // blocks in `globals.css`, which reset the property by class.
+        style={{ "--glass-blur": "var(--glass-blur-lg)" } as React.CSSProperties}
         className={cn(
           "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-sidebar-foreground transition-transform duration-300 ease-[var(--ease-ios-sheet)]",
           sideClasses,

@@ -1188,6 +1188,15 @@ input[type="search"]::-webkit-search-decoration {
     box-shadow: none;
   }
 
+  /* The status-bar strip is a blur-only layer with no fill of its own, so it
+     needs no border here — only the blur dropped, which a forced-colors user
+     has asked not to see. Listed separately because it must NOT gain the
+     border/background the glass utilities above take. */
+  .chrome-frost {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
   /* The substitution callout draws its boundary with ring-1, which is a
      box-shadow and is stripped here, flattening the callout into plain prose.
      It is a trust surface, so it must keep a visible edge. */

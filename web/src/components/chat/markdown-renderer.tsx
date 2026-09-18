@@ -190,14 +190,34 @@ export function MarkdownRenderer({
   }, [citationsEnabled, idsKey]);
 
   const components = useMemo<Components | undefined>(() => {
-    if (!citationsEnabled || !onCitationClick) return undefined;
+    // An image in streamed markdown comes straight from the model, so neither
+    // `loading` nor a usable `alt` is guaranteed. Supply both here rather than
+    // trusting the content: lazy + async decode keep an off-screen image off
+    // the first paint, and a generic label is what PRD 01 §5.4 asks for when
+    // the model gives none. The width cap lives in `.chat-md :where(img)`.
+    const Img = (props: { src?: string; alt?: string; title?: string }) => (
+      // A remote, model-supplied URL has no known dimensions and no configured
+      // loader, which is what `next/image` requires — a plain `img` is correct
+      // here, and `.chat-md :where(img)` caps its width.
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={props.src ?? ""}
+        alt={props.alt?.trim() ? props.alt : "Image in assistant response"}
+        {...(props.title ? { title: props.title } : {})}
+        loading="lazy"
+        decoding="async"
+      />
+    );
+    // The `Components` map's index signature widens child props to `unknown`;
+    // each override reads only the props it names, so cast through `unknown`
+    // rather than contorting the signature.
+    if (!citationsEnabled || !onCitationClick) {
+      return { img: Img } as unknown as Components;
+    }
     const Cite = (props: { children?: ReactNode }) => (
       <CitationChip onActivate={onCitationClick}>{props.children}</CitationChip>
     );
-    // The `Components` map's index signature widens child props to `unknown`;
-    // our chip only reads `children`, so cast through `unknown` rather than
-    // contorting the signature.
-    return { [CITATION_TAG]: Cite } as unknown as Components;
+    return { img: Img, [CITATION_TAG]: Cite } as unknown as Components;
   }, [citationsEnabled, onCitationClick]);
 
   return (

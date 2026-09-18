@@ -875,6 +875,16 @@
   .chat-md :where(blockquote) {
     @apply border-l-2 border-border pl-4 text-muted-foreground;
   }
+  /* A model-emitted markdown image carries no intrinsic width, so an over-wide
+     one widens the message row and puts a horizontal scrollbar on the page
+     (PRD 01 §5.4, "constrained max-width"). Cap it to the reading column and
+     keep its aspect ratio. The muted fill reserves a visible box while the
+     image decodes, which is the part of PRD 03 §4.10's CLS protection a
+     stylesheet can carry — an arbitrary remote URL has no dimensions to
+     reserve against. */
+  .chat-md :where(img) {
+    @apply h-auto max-w-full rounded-lg bg-muted;
+  }
   /* Streamdown's CodeBlockHeader (copy + download buttons) defaults to
      `sticky top-2` so the buttons follow the viewport while the user
      scrolls through a long code block. We want them pinned to the top of

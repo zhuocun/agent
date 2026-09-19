@@ -93,7 +93,7 @@ The calm comes from doing less. There is no progress bar, no animated brand mark
 The peacefulness pillar in `00-principles.md` is the principle that turns this from a stylistic preference into a rule. A chat product is a tool people use under cognitive load — drafting an email, debugging a stack trace, sketching an idea. A surface that performs activity at the user while the user is trying to think is a surface that is competing with them. The streaming-as-calmed-state pattern is the surface refusing to compete. It also has a downstream effect on the perceived quality of the renderer: a calm surface lets the eye notice rendering fidelity (smooth code highlighting, mid-token math resolution) rather than absorbing it through a haze of motion noise.
 
 - Pre-first-token typing indicator uses pulse-soft and replaces itself with content on the first token (PRD 01 §4.1).
-- Stop button morphs in the send slot, sized to the minimum touch-target in PRD 06 §3.3 on mobile, with a neutral "Stopped" chip on partial completion (PRD 06 §5.2).
+- Stop button morphs in the send slot, sized to the minimum touch-target in PRD 06 §7 AC 6 on mobile, with a neutral "Stopped" chip on partial completion (PRD 06 §5.2).
 - The streamed answer text is never wrapped in a live region (PRD 01 §5.7); a separate polite status region announces transitions.
 
 ---
@@ -144,14 +144,14 @@ Mobile-web is the primary form factor. The patterns here are not "responsive var
 
 ### Pattern: Thumb zone primacy
 
-The composer lives in the thumb zone. It floats at the bottom of the viewport, respects `safe-area-inset` on all four sides, and never lets a primary control fall under the OS gesture bar or the iOS Safari URL chrome. Primary controls — Send, Stop, the tier picker — meet the minimum touch-target size in PRD 06 §3.3 on every axis. The Stop control specifically must remain reachable during streaming without scrolling and without focus-trap workarounds (PRD 01 §1, PRD 06 §3.3).
+The composer lives in the thumb zone. It floats at the bottom of the viewport, respects `safe-area-inset` on all four sides, and never lets a primary control fall under the OS gesture bar or the iOS Safari URL chrome. Primary controls — Send, Stop, the tier picker — meet the minimum touch-target size in PRD 06 §7 AC 6 on every axis. The Stop control specifically must remain reachable during streaming without scrolling and without focus-trap workarounds (PRD 01 §1, PRD 06 §5.2).
 
-The same rule applies to any new surface that lives near the bottom of the screen. A confirmation sheet, a tier-picker menu, an attachment chip row: all of them have to obey the safe-area rule, the minimum touch-target size in PRD 06 §3.3, and the reachability-during-streaming rule. If a proposed surface fails any of the three on the smallest supported mobile viewport, the proposal needs to change, not the rule.
+The same rule applies to any new surface that lives near the bottom of the screen. A confirmation sheet, a tier-picker menu, an attachment chip row: all of them have to obey the safe-area rule, the minimum touch-target size in PRD 06 §7 AC 6, and the reachability-during-streaming rule. If a proposed surface fails any of the three on the smallest supported mobile viewport, the proposal needs to change, not the rule.
 
 "Thumb zone primacy" also constrains layout decisions higher up the screen. A primary action — anything the user is likely to invoke during a normal turn — does not live in the top-right corner of the viewport, because the top-right corner of a one-handed phone hold is the hardest place to reach. The top of the screen is for navigation, identity, and rarely-tapped controls. The bottom of the screen, and the composer in particular, is for the actions that drive the conversation. This is the rule that, applied consistently, keeps the product feeling phone-native rather than desktop-shrunk.
 
 - Composer capsule: glass material, anchored at bottom, safe-area-inset honored top/right/bottom/left.
-- Send/Stop control: meets the minimum touch-target size in PRD 06 §3.3, identical position before/during/after generation.
+- Send/Stop control: meets the minimum touch-target size in PRD 06 §7 AC 6, identical position before/during/after generation.
 - Tier picker on mobile: bottom sheet, not a hover-dropdown.
 - New-chat affordance: reachable from the composer or via a global shortcut, not parked exclusively in a hard-to-reach header corner.
 

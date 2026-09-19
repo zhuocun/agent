@@ -86,7 +86,7 @@ function DrawerContent({
         // blocks in `globals.css`, which reset the property by class.
         style={{ "--glass-blur": "var(--glass-blur-lg)" } as React.CSSProperties}
         className={cn(
-          "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] text-sidebar-foreground transition-transform duration-300 ease-[var(--ease-ios-sheet)]",
+          "glass-strong fixed inset-y-0 z-50 flex h-dvh w-80 max-w-[85vw] flex-col pt-[env(safe-area-inset-top)] pb-[var(--bottom-inset)] text-sidebar-foreground transition-transform duration-300 ease-[var(--ease-ios-sheet)]",
           sideClasses,
           className
         )}

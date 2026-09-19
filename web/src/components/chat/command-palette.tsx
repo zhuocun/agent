@@ -560,7 +560,7 @@ export function CommandPalette({
                 type="button"
                 onClick={exitFilterMode}
                 aria-label="Back to commands"
-                className="-ml-1.5 mr-1 flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:size-7"
+                className="-ml-1.5 mr-1 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:size-11"
               >
                 <ChevronLeft aria-hidden className="size-4" />
               </button>
@@ -611,7 +611,7 @@ export function CommandPalette({
                 onClick={enterFilterMode}
                 aria-label="Advanced search filters"
                 data-testid="palette-filter-toggle"
-                className="ml-2 flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:size-7"
+                className="ml-2 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:size-11"
               >
                 <SlidersHorizontal aria-hidden className="size-4" />
               </button>

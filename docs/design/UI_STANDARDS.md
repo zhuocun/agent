@@ -69,6 +69,20 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 
 ---
 
+### UI-LAYOUT-9 [must] — Message role is carried by alignment
+**Assertion.** In the thread, a user message's box ends at the message column's end edge and is narrower than the column. An assistant message spans the column from edge to edge. Alignment alone distinguishes the two roles, and no clause elsewhere may remove it without replacing it.
+**Source.** `docs/prd/06-design-system-visual-spec.md` §5.1 ("User: aligned end, plain text. / Assistant: aligned start, part renderer"); `docs/design/04-rationale.md` Decision 15, which rejects two-tone and alternating-row treatments on the stated ground that "the role distinction is already carried by alignment and avatar".
+**Why this clause exists.** UI-LAYOUT-4 forbids the shadow and UI-LAYOUT-5 forbids the glass, so both subtract role signal. Decision 15 permits that subtraction because alignment carries the role. Nothing asserted the alignment, so the rationale rested on a property no clause guaranteed. This clause guarantees it.
+**Scope.** The visual half only. The programmatic half — `role="article"` with an accessible name of "You" or "Assistant" — is UI-FOCUS-6's. Decision 15 names alignment **and avatar**; the assistant message ships no avatar, so this clause asserts alignment alone and §14 C36 records the missing second carrier. Do not add an avatar assertion here.
+**Verify.** Playwright at 1280 px: send one message and read `boundingBox()` for the last `[data-testid="user-message-text"]`, the last `[data-testid="assistant-message"]` and the last `[data-testid="message-list-row"]`, which is the column. Assert the user box's end edge sits within 2 px of the column's end edge and its width is less than the column's. Assert the assistant box matches the column's box within 2 px.
+
+### UI-LAYOUT-10 [must] — A code block names its language and copies its source
+**Assertion.** Every fenced code block in a rendered message shows a language label and a copy control, and the copy control writes the raw fence source to the clipboard rather than the highlighted DOM text.
+**Source.** `docs/prd/06-design-system-visual-spec.md` §5.7 ("Language label, syntax highlighting, copy button"); `docs/prd/01-core-chat-experience.md` §5.4 ("copy copies raw source (not highlighted DOM)").
+**Scope.** Presence, the language label and the clipboard payload only. The copy control's accessible name is UI-FOCUS-5's and its touch size is UI-TOUCH-1's, so this clause must not re-assert either. The "Show more" collapse named in the same PRD bullet is not shipped — §14 C35.
+**Vendor caveat.** The chrome is Streamdown's, not this repo's: `web/src/components/chat/markdown-renderer.tsx` delegates it and passes only `controls={{ code: { download: false } }}`. `data-language` and `[data-streamdown="code-block-copy-button"]` are the vendored library's own hooks. Streamdown marks its parts with `data-streamdown`, not with class names, so a check written against a `.code-block-*` class matches nothing and fails on conformant code. An upgrade can rename them, so a failing Verify means "read the new markup first", not "the app regressed" — the same caution §14 C4 records for `max-w-3xl`.
+**Verify.** Playwright with the fake provider: send a prompt beginning `RICH_MARKDOWN:`, which makes the fake emit a fenced `python` block (`api/app/providers/fake.py`). Assert `[data-streamdown="code-block-header"]` carries `data-language="python"` and shows that text. Grant the `clipboard-read` and `clipboard-write` permissions, click `[data-streamdown="code-block-copy-button"]`, read `navigator.clipboard.readText()`, and assert the result is the fence's source text, `print("hello")` followed by a newline.
+
 ## 2. Typography and measure — `UI-TYPE`
 
 ### UI-TYPE-1 [must] — No blocking font on the critical path
@@ -113,6 +127,12 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 **Verify.** Playwright: inject the WCAG text-spacing bookmarklet stylesheet, screenshot the surface, and assert no element has `scrollHeight > clientHeight` where `overflow` is `hidden`.
 
 ---
+
+### UI-TYPE-9 [should] — Layout survives string expansion
+**Assertion.** With every visible text node expanded by 40%, no attribution row and no composer control clips its text, overlaps a neighbour, or pushes the page into horizontal scroll.
+**Source.** `docs/prd/06-design-system-visual-spec.md` §3.2, final bullet: "Pseudo-localization must not break attribution rows or composer layout."
+**Why the Verify carries its own mechanism.** This repo has no pseudo-locale to switch to. `web/src/lib/i18n/messages.ts` defines `catalogs` as `{ en }`, and that catalog is a roughly 25-key subset covering `composer.*`, `sidebar.*`, `usage.*` and `followups.*`. The attribution row the PRD names is hardcoded English in the components, so swapping the catalog would not expand it. The `?rtl=1` hook is a direction override, not a locale. The check therefore expands the rendered text itself. §14 C6 records the i18n gap this works around.
+**Verify.** Playwright at 390 px and at 1280 px: walk the document with a `TreeWalker` over text nodes and rewrite each one so its length grows by 40%. Then assert `document.documentElement.scrollWidth <= clientWidth + 1`, and for every element inside the attribution row and the composer assert `scrollWidth <= clientWidth + 1`.
 
 ## 3. Color, theme and contrast — `UI-COLOR`
 
@@ -207,6 +227,12 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 **Verify.** Read the resolved `--focus-ring` value (a 2 px background offset plus a 2 px brand ring) and compute its contrast against `--background` and against each control fill, per theme.
 
 ---
+
+### UI-FOCUS-9 [must] — Every rendered image carries an alt attribute, and a content image names itself
+**Assertion.** No `<img>` in rendered app markup omits its `alt` attribute. An image inside a rendered message has a non-empty `alt`, supplied by the model when the model gives one and by the renderer when it does not. An empty `alt` is permitted only on a decorative image.
+**Source.** `docs/prd/01-core-chat-experience.md` §5.4: "Images: lazy-load, constrained max-width, alt text required (use model-provided alt or a generic label)."
+**Scope.** The decidable subject is the renderer, not the content. A model can emit a bare `![](url)`, so the clause holds the renderer to supplying the fallback label — `web/src/components/chat/markdown-renderer.tsx` overrides `img` for exactly that reason. The one decorative image today is the source favicon in `web/src/components/chat/sources-panel.tsx`, which is correctly `alt=""`. UI-FOCUS-5 is scoped to `button` elements and reaches no image, which is why this clause is separate rather than an extension of it.
+**Verify.** Playwright: send a prompt beginning `RICH_MARKDOWN:`, which makes the fake provider emit a deliberately alt-less markdown image. Assert `page.$$eval("img", els => els.every(e => e.hasAttribute("alt")))`. Then assert every `img` inside `.chat-md` has a non-empty `alt` — the renderer's fallback label, since the model supplied none.
 
 ## 5. Touch targets and pointer — `UI-TOUCH`
 
@@ -381,6 +407,13 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 
 ---
 
+### UI-STREAM-9 [must] — A failed turn keeps its body and offers recovery
+**Assertion.** When a turn ends in `error`, the assistant bubble is never empty: the partial text stays rendered and a named recovery control is present and enabled.
+**Source.** `docs/prd/03-mobile-cross-platform.md` §4.6, interrupted-stream recovery: "*AC:* no empty/broken bubble; actions work after reload"; `docs/prd/08-error-and-limit-states.md` §8.
+**Why it is written against `error`.** PRD 08 §8 names an `interrupted` terminal. The frontend has no such status: `StreamStatus` in `web/src/lib/types.ts` is `idle | submitted | streaming | done | awaiting_approval | stopped | error`, which collapses `interrupted` onto `error` and adds a terminal the PRD omits. A clause turning on a status that does not exist could not be run, so this one is written against the shipped statuses. §14 C34 records the divergence.
+**Scope.** The live turn only. UI-STREAM-7 owns the Stop path and the `stopped` chip, and the two must not overlap. PRD 03 §4.6's AC also says "actions work after reload", and that half is deliberately not asserted here: a failed turn persists no assistant row, so the bubble does not survive a reload and no shipped status carries the persisted-partial behaviour PRD 08 §8 attaches to `interrupted`. §14 C34 records it. Asserting it would make this clause fail on every build until that behaviour ships.
+**Verify.** Playwright with the fake provider: send a prompt beginning `FORCE_ERROR:`, which fails the stream after two answer deltas. Wait for the assistant message's `data-status` to read `error`. Assert its text content is non-empty and that the **Retry** control inside it is enabled.
+
 ## 9. Transparency surfaces — `UI-TRUST`
 
 ### UI-TRUST-1 [must] — Every assistant message carries attribution without hover
@@ -404,10 +437,12 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 **Source.** `docs/prd/07-transparency-contract.md` §6.1 ("estimate labels must be explicit"), §7 rule 2 and §8 AC 4; `docs/prd/06-design-system-visual-spec.md` §5.4.
 **Verify.** Playwright against a fixture whose `cost_confidence` is not `exact`: assert the rendered figure is adjacent to an estimate label and is not an exact-formatted zero.
 
-### UI-TRUST-5 [must] — Public share strips cost and tokens, keeps model
-**Assertion.** A public share view shows served model attribution and substitution callouts, and shows no cost figure, token count or breakdown anywhere in its markup or embedded JSON.
+### UI-TRUST-5 [must] — Public share strips cost, tokens and memory, keeps model and web sources
+**Assertion.** A public share view shows served model attribution and substitution callouts, and shows the web sources the private turn carried. It shows no cost figure, token count or breakdown, and no memory chip, memory count or memory fact id, anywhere in its markup or embedded JSON.
 **Source.** `docs/prd/07-transparency-contract.md` §6.4 matrix and AC, and §8 AC 6; `docs/prd/06-design-system-visual-spec.md` §5.9 and §7 AC 3.
-**Verify.** Playwright: mint a share link, fetch the public page, assert the rendered text contains the model label and assert the page HTML matches no `/cost_usd|costUsd|tokens?\b.*\d|cost_breakdown/` pattern.
+**Why the memory and sources halves live here.** PRD 07 §8 AC 6 states three things about a public share, and this clause originally asserted one of them. The memory half is already structurally guaranteed — `memory_applied` and `memory_fact_ids` sit on the private `ModelAttribution` in `api/app/schemas/message.py`, and `PublicAttribution` in `api/app/schemas/share.py` does not carry them — so the assertion pins a guarantee that exists rather than requesting a change. The web-sources half ships too: `SourcesPart` passes through the public parts union unmodified. Folding both in here beats a second clause, because a reviewer checking a share view should read one clause, not three.
+**Not asserted here.** AC 6 also requires a redacted marker for `knowledge` and `connector` sources, and retention of generated-media provenance. Neither ships — §14 C32.
+**Verify.** Playwright: mint a share link from a conversation whose private turn rendered a sources panel. Fetch the public page, assert the rendered text contains the model label, assert the sources panel renders, and assert the page HTML matches neither `/cost_usd|costUsd|tokens?\b.*\d|cost_breakdown/` nor `/memory_applied|memoryApplied|memory_fact_ids|memoryFactIds/`.
 
 ### UI-TRUST-6 [must] — Transparency chrome is typographically first-class
 **Assertion.** The attribution row uses the same font stack as the answer, one step down the ramp, with a muted-but-readable color meeting the 4.5:1 body threshold; it is not a smaller secondary stack.
@@ -425,6 +460,30 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 **Verify.** Playwright on a reasoning-bearing turn: assert the collapsed bar's text matches `/Thought for \d+/` and the attribution row's text contains the model label before any expansion.
 
 ---
+
+### UI-TRUST-9 [must] — The AI-interaction disclosure renders on the entry surface
+**Assertion.** The empty state renders a disclosure with `role="note"` and a non-empty accessible name, whose text states that the responder is an AI and that its answers may be wrong.
+**Source.** `docs/prd/06-design-system-visual-spec.md` §5.8, bullet 1; `docs/ux-best-practices/desktop-ux.md` §12 (EU AI Act Article 50(1)).
+**Canon says more than the code ships.** PRD 06 §5.8 says "persistent". The shipped ruling places the disclosure on the welcome surface only: `web/src/components/chat/ai-disclosure.tsx` is mounted at one call site, `welcome-screen.tsx`, and its own header comment records that the below-composer placement was deliberately removed as chrome clutter. UI-STATE-7 requires the welcome surface to unmount on first send, so the disclosure does leave the thread. This clause asserts the shipped ruling so that it decides something. §14 C31 records the disagreement and is where an amendment to PRD 06 §5.8 belongs. Do not read this clause as ratifying "persistent".
+**Verify.** Playwright on a fresh session: assert `getByTestId("ai-interaction-disclosure")` is visible, that its `role` is `note`, that its `aria-label` is non-empty, and that its text contrast clears the UI-COLOR-3 floor.
+
+### UI-TRUST-10 [must] — A temporary thread renders its banner
+**Assertion.** While a conversation is in temporary mode, the thread renders a banner that names the mode, states that the conversation is not saved, and carries a control to leave the mode.
+**Source.** `docs/prd/06-design-system-visual-spec.md` §5.8, bullet 2; `docs/prd/01-core-chat-experience.md` §4.8 AC: "starting a temporary chat sets `chat.is_temporary = true` and the UI shows a temporary-chat banner."
+**Scope.** The banner only. The same PRD bullet also asks for "distinct thread treatment", which is not decidable as canon states it and which no clause asserts — §14 C37 records that silence. PRD 01 §4.8 makes the banner an acceptance criterion, and the banner is the half this clause can decide.
+**Verify.** Playwright: start a temporary chat, assert `getByTestId("temporary-chat-banner")` is visible, assert its text names the mode and says the chat is not saved, and assert the control that leaves the mode is enabled.
+
+### UI-TRUST-11 [must] — The composer names the selected route before send
+**Assertion.** The composer renders a control stating the model tier currently selected, before any message is sent, with an accessible name containing that tier's label. The control follows the selection when it changes.
+**Source.** `docs/prd/07-transparency-contract.md` §6.2 **[P0]**, bullet 1: "Show selected tier/model before send."
+**Scope.** The *selected* tier, never the served route. Auto resolves at send time, so under Auto the correct pre-send label is "Auto". The served route is UI-TRUST-1's claim and this clause must not duplicate it. UI-COMPOSER-7 governs whether a capability-gated control is absent or disabled, not what the picker displays. Section 9's other clauses are all post-turn, which is what left this half uncovered.
+**Verify.** Playwright at 1280 px and at 390 px: assert the visible `[data-testid="model-mode-trigger"]` is present and that its `aria-label` contains the selected tier's label. Change the tier through the picker and assert the label follows the change.
+
+### UI-TRUST-12 [must] — No reasoning means no panel and no affordance
+**Assertion.** When a turn emits no reasoning content, the message renders neither a reasoning panel nor its expand affordance. No empty panel, and no chevron with nothing behind it.
+**Source.** `docs/prd/06-design-system-visual-spec.md` §5.3, bullet 3: "Hidden entirely when no reasoning/summary is emitted"; `docs/prd/01-core-chat-experience.md` §4.2 AC: "If no reasoning content is emitted, no panel/affordance appears (no empty panel)."
+**Scope.** UI-TRUST-7 asserts the toggle's `aria-expanded` and UI-TRUST-8 asserts the collapsed bar's text. Both presuppose a panel exists, so neither forbids an empty one. The affordance half matters as much as the panel half, because a chevron rendered with nothing behind it is the likelier regression.
+**Verify.** Playwright with the fake provider: send a prompt beginning `NO_REASONING:`, the one marker that makes the fake skip its reasoning block (`api/app/providers/fake.py`). Assert `getByTestId("reasoning-panel")` has count 0 within that assistant message, and assert no control whose accessible name matches `/reasoning|thought/i` exists within it.
 
 ## 10. Error, empty and limit states — `UI-STATE`
 
@@ -582,6 +641,13 @@ Every clause has a stable ID (`UI-<AREA>-<n>`), a strength marker, and exactly t
 
 ---
 
+### UI-PERF-8 [must] — A rendered image defers its load and reserves a box
+**Assertion.** Every `<img>` in rendered app markup sets `loading="lazy"`. An image inside a rendered message resolves a `max-width` no wider than the reading column and paints a visible placeholder box before its bytes arrive.
+**Source.** `docs/prd/01-core-chat-experience.md` §5.4 ("lazy-load, constrained max-width"); `docs/prd/03-mobile-cross-platform.md` §4.10 CLS protection.
+**On the strength marker.** PRD 03 §4.10's dedicated image bullet is **[P1]**, but the CLS budget it serves is **[P0]** and PRD 01 §5.4 states the requirement without qualification. The clause is `[must]` on the strength of those two, not of the P1 bullet. A reviewer relaxing it by citing the P1 marker alone has read only one of the three sources.
+**Scope.** The naming half of the same PRD bullet is UI-FOCUS-9's. A model-supplied remote URL has no intrinsic dimensions and no configured loader, so the clause asks for a reserved box rather than exact dimensions — exact dimensions are only assertable where the app itself knows them, as the source favicon does.
+**Verify.** Playwright: send a prompt beginning `RICH_MARKDOWN:` and assert every `img` on the page has `loading="lazy"`. Then assert the image inside `.chat-md` resolves `max-width` to `100%` of the reading column and resolves a `background-color` that is not `rgba(0, 0, 0, 0)`, which is the reserved box.
+
 ## 14. Conflict and silence register
 
 Recorded while writing this document. Each entry names the disagreement, the ruling, and what a reviewer should do.
@@ -646,11 +712,25 @@ Recorded while writing this document. Each entry names the disagreement, the rul
 
 **C30 — The trust badge is a token with nothing to color.** UI-COLOR-9 `[should]` asserts that `--color-trust-badge`, `--color-byok-indicator` and `--color-temporary-chat-banner` read as low-chroma role markers rather than as second accents. Two of the three ship: the BYOK indicator and the temporary-chat banner each have component consumers. `--trust-badge` and `--trust-badge-foreground` are defined in both themes and aliased to `--color-trust-badge`, and `rg 'trust-badge' web/src --glob '!globals.css'` returns nothing — no surface renders them. **Ruling:** the clause cannot be decided on its first token, the same shape as C17 and C18. This is not a defect in the token, whose chroma sits correctly in the neutral band; it is a clause written ahead of the surface. Either a trust badge ships and the clause decides all three, or the token is retired and the clause names the two that exist. That is a product call, not a review finding.
 
+**C31 — Canon says the AI disclosure is persistent; the shipped ruling puts it on one surface.** `docs/prd/06-design-system-visual-spec.md` §5.8 requires a "Persistent AI-interaction disclosure", and `docs/ux-best-practices/desktop-ux.md` §12 ties it to EU AI Act Article 50(1). `web/src/components/chat/ai-disclosure.tsx` has exactly one call site, the welcome screen, and its header comment records that the below-composer placement was removed deliberately as chrome clutter. UI-STATE-7 then requires the welcome surface to unmount on first send, so the disclosure is absent from an active thread. **Ruling:** the shipped placement stands, and UI-TRUST-9 is written against it so that it decides something rather than passing on a build that arguably fails canon. This is the same shape as C1 — canon wording against a deliberate product ruling — and the same remedy applies: amend PRD 06 §5.8 to describe the entry-surface placement, or reopen the #245 decision. Until one of those happens, a reviewer must not read UI-TRUST-9 as ratifying the word "persistent".
+
+**C32 — Two thirds of the public-share redaction rule have no code to check.** `docs/prd/07-transparency-contract.md` §8 AC 6 states three requirements for a public share: memory detail stripped, web sources retained, and `knowledge` / `connector` sources shown with a redacted marker. It also requires generated-media provenance to survive. The first two now sit in UI-TRUST-5, because both are shipped. The redaction marker is not: `provenance?: "web" | "knowledge" | "connector"` in `web/src/lib/types.ts` is explicitly reserved with a comment naming `web` as the only live value, and no redaction code exists on either side. Generated-media provenance is marked **[P2]** at PRD 06 §7 AC 13. **Ruling:** neither becomes a clause now. When a non-`web` provenance ships, extend UI-TRUST-5's Verify rather than adding a clause, since the reviewer's action is one page fetch either way.
+
+**C33 — Offline and queued state is canon with no interface behind it.** `docs/prd/08-error-and-limit-states.md` §9 ends with "Offline/queued status is visible and announced". The words "offline" and "queue" appear nowhere in this document, and the product has nothing to point them at: `web/src/lib/offline-store.ts` exports `enqueueUnsent`, `getUnsentQueue` and `removeFromQueue`, and none of the three has a caller anywhere in `web/src`. The one importer, `composer.tsx`, takes only the draft helpers. There is no `navigator.onLine` listener, no offline banner and no queued-message chrome. **Ruling:** no clause. A `[must]` that every screen fails, with no defect to file it against, is a backlog item wearing a clause ID. The queue is dead storage plumbing. When the offline surface ships, the clause is worth writing, and its announcement half will have to reconcile with UI-STREAM-2's "exactly one polite status region".
+
+**C34 — The frontend stream state machine does not match PRD 08 §8.** The PRD's machine is `idle -> submitted -> streaming -> done | stopped | error | interrupted`, and it defines `interrupted` as "partial persisted; Continue/Regenerate". `StreamStatus` in `web/src/lib/types.ts` is `idle | submitted | streaming | done | awaiting_approval | stopped | error`. The frontend collapses `interrupted` onto `error`, and it adds `awaiting_approval`, a human-in-the-loop tool-approval terminal the PRD omits. The divergence runs in both directions. One consequence is user-visible: PRD 08 §8 defines `interrupted` as "partial persisted; Continue/Regenerate", and PRD 03 §4.6's AC turns on that persistence when it says "actions work after reload". The `error` path persists no assistant row, so a failed turn's bubble and its Retry control are gone after a reload — confirmed against the running app, where the user message survives the reload and the assistant bubble does not. **Ruling:** the shipped statuses are correct for what the product does today, and UI-STREAM-9 is written against them and asserts the live half only. Two things are open, and they are separate. PRD 08 §8 is the document to amend for the status list — drop `interrupted` in favour of `error`, and add `awaiting_approval`. Persisting a failed partial so the reload half of PRD 03 §4.6 can hold is a product change, not a documentation one, and it is the one worth doing: the `stopped` path already persists its partial, so the two failure terminals behave differently for no reason a user would recognise. Until then a reviewer must not file the missing `interrupted` status, or the vanishing bubble, as fresh defects.
+
+**C35 — Code blocks have no "Show more" collapse.** `docs/prd/06-design-system-visual-spec.md` §5.7 asks that "Long blocks collapse with 'Show more.'" The chrome is Streamdown's, and the string "Show more" appears in none of its distributed bundles and nowhere in `web/src`. **Ruling:** UI-LAYOUT-10 asserts the language label, the copy control and the clipboard payload, and states that the collapse is out of its scope. The collapse is a vendored-library capability this repo does not have, so shipping it means either a Streamdown feature or a local renderer override. That is a product call. Until it is made, a reviewer must not file the absent collapse as a defect against UI-LAYOUT-10.
+
+**C36 — Decision 15 leans on an avatar that does not exist.** `docs/design/04-rationale.md` Decision 15 rejects two-tone and alternating-row message treatments on the stated ground that "the role distinction is already carried by alignment and avatar". Alignment ships. The assistant message renders no avatar. **Ruling:** UI-LAYOUT-9 asserts alignment alone, deliberately, so that it passes on the build the rationale actually produced. The alternative — asserting both carriers — would make a `[must]` fail on day one over a design element nobody has decided to ship. Decision 15's wording should be amended to name alignment only, or an avatar should ship and the clause should gain its second half.
+
+**C37 — "Distinct thread treatment" for a temporary chat is undefined.** `docs/prd/06-design-system-visual-spec.md` §5.8 asks for a temporary-chat banner "and distinct thread treatment". The banner is decidable and is asserted by UI-TRUST-10. The second phrase names no property: a different background, a different message surface and a different chrome tint would all satisfy it, and UI-LAYOUT-5 and UI-COLOR-5 constrain what a thread may look like in ways some readings would break. **Ruling:** silence recorded, no clause. Either the PRD names the treatment, or the phrase is dropped in favour of the banner it already requires.
+
 ---
 
 ## 15. Running a review
 
-1. Read §14 first. Several entries there name a `[must]` clause that the current build fails for a reason already diagnosed — C13 through C25, plus C29 and C30 — and re-filing one of those as a fresh defect wastes the review. An entry marked RESOLVED is closed and needs no attention.
+1. Read §14 first. Several entries there name a `[must]` clause that the current build fails for a reason already diagnosed — C13 through C25, plus C29 through C37 — and re-filing one of those as a fresh defect wastes the review. An entry marked RESOLVED is closed and needs no attention.
 2. Identify the surface and the renderings it has: visual light, visual dark, keyboard, screen reader, reduced motion, reduced transparency, increased contrast, forced colors, mobile touch, print. `docs/design/02-patterns.md` §E is the rule that these are the same UI, not accommodations.
 3. Walk sections 1–13 in order. Skip a section only when the surface provably has no instance of it — record the skip.
 4. For each `[must]` failure, file the defect against the clause ID. For each `[should]` deviation, require a rationale entry per `docs/design/04-rationale.md` before approval.

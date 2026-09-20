@@ -165,3 +165,59 @@ Per PNG, in both light and dark and at phone + desktop widths:
   + screenshots live outside the repo (or a gitignored path). Confirm
   `git status` shows only the intended app fix — never the harness, the
   driver, or the PNGs.
+
+## Self-check
+
+Before declaring a sweep done, confirm:
+
+- [ ] Setup ran in full: `playwright` installed with `--no-save`, a chromium
+  binary installed, a `chromium.launch()` confirmed to succeed before the
+  first capture, and the capture script placed where `import "playwright"`
+  resolves — inside the repo, or with the repo's `node_modules` symlinked
+  into the script's own directory.
+- [ ] The capture used the recipe in `references/playwright-harness.md`
+  verbatim, with only the repo-specific bits parameterized — the port, the
+  API base, the route list and the mock shapes — not a harness written from
+  scratch.
+- [ ] Every shot was taken against a production build served on a stable
+  port, never a dev server; any chrome that differs from dev because the
+  build uses different env defaults is noted rather than filed as an issue.
+- [ ] The port / base URL, the API base path, the route list, and the mock
+  shapes were each read out of this repo — the `dev`/`preview`/`start`
+  script or framework config, the HTTP client or `.env*`, the router
+  config, and the API client's types or real fixtures — not assumed.
+- [ ] Every API call under the discovered base is intercepted and fulfilled
+  with plausible JSON; endpoints the app maps over return arrays; auth is
+  seeded before first paint with `addInitScript` and the session/identity
+  endpoint is mocked, returning `401` for the public routes.
+- [ ] Every nested or guarded route was reached by clicking through from its
+  rendered parent — no direct `goto`, no faked `history.pushState` — and
+  each shot waited for a known content selector or text to APPEAR plus a
+  short settle, not on `networkidle` or on "loading" disappearing.
+- [ ] The captured matrix covers the discovered routes at phone and desktop
+  widths in both light and dark, plus the interaction states under review.
+- [ ] Every PNG was hashed (`md5sum`) and no two distinct route/theme shots
+  share a hash; any blank, stuck, or odd shot got a one-shot
+  `page.evaluate` dump of `location.href`, trimmed
+  `document.body.innerText`, the intercepted API calls, and console/page
+  errors before the app's code was blamed.
+- [ ] Every PNG was reviewed against all five checklist groups — layout,
+  theme, state, a11y modes, anti-patterns — and the issue list was written
+  before the first fix. `colorScheme`, `contrast: "more"`,
+  `reducedMotion: "reduce"` and `forcedColors: "active"` were driven
+  through `emulateMedia`; `prefers-reduced-transparency`, which has no
+  `emulateMedia` switch, was verified in code or manually.
+- [ ] Nothing was "fixed" for looking wrong while being correct —
+  intentional translucency/blur, deliberately muted "coming soon"
+  controls, and brand-specific spacing were each confirmed against tokens
+  or design intent first.
+- [ ] Every issue got its `page.evaluate` root-cause probe before any edit,
+  and each fix addresses that root cause rather than the symptom.
+- [ ] No feature, architecture refactor, new dependency, or new test was
+  added; a test was touched only because an existing one broke.
+- [ ] Fixes landed in themed batches, one commit each, with a re-capture
+  after each batch confirming the issue is gone.
+- [ ] Before each commit: typecheck clean, `jest <touched-paths>` green, and
+  the full test suite green.
+- [ ] `git status` shows only the intended app fix — not the capture script,
+  not the screenshots, not the browser driver in the manifest or lockfile.

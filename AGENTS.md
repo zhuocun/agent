@@ -250,6 +250,12 @@ auto-compact event's `preTokens` in the session `.jsonl`: ~320K means it works,
 
 ## Repo conventions
 
+- **Skills are downstream; this repo does not own them.** `.agents/skills/*`
+  are copies of `zhuocun/agent-skills`, which is canonical. Edit a skill there
+  and copy the result back; an edit made here is drift, and `skills-drift.yml`
+  fails on it. That workflow runs on PRs touching `.agents/skills/**` and
+  weekly — the weekly run is what catches canonical moving ahead of this repo,
+  which no PR here can see.
 - **Branch names** for AI-authored work: `claude/<short-topic>` —
   `claude/burst-post-m4-hardening`, `claude/resolve-auto-tier-in-attribution`,
   `claude/fly-auto-deploy`.

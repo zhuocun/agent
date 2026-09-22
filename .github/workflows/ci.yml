@@ -9,8 +9,48 @@ on:
       - main
 
 jobs:
+  # Decides whether a pull request touches only docs, so the heavy jobs can
+  # skip it with `if:`. A job skipped by `if:` reports success and satisfies a
+  # required check; a workflow skipped by `paths:` stays Pending and blocks the
+  # merge, which is why this is a job and not a path filter. Anything short of
+  # proof (push, no merge commit, git failure, empty diff, a file outside the
+  # list, this job failing) runs the heavy jobs.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.detect.outputs.docs_only }}
+    steps:
+      - name: Checkout
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          # The PR merge commit plus its parents: HEAD^1 is the base branch.
+          fetch-depth: 2
+
+      - name: Detect docs-only change
+        id: detect
+        if: github.event_name == 'pull_request'
+        run: |
+          docs_only=false
+          if git rev-parse --verify --quiet HEAD^2 >/dev/null &&
+            files=$(git -c core.quotePath=false diff --name-only --no-renames HEAD^1 HEAD) &&
+            [ -n "$files" ]; then
+            docs_only=true
+            while IFS= read -r f; do
+              [[ $f =~ ^(\.agents/|\.claude/|docs/|[^/]+\.md$) ]] || docs_only=false
+            done <<<"$files"
+          fi
+          echo "docs_only=$docs_only"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
   api:
     name: api
+    needs: changes
+    # Skips only on a pull_request whose `changes` job succeeded and proved it
+    # docs-only; push always runs. `!cancelled()` keeps a failed or skipped
+    # `changes` job from skipping this one.
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && needs.changes.result == 'success' && needs.changes.outputs.docs_only == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -44,6 +84,8 @@ jobs:
 
   web-e2e:
     name: web-e2e
+    needs: changes
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && needs.changes.result == 'success' && needs.changes.outputs.docs_only == 'true') }}
     runs-on: ubuntu-latest
     # Parallel with the `api` job: this job re-installs BE deps anyway since
     # Playwright's `webServer` boots uvicorn locally, so chaining via `needs:`
@@ -165,6 +207,8 @@ jobs:
 
   web-coverage:
     name: web-coverage
+    needs: changes
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && needs.changes.result == 'success' && needs.changes.outputs.docs_only == 'true') }}
     runs-on: ubuntu-latest
     # Runs in parallel with `web-e2e`. This job boots its own instrumented
     # (istanbul via `next dev --webpack`) BE+FE pair through Playwright's

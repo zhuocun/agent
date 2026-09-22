@@ -145,12 +145,12 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
     };
   }, [duration, toast.id]);
 
-  // role=alert for error/warning so screen readers interrupt; status for
-  // info/success so they queue politely behind the streamed-transition region.
-  const role =
-    toast.severity === "error" || toast.severity === "warning"
-      ? "alert"
-      : "status";
+  // role=alert only for errors, so a screen reader interrupts for a failure
+  // and nothing else. Warnings are the dominant severity on the quota path
+  // (budget warning, soft cap, guest limit), and PRD 08 §9 puts them on
+  // role=status so a routine limit notice queues politely behind the
+  // streamed-transition region instead of cutting across the answer.
+  const role = toast.severity === "error" ? "alert" : "status";
 
   return (
     <li

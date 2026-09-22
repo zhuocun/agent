@@ -424,7 +424,10 @@ function PlanClarifyForm({
               maxLength={maxAnswerChars}
               className={cn(
                 "w-full resize-y rounded-lg border border-foreground/10 bg-background px-2.5 py-2",
-                "ui-caption leading-snug text-foreground placeholder:text-muted-foreground/70",
+                // ui-body, not ui-caption: a form control below 16 px makes
+                // iOS Safari zoom the page on focus. This is the one field in
+                // the app that read 13 px on mobile.
+                "ui-body leading-snug text-foreground placeholder:text-muted-foreground/70",
                 "outline-none focus-visible:shadow-[var(--focus-ring)]",
               )}
               placeholder="Your answer (optional)"

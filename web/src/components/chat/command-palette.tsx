@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState, type JSX } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type JSX,
+} from "react";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
   ChevronLeft,
@@ -507,17 +515,19 @@ export function CommandPalette({
           // unaffected.
           data-testid={filterMode ? "search-dialog" : undefined}
           data-slot="dialog-content"
-          // Override glass-regular's blur with the denser dialog blur (same
-          // trick as DialogContent so the popup reads as the canonical "modal"
-          // glass surface).
-          style={{
-            backdropFilter:
-              "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
-            WebkitBackdropFilter:
-              "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
-            // Keyboard-safe lift on mobile (no-op on desktop / no keyboard).
-            ...mobileKeyboardStyle,
-          }}
+          // Retune the glass utility to the denser dialog blur (same trick as
+          // DialogContent, so the popup reads as the canonical "modal" glass
+          // surface). Variables, not an inline `backdrop-filter`: the
+          // reduced-transparency, forced-colors and `@supports` resets in
+          // `globals.css` match by class and cannot reach an inline property.
+          style={
+            {
+              "--glass-blur": "var(--glass-blur-xl)",
+              "--glass-brightness": "1",
+              // Keyboard-safe lift on mobile (no-op on desktop / no keyboard).
+              ...mobileKeyboardStyle,
+            } as CSSProperties
+          }
           {...sheetContentProps}
           className={cn(
             // Mobile (default): iOS bottom sheet — full-width, bottom-pinned,
@@ -550,7 +560,7 @@ export function CommandPalette({
                 type="button"
                 onClick={exitFilterMode}
                 aria-label="Back to commands"
-                className="-ml-1.5 mr-1 flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:size-7"
+                className="-ml-1.5 mr-1 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:size-11"
               >
                 <ChevronLeft aria-hidden className="size-4" />
               </button>
@@ -601,7 +611,7 @@ export function CommandPalette({
                 onClick={enterFilterMode}
                 aria-label="Advanced search filters"
                 data-testid="palette-filter-toggle"
-                className="ml-2 flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:size-7"
+                className="ml-2 flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:size-11"
               >
                 <SlidersHorizontal aria-hidden className="size-4" />
               </button>

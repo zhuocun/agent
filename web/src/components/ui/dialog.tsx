@@ -106,15 +106,19 @@ function DialogContent({
       <DialogPrimitive.Popup
         ref={sheetRef}
         data-slot="dialog-content"
-        // Override glass-regular's blur with the denser dialog blur. Inline
-        // style wins over the utility's backdrop-filter without a new utility.
-        style={{
-          backdropFilter:
-            "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
-          WebkitBackdropFilter:
-            "blur(var(--glass-blur-xl)) saturate(var(--glass-saturate)) contrast(var(--glass-contrast))",
-          ...mobileKeyboardStyle,
-        }}
+        // Override glass-strong's blur with the denser dialog blur, and drop
+        // the brightness lift (`brightness(1)` is the identity), by retuning
+        // the two variables the utility already reads. Setting
+        // `backdrop-filter` inline instead would put the property out of reach
+        // of the `prefers-reduced-transparency`, `forced-colors` and
+        // `@supports` resets in `globals.css`, which all match by class.
+        style={
+          {
+            "--glass-blur": "var(--glass-blur-xl)",
+            "--glass-brightness": "1",
+            ...mobileKeyboardStyle,
+          } as React.CSSProperties
+        }
         className={cn(
           // Mobile (default): iOS bottom sheet — full width, pinned to the
           // bottom, rounded top only, capped height, home-indicator-safe bottom

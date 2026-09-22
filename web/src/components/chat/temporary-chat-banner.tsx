@@ -24,6 +24,10 @@ export function TemporaryChatBanner({
     <div className={cn("flex justify-center px-3 pt-1", className)}>
       <div
         role="note"
+        // Every visibility assertion in the UI standard selects on a test id
+        // (UI-TRUST-10, and UI-TRUST-2/3 before it). Selecting this pill by its
+        // role and text instead would break on a copy edit.
+        data-testid="temporary-chat-banner"
         // iOS-style pill: inline-flex, rounded-full, muted surface. A faint
         // hairline (`ring-1` in the dedicated `--temporary-chat-banner-border`
         // token) layers it above the chrome the way iOS status pills sit on

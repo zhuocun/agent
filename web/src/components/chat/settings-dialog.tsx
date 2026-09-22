@@ -1216,7 +1216,7 @@ export function SettingsDialog({
           hidden={activeTab !== "general" || (!isDesktop && mobileShowList)}
           className={cn(
             activeTab === "general" && (isDesktop || !mobileShowList)
-              ? "-mr-2 min-h-0 flex-1 space-y-8 overflow-y-auto pr-2 pb-8"
+              ? "-mr-2 min-h-0 flex-1 space-y-8 overflow-y-auto overscroll-contain pr-2 pb-8"
               : undefined,
           )}
         >

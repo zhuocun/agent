@@ -94,6 +94,17 @@ the flag-off path is byte-for-byte unchanged):
   …") + `Complete`. The seeded `tool_result` is emitted by the handler before
   this stream runs.
 
+Rich markdown: when `user_text` starts with `RICH_MARKDOWN:`, the provider emits
+a fenced ```python block followed by a bare, alt-less markdown image (a 1x1 data
+URI, so no network is involved). Exercises the code-block chrome and the image
+renderer, neither of which any other marker reaches.
+
+No reasoning: when `user_text` starts with `NO_REASONING:`, the provider skips
+the reasoning block entirely and streams only answer deltas. Every other marker
+emits reasoning, so without this one there is no way to reach a turn that has
+none — which is the state PRD 01 §4.2 makes an acceptance criterion ("no
+panel/affordance appears") and `UI_STANDARDS.md` UI-TRUST-12 asserts.
+
 Structured output: when a `response_format` is requested (any type), the
 provider emits a deterministic JSON answer instead of the templated text. By
 default it streams exactly two deltas — `{"ok": true, ` then
@@ -233,8 +244,9 @@ class FakeProvider:
             TOOL_FEEDBACK_SENTINEL in message.text for message in history
         )
 
-        # Two short reasoning deltas, then done (skipped on a tool-feedback round).
-        if not has_tool_feedback:
+        # Two short reasoning deltas, then done (skipped on a tool-feedback round,
+        # and on the explicit no-reasoning marker below).
+        if not has_tool_feedback and not user_text.startswith("NO_REASONING:"):
             await asyncio.sleep(self._delay)
             yield ReasoningDelta(text="Let me think")
             await asyncio.sleep(self._delay)
@@ -799,6 +811,32 @@ class FakeProvider:
             yield AnswerDelta(text="```mermaid\ngraph TD\n")
             await asyncio.sleep(self._delay)
             yield AnswerDelta(text="  A[Start] --> B[End]\n```")
+            usage = UsageUpdate(
+                input_tokens=50,
+                output_tokens=100,
+                reasoning_tokens=10,
+                cached_input_tokens=0,
+            )
+            yield usage
+            yield Complete(usage=usage)
+            return
+
+        # Rich markdown trigger: emit a fenced code block and a bare markdown
+        # image as the answer body. Nothing else in the fake catalogue renders
+        # either one, so without this marker the code-block chrome and the image
+        # renderer have no e2e reachable state at all (UI_STANDARDS.md
+        # UI-LAYOUT-10, UI-FOCUS-9, UI-PERF-8). The image link is deliberately
+        # alt-less: the renderer must supply the fallback label itself. A `data:`
+        # URI would be sanitized out of the rendered markdown, so the src points
+        # at `example.invalid`, which resolves nowhere — the element renders and
+        # can be asserted on, and no test ever reaches the network.
+        if user_text.startswith("RICH_MARKDOWN:"):
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="Here is a snippet:\n\n```python\n")
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text='print("hello")\n```\n\n')
+            await asyncio.sleep(self._delay)
+            yield AnswerDelta(text="![](https://example.invalid/pixel.png)")
             usage = UsageUpdate(
                 input_tokens=50,
                 output_tokens=100,

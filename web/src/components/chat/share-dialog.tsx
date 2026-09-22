@@ -187,7 +187,7 @@ export function ShareDialog({
         {/* Scroll body: landscape / short viewports can push the link field past
             the sheet cap under the keyboard, so the content scrolls within the
             overflow-hidden flex shell rather than clipping (ST5 §c ST-8, R6). */}
-        <div className="-mr-2 min-h-0 flex-1 space-y-4 overflow-y-auto pr-2">
+        <div className="-mr-2 min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pr-2">
           <p className="ui-body text-muted-foreground">
             Anyone with the link can view this conversation read-only. Costs and
             usage are hidden on the shared view.

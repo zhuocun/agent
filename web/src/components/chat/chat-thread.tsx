@@ -3937,7 +3937,7 @@ export function ChatThread() {
           {compareMode && compareTierA && compareTierB ? (
             <div
               className={cn(
-                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+12rem)] pl-[env(safe-area-inset-left)]",
+                "relative min-h-0 flex-1 overflow-y-auto overscroll-contain pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+12rem)] pl-[env(safe-area-inset-left)]",
                 CHAT_CHROME_PAD_CLASS,
               )}
               style={topChromePaddingStyle("compare", {
@@ -3961,7 +3961,7 @@ export function ChatThread() {
             // not biased toward either the header or the composer.
             <div
               className={cn(
-                "relative min-h-0 flex-1 overflow-y-auto pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+20rem)] pl-[env(safe-area-inset-left)] md:pb-[calc(var(--bottom-inset)+12rem)]",
+                "relative min-h-0 flex-1 overflow-y-auto overscroll-contain pr-[env(safe-area-inset-right)] pb-[calc(var(--bottom-inset)+20rem)] pl-[env(safe-area-inset-left)] md:pb-[calc(var(--bottom-inset)+12rem)]",
                 CHAT_CHROME_PAD_CLASS,
               )}
               style={topChromePaddingStyle("welcome", {

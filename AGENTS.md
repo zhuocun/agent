@@ -26,6 +26,15 @@ Vercel apex alias `olune-agent.vercel.app` resolves to the same FE.
   `flyctl deploy --remote-only`. Needs the `FLY_API_TOKEN` repo secret (Fly
   deploy-scoped token — `flyctl tokens create deploy -a olune-agent-server`).
 
+**Docs-only pull requests skip the heavy jobs.** In `ci.yml`, a `changes` job
+checks whether a PR touches only `.agents/`, `.claude/`, `docs/` or a root-level
+`*.md`; if so, `api`, `web-e2e` and `web-coverage` skip via `if:` and report
+success. Nested `.md` files (`api/README.md`, `web/AGENTS.md`) do not count.
+Anything unproven runs everything, and pushes to `main` always run the full
+suite before `deploy-api`. Do not replace this with a workflow-level `paths:`
+filter: a workflow skipped that way never reports, so a required check stays
+pending and blocks the merge.
+
 No manual deploy is required for normal merges. The FE proxies `/api/*` through
 Next.js to the BE (see `web/next.config.ts`) so the BE's `Set-Cookie` is
 first-party against the Vercel origin — critical for iOS Safari ITP.

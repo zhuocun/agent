@@ -334,13 +334,10 @@ export function CommandPalette({
     onDismiss: () => handleOpenChangeRef.current(false),
   });
 
-  // Taps on interactive controls inside the sheet (the header's filter/back
-  // buttons, the filter form fields) must stay plain clicks. The swipe hook
-  // pointer-captures the sheet on pointerdown, which retargets the eventual
-  // `click` to the sheet and silently swallows the control's handler on
-  // touch. Skipping the gesture for controls trades "swipe starting on a
-  // button" for working taps — matching iOS, where a touch that lands on a
-  // control acts on the control.
+  // Presses on interactive controls inside the sheet (the header's filter/back
+  // buttons, the filter form fields) never start the swipe gesture, so a
+  // slightly-dragged tap still acts on the control — matching iOS, where a
+  // touch that lands on a control acts on the control.
   const sheetContentProps: typeof contentProps = {
     ...contentProps,
     onPointerDown: (event) => {

@@ -207,3 +207,49 @@ test.describe("ui primitives on mobile", () => {
     await expect(dialog).toBeHidden({ timeout: 5_000 });
   });
 });
+
+test.describe("ui primitives on a narrow mouse viewport", () => {
+  // Below `sm` a dialog presents as a swipe-dismissable bottom sheet even with
+  // a mouse (a narrow desktop window, a pen tablet). A press must stay a click
+  // until it turns into a drag, or every control in the sheet goes dead.
+  test.use({ viewport: { width: 600, height: 900 }, hasTouch: false });
+
+  test("dialog: a mouse click on a control inside a bottom sheet acts on it", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.locator('button[aria-label="Open sidebar"]:visible').click();
+    await expect(page.locator('[data-slot="drawer-content"]')).toBeVisible();
+    await page.getByRole("button", { name: "Account menu" }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await expect(dialog).toBeVisible();
+    // The sheet presentation (grabber) is what arms the swipe gesture.
+    await expect(
+      dialog.locator('[aria-hidden="true"].cursor-grab').first(),
+    ).toBeVisible();
+
+    // Narrow sheets open on the section list; a section row drills in and
+    // the back button returns to the list.
+    const general = dialog.getByRole("button", { name: "General" });
+    const back = dialog.getByTestId("settings-back-button");
+    // A real mouse press + release (not a synthetic element.click()).
+    await general.click();
+    await expect(back).toBeVisible();
+
+    // A press that jitters a couple of pixels downward is still a click.
+    const box = await back.boundingBox();
+    expect(box).not.toBeNull();
+    const x = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, y + 2);
+    await page.mouse.up();
+    await expect(general).toBeVisible();
+    await expect(dialog).toBeVisible();
+  });
+});

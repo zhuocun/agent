@@ -702,7 +702,7 @@ for (const vp of VIEWPORTS) {
         await a.attempt("drawer-thread", async () => {
           await openDrawerIfMobile(page);
           await a.capture("drawer-thread", {
-            ready: () => page.locator("[data-conversation-id]").first().waitFor({ state: "visible" }),
+            ready: () => page.locator("[data-conversation-id]:visible").first().waitFor({ state: "visible" }),
           });
         });
       }

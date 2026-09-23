@@ -735,6 +735,13 @@ for (const vp of VIEWPORTS) {
       }
 
       // 10. Streaming states --------------------------------------------------
+      await a.attempt("turn-error", async () => {
+        await sendAndSettle(page, "FORCE_ERROR: fail this turn", "error");
+        await a.capture("turn-error", {
+          ready: () => page.getByTestId("assistant-message").last().getByRole("button", { name: /retry/i }).first().waitFor(),
+        });
+      });
+
       await a.attempt("mid-stream", async () => {
         await page.locator(".chat-scroll").evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
         await resetCls(page);
@@ -790,10 +797,27 @@ for (const vp of VIEWPORTS) {
         });
       });
 
-      await a.attempt("turn-error", async () => {
-        await sendAndSettle(page, "FORCE_ERROR: fail this turn", "error");
-        await a.capture("turn-error", {
-          ready: () => page.getByTestId("assistant-message").last().getByRole("button", { name: /retry/i }).first().waitFor(),
+      // A send shortly after Stop. Recorded because the BE answered 409
+      // STREAM_IN_PROGRESS here during harness development (FINDINGS-RAW.md);
+      // the capture shows whatever the product does with the draft.
+      await a.attempt("send-after-stop", async () => {
+        await page.waitForTimeout(3000);
+        await page.getByTestId("composer-textarea").fill("A follow-up sent after stopping");
+        const resp = page.waitForResponse(
+          (r) => /\/api\/conversations\/[^/]+\/messages$/.test(r.url()) && r.request().method() === "POST",
+          { timeout: 10_000 },
+        );
+        await press(page.getByTestId("composer-send"));
+        const status = (await resp).status();
+        await page.waitForTimeout(800);
+        await a.capture("send-after-stop", {
+          extra: {
+            messagesPostStatus: status,
+            draftAfter: await page.getByTestId("composer-textarea").inputValue(),
+            followUpBubbleShown: (await page.getByTestId("user-message-text").allTextContents()).some((t) =>
+              t.includes("A follow-up sent after stopping"),
+            ),
+          },
         });
       });
 
@@ -931,6 +955,45 @@ for (const vp of VIEWPORTS) {
       await ctx.close();
     });
   }
+}
+
+// ── Pointer click inside a bottom sheet ──────────────────────────────────
+// Below `md` the dialogs render as swipe-dismissable bottom sheets. During
+// harness development a synthesized MOUSE click on a row inside the Settings
+// sheet did nothing while a TAP worked (FINDINGS-RAW.md). This probe re-checks
+// it on a narrow pointer (no touch) window, the case a desktop user hits by
+// resizing the browser, and records the outcome instead of asserting it.
+if (!ONLY.length || ONLY.includes("p600")) {
+  test("audit p600 sheet mouse click", async ({ browser }) => {
+    const vp: Viewport = { id: "p600", width: 600, height: 800, touch: false, dsf: 1, primary: false };
+    const ctx = await newAuditContext(browser, vp, "light");
+    const page = await ctx.newPage();
+    const a = new Auditor(page, vp, "light");
+    currentTouch = false;
+    await page.goto("/");
+    await waitForShell(page);
+    await a.attempt("sheet-mouse-click", async () => {
+      await openDrawerIfMobile(page);
+      await page.getByRole("button", { name: "Account menu" }).click();
+      await page.getByRole("menuitem", { name: "Settings" }).click();
+      const dialog = page.getByRole("dialog", { name: "Settings" });
+      await dialog.waitFor({ state: "visible" });
+      await page.waitForTimeout(600);
+      await dialog.getByRole("button", { name: "General", exact: true }).click();
+      await page.waitForTimeout(800);
+      const navigated = await dialog.getByTestId("settings-back-button").isVisible().catch(() => false);
+      // Keyboard activation of the same row, for comparison.
+      let keyboardWorks: boolean | null = null;
+      if (!navigated) {
+        await dialog.getByRole("button", { name: "General", exact: true }).focus();
+        await page.keyboard.press("Enter");
+        await page.waitForTimeout(600);
+        keyboardWorks = await dialog.getByTestId("settings-back-button").isVisible().catch(() => false);
+      }
+      await a.capture("sheet-mouse-click", { extra: { mouseClickNavigated: navigated, keyboardWorks } });
+    });
+    await ctx.close();
+  });
 }
 
 // ── Media variants ───────────────────────────────────────────────────────

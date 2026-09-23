@@ -96,6 +96,17 @@ export default defineConfig({
       env: {
         ...BE_ENV,
         DATABASE_URL: `sqlite+aiosqlite:///${AUDIT_DB}`,
+        // Several flows run in parallel from one IP; the per-IP message and
+        // read limits (30-60/min) would otherwise throttle the later flows.
+        // The limiter itself is covered by pytest.
+        RATE_LIMIT_MESSAGES: "10000/minute",
+        RATE_LIMIT_SEARCH: "10000/minute",
+        RATE_LIMIT_ANALYTICS: "10000/minute",
+        RATE_LIMIT_TRUST_READ: "10000/minute",
+        RATE_LIMIT_MEMORY: "10000/minute",
+        RATE_LIMIT_PROJECTS: "10000/minute",
+        RATE_LIMIT_PROMPT_TEMPLATES: "10000/minute",
+        RATE_LIMIT_TAGS: "10000/minute",
       },
       stdout: "pipe",
       stderr: "pipe",

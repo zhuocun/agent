@@ -37,6 +37,7 @@ export function AgenticAssistantParts({
   sourcesPanelRef,
   answerTestId = "assistant-answer",
   showEmptyFallback = false,
+  status,
 }: {
   parts: readonly MessagePart[];
   sourcesPanelRef: RefObject<SourcesPanelHandle | null>;
@@ -45,6 +46,8 @@ export function AgenticAssistantParts({
   answerTestId?: string;
   /** When true, show the calm empty-reply note on tool/subagent turns with no main answer. */
   showEmptyFallback?: boolean;
+  /** Persisted turn status; a paused turn never shows the partial chip. */
+  status?: string | null;
 }) {
   const layout = buildAgenticPanelLayout(parts);
   const {
@@ -56,7 +59,7 @@ export function AgenticAssistantParts({
   } = layout;
   const subagentSections = buildSubagentSectionsFromParts(parts);
   const runCost = deriveRunCostFromParts(parts);
-  const partialSummary = deriveAgenticRunSummary(parts);
+  const partialSummary = deriveAgenticRunSummary(parts, null, status);
   const subagentRoleById = useMemo(() => buildSubagentRoleById(parts), [parts]);
   const { effectiveAnswerText } = useMemo(
     () => resolveMainBubbleText(parts),

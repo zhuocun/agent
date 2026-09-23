@@ -212,8 +212,8 @@ export function AssistantMessage({
   }, [liveRunCost, message.parts]);
 
   const partialSummary = useMemo(
-    () => deriveAgenticRunSummary(message.parts, liveRunCost),
-    [message.parts, liveRunCost],
+    () => deriveAgenticRunSummary(message.parts, liveRunCost, status),
+    [message.parts, liveRunCost, status],
   );
 
   const agenticLayout = useMemo(

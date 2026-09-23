@@ -220,6 +220,7 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
         // explicitly done. Unknown/missing status must not fake completion —
         // e.g. a stopped/paused legacy turn should stay silent, not dead-end.
         showEmptyFallback={message.status === "done"}
+        status={message.status}
       />
 
       {message.attribution ? (

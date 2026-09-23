@@ -93,11 +93,11 @@ const SERVED_MODEL_OPTIONS: { value: ModelTierId; label: string }[] = [
 // Filter-control styling — copied from the former dialog so the inputs read as
 // part of the same surface family.
 const FILTER_INPUT_CLASS =
-  "w-full min-w-0 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
+  "w-full min-w-0 [@media(hover:none)]:min-h-11 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 const FILTER_DATE_INPUT_CLASS =
-  "w-full min-w-[7.5rem] rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
+  "w-full min-w-[7.5rem] [@media(hover:none)]:min-h-11 rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 const FILTER_SELECT_CLASS =
-  "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
+  "h-9 [@media(hover:none)]:h-11 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 
 // Date input <-> ISO. The native date input gives `YYYY-MM-DD`; the BE parses
 // ISO-8601. `dateTo` widens to end-of-day so an inclusive "to" matches any time

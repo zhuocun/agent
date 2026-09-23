@@ -122,6 +122,12 @@ function CitationChip({
       aria-label={`Jump to source ${id}`}
       className={cn(
         "inline-flex items-baseline align-baseline rounded px-0.5 text-[0.85em] font-medium leading-none",
+        // Hit-slop: the painted chip is ~22x13 px. An invisible ::before grows
+        // the clickable region to the 24 px pointer floor (UI-TOUCH-2) and, on
+        // touch, to the 44 px floor (UI-TOUCH-1) without changing the type size
+        // or the line box.
+        "relative before:absolute before:-inset-x-0.5 before:-inset-y-1.5 before:content-['']",
+        "[@media(hover:none)]:before:-inset-x-[11px] [@media(hover:none)]:before:-inset-y-4",
         "text-primary bg-primary/[0.08] hover:bg-primary/15",
         "cursor-pointer transition-colors",
         "outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",

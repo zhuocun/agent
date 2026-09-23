@@ -199,6 +199,19 @@ class Auditor {
       rec.ok = false;
       rec.error = `not ready: ${(e as Error).message.split("\n")[0]}`;
     }
+    // Probe BEFORE the screenshot: a fullPage screenshot resizes the viewport
+    // and resets emulated device metrics, after which media queries such as
+    // `hover: none` / `pointer: coarse` read false on touch viewports.
+    if (rec.ok && opts.probes !== false) {
+      try {
+        rec.probe = await this.page.evaluate(pageProbe, {
+          touch: this.vp.touch,
+          targetFloor: this.floor,
+        });
+      } catch (e) {
+        rec.extra = { ...rec.extra, probeError: (e as Error).message.split("\n")[0] };
+      }
+    }
     try {
       const buf = await this.page.screenshot({
         path: rec.ok ? file : file.replace(/\.png$/, "__FAILED.png"),
@@ -214,14 +227,6 @@ class Auditor {
       rec.error = `${rec.error ?? ""} screenshot: ${(e as Error).message.split("\n")[0]}`;
     }
     if (rec.ok && opts.probes !== false) {
-      try {
-        rec.probe = await this.page.evaluate(pageProbe, {
-          touch: this.vp.touch,
-          targetFloor: this.floor,
-        });
-      } catch (e) {
-        rec.extra = { ...rec.extra, probeError: (e as Error).message.split("\n")[0] };
-      }
       if (opts.axe !== false && this.media === "base") {
         try {
           const res = await new AxeBuilder({ page: this.page }).withTags(AXE_TAGS).analyze();
@@ -742,7 +747,26 @@ for (const vp of VIEWPORTS) {
         });
       });
 
+      // One retry: the SLOW: send can land on a still-guarded conversation
+      // (a 409 after the preceding error turn) or miss the capture window.
       await a.attempt("mid-stream", async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await captureMidStream();
+            return;
+          } catch (e) {
+            if (attempt >= 1) throw e;
+            await dismissAll(page);
+            // Let any stream still running finish before trying again.
+            await page
+              .getByRole("button", { name: "Stop generating" })
+              .waitFor({ state: "hidden", timeout: 15_000 })
+              .catch(() => {});
+            await page.waitForTimeout(3000);
+          }
+        }
+      });
+      async function captureMidStream(): Promise<void> {
         await page.locator(".chat-scroll").evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
         await resetCls(page);
         await page.getByTestId("composer-textarea").fill("SLOW: stream a long answer slowly");
@@ -795,7 +819,7 @@ for (const vp of VIEWPORTS) {
             }),
           extra: { streamCls: await readCls(page), lastStatus: await last.getAttribute("data-status") },
         });
-      });
+      }
 
       // A send shortly after Stop. Recorded because the BE answered 409
       // STREAM_IN_PROGRESS here during harness development (FINDINGS-RAW.md);

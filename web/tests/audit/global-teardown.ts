@@ -223,7 +223,7 @@ export default async function globalTeardown(): Promise<void> {
 
   // ── Spacing ────────────────────────────────────────────────────────────
   L.push("## Off-scale spacing (craft)", "");
-  L.push("Computed margin / padding / gap values not on the Tailwind scale (2 px steps to 16 px, 4 px steps above). **Noisy by design:** `em`-based prose margins inside `.chat-md` (column `inProse`), browser defaults and vendored Streamdown chrome show up here; treat as a pointer for review, not a defect list.", "");
+  L.push("Computed margin / padding / gap values that fail UI-CRAFT-1's predicate: `0`, `1`, a multiple of 4, or — inside a control (`button`, menuitem, option, tab, `code`, badge) — a multiple of 2 up to 14 px. `ml-auto` resolved margins also appear. **Noisy by design:** `em`-based prose margins inside `.chat-md` (column `inProse`), browser defaults and vendored Streamdown chrome show up here; treat as a pointer for review, not a defect list.", "");
   const sp = new Map<string, { value: number; prop: string; count: number; inProse: number; examples: Set<string> }>();
   for (const r of ok) {
     for (const s of r.probe?.spacing ?? []) {

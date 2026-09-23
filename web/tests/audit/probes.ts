@@ -90,6 +90,7 @@ export function pageProbe(opts: ProbeOptions) {
     offenders: [] as Array<{ sel: string; left: number; right: number; text: string; clipped: boolean }>,
   };
   const all = Array.from(document.body.querySelectorAll("*"));
+  const offenderEls: Element[] = [];
   for (const el of all) {
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
@@ -102,6 +103,11 @@ export function pageProbe(opts: ProbeOptions) {
     if (r.left >= vw || r.right <= 0) continue;
     const clipped = clippedHorizontally(el);
     if (clipped) continue;
+    // Keep only the outermost offenders: a descendant of an element already
+    // recorded crosses the edge because its ancestor does, and adds noise.
+    // `all` is in document order, so an ancestor is always seen first.
+    if (offenderEls.some((o) => o.contains(el))) continue;
+    offenderEls.push(el);
     overflow.offenders.push({
       sel: describe(el),
       left: Math.round(r.left),
@@ -110,7 +116,7 @@ export function pageProbe(opts: ProbeOptions) {
       clipped,
     });
   }
-  // Keep only the outermost offenders (children of an offender add noise).
+  // Cap the list; the page-level `pageOverflows` flag is the verdict.
   overflow.offenders = overflow.offenders.slice(0, 25);
 
   // ── Targets (UI-TOUCH-1 / UI-TOUCH-2) ──────────────────────────────────
@@ -209,11 +215,16 @@ export function pageProbe(opts: ProbeOptions) {
     "rowGap", "columnGap",
   ] as const;
   const offScale = new Map<string, { value: number; prop: string; count: number; examples: string[]; inProse: number }>();
-  function onScale(v: number): boolean {
-    if (v === 0 || v === 1) return true; // hairline offsets
+  // UI-CRAFT-1's predicate, verbatim: 0, 1 px hairlines, and 4 px steps
+  // everywhere; the 2 px sub-step (6, 10, 14) is admitted only inside a
+  // control, up to 14 px (UI_STANDARDS.md §15 C38).
+  const CONTROL_SEL =
+    'button,[role=menuitem],[role=option],[role=tab],code,[data-slot=badge]';
+  const on = (a: number, step: number) => Math.abs(a / step - Math.round(a / step)) < 0.01;
+  function onScale(v: number, el: Element): boolean {
     const a = Math.abs(v);
-    if (a <= 16) return Math.abs(a / 2 - Math.round(a / 2)) < 0.01; // 0.5-step region: 2,4,6..16
-    return Math.abs(a / 4 - Math.round(a / 4)) < 0.01;
+    const inCtl = el.closest(CONTROL_SEL) !== null;
+    return a === 0 || a === 1 || on(a, 4) || (inCtl && a <= 14 && on(a, 2));
   }
   for (const el of all) {
     if (!isVisible(el)) continue;
@@ -222,7 +233,7 @@ export function pageProbe(opts: ProbeOptions) {
       const raw = cs[p];
       if (!raw || raw === "normal" || !raw.endsWith("px")) continue;
       const v = parseFloat(raw);
-      if (Number.isNaN(v) || onScale(v)) continue;
+      if (Number.isNaN(v) || onScale(v, el)) continue;
       const vr = Math.round(v * 100) / 100;
       const key = `${vr}|${p}`;
       const inProse = el.closest(".chat-md") ? 1 : 0;
@@ -322,7 +333,13 @@ export function focusSnapshot() {
   function styleOf(e: Element) {
     const cs = getComputedStyle(e);
     return {
-      outline: `${cs.outlineStyle} ${cs.outlineWidth} ${cs.outlineColor}`,
+      // An outline only paints when it has a style and a width; otherwise a
+      // colour change alone (e.g. currentColor tracking a hover tint) would
+      // read as a visible indicator.
+      outline:
+        cs.outlineStyle !== "none" && parseFloat(cs.outlineWidth) > 0
+          ? `${cs.outlineStyle} ${cs.outlineWidth} ${cs.outlineColor}`
+          : "none",
       boxShadow: cs.boxShadow,
       borderColor: cs.borderColor,
       background: cs.backgroundColor,
@@ -361,7 +378,13 @@ export function focusBaselines() {
   function styleOf(e: Element) {
     const cs = getComputedStyle(e);
     return {
-      outline: `${cs.outlineStyle} ${cs.outlineWidth} ${cs.outlineColor}`,
+      // An outline only paints when it has a style and a width; otherwise a
+      // colour change alone (e.g. currentColor tracking a hover tint) would
+      // read as a visible indicator.
+      outline:
+        cs.outlineStyle !== "none" && parseFloat(cs.outlineWidth) > 0
+          ? `${cs.outlineStyle} ${cs.outlineWidth} ${cs.outlineColor}`
+          : "none",
       boxShadow: cs.boxShadow,
       borderColor: cs.borderColor,
       background: cs.backgroundColor,

@@ -19,6 +19,10 @@ const BE_ORIGIN =
 const COVERAGE = process.env.COVERAGE === "1";
 
 const nextConfig: NextConfig = {
+  // Build output directory. Defaults to `.next`; the UI audit harness
+  // (`pnpm audit:ui`) builds into `.next-audit` so its localhost-inlined
+  // production build never replaces the one `pnpm start` would serve.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   // Production browser code calls same-origin /api/*. This server-side rewrite
   // forwards those requests to Fly while preserving first-party cookies on the
   // Vercel origin. For local proxy testing, set BE_ORIGIN=http://localhost:8000.

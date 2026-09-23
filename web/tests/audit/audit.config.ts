@@ -118,7 +118,7 @@ export default defineConfig({
       url: FE_URL,
       reuseExistingServer: false,
       timeout: 60_000,
-      env: { PORT: String(FE_PORT) },
+      env: { PORT: String(FE_PORT), NEXT_DIST_DIR: ".next-audit" },
       stdout: "pipe",
       stderr: "pipe",
       gracefulShutdown: { signal: "SIGTERM", timeout: 5_000 },

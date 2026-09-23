@@ -275,6 +275,16 @@ class Auditor {
   }
 }
 
+// Touch viewports must activate controls with touch events. A synthesized
+// mouse click inside a bottom sheet is swallowed by the sheet's swipe-dismiss
+// pointer capture (see FINDINGS-RAW.md), so on touch contexts the walk taps,
+// as a phone user would. Set per test; tests in one worker run sequentially.
+let currentTouch = false;
+async function press(loc: Locator): Promise<void> {
+  if (currentTouch) await loc.tap();
+  else await loc.click();
+}
+
 async function dismissAll(page: Page): Promise<void> {
   for (let i = 0; i < 3; i++) {
     const open = await page
@@ -305,7 +315,7 @@ async function openDrawerIfMobile(page: Page): Promise<boolean> {
   const accountVisible = await page.getByRole("button", { name: "Account menu" }).isVisible();
   if (accountVisible) return false;
   const opener = await visibleFirst(page.getByRole("button", { name: "Open sidebar" }));
-  await opener.click();
+  await press(opener);
   await page.getByRole("dialog", { name: "Navigation" }).waitFor({ state: "visible" });
   return true;
 }
@@ -313,7 +323,7 @@ async function openDrawerIfMobile(page: Page): Promise<boolean> {
 async function sendAndSettle(page: Page, prompt: string, status = "done"): Promise<Locator> {
   const before = await page.getByTestId("assistant-message").count();
   await page.getByTestId("composer-textarea").fill(prompt);
-  await page.getByTestId("composer-send").click();
+  await press(page.getByTestId("composer-send"));
   const msg = page.getByTestId("assistant-message").nth(before);
   await msg.waitFor({ state: "visible", timeout: 20_000 });
   await page.waitForFunction(
@@ -441,6 +451,7 @@ for (const vp of VIEWPORTS) {
       const page = await ctx.newPage();
       const a = new Auditor(page, vp, theme);
       const primary = vp.primary;
+      currentTouch = vp.touch;
 
       // 1. Welcome ------------------------------------------------------------
       await page.goto("/");
@@ -479,14 +490,14 @@ for (const vp of VIEWPORTS) {
 
       // 2. Model picker -------------------------------------------------------
       await a.attempt("model-picker", async () => {
-        await page.locator('[data-testid="model-mode-trigger"]:visible').first().click();
+        await press(page.locator('[data-testid="model-mode-trigger"]:visible').first());
         await a.capture("model-picker", {
           ready: () =>
             page.locator('[role="menu"]:visible, [role="dialog"]:visible').first().waitFor({ state: "visible" }),
         });
         const adv = page.locator('[data-testid="picker-advanced"]:visible').first();
         if (await adv.count()) {
-          await adv.click();
+          await press(adv);
           await a.capture("model-picker-advanced", {
             ready: () => page.locator('[data-testid="web-search-toggle"]:visible').first().waitFor(),
           });
@@ -517,17 +528,17 @@ for (const vp of VIEWPORTS) {
       // 5. Account menu + auth dialog ----------------------------------------
       await a.attempt("account-menu", async () => {
         await openDrawerIfMobile(page);
-        await page.getByRole("button", { name: "Account menu" }).click();
+        await press(page.getByRole("button", { name: "Account menu" }));
         await a.capture("account-menu", {
           ready: () => page.getByRole("menuitem", { name: "Settings" }).waitFor(),
         });
-        await page.getByRole("menuitem", { name: "Sign in" }).click();
+        await press(page.getByRole("menuitem", { name: "Sign in" }));
         await a.capture("auth-signin", {
           ready: () => page.getByRole("heading", { name: "Sign in" }).waitFor(),
         });
         const toSignup = page.getByRole("button", { name: "Create an account" });
         if (await toSignup.count()) {
-          await toSignup.click();
+          await press(toSignup);
           await a.capture("auth-signup", {
             ready: () => page.getByRole("heading", { name: "Create account" }).waitFor(),
           });
@@ -537,8 +548,8 @@ for (const vp of VIEWPORTS) {
       // 6. Settings, every tab -----------------------------------------------
       await a.attempt("settings", async () => {
         await openDrawerIfMobile(page);
-        await page.getByRole("button", { name: "Account menu" }).click();
-        await page.getByRole("menuitem", { name: "Settings" }).click();
+        await press(page.getByRole("button", { name: "Account menu" }));
+        await press(page.getByRole("menuitem", { name: "Settings" }));
         const dialog = page.getByRole("dialog", { name: "Settings" });
         await dialog.waitFor({ state: "visible" });
         const tabs = ["General", "Activity", "Memory", "Templates", "Models", "Shortcuts"];
@@ -551,10 +562,10 @@ for (const vp of VIEWPORTS) {
           try {
             if (isList) {
               const back = dialog.getByTestId("settings-back-button");
-              if (await back.isVisible().catch(() => false)) await back.click();
-              await dialog.getByRole("button", { name: label, exact: true }).click();
+              if (await back.isVisible().catch(() => false)) await press(back);
+              await press(dialog.getByRole("button", { name: label, exact: true }));
             } else {
-              await dialog.getByRole("tab", { name: label }).click();
+              await press(dialog.getByRole("tab", { name: label }));
             }
             await a.capture(slug, {
               ready: async () => {
@@ -668,20 +679,20 @@ for (const vp of VIEWPORTS) {
         await page.locator(".chat-scroll").evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
         const last = page.getByTestId("assistant-message").last();
         await last.hover().catch(() => {});
-        await last.getByTestId("message-actions-overflow").click();
+        await press(last.getByTestId("message-actions-overflow"));
         await a.capture("message-overflow", {
           ready: () => page.getByRole("menu").first().waitFor({ state: "visible" }),
         });
       });
 
       await a.attempt("share-dialog", async () => {
-        await (await visibleFirst(page.getByRole("button", { name: "Chat menu" }))).click();
+        await press(await visibleFirst(page.getByRole("button", { name: "Chat menu" })));
         await a.capture("chat-menu", { ready: () => page.getByRole("menuitem", { name: "Share chat" }).waitFor() });
-        await page.getByRole("menuitem", { name: "Share chat" }).click();
+        await press(page.getByRole("menuitem", { name: "Share chat" }));
         await a.capture("share-dialog", {
           ready: () => page.getByRole("heading", { name: "Share chat" }).waitFor(),
         });
-        await page.getByRole("button", { name: "Create share link" }).click();
+        await press(page.getByRole("button", { name: "Create share link" }));
         await a.capture("share-dialog-link", {
           ready: () => page.getByRole("textbox", { name: "Public share link" }).waitFor(),
         });
@@ -728,7 +739,7 @@ for (const vp of VIEWPORTS) {
         await page.locator(".chat-scroll").evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
         await resetCls(page);
         await page.getByTestId("composer-textarea").fill("SLOW: stream a long answer slowly");
-        await page.getByTestId("composer-send").click();
+        await press(page.getByTestId("composer-send"));
         const stop = page.getByRole("button", { name: "Stop generating" });
         await stop.waitFor({ state: "visible", timeout: 10_000 });
         await page.waitForFunction(
@@ -767,7 +778,7 @@ for (const vp of VIEWPORTS) {
         };
         rec.probe = await page.evaluate(pageProbe, { touch: vp.touch, targetFloor: a.floor });
         a.write(rec);
-        await stop.click();
+        await press(stop);
         const last = page.getByTestId("assistant-message").last();
         await a.capture("stopped", {
           ready: () =>
@@ -794,7 +805,7 @@ for (const vp of VIEWPORTS) {
         await a.capture("tool-approval", {
           ready: () => page.getByTestId("tool-approve").last().waitFor({ state: "visible" }),
         });
-        await page.getByTestId("tool-approve").last().click();
+        await press(page.getByTestId("tool-approve").last());
         await page.waitForFunction(() => {
           const msgs = document.querySelectorAll('[data-testid="assistant-message"]');
           return msgs[msgs.length - 1]?.getAttribute("data-status") === "done";
@@ -807,9 +818,9 @@ for (const vp of VIEWPORTS) {
       await a.attempt("web-search", async () => {
         await page.goto("/");
         await waitForShell(page);
-        await page.locator('[data-testid="model-mode-trigger"]:visible').first().click();
-        await page.locator('[data-testid="picker-advanced"]:visible').first().click();
-        await page.locator('[data-testid="web-search-toggle"]:visible').first().click();
+        await press(page.locator('[data-testid="model-mode-trigger"]:visible').first());
+        await press(page.locator('[data-testid="picker-advanced"]:visible').first());
+        await press(page.locator('[data-testid="web-search-toggle"]:visible').first());
         await dismissAll(page);
         await sendAndSettle(page, "What is the latest on Playwright releases?");
         await a.capture("web-search", {
@@ -817,7 +828,7 @@ for (const vp of VIEWPORTS) {
         });
         const trig = page.getByTestId("web-search-trigger").last();
         if (await trig.count()) {
-          await trig.click();
+          await press(trig);
           await a.capture("web-search-expanded", { ready: () => page.waitForTimeout(300) });
         }
       });
@@ -825,14 +836,14 @@ for (const vp of VIEWPORTS) {
       await a.attempt("deep-research-plan", async () => {
         await page.goto("/");
         await waitForShell(page);
-        await page.locator('[data-testid="model-mode-trigger"]:visible').first().click();
-        await page.locator('[data-testid="deep-research-toggle"]:visible').first().click();
+        await press(page.locator('[data-testid="model-mode-trigger"]:visible').first());
+        await press(page.locator('[data-testid="deep-research-toggle"]:visible').first());
         await dismissAll(page);
         await sendAndSettle(page, "DEEP_RESEARCH: alpha topic | beta topic", "awaiting_approval");
         await a.capture("deep-research-plan", {
           ready: () => page.getByTestId("plan-approval-detail").last().waitFor({ state: "visible" }),
         });
-        await page.getByTestId("tool-approve").last().click();
+        await press(page.getByTestId("tool-approve").last());
         await page.waitForFunction(() => {
           const msgs = document.querySelectorAll('[data-testid="assistant-message"]');
           const s = msgs[msgs.length - 1]?.getAttribute("data-status");
@@ -846,8 +857,8 @@ for (const vp of VIEWPORTS) {
       await a.attempt("temporary-chat", async () => {
         await page.goto("/");
         await waitForShell(page);
-        await (await visibleFirst(page.getByRole("button", { name: "Chat menu" }))).click();
-        await page.getByRole("menuitemcheckbox", { name: "Temporary chat" }).click();
+        await press(await visibleFirst(page.getByRole("button", { name: "Chat menu" })));
+        await press(page.getByRole("menuitemcheckbox", { name: "Temporary chat" }));
         await a.capture("temporary-chat", {
           ready: () => page.getByTestId("temporary-chat-banner").waitFor({ state: "visible" }),
         });

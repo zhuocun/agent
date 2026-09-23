@@ -57,6 +57,7 @@ Incumbents compete on breadth; this product competes on **polish + trust surface
 
 ### 3.3 Spacing, radius, elevation **[P0]**
 - 4px base grid.
+- Inside a single control or inline chip (button, menu item, option, tab, inline code, badge), 2px sub-steps up to 14px are admitted; spacing between components and every container gutter stays on the 4px grid (`docs/design/UI_STANDARDS.md` UI-CRAFT-1).
 - Composer/header respect all four `safe-area-inset-*`.
 - Message surfaces remain flat; elevation reserved for drawer/sheet/modal.
 - **[shipped]** `--radius-3xl` (`--radius` × 2.4 = 1.5rem at default) brings the welcome surface's generous rounding into the token system — same resolved value as the Tailwind built-in it replaces, but it now tracks the system radius knob (Decision 16).

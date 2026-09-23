@@ -108,3 +108,64 @@ test.describe("reasoning panel", () => {
     await expect(assistant.getByTestId("assistant-answer")).not.toBeEmpty();
   });
 });
+
+test.describe("markdown tables", () => {
+  // UI-LAYOUT-2 / UI-LAYOUT-11. `.chat-md` sets `overflow-wrap: anywhere` so an
+  // unbroken URL wraps in prose; inherited into cells, it shrank every column's
+  // min-content to one character, so tables squeezed to fit and broke words
+  // mid-letter instead of scrolling. The table and the prose are injected, as
+  // UI-LAYOUT-11 prescribes: the property under test is the stylesheet.
+  for (const width of [320, 1280]) {
+    test(`cells wrap at word boundaries and a wide table scrolls at ${width}px`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto("/");
+      await waitForBootstrap(page);
+      await sendAndSettle(page, "NO_REASONING: keep it short");
+
+      const result = await page.evaluate(() => {
+        const md = [...document.querySelectorAll(".chat-md")].pop()!;
+        const p = document.createElement("p");
+        p.textContent = "https://example.com/" + "a".repeat(280);
+        md.append(p);
+        const cols = ["Region", "Latency p50", "Latency p95", "Error rate", "Notes", "Owner"];
+        const row = ["ap-southeast-1", "120 ms", "480 ms", "0.02%", "Primary database region, warm", "platform"];
+        const table = document.createElement("table");
+        table.innerHTML =
+          `<thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead>` +
+          `<tbody>${[0, 1, 2].map(() => `<tr>${row.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody>`;
+        md.append(table);
+        // A word split mid-letter paints as more than one line box.
+        const splitWords: string[] = [];
+        for (const cell of table.querySelectorAll("th, td")) {
+          const text = cell.firstChild as Text;
+          for (const m of text.data.matchAll(/[A-Za-z]+/g)) {
+            const range = document.createRange();
+            range.setStart(text, m.index);
+            range.setEnd(text, m.index + m[0].length);
+            if (range.getClientRects().length > 1) splitWords.push(m[0]);
+          }
+        }
+        return {
+          splitWords,
+          tableScrolls: table.scrollWidth > table.clientWidth + 1,
+          overflowX: getComputedStyle(table).overflowX,
+          prose: { sw: p.scrollWidth, cw: p.clientWidth },
+          md: { sw: md.scrollWidth, cw: md.clientWidth },
+          doc: document.documentElement.scrollWidth,
+          vw: window.innerWidth,
+        };
+      });
+
+      expect(result.splitWords).toEqual([]);
+      expect(result.overflowX).toBe("auto");
+      // Six columns never fit a phone column without breaking words.
+      if (width === 320) expect(result.tableScrolls).toBe(true);
+      // The long URL still wraps inside prose, and nothing widens the page.
+      expect(result.prose.sw).toBeLessThanOrEqual(result.prose.cw + 1);
+      expect(result.md.sw).toBeLessThanOrEqual(result.md.cw + 1);
+      expect(result.doc).toBeLessThanOrEqual(result.vw);
+    });
+  }
+});

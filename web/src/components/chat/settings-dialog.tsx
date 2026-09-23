@@ -400,8 +400,10 @@ function BudgetEditor({
     onSaveBudget(parsed);
   }
 
+  // No top rule: this editor opens the budget group, whose wrapper in the
+  // credits card already draws the divider above it.
   return (
-    <div className="space-y-1.5 border-t border-border/50 pt-2">
+    <div className="space-y-1.5">
       <label htmlFor={inputId} className="ui-caption font-medium">
         Monthly budget cap
       </label>

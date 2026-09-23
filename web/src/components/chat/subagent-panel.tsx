@@ -144,7 +144,7 @@ export function SubagentPanel({
         <CollapsibleTrigger
           data-testid="subagent-panel-trigger"
           className={cn(
-            "group/subagent-panel-trigger flex w-full min-w-0 items-center gap-x-2 gap-y-1 text-left",
+            "group/subagent-panel-trigger flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left",
             "bg-transparent outline-none [@media(hover:none)]:min-h-11 [@media(hover:none)]:py-2 [@media(hover:none)]:-my-2",
             "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
@@ -241,7 +241,7 @@ function RunCostMeter({ runCost }: { runCost: RunCostState }) {
       data-testid="run-cost-meter"
       data-confidence={runCost.confidence ?? "exact"}
       data-phase={runCost.phase ?? "final"}
-      className="inline-flex h-5 items-center rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground"
+      className="inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-full bg-foreground/[0.06] px-2 ui-caption text-muted-foreground"
       aria-label={`Run cost${ariaExtra} ${formatUsdMeter(runCost.subtotalUsd)}${
         runCost.capUsd > 0 ? ` of ${formatUsdMeter(runCost.capUsd)} cap` : ""
       }`}
@@ -249,8 +249,9 @@ function RunCostMeter({ runCost }: { runCost: RunCostState }) {
       {prefix}
       {formatUsdMeter(runCost.subtotalUsd)}
       {runCost.capUsd > 0 ? (
-        <span className="text-muted-foreground/70">
-          {" "}
+        // A leading space inside a flex item is collapsed at the start of its
+        // line, so the gap before the slash is a margin, not a text space.
+        <span className="ml-1 text-muted-foreground/70">
           / {formatUsdMeter(runCost.capUsd)}
         </span>
       ) : null}

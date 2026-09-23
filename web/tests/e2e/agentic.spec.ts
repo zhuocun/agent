@@ -187,6 +187,33 @@ test.describe("agentic mode (deep research)", () => {
     await expect(panel).toContainText("Worker 2");
     await expect(panel).toContainText("Synthesis");
     await expect(panel.getByTestId("run-cost-meter")).toBeVisible();
+    // The subtotal and the "/ cap" are separated on screen, not only in the
+    // DOM: a text space leading a flex item collapses, which once painted
+    // "$0.0001/ $1.00". Measure the painted gap before the slash.
+    const slashGap = await panel.getByTestId("run-cost-meter").evaluate((el) => {
+      const cap = el.lastElementChild;
+      if (!cap) return null;
+      const walker = document.createTreeWalker(cap, NodeFilter.SHOW_TEXT);
+      let capText: Text | null = null;
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        if (node.data.includes("/")) {
+          capText = node;
+          break;
+        }
+      }
+      if (!capText) return null;
+      const before = document.createRange();
+      before.setStart(el, 0);
+      before.setEndBefore(cap);
+      const slashAt = capText.data.indexOf("/");
+      const slash = document.createRange();
+      slash.setStart(capText, slashAt);
+      slash.setEnd(capText, slashAt + 1);
+      return slash.getBoundingClientRect().left - before.getBoundingClientRect().right;
+    });
+    expect(slashGap).not.toBeNull();
+    expect(slashGap!).toBeGreaterThanOrEqual(2);
     // Worker intermediate findings stay in the panel; the synthesis answer does not.
     await expect(panel).toContainText("Worker 1 finding");
     await expect(panel).not.toContainText("Synthesis of 2 findings");

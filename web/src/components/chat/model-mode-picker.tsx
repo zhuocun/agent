@@ -87,13 +87,16 @@ export interface ModelModePickerProps {
 // model dropdown): a compact text-sm ghost pill that sits flush with the
 // surrounding muted icon buttons while keeping the 44px touch floor
 // (PRD 06 §3.3). The mobile max-width budgets for the toolbar's siblings
-// (+ / mic / send circles) so the trigger can never push them off-card.
+// (+ / mic / send circles) so the trigger can never push them off-card. The
+// budget is in rem, so at 200% text it would exceed the viewport and crush the
+// pill to its padding; the 6rem floor keeps the label legible and the toolbar
+// wraps the right-hand circles to a second row instead (WCAG 1.4.4).
 // Lovable's "Fable 5" model selector reads as a subtle pill, not a bare text
 // run: a faint resting fill + hairline rim sets it apart from the muted icon
 // circles flanking it, while staying quiet enough not to compete with the send
 // button. Hover/expanded deepen the fill; focus shows the ring.
 const TRIGGER_CLASS =
-  "inline-flex h-11 min-w-0 max-w-[min(12rem,calc(100vw-11rem))] sm:max-w-[min(12rem,calc(100vw-16rem))] items-center gap-1 rounded-full px-3 ui-list-row outline-none transition-colors bg-foreground/[0.04] shadow-[inset_0_0_0_1px_var(--glass-border)] hover:bg-foreground/[0.08] focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/[0.08] md:max-w-80";
+  "inline-flex h-11 min-w-0 max-w-[min(12rem,max(6rem,calc(100vw-11rem)))] sm:max-w-[min(12rem,max(6rem,calc(100vw-16rem)))] items-center gap-1 rounded-full px-3 ui-list-row outline-none transition-colors bg-foreground/[0.04] shadow-[inset_0_0_0_1px_var(--glass-border)] hover:bg-foreground/[0.08] focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/[0.08] md:max-w-80";
 
 export function ModelModePicker({
   tiers,

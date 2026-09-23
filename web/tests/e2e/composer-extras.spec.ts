@@ -173,3 +173,56 @@ test.describe("composer attachments", () => {
     });
   });
 });
+
+test.describe("composer at 200% text size", () => {
+  // UI-TYPE-3 / WCAG 1.4.4. The audit's phone variant doubles the root font
+  // after load. The grown textarea kept its px height from 100% and clipped
+  // the placeholder, and the toolbar overflowed its card and crushed the model
+  // pill under the mic button.
+  test("the textarea re-fits and the toolbar wraps instead of overlapping", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await expect(modelModeTrigger(page)).toBeVisible();
+
+    await page.evaluate(() => {
+      document.documentElement.style.fontSize = "200%";
+    });
+
+    const textarea = page.getByTestId("composer-textarea");
+    await expect
+      .poll(() => textarea.evaluate((el) => el.scrollHeight - el.clientHeight))
+      .toBeLessThanOrEqual(1);
+
+    const layout = await page.evaluate(() => {
+      const ta = document.querySelector('[data-testid="composer-textarea"]')!;
+      const toolbar = ta.nextElementSibling as HTMLElement;
+      const trigger = [
+        ...document.querySelectorAll<HTMLElement>('[data-testid="model-mode-trigger"]'),
+      ].find((el) => el.getClientRects().length > 0)!;
+      const boxes = [...toolbar.querySelectorAll("button")]
+        .filter((b) => b.getClientRects().length > 0)
+        .map((b) => b.getBoundingClientRect());
+      let overlaps = 0;
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          const a = boxes[i];
+          const b = boxes[j];
+          const x = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+          const y = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+          if (x > 1 && y > 1) overlaps += 1;
+        }
+      }
+      return {
+        toolbar: { sw: toolbar.scrollWidth, cw: toolbar.clientWidth },
+        trigger: { sw: trigger.scrollWidth, cw: trigger.clientWidth },
+        overlaps,
+      };
+    });
+    expect(layout.toolbar.sw).toBeLessThanOrEqual(layout.toolbar.cw + 1);
+    expect(layout.trigger.sw).toBeLessThanOrEqual(layout.trigger.cw + 1);
+    expect(layout.overlaps).toBe(0);
+  });
+});

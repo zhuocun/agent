@@ -107,6 +107,30 @@ test.describe("bootstrap", () => {
     // Aggregate spend analytics and budget controls are inline in Account.
     await expect(dialog.getByTestId("spend-analytics-panel")).toBeVisible();
     await expect(dialog.getByTestId("budget-cap-input")).toBeVisible();
+
+    // One divider between the credits header and the budget editors, not a
+    // wrapper rule stacked on the first editor's own rule.
+    const ruleGaps = await dialog
+      .getByText("Platform credits", { exact: true })
+      .evaluate((el) => {
+        const card = el.closest(".glass-clear")!;
+        // Top-only rules (inputs and pills draw full borders), outside the
+        // analytics panel's own table rows.
+        const tops = [...card.querySelectorAll("*")]
+          .filter((n) => {
+            if (n.closest('[data-testid="spend-analytics-panel"]')) return false;
+            const cs = getComputedStyle(n);
+            return (
+              cs.borderTopStyle !== "none" &&
+              parseFloat(cs.borderTopWidth) > 0 &&
+              cs.borderLeftStyle === "none"
+            );
+          })
+          .map((n) => n.getBoundingClientRect().top)
+          .sort((a, b) => a - b);
+        return tops.slice(1).map((t, i) => t - tops[i]);
+      });
+    expect(ruleGaps.every((gap) => gap > 24)).toBe(true);
   });
 
   test("custom instructions draft is preserved when another setting is toggled", async ({

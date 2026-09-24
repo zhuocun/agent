@@ -243,10 +243,14 @@ export interface SubagentPart {
   outcome?: SubagentOutcome;
 }
 
-/** Turn-level partial-synthesis signal (FE-015 / PRD08). */
+/**
+ * Turn-level partial-synthesis signal (FE-015 / PRD08). `paused` marks a row
+ * parked at an approval boundary: neither finished nor degraded, so it never
+ * raises the partial chip.
+ */
 export interface AgenticRunSummaryPart {
   type: "agentic_run_summary";
-  outcome: "complete" | "partial";
+  outcome: "complete" | "partial" | "paused";
   budgetHalted?: boolean;
   failedWorkers?: number;
   /** AR-012: persisted run-cost receipt for reload parity. */

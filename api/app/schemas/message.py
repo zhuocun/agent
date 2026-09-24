@@ -279,10 +279,15 @@ class AgenticRunSummaryPart(CamelModel):
 
     AR-012 / A-4: also carries the terminal run-cost receipt (cap/confidence/
     phase/subtotal) so reload matches the live meter without inventing defaults.
+
+    ``paused`` marks a row that stopped at a resumable approval boundary (plan
+    approval, clarify, a worker or single-agent HITL pause). It is neither a
+    finished run nor a degraded one, so it must not raise the partial chip; the
+    resumed turn carries the run's real outcome.
     """
 
     type: Literal["agentic_run_summary"] = "agentic_run_summary"
-    outcome: Literal["complete", "partial"] = "complete"
+    outcome: Literal["complete", "partial", "paused"] = "complete"
     budget_halted: bool = False
     failed_workers: int = 0
     # Logical run-cost receipt (private; share projection strips cost keys).

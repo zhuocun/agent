@@ -89,7 +89,7 @@ class PublicAgenticRunSummaryPart(CamelModel):
     """Public agentic run summary — outcome flags only, no meter receipt (AR-012)."""
 
     type: Literal["agentic_run_summary"] = "agentic_run_summary"
-    outcome: Literal["complete", "partial"] = "complete"
+    outcome: Literal["complete", "partial", "paused"] = "complete"
     budget_halted: bool = False
     failed_workers: int = 0
 

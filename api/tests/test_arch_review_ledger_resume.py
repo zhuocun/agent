@@ -540,9 +540,12 @@ async def test_single_mode_pause_terminal_reports_tokens_and_receipt(
         for p in (row.parts or [])
         if isinstance(p, dict) and p.get("type") == "agentic_run_summary"
     )
-    # A resumable pause is not a finished answer.
-    assert summary["outcome"] == "partial"
+    # A resumable pause is neither a finished answer nor a degraded one: it
+    # persists as `paused`, never `partial` (which raises the partial chip).
+    assert summary["outcome"] == "paused"
     assert summary["budgetHalted"] is False
+    run_cost = next(p for n, p in frames if n == "run_cost")
+    assert run_cost.get("partial") is not True
 
 
 # --- AC-02: one receipt owns cumulative vs newly billable ----------------------
@@ -1417,3 +1420,58 @@ async def test_ac02_only_boundary_run_costs_are_billing_authority(
             restored[phase.phase_id]
         ):
             assert phase.already_billed is True, phase.phase_id
+
+
+def _run_summary(row: Message) -> dict[str, object]:
+    return next(
+        p
+        for p in (row.parts or [])
+        if isinstance(p, dict) and p.get("type") == "agentic_run_summary"
+    )
+
+
+async def test_approval_pauses_persist_paused_never_partial(
+    fanout_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A run parked for approval is not a partial answer (F3).
+
+    The plan-approval pause folded to `outcome: "partial"`, so the FE raised
+    "Partial answer — some research steps did not finish" above a plan the user
+    had not even approved yet, and kept it on that row after approval. Both the
+    plan pause and the worker-HITL pause must persist `paused` and put no
+    `partial` flag on the wire; only the resumed turn carries the run's real
+    outcome.
+    """
+    await fanout_client.get("/api/bootstrap")
+    await _entitle_current_user(session_factory)
+    conv_id = await _new_conversation(fanout_client, "f3-paused")
+
+    plan_call_id, plan_frames = await _plan_pause(
+        fanout_client, conv_id=conv_id, nonce="51"
+    )
+    fanout = await _approve(
+        fanout_client, conv_id=conv_id, call_id=plan_call_id, nonce="52"
+    )
+    assert fanout[-1][1]["status"] == "awaiting_approval"
+    done = await _approve(
+        fanout_client,
+        conv_id=conv_id,
+        call_id=_awaiting_call_id(fanout),
+        nonce="53",
+    )
+    assert done[-1][1]["status"] == "done"
+
+    for frames in (plan_frames, fanout):
+        run_costs = [p for n, p in frames if n == "run_cost"]
+        assert run_costs, "a pause still ships its receipt"
+        assert all(p.get("partial") is not True for p in run_costs)
+
+    plan_row, worker_row, final_row = await _assistant_rows(
+        session_factory, conv_id
+    )
+    assert _run_summary(plan_row)["outcome"] == "paused"
+    # The pause keeps its honest estimate labels; `paused` is not `complete`.
+    assert _run_summary(plan_row)["costPhase"] == "plan"
+    assert _run_summary(worker_row)["outcome"] == "paused"
+    assert _run_summary(final_row)["outcome"] == "complete"

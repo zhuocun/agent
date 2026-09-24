@@ -97,6 +97,10 @@ async function sendAndPauseOnPlan(
   });
   await expect(paused.getByTestId("tool-approve")).toBeVisible();
   await expect(paused.getByTestId("tool-deny")).toBeVisible();
+  // F3: a run parked for approval has no answer yet, so it is not a partial
+  // one — the chip must not claim research steps failed before the user even
+  // decided on the plan.
+  await expect(paused.getByTestId("partial-synthesis-warning")).toHaveCount(0);
 
   // Wait for the BE to persist the paused row before deciding.
   await expect.poll(() => capturedConvId).not.toBeNull();
@@ -206,6 +210,16 @@ test.describe("agentic mode (deep research)", () => {
     expect(sentModes).toEqual(["deep_research", "deep_research"]);
     await expect(page.getByTestId("user-message-text")).toHaveCount(1);
 
+    // The approved plan card settles once the run finishes: no stale
+    // "Running" pill (the optimistic approve flip) and no partial chip on the
+    // paused row.
+    const planRow = page.getByTestId("assistant-message").first();
+    const planCard = planRow.getByTestId("tool-call-part").first();
+    await expect(planCard).toContainText("Complete");
+    await expect(planCard).not.toContainText("Running");
+    await expect(planRow.getByTestId("partial-synthesis-warning")).toHaveCount(0);
+    await expect(resumed.getByTestId("partial-synthesis-warning")).toHaveCount(0);
+
     // BE round-trip: the resumed assistant row persisted subagent marker
     // parts, so a reload re-renders the same grouped panel.
     const fetched = await page.request.get(
@@ -235,6 +249,14 @@ test.describe("agentic mode (deep research)", () => {
     );
     await expect(reloaded.getByTestId("assistant-empty-fallback")).toHaveCount(0);
     expect(await snapshotAgenticTurn(reloaded)).toEqual(live);
+    // The persisted pause row reloads settled and without the partial chip too.
+    const reloadedPlanRow = page.getByTestId("assistant-message").first();
+    await expect(
+      reloadedPlanRow.getByTestId("tool-call-part").first(),
+    ).toContainText("Complete");
+    await expect(
+      reloadedPlanRow.getByTestId("partial-synthesis-warning"),
+    ).toHaveCount(0);
   });
 
   test("deny the plan: no fan-out, a labeled declined synthesis streams", async ({
@@ -666,13 +688,12 @@ test.describe("agentic mode (deep research)", () => {
 
     // ...and both sides say what a pause receipt must say, so the comparison
     // above cannot pass by two empty renders agreeing: an estimate at plan
-    // phase, partial because the run can still resume.
+    // phase — and NO partial chip: a run parked for approval has no answer
+    // yet, so it is not a partial one (F3).
     expect(reloaded.meter?.confidence).toBe("estimate");
     expect(reloaded.meter?.phase).toBe("plan");
     expect(reloaded.meter?.text).toContain("Est. ");
-    expect(reloaded.partialChip).toBe(
-      "Partial answer — some research steps did not finish.",
-    );
+    expect(reloaded.partialChip).toBeNull();
   });
 
   // FE-4, live half, on the path the audit measured: Stop during fan-out.

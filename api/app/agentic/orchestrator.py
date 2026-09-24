@@ -517,7 +517,7 @@ async def _maybe_clarify_before_plan(
     )
     if ledger is not None:
         yield _boundary_run_cost(
-            ledger, cap_usd=cap_usd, phase="plan", boundary="pause", partial=True
+            ledger, cap_usd=cap_usd, phase="plan", boundary="pause"
         )
     clarify_call_id = call_id or mint_plan_clarify_call_id()
     yield ToolCall(
@@ -1475,8 +1475,9 @@ async def run_single(
                     # token roll-up) and the final RunCost receipt must precede the
                     # tagged pause. `SubagentDone` stays suppressed —
                     # `mark_unfinished_subagents_paused` deliberately keeps the
-                    # primary non-terminal on a pause (B15). `partial=True` because
-                    # the turn is resumable, not finished.
+                    # primary non-terminal on a pause (B15). Not `partial`: a
+                    # resumable pause is not a degraded answer — the pause
+                    # boundary on the receipt is what folds it to `paused`.
                     pause_usage = sum_usages([prior_usage, session_usage])
                     yield Complete(usage=pause_usage)
                     ledger.settle(
@@ -1486,7 +1487,7 @@ async def run_single(
                         cost_usd=prior_cost + cost_for_usage(session_usage),
                     )
                     yield _boundary_run_cost(
-                        ledger, cap_usd=cap, boundary="pause", partial=True
+                        ledger, cap_usd=cap, boundary="pause"
                     )
                     _settle_primary("paused", stop_reason="awaiting_approval")
                     yield tag_event(event, subagent_id)
@@ -1960,7 +1961,6 @@ async def _resume_worker_continuation(
             ledger,
             cap_usd=cap,
             boundary="pause",
-            partial=True,
             budget_halted=budget_halted,
             failed_worker_count=failed_workers,
         )
@@ -2753,7 +2753,6 @@ async def _run_deep_research(
             ledger,
             cap_usd=cap,
             boundary="pause",
-            partial=True,
             budget_halted=budget_halted,
             failed_worker_count=failed_workers,
         )

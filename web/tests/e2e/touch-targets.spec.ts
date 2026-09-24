@@ -55,9 +55,9 @@ async function sendWebSearchTurn(page: Page): Promise<Locator> {
   const toggle = page.getByTestId("web-search-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();
-  // The desktop menu and the phone sheet expose different roles; both name
-  // the on state.
-  await expect(toggle).toHaveAttribute("aria-label", "Web search: on");
+  // The desktop menu item and the phone sheet switch both report the on state
+  // through aria-checked.
+  await expect(toggle).toBeChecked();
   await page.keyboard.press("Escape");
 
   await page.getByTestId("composer-textarea").fill("What is the latest on Playwright?");

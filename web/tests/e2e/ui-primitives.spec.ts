@@ -252,4 +252,42 @@ test.describe("ui primitives on a narrow mouse viewport", () => {
     await expect(general).toBeVisible();
     await expect(dialog).toBeVisible();
   });
+
+  test("dialog: a press released outside the sheet does not leave it following the mouse", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.locator('button[aria-label="Open sidebar"]:visible').click();
+    await expect(page.locator('[data-slot="drawer-content"]')).toBeVisible();
+    await page.getByRole("button", { name: "Account menu" }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await expect(dialog).toBeVisible();
+    const heading = dialog.getByRole("heading", { name: "Settings" });
+    const hb = await heading.boundingBox();
+    const sheetBox = await dialog.boundingBox();
+    expect(hb).not.toBeNull();
+    expect(sheetBox).not.toBeNull();
+    const x = hb!.x + hb!.width / 2;
+    const y = hb!.y + hb!.height / 2;
+
+    // Press on the sheet, leave it upward, release outside it: the region
+    // never sees the pointerup (no capture is held for a plain press).
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, Math.max(2, sheetBox!.y - 20), { steps: 4 });
+    await page.mouse.up();
+
+    // Hover back in with no button held and travel well past the slop.
+    await page.mouse.move(x, y, { steps: 4 });
+    await page.mouse.move(x, y + 40, { steps: 8 });
+
+    const transform = await page
+      .locator('[data-slot="dialog-content"]')
+      .evaluate((el) => (el as HTMLElement).style.transform);
+    expect(transform).toBe("");
+  });
 });

@@ -162,11 +162,13 @@ export function useSwipeDismiss({
   const begin = useCallback(
     (event: PointerEvent<HTMLElement>, fromHandle: boolean) => {
       if (!enabled) return;
-      // A second concurrent pointer (multi-touch) never restarts the gesture.
-      // The same pointer id pressing again means its previous release landed
-      // outside the region (no capture was taken for a plain press), so the
-      // stale state is simply replaced.
-      if (drag.current && drag.current.pointerId !== event.pointerId) return;
+      // A second pointer never interrupts a drag in progress (multi-touch).
+      // A press that has not become a drag holds no capture, so its release
+      // can land outside the region and never reach us; a new press simply
+      // replaces that pending state rather than being blocked by it.
+      if (drag.current?.dragging && drag.current.pointerId !== event.pointerId) {
+        return;
+      }
       // The grabber sits inside the content region, so one pointerdown
       // reaches both handlers; the first (the handle) wins.
       if (drag.current?.origin === event.nativeEvent) return;
@@ -210,6 +212,17 @@ export function useSwipeDismiss({
     (event: PointerEvent<HTMLElement>) => {
       const state = drag.current;
       if (!state || state.pointerId !== event.pointerId) return;
+      // A mouse or pen press released outside the region (no capture yet)
+      // leaves pending state behind; a later hover with no button held must
+      // not turn it into a drag that follows the cursor.
+      if (
+        !state.dragging &&
+        event.pointerType !== "touch" &&
+        event.buttons === 0
+      ) {
+        drag.current = null;
+        return;
+      }
       const dy = event.clientY - state.startY;
       // Track velocity (px/ms) for flick detection.
       const dt = event.timeStamp - state.lastT;
@@ -243,8 +256,9 @@ export function useSwipeDismiss({
       // Prevent the page/inner content from scrolling/selecting mid-drag.
       event.preventDefault();
       if (!state.reduced) {
-        // Rubber-band slightly so the sheet feels physical.
-        setTransform(dy, false);
+        // Measure the visual offset from the end of the slop so the sheet
+        // starts moving from rest instead of jumping by the slop distance.
+        setTransform(dy - DRAG_SLOP_PX, false);
       }
     },
     [setTransform],

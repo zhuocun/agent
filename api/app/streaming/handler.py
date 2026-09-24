@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+import anyio
 import jsonschema
 import structlog
 from fastapi import Request
@@ -194,15 +195,48 @@ class _NeverDisconnectedRequest:
         return False
 
 
+# Inline (non-resumable) turn DRIVER tasks. See `stream_inline_turn`: each one
+# runs `stream_and_persist` outside the SSE response's cancel scope so a client
+# disconnect reaches it as a stop poll instead of a cancellation. Held strongly
+# for the same GC reason as `_BG_TASKS`, and cancelled on app shutdown.
+_INLINE_TURN_TASKS: set[asyncio.Task[None]] = set()
+
+# How long the SSE body waits, after its client went away, for the driver to
+# persist the stopped partial and release the stream row. The driver polls the
+# disconnect signal every ~0.1 s, so this is a ceiling, not a typical wait.
+_INLINE_STOP_GRACE_SECONDS = 15.0
+
+
+class _SignalledDisconnectRequest:
+    """A `Request` stand-in that also reports disconnected once `signal` is set.
+
+    `stream_inline_turn` sets the signal the moment the SSE body stops
+    consuming (client disconnect, or the Stop button aborting the fetch), so the
+    handler's own poll takes the persist-`stopped` branch without depending on
+    the transport still answering `receive()`.
+    """
+
+    def __init__(self, request: Request, signal: asyncio.Event) -> None:
+        self._request = request
+        self._signal = signal
+
+    async def is_disconnected(self) -> bool:
+        if self._signal.is_set():
+            return True
+        return await self._request.is_disconnected()
+
+
 async def cancel_all_producers() -> None:
-    """Cancel every in-flight detached producer. Called on app shutdown.
+    """Cancel every in-flight detached producer and inline turn driver.
+
+    Called on app shutdown.
 
     Mirrors the lifespan's handling of other detached tasks: a clean cancel so a
     producer doesn't leak past process shutdown. A hard crash (SIGKILL / OOM)
     still bypasses this, leaving the durable `stream` row `active` — that gap is
     the orphan-reaper's job (the same gap the non-resumable path has today).
     """
-    tasks = list(_PRODUCER_TASKS)
+    tasks = [*_PRODUCER_TASKS, *_INLINE_TURN_TASKS]
     for task in tasks:
         task.cancel()
     for task in tasks:
@@ -2168,6 +2202,14 @@ async def stream_and_persist(
                     memory_applied=memory_applied_count,
                     memory_fact_ids=memory_fact_ids_applied,
                 )
+                # End the request session's open transaction first. It can
+                # hold a read transaction (e.g. the resume path reads the
+                # paused row after the route's commit), and on SQLite a reader
+                # blocks the fresh session's commit below until the lock times
+                # out — losing the stopped row. Committing here is what
+                # `get_db` would do at the end of the request anyway.
+                with contextlib.suppress(Exception):
+                    await db.commit()
                 # Use a fresh session for stop-path persist (see helper docstring).
                 # The assistant row and the usage_rollup bump land in ONE commit:
                 # the persist flushes (commit=False), the meter bumps, then a
@@ -3228,3 +3270,69 @@ def spawn_detached_producer(
     _PRODUCER_TASKS.add(task)
     task.add_done_callback(_PRODUCER_TASKS.discard)
     return task
+
+
+_INLINE_END = object()
+
+
+async def stream_inline_turn(
+    *, request: Request, **kwargs: Any
+) -> AsyncIterator[ServerSentEvent]:
+    """Drive `stream_and_persist` for the inline (non-resumable) SSE path.
+
+    sse-starlette answers a client disconnect by cancelling its whole task
+    group, and the cancel lands wherever the body is awaiting — usually deep in
+    `stream_and_persist`. That turned every disconnect into a hard cancel whose
+    cleanup awaits were themselves cancelled by the still-active cancel scope:
+    no stopped partial was persisted, and the `stream` row stayed `active`, so
+    every later send on the conversation got 409 STREAM_IN_PROGRESS until the
+    orphan reaper swept it. The Stop button aborts the fetch, so this was the
+    normal Stop path.
+
+    So the handler runs in its own task, outside the response's cancel scope,
+    and this generator only relays its frames. When the body stops consuming
+    for any reason, it raises the disconnect signal the handler polls, then
+    waits (shielded, bounded) for the handler to take its ordinary
+    persist-`stopped` branch — which keeps the request-scoped session alive for
+    the handler until it is done with it.
+    """
+    disconnected = asyncio.Event()
+    frames: asyncio.Queue[object] = asyncio.Queue()
+
+    async def _drive() -> None:
+        try:
+            async for sse_event in stream_and_persist(
+                request=_SignalledDisconnectRequest(request, disconnected),  # type: ignore[arg-type]
+                **kwargs,
+            ):
+                frames.put_nowait(sse_event)
+        finally:
+            frames.put_nowait(_INLINE_END)
+
+    task = asyncio.create_task(_drive())
+    _INLINE_TURN_TASKS.add(task)
+    task.add_done_callback(_INLINE_TURN_TASKS.discard)
+    try:
+        while True:
+            item = await frames.get()
+            if item is _INLINE_END:
+                break
+            assert isinstance(item, ServerSentEvent)
+            yield item
+        # Surface a setup failure the handler re-raised, exactly as the direct
+        # iteration did.
+        await task
+    finally:
+        if not task.done():
+            disconnected.set()
+            with anyio.CancelScope(shield=True):
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task), timeout=_INLINE_STOP_GRACE_SECONDS
+                    )
+                except TimeoutError:
+                    log.warning("stream.inline_stop_grace_exceeded")
+                except asyncio.CancelledError:
+                    pass  # Shutdown cancelled the driver; its own branch settled it.
+                except Exception as exc:
+                    log.warning("stream.inline_stop_failed", exc_info=exc)

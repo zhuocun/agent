@@ -19,6 +19,7 @@ import binascii
 import contextlib
 import hashlib
 import json
+import time
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -130,12 +131,12 @@ from app.streaming import replay_registry
 from app.streaming.handler import (
     ResumeToolSeed,
     spawn_detached_producer,
-    stream_and_persist,
+    stream_inline_turn,
 )
 from app.streaming.reaper import stream_orphaned_envelope
 from app.streaming.replay_registry import ReplayLogBuffer, ReplayLogTruncatedError
 from app.streaming.sse import encode_error, encode_submitted
-from app.streaming.stop_registry import request_stop_async
+from app.streaming.stop_registry import is_stop_requested_async, request_stop_async
 from app.tools.approval_settlement import (
     ApprovalDecisionConflict,
     ApprovalSettlementIncomplete,
@@ -422,6 +423,36 @@ def _stream_in_progress() -> AppError:
         ),
         status.HTTP_409_CONFLICT,
     )
+
+
+# How long a send waits for a turn the user just Stopped to finish tearing down
+# (persist the partial, release the single-active guard) before answering 409.
+_STOPPING_STREAM_GRACE_SECONDS = 3.0
+_STOPPING_STREAM_POLL_SECONDS = 0.1
+
+
+async def _await_stopping_stream_release(db: AsyncSession, stream_id: UUID) -> bool:
+    """Wait briefly for a STOPPED turn's stream row to release. True if it did.
+
+    Stop is two requests racing: `POST /stop` plus the aborted SSE fetch. The
+    old producer needs a poll interval and one commit to persist its partial
+    and release the guard, and a send right after Stop can land inside that
+    window. Waiting only while a stop is requested keeps a genuinely streaming
+    turn an immediate 409. Probes on fresh sessions: the request session's own
+    transaction may not see the other session's commit.
+    """
+    factory = RuntimeContext.from_session(db).session_factory
+    deadline = time.monotonic() + _STOPPING_STREAM_GRACE_SECONDS
+    while True:
+        async with factory() as probe:
+            row = await streams_repo.get_by_id(probe, stream_id=stream_id)
+        if row is None or row.status != "active":
+            return True
+        if not await is_stop_requested_async(stream_id):
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(_STOPPING_STREAM_POLL_SECONDS)
 
 
 async def _abandon_unstarted_stream_claim(
@@ -2033,7 +2064,9 @@ async def send_message(
         existing_active = await streams_repo.get_active_for_conversation(
             db, conversation_id=conversation_id
         )
-        if existing_active is not None:
+        if existing_active is not None and not await _await_stopping_stream_release(
+            db, existing_active.id
+        ):
             raise _stream_in_progress()
         try:
             stream_row = await streams_repo.create_stream(db, conversation_id=conversation_id)
@@ -2782,7 +2815,9 @@ async def send_message(
             )
 
         async def _event_stream() -> AsyncIterator[ServerSentEvent]:
-            async for sse_event in stream_and_persist(
+            # `stream_inline_turn` keeps a client disconnect (the Stop button
+            # aborting the fetch) from cancelling the turn mid-persist; see it.
+            async for sse_event in stream_inline_turn(
                 request=request,
                 db=db,
                 provider=provider,

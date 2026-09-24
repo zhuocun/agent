@@ -1599,6 +1599,9 @@ export function Sidebar({
             data-testid="sidebar-advanced-search"
             className={cn(
               "mt-1 hidden items-center gap-1.5 rounded-full px-2.5 py-1 ui-caption text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:inline-flex",
+              // A touch tablet gets this rail too (≥768 px), so it needs the
+              // 44 px touch floor; mouse density is unchanged (UI-TOUCH-4/5).
+              "[@media(hover:none)]:min-h-11",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users reach advanced search via Cmd+K instead.
               "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/toolbar:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100",
@@ -1621,7 +1624,7 @@ export function Sidebar({
             onClick={() => setSelectionActive(true)}
             data-testid="sidebar-select-toggle"
             className={cn(
-              "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left ui-caption font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex",
+              "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left ui-caption font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex [@media(hover:none)]:min-h-11",
               // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
               // rest. Mobile users use the conversation row's overflow menu.
               "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/toolbar:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100",

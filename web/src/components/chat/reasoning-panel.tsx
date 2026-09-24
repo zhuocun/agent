@@ -61,10 +61,12 @@ export function ReasoningPanel({
           "group/reasoning-trigger inline-flex items-center gap-1 text-left ui-caption text-muted-foreground",
           // Tap target: the trigger is intrinsically ~16px tall (text-xs line +
           // p-0), well under the iOS 44pt floor. Expand the hit area vertically
-          // with py-1.5 and cancel it back out with -my-1.5 so the surrounding
-          // layout (the assistant bubble's gap stack) is unchanged — only the
-          // clickable region grows.
-          "bg-transparent py-3.5 -my-3.5 underline-offset-2 md:py-1.5 md:-my-1.5",
+          // with padding and cancel it back out with the matching negative
+          // margin so the surrounding layout (the assistant bubble's gap stack)
+          // is unchanged — only the clickable region grows. The 44 px floor is
+          // gated on `hover: none`, not width, so a touch tablet in the desktop
+          // layout keeps it (UI-TOUCH-5).
+          "bg-transparent py-1.5 -my-1.5 underline-offset-2 [@media(hover:none)]:py-3.5 [@media(hover:none)]:-my-3.5",
           "outline-none focus-visible:underline focus-visible:shadow-[var(--focus-ring)]",
         )}
       >

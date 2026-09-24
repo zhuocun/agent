@@ -96,9 +96,12 @@ function MermaidError({ chart }: MermaidErrorComponentProps) {
 function CitationChip({
   children,
   onActivate,
+  adjacent = false,
 }: {
   children?: ReactNode;
   onActivate: (id: number) => void;
+  /** Directly follows another marker (`[1][2]`), per the rehype plugin. */
+  adjacent?: boolean;
 }) {
   const label =
     typeof children === "string"
@@ -122,6 +125,21 @@ function CitationChip({
       aria-label={`Jump to source ${id}`}
       className={cn(
         "inline-flex items-baseline align-baseline rounded px-0.5 text-[0.85em] font-medium leading-none",
+        // Hit-slop: the painted chip is ~22x13 px. An invisible ::before grows
+        // the clickable region to the 24 px pointer floor (UI-TOUCH-2) and, on
+        // touch, to 44 px wide without changing the type size or the line box.
+        // On touch its height stops at the 28 px prose line box, so it never
+        // takes taps from the line above or below (UI-TOUCH-3, §15 C50).
+        "relative before:absolute before:-inset-x-0.5 before:-inset-y-1.5 before:content-['']",
+        // A marker that follows another starts its slop at its own edge, so
+        // two pointer slops never overlap.
+        adjacent && "before:left-0",
+        "[@media(hover:none)]:before:-inset-x-[11px] [@media(hover:none)]:before:top-[calc((100%-1.75rem)/2)] [@media(hover:none)]:before:bottom-[calc((100%-1.75rem)/2)]",
+        // Two touch hit-slops of 11 px would overlap across a run like
+        // `[1][2]`, so a tap on the right of [1] opened source 2
+        // (UI-TOUCH-3). On touch, a marker that follows another is pushed
+        // clear of its neighbour's slop.
+        adjacent && "[@media(hover:none)]:ml-[22px]",
         "text-primary bg-primary/[0.08] hover:bg-primary/15",
         "cursor-pointer transition-colors",
         "outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
@@ -295,8 +313,16 @@ export function MarkdownRenderer({
     if (!citationsEnabled || !onCitationClick) {
       return { img: Img } as unknown as Components;
     }
-    const Cite = (props: { children?: ReactNode }) => (
-      <CitationChip onActivate={onCitationClick}>{props.children}</CitationChip>
+    const Cite = (props: {
+      children?: ReactNode;
+      "data-citation-adjacent"?: string;
+    }) => (
+      <CitationChip
+        onActivate={onCitationClick}
+        adjacent={props["data-citation-adjacent"] === "true"}
+      >
+        {props.children}
+      </CitationChip>
     );
     return { img: Img, [CITATION_TAG]: Cite } as unknown as Components;
   }, [citationsEnabled, onCitationClick]);

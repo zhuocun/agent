@@ -58,9 +58,16 @@ function prefersReducedMotion(): boolean {
 }
 
 /**
+ * Downward travel (px) before a press becomes a drag. Below it the press stays
+ * a plain tap/click, so pointer jitter on a control never swallows its click.
+ */
+const DRAG_SLOP_PX = 6;
+
+/**
  * Interactive swipe-to-dismiss for an iOS-style bottom sheet. Pointer-event
- * based (works for touch, pen, mouse), uses pointer capture so the gesture
- * survives the finger leaving the element, and never hijacks inner scrolling:
+ * based (works for touch, pen, mouse), takes pointer capture once the press
+ * turns into a drag so the gesture survives the pointer leaving the element,
+ * and never hijacks inner scrolling:
  * a drag only engages from the grabber/header, or from the body when its
  * scroll region is already at the top.
  *
@@ -85,6 +92,8 @@ export function useSwipeDismiss({
     velocity: number;
     dragging: boolean;
     reduced: boolean;
+    /** The pointerdown that started it, so a bubbled copy is ignored. */
+    origin: Event;
   } | null>(null);
 
   const onDismissRef = useRef(onDismiss);
@@ -153,7 +162,16 @@ export function useSwipeDismiss({
   const begin = useCallback(
     (event: PointerEvent<HTMLElement>, fromHandle: boolean) => {
       if (!enabled) return;
-      if (drag.current) return;
+      // A second pointer never interrupts a drag in progress (multi-touch).
+      // A press that has not become a drag holds no capture, so its release
+      // can land outside the region and never reach us; a new press simply
+      // replaces that pending state rather than being blocked by it.
+      if (drag.current?.dragging && drag.current.pointerId !== event.pointerId) {
+        return;
+      }
+      // The grabber sits inside the content region, so one pointerdown
+      // reaches both handlers; the first (the handle) wins.
+      if (drag.current?.origin === event.nativeEvent) return;
       // Only the primary button / single touch.
       if (event.button !== 0 && event.pointerType === "mouse") return;
 
@@ -180,14 +198,12 @@ export function useSwipeDismiss({
         velocity: 0,
         dragging: false,
         reduced,
+        origin: event.nativeEvent,
       };
-      try {
-        (event.currentTarget as HTMLElement).setPointerCapture(
-          event.pointerId,
-        );
-      } catch {
-        // setPointerCapture can throw if the pointer is already gone.
-      }
+      // No pointer capture here: capturing on pointerdown retargets the
+      // eventual `click` to the region element, so a mouse or pen click on a
+      // control inside the sheet would never reach it. Capture is taken in
+      // `move` once the press has become a drag.
     },
     [enabled],
   );
@@ -196,6 +212,17 @@ export function useSwipeDismiss({
     (event: PointerEvent<HTMLElement>) => {
       const state = drag.current;
       if (!state || state.pointerId !== event.pointerId) return;
+      // A mouse or pen press released outside the region (no capture yet)
+      // leaves pending state behind; a later hover with no button held must
+      // not turn it into a drag that follows the cursor.
+      if (
+        !state.dragging &&
+        event.pointerType !== "touch" &&
+        event.buttons === 0
+      ) {
+        drag.current = null;
+        return;
+      }
       const dy = event.clientY - state.startY;
       // Track velocity (px/ms) for flick detection.
       const dt = event.timeStamp - state.lastT;
@@ -210,13 +237,28 @@ export function useSwipeDismiss({
         if (state.dragging && !state.reduced) setTransform(0, false);
         return;
       }
-      // We are committed to a downward drag.
-      if (!state.dragging) state.dragging = true;
+      if (!state.dragging) {
+        // Still a press, not a drag, until it travels past the slop.
+        if (dy < DRAG_SLOP_PX) return;
+        // We are committed to a downward drag. Capture now so the gesture
+        // survives the pointer leaving the region; a drag is not a click, so
+        // retargeting the eventual click away from the pressed control is
+        // what we want from here on.
+        state.dragging = true;
+        try {
+          (event.currentTarget as HTMLElement).setPointerCapture(
+            event.pointerId,
+          );
+        } catch {
+          // setPointerCapture can throw if the pointer is already gone.
+        }
+      }
       // Prevent the page/inner content from scrolling/selecting mid-drag.
       event.preventDefault();
       if (!state.reduced) {
-        // Rubber-band slightly so the sheet feels physical.
-        setTransform(dy, false);
+        // Measure the visual offset from the end of the slop so the sheet
+        // starts moving from rest instead of jumping by the slop distance.
+        setTransform(dy - DRAG_SLOP_PX, false);
       }
     },
     [setTransform],

@@ -9,7 +9,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "./coverage-fixture";
 
-import { modelModeTrigger, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 
 async function axeViolations(page: Page, rules: string[]) {
   const res = await new AxeBuilder({ page }).withRules(rules).analyze();
@@ -148,8 +148,13 @@ test.describe("desktop", () => {
       .poll(() => pre.evaluate((el) => el.scrollLeft))
       .toBeGreaterThan(0);
 
-    // Once it fits again it leaves the Tab order.
+    // Once it fits again it leaves the Tab order, but not while it holds
+    // focus: dropping tabindex then would throw focus to <body>.
     await root.evaluate((el) => el.style.removeProperty("max-width"));
+    await page.waitForTimeout(400);
+    await expect(pre).toBeFocused();
+    await expect(pre).toHaveAttribute("tabindex", "0");
+    await pre.evaluate((el) => el.blur());
     await expect(pre).not.toHaveAttribute("tabindex", /.*/);
   });
 
@@ -175,6 +180,65 @@ test.describe("desktop", () => {
     });
     expect(room.left).toBeGreaterThanOrEqual(4);
     expect(room.right).toBeGreaterThanOrEqual(4);
+  });
+});
+
+// The fake provider emits no table, so one turn's answer is swapped in flight
+// for a wide one (the real stream is fetched so the turn persists). Same
+// technique as the UI audit harness.
+const WIDE_TABLE = [
+  "| Region | Latency p50 | Latency p95 | Error rate | Notes | Owner |",
+  "| --- | --- | --- | --- | --- | --- |",
+  "| ap-southeast-1 | 120 ms | 480 ms | 0.02% | Primary database region, warm | platform |",
+  "| us-east-1 | 210 ms | 900 ms | 0.10% | Cross-region reads only | infra |",
+].join("\n");
+
+test.describe("phone width", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("markdown: a wide table is a focusable scroller with a visible focus ring", async ({
+    page,
+  }) => {
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      const req = route.request();
+      if (req.method() !== "POST" || !(req.postData() ?? "").includes("WIDE_TABLE")) {
+        await route.fallback();
+        return;
+      }
+      const resp = await route.fetch();
+      const frames = (await resp.text()).replace(/\r\n/g, "\n").split(/\n\n/);
+      const kept = frames.filter((f) => !/^event: answer_delta/m.test(f));
+      const at = kept.findIndex((f) => /^event: terminal/m.test(f));
+      const table = `event: answer_delta\ndata: ${JSON.stringify({ text: WIDE_TABLE })}`;
+      if (at >= 0) kept.splice(at, 0, table);
+      else kept.push(table);
+      await route.fulfill({ response: resp, body: kept.join("\n\n") });
+    });
+    await page.goto("/");
+    await waitForBootstrap(page);
+    const assistant = await sendAndSettle(page, "WIDE_TABLE: latency by region");
+
+    // Whichever box scrolls (the table itself, or Streamdown's wrapper) is
+    // the one marked.
+    const region = assistant.locator("[data-scroll-region]");
+    await expect(region).toHaveCount(1);
+    await expect(region).toHaveAttribute("tabindex", "0");
+    await expect(region).toHaveAttribute("aria-label", "Scrollable table");
+    expect(await region.locator("table").count().then(async (n) =>
+      n > 0 || (await region.evaluate((el) => el.tagName === "TABLE")),
+    )).toBe(true);
+    expect(await axeViolations(page, ["scrollable-region-focusable"])).toEqual(
+      [],
+    );
+
+    // Reach it by Tab (keyboard modality) and check the inset ring paints.
+    await region.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(region).toBeFocused();
+    const shadow = await region.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(shadow).not.toBe("none");
+    expect(shadow).toContain("inset");
   });
 });
 

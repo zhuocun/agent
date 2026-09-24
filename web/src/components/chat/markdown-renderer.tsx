@@ -143,6 +143,7 @@ function CitationChip({
 const SCROLL_CANDIDATES =
   'pre, table, [data-streamdown="code-block-body"], div:has(> table)';
 const SCROLL_MARK = "data-scroll-region";
+const SYNC_DEBOUNCE_MS = 150;
 
 function syncScrollRegions(root: HTMLElement): void {
   for (const el of root.querySelectorAll<HTMLElement>(SCROLL_CANDIDATES)) {
@@ -151,6 +152,10 @@ function syncScrollRegions(root: HTMLElement): void {
       (ox === "auto" || ox === "scroll") && el.scrollWidth > el.clientWidth + 1;
     if (overflows === el.hasAttribute(SCROLL_MARK)) continue;
     if (!overflows) {
+      // Dropping tabindex from the focused region would throw focus to
+      // <body>; leave it marked until focus moves on.
+      const active = document.activeElement;
+      if (active && (el === active || el.contains(active))) continue;
       el.removeAttribute(SCROLL_MARK);
       el.removeAttribute("tabindex");
       el.removeAttribute("aria-label");
@@ -173,15 +178,20 @@ function useScrollRegions(ref: RefObject<HTMLElement | null>): void {
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
-    let frame = 0;
+    // Trailing debounce: a sync reads layout (getComputedStyle, scrollWidth)
+    // for every candidate, and streaming mutates the DOM every frame, so a
+    // per-frame sync would force a layout per frame (UI-PERF-4). Syncing
+    // once the DOM has been quiet for SYNC_DEBOUNCE_MS costs one layout per
+    // burst; a finished message settles one debounce after its last delta.
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
-      if (frame) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
         syncScrollRegions(root);
-      });
+      }, SYNC_DEBOUNCE_MS);
     };
-    schedule();
+    syncScrollRegions(root);
     // Streaming appends content and highlighting swaps the code body in
     // later, so re-check on DOM changes as well as on width changes.
     const mo = new MutationObserver(schedule);
@@ -190,10 +200,13 @@ function useScrollRegions(ref: RefObject<HTMLElement | null>): void {
     // The ref host is `display: contents` and has no box to resize; watch
     // the Streamdown root it wraps instead.
     ro.observe(root.firstElementChild ?? root);
+    // A region kept marked only because it held focus is released here.
+    root.addEventListener("focusout", schedule);
     return () => {
+      root.removeEventListener("focusout", schedule);
       mo.disconnect();
       ro.disconnect();
-      if (frame) cancelAnimationFrame(frame);
+      if (timer !== undefined) clearTimeout(timer);
     };
   }, [ref]);
 }

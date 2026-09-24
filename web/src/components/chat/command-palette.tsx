@@ -392,6 +392,16 @@ export function CommandPalette({
   const activeOptionId =
     flat.length > 0 ? `${optionIdPrefix}-${clampedIndex}` : undefined;
 
+  // Focus stays in the input (aria-activedescendant), so the list never
+  // scrolls on its own: bring the active option into view as the arrow keys
+  // move it, or an option below the fold is selected but never seen.
+  useEffect(() => {
+    if (!activeOptionId) return;
+    document
+      .getElementById(activeOptionId)
+      ?.scrollIntoView?.({ block: "nearest" });
+  }, [activeOptionId]);
+
   // Reset the filter sub-state (controls + results). Shared by "exit filter
   // mode" and "palette close" so a re-entry always starts clean.
   const resetFilters = (): void => {

@@ -59,6 +59,13 @@ test.describe("desktop", () => {
       "aria-selected",
       "true",
     );
+
+    // ArrowUp from the first option wraps to the last, below the fold; the
+    // list must scroll it into view since focus never leaves the input.
+    await input.press("ArrowUp");
+    await input.press("ArrowUp");
+    const last = await input.getAttribute("aria-activedescendant");
+    await expect(page.locator(`[id="${last}"]`)).toBeInViewport({ ratio: 1 });
   });
 
   test("model picker: Advanced is a menu item reachable by arrow keys", async ({

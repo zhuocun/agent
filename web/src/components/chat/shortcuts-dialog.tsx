@@ -312,7 +312,16 @@ export function ShortcutsBody({
           </Button>
         ) : null}
       </div>
-      <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto overscroll-contain pr-2 sm:max-h-none">
+      {/* Outside Customize mode the list is read-only text with no focusable
+          control, so the scroller itself takes focus or a keyboard user could
+          not scroll it (WCAG 2.1.1; axe scrollable-region-focusable). The
+          ring is inset because the dialog clips anything drawn outside. */}
+      <div
+        role="region"
+        aria-label="Keyboard shortcuts"
+        tabIndex={0}
+        className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto overscroll-contain rounded-md pr-2 outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--color-ring)] sm:max-h-none"
+      >
         {shortcuts.map((section) => (
           <section key={section.heading} className="space-y-1">
             <h3 className="px-2 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">

@@ -621,4 +621,120 @@ test.describe("streaming", () => {
     await expect(assistant.getByTestId("assistant-empty-fallback")).toHaveCount(0);
     await expect(assistant.getByTestId("assistant-answer")).toHaveCount(0);
   });
+
+  // F1 / UI-STREAM-7: Stop aborts the SSE fetch (and posts /stop). The BE used
+  // to let the transport's disconnect-cancel kill the turn mid-teardown: no
+  // stopped partial was persisted and the stream lock stayed held, so EVERY
+  // later send got 409 STREAM_IN_PROGRESS. No retry loop here on purpose —
+  // one Stop must be enough, and the very next send must go through.
+  test("stop then send again immediately: the send streams, the stopped partial persists across reload", async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    let convId: string | null = null;
+    const sendStatuses: number[] = [];
+    page.on("response", (res) => {
+      const m = res
+        .url()
+        .match(/\/api\/conversations\/([0-9a-fA-F-]{36})\/messages$/);
+      if (!m || res.request().method() !== "POST") return;
+      convId ??= m[1]!;
+      sendStatuses.push(res.status());
+    });
+
+    const composer = page.getByTestId("composer-textarea");
+    await composer.fill("SLOW: tell me a long story so I can stop it");
+    await page.getByTestId("composer-send").click();
+
+    const first = page.getByTestId("assistant-message").first();
+    await expect(first.getByTestId("assistant-answer").first()).toContainText(
+      "part 1 ",
+      { timeout: 15_000 },
+    );
+    // Dispatch rather than `click()`: the button re-renders on every delta, so
+    // the actionability wait can outlast the ~2s SLOW window.
+    await page
+      .getByRole("button", { name: "Stop generating" })
+      .dispatchEvent("click");
+    await expect(first).toHaveAttribute("data-status", "stopped");
+    const partial =
+      (await first.getByTestId("assistant-answer").first().textContent()) ?? "";
+    expect(partial).toContain("part 0");
+
+    // Immediately send again — no waiting for the BE to settle.
+    await composer.fill("hello again");
+    await page.getByTestId("composer-send").click();
+
+    await expect(page.getByTestId("user-message-text")).toHaveCount(2);
+    const second = page.getByTestId("assistant-message").nth(1);
+    await expect(second).toHaveAttribute("data-status", "done", {
+      timeout: 15_000,
+    });
+    await expect(page.getByText("Message not sent", { exact: true })).toHaveCount(0);
+    expect(sendStatuses).toEqual([200, 200]);
+
+    // The stopped partial is durable: reload and it is still there, stopped.
+    expect(convId).not.toBeNull();
+    await reloadIntoConversation(page, convId!);
+    await expect(page.getByTestId("user-message-text")).toHaveCount(2);
+    const reloadedFirst = page.getByTestId("assistant-message").first();
+    await expect(reloadedFirst.getByTestId("stopped-chip")).toBeVisible();
+    await expect(
+      reloadedFirst.getByTestId("assistant-answer").first(),
+    ).toContainText("part 0");
+    await expect(page.getByTestId("assistant-message")).toHaveCount(2);
+  });
+
+  // UI-STATE-5: a send the BE rejects with 409 STREAM_IN_PROGRESS must not
+  // silently eat the user's message. The draft goes back into the composer and
+  // the notice offers "Send again".
+  test("a send rejected with 409 keeps the draft and offers Send again", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    let rejectNext = true;
+    await page.route(/\/api\/conversations\/[^/]+\/messages$/, async (route) => {
+      if (route.request().method() !== "POST" || !rejectNext) {
+        await route.fallback();
+        return;
+      }
+      rejectNext = false;
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "STREAM_IN_PROGRESS",
+            severity: "error",
+            title: "A response is still streaming",
+            body: "This conversation already has a response in progress.",
+          },
+        }),
+      });
+    });
+
+    const composer = page.getByTestId("composer-textarea");
+    await composer.fill("please keep this text");
+    await page.getByTestId("composer-send").click();
+
+    await expect(page.getByText("Message not sent", { exact: true })).toBeVisible();
+    await expect(composer).toHaveValue("please keep this text");
+    await expect(page.getByTestId("user-message-text")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Send again" }).click();
+    await expect(page.getByTestId("user-message-text")).toHaveText([
+      "please keep this text",
+    ]);
+    await expect(composer).toHaveValue("");
+    await expect(page.getByTestId("assistant-message").first()).toHaveAttribute(
+      "data-status",
+      "done",
+      { timeout: 15_000 },
+    );
+  });
 });

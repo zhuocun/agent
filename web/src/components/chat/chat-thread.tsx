@@ -595,6 +595,19 @@ export function ChatThread() {
   // its response if a faster selection has since superseded it.
   const selectConversationTokenRef = useRef<string | null>(null);
   const composerRef = useRef<ComposerHandle>(null);
+  // The in-flight PLAIN send's text + attachments (not regenerate / edit /
+  // continue / tool approval). If the BE rejects it with 409
+  // STREAM_IN_PROGRESS, the composer already cleared on submit — this is what
+  // puts the user's message back instead of silently dropping it (UI-STATE-5).
+  const plainSendRef = useRef<{
+    text: string;
+    attachments: AttachmentPart[];
+  } | null>(null);
+  // Latest `handleSend`, for that toast's "Send again": it must resend with
+  // the CURRENT tier / toggles, not the ones captured when the toast opened.
+  const handleSendRef = useRef<
+    ((text: string, attachments: AttachmentPart[]) => void) | null
+  >(null);
 
   // --- Compare mode (parallel model comparison) -------------------------------
   // Flagship multi-model differentiator: one prompt → two tiers answer side by
@@ -1176,10 +1189,12 @@ export function ChatThread() {
     pendingUserIdRef.current = null;
   }, [activeConversationId, isTemporary]);
 
-  // A second send was rejected with 409 STREAM_IN_PROGRESS — a response is
-  // still generating. The hook suppressed the error terminal so the live answer
-  // survives; here we just roll back THIS turn's optimistic user bubble + clear
-  // its pending state and tell the user to wait. (P0-2)
+  // A send was rejected with 409 STREAM_IN_PROGRESS — a response is still
+  // generating (or a just-Stopped one is still tearing down). The hook
+  // suppressed the error terminal so any live answer survives; here we roll
+  // back THIS turn's optimistic user bubble + clear its pending state, and —
+  // non-destructively — put the user's text back in the composer and offer to
+  // send it again, so a rejected send never silently loses the message. (P0-2)
   const handleStreamInProgress = useCallback(() => {
     const optimisticUserId = pendingUserIdRef.current;
     if (optimisticUserId) {
@@ -1188,10 +1203,31 @@ export function ChatThread() {
     pendingUserIdRef.current = null;
     assistantIdRef.current = null;
     setPendingId(null);
-    setLiveMessage("A response is still generating");
+    const rejected = plainSendRef.current;
+    plainSendRef.current = null;
+    if (!rejected) {
+      setLiveMessage("A response is still generating");
+      showToast({
+        severity: "info",
+        title: "A response is still generating — wait for it to finish or stop it.",
+      });
+      return;
+    }
+    composerRef.current?.setDraft(rejected.text);
+    setLiveMessage("Message not sent. It is back in the composer.");
     showToast({
-      severity: "info",
-      title: "A response is still generating — wait for it to finish or stop it.",
+      severity: "warning",
+      title: "Message not sent",
+      body: "The previous response was still finishing. Your message is back in the composer.",
+      actions: [
+        {
+          label: "Send again",
+          onClick: () => {
+            composerRef.current?.setDraft("");
+            handleSendRef.current?.(rejected.text, rejected.attachments);
+          },
+        },
+      ],
     });
   }, []);
 
@@ -1421,6 +1457,13 @@ export function ChatThread() {
         }
       }
 
+      plainSendRef.current =
+        !args.regenerate &&
+        !args.editMessageId &&
+        !args.continueTurn &&
+        !args.toolApproval
+          ? { text: args.text, attachments: args.attachments ?? [] }
+          : null;
       start({
         conversationId,
         clientMessageId: crypto.randomUUID(),
@@ -1652,6 +1695,10 @@ export function ChatThread() {
       }
     })();
   };
+
+  useEffect(() => {
+    handleSendRef.current = handleSend;
+  });
 
   const pendingMessage: ChatMessage | null = useMemo(() => {
     if (!pendingId) return null;

@@ -103,7 +103,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                     {tier.description}
                   </p>
                   {tier.modelLabel ? (
-                    <p className="mt-0.5 ui-caption leading-snug text-muted-foreground/70 group-focus/dropdown-menu-item:text-accent-foreground/70">
+                    <p className="mt-0.5 ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
                       {tier.modelLabel}
                     </p>
                   ) : null}
@@ -174,7 +174,7 @@ export function TierPicker({ tiers, selectedId, onSelect, disabled }: TierPicker
                         {tier.description}
                       </p>
                       {tier.modelLabel ? (
-                        <p className="mt-0.5 ui-caption leading-snug text-muted-foreground/70">
+                        <p className="mt-0.5 ui-caption leading-snug text-muted-foreground">
                           {tier.modelLabel}
                         </p>
                       ) : null}

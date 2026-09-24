@@ -13,7 +13,9 @@
     "test:e2e:install": "playwright install --with-deps chromium",
     "dev:coverage": "COVERAGE=1 next dev --webpack",
     "test:e2e:coverage": "rm -rf coverage && { COVERAGE=1 playwright test --retries=1; status=$?; pnpm run coverage:report; exit $status; }",
-    "coverage:report": "nyc report --reporter=text-summary --reporter=text --reporter=lcov --reporter=html --reporter=json-summary --temp-dir coverage/.nyc_output --report-dir coverage && nyc check-coverage --temp-dir coverage/.nyc_output"
+    "coverage:report": "nyc report --reporter=text-summary --reporter=text --reporter=lcov --reporter=html --reporter=json-summary --temp-dir coverage/.nyc_output --report-dir coverage && nyc check-coverage --temp-dir coverage/.nyc_output",
+    "audit:ui": "NEXT_DIST_DIR=.next-audit NEXT_PUBLIC_API_BASE_URL=http://localhost:8000 BE_ORIGIN=http://localhost:8000 next build && playwright test -c tests/audit/audit.config.ts",
+    "audit:ui:nobuild": "playwright test -c tests/audit/audit.config.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
@@ -31,6 +33,7 @@
     "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@babel/core": "^8.0.1",
     "@playwright/test": "1.60.0",
     "@tailwindcss/postcss": "^4",

@@ -27,7 +27,6 @@ import {
   reloadIntoConversation,
   snapshotAgenticTurn,
   waitForBootstrap,
-  type AgenticTurnSnapshot,
 } from "./helpers";
 
 // Flip the Deep Research toggle ON via the model-mode picker (desktop
@@ -97,6 +96,10 @@ async function sendAndPauseOnPlan(
   });
   await expect(paused.getByTestId("tool-approve")).toBeVisible();
   await expect(paused.getByTestId("tool-deny")).toBeVisible();
+  // F3: a run parked for approval has no answer yet, so it is not a partial
+  // one — the chip must not claim research steps failed before the user even
+  // decided on the plan.
+  await expect(paused.getByTestId("partial-synthesis-warning")).toHaveCount(0);
 
   // Wait for the BE to persist the paused row before deciding.
   await expect.poll(() => capturedConvId).not.toBeNull();
@@ -187,6 +190,33 @@ test.describe("agentic mode (deep research)", () => {
     await expect(panel).toContainText("Worker 2");
     await expect(panel).toContainText("Synthesis");
     await expect(panel.getByTestId("run-cost-meter")).toBeVisible();
+    // The subtotal and the "/ cap" are separated on screen, not only in the
+    // DOM: a text space leading a flex item collapses, which once painted
+    // "$0.0001/ $1.00". Measure the painted gap before the slash.
+    const slashGap = await panel.getByTestId("run-cost-meter").evaluate((el) => {
+      const cap = el.lastElementChild;
+      if (!cap) return null;
+      const walker = document.createTreeWalker(cap, NodeFilter.SHOW_TEXT);
+      let capText: Text | null = null;
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        if (node.data.includes("/")) {
+          capText = node;
+          break;
+        }
+      }
+      if (!capText) return null;
+      const before = document.createRange();
+      before.setStart(el, 0);
+      before.setEndBefore(cap);
+      const slashAt = capText.data.indexOf("/");
+      const slash = document.createRange();
+      slash.setStart(capText, slashAt);
+      slash.setEnd(capText, slashAt + 1);
+      return slash.getBoundingClientRect().left - before.getBoundingClientRect().right;
+    });
+    expect(slashGap).not.toBeNull();
+    expect(slashGap!).toBeGreaterThanOrEqual(2);
     // Worker intermediate findings stay in the panel; the synthesis answer does not.
     await expect(panel).toContainText("Worker 1 finding");
     await expect(panel).not.toContainText("Synthesis of 2 findings");
@@ -205,6 +235,16 @@ test.describe("agentic mode (deep research)", () => {
     // The resume rode with the mode; no duplicate user bubble was minted.
     expect(sentModes).toEqual(["deep_research", "deep_research"]);
     await expect(page.getByTestId("user-message-text")).toHaveCount(1);
+
+    // The approved plan card settles once the run finishes: no stale
+    // "Running" pill (the optimistic approve flip) and no partial chip on the
+    // paused row.
+    const planRow = page.getByTestId("assistant-message").first();
+    const planCard = planRow.getByTestId("tool-call-part").first();
+    await expect(planCard).toContainText("Complete");
+    await expect(planCard).not.toContainText("Running");
+    await expect(planRow.getByTestId("partial-synthesis-warning")).toHaveCount(0);
+    await expect(resumed.getByTestId("partial-synthesis-warning")).toHaveCount(0);
 
     // BE round-trip: the resumed assistant row persisted subagent marker
     // parts, so a reload re-renders the same grouped panel.
@@ -235,6 +275,14 @@ test.describe("agentic mode (deep research)", () => {
     );
     await expect(reloaded.getByTestId("assistant-empty-fallback")).toHaveCount(0);
     expect(await snapshotAgenticTurn(reloaded)).toEqual(live);
+    // The persisted pause row reloads settled and without the partial chip too.
+    const reloadedPlanRow = page.getByTestId("assistant-message").first();
+    await expect(
+      reloadedPlanRow.getByTestId("tool-call-part").first(),
+    ).toContainText("Complete");
+    await expect(
+      reloadedPlanRow.getByTestId("partial-synthesis-warning"),
+    ).toHaveCount(0);
   });
 
   test("deny the plan: no fan-out, a labeled declined synthesis streams", async ({
@@ -666,13 +714,12 @@ test.describe("agentic mode (deep research)", () => {
 
     // ...and both sides say what a pause receipt must say, so the comparison
     // above cannot pass by two empty renders agreeing: an estimate at plan
-    // phase, partial because the run can still resume.
+    // phase — and NO partial chip: a run parked for approval has no answer
+    // yet, so it is not a partial one (F3).
     expect(reloaded.meter?.confidence).toBe("estimate");
     expect(reloaded.meter?.phase).toBe("plan");
     expect(reloaded.meter?.text).toContain("Est. ");
-    expect(reloaded.partialChip).toBe(
-      "Partial answer — some research steps did not finish.",
-    );
+    expect(reloaded.partialChip).toBeNull();
   });
 
   // FE-4, live half, on the path the audit measured: Stop during fan-out.
@@ -692,81 +739,41 @@ test.describe("agentic mode (deep research)", () => {
     await page.goto("/");
     await waitForBootstrap(page);
     await enableDeepResearch(page);
-    // Web search widens the per-worker window well past the bare fake
-    // provider's ~100ms fan-out, so the Stop lands mid-flight rather than
-    // racing the workers to completion.
+    // Workers also run their search transcript, so the cut-off rows carry
+    // nested activity, as a real mid-search Stop would.
     await enableWebSearch(page);
 
-    // A stop is a race against the fan-out by nature, so retry the whole
-    // produce-then-stop on a fresh chat until one lands mid-flight — the same
-    // recovery shape streaming.spec.ts uses for its stop test. A fan-out that
-    // finishes first simply recycles instead of failing the assertion.
-    // `stopped` is the attempt that caught a worker in flight; `greenAfterStop`
-    // records a turn the BE confirmed as `stopped` whose rows nonetheless all
-    // claimed success — the FE-4 defect, which the failure message must
-    // distinguish from simply losing the race.
-    let stopped: AgenticTurnSnapshot | null = null;
-    let greenAfterStop: AgenticTurnSnapshot | null = null;
-    for (let attempt = 0; stopped === null && attempt < 6; attempt++) {
-      if (attempt > 0) {
-        await page.getByRole("button", { name: "New chat" }).first().click();
-        await expect(page.getByTestId("user-message-text")).toHaveCount(0);
-      }
-      await sendAndPauseOnPlan(
-        page,
-        "DEEP_RESEARCH: alpha topic | beta topic | gamma topic",
-      );
-      await page
-        .getByTestId("assistant-message")
-        .last()
-        .getByTestId("tool-approve")
-        .click();
+    // `HOLD_WORKER` keeps every worker in flight until Stop cancels the
+    // fan-out (see the fake provider), so Stop always lands mid fan-out on
+    // the first attempt instead of racing the workers to completion.
+    await sendAndPauseOnPlan(
+      page,
+      "DEEP_RESEARCH: HOLD_WORKER alpha topic | HOLD_WORKER beta topic | HOLD_WORKER gamma topic",
+    );
+    await page
+      .getByTestId("assistant-message")
+      .last()
+      .getByTestId("tool-approve")
+      .click();
 
-      const live = page.getByTestId("assistant-message").last();
-      try {
-        await expect(live.getByTestId("subagent-row").first()).toBeVisible({
-          timeout: 10_000,
-        });
-        // Short timeout: if the fan-out already settled the button is gone and
-        // this attempt recycles.
-        await page
-          .getByRole("button", { name: "Stop generating" })
-          .click({ timeout: 5_000 });
-        await expect(live).toHaveAttribute("data-status", /stopped|done/, {
-          timeout: 20_000,
-        });
-      } catch {
-        continue;
-      }
-      const snapshot = await snapshotAgenticTurn(live);
-      // Only an attempt that actually caught a worker in flight proves the fix;
-      // a fan-out that reached `done` on its own has every row legitimately
-      // `succeeded` and simply recycles.
-      if (snapshot.rows.some((r) => r.outcome === "cancelled")) {
-        stopped = snapshot;
-      } else if (
-        snapshot.rows.length > 0 &&
-        (await live.getAttribute("data-status")) === "stopped"
-      ) {
-        greenAfterStop = snapshot;
-      }
-    }
+    const live = page.getByTestId("assistant-message").last();
+    await expect(live.getByTestId("subagent-row")).toHaveCount(3, {
+      timeout: 10_000,
+    });
+    await page.getByRole("button", { name: "Stop generating" }).click();
+    await expect(live).toHaveAttribute("data-status", "stopped", {
+      timeout: 20_000,
+    });
 
-    // A green check on every row of a turn the BE marked `stopped` is the FE-4
-    // defect itself, not a missed race — say so rather than blaming the timing.
-    expect(
-      stopped,
-      greenAfterStop
-        ? `turn stopped but every row still claimed success: ${JSON.stringify(greenAfterStop.rows)}`
-        : "no Stop landed mid fan-out in 6 attempts",
-    ).not.toBeNull();
     // Every row is accounted for as cut off, and none claims success: a worker
     // that never reported a terminal must not settle on the green check.
-    expect(stopped!.rows.map((r) => r.outcome)).toEqual(
-      stopped!.rows.map(() => "cancelled"),
-    );
+    const stopped = await snapshotAgenticTurn(live);
+    expect(
+      stopped.rows.map((r) => r.outcome),
+      `turn stopped but rows claimed: ${JSON.stringify(stopped.rows)}`,
+    ).toEqual(["cancelled", "cancelled", "cancelled"]);
     await expect(
-      page.getByTestId("assistant-message").last().getByTestId("subagent-outcome-succeeded"),
+      live.getByTestId("subagent-outcome-succeeded"),
     ).toHaveCount(0);
   });
 

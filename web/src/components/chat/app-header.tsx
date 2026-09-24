@@ -112,7 +112,10 @@ export function AppHeader({
       aria-label="Chat toolbar"
       className="relative flex h-[52px] shrink-0 items-center gap-2 pl-[max(env(safe-area-inset-left),1.25rem)] pr-[max(env(safe-area-inset-right),1.25rem)] sm:pl-[max(env(safe-area-inset-left),1.5rem)] sm:pr-[max(env(safe-area-inset-right),1.5rem)] md:h-16">
       {centerSlot ? (
-        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 select-none">
+        // Below 360 px the trailing pill reaches past the centre line, so the
+        // decorative slot would sit under it; drop it there rather than
+        // shrink the 44 px controls.
+        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 select-none max-[359.98px]:hidden">
           {centerSlot}
         </div>
       ) : null}
@@ -218,8 +221,12 @@ export function AppHeader({
               }
             />
             <DropdownMenuContent align="end" sideOffset={8} className="min-w-56">
+              {/* Toggling starts a fresh chat and mounts the temporary-chat
+                  banner under the header, so the menu closes: left open it
+                  covers the banner's "Turn off" button (axe target-size). */}
               <DropdownMenuCheckboxItem
                 checked={isTemporary}
+                closeOnClick
                 onCheckedChange={onToggleTemporary}
               >
                 Temporary chat

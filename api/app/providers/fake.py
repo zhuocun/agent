@@ -53,6 +53,11 @@ reasoning block then ~40 non-empty answer deltas at 50ms each, so an e2e can
 deterministically catch the stream mid-flight (e.g. to click Stop and commit a
 non-empty `stopped` partial). Without it the default stream is too fast to stop.
 
+Held worker: a deep-research sub-question containing `HOLD_WORKER` keeps its
+worker in flight for ~30s before it reports a finding (after its search
+transcript, when web search is on), so an e2e can land Stop mid fan-out on the
+first try. Same per-sub-question marker shape as `FAIL_WORKER`.
+
 Leaked tool-call markup: when `user_text` starts with `LEAK_MARKUP:`, the
 provider emits clean lead-in prose then a raw DSML tool-call block as answer
 content (the shape a stubborn real provider leaks). The fake path bypasses the
@@ -186,6 +191,11 @@ def _pick_title(user_text: str) -> str:
     h = hashlib.sha256(user_text.encode("utf-8")).digest()
     idx = h[1] % len(_TITLE_STEMS)
     return " ".join(_TITLE_STEMS[idx])
+
+
+# How long a `HOLD_WORKER` sub-question keeps its worker in flight. Long enough
+# that nothing but a Stop ends the fan-out inside an e2e test's budget.
+_HOLD_WORKER_SECONDS = 30.0
 
 
 class FakeProvider:
@@ -423,6 +433,10 @@ class FakeProvider:
                         "results": [item.model_dump() for item in worker_search_items],
                     },
                 )
+            if "HOLD_WORKER" in sub_question:
+                # Stay in flight until Stop cancels the fan-out, so an e2e can
+                # land Stop mid fan-out deterministically instead of racing it.
+                await asyncio.sleep(_HOLD_WORKER_SECONDS)
             await asyncio.sleep(self._delay)
             yield AnswerDelta(
                 text=(

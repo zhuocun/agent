@@ -43,13 +43,22 @@ function splitCitations(text: string, ids: ReadonlySet<number>): HastNode[] {
   while ((match = MARKER.exec(text)) !== null) {
     const n = Number(match[1]);
     if (!ids.has(n)) continue; // unknown id -> leave literal
-    if (match.index > lastIndex) {
-      out.push({ type: "text", value: text.slice(lastIndex, match.index) });
+    const gap = text.slice(lastIndex, match.index);
+    // A marker that directly follows another (`[1][2]`, `[1] [2]`) is
+    // flagged so the chip can keep its touch hit-slop off its neighbour's.
+    const adjacent =
+      out.length > 0 &&
+      out[out.length - 1].tagName === CITATION_TAG &&
+      gap.trim() === "";
+    if (gap) {
+      out.push({ type: "text", value: gap });
     }
     out.push({
       type: "element",
       tagName: CITATION_TAG,
-      properties: { dataCitationId: n },
+      properties: adjacent
+        ? { dataCitationId: n, dataCitationAdjacent: "true" }
+        : { dataCitationId: n },
       children: [{ type: "text", value: match[0] }],
     });
     lastIndex = match.index + match[0].length;

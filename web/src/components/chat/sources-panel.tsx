@@ -123,8 +123,8 @@ export const SourcesPanel = forwardRef<SourcesPanelHandle, SourcesPanelProps>(
             "group/sources-trigger inline-flex items-center gap-1 text-left ui-caption text-muted-foreground",
             // Tap target: grow the hit area vertically to clear the iOS 44pt floor
             // without disturbing the surrounding gap stack (same trick as
-            // ReasoningPanel).
-            "bg-transparent py-3.5 -my-3.5 underline-offset-2 md:py-1.5 md:-my-1.5",
+            // ReasoningPanel, gated on `hover: none` rather than width).
+            "bg-transparent py-1.5 -my-1.5 underline-offset-2 [@media(hover:none)]:py-3.5 [@media(hover:none)]:-my-3.5",
             "outline-none focus-visible:underline",
           )}
           aria-label={open ? `Hide ${label}` : `Show ${label}`}

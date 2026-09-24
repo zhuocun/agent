@@ -93,11 +93,11 @@ const SERVED_MODEL_OPTIONS: { value: ModelTierId; label: string }[] = [
 // Filter-control styling — copied from the former dialog so the inputs read as
 // part of the same surface family.
 const FILTER_INPUT_CLASS =
-  "w-full min-w-0 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
+  "w-full min-w-0 [@media(hover:none)]:min-h-11 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 const FILTER_DATE_INPUT_CLASS =
-  "w-full min-w-[7.5rem] rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
+  "w-full min-w-[7.5rem] [@media(hover:none)]:min-h-11 rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 const FILTER_SELECT_CLASS =
-  "h-9 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
+  "h-9 [@media(hover:none)]:h-11 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 
 // Date input <-> ISO. The native date input gives `YYYY-MM-DD`; the BE parses
 // ISO-8601. `dateTo` widens to end-of-day so an inclusive "to" matches any time
@@ -334,13 +334,10 @@ export function CommandPalette({
     onDismiss: () => handleOpenChangeRef.current(false),
   });
 
-  // Taps on interactive controls inside the sheet (the header's filter/back
-  // buttons, the filter form fields) must stay plain clicks. The swipe hook
-  // pointer-captures the sheet on pointerdown, which retargets the eventual
-  // `click` to the sheet and silently swallows the control's handler on
-  // touch. Skipping the gesture for controls trades "swipe starting on a
-  // button" for working taps — matching iOS, where a touch that lands on a
-  // control acts on the control.
+  // Presses on interactive controls inside the sheet (the header's filter/back
+  // buttons, the filter form fields) never start the swipe gesture, so a
+  // slightly-dragged tap still acts on the control — matching iOS, where a
+  // touch that lands on a control acts on the control.
   const sheetContentProps: typeof contentProps = {
     ...contentProps,
     onPointerDown: (event) => {
@@ -391,6 +388,16 @@ export function CommandPalette({
 
   const activeOptionId =
     flat.length > 0 ? `${optionIdPrefix}-${clampedIndex}` : undefined;
+
+  // Focus stays in the input (aria-activedescendant), so the list never
+  // scrolls on its own: bring the active option into view as the arrow keys
+  // move it, or an option below the fold is selected but never seen.
+  useEffect(() => {
+    if (!activeOptionId) return;
+    document
+      .getElementById(activeOptionId)
+      ?.scrollIntoView?.({ block: "nearest" });
+  }, [activeOptionId]);
 
   // Reset the filter sub-state (controls + results). Shared by "exit filter
   // mode" and "palette close" so a re-entry always starts clean.
@@ -834,111 +841,118 @@ export function CommandPalette({
                   : "No results — try a different term"}
               </div>
             ) : (
-              <ul role="listbox" id={listboxId} aria-label="Commands">
-                {sections.map((section) => (
-                  <li key={section.heading} className="py-1">
+              // listbox > group > option: the only ownership chain ARIA allows
+              // here. Native <ul>/<li> would leak list/listitem roles between
+              // the listbox and its options (axe aria-required-children).
+              <div role="listbox" id={listboxId} aria-label="Commands">
+                {sections.map((section, sectionIndex) => (
+                  <div
+                    key={section.heading}
+                    role="group"
+                    aria-labelledby={`${optionIdPrefix}-group-${sectionIndex}`}
+                    className="py-1"
+                  >
                     <div
+                      id={`${optionIdPrefix}-group-${sectionIndex}`}
                       role="presentation"
                       className="px-5 pb-1 pt-2 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase"
                     >
                       {section.heading}
                     </div>
-                    <ul role="presentation">
-                      {section.items.map((item) => {
-                        const isSelected = item.flatIndex === clampedIndex;
-                        const id = `${optionIdPrefix}-${item.flatIndex}`;
-                        if (item.kind === "action") {
-                          const Icon = item.action.icon;
-                          return (
-                            <li
-                              key={item.action.id}
-                              id={id}
-                              role="option"
-                              aria-selected={isSelected}
-                              onMouseEnter={() => setSelectedIndex(item.flatIndex)}
-                              onMouseDown={(e) => {
-                                // mousedown to beat the input's blur, which
-                                // would otherwise unmount the row before the
-                                // click resolved.
-                                e.preventDefault();
-                                runItem(item);
-                              }}
-                              className={cn(
-                                // min-h-11: 44pt touch floor on the mobile
-                                // sheet (harmless on desktop). Selection uses a
-                                // quiet translucent tint to match the model/tier
-                                // pickers' selected-row treatment — the solid
-                                // `bg-accent` fill read too loud against glass.
-                                "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 ui-list-row text-foreground",
-                                isSelected && "bg-foreground/[0.06]",
-                              )}
-                            >
-                              {Icon ? (
-                                <Icon
-                                  aria-hidden
-                                  className="size-4 shrink-0 text-muted-foreground"
-                                />
-                              ) : (
-                                <span aria-hidden className="size-4 shrink-0" />
-                              )}
-                              <span className="min-w-0 flex-1 truncate">
-                                {item.action.label}
-                              </span>
-                              {item.action.shortcut ? (
-                                <KeyCaps
-                                  shortcut={item.action.shortcut}
-                                  variant="compact"
-                                  className="ml-3 hidden [@media(hover:hover)_and_(pointer:fine)]:inline-flex"
-                                />
-                              ) : null}
-                            </li>
-                          );
-                        }
-                        const matchSnippet = item.conversation.matchSnippet?.trim();
+                    {section.items.map((item) => {
+                      const isSelected = item.flatIndex === clampedIndex;
+                      const id = `${optionIdPrefix}-${item.flatIndex}`;
+                      if (item.kind === "action") {
+                        const Icon = item.action.icon;
                         return (
-                          <li
-                            key={item.conversation.id}
+                          <div
+                            key={item.action.id}
                             id={id}
                             role="option"
                             aria-selected={isSelected}
                             onMouseEnter={() => setSelectedIndex(item.flatIndex)}
                             onMouseDown={(e) => {
+                              // mousedown to beat the input's blur, which
+                              // would otherwise unmount the row before the
+                              // click resolved.
                               e.preventDefault();
                               runItem(item);
                             }}
                             className={cn(
-                              // min-h-11: 44pt touch floor; quiet selection
-                              // tint consistent with the action rows above.
-                              "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 ui-list-row text-foreground",
+                              // min-h-11: 44pt touch floor on the mobile
+                              // sheet (harmless on desktop). Selection uses a
+                              // quiet translucent tint to match the model/tier
+                              // pickers' selected-row treatment — the solid
+                              // `bg-accent` fill read too loud against glass.
+                              "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 ui-list-row text-foreground",
                               isSelected && "bg-foreground/[0.06]",
                             )}
                           >
-                            <MessageSquare
-                              aria-hidden
-                              className="size-4 shrink-0 text-muted-foreground"
-                            />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate">
-                                {item.conversation.title}
-                              </span>
-                              {matchSnippet ? (
-                                <span className="mt-0.5 block truncate ui-caption text-muted-foreground">
-                                  {matchSnippet}
-                                </span>
-                              ) : null}
+                            {Icon ? (
+                              <Icon
+                                aria-hidden
+                                className="size-4 shrink-0 text-muted-foreground"
+                              />
+                            ) : (
+                              <span aria-hidden className="size-4 shrink-0" />
+                            )}
+                            <span className="min-w-0 flex-1 truncate">
+                              {item.action.label}
                             </span>
-                            {item.isActive ? (
-                              <span className="ml-3 shrink-0 ui-caption text-muted-foreground">
-                                Open
+                            {item.action.shortcut ? (
+                              <KeyCaps
+                                shortcut={item.action.shortcut}
+                                variant="compact"
+                                className="ml-3 hidden [@media(hover:hover)_and_(pointer:fine)]:inline-flex"
+                              />
+                            ) : null}
+                          </div>
+                        );
+                      }
+                      const matchSnippet = item.conversation.matchSnippet?.trim();
+                      return (
+                        <div
+                          key={item.conversation.id}
+                          id={id}
+                          role="option"
+                          aria-selected={isSelected}
+                          onMouseEnter={() => setSelectedIndex(item.flatIndex)}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            runItem(item);
+                          }}
+                          className={cn(
+                            // min-h-11: 44pt touch floor; quiet selection
+                            // tint consistent with the action rows above.
+                            "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 ui-list-row text-foreground",
+                            isSelected && "bg-foreground/[0.06]",
+                          )}
+                        >
+                          <MessageSquare
+                            aria-hidden
+                            className="size-4 shrink-0 text-muted-foreground"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              {item.conversation.title}
+                            </span>
+                            {matchSnippet ? (
+                              <span className="mt-0.5 block truncate ui-caption text-muted-foreground">
+                                {matchSnippet}
                               </span>
                             ) : null}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </li>
+                          </span>
+                          {item.isActive ? (
+                            <span className="ml-3 shrink-0 ui-caption text-muted-foreground">
+                              Open
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 ))}
-              </ul>
+              </div>
             )}
           </div>
 

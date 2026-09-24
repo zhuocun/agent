@@ -232,13 +232,20 @@ def build_agentic_run_summary_part(ev: RunCost) -> AgenticRunSummaryPart:
     re-derived a meter that both showed a different number and claimed
     exact/final while the plan card above it still said "(estimate)".
 
-    A non-final phase is by definition not a finished run, so it folds to
-    ``partial`` regardless of the flags — a resumable pause must never read as a
-    completed receipt.
+    A pause boundary (the receipt a plan / clarify / HITL pause carries) folds
+    to ``paused``: the run is resumable, so it is neither complete nor a
+    degraded answer. The partial chip labels a degraded synthesis (PRD 08
+    §5.4); a pause is the ``awaiting_approval`` terminal, and flagging it
+    partial told the user research steps had failed before they had even
+    approved the plan. Otherwise a non-final phase is by definition not a
+    finished run, so it folds to ``partial`` regardless of the flags.
     """
+    is_pause = ev.receipt is not None and ev.receipt.boundary == "pause"
     return AgenticRunSummaryPart(
         outcome=(
-            "partial"
+            "paused"
+            if is_pause
+            else "partial"
             if (
                 ev.partial
                 or ev.budget_halted

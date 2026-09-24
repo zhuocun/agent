@@ -91,11 +91,18 @@ export function deriveRunCostFromParts(
 export function deriveAgenticRunSummary(
   parts: readonly MessagePart[],
   liveRunCost?: RunCostState | null,
+  status?: string | null,
 ): {
   partial: boolean;
   budgetHalted: boolean;
   failedWorkers: number;
 } | null {
+  // A turn parked for approval has no answer yet, so it cannot be a partial
+  // one. The status guard also covers rows persisted before pauses folded to
+  // `paused` (they carry `outcome: "partial"`), and it holds after the user
+  // decides: the paused row keeps `awaiting_approval` while the resumed turn
+  // carries the run's real outcome.
+  if (status === "awaiting_approval") return null;
   if (liveRunCost?.partial || liveRunCost?.budgetHalted) {
     return {
       partial: true,

@@ -861,6 +861,14 @@
     @apply block max-w-full overflow-x-auto;
     overscroll-behavior-x: contain;
   }
+  /* `.chat-md`'s `overflow-wrap: anywhere` shrinks a cell's min-content width
+     to one character, so auto table layout squeezes every column to fit and
+     breaks words mid-letter instead of letting the table scroll. Cells wrap at
+     word boundaries only; a table wider than the column scrolls in its own
+     container (UI-LAYOUT-2). Prose keeps `anywhere` (UI-LAYOUT-11). */
+  .chat-md :where(th, td) {
+    overflow-wrap: normal;
+  }
   .chat-md :where(ul) { @apply list-disc pl-6; }
   .chat-md :where(ol) { @apply list-decimal pl-6; }
   .chat-md :where(li):not(:first-child) { @apply mt-1; }
@@ -871,6 +879,13 @@
   .chat-md :where(strong) { @apply font-semibold text-foreground; }
   .chat-md :where(code):not(:where(pre *)) {
     @apply rounded bg-muted px-1.5 py-0.5 font-mono text-[0.875em];
+  }
+  /* Overflowing code/table scrollers are made focusable by MarkdownRenderer
+     (data-scroll-region). The ring is inset because the code body wrapper
+     clips anything drawn outside the <pre>. */
+  .chat-md [data-scroll-region]:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--color-ring);
   }
   .chat-md :where(blockquote) {
     @apply border-l-2 border-border pl-4 text-muted-foreground;

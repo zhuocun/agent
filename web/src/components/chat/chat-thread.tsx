@@ -566,6 +566,13 @@ export function ChatThread() {
   // Captured at send-time so a mid-stream toggle can't retroactively change
   // what this turn requested (mirrors `searchAtSendRef`).
   const deepResearchAtSendRef = useRef(false);
+  // The approval a resume turn is answering. `handleToolDecision` flips the
+  // paused card to `running` optimistically; the resume's terminal settles it
+  // (the BE settles the same call on the paused row before streaming).
+  const resumedApprovalRef = useRef<{
+    toolCallId: string;
+    decision: "approve" | "deny";
+  } | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
   const tierAtSendRef = useRef<ModelTierId>(selectedTierId);
@@ -595,6 +602,19 @@ export function ChatThread() {
   // its response if a faster selection has since superseded it.
   const selectConversationTokenRef = useRef<string | null>(null);
   const composerRef = useRef<ComposerHandle>(null);
+  // The in-flight PLAIN send's text + attachments (not regenerate / edit /
+  // continue / tool approval). If the BE rejects it with 409
+  // STREAM_IN_PROGRESS, the composer already cleared on submit — this is what
+  // puts the user's message back instead of silently dropping it (UI-STATE-5).
+  const plainSendRef = useRef<{
+    text: string;
+    attachments: AttachmentPart[];
+  } | null>(null);
+  // Latest `handleSend`, for that toast's "Send again": it must resend with
+  // the CURRENT tier / toggles, not the ones captured when the toast opened.
+  const handleSendRef = useRef<
+    ((text: string, attachments: AttachmentPart[]) => void) | null
+  >(null);
 
   // --- Compare mode (parallel model comparison) -------------------------------
   // Flagship multi-model differentiator: one prompt → two tiers answer side by
@@ -1001,6 +1021,45 @@ export function ChatThread() {
     const assistantId = assistantIdRef.current;
     if (!assistantId) return;
 
+    // Settle the paused card this resume answered. Without it the plan card
+    // (and any approved tool card) kept the optimistic "Running" pill after the
+    // run finished, until a reload read the settled row. The resume's own
+    // `tool_result` carries the real status for a server tool; a pseudo tool
+    // (plan approval / clarify) streams none, and the BE settles it
+    // `succeeded` on approve. An errored resume may not have settled it, so it
+    // is left for the reload to resolve.
+    const resumed = resumedApprovalRef.current;
+    resumedApprovalRef.current = null;
+    if (resumed && result.status !== "error") {
+      const streamed = result.toolParts.find(
+        (p) => p.type === "tool_result" && p.toolCallId === resumed.toolCallId,
+      );
+      const settledStatus =
+        streamed?.type === "tool_result" && streamed.status
+          ? streamed.status
+          : resumed.decision === "approve"
+            ? "succeeded"
+            : "cancelled";
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.role !== "assistant") return m;
+          let touched = false;
+          const parts = m.parts.map((p) => {
+            if (
+              p.type !== "tool_call" ||
+              p.id !== resumed.toolCallId ||
+              p.status !== "running"
+            ) {
+              return p;
+            }
+            touched = true;
+            return { ...p, status: settledStatus };
+          });
+          return touched ? { ...m, parts } : m;
+        }),
+      );
+    }
+
     // Stop pressed before any content streamed: committing an empty assistant
     // bubble (parts:[]) reads as a blank/errored turn. Skip the assistant
     // commit entirely — keep the user message, just clear the pending state.
@@ -1076,8 +1135,9 @@ export function ChatThread() {
     // parts, folded by the SAME rule as the BE's
     // `build_agentic_run_summary_part` (api/app/streaming/handler.py), which is
     // the authority this mirrors: every `run_cost` tick persists a receipt, and
-    // a non-final phase folds to `partial` whatever the flags say, because a
-    // resumable pause must never read as a completed run. Matching that rule —
+    // a pause folds to `paused` (a run parked for approval is neither complete
+    // nor a partial answer), and otherwise a non-final phase folds to `partial`
+    // whatever the flags say. Matching that rule —
     // and the honesty labels with it — is what makes the settled bubble and the
     // reloaded bubble derive an identical meter and partial state.
     // `phase` is optional only because `parseRunCost` drops values outside the
@@ -1093,7 +1153,12 @@ export function ChatThread() {
         (rc.failedWorkerCount ?? 0) > 0;
       parts.push({
         type: "agentic_run_summary",
-        outcome: isPartial || rc.phase !== "final" ? "partial" : "complete",
+        outcome:
+          result.status === "awaiting_approval"
+            ? "paused"
+            : isPartial || rc.phase !== "final"
+              ? "partial"
+              : "complete",
         budgetHalted: rc.budgetHalted === true,
         failedWorkers: rc.failedWorkerCount ?? 0,
         subtotalUsd: rc.subtotalUsd,
@@ -1176,10 +1241,12 @@ export function ChatThread() {
     pendingUserIdRef.current = null;
   }, [activeConversationId, isTemporary]);
 
-  // A second send was rejected with 409 STREAM_IN_PROGRESS — a response is
-  // still generating. The hook suppressed the error terminal so the live answer
-  // survives; here we just roll back THIS turn's optimistic user bubble + clear
-  // its pending state and tell the user to wait. (P0-2)
+  // A send was rejected with 409 STREAM_IN_PROGRESS — a response is still
+  // generating (or a just-Stopped one is still tearing down). The hook
+  // suppressed the error terminal so any live answer survives; here we roll
+  // back THIS turn's optimistic user bubble + clear its pending state, and —
+  // non-destructively — put the user's text back in the composer and offer to
+  // send it again, so a rejected send never silently loses the message. (P0-2)
   const handleStreamInProgress = useCallback(() => {
     const optimisticUserId = pendingUserIdRef.current;
     if (optimisticUserId) {
@@ -1187,11 +1254,50 @@ export function ChatThread() {
     }
     pendingUserIdRef.current = null;
     assistantIdRef.current = null;
+    resumedApprovalRef.current = null;
     setPendingId(null);
-    setLiveMessage("A response is still generating");
+    const rejected = plainSendRef.current;
+    plainSendRef.current = null;
+    if (!rejected) {
+      setLiveMessage("A response is still generating");
+      showToast({
+        severity: "info",
+        title: "A response is still generating — wait for it to finish or stop it.",
+      });
+      return;
+    }
+    // Restore only into an empty composer: anything typed during the 409
+    // round-trip wins, and the toast still carries the message.
+    const restored =
+      composerRef.current?.restoreDraft(rejected.text, rejected.attachments) ??
+      false;
+    setLiveMessage(
+      restored
+        ? "Message not sent. It is back in the composer."
+        : "Message not sent.",
+    );
     showToast({
-      severity: "info",
-      title: "A response is still generating — wait for it to finish or stop it.",
+      severity: "warning",
+      title: "Message not sent",
+      body: restored
+        ? "The previous response was still finishing. Your message is back in the composer."
+        : "The previous response was still finishing.",
+      actions: [
+        {
+          label: "Send again",
+          onClick: () => {
+            const composer = composerRef.current;
+            if (restored) {
+              // Edited or already re-sent from the composer: that copy is the
+              // user's, so don't clear it or send a second one.
+              if (!composer || composer.getDraft() !== rejected.text) return;
+              composer.setDraft("");
+              composer.clearAttachments();
+            }
+            handleSendRef.current?.(rejected.text, rejected.attachments);
+          },
+        },
+      ],
     });
   }, []);
 
@@ -1421,6 +1527,13 @@ export function ChatThread() {
         }
       }
 
+      plainSendRef.current =
+        !args.regenerate &&
+        !args.editMessageId &&
+        !args.continueTurn &&
+        !args.toolApproval
+          ? { text: args.text, attachments: args.attachments ?? [] }
+          : null;
       start({
         conversationId,
         clientMessageId: crypto.randomUUID(),
@@ -1652,6 +1765,10 @@ export function ChatThread() {
       }
     })();
   };
+
+  useEffect(() => {
+    handleSendRef.current = handleSend;
+  });
 
   const pendingMessage: ChatMessage | null = useMemo(() => {
     if (!pendingId) return null;
@@ -1949,6 +2066,10 @@ export function ChatThread() {
     effortAtSendRef.current = effectiveReasoningEffort;
     jsonModeAtSendRef.current = jsonModeEnabled;
     deepResearchAtSendRef.current = isAgenticHitl || effectiveDeepResearch;
+    resumedApprovalRef.current = {
+      toolCallId: decision.toolCallId,
+      decision: decision.decision,
+    };
     // AR-014 / AR-024: optimistically clear the paused card's approval controls
     // so the UI does not keep showing "Needs approval" while the resume streams.
     setMessages((prev) =>

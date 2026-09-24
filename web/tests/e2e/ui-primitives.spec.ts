@@ -53,7 +53,7 @@ test.describe("ui primitives via real flows", () => {
     await expect(copyItem).toBeVisible();
     await copyItem.click();
 
-    // info-severity toast renders as <li role="status" aria-label="Information">
+    // info-severity toast renders as <div role="status" aria-label="Information">
     // (scoped by the aria-label to avoid the sr-only live region). It
     // auto-dismisses after ~5s, driving the ToastItem auto-dismiss timer path.
     const toast = page.getByRole("status", { name: "Information" });
@@ -88,7 +88,7 @@ test.describe("ui primitives via real flows", () => {
     await page.getByTestId("composer-textarea").fill("This send will fail");
     await page.getByTestId("composer-send").click();
 
-    // error-severity toast renders as <li role="alert" aria-label="Error">.
+    // error-severity toast renders as <div role="alert" aria-label="Error">.
     const toast = page.getByRole("alert", { name: "Error" });
     await expect(toast).toBeVisible({ timeout: 10_000 });
 
@@ -205,5 +205,89 @@ test.describe("ui primitives on mobile", () => {
     await page.mouse.up();
 
     await expect(dialog).toBeHidden({ timeout: 5_000 });
+  });
+});
+
+test.describe("ui primitives on a narrow mouse viewport", () => {
+  // Below `sm` a dialog presents as a swipe-dismissable bottom sheet even with
+  // a mouse (a narrow desktop window, a pen tablet). A press must stay a click
+  // until it turns into a drag, or every control in the sheet goes dead.
+  test.use({ viewport: { width: 600, height: 900 }, hasTouch: false });
+
+  test("dialog: a mouse click on a control inside a bottom sheet acts on it", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.locator('button[aria-label="Open sidebar"]:visible').click();
+    await expect(page.locator('[data-slot="drawer-content"]')).toBeVisible();
+    await page.getByRole("button", { name: "Account menu" }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await expect(dialog).toBeVisible();
+    // The sheet presentation (grabber) is what arms the swipe gesture.
+    await expect(
+      dialog.locator('[aria-hidden="true"].cursor-grab').first(),
+    ).toBeVisible();
+
+    // Narrow sheets open on the section list; a section row drills in and
+    // the back button returns to the list.
+    const general = dialog.getByRole("button", { name: "General" });
+    const back = dialog.getByTestId("settings-back-button");
+    // A real mouse press + release (not a synthetic element.click()).
+    await general.click();
+    await expect(back).toBeVisible();
+
+    // A press that jitters a couple of pixels downward is still a click.
+    const box = await back.boundingBox();
+    expect(box).not.toBeNull();
+    const x = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, y + 2);
+    await page.mouse.up();
+    await expect(general).toBeVisible();
+    await expect(dialog).toBeVisible();
+  });
+
+  test("dialog: a press released outside the sheet does not leave it following the mouse", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    await page.locator('button[aria-label="Open sidebar"]:visible').click();
+    await expect(page.locator('[data-slot="drawer-content"]')).toBeVisible();
+    await page.getByRole("button", { name: "Account menu" }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Settings" });
+    await expect(dialog).toBeVisible();
+    const heading = dialog.getByRole("heading", { name: "Settings" });
+    const hb = await heading.boundingBox();
+    const sheetBox = await dialog.boundingBox();
+    expect(hb).not.toBeNull();
+    expect(sheetBox).not.toBeNull();
+    const x = hb!.x + hb!.width / 2;
+    const y = hb!.y + hb!.height / 2;
+
+    // Press on the sheet, leave it upward, release outside it: the region
+    // never sees the pointerup (no capture is held for a plain press).
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, Math.max(2, sheetBox!.y - 20), { steps: 4 });
+    await page.mouse.up();
+
+    // Hover back in with no button held and travel well past the slop.
+    await page.mouse.move(x, y, { steps: 4 });
+    await page.mouse.move(x, y + 40, { steps: 8 });
+
+    const transform = await page
+      .locator('[data-slot="dialog-content"]')
+      .evaluate((el) => (el as HTMLElement).style.transform);
+    expect(transform).toBe("");
   });
 });

@@ -104,4 +104,49 @@ test.describe("phone target floor", () => {
     const assistant = await sendWebSearchTurn(page);
     await expectFloor(assistant.getByTestId("citation-marker").first(), 44);
   });
+
+  test("adjacent citation markers keep their touch hit areas apart", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    const assistant = await sendWebSearchTurn(page);
+    // The fake answer opens "Based on the sources [1][2], ".
+    const one = assistant.locator('[data-testid="citation-marker"][data-citation-id="1"]').first();
+    const two = assistant.locator('[data-testid="citation-marker"][data-citation-id="2"]').first();
+    await expect(two).toBeVisible();
+
+    // Probe the outer edge of each marker's hit-slop facing the other, and
+    // assert the hit lands on that marker (UI-TOUCH-3: no overlap).
+    const hits = await page.evaluate(() => {
+      const byId = (id: string) =>
+        document.querySelector(
+          `[data-testid="citation-marker"][data-citation-id="${id}"]`,
+        ) as HTMLElement;
+      const slop = (el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        const ps = getComputedStyle(el, "::before");
+        return {
+          left: r.left + parseFloat(ps.left),
+          right: r.right - parseFloat(ps.right),
+          y: r.top + r.height / 2,
+        };
+      };
+      const a = slop(byId("1"));
+      const b = slop(byId("2"));
+      const idAt = (x: number, y: number) =>
+        (document.elementFromPoint(x, y) as HTMLElement | null)
+          ?.closest('[data-testid="citation-marker"]')
+          ?.getAttribute("data-citation-id") ?? null;
+      return {
+        overlap: a.right > b.left,
+        oneRightEdge: idAt(a.right - 1, a.y),
+        twoLeftEdge: idAt(b.left + 1, b.y),
+      };
+    });
+    expect(hits.overlap).toBe(false);
+    expect(hits.oneRightEdge).toBe("1");
+    expect(hits.twoLeftEdge).toBe("2");
+    await expect(one).toBeVisible();
+  });
 });

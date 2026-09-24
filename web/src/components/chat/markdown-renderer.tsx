@@ -96,9 +96,12 @@ function MermaidError({ chart }: MermaidErrorComponentProps) {
 function CitationChip({
   children,
   onActivate,
+  adjacent = false,
 }: {
   children?: ReactNode;
   onActivate: (id: number) => void;
+  /** Directly follows another marker (`[1][2]`), per the rehype plugin. */
+  adjacent?: boolean;
 }) {
   const label =
     typeof children === "string"
@@ -128,6 +131,11 @@ function CitationChip({
         // or the line box.
         "relative before:absolute before:-inset-x-0.5 before:-inset-y-1.5 before:content-['']",
         "[@media(hover:none)]:before:-inset-x-[11px] [@media(hover:none)]:before:-inset-y-4",
+        // Two touch hit-slops of 11 px would overlap across a run like
+        // `[1][2]`, so a tap on the right of [1] opened source 2
+        // (UI-TOUCH-3). On touch, a marker that follows another is pushed
+        // clear of its neighbour's slop.
+        adjacent && "[@media(hover:none)]:ml-[22px]",
         "text-primary bg-primary/[0.08] hover:bg-primary/15",
         "cursor-pointer transition-colors",
         "outline-none focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
@@ -220,8 +228,16 @@ export function MarkdownRenderer({
     if (!citationsEnabled || !onCitationClick) {
       return { img: Img } as unknown as Components;
     }
-    const Cite = (props: { children?: ReactNode }) => (
-      <CitationChip onActivate={onCitationClick}>{props.children}</CitationChip>
+    const Cite = (props: {
+      children?: ReactNode;
+      "data-citation-adjacent"?: string;
+    }) => (
+      <CitationChip
+        onActivate={onCitationClick}
+        adjacent={props["data-citation-adjacent"] === "true"}
+      >
+        {props.children}
+      </CitationChip>
     );
     return { img: Img, [CITATION_TAG]: Cite } as unknown as Components;
   }, [citationsEnabled, onCitationClick]);

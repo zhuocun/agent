@@ -218,6 +218,400 @@ against the cited PNGs during this triage). Probes live in the gitignored
   forced-colors shots was disproven by pixel sampling (pure white — preview
   scaling artifact).
 
+## 2026-09-23 audit run — new issues
+
+Source: the `pnpm audit:ui` Playwright harness (`web/tests/audit/ui.audit.ts`),
+453 captures across five viewports (`d1440`, `d1024`, `t820`, `m390`, `m320`)
+× two themes, plus media variants (`__reduced-motion`, `__forced-colors`,
+`__contrast-more`, `__text200` / `__zoom200`) on the primary viewports and a
+one-off `p600` narrow-pointer probe. Probes: overflow, target size, axe WCAG 2.2
+AA, focus visibility, CLS and off-scale spacing. Raw triage input:
+`docs/design/audits/2026-09-23-findings.md` (F1–F18). ISSUE-28–33 were found
+after that list was written, while verifying the fixes. Unlike the sweeps above,
+this run's screenshot paths are relative to `web/test-results/audit/shots/`
+(`<viewport>/<theme>/<surface><__media>.png`) and are ephemeral. The PNGs of the original run were not retained, so each path names the harness surface that shows the defect; re-run `pnpm audit:ui` to regenerate it. Each entry
+names the `docs/design/UI_STANDARDS.md` clause it fails. Where no clause asserts
+the defect, the entry says so and names the nearest one. Fixes landed on branch
+`claude/ui-optimization-playwright-iju8tj`.
+
+## ISSUE-10 — MAJOR — Stop, then any new send, fails with 409 and loses the draft
+
+- **Source:** F1
+- **Standard:** UI-STREAM-7, UI-STREAM-9 (and UI-STATE-5: the failure implies the draft was never sent)
+- **Screenshots:** `d1440/light/stopped.png`, `d1440/light/send-after-stop.png`, `d1440/light/share-view.png`
+- **Observation:** After Stop, every new send returns `409 STREAM_IN_PROGRESS`
+  (10 of 10 attempts, and still failing 12 s or more later). The optimistic user
+  bubble is removed and the typed draft is lost. The API logs no `turn.stopped`
+  line, and the stopped partial never reaches the share view. Hypothesis:
+  sse-starlette's cancellation of the disconnected stream also cancels the
+  stop-path DB write (`api/app/streaming/handler.py`,
+  `api/app/streaming/turn_lifecycle.py` `_terminalize`), so the turn row is
+  never terminalized and the in-progress guard stays latched. The FE half is in
+  `chat-thread.tsx`, which drops the bubble and the draft on the 409.
+- **Status:** fix in review
+- **Fix (planned):** run the turn in its own task, outside the SSE response's
+  cancel scope, so Stop's terminal write completes when the client disconnects.
+  On a 409 the FE keeps the draft in the composer instead of discarding it.
+
+## ISSUE-11 — MAJOR — Mouse and pen clicks inside bottom sheets are dead below 768 px
+
+- **Source:** F2
+- **Standard:** UI-FOCUS-7 (a swipe gesture must leave single-pointer operation intact). No clause asserts pointer operability of sheet contents directly.
+- **Screenshots:** `p600/light/sheet-mouse-click.png`
+- **Observation:** Below 768 px, where dialogs render as swipe-dismissable
+  bottom sheets, a mouse or pen click on a control inside the sheet did nothing.
+  Keyboard and touch taps worked. `use-swipe-dismiss.ts` called
+  `setPointerCapture` on `pointerdown`, which retargeted the resulting `click`
+  to the sheet element and swallowed the control's handler.
+- **Status:** fixed (commits `0fa4207`, `c31426c`)
+- **Fix:** `web/src/lib/use-swipe-dismiss.ts` — a press stays a plain click until it
+  travels 6 px downward, and pointer capture is taken only then (`0fa4207`).
+  `web/src/components/chat/command-palette.tsx` drops its control-skipping
+  workaround, which the hook change made unnecessary. Follow-up `c31426c`: a
+  pending press is cleared when a move arrives with no button held, so a press
+  released outside the sheet no longer turns a later hover into a drag. The sheet
+  offset starts after the slop. Covered in `web/tests/e2e/ui-primitives.spec.ts`.
+
+## ISSUE-12 — MAJOR — Deep research shows "Partial answer" before the plan is approved
+
+- **Source:** F3
+- **Standard:** UI-STATE-1 (a pause is `awaiting_approval`, not a degraded result); UI-TRUST-5 for the share projection
+- **Screenshots:** `d1440/light/deep-research-plan.png`, `d1440/light/deep-research-done.png`
+- **Observation:** A deep-research run waiting at its plan-approval gate showed
+  "Partial answer — some research steps did not finish" before the user had
+  decided. The server put `partial=True` on the wire at the pause
+  (`api/app/agentic/orchestrator.py`), and `web/src/lib/agentic-layout.ts` had
+  no pause guard. The chip also survived approval and reload. NIT in the same
+  flow: the approved plan card kept its optimistic "Running" pill after the run
+  finished.
+- **Status:** fixed (commit `3c91260`)
+- **Fix:** the pause sites in `api/app/agentic/orchestrator.py` stop raising the
+  wire `partial` flag. `api/app/streaming/turn_reducer.py` folds a pause-boundary
+  receipt to a new `paused` outcome (`api/app/schemas/message.py`,
+  `api/app/schemas/share.py`). On the FE, `web/src/lib/agentic-layout.ts`,
+  `web/src/lib/types.ts` and `chat-thread.tsx` mirror the fold.
+  `assistant-message.tsx`, `agentic-assistant-parts.tsx` and
+  `share/public-conversation-view.tsx` suppress the chip on an
+  `awaiting_approval` row, which also covers rows persisted before the change.
+  The plan card settles once the run finishes, so no stale "Running" pill.
+  Covered in `api/tests/test_arch_review_ledger_resume.py` and
+  `web/tests/e2e/agentic.spec.ts`.
+
+## ISSUE-13 — MINOR — Table cells break mid-word and the table never scrolls
+
+- **Source:** F4
+- **Standard:** UI-LAYOUT-2 (UI-LAYOUT-11 keeps `anywhere` for prose only)
+- **Screenshots:** `m390/light/thread-rich-table.png`
+- **Observation:** Markdown table cells inherited `overflow-wrap: anywhere`
+  from `.chat-md` (`globals.css`). Every column shrank to about one character,
+  words broke mid-letter, and the table never overflowed into its horizontal
+  scroller.
+- **Status:** fixed (commit `cd66b4c`; test hardened in `a720b7c`)
+- **Fix:** `web/src/app/globals.css` — table cells wrap at word boundaries, and a wide
+  table scrolls inside its container. Prose keeps `anywhere`. Covered in
+  `web/tests/e2e/markdown-parts.spec.ts`. `a720b7c` makes that test check
+  whichever element actually scrolls.
+
+## ISSUE-14 — MINOR — 320×640 welcome hero overflows upward under the header
+
+- **Source:** F5
+- **Standard:** UI-LAYOUT-1 (SC 1.4.10 Reflow at 320 px: content pushed out of scroll reach)
+- **Screenshots:** `m320/light/welcome.png`, `m320/dark/welcome.png`
+- **Observation:** At 320×640 the welcome hero was taller than its scroll area.
+  Because it was centred, it grew upward: "Connect your API key" sat under the
+  header, out of scroll reach, and the title collided with the header's
+  trailing pill (`welcome-screen.tsx`).
+- **Status:** fixed (commits `2877c27`, `0cd6287`)
+- **Fix:** `web/src/components/chat/welcome-screen.tsx` — the hero start-aligns once it
+  overflows. `web/src/components/chat/app-header.tsx` drops the decorative
+  wordmark below 360 px (`2877c27`). `0cd6287` replaces `safe center`, which
+  needs Safari 17.6+, with auto margins that work on every engine. Covered in
+  `web/tests/e2e/app-shell.spec.ts` (`8bb5c87`, `0cd6287`).
+
+## ISSUE-15 — MINOR — Auth dialog clips the left edge of the input focus ring
+
+- **Source:** F6
+- **Standard:** UI-FOCUS-2
+- **Screenshots:** harness surface `auth-signin` focus walk (`focus/d1440__light/`) at d1440
+- **Observation:** The auth dialog's scroll body padded only its right edge.
+  Its overflow clip cut the 4 px focus ring on the left of the full-width inputs.
+- **Status:** fixed (commit `e770bd8`)
+- **Fix:** `web/src/components/chat/auth-dialog.tsx` — the scroll body leaves room on both
+  sides for the field focus ring. Covered in
+  `web/tests/e2e/a11y-structure.spec.ts` (`cd7bf0b`).
+
+## ISSUE-16 — MINOR — Command palette ARIA structure invalid (axe critical)
+
+- **Source:** F7
+- **Standard:** UI-FOCUS-1. No clause asserts ARIA ownership. The axe gate is PRD 06 §7 AC 4, recorded as §15 C5.
+- **Screenshots:** `d1440/light/command-palette.png`
+- **Observation:** The palette rendered its options inside `<ul>`/`<li>` wrappers
+  under `role="listbox"`. The listbox owned list items, and the options had no
+  listbox or group parent (axe `aria-required-children` /
+  `aria-required-parent`, critical).
+- **Status:** fixed (commits `a837762`, `44ad47f`)
+- **Fix:** `web/src/components/chat/command-palette.tsx` — options are nested in listbox
+  groups (`a837762`). Follow-up `44ad47f` scrolls the active option into view,
+  because focus stays in the input (`aria-activedescendant`). Covered in
+  `web/tests/e2e/a11y-structure.spec.ts` (`cd7bf0b`, `44ad47f`).
+
+## ISSUE-17 — MINOR — Small secondary text at 70% muted fails contrast
+
+- **Source:** F8
+- **Standard:** UI-COLOR-3 (UI-TRUST-6 for the tier and tool captions)
+- **Screenshots:** `d1440/light/deep-research-done.png`, `d1440/light/tool-approval.png`, `d1440/light/model-picker.png`
+- **Observation:** `text-muted-foreground/70` (and `/60`) at 12–13 px measured
+  3.06–4.04:1, below the 4.5:1 floor, in both themes (subagent panel, tool part,
+  tier picker).
+- **Status:** fixed (commit `91e2e55`)
+- **Fix:** switched to full-strength `text-muted-foreground` in
+  `subagent-panel.tsx`, `tool-part.tsx`, `tier-picker.tsx`,
+  `model-directory-dialog.tsx` and `web-search-panel.tsx`
+  (`web/src/components/chat/`).
+
+## ISSUE-18 — MINOR — Citation markers under the 24 px pointer floor
+
+- **Source:** F9
+- **Standard:** UI-TOUCH-2 (UI-TOUCH-1 on touch, bounded by §15 C50; see ISSUE-33)
+- **Screenshots:** `d1440/light/web-search.png`
+- **Observation:** Inline citation markers (`[1]`) painted at about 22×13 px,
+  under the 24 px pointer floor (`markdown-renderer.tsx`).
+- **Status:** fixed (commit `6d89b40`)
+- **Fix:** `web/src/components/chat/markdown-renderer.tsx` — an invisible `::before`
+  hit-slop grows the target to 24 px on a pointer and 44 px on touch without
+  changing the type size or line box. Covered in
+  `web/tests/e2e/touch-targets.spec.ts`. The touch half's vertical slop later
+  proved too tall: ISSUE-33.
+
+## ISSUE-19 — MINOR — 820 px touch tablet gets sub-44 px targets
+
+- **Source:** F10
+- **Standard:** UI-TOUCH-1, UI-TOUCH-5 (UI-TOUCH-4 bounds the fix)
+- **Screenshots:** `t820/light/sidebar.png`, `t820/light/thread.png`, `t820/light/web-search-expanded.png`
+- **Observation:** On the 820 px touch tablet, which gets the desktop layout,
+  several targets fell below 44 px. Sidebar "Advanced search" measured 24 px
+  tall and "Select" 36 px. The "Thought for" reasoning toggle and the sources
+  toggle measured 28 px. The two toggles used the inverted form UI-TOUCH-5 names:
+  a 44 px base reset by `md:`. The command palette's filter fields had no touch
+  floor at all.
+- **Status:** fixed (commit `6d89b40`)
+- **Fix:** `sidebar.tsx`, `reasoning-panel.tsx`, `sources-panel.tsx` and
+  `command-palette.tsx` (`web/src/components/chat/`) keep the dense size as the
+  base with a `[@media(hover:none)]` 44 px override, so mouse density is
+  unchanged. Covered in `web/tests/e2e/touch-targets.spec.ts`.
+
+## ISSUE-20 — MINOR — Composer breaks at 200% text size
+
+- **Source:** F11
+- **Standard:** UI-TYPE-3 (WCAG 1.4.4)
+- **Screenshots:** `m390/light/welcome__text200.png`, `m390/light/thread__text200.png`
+- **Observation:** With the root font at 200%, the composer broke. The
+  auto-grown textarea did not re-fit its changed box, its cap was not rem-based,
+  and the model pill was crushed to its padding.
+- **Status:** fixed (commits `cd66b4c`, `a720b7c`)
+- **Fix:** `web/src/components/chat/composer.tsx` — the textarea re-fits when its box
+  changes, uses a rem-based cap, and the toolbar wraps.
+  `web/src/components/chat/model-mode-picker.tsx` gives the pill's rem width
+  budget a floor (`cd66b4c`). `a720b7c` gives the picker a zero-basis, 6rem-floor
+  wrapper, so the row wraps only at 200% text and not on a long label at 100%.
+  Covered in `web/tests/e2e/composer-extras.spec.ts`.
+
+## ISSUE-21 — MINOR — Code-block and table scrollers not keyboard-reachable
+
+- **Source:** F12
+- **Standard:** UI-FOCUS-1, UI-LAYOUT-2
+- **Screenshots:** `d1440/light/thread-rich-code.png`, `d1440/light/thread-rich-table.png`
+- **Observation:** A long code line or a wide table scrolled horizontally with
+  no way to reach the scroller from the keyboard (axe
+  `scrollable-region-focusable`).
+- **Status:** fixed (commits `934fd8f`, `97fb905`)
+- **Fix:** `web/src/components/chat/markdown-renderer.tsx` and
+  `web/src/app/globals.css` — a scroller that overflows gets `tabIndex=0`, a
+  name and `role=region` (unless it is the table itself), plus a focus ring. It
+  leaves the Tab order once its content fits (`934fd8f`). `97fb905` syncs on a
+  150 ms trailing debounce instead of every streamed frame, and keeps a focused
+  region's tabindex until focus leaves. Covered in
+  `web/tests/e2e/a11y-structure.spec.ts` (`cd7bf0b`, `97fb905`).
+
+## ISSUE-22 — MINOR — Toast stack list markup invalid
+
+- **Source:** F13
+- **Standard:** no clause asserts list semantics. The axe gate is PRD 06 §7 AC 4, recorded as §15 C5. The toasts' live-region roles are UI-STATE-2's.
+- **Screenshots:** harness axe probe (`list` rule) at d1440; the raw findings do not record the surface
+- **Observation:** Each toast is a status or alert live region. An `<li>`
+  carrying that role loses its `listitem` role, so the `<ol>` had no valid
+  children (axe `list`).
+- **Status:** fixed (commit `af11472`)
+- **Fix:** `web/src/components/ui/toast.tsx` — the stack renders without list markup.
+  `web/tests/e2e/ui-primitives.spec.ts` was updated to match, and
+  `web/tests/e2e/a11y-structure.spec.ts` covers it (`cd7bf0b`).
+
+## ISSUE-23 — MINOR — Model picker nests a switch inside a button
+
+- **Source:** F14
+- **Standard:** UI-FOCUS-1 (the desktop Advanced trigger was unreachable by keyboard); UI-FOCUS-12 for the row's name. The axe gate is §15 C5.
+- **Screenshots:** `m390/light/model-picker.png`, `d1440/light/model-picker-advanced.png`
+- **Observation:** In the mobile sheet, each toggle row was a button containing
+  an `aria-hidden` Switch (axe `nested-interactive`). In the desktop menu, the
+  Advanced collapsible trigger was a bare button inside `role=menu` (axe
+  `aria-required-children`). At `tabIndex=-1`, outside the menu's roving focus,
+  it could not be reached by keyboard.
+- **Status:** fixed (commit `1b45caf`)
+- **Fix:** `web/src/components/chat/model-mode-picker.tsx` — the row is the only
+  control: a `role=switch` named by its visible label, with a decorative track.
+  Advanced renders as a menu item. Covered in
+  `web/tests/e2e/a11y-structure.spec.ts` (`cd7bf0b`).
+
+## ISSUE-24 — NIT — Double divider under Platform credits
+
+- **Source:** F15
+- **Standard:** no clause names a doubled rule. This is a visual-craft NIT in the UI-CRAFT family.
+- **Screenshots:** `d1440/light/settings-general.png`
+- **Observation:** Two rules were stacked under Platform credits. The Monthly
+  budget cap editor drew its own top border, and the budget group's wrapper
+  already drew one.
+- **Status:** fixed (commit `cd66b4c`; test fixed in `62bb2ac`)
+- **Fix:** `web/src/components/chat/settings-dialog.tsx` — drops the editor's own top
+  rule. Covered in `web/tests/e2e/bootstrap.spec.ts`. `62bb2ac` makes that
+  assertion filter on border width, because the original `border-left-style`
+  check passed without testing anything (Tailwind preflight sets every side to
+  `solid`).
+
+## ISSUE-25 — NIT — Missing space in run-cost meter ("$0.0001/ $1.00")
+
+- **Source:** F16
+- **Standard:** no clause asserts the spacing. The figure is a cost display under UI-TRUST-4.
+- **Screenshots:** `d1440/light/deep-research-done.png`
+- **Observation:** The run-cost meter painted "$0.0001/ $1.00". The leading space
+  before "/ cap" sat at the start of a flex item, where it collapsed.
+- **Status:** fixed (commit `cd66b4c`)
+- **Fix:** `web/src/components/chat/subagent-panel.tsx` — a margin replaces the text
+  space. The pill stays on one line, and the panel header wraps at narrow
+  widths. Covered in `web/tests/e2e/agentic.spec.ts`.
+
+## ISSUE-26 — NIT — Mobile drawer's bottom strip is a mismatched color
+
+- **Source:** F17
+- **Standard:** UI-MOBILE-2 (the inset is honoured, but it is painted in a different surface color)
+- **Screenshots:** `m390/light/drawer.png`, `m390/dark/drawer.png`
+- **Observation:** The drawer carried the safe-area padding itself. The strip
+  below the opaque sidebar therefore showed the drawer's translucent glass, in a
+  different color.
+- **Status:** fixed (commit `8bb5c87`)
+- **Fix:** `web/src/components/chat/app-shell.tsx` — the insets sit on a
+  sidebar-colored wrapper inside the drawer. Covered in
+  `web/tests/e2e/app-shell.spec.ts`, which also runs in light mode
+  (`0cd6287`).
+
+## ISSUE-27 — NIT — Model picker section headings repeat as the only row label
+
+- **Source:** F18
+- **Standard:** no clause asserts it directly. The nearest is UI-FOCUS-11: each toggle got a heading that only repeated its row's label.
+- **Screenshots:** `m390/light/model-picker.png`
+- **Observation:** In the mobile model picker, each toggle sat under its own
+  section title, and that title only repeated the row's label.
+- **Status:** fixed (commit `1b45caf`)
+- **Fix:** `web/src/components/chat/model-mode-picker.tsx` — the toggles share one
+  untitled list.
+
+## ISSUE-28 — MINOR — Settings disclosure toggles 16–20 px tall on a touch tablet
+
+- **Source:** later finding L1
+- **Standard:** UI-TOUCH-1, UI-TOUCH-5 (UI-TOUCH-4 bounds the fix)
+- **Screenshots:** `t820/light/settings-general.png`, `t820/light/settings-models.png`
+- **Observation:** The BYOK, custom-instructions, project-defaults and
+  advanced-privacy disclosure triggers in Settings measured 16–20 px tall on the
+  touch tablet.
+- **Status:** fixed (commit `f75911e`)
+- **Fix:** `web/src/components/chat/settings-dialog.tsx` — adds the
+  `[@media(hover:none)]:min-h-11` floor that Button and Checkbox use, so desktop
+  density is unchanged. Covered in `web/tests/e2e/a11y-structure.spec.ts`
+  (`9408cc6`).
+
+## ISSUE-29 — MINOR — Chat menu covers the temporary-chat banner's Turn off
+
+- **Source:** later finding L2
+- **Standard:** UI-TRUST-10 (the control that leaves the mode is obscured), UI-TOUCH-2 (axe `target-size`, partially obscured)
+- **Screenshots:** `m390/light/temporary-chat.png`
+- **Observation:** Toggling "Temporary chat" (a checkbox menu item) left the
+  chat menu open. On phones the menu then sat over the new banner and covered its
+  Turn off button (axe `target-size`, partially obscured).
+- **Status:** fixed (commit `5d20a79`)
+- **Fix:** `web/src/components/chat/app-header.tsx` — toggling Temporary chat closes
+  the menu. Covered in `web/tests/e2e/a11y-structure.spec.ts` (`9408cc6`).
+
+## ISSUE-30 — MINOR — Scrolling message overflow menu not keyboard-reachable
+
+- **Source:** later finding L3
+- **Standard:** UI-FOCUS-1
+- **Screenshots:** `m390/light/message-overflow.png`
+- **Observation:** Opened by pointer, the tall message overflow menu scrolls,
+  but no row is highlighted, so no descendant holds a tab stop. Axe reports the
+  scroller as keyboard-unreachable (`scrollable-region-focusable`).
+- **Status:** fixed (commit `756a16a`)
+- **Fix:** `web/src/components/chat/message-actions.tsx` — the popup gets `tabIndex=0`.
+  It already takes focus on open, so arrow-key and Tab behaviour are unchanged.
+  Covered in `web/tests/e2e/a11y-structure.spec.ts` (`9408cc6`).
+
+## ISSUE-31 — MINOR — Models and Shortcuts settings scrollers not keyboard-reachable
+
+- **Source:** later finding L4
+- **Standard:** UI-FOCUS-1
+- **Screenshots:** `m390/light/settings-models.png`, `m390/light/settings-shortcuts.png`
+- **Observation:** These read-only panels hold only text, so a keyboard user had
+  no focus stop from which to scroll them (axe `scrollable-region-focusable`).
+- **Status:** fixed (commit `9408cc6`)
+- **Fix:** `web/src/components/chat/model-directory-dialog.tsx` and
+  `web/src/components/chat/shortcuts-dialog.tsx` — each scroller gets a region
+  role, a name, `tabIndex=0` and an inset focus ring. Covered in
+  `web/tests/e2e/a11y-structure.spec.ts`.
+
+## ISSUE-32 — MINOR — Spend "(month-to-date)" caption at 3.37:1
+
+- **Source:** later finding L5
+- **Standard:** UI-COLOR-3
+- **Screenshots:** `d1440/light/settings-general.png`
+- **Observation:** The "(month-to-date)" caption in the Settings spend panel
+  faded the muted token with `opacity-70` and measured 3.37:1 (axe
+  `color-contrast`). ISSUE-17 did not cover this site.
+- **Status:** fixed (commit `dedd921`)
+- **Fix:** `web/src/components/chat/spend-analytics-panel.tsx` — full-strength
+  `text-muted-foreground` in both themes. Covered in
+  `web/tests/e2e/a11y-structure.spec.ts`.
+
+## ISSUE-33 — MINOR — Citation touch hit areas overlap neighbours
+
+- **Source:** later finding, from verifying ISSUE-18
+- **Standard:** UI-TOUCH-3; resolved against UI-TOUCH-1 by UI_STANDARDS §15 C50
+- **Screenshots:** harness surface `web-search` at m390
+- **Observation:** ISSUE-18's 44 px touch hit-slop introduced two overlaps.
+  Across a run like `[1][2]`, adjacent slops overlapped, so a tap on the right of
+  `[1]` opened source 2. The 44 px-tall slop also reached about 9 px into the
+  28 px prose lines above and below, where it took taps from links and from
+  citations on neighbouring lines.
+- **Status:** fixed (commits `5c91983`, `d9c5961`; standard ruling `2da0ca7`)
+- **Fix:** `web/src/components/chat/citation-rehype.ts` flags a marker that
+  directly follows another. On touch, `web/src/components/chat/markdown-renderer.tsx`
+  pushes that marker clear of its neighbour's slop (`5c91983`). The touch slop
+  stops at the 28 px line box, and a following marker starts its pointer slop at
+  its own edge (`d9c5961`). `docs/design/UI_STANDARDS.md` §15 C50 records the
+  exception: an inline citation's touch hit area is at least 44 px wide and
+  exactly its line box tall (`2da0ca7`). Covered in
+  `web/tests/e2e/touch-targets.spec.ts`.
+
+### 2026-09-23 run — known, not counted
+
+Seen in the run and already on record, so not logged as new issues (per the
+findings file):
+
+- **"Fast" tier label wraps under the substitution capsule** on narrow
+  threads. This is the W2 triage deferral above, still deferred.
+- **§15 C40** — code-block controls draw Streamdown's own icon family
+  (UI-CRAFT-4). Already registered as failing.
+- **§15 C48** — toasts close on a clock the user cannot stop (UI-STATE-8).
+  Already registered as failing.
+- **§15 C15** — print clips the thread (UI-PREF-5). Already registered.
+
 ## Harness caveats
 
 These bound what the captures can and cannot prove. None are product bugs.
@@ -285,3 +679,6 @@ These bound what the captures can and cannot prove. None are product bugs.
 - **Fix pass (2026-07-07):** ISSUE-6/7 fixed in commit `e58e977`, ISSUE-8 fixed in
   commit `9744e92` (branch `cursor/ui-ux-sweep-fixes-10db`); ISSUE-9 skipped
   (refuted, per ISSUE-4 precedent).
+- **Fix pass (2026-09-23/24):** ISSUE-11–33 fixed on branch
+  `claude/ui-optimization-playwright-iju8tj` (commits cited per entry);
+  ISSUE-10 fix in review on a separate branch.

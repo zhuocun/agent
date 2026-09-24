@@ -86,7 +86,10 @@ export function WelcomeScreen({
         : PROMPTS;
 
   return (
-    <div className="flex h-full flex-col items-center justify-center px-4">
+    // `justify-center-safe`: centered while the hero fits, start-aligned once
+    // it is taller than the scroll area (320x640), so it overflows downward
+    // into the scroller instead of upward under the header, out of reach.
+    <div className="flex h-full flex-col items-center justify-center-safe px-4">
       <div
         className={
           exiting

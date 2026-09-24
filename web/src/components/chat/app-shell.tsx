@@ -119,12 +119,19 @@ export function AppShell({
       </aside>
 
       <Drawer open={mobileNavOpen} onOpenChange={handleMobileNavOpenChange}>
+        {/* The sidebar paints an opaque `bg-sidebar` (its rows need it to mask
+            the swipe tray), so the drawer's own safe-area padding would show
+            the translucent drawer glass as a mismatched strip. The insets move
+            onto an inner sidebar-colored wrapper instead, so the whole drawer
+            reads as one surface in every theme and transparency mode. */}
         <DrawerContent
           side="left"
           showClose={true}
-          className="w-72 pl-[env(safe-area-inset-left)]"
+          className="w-72 pt-0 pb-0"
         >
-          {sidebar}
+          <div className="flex h-full min-h-0 flex-col rounded-[inherit] bg-sidebar pt-[env(safe-area-inset-top)] pb-[var(--bottom-inset)] pl-[env(safe-area-inset-left)]">
+            {sidebar}
+          </div>
         </DrawerContent>
       </Drawer>
 

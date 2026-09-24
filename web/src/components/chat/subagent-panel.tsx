@@ -249,7 +249,7 @@ function RunCostMeter({ runCost }: { runCost: RunCostState }) {
       {prefix}
       {formatUsdMeter(runCost.subtotalUsd)}
       {runCost.capUsd > 0 ? (
-        <span className="text-muted-foreground/70">
+        <span className="text-muted-foreground">
           {" "}
           / {formatUsdMeter(runCost.capUsd)}
         </span>

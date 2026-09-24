@@ -134,7 +134,7 @@ function WebSearchRunRow({ run }: { run: ToolRun }) {
     case "cancelled":
       icon = <CircleDashed aria-hidden className="mt-0.5 size-3.5 shrink-0" />;
       statusSuffix = (
-        <span className="text-muted-foreground/70"> · cancelled</span>
+        <span className="text-muted-foreground"> · cancelled</span>
       );
       break;
     default: {

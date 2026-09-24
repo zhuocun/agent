@@ -27,7 +27,6 @@ import {
   reloadIntoConversation,
   snapshotAgenticTurn,
   waitForBootstrap,
-  type AgenticTurnSnapshot,
 } from "./helpers";
 
 // Flip the Deep Research toggle ON via the model-mode picker (desktop
@@ -740,81 +739,41 @@ test.describe("agentic mode (deep research)", () => {
     await page.goto("/");
     await waitForBootstrap(page);
     await enableDeepResearch(page);
-    // Web search widens the per-worker window well past the bare fake
-    // provider's ~100ms fan-out, so the Stop lands mid-flight rather than
-    // racing the workers to completion.
+    // Workers also run their search transcript, so the cut-off rows carry
+    // nested activity, as a real mid-search Stop would.
     await enableWebSearch(page);
 
-    // A stop is a race against the fan-out by nature, so retry the whole
-    // produce-then-stop on a fresh chat until one lands mid-flight — the same
-    // recovery shape streaming.spec.ts uses for its stop test. A fan-out that
-    // finishes first simply recycles instead of failing the assertion.
-    // `stopped` is the attempt that caught a worker in flight; `greenAfterStop`
-    // records a turn the BE confirmed as `stopped` whose rows nonetheless all
-    // claimed success — the FE-4 defect, which the failure message must
-    // distinguish from simply losing the race.
-    let stopped: AgenticTurnSnapshot | null = null;
-    let greenAfterStop: AgenticTurnSnapshot | null = null;
-    for (let attempt = 0; stopped === null && attempt < 6; attempt++) {
-      if (attempt > 0) {
-        await page.getByRole("button", { name: "New chat" }).first().click();
-        await expect(page.getByTestId("user-message-text")).toHaveCount(0);
-      }
-      await sendAndPauseOnPlan(
-        page,
-        "DEEP_RESEARCH: alpha topic | beta topic | gamma topic",
-      );
-      await page
-        .getByTestId("assistant-message")
-        .last()
-        .getByTestId("tool-approve")
-        .click();
+    // `HOLD_WORKER` keeps every worker in flight until Stop cancels the
+    // fan-out (see the fake provider), so Stop always lands mid fan-out on
+    // the first attempt instead of racing the workers to completion.
+    await sendAndPauseOnPlan(
+      page,
+      "DEEP_RESEARCH: HOLD_WORKER alpha topic | HOLD_WORKER beta topic | HOLD_WORKER gamma topic",
+    );
+    await page
+      .getByTestId("assistant-message")
+      .last()
+      .getByTestId("tool-approve")
+      .click();
 
-      const live = page.getByTestId("assistant-message").last();
-      try {
-        await expect(live.getByTestId("subagent-row").first()).toBeVisible({
-          timeout: 10_000,
-        });
-        // Short timeout: if the fan-out already settled the button is gone and
-        // this attempt recycles.
-        await page
-          .getByRole("button", { name: "Stop generating" })
-          .click({ timeout: 5_000 });
-        await expect(live).toHaveAttribute("data-status", /stopped|done/, {
-          timeout: 20_000,
-        });
-      } catch {
-        continue;
-      }
-      const snapshot = await snapshotAgenticTurn(live);
-      // Only an attempt that actually caught a worker in flight proves the fix;
-      // a fan-out that reached `done` on its own has every row legitimately
-      // `succeeded` and simply recycles.
-      if (snapshot.rows.some((r) => r.outcome === "cancelled")) {
-        stopped = snapshot;
-      } else if (
-        snapshot.rows.length > 0 &&
-        (await live.getAttribute("data-status")) === "stopped"
-      ) {
-        greenAfterStop = snapshot;
-      }
-    }
+    const live = page.getByTestId("assistant-message").last();
+    await expect(live.getByTestId("subagent-row")).toHaveCount(3, {
+      timeout: 10_000,
+    });
+    await page.getByRole("button", { name: "Stop generating" }).click();
+    await expect(live).toHaveAttribute("data-status", "stopped", {
+      timeout: 20_000,
+    });
 
-    // A green check on every row of a turn the BE marked `stopped` is the FE-4
-    // defect itself, not a missed race — say so rather than blaming the timing.
-    expect(
-      stopped,
-      greenAfterStop
-        ? `turn stopped but every row still claimed success: ${JSON.stringify(greenAfterStop.rows)}`
-        : "no Stop landed mid fan-out in 6 attempts",
-    ).not.toBeNull();
     // Every row is accounted for as cut off, and none claims success: a worker
     // that never reported a terminal must not settle on the green check.
-    expect(stopped!.rows.map((r) => r.outcome)).toEqual(
-      stopped!.rows.map(() => "cancelled"),
-    );
+    const stopped = await snapshotAgenticTurn(live);
+    expect(
+      stopped.rows.map((r) => r.outcome),
+      `turn stopped but rows claimed: ${JSON.stringify(stopped.rows)}`,
+    ).toEqual(["cancelled", "cancelled", "cancelled"]);
     await expect(
-      page.getByTestId("assistant-message").last().getByTestId("subagent-outcome-succeeded"),
+      live.getByTestId("subagent-outcome-succeeded"),
     ).toHaveCount(0);
   });
 

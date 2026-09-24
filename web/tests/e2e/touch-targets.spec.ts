@@ -33,6 +33,22 @@ async function expectFloor(locator: Locator, floor: number): Promise<void> {
   expect(h, "hit region height").toBeGreaterThanOrEqual(floor);
 }
 
+// An inline citation sits in 28 px prose leading. Its touch hit region is
+// 44 px wide but stops at the line box, so it never reaches the lines above
+// and below (UI-TOUCH-3; the inline-target exception in UI_STANDARDS §15 C50).
+async function expectInlineCitationFloor(locator: Locator): Promise<void> {
+  await expect(locator).toBeVisible();
+  const { w, h } = await hitRegion(locator);
+  const lineBox = await locator.evaluate((el) =>
+    parseFloat(getComputedStyle(el.parentElement ?? el).lineHeight),
+  );
+  expect(w, "hit region width").toBeGreaterThanOrEqual(44);
+  expect(h, "hit region height").toBeGreaterThanOrEqual(24);
+  expect(h, "hit region height stays inside the line box").toBeLessThanOrEqual(
+    lineBox + 0.5,
+  );
+}
+
 async function sendWebSearchTurn(page: Page): Promise<Locator> {
   await modelModeTrigger(page).click();
   await page.getByTestId("picker-advanced").click();
@@ -77,7 +93,7 @@ test.describe("touch tablet target floor", () => {
     await waitForBootstrap(page);
     const assistant = await sendWebSearchTurn(page);
 
-    await expectFloor(assistant.getByTestId("citation-marker").first(), 44);
+    await expectInlineCitationFloor(assistant.getByTestId("citation-marker").first());
     await expectFloor(
       assistant.getByTestId("reasoning-panel").getByRole("button").first(),
       44,
@@ -98,11 +114,11 @@ test.describe("phone target floor", () => {
     isMobile: true,
   });
 
-  test("citation markers reach 44 px on a phone", async ({ page }) => {
+  test("citation markers reach 44 px wide within the line box on a phone", async ({ page }) => {
     await page.goto("/");
     await waitForBootstrap(page);
     const assistant = await sendWebSearchTurn(page);
-    await expectFloor(assistant.getByTestId("citation-marker").first(), 44);
+    await expectInlineCitationFloor(assistant.getByTestId("citation-marker").first());
   });
 
   test("adjacent citation markers keep their touch hit areas apart", async ({

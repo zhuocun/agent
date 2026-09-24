@@ -127,10 +127,14 @@ function CitationChip({
         "inline-flex items-baseline align-baseline rounded px-0.5 text-[0.85em] font-medium leading-none",
         // Hit-slop: the painted chip is ~22x13 px. An invisible ::before grows
         // the clickable region to the 24 px pointer floor (UI-TOUCH-2) and, on
-        // touch, to the 44 px floor (UI-TOUCH-1) without changing the type size
-        // or the line box.
+        // touch, to 44 px wide without changing the type size or the line box.
+        // On touch its height stops at the 28 px prose line box, so it never
+        // takes taps from the line above or below (UI-TOUCH-3, §15 C50).
         "relative before:absolute before:-inset-x-0.5 before:-inset-y-1.5 before:content-['']",
-        "[@media(hover:none)]:before:-inset-x-[11px] [@media(hover:none)]:before:-inset-y-4",
+        // A marker that follows another starts its slop at its own edge, so
+        // two pointer slops never overlap.
+        adjacent && "before:left-0",
+        "[@media(hover:none)]:before:-inset-x-[11px] [@media(hover:none)]:before:top-[calc((100%-1.75rem)/2)] [@media(hover:none)]:before:bottom-[calc((100%-1.75rem)/2)]",
         // Two touch hit-slops of 11 px would overlap across a run like
         // `[1][2]`, so a tap on the right of [1] opened source 2
         // (UI-TOUCH-3). On touch, a marker that follows another is pushed

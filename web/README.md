@@ -83,6 +83,22 @@ browser-reachable code. Artifacts land in `web/coverage/` (`lcov.info`,
 `coverage-summary.json`, `index.html`). CI runs this in the `web-coverage` job
 and uploads the lcov report.
 
+### UI audit
+
+`pnpm audit:ui` runs the Playwright audit harness in `tests/audit/` against a
+production build in `.next-audit`. It walks every surface at five viewports
+(d1440, d1024, t820, m390, m320) in light and dark, and it runs automated
+probes for the `docs/design/UI_STANDARDS.md` clauses. Screenshots and
+`probes.md` / `probes.json` land in `test-results/audit/`.
+
+```bash
+pnpm audit:ui                                   # build, then capture + probe
+AUDIT_ONLY=m390 AUDIT_THEMES=light pnpm audit:ui:nobuild   # reuse the build, filter
+```
+
+It binds ports 3000 and 8000 like `pnpm test:e2e`, so do not run both at once.
+Findings are logged in `docs/design/audits/ISSUES.md`.
+
 ## Deploy
 
 Production deploys are handled by the Vercel GitHub integration for this repo,

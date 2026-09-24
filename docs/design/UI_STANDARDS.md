@@ -897,3 +897,4 @@ Recorded while writing this document. Each entry names the disagreement, the rul
 4. For each `[must]` failure, file the defect against the clause ID. For each `[should]` deviation, require a rationale entry per `docs/design/04-rationale.md` before approval.
 5. Re-run UI-PERF-1 (`pnpm check:bundle`) and UI-PERF-7 (`pnpm test:e2e:coverage && pnpm coverage:report`) on any PR that adds a dependency or a component.
 6. Anything this document cannot decide goes in §15, not into the reviewer's judgment.
+7. For a review that spans surfaces, run `pnpm audit:ui` in `web/` first (see `web/README.md` "UI audit"). It captures every surface at five viewports in both themes and writes the automated probe results (overflow, target size, axe WCAG 2.2 AA, focus visibility, CLS, spacing) to `web/test-results/audit/probes.md`. A probe hit is a lead to check against the clause, not a finding.

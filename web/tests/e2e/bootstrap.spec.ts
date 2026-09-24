@@ -120,16 +120,18 @@ test.describe("bootstrap", () => {
           .filter((n) => {
             if (n.closest('[data-testid="spend-analytics-panel"]')) return false;
             const cs = getComputedStyle(n);
+            // Preflight gives every side a solid style, so width decides.
             return (
               cs.borderTopStyle !== "none" &&
               parseFloat(cs.borderTopWidth) > 0 &&
-              cs.borderLeftStyle === "none"
+              parseFloat(cs.borderLeftWidth) === 0
             );
           })
           .map((n) => n.getBoundingClientRect().top)
           .sort((a, b) => a - b);
         return tops.slice(1).map((t, i) => t - tops[i]);
       });
+    expect(ruleGaps.length).toBeGreaterThan(0);
     expect(ruleGaps.every((gap) => gap > 24)).toBe(true);
   });
 

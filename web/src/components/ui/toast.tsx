@@ -179,9 +179,8 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
           </p>
         ) : null}
         {
-          /* No consumer supplies toast `actions`, so the action row and its
-             click handler are unreachable through real flows. */
-          /* istanbul ignore next */
+          // Actions render as a row of text buttons; each dismisses the toast
+          // after running (e.g. chat-thread's "Send again" on a 409 send).
           toast.actions && toast.actions.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-3">
               {toast.actions.map((action, index) => (

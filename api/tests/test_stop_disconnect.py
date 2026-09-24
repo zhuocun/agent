@@ -191,3 +191,63 @@ async def test_send_right_after_stop_waits_for_teardown_instead_of_409(
 
     statuses = sorted(row.status for row in await _stream_rows(session_factory, conversation_id))
     assert statuses == ["done", "stopped"]
+
+
+class _NeverDisconnected:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+async def test_inline_driver_is_cancelled_when_the_stop_grace_runs_out(
+    monkeypatch: Any,
+) -> None:
+    """A handler that never reaches its disconnect poll (e.g. stuck in setup)
+    must not outlive the request: past the grace it is cancelled and joined."""
+    from sse_starlette import ServerSentEvent
+
+    from app.streaming import handler as handler_mod
+
+    cancelled = asyncio.Event()
+
+    async def _stuck_handler(**_kwargs: Any) -> Any:
+        yield ServerSentEvent(data="{}", event="submitted")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(handler_mod, "stream_and_persist", _stuck_handler)
+    monkeypatch.setattr(handler_mod, "_INLINE_STOP_GRACE_SECONDS", 0.2)
+
+    body = handler_mod.stream_inline_turn(request=_NeverDisconnected())  # type: ignore[arg-type]
+    first = await body.__anext__()
+    assert first.event == "submitted"
+    await asyncio.wait_for(body.aclose(), timeout=5)  # the client went away
+
+    assert cancelled.is_set()
+    assert not handler_mod._INLINE_TURN_TASKS
+
+
+async def test_inline_driver_is_paced_by_the_consumer(monkeypatch: Any) -> None:
+    """Backpressure: the handler must not run ahead of what the client read,
+    or a stopped partial could hold text the client was never sent."""
+    from sse_starlette import ServerSentEvent
+
+    from app.streaming import handler as handler_mod
+
+    produced = 0
+
+    async def _chatty_handler(**_kwargs: Any) -> Any:
+        nonlocal produced
+        for i in range(50):
+            produced += 1
+            yield ServerSentEvent(data=str(i), event="answer_delta")
+
+    monkeypatch.setattr(handler_mod, "stream_and_persist", _chatty_handler)
+    body = handler_mod.stream_inline_turn(request=_NeverDisconnected())  # type: ignore[arg-type]
+    await body.__anext__()
+    await asyncio.sleep(0.1)
+    # One frame read, at most one queued and one in hand at the handler.
+    assert produced <= 3
+    await body.aclose()

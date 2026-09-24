@@ -120,6 +120,11 @@ interface ComposerProps {
 
 export interface ComposerHandle {
   setDraft: (text: string) => void;
+  // Current draft text (what the textarea holds right now).
+  getDraft: () => string;
+  // Put a rejected send's text + attachments back, but ONLY into an empty
+  // composer — never over something typed since. True when it restored.
+  restoreDraft: (text: string, attachments: AttachmentPart[]) => boolean;
   clearAttachments: (reason?: "unsupported" | "manual") => void;
   focus: () => void;
   // Toggle on-device dictation (STT). No-op when the browser lacks the Web
@@ -695,6 +700,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           ta.focus();
           requestAnimationFrame(autoGrow);
         }
+      },
+      getDraft: () => valueRef.current,
+      restoreDraft: (text: string, restored: AttachmentPart[]) => {
+        if (valueRef.current.trim() !== "" || attachments.length > 0) {
+          return false;
+        }
+        prevValueRef.current = text;
+        valueRef.current = text;
+        setValue(text);
+        setAttachments(restored);
+        const ta = ref.current;
+        if (ta) {
+          ta.focus();
+          requestAnimationFrame(autoGrow);
+        }
+        return true;
       },
       clearAttachments,
       focus: () => {

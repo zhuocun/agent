@@ -1213,17 +1213,34 @@ export function ChatThread() {
       });
       return;
     }
-    composerRef.current?.setDraft(rejected.text);
-    setLiveMessage("Message not sent. It is back in the composer.");
+    // Restore only into an empty composer: anything typed during the 409
+    // round-trip wins, and the toast still carries the message.
+    const restored =
+      composerRef.current?.restoreDraft(rejected.text, rejected.attachments) ??
+      false;
+    setLiveMessage(
+      restored
+        ? "Message not sent. It is back in the composer."
+        : "Message not sent.",
+    );
     showToast({
       severity: "warning",
       title: "Message not sent",
-      body: "The previous response was still finishing. Your message is back in the composer.",
+      body: restored
+        ? "The previous response was still finishing. Your message is back in the composer."
+        : "The previous response was still finishing.",
       actions: [
         {
           label: "Send again",
           onClick: () => {
-            composerRef.current?.setDraft("");
+            const composer = composerRef.current;
+            if (restored) {
+              // Edited or already re-sent from the composer: that copy is the
+              // user's, so don't clear it or send a second one.
+              if (!composer || composer.getDraft() !== rejected.text) return;
+              composer.setDraft("");
+              composer.clearAttachments();
+            }
             handleSendRef.current?.(rejected.text, rejected.attachments);
           },
         },

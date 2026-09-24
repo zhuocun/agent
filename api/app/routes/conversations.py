@@ -440,16 +440,28 @@ async def _await_stopping_stream_release(db: AsyncSession, stream_id: UUID) -> b
     window. Waiting only while a stop is requested keeps a genuinely streaming
     turn an immediate 409. Probes on fresh sessions: the request session's own
     transaction may not see the other session's commit.
+
+    Best-effort across machines: the stop flag lives in the in-process
+    registry unless the Redis stop store is configured, so behind several
+    machines a send that lands on a machine other than the one that took
+    `POST /stop` sees no flag and 409s at once. The FE keeps the draft and
+    offers "Send again" for exactly that case.
     """
     factory = RuntimeContext.from_session(db).session_factory
-    deadline = time.monotonic() + _STOPPING_STREAM_GRACE_SECONDS
-    while True:
+
+    async def _released() -> bool:
         async with factory() as probe:
             row = await streams_repo.get_by_id(probe, stream_id=stream_id)
-        if row is None or row.status != "active":
+        return row is None or row.status != "active"
+
+    deadline = time.monotonic() + _STOPPING_STREAM_GRACE_SECONDS
+    while True:
+        if await _released():
             return True
         if not await is_stop_requested_async(stream_id):
-            return False
+            # The old turn may have committed and cleared its flag between the
+            # two reads above; look at the row once more before refusing.
+            return await _released()
         if time.monotonic() >= deadline:
             return False
         await asyncio.sleep(_STOPPING_STREAM_POLL_SECONDS)

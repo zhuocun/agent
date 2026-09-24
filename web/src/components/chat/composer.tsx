@@ -128,7 +128,17 @@ export interface ComposerHandle {
   toggleDictation: () => void;
 }
 
+// Fallback cap (px) for the auto-grown textarea when its computed `max-height`
+// cannot be read. The live cap is the rem-based class on the textarea, so it
+// scales with the user's text size (WCAG 1.4.4).
 const MAX_HEIGHT = 200;
+
+// Size a textarea to its content, capped at its computed `max-height`.
+function fitTextareaHeight(ta: HTMLTextAreaElement): void {
+  const cap = Number.parseFloat(getComputedStyle(ta).maxHeight) || MAX_HEIGHT;
+  ta.style.height = "auto";
+  ta.style.height = `${Math.min(ta.scrollHeight, cap)}px`;
+}
 const STOP_SETTLE_MS = 600;
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -460,9 +470,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     const autoGrow = useCallback(() => {
       const ta = ref.current;
       if (!ta) return;
-      ta.style.height = "auto";
-      ta.style.height = `${Math.min(ta.scrollHeight, MAX_HEIGHT)}px`;
+      fitTextareaHeight(ta);
     }, []);
+
+    // The grown height is a px snapshot, so re-fit when the box changes under
+    // it: a narrower width re-wraps the text, and a larger root font (browser
+    // text size, WCAG 1.4.4) grows the rem padding and line height, which
+    // otherwise clips the text inside the stale height. Deferred a frame so
+    // the resize the re-fit causes is not delivered inside this callback.
+    useEffect(() => {
+      const ta = ref.current;
+      if (!ta || typeof ResizeObserver === "undefined") return;
+      let frame = 0;
+      const observer = new ResizeObserver(() => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(autoGrow);
+      });
+      observer.observe(ta);
+      return () => {
+        cancelAnimationFrame(frame);
+        observer.disconnect();
+      };
+    }, [autoGrow]);
 
     const updateValue = (next: string) => {
       const prev = prevValueRef.current;
@@ -594,8 +623,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       requestAnimationFrame(() => {
         const ta = ref.current;
         if (!ta) return;
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, MAX_HEIGHT)}px`;
+        fitTextareaHeight(ta);
         const end = ta.value.length;
         ta.setSelectionRange(end, end);
       });
@@ -1303,7 +1331,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             aria-expanded={comboboxOpen}
             aria-controls={comboboxControls}
             aria-activedescendant={comboboxActiveOptionId}
-            className="block max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
+            className="block max-h-[12.5rem] min-h-11 w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
           />
           {/* Toolbar row beneath the textarea: the "+" disclosure and the
             model/mode picker sit left; the quick mic and the circular
@@ -1311,8 +1339,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             Templates / Dictate) still lives behind the single "More actions"
             ("+") disclosure, mounted in ONE place so there are never duplicate
             testid hooks or stray hidden tab stops. The disclosure expands with
-            a zoom/fade; motion-reduce makes the open instant. */}
-          <div className="flex min-w-0 items-center gap-1 [@media(hover:none)]:gap-2">
+            a zoom/fade; motion-reduce makes the open instant. At 200% text
+            the row cannot hold all four controls, so it wraps (WCAG 1.4.4). */}
+          <div className="flex min-w-0 flex-wrap items-center gap-1 [@media(hover:none)]:gap-2">
             {(() => {
                 const moreActionsTrigger = (
                   <Button
@@ -1431,9 +1460,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               })()}
             {/* Model/mode picker — the same component the header used to host
               (every testid/aria contract intact), now sitting in the toolbar
-              like a Lovable-style model dropdown. */}
+              like a Lovable-style model dropdown. A zero basis with a 6rem
+              floor makes the row wrap only when even 6rem cannot fit (200%
+              text); otherwise a long label truncates on one row. */}
             {modelPicker ? (
-              <div className="flex min-w-0 items-center">{modelPicker}</div>
+              <div className="flex min-w-[6rem] flex-1 basis-0 items-center">
+                {modelPicker}
+              </div>
             ) : null}
             <div className="ml-auto flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
               <Tooltip>

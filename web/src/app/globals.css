@@ -861,6 +861,14 @@
     @apply block max-w-full overflow-x-auto;
     overscroll-behavior-x: contain;
   }
+  /* `.chat-md`'s `overflow-wrap: anywhere` shrinks a cell's min-content width
+     to one character, so auto table layout squeezes every column to fit and
+     breaks words mid-letter instead of letting the table scroll. Cells wrap at
+     word boundaries only; a table wider than the column scrolls in its own
+     container (UI-LAYOUT-2). Prose keeps `anywhere` (UI-LAYOUT-11). */
+  .chat-md :where(th, td) {
+    overflow-wrap: normal;
+  }
   .chat-md :where(ul) { @apply list-disc pl-6; }
   .chat-md :where(ol) { @apply list-decimal pl-6; }
   .chat-md :where(li):not(:first-child) { @apply mt-1; }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
 import type { MermaidConfig } from "mermaid";
 import {
   type Components,
@@ -132,6 +132,72 @@ function CitationChip({
   );
 }
 
+// Horizontal scrollers inside rendered markdown (a long code line, a wide
+// table) are unreachable by keyboard unless the scroller itself can take focus
+// (WCAG 2.1.1; axe scrollable-region-focusable). Streamdown owns that markup
+// and gives no hook for it, so the scrollers are marked after render: any
+// code-block or table box whose content overflows gets tabIndex=0 and a name,
+// plus role=region unless it is the <table> itself, which keeps its table
+// role. The marking tracks overflow, so a block that fits stays out of the
+// Tab order.
+const SCROLL_CANDIDATES =
+  'pre, table, [data-streamdown="code-block-body"], div:has(> table)';
+const SCROLL_MARK = "data-scroll-region";
+
+function syncScrollRegions(root: HTMLElement): void {
+  for (const el of root.querySelectorAll<HTMLElement>(SCROLL_CANDIDATES)) {
+    const ox = getComputedStyle(el).overflowX;
+    const overflows =
+      (ox === "auto" || ox === "scroll") && el.scrollWidth > el.clientWidth + 1;
+    if (overflows === el.hasAttribute(SCROLL_MARK)) continue;
+    if (!overflows) {
+      el.removeAttribute(SCROLL_MARK);
+      el.removeAttribute("tabindex");
+      el.removeAttribute("aria-label");
+      if (el.getAttribute("role") === "region") el.removeAttribute("role");
+      continue;
+    }
+    const isTable = el.tagName === "TABLE" || !!el.querySelector(":scope > table");
+    const lang = el.closest("[data-language]")?.getAttribute("data-language");
+    el.setAttribute(SCROLL_MARK, "");
+    el.setAttribute("tabindex", "0");
+    if (el.tagName !== "TABLE") el.setAttribute("role", "region");
+    el.setAttribute(
+      "aria-label",
+      isTable ? "Scrollable table" : lang ? `Scrollable ${lang} code` : "Scrollable code",
+    );
+  }
+}
+
+function useScrollRegions(ref: RefObject<HTMLElement | null>): void {
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        syncScrollRegions(root);
+      });
+    };
+    schedule();
+    // Streaming appends content and highlighting swaps the code body in
+    // later, so re-check on DOM changes as well as on width changes.
+    const mo = new MutationObserver(schedule);
+    mo.observe(root, { childList: true, subtree: true, characterData: true });
+    const ro = new ResizeObserver(schedule);
+    // The ref host is `display: contents` and has no box to resize; watch
+    // the Streamdown root it wraps instead.
+    ro.observe(root.firstElementChild ?? root);
+    return () => {
+      mo.disconnect();
+      ro.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [ref]);
+}
+
 export function MarkdownRenderer({
   children,
   className,
@@ -148,6 +214,8 @@ export function MarkdownRenderer({
   onCitationClick?: (id: number) => void;
 }) {
   const { resolvedTheme } = useTheme();
+  const rootRef = useRef<HTMLDivElement>(null);
+  useScrollRegions(rootRef);
 
   // Final render-time net: drop any leaked tool-call markup (mirrors the BE
   // sanitizer) so persisted/edge-case leaks never display raw. Display-only —
@@ -221,16 +289,20 @@ export function MarkdownRenderer({
   }, [citationsEnabled, onCitationClick]);
 
   return (
-    <Streamdown
-      parseIncompleteMarkdown
-      controls={{ code: { download: false } }}
-      mermaid={mermaid}
-      plugins={plugins}
-      className={cn("chat-md", className)}
-      {...(rehypePlugins ? { rehypePlugins } : {})}
-      {...(components ? { components } : {})}
-    >
-      {safeChildren}
-    </Streamdown>
+    // `contents`: a ref host for useScrollRegions that adds no box, so the
+    // Streamdown root keeps its place in the parent's layout.
+    <div ref={rootRef} className="contents">
+      <Streamdown
+        parseIncompleteMarkdown
+        controls={{ code: { download: false } }}
+        mermaid={mermaid}
+        plugins={plugins}
+        className={cn("chat-md", className)}
+        {...(rehypePlugins ? { rehypePlugins } : {})}
+        {...(components ? { components } : {})}
+      >
+        {safeChildren}
+      </Streamdown>
+    </div>
   );
 }

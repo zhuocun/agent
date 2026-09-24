@@ -1460,9 +1460,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               })()}
             {/* Model/mode picker — the same component the header used to host
               (every testid/aria contract intact), now sitting in the toolbar
-              like a Lovable-style model dropdown. */}
+              like a Lovable-style model dropdown. A zero basis with a 6rem
+              floor makes the row wrap only when even 6rem cannot fit (200%
+              text); otherwise a long label truncates on one row. */}
             {modelPicker ? (
-              <div className="flex min-w-0 items-center">{modelPicker}</div>
+              <div className="flex min-w-[6rem] flex-1 basis-0 items-center">
+                {modelPicker}
+              </div>
             ) : null}
             <div className="ml-auto flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
               <Tooltip>

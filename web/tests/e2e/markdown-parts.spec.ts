@@ -147,10 +147,24 @@ test.describe("markdown tables", () => {
             if (range.getClientRects().length > 1) splitWords.push(m[0]);
           }
         }
+        // The scroll container is the table or its nearest horizontally
+        // scrollable ancestor inside the message, whichever owns overflow.
+        let scroller: HTMLElement | null = table;
+        while (scroller && scroller !== md) {
+          const ox = getComputedStyle(scroller).overflowX;
+          if (
+            (ox === "auto" || ox === "scroll") &&
+            scroller.scrollWidth > scroller.clientWidth + 1
+          )
+            break;
+          scroller = scroller.parentElement;
+        }
+        const scrolls = !!scroller && scroller !== md;
         return {
           splitWords,
-          tableScrolls: table.scrollWidth > table.clientWidth + 1,
-          overflowX: getComputedStyle(table).overflowX,
+          tableScrolls: scrolls,
+          // At 1280 the table may fit; then no scroller is required.
+          tableFits: table.scrollWidth <= md.clientWidth + 1,
           prose: { sw: p.scrollWidth, cw: p.clientWidth },
           md: { sw: md.scrollWidth, cw: md.clientWidth },
           doc: document.documentElement.scrollWidth,
@@ -159,9 +173,10 @@ test.describe("markdown tables", () => {
       });
 
       expect(result.splitWords).toEqual([]);
-      expect(result.overflowX).toBe("auto");
-      // Six columns never fit a phone column without breaking words.
+      // Six columns never fit a phone column without breaking words, so the
+      // table must scroll there; wherever it overflows, something scrolls it.
       if (width === 320) expect(result.tableScrolls).toBe(true);
+      if (!result.tableFits) expect(result.tableScrolls).toBe(true);
       // The long URL still wraps inside prose, and nothing widens the page.
       expect(result.prose.sw).toBeLessThanOrEqual(result.prose.cw + 1);
       expect(result.md.sw).toBeLessThanOrEqual(result.md.cw + 1);

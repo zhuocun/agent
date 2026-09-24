@@ -62,7 +62,7 @@ function Capability({
     <span
       className={cn(
         "inline-flex items-center gap-1 ui-caption",
-        on ? "text-foreground" : "text-muted-foreground/60",
+        on ? "text-foreground" : "text-muted-foreground",
       )}
     >
       {on ? (

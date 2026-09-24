@@ -164,8 +164,11 @@ export function AuthDialog({
 
         {/* Scroll body: in landscape / short viewports the keyboard can push the
             fields past the sheet cap, so the content scrolls within an
-            overflow-hidden flex shell rather than clipping (ST5 §c ST-8, R6). */}
-        <div className="-mr-2 min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pr-2">
+            overflow-hidden flex shell rather than clipping (ST5 §c ST-8, R6).
+            A scroller clips on both axes, so the body is padded out on every
+            side (and pulled back by equal negative margins) to leave room for
+            the 4px focus ring of a full-width field. */}
+        <div className="-mx-2 -my-1 min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-2 py-1">
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <div className="space-y-1.5">
             <label htmlFor={emailId} className="ui-list-row font-medium">

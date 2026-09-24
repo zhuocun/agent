@@ -53,7 +53,7 @@ test.describe("ui primitives via real flows", () => {
     await expect(copyItem).toBeVisible();
     await copyItem.click();
 
-    // info-severity toast renders as <li role="status" aria-label="Information">
+    // info-severity toast renders as <div role="status" aria-label="Information">
     // (scoped by the aria-label to avoid the sr-only live region). It
     // auto-dismisses after ~5s, driving the ToastItem auto-dismiss timer path.
     const toast = page.getByRole("status", { name: "Information" });
@@ -88,7 +88,7 @@ test.describe("ui primitives via real flows", () => {
     await page.getByTestId("composer-textarea").fill("This send will fail");
     await page.getByTestId("composer-send").click();
 
-    // error-severity toast renders as <li role="alert" aria-label="Error">.
+    // error-severity toast renders as <div role="alert" aria-label="Error">.
     const toast = page.getByRole("alert", { name: "Error" });
     await expect(toast).toBeVisible({ timeout: 10_000 });
 

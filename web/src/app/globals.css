@@ -872,6 +872,13 @@
   .chat-md :where(code):not(:where(pre *)) {
     @apply rounded bg-muted px-1.5 py-0.5 font-mono text-[0.875em];
   }
+  /* Overflowing code/table scrollers are made focusable by MarkdownRenderer
+     (data-scroll-region). The ring is inset because the code body wrapper
+     clips anything drawn outside the <pre>. */
+  .chat-md [data-scroll-region]:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--color-ring);
+  }
   .chat-md :where(blockquote) {
     @apply border-l-2 border-border pl-4 text-muted-foreground;
   }

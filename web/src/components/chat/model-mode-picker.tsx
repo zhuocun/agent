@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type JSX, type ReactNode } from "react";
+import { useId, useState, type JSX, type ReactNode } from "react";
 import {
   Check,
   ChevronDown,
@@ -33,7 +33,6 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Switch } from "@/components/ui/switch";
 import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type {
@@ -282,10 +281,22 @@ export function ModelModePicker({
               opens minimal; power users expand to reach them. Mirrors the
               mobile sheet's Advanced section for cross-modality parity. */}
           <Collapsible className="mt-1">
+            {/* Rendered AS a menu item: a bare <button> is not a child the
+                menu role may own (axe aria-required-children), and outside
+                the menu's roving focus it was unreachable by keyboard. */}
             <CollapsibleTrigger
-              data-testid="picker-advanced"
+              nativeButton={false}
+              role="menuitem"
+              // The menu's roving focus owns tab order; the trigger's own
+              // tabIndex=0 would otherwise pin this row as the entry point.
               tabIndex={-1}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase outline-none transition-colors [@media(hover:none)]:min-h-11 hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground"
+              render={
+                <DropdownMenuItem
+                  closeOnClick={false}
+                  data-testid="picker-advanced"
+                  className="w-full gap-1.5 px-2 py-1.5 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors"
+                />
+              }
             >
               <ChevronRight
                 aria-hidden
@@ -398,8 +409,10 @@ export function ModelModePicker({
             {/* First-level toggles — Web search + JSON output are tap-and-go
                 switches users reach for mid-prompt, so they sit OUT of Advanced
                 in the mobile sheet too. Mirrors the desktop dropdown order. */}
-            {showWebSearch ? (
-              <SheetSection title="Web search">
+            {/* One untitled list, like the desktop group: a per-toggle section
+                title only repeated the row's own label. */}
+            <SheetSection>
+              {showWebSearch ? (
                 <SheetToggleRow
                   label="Web search"
                   description="Ground answers with a live web search."
@@ -407,10 +420,8 @@ export function ModelModePicker({
                   onCheckedChange={onToggleSearch}
                   testId="web-search-toggle"
                 />
-              </SheetSection>
-            ) : null}
-            {showDeepResearch && onToggleDeepResearch ? (
-              <SheetSection title="Deep Research">
+              ) : null}
+              {showDeepResearch && onToggleDeepResearch ? (
                 <SheetToggleRow
                   label="Deep Research"
                   description="Fan out parallel research agents and synthesize their findings."
@@ -418,9 +429,7 @@ export function ModelModePicker({
                   onCheckedChange={onToggleDeepResearch}
                   testId="deep-research-toggle"
                 />
-              </SheetSection>
-            ) : null}
-            <SheetSection title="JSON output">
+              ) : null}
               <SheetToggleRow
                 label="JSON output"
                 description="Ask the model to reply with a JSON object."
@@ -654,22 +663,27 @@ function SheetSection({
   title,
   children,
 }: {
-  title: string;
+  title?: string;
   children: ReactNode;
 }): JSX.Element {
   return (
     <div className="flex flex-col">
-      <p className="px-4 pb-1 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
-        {title}
-      </p>
+      {title ? (
+        <p className="px-4 pb-1 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
+          {title}
+        </p>
+      ) : null}
       <ul className="flex flex-col">{children}</ul>
     </div>
   );
 }
 
-// Mobile sheet toggles use an explicit Switch (not the SheetRow tap-to-select
-// pattern) so on/off state updates reliably on touch — the row-style toggle
-// regressed on iOS-width viewports for Deep Research.
+// Mobile sheet toggles: the whole row is ONE control, a button carrying
+// role="switch". The row is the tap target because Base UI Switch pointer hits
+// were flaky on iOS-width sheets; nesting that Switch inside the row button
+// (even aria-hidden, tabIndex=-1) was a nested interactive control, so the
+// track and thumb here are plain decoration. The name is the visible label
+// (label-in-name) and aria-checked carries the state.
 function SheetToggleRow({
   label,
   description,
@@ -683,37 +697,54 @@ function SheetToggleRow({
   onCheckedChange: (next: boolean) => void;
   testId: string;
 }): JSX.Element {
+  const labelId = useId();
+  const descriptionId = useId();
   return (
     <li>
-      {/* The row is the tap target — Base UI Switch pointer hits were flaky on
-          iOS-width sheets (keyboard toggled fine). The Switch is visual-only. */}
       <button
         type="button"
+        role="switch"
         data-testid={testId}
-        aria-pressed={checked}
-        aria-label={`${label}: ${checked ? "on" : "off"}`}
-        onClick={() => onCheckedChange(!checked)}
+        aria-checked={checked}
+        aria-labelledby={labelId}
+        aria-describedby={description ? descriptionId : undefined}
+        onClick={() => {
+          haptic("selection");
+          onCheckedChange(!checked);
+        }}
         className={cn(
           "flex min-h-11 w-full items-center gap-3 rounded-xl px-4 py-2.5 text-left transition-colors",
           "hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           checked && "bg-foreground/[0.06]",
         )}
       >
-        <div className="min-w-0 flex-1">
-          <p className="ui-list-row font-medium text-foreground">{label}</p>
+        <span className="min-w-0 flex-1">
+          <span
+            id={labelId}
+            className="block ui-list-row font-medium text-foreground"
+          >
+            {label}
+          </span>
           {description ? (
-            <p className="mt-0.5 ui-secondary leading-snug text-muted-foreground">
+            <span
+              id={descriptionId}
+              className="mt-0.5 block ui-secondary leading-snug text-muted-foreground"
+            >
               {description}
-            </p>
+            </span>
           ) : null}
-        </div>
-        <Switch
-          checked={checked}
-          readOnly
-          tabIndex={-1}
+        </span>
+        {/* Visual twin of <Switch>: same track/thumb geometry, no semantics. */}
+        <span
           aria-hidden
-          className="pointer-events-none"
-        />
+          data-checked={checked ? "" : undefined}
+          className="inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-border bg-muted/60 transition-colors data-[checked]:border-transparent data-[checked]:bg-brand"
+        >
+          <span
+            data-checked={checked ? "" : undefined}
+            className="block size-4 translate-x-0.5 rounded-full bg-card shadow-glass-ambient transition-transform duration-[250ms] ease-ios-spring motion-reduce:duration-150 motion-reduce:ease-out data-[checked]:translate-x-4"
+          />
+        </span>
       </button>
     </li>
   );

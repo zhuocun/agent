@@ -153,7 +153,7 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
   const role = toast.severity === "error" ? "alert" : "status";
 
   return (
-    <li
+    <div
       role={role}
       aria-label={SEVERITY_LABEL[toast.severity]}
       className={cn(
@@ -209,7 +209,7 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
       >
         <X aria-hidden className="size-4" />
       </button>
-    </li>
+    </div>
   );
 }
 
@@ -241,11 +241,14 @@ export function Toaster() {
       style={mobileKeyboardStyle}
       className="pointer-events-none fixed inset-x-0 bottom-0 z-[70] flex flex-col items-center gap-2 px-4 pb-[calc(var(--bottom-inset)+5rem)] pr-[max(env(safe-area-inset-right),1rem)] pl-[max(env(safe-area-inset-left),1rem)] md:inset-x-auto md:bottom-auto md:top-0 md:right-0 md:items-end md:pt-[max(env(safe-area-inset-top),1rem)] md:pb-0"
     >
-      <ol className="flex w-full max-w-sm flex-col gap-2">
+      {/* A plain stack, not <ol>: each toast is its own status/alert live
+          region, and an <li> carrying role=status loses its listitem role,
+          leaving the list with no valid children (axe `list`). */}
+      <div className="flex w-full max-w-sm flex-col gap-2">
         {toasts.map((toast) => (
           <ToastItem key={toast.id} toast={toast} />
         ))}
-      </ol>
+      </div>
     </div>
   );
 }

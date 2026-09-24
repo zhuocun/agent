@@ -86,10 +86,12 @@ export function WelcomeScreen({
         : PROMPTS;
 
   return (
-    // `justify-center-safe`: centered while the hero fits, start-aligned once
-    // it is taller than the scroll area (320x640), so it overflows downward
-    // into the scroller instead of upward under the header, out of reach.
-    <div className="flex h-full flex-col items-center justify-center-safe px-4">
+    // The block centres itself with `my-auto` rather than the column using
+    // `justify-center`: auto margins collapse to 0 once the hero is taller
+    // than the scroll area (320x640), so it overflows downward into the
+    // scroller instead of upward under the header, out of reach. (`safe
+    // center` does the same but needs Safari 17.6+.)
+    <div className="flex h-full flex-col items-center px-4">
       <div
         className={
           exiting
@@ -104,10 +106,10 @@ export function WelcomeScreen({
             // group snaps width at the exit seam. (max-w-xl: the serif display
             // greeting + wrapping pill rail need more room than the old
             // inset-group's max-w-md.)
-            ? "animate-welcome-exit flex w-full max-w-xl flex-col items-center text-center transition-[opacity,transform] duration-200 ease-[var(--ease-welcome)] opacity-0 -translate-y-2"
+            ? "animate-welcome-exit my-auto flex w-full max-w-xl flex-col items-center text-center transition-[opacity,transform] duration-200 ease-[var(--ease-welcome)] opacity-0 -translate-y-2"
             // Entrance choreography lives on each child below (staggered via
             // inline animationDelay). The wrapper itself carries layout only.
-            : "flex w-full max-w-xl flex-col items-center text-center"
+            : "my-auto flex w-full max-w-xl flex-col items-center text-center"
         }
       >
         {/* Slim connect banner above the greeting — the Lovable "Connect all

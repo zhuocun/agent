@@ -51,8 +51,9 @@ test.describe("app shell — mobile drawer", () => {
   });
 });
 
-test.describe("app shell — mobile drawer surface", () => {
-  test.use({ viewport: { width: 390, height: 844 }, colorScheme: "dark" });
+for (const colorScheme of ["light", "dark"] as const)
+test.describe(`app shell — mobile drawer surface (${colorScheme})`, () => {
+  test.use({ viewport: { width: 390, height: 844 }, colorScheme });
 
   test("the drawer's bottom safe-area inset matches the sidebar surface", async ({
     page,

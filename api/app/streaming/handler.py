@@ -3293,8 +3293,8 @@ async def stream_inline_turn(
     So the handler runs in its own task, outside the response's cancel scope,
     and this generator only relays its frames through a one-slot queue: the
     handler stays paced by the client, as it was when it yielded straight to
-    the transport, so a stopped partial never holds text the client was not
-    sent. When the body stops consuming
+    the transport, so a stopped partial runs at most a frame or two ahead of
+    what the client was sent. When the body stops consuming
     for any reason, it raises the disconnect signal the handler polls, then
     waits (shielded, bounded) for the handler to take its ordinary
     persist-`stopped` branch — which keeps the request-scoped session alive for
@@ -3355,8 +3355,10 @@ async def stream_inline_turn(
 async def _settle_inline_driver(task: asyncio.Task[None]) -> None:
     """Wait for a disconnected driver to settle; cancel it past the grace.
 
-    Never returns while the driver is still running: the caller's request
-    session is about to close, and the driver must not outlive it.
+    The caller's request session is about to close, so the driver must not
+    outlive it. The one exception is a driver that ignores its cancel past the
+    second grace: it is left running, and its outcome is still retrieved so
+    asyncio does not report it as never retrieved.
     """
     done, _ = await asyncio.wait({task}, timeout=_INLINE_STOP_GRACE_SECONDS)
     if not done:
@@ -3366,6 +3368,7 @@ async def _settle_inline_driver(task: asyncio.Task[None]) -> None:
         if not done:
             # The row stays `active` until the orphan reaper sweeps it.
             log.warning("stream.inline_cancel_grace_exceeded")
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
             return
     if not task.cancelled() and task.exception() is not None:
         log.warning("stream.inline_stop_failed", exc_info=task.exception())

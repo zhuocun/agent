@@ -248,10 +248,18 @@ the defect, the entry says so and names the nearest one. Fixes landed on branch
   `api/app/streaming/turn_lifecycle.py` `_terminalize`), so the turn row is
   never terminalized and the in-progress guard stays latched. The FE half is in
   `chat-thread.tsx`, which drops the bubble and the draft on the 409.
-- **Status:** fix in review
-- **Fix (planned):** run the turn in its own task, outside the SSE response's
-  cancel scope, so Stop's terminal write completes when the client disconnects.
-  On a 409 the FE keeps the draft in the composer instead of discarding it.
+- **Status:** fixed (commits `392de99`, `82bc7c8`, `23a3151`, `1508daf`, merged
+  in `a4c1fdc`)
+- **Fix:** the inline turn runs in its own task, outside the SSE response's
+  cancel scope, and relays frames through a one-slot queue so it stays paced by
+  the client. A disconnect raises the stop signal, and Stop's terminal write
+  completes. The next send waits up to 3 s for a stopping stream to release its
+  row. On a 409 the FE restores the draft into an empty composer and offers
+  "Send again". Tests: `api/tests/test_stop_disconnect.py` and the "stop then
+  send again immediately" and "409 keeps the draft" cases in
+  `web/tests/e2e/streaming.spec.ts`. Unless the Redis stop store is configured,
+  the stop flag is per machine, so the 3 s wait only helps when both requests
+  reach the same Fly machine.
 
 ## ISSUE-11 — MAJOR — Mouse and pen clicks inside bottom sheets are dead below 768 px
 
@@ -679,6 +687,5 @@ These bound what the captures can and cannot prove. None are product bugs.
 - **Fix pass (2026-07-07):** ISSUE-6/7 fixed in commit `e58e977`, ISSUE-8 fixed in
   commit `9744e92` (branch `cursor/ui-ux-sweep-fixes-10db`); ISSUE-9 skipped
   (refuted, per ISSUE-4 precedent).
-- **Fix pass (2026-09-23/24):** ISSUE-11–33 fixed on branch
-  `claude/ui-optimization-playwright-iju8tj` (commits cited per entry);
-  ISSUE-10 fix in review on a separate branch.
+- **Fix pass (2026-09-23/24):** ISSUE-10–33 fixed on branch
+  `claude/ui-optimization-playwright-iju8tj` (commits cited per entry).

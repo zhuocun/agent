@@ -834,111 +834,118 @@ export function CommandPalette({
                   : "No results — try a different term"}
               </div>
             ) : (
-              <ul role="listbox" id={listboxId} aria-label="Commands">
-                {sections.map((section) => (
-                  <li key={section.heading} className="py-1">
+              // listbox > group > option: the only ownership chain ARIA allows
+              // here. Native <ul>/<li> would leak list/listitem roles between
+              // the listbox and its options (axe aria-required-children).
+              <div role="listbox" id={listboxId} aria-label="Commands">
+                {sections.map((section, sectionIndex) => (
+                  <div
+                    key={section.heading}
+                    role="group"
+                    aria-labelledby={`${optionIdPrefix}-group-${sectionIndex}`}
+                    className="py-1"
+                  >
                     <div
+                      id={`${optionIdPrefix}-group-${sectionIndex}`}
                       role="presentation"
                       className="px-5 pb-1 pt-2 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase"
                     >
                       {section.heading}
                     </div>
-                    <ul role="presentation">
-                      {section.items.map((item) => {
-                        const isSelected = item.flatIndex === clampedIndex;
-                        const id = `${optionIdPrefix}-${item.flatIndex}`;
-                        if (item.kind === "action") {
-                          const Icon = item.action.icon;
-                          return (
-                            <li
-                              key={item.action.id}
-                              id={id}
-                              role="option"
-                              aria-selected={isSelected}
-                              onMouseEnter={() => setSelectedIndex(item.flatIndex)}
-                              onMouseDown={(e) => {
-                                // mousedown to beat the input's blur, which
-                                // would otherwise unmount the row before the
-                                // click resolved.
-                                e.preventDefault();
-                                runItem(item);
-                              }}
-                              className={cn(
-                                // min-h-11: 44pt touch floor on the mobile
-                                // sheet (harmless on desktop). Selection uses a
-                                // quiet translucent tint to match the model/tier
-                                // pickers' selected-row treatment — the solid
-                                // `bg-accent` fill read too loud against glass.
-                                "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 ui-list-row text-foreground",
-                                isSelected && "bg-foreground/[0.06]",
-                              )}
-                            >
-                              {Icon ? (
-                                <Icon
-                                  aria-hidden
-                                  className="size-4 shrink-0 text-muted-foreground"
-                                />
-                              ) : (
-                                <span aria-hidden className="size-4 shrink-0" />
-                              )}
-                              <span className="min-w-0 flex-1 truncate">
-                                {item.action.label}
-                              </span>
-                              {item.action.shortcut ? (
-                                <KeyCaps
-                                  shortcut={item.action.shortcut}
-                                  variant="compact"
-                                  className="ml-3 hidden [@media(hover:hover)_and_(pointer:fine)]:inline-flex"
-                                />
-                              ) : null}
-                            </li>
-                          );
-                        }
-                        const matchSnippet = item.conversation.matchSnippet?.trim();
+                    {section.items.map((item) => {
+                      const isSelected = item.flatIndex === clampedIndex;
+                      const id = `${optionIdPrefix}-${item.flatIndex}`;
+                      if (item.kind === "action") {
+                        const Icon = item.action.icon;
                         return (
-                          <li
-                            key={item.conversation.id}
+                          <div
+                            key={item.action.id}
                             id={id}
                             role="option"
                             aria-selected={isSelected}
                             onMouseEnter={() => setSelectedIndex(item.flatIndex)}
                             onMouseDown={(e) => {
+                              // mousedown to beat the input's blur, which
+                              // would otherwise unmount the row before the
+                              // click resolved.
                               e.preventDefault();
                               runItem(item);
                             }}
                             className={cn(
-                              // min-h-11: 44pt touch floor; quiet selection
-                              // tint consistent with the action rows above.
-                              "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 ui-list-row text-foreground",
+                              // min-h-11: 44pt touch floor on the mobile
+                              // sheet (harmless on desktop). Selection uses a
+                              // quiet translucent tint to match the model/tier
+                              // pickers' selected-row treatment — the solid
+                              // `bg-accent` fill read too loud against glass.
+                              "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-3 ui-list-row text-foreground",
                               isSelected && "bg-foreground/[0.06]",
                             )}
                           >
-                            <MessageSquare
-                              aria-hidden
-                              className="size-4 shrink-0 text-muted-foreground"
-                            />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate">
-                                {item.conversation.title}
-                              </span>
-                              {matchSnippet ? (
-                                <span className="mt-0.5 block truncate ui-caption text-muted-foreground">
-                                  {matchSnippet}
-                                </span>
-                              ) : null}
+                            {Icon ? (
+                              <Icon
+                                aria-hidden
+                                className="size-4 shrink-0 text-muted-foreground"
+                              />
+                            ) : (
+                              <span aria-hidden className="size-4 shrink-0" />
+                            )}
+                            <span className="min-w-0 flex-1 truncate">
+                              {item.action.label}
                             </span>
-                            {item.isActive ? (
-                              <span className="ml-3 shrink-0 ui-caption text-muted-foreground">
-                                Open
+                            {item.action.shortcut ? (
+                              <KeyCaps
+                                shortcut={item.action.shortcut}
+                                variant="compact"
+                                className="ml-3 hidden [@media(hover:hover)_and_(pointer:fine)]:inline-flex"
+                              />
+                            ) : null}
+                          </div>
+                        );
+                      }
+                      const matchSnippet = item.conversation.matchSnippet?.trim();
+                      return (
+                        <div
+                          key={item.conversation.id}
+                          id={id}
+                          role="option"
+                          aria-selected={isSelected}
+                          onMouseEnter={() => setSelectedIndex(item.flatIndex)}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            runItem(item);
+                          }}
+                          className={cn(
+                            // min-h-11: 44pt touch floor; quiet selection
+                            // tint consistent with the action rows above.
+                            "mx-2 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 ui-list-row text-foreground",
+                            isSelected && "bg-foreground/[0.06]",
+                          )}
+                        >
+                          <MessageSquare
+                            aria-hidden
+                            className="size-4 shrink-0 text-muted-foreground"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              {item.conversation.title}
+                            </span>
+                            {matchSnippet ? (
+                              <span className="mt-0.5 block truncate ui-caption text-muted-foreground">
+                                {matchSnippet}
                               </span>
                             ) : null}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </li>
+                          </span>
+                          {item.isActive ? (
+                            <span className="ml-3 shrink-0 ui-caption text-muted-foreground">
+                              Open
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 ))}
-              </ul>
+              </div>
             )}
           </div>
 

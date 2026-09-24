@@ -218,8 +218,12 @@ export function AppHeader({
               }
             />
             <DropdownMenuContent align="end" sideOffset={8} className="min-w-56">
+              {/* Toggling starts a fresh chat and mounts the temporary-chat
+                  banner under the header, so the menu closes: left open it
+                  covers the banner's "Turn off" button (axe target-size). */}
               <DropdownMenuCheckboxItem
                 checked={isTemporary}
+                closeOnClick
                 onCheckedChange={onToggleTemporary}
               >
                 Temporary chat

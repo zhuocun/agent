@@ -363,6 +363,47 @@ test.describe("touch tablet", () => {
       expect(box?.height, id).toBeGreaterThanOrEqual(44);
     }
   });
+
+  test("settings spend panel captions meet text contrast in both themes", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    const dialog = await openSettings(page);
+    const panel = dialog.getByTestId("spend-analytics-panel");
+    await expect(panel).toBeVisible();
+    const caption = panel.getByText("(month-to-date)");
+    await expect(caption).toBeVisible();
+    await caption.scrollIntoViewIfNeeded();
+    const colors = new Set<string>();
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      await page.waitForTimeout(300);
+      colors.add(await caption.evaluate((el) => getComputedStyle(el).color));
+      // axe often files this glass card's text as "incomplete" (it cannot
+      // resolve the background under the dialog's glass), so pin the cause
+      // directly too: the caption renders the full muted token, not a faded
+      // copy of it (the muted token itself is held to 4.5:1 by UI-COLOR-3).
+      expect(
+        await caption.evaluate((el) => {
+          const cs = getComputedStyle(el);
+          const parent = getComputedStyle(el.parentElement as HTMLElement);
+          return cs.opacity === "1" && cs.color === parent.color;
+        }),
+        colorScheme,
+      ).toBe(true);
+      const res = await new AxeBuilder({ page })
+        .include('[data-testid="spend-analytics-panel"]')
+        .withRules(["color-contrast"])
+        .analyze();
+      expect(
+        res.violations.flatMap((v) => v.nodes.map((n) => n.target.join(" "))),
+        colorScheme,
+      ).toEqual([]);
+    }
+    // Both themes really rendered (the app follows the system scheme).
+    expect(colors.size).toBe(2);
+  });
 });
 
 test.describe("desktop density", () => {

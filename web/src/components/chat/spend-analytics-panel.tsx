@@ -156,7 +156,7 @@ export function SpendAnalyticsPanel({
         <div className="glass-clear rounded-2xl px-3.5 py-3">
           <p className="ui-caption text-muted-foreground">
             <span>Cumulative meter</span>
-            <span className="ml-1 ui-caption opacity-70">(month-to-date)</span>
+            <span className="ml-1 ui-caption text-muted-foreground">(month-to-date)</span>
           </p>
           <p
             className="mt-0.5 font-mono text-base tabular-nums"

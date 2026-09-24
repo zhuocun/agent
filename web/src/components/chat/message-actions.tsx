@@ -311,6 +311,13 @@ function OverflowMenu({
         // (and any badge) isn't mid-glyph clipped when the popup pins to the
         // bottom. scroll-pb gives the overflow scroller the same breathing room.
         collisionPadding={20}
+        // The menu can outgrow the viewport and scroll. Arrow keys move the
+        // highlight and scroll it, but a pointer-opened menu starts with no
+        // highlighted row, so no descendant holds a tab stop and the scroller
+        // reads as keyboard-unreachable (axe scrollable-region-focusable).
+        // Making the popup itself a tab stop closes that gap; it already
+        // takes focus on open, and Tab still closes the menu.
+        tabIndex={0}
         className="w-60 max-w-[min(18rem,calc(100vw-1.5rem))] rounded-2xl scroll-pb-4 pb-2.5"
       >
         {primary ? (

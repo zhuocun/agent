@@ -272,3 +272,175 @@ test.describe("mobile sheet", () => {
     await expect(sheet.getByText("JSON output", { exact: true })).toHaveCount(1);
   });
 });
+
+async function openSettings(page: Page) {
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+test.describe("scroll regions", () => {
+  // A short viewport so the tall message-actions menu has to scroll, as it
+  // does on a laptop once a thread fills the screen.
+  test.use({ viewport: { width: 1280, height: 520 } });
+
+  test("message overflow menu: a pointer-opened scrolling menu is keyboard reachable", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await sendAndSettle(page, "Hello overflow");
+    await page.getByTestId("message-actions-overflow").last().click();
+    const menu = page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    expect(await menu.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(
+      true,
+    );
+    expect(await axeViolations(page, ["scrollable-region-focusable"])).toEqual(
+      [],
+    );
+    // Arrow keys still drive the menu, and End scrolls the last row in.
+    await page.keyboard.press("End");
+    const last = menu.locator('[role^="menuitem"]').last();
+    await expect(last).toBeFocused();
+    await expect(last).toBeInViewport();
+  });
+
+  test("settings: the read-only Models and Shortcuts scrollers take focus", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    const dialog = await openSettings(page);
+    for (const [tab, name] of [
+      ["Models", "Models and data policies"],
+      ["Shortcuts", "Keyboard shortcuts"],
+    ] as const) {
+      await dialog.getByRole("tab", { name: tab }).click();
+      const region = dialog.getByRole("region", { name, exact: true });
+      await expect(region).toHaveAttribute("tabindex", "0");
+      expect(
+        await axeViolations(page, ["scrollable-region-focusable"]),
+      ).toEqual([]);
+      // Keyboard focus draws the inset ring, and the keyboard scrolls it.
+      await region.focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      await expect(region).toBeFocused();
+      expect(
+        await region.evaluate((el) => getComputedStyle(el).boxShadow),
+      ).toContain("inset");
+      await page.keyboard.press("PageDown");
+      await expect
+        .poll(() => region.evaluate((el) => el.scrollTop))
+        .toBeGreaterThan(0);
+    }
+  });
+});
+
+test.describe("touch tablet", () => {
+  test.use({
+    viewport: { width: 820, height: 1180 },
+    hasTouch: true,
+    isMobile: true,
+  });
+
+  test("settings disclosure toggles meet the 44px touch floor", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    const dialog = await openSettings(page);
+    for (const id of [
+      "byok-section-toggle",
+      "custom-instructions-toggle",
+      "project-defaults-toggle",
+      "advanced-privacy-toggle",
+    ]) {
+      const box = await dialog.getByTestId(id).boundingBox();
+      expect(box?.height, id).toBeGreaterThanOrEqual(44);
+    }
+  });
+
+  test("settings spend panel captions meet text contrast in both themes", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    const dialog = await openSettings(page);
+    const panel = dialog.getByTestId("spend-analytics-panel");
+    await expect(panel).toBeVisible();
+    const caption = panel.getByText("(month-to-date)");
+    await expect(caption).toBeVisible();
+    await caption.scrollIntoViewIfNeeded();
+    const colors = new Set<string>();
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      await page.waitForTimeout(300);
+      colors.add(await caption.evaluate((el) => getComputedStyle(el).color));
+      // axe often files this glass card's text as "incomplete" (it cannot
+      // resolve the background under the dialog's glass), so pin the cause
+      // directly too: the caption renders the full muted token, not a faded
+      // copy of it (the muted token itself is held to 4.5:1 by UI-COLOR-3).
+      expect(
+        await caption.evaluate((el) => {
+          const cs = getComputedStyle(el);
+          const parent = getComputedStyle(el.parentElement as HTMLElement);
+          return cs.opacity === "1" && cs.color === parent.color;
+        }),
+        colorScheme,
+      ).toBe(true);
+      const res = await new AxeBuilder({ page })
+        .include('[data-testid="spend-analytics-panel"]')
+        .withRules(["color-contrast"])
+        .analyze();
+      expect(
+        res.violations.flatMap((v) => v.nodes.map((n) => n.target.join(" "))),
+        colorScheme,
+      ).toEqual([]);
+    }
+    // Both themes really rendered (the app follows the system scheme).
+    expect(colors.size).toBe(2);
+  });
+});
+
+test.describe("desktop density", () => {
+  test("settings disclosure toggles keep their compact desktop height", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    const dialog = await openSettings(page);
+    const box = await dialog
+      .getByTestId("advanced-privacy-toggle")
+      .boundingBox();
+    expect(box?.height).toBeLessThan(44);
+  });
+});
+
+test.describe("phone temporary chat", () => {
+  test.use({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+
+  test("turning on Temporary chat closes the menu so Turn off is not covered", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await page.getByRole("button", { name: "Chat menu" }).first().click();
+    await page
+      .getByRole("menuitemcheckbox", { name: "Temporary chat" })
+      .click();
+    const banner = page.getByTestId("temporary-chat-banner");
+    await expect(banner).toBeVisible();
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    expect(await axeViolations(page, ["target-size"])).toEqual([]);
+    await banner.getByRole("button", { name: "Turn off" }).click();
+    await expect(banner).toHaveCount(0);
+  });
+});

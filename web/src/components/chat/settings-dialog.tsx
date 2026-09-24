@@ -1346,7 +1346,7 @@ export function SettingsDialog({
           <Collapsible className="space-y-3">
             <CollapsibleTrigger
               data-testid="byok-section-toggle"
-              className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+              className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground [@media(hover:none)]:min-h-11"
             >
               <ChevronRight
                 aria-hidden
@@ -1430,7 +1430,7 @@ export function SettingsDialog({
             <Collapsible className="space-y-2">
               <CollapsibleTrigger
                 data-testid="custom-instructions-toggle"
-                className="flex w-full items-center gap-2 text-left ui-list-row font-medium transition-colors hover:text-foreground"
+                className="flex w-full items-center gap-2 text-left ui-list-row font-medium transition-colors hover:text-foreground [@media(hover:none)]:min-h-11"
               >
                 <ChevronRight
                   aria-hidden
@@ -1471,7 +1471,7 @@ export function SettingsDialog({
                 <Collapsible className="space-y-3">
                   <CollapsibleTrigger
                     data-testid="project-defaults-toggle"
-                    className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+                    className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground [@media(hover:none)]:min-h-11"
                   >
                     <ChevronRight
                       aria-hidden
@@ -1529,7 +1529,7 @@ export function SettingsDialog({
             <Collapsible className="space-y-4">
               <CollapsibleTrigger
                 data-testid="advanced-privacy-toggle"
-                className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground"
+                className="flex w-full items-center gap-2 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:text-foreground [@media(hover:none)]:min-h-11"
               >
                 <ChevronRight
                   aria-hidden

@@ -142,9 +142,11 @@ Priority order, highest first: **grounded truth, the answer actually asked for, 
 - ✓ `this point still matters`
 - Only a live figure that displaced an available literal phrase is mannered. A figure added after the literal statement, a dead metaphor, or a term of art with no plain equivalent, is not.
 - The standard bars the extended sense of a single word, and this rule covers the whole construction. A figure this rule allows may leave the dictionary and the plain literal sense.
-- The false contrast says what a thing is not, then what it is. Drop the negation and keep the claim.
-- ✗ `This is not a caching problem. It is a clock-skew problem.`
+- The false contrast denies something nobody raised, then states what the thing is. Drop the negation and keep the claim.
+- Keep the negation when the conversation raised the denied thing as a question, a claim, or a plan. A guess about what the reader might think does not count.
+- ✗ `This is not a caching problem. It is a clock-skew problem.` (nobody raised caching)
 - ✓ `This is a clock-skew problem.`
+- ✓ `Caching is not the cause. It is clock skew.` (the user asked whether caching was the cause)
 - The rhythmic triad gives three items because three sounds complete. Give the items that exist.
 - The escalation — `not only X, but Y` — inflates a plain fact. State the fact.
 - The aphoristic closer ends a message with a weighty line that carries no fact. Delete it.

@@ -36,7 +36,7 @@ loading spinner.
 ## Setup (do every step — this is where sweeps fail)
 
 1. **Install the browser driver and a browser binary.** Playwright is
-   usually NOT a project dependency, so installing it must not pollute
+   usually not a project dependency, so installing it must not pollute
    the manifest:
     - `npm i playwright --no-save` (keeps `package.json` / lockfile
       untouched).
@@ -48,7 +48,7 @@ loading spinner.
       `PLAYWRIGHT_BROWSERS_PATH` is set in the environment; the runtime
       reads the same variable, so leave it as-is and just verify a
       launch (`chromium.launch()`) succeeds before capturing.
-2. **Capture against a PRODUCTION BUILD, not the dev server.** Dev
+2. **Capture against a production build, not the dev server.** Dev
    servers (Vite, webpack, Next dev) lazily compile route-split / heavy
    module graphs on first hit; under headless automation a heavy route
    can sit in its loading/Suspense state indefinitely and never fire its
@@ -60,10 +60,7 @@ loading spinner.
     - **Necessary, not always sufficient.** The build is the reliable
       surface to *launch* from, but a deeply nested route can still fail
       to render when reached by a direct deep-link — reach those by UI
-      navigation (see below). Verified on a real app: a list page that
-      hung forever in dev rendered on the preview build, but the nested
-      board route under it stayed stuck on a direct `goto` and only
-      rendered after a click-through from its parent.
+      navigation (see below).
     - Caveat: a build may use different env defaults than dev (feature
       flags, API engine), so some chrome differs — fine for visual
       review; note it. Only fall back to the dev server for a trivial
@@ -91,7 +88,7 @@ loading spinner.
 
 ## Auth + mocks
 
-- **Intercept ALL API calls** in the browser context
+- **Intercept every API call** in the browser context
   (`context.route("**/<api-base>/**", …)`) and fulfill plausible JSON —
   the real backend is usually blocked from the sandbox. An un-mocked
   call hangs or errors and the page never leaves loading.
@@ -109,21 +106,21 @@ loading spinner.
 - **Drive the app like a user.** A direct `goto` is fine for top-level /
   public routes (login, a list page). For a deeply nested or guarded
   route (e.g. `/projects/:id/board`), render the parent and click into
-  the child — do NOT deep-link `goto` it or fake `history.pushState`.
-  Verified: a direct `goto` to a nested route left it stuck in Suspense
-  with only the app-shell queries firing (`users`, `health`, members);
-  clicking into it from the rendered parent fired every data query and
-  rendered it fully. The harness reference shows the click-through.
+  the child — do not deep-link `goto` it or fake `history.pushState`.
+  A direct `goto` to a nested route can leave it stuck in Suspense with
+  only the app-shell queries firing; clicking into it from the rendered
+  parent fires the route's own data queries and renders it fully. The
+  harness reference shows the click-through.
 - **Wait for content, not for "loading" to vanish.** A "no loading
   text" or `networkidle` check passes prematurely (e.g. just before an
   auth redirect kicks off the next load). Wait for a known content
-  selector/text to APPEAR (generous timeout), then a short settle, then
+  selector/text to appear (generous timeout), then a short settle, then
   shoot.
 
 ## Verify the capture (cheap, catches silent failures)
 
 - **Hash every PNG** (`md5sum`). Identical hashes across distinct
-  routes/themes mean those routes did NOT render — you captured the same
+  routes/themes mean those routes did not render — you captured the same
   loading/error screen. Re-navigate or fix the harness; never review or
   commit off un-rendered shots.
 - **Probe before blaming the code.** For any blank/stuck/odd shot, run a
@@ -146,9 +143,9 @@ Per PNG, in both light and dark and at phone + desktop widths:
   coarse pointers.
 - **A11y modes:** drive `colorScheme`, `contrast: "more"`,
   `reducedMotion: "reduce"`, and `forcedColors: "active"` through
-  `emulateMedia` (these are the options it actually supports) — they are
-  routinely unstyled. `prefers-reduced-transparency` has no `emulateMedia`
-  switch yet, so verify that one in code / manually.
+  `emulateMedia` — they are routinely unstyled. Drive
+  `prefers-reduced-transparency` the same way where the installed Playwright
+  supports it, and otherwise verify it in code or manually.
 - **Anti-patterns that look wrong but are correct:** intentional
   translucency/blur (glass), deliberately muted "coming soon" controls,
   brand-specific spacing. Confirm against tokens/design intent before
@@ -159,8 +156,9 @@ Per PNG, in both light and dark and at phone + desktop widths:
 - Fix **root causes, not symptoms**.
 - Do **not** add features, refactor architecture, introduce
   dependencies, or write new tests unless an existing test breaks.
-- Gates before each commit: typecheck clean, `jest <touched-paths>`
-  green, full test suite green.
+- Gates before each commit, using the commands this repo's scripts
+  define: typecheck clean, the tests covering the touched paths green,
+  full test suite green.
 - **Keep the repo clean.** Browser driver is `--no-save`; capture script
   + screenshots live outside the repo (or a gitignored path). Confirm
   `git status` shows only the intended app fix — never the harness, the
@@ -177,11 +175,12 @@ Before declaring a sweep done, confirm:
   into the script's own directory.
 - [ ] The capture used the recipe in `references/playwright-harness.md`
   verbatim, with only the repo-specific bits parameterized — the port, the
-  API base, the route list and the mock shapes — not a harness written from
-  scratch.
+  API base, the route list, the mock shapes and the auth seed — not a harness
+  written from scratch.
 - [ ] Every shot was taken against a production build served on a stable
-  port, never a dev server; any chrome that differs from dev because the
-  build uses different env defaults is noted rather than filed as an issue.
+  port — a dev server only for a trivial app with no route splitting; any
+  chrome that differs from dev because the build uses different env
+  defaults is noted rather than filed as an issue.
 - [ ] The port / base URL, the API base path, the route list, and the mock
   shapes were each read out of this repo — the `dev`/`preview`/`start`
   script or framework config, the HTTP client or `.env*`, the router
@@ -192,7 +191,7 @@ Before declaring a sweep done, confirm:
   endpoint is mocked, returning `401` for the public routes.
 - [ ] Every nested or guarded route was reached by clicking through from its
   rendered parent — no direct `goto`, no faked `history.pushState` — and
-  each shot waited for a known content selector or text to APPEAR plus a
+  each shot waited for a known content selector or text to appear plus a
   short settle, not on `networkidle` or on "loading" disappearing.
 - [ ] The captured matrix covers the discovered routes at phone and desktop
   widths in both light and dark, plus the interaction states under review.
@@ -205,8 +204,9 @@ Before declaring a sweep done, confirm:
   theme, state, a11y modes, anti-patterns — and the issue list was written
   before the first fix. `colorScheme`, `contrast: "more"`,
   `reducedMotion: "reduce"` and `forcedColors: "active"` were driven
-  through `emulateMedia`; `prefers-reduced-transparency`, which has no
-  `emulateMedia` switch, was verified in code or manually.
+  through `emulateMedia`. `prefers-reduced-transparency` was driven the same
+  way where the installed version supports it, and otherwise verified in code
+  or manually.
 - [ ] Nothing was "fixed" for looking wrong while being correct —
   intentional translucency/blur, deliberately muted "coming soon"
   controls, and brand-specific spacing were each confirmed against tokens
@@ -217,7 +217,7 @@ Before declaring a sweep done, confirm:
   added; a test was touched only because an existing one broke.
 - [ ] Fixes landed in themed batches, one commit each, with a re-capture
   after each batch confirming the issue is gone.
-- [ ] Before each commit: typecheck clean, `jest <touched-paths>` green, and
-  the full test suite green.
+- [ ] Before each commit, with this repo's own commands: typecheck clean,
+  the tests covering the touched paths green, and the full test suite green.
 - [ ] `git status` shows only the intended app fix — not the capture script,
   not the screenshots, not the browser driver in the manifest or lockfile.

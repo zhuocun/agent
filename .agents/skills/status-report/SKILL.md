@@ -6,7 +6,7 @@ description: >-
 
 # Project Status Report
 
-Write a one-screen document that answers, in order: where does the project stand, what moved since last time, and what needs a person. The reader is a capable peer with one screen of attention who was not watching the work, so state is the product — not a diary, changelog, plan, retrospective, or metrics dashboard. Every claim either carries a reference the reader can open or is marked unverified in place. The report names the revision it was read at, so the next report can diff from it.
+Write a one-page document that answers, in order: where does the project stand, what moved since last time, and what needs a person. The reader is a capable peer with one screen of attention who was not watching the work, so state is the product — not a diary, changelog, plan, retrospective, or metrics dashboard. Every claim either carries a reference the reader can open or is marked unverified in place. The report names the revision it was read at, so the next report can diff from it.
 
 Priority order, highest first: **grounded evidence → complete picture → legible progress → the reader's next action → concision → fixed form.** When two rules collide, the higher one wins; concision never buys itself a dropped workstream or an unreferenced claim.
 
@@ -51,7 +51,7 @@ The shape, in five rows — a blocked row waiting on another row, an exact-denom
 | --- | --- | --- | --- | --- |
 | Payout rails | Blocked | `██▓▓▓▓▓` 2/7 rails reconciled | Currency service | CR-118 |
 | Fraud rules | In review | `███` 3/3 rule sets authored | review on CR-127 | unverified — see Not verified |
-| Currency service | In progress | `████████▓` 8/9 handlers implemented · `█████▓▓▓▓` 5/9 exposed (+2) | in hand | commit 4ab7de1 |
+| Currency service | In progress | `████████▓` 8/9 handlers implemented; `█████▓▓▓▓` 5/9 exposed (+2) | in hand | commit 4ab7de1 |
 | Locale bundles | In progress | 3 in progress · 3 shipped, of 6 | in hand | doc: locales.md#bundle-list |
 | Merchant onboarding | In progress | 9 partners integrated, total set not fixed | in hand | doc: partners.md#status |
 
@@ -105,7 +105,6 @@ An illustration is mandatory only if all three hold: constant cost (at most one 
 - **Conditional, the progress bar — exact-denominator only.** A bar carries exactly as many cells as the denominator and exactly as many filled cells as the numerator: `3/5` is `███▓▓`. Never a fixed-width track, which rounds `4/6` to seven cells of ten and so reads 70% for 66.7%; never a scale shared across rows, which flattens a four-unit job and a twelve-unit job to the same length. Written this way the track length *is* the denominator, so two rows stay as incomparable as their numbers already are. Use `█` filled and `▓` empty: they share a character-width class, so a bar's width does not change with its value. Do not use `░`, which sits in a different class and makes a fuller bar physically wider. Omit the bar where no enumerable denominator exists and where the denominator exceeds 12 — the number then stands alone, and a row that cannot be measured says so in words.
 - **A row with a build axis and an exposure axis carries one bar per axis** against the same denominator. A full bar above an empty one is a workstream that is finished and that nobody can see, which is the state a single number always hides.
 - **No other rendering may sit beside the value it renders.** A bar in a hand-edited document is a second representation of one fact, and the only reason this one is permitted is that cells-equal-denominator makes a drifted bar mechanically checkable rather than silently wrong. Nothing that fails that test — no sparkline, no trend glyph, no percentage — earns the same licence.
-- **Where a view renders colour** rather than plain text, lifecycle takes one sequential hue running light to dark, because lifecycle is ordered; `Blocked` takes a reserved status colour and a row-edge stripe, because it is a condition that can hold at any lifecycle position. Never give `Blocked` a step on the lifecycle ramp.
 - **No illustration may be the sole carrier of the answer to "what is blocked and by what."** Topology beyond that answer — chain order, indirect dependents — may live only in the graph. Deleting every illustration must still leave the reader knowing what is blocked and by what, never how deep the chain runs.
 
 ## Failure modes

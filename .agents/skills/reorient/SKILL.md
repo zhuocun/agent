@@ -40,17 +40,17 @@ Order the list by dependency: what unblocks the most, or what the next step need
 
 ### 4. Fill context gaps — what is needed to continue perfectly
 
-This is the active pass — *rebuild until confident*, not skim. For the next one or two to-dos, list what you would need to do them correctly: the files and functions involved, the repo conventions (`AGENTS.md` / `CLAUDE.md`, lint/test/typecheck commands), the wire contracts or interfaces at the boundary, and the earlier decisions plus the **why** behind them. For each item you do not already hold, **go get it**: read the file, walk the git history (`git log -p <path>`, `git show <sha>`), open the linked docs, run the tests to see real state. Loop pass 4 until you could resume without guessing. Keep this pass internal — it is preparation, not the report.
+For the next one or two to-dos, list what you would need to do them correctly: the files and functions involved, the repo conventions (`AGENTS.md` / `CLAUDE.md`, lint/test/typecheck commands), the wire contracts or interfaces at the boundary, and the earlier decisions plus the **why** behind them. For each item you do not already hold, **go get it**: read the file, walk the git history (`git log -p <path>`, `git show <sha>`), open the linked docs, run the tests to see real state. Loop pass 4 until you could resume without guessing. Keep this pass internal — it is preparation, not the report.
 
 ### 5. Report — return 1–3 to the user
 
-Give a concise recap, no wall of text:
+Give a concise recap:
 
 1. **What we have been doing** — the goal, in a sentence or two.
 2. **What is finished** — each item backed by a verifiable anchor (commit sha, PR number, merged/CI state, or file), so the user can check it.
 3. **The to-dos** — the ordered remaining work from Pass 3.
 
-Do **not** dump Pass 4 (files read, conventions, gap-filling) at the user — it is your prep, not their recap. End by resuming the top to-do or asking which to take, per what the user signalled.
+End by resuming the top to-do or asking which to take, per what the user signalled.
 
 ## Failure modes
 

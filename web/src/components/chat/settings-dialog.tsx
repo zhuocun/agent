@@ -24,9 +24,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Collapsible,
   CollapsibleContent,
@@ -270,9 +274,7 @@ function SettingRow({
     <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <div className="min-w-0">
         {htmlFor ? (
-          <label htmlFor={htmlFor} className="ui-list-row font-medium">
-            {label}
-          </label>
+          <Label htmlFor={htmlFor}>{label}</Label>
         ) : (
           <p className="ui-list-row font-medium">{label}</p>
         )}
@@ -415,7 +417,7 @@ function BudgetEditor({
           >
             $
           </span>
-          <input
+          <Input
             id={inputId}
             type="number"
             inputMode="decimal"
@@ -425,7 +427,7 @@ function BudgetEditor({
             placeholder="No cap"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="budget-cap-input"
-            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="pl-6 pr-3 tabular-nums focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
           />
         </div>
         <Button
@@ -494,7 +496,7 @@ function PerConversationBudgetEditor({
           >
             $
           </span>
-          <input
+          <Input
             id={inputId}
             type="number"
             inputMode="decimal"
@@ -504,7 +506,7 @@ function PerConversationBudgetEditor({
             placeholder="No cap"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="conversation-cap-input"
-            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="pl-6 pr-3 tabular-nums focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
           />
         </div>
         <Button
@@ -579,19 +581,21 @@ function ProjectSettingsPanel({
         helper="Settings below apply to this project's chats."
         htmlFor={selectId}
         control={
-          <select
+          <NativeSelect
             id={selectId}
+            icon={false}
             value={selected.id}
             onChange={(event) => setSelectedId(event.currentTarget.value)}
             data-testid="project-settings-select"
-            className="h-9 [@media(hover:none)]:h-11 max-w-[12rem] truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="w-auto max-w-[12rem]"
+            selectClassName="max-w-[12rem] truncate h-9 [@media(hover:none)]:h-11 px-3 border border-border/70 bg-background/70 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
           >
             {projects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         }
       />
 
@@ -708,7 +712,7 @@ function ProjectInstructionsEditor({
   const [draft, setDraft] = useState(value);
   return (
     <>
-      <textarea
+      <Textarea
         id={id}
         value={draft}
         maxLength={CUSTOM_INSTRUCTIONS_LIMIT}
@@ -718,7 +722,7 @@ function ProjectInstructionsEditor({
           if (draft !== value) onCommit(draft);
         }}
         data-testid="project-instructions-input"
-        className="min-h-24 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+        className="min-h-24 [@media(hover:none)]:min-h-24 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
         placeholder="Context, tone, or constraints shared across this project"
       />
       <div className="text-right font-mono ui-caption tabular-nums text-muted-foreground">
@@ -767,7 +771,7 @@ function ProjectBudgetEditor({
           >
             $
           </span>
-          <input
+          <Input
             id={inputId}
             type="number"
             inputMode="decimal"
@@ -777,7 +781,7 @@ function ProjectBudgetEditor({
             placeholder="Inherit"
             onChange={(event) => setDraft(event.currentTarget.value)}
             data-testid="project-cap-input"
-            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 pl-6 pr-3 text-base tabular-nums text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="pl-6 pr-3 tabular-nums focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
           />
         </div>
         <Button
@@ -1439,7 +1443,7 @@ export function SettingsDialog({
                 Custom instructions
               </CollapsibleTrigger>
               <CollapsibleContent className="space-y-2">
-                <textarea
+                <Textarea
                   id={customInstructionsId}
                   aria-label="Custom instructions"
                   value={customInstructionsDraft}
@@ -1449,7 +1453,7 @@ export function SettingsDialog({
                     setCustomInstructionsDraft(event.currentTarget.value)
                   }
                   onBlur={commitCustomInstructions}
-                  className="min-h-28 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+                  className="min-h-28 [@media(hover:none)]:min-h-28 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                   placeholder="Preferred tone, formatting, and context for future chats"
                 />
                 <div className="text-right font-mono ui-caption tabular-nums text-muted-foreground">

@@ -587,8 +587,8 @@ function ProjectSettingsPanel({
             value={selected.id}
             onChange={(event) => setSelectedId(event.currentTarget.value)}
             data-testid="project-settings-select"
-            className="w-auto max-w-[12rem]"
-            selectClassName="max-w-[12rem] truncate h-9 [@media(hover:none)]:h-11 px-3 border border-border/70 bg-background/70 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
+            className="inline-grid w-auto max-w-[12rem]"
+            selectClassName="w-auto max-w-[12rem] truncate h-9 [@media(hover:none)]:h-11 px-3 border border-border/70 bg-background/70 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
           >
             {projects.map((project) => (
               <option key={project.id} value={project.id}>

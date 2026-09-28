@@ -5,8 +5,13 @@ import { cn } from "@/lib/utils"
 
 function NativeSelect({
   className,
+  selectClassName,
+  icon = true,
   ...props
-}: React.ComponentProps<"select">) {
+}: React.ComponentProps<"select"> & {
+  selectClassName?: string
+  icon?: boolean
+}) {
   return (
     <div
       data-slot="native-select-wrapper"
@@ -14,14 +19,20 @@ function NativeSelect({
     >
       <select
         data-slot="native-select"
-        className="peer col-start-1 row-start-1 h-9 w-full min-w-0 appearance-none rounded-xl border border-border/70 bg-background/70 py-0 ps-3 pe-8 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50 aria-invalid:border-destructive md:text-sm [@media(hover:none)]:h-11"
+        className={cn(
+          "peer col-start-1 row-start-1 h-9 w-full min-w-0 rounded-xl border border-border/70 bg-background/70 py-0 ps-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50 aria-invalid:border-destructive md:text-sm [@media(hover:none)]:h-11",
+          icon && "appearance-none pe-8",
+          selectClassName
+        )}
         {...props}
       />
-      <ChevronDownIcon
-        aria-hidden="true"
-        data-slot="native-select-icon"
-        className="pointer-events-none col-start-1 row-start-1 me-2.5 size-4 self-center justify-self-end text-muted-foreground peer-disabled:opacity-50"
-      />
+      {icon ? (
+        <ChevronDownIcon
+          aria-hidden="true"
+          data-slot="native-select-icon"
+          className="pointer-events-none col-start-1 row-start-1 me-2.5 size-4 self-center justify-self-end text-muted-foreground peer-disabled:opacity-50"
+        />
+      ) : null}
     </div>
   )
 }

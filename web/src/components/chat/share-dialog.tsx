@@ -11,6 +11,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   ApiError,
   ApiNetworkError,
@@ -196,18 +198,16 @@ export function ShareDialog({
           {shareUrl ? (
             <div className="space-y-3">
               <div className="space-y-1.5">
-                <label htmlFor={urlFieldId} className="ui-list-row font-medium">
-                  Public link
-                </label>
+                <Label htmlFor={urlFieldId}>Public link</Label>
                 <div className="flex items-center gap-2">
-                  <input
+                  <Input
                     id={urlFieldId}
                     type="text"
                     value={shareUrl}
                     readOnly
                     onFocus={(e) => e.currentTarget.select()}
                     aria-label="Public share link"
-                    className="block h-9 w-full min-w-0 flex-1 rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:h-11 md:text-sm"
+                    className="rounded-2xl border-0 bg-muted/50 min-w-0 flex-1"
                   />
                   <Button
                     type="button"

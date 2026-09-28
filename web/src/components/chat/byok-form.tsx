@@ -12,6 +12,9 @@ import {
 import { Key, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { showToast } from "@/components/ui/toast";
 import { deleteByok, putByok } from "@/lib/apiClient";
 import { ApiError, ApiNetworkError } from "@/lib/apiClient";
@@ -232,11 +235,10 @@ export function ByokForm({
           list. */}
       <div className="glass-clear overflow-hidden rounded-2xl">
         <div className="space-y-1.5 px-3.5 py-3">
-          <label htmlFor={providerId} className="ui-list-row font-medium">
-            Provider
-          </label>
-          <select
+          <Label htmlFor={providerId}>Provider</Label>
+          <NativeSelect
             id={providerId}
+            icon={false}
             value={provider}
             onChange={(e) => {
               setProvider(e.target.value);
@@ -244,24 +246,23 @@ export function ByokForm({
             }}
             // h-11 = 44pt, the iOS minimum touch target (was h-9/36px). The
             // field is transparent (`bg-transparent`) because the card behind
-            // it is the surface now.
-            className="block h-11 w-full rounded-xl bg-transparent px-2.5 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] md:text-sm"
+            // it is the surface now. ps-2.5 drops the primitive ps-3, which
+            // padding-inline does not.
+            selectClassName="h-11 rounded-xl border-0 bg-transparent px-2.5 ps-2.5 focus-visible:shadow-[var(--focus-ring)]"
           >
             {providerChoices.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
 
         {showKeyRow ? (
           <div className="space-y-1.5 border-t border-border/60 px-3.5 py-3">
-            <label htmlFor={keyId} className="ui-list-row font-medium">
-              API key
-            </label>
+            <Label htmlFor={keyId}>API key</Label>
             <div className="relative">
-              <input
+              <Input
                 id={keyId}
                 type="password"
                 value={apiKey}
@@ -273,7 +274,7 @@ export function ByokForm({
                 // h-11 = 44pt (was h-9). Transparent against the card surface;
                 // right padding leaves room for the clear button. The password
                 // hardening (autoComplete/autoCorrect/spellCheck off) is kept.
-                className="block h-11 w-full rounded-xl bg-transparent pl-2.5 pr-12 font-mono text-base text-foreground outline-none placeholder:font-sans placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] md:pr-10 md:text-sm"
+                className="h-11 border-0 bg-transparent font-mono placeholder:font-sans pl-2.5 pr-12 md:pr-10"
               />
               {apiKey.length > 0 ? (
                 <button

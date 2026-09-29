@@ -1149,7 +1149,7 @@ export function SettingsDialog({
           activateOnFocus
           aria-label="Settings sections"
           id={tablistId}
-          className="-mx-1 flex !h-auto w-full shrink-0 items-end gap-3 overflow-x-auto rounded-none bg-transparent p-0 px-1 pb-1 [scrollbar-gutter:stable]"
+          className="-mx-1 flex h-auto w-[calc(100%+0.5rem)] shrink-0 items-end justify-start gap-3 overflow-x-auto rounded-none bg-transparent p-0 px-1 pb-1 [scrollbar-gutter:stable]"
         >
           {SETTINGS_TAB_GROUPS.map((group, groupIndex) => (
             <div

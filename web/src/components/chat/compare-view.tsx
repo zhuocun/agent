@@ -190,7 +190,7 @@ export function CompareView({
       <TabsList
         activateOnFocus
         aria-label="Compare responses"
-        className="flex h-auto w-full gap-2 rounded-full bg-transparent p-0 md:hidden"
+        className="flex h-auto w-full gap-2 bg-transparent p-0 md:hidden"
       >
         {tiers.map((tier, index) => (
           <TabsTrigger

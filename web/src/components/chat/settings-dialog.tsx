@@ -1178,7 +1178,7 @@ export function SettingsDialog({
                       id={`${tablistId}-${tab.id}`}
                       data-testid={tab.testId}
                       className={cn(
-                        "inline-flex h-11 flex-none items-center gap-1.5 rounded-full border-0 px-3.5 ui-list-row font-medium whitespace-nowrap transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:border-transparent focus-visible:shadow-[var(--focus-ring)] focus-visible:ring-0 focus-visible:outline-none data-active:bg-secondary data-active:text-foreground dark:data-active:bg-secondary",
+                        "inline-flex h-11 flex-none items-center gap-1.5 rounded-full border-0 px-3.5 ui-list-row font-medium whitespace-nowrap transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:border-transparent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none data-active:bg-secondary data-active:text-foreground dark:data-active:bg-secondary",
                         selected
                           ? "bg-secondary text-foreground shadow-sm ring-1 ring-ring/30"
                           : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",

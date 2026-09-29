@@ -199,7 +199,7 @@ export function CompareView({
             id={`compare-tab-${tier.id}`}
             data-testid="compare-tab"
             className={cn(
-              "min-h-11 flex-1 rounded-full px-3 ui-list-row font-medium transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:ring-0 focus-visible:outline-none data-active:bg-foreground/[0.08] data-active:text-foreground group-data-[variant=default]/tabs-list:data-active:shadow-none group-data-[variant=default]/tabs-list:data-active:[box-shadow:none]! dark:data-active:bg-foreground/[0.08] dark:data-active:border-transparent",
+              "min-h-11 flex-1 rounded-full px-3 ui-list-row font-medium transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:ring-0 focus-visible:outline-none data-active:bg-foreground/[0.08] data-active:text-foreground group-data-[variant=default]/tabs-list:data-active:[box-shadow:none]! group-data-[variant=default]/tabs-list:data-active:focus-visible:[box-shadow:var(--focus-ring)]! dark:data-active:bg-foreground/[0.08] dark:data-active:border-transparent",
               activeTab === index
                 ? "bg-foreground/[0.08] text-foreground"
                 : "text-muted-foreground hover:bg-foreground/[0.04]",

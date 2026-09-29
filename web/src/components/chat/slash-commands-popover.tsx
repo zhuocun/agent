@@ -40,7 +40,7 @@ export interface SlashCommandsPopoverProps {
   // pairs across the two components.
   listboxId?: string;
   optionIdPrefix?: string;
-  // Optional anchor element (e.g. the composer capsule) used for positioning
+  // Optional anchor element (the composer container) used for positioning
   // and to keep interactions inside the composer from dismissing the popover.
   anchorRef?: RefObject<HTMLElement | null>;
 }
@@ -108,6 +108,7 @@ export function SlashCommandsPopover({
     >
       <PopoverContent
         anchor={anchorRef}
+        collisionPadding={0}
         side="top"
         align="start"
         sideOffset={8}
@@ -115,7 +116,7 @@ export function SlashCommandsPopover({
         finalFocus={false}
         role="presentation"
         className={cn(
-          "w-(--anchor-width) max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-2xl p-0 text-foreground",
+          "w-(--anchor-width) gap-0 overflow-hidden rounded-2xl p-0 text-base text-foreground",
           // iOS popover entrance: anchored to the bottom edge (it sits above the
           // composer) it springs up from a slightly-shrunk, faded state via a
           // `starting:` @starting-style snapshot. The spring easing gives it that

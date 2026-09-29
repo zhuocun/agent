@@ -23,7 +23,7 @@ export interface TemplatePickerPopoverProps {
   // pairs across the two components.
   listboxId?: string;
   optionIdPrefix?: string;
-  // Optional anchor element (the composer capsule) used for positioning
+  // Optional anchor element (the composer container) used for positioning
   // and to keep interactions inside the composer from dismissing the popover.
   anchorRef?: RefObject<HTMLElement | null>;
 }
@@ -93,6 +93,7 @@ export function TemplatePickerPopover({
     >
       <PopoverContent
         anchor={anchorRef}
+        collisionPadding={0}
         side="top"
         align="start"
         sideOffset={8}
@@ -101,7 +102,7 @@ export function TemplatePickerPopover({
         role="presentation"
         data-testid="template-picker"
         className={cn(
-          "w-(--anchor-width) max-w-[calc(100vw-2rem)] gap-0 overflow-hidden rounded-2xl p-0 text-foreground",
+          "w-(--anchor-width) gap-0 overflow-hidden rounded-2xl p-0 text-base text-foreground",
           // Mirrors the slash popover's iOS entrance: a spring pop from a
           // slightly-shrunk, faded state; reduced motion falls back to a plain
           // cross-fade with no scale/translate.

@@ -311,9 +311,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // without making them depend on `value` (which would reload every keystroke).
     const valueRef = useRef(value);
     const prevDraftKeyRef = useRef<string | undefined>(undefined);
-    // Anchor for the popover's outside-click guard — clicks anywhere on the
-    // composer surface (textarea, send button) must NOT dismiss the popover.
-    const capsuleRef = useRef<HTMLDivElement>(null);
+    // Anchor the popovers to the full composer surface and keep its interactions inside.
+    const composerContainerRef = useRef<HTMLDivElement>(null);
     // Tracks the previous value so updateValue can detect transitions — namely a
     // "fresh slash" (prev didn't start with "/", new does) which re-arms the
     // popover even when the user has dismissed an earlier token with Escape.
@@ -1144,7 +1143,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     return (
       // No top hairline any more — the card's own glass shadow + the bottom
       // chrome frost carry the seam against the thread scrolling beneath.
-      <div className="group/composer relative mx-auto w-full max-w-3xl min-w-0 px-4 pt-1">
+      <div
+        ref={composerContainerRef}
+        className="group/composer relative mx-auto w-full max-w-3xl min-w-0 px-4 pt-1"
+      >
         <SlashCommandsPopover
           open={slashOpen}
           commands={MOCK_COMMANDS}
@@ -1155,7 +1157,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           onClose={() => setSlashDismissed(true)}
           listboxId={slashListboxId}
           optionIdPrefix={slashOptionPrefix}
-          anchorRef={capsuleRef}
+          anchorRef={composerContainerRef}
         />
         <TemplatePickerPopover
           open={templatePickerOpen}
@@ -1168,7 +1170,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           loading={!templatesLoaded}
           listboxId={templateListboxId}
           optionIdPrefix={templateOptionPrefix}
-          anchorRef={capsuleRef}
+          anchorRef={composerContainerRef}
         />
         {attachments.length > 0 || attachmentReadPending || attachmentNotice ? (
           <div className="mb-2 flex min-w-0 flex-wrap items-center justify-end gap-2">
@@ -1242,7 +1244,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           </div>
         ) : null}
         <div
-          ref={capsuleRef}
           // Two-row card (Lovable-style): textarea on top, toolbar beneath.
           // The glass material stays `glass-capsule`; the card swaps the old
           // perfect pill for the welcome-surface --radius-3xl rounding

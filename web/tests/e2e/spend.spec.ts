@@ -226,6 +226,18 @@ test.describe("spend analytics dashboard", () => {
     await expect(
       page.getByTestId("spend-daily-bars").locator("> div"),
     ).toHaveCount(7);
+
+    const range7 = page.getByTestId("spend-range-7");
+    const range30 = page.getByTestId("spend-range-30");
+    await expect(range7).toHaveAttribute("aria-pressed", "true");
+    await expect(range30).toHaveAttribute("aria-pressed", "false");
+    await range7.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(range30).toBeFocused();
+    await expect(range7).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("Space");
+    await expect(range30).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => requestedDays.includes(30)).toBe(true);
   });
 
   test("exporting CSV and JSON downloads the loaded data (with CSV field escaping)", async ({

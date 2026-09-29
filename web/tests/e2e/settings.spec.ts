@@ -159,11 +159,22 @@ test.describe("settings — tab matrix", () => {
     await expect(page.getByTestId("shortcuts-customize-toggle")).toBeVisible();
 
     // Back to General (roving-tabindex tablist; General has no testid).
-    await dialog.getByRole("tab", { name: "General" }).click();
+    const general = dialog.getByRole("tab", { name: "General" });
+    await general.click();
     await expect(page.getByTestId("export-data-button")).toBeVisible();
 
+    const generalPanelId = await general.getAttribute("aria-controls");
+    if (!generalPanelId) throw new Error("General tab panel is not connected");
+    const generalTabId = await general.getAttribute("id");
+    if (!generalTabId) throw new Error("General tab is missing its id");
+    const generalPanel = dialog.locator(`[id="${generalPanelId}"]`);
+    await expect(generalPanel).toHaveAttribute("role", "tabpanel");
+    await expect(generalPanel).toHaveAttribute(
+      "aria-labelledby",
+      generalTabId,
+    );
+
     // Roving keyboard nav: focus General then arrow across cluster boundaries.
-    const general = dialog.getByRole("tab", { name: "General" });
     await general.focus();
     await page.keyboard.press("ArrowRight");
     await expect(dialog.getByRole("tab", { name: "Activity" })).toHaveAttribute(

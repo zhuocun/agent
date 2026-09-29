@@ -4,6 +4,7 @@ import { useEffect, useState, type JSX } from "react";
 import { Download } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { fetchSpendAnalytics } from "@/lib/apiClient";
 import type { SpendAnalytics } from "@/lib/types";
 import { formatUsdCurrency } from "@/lib/money";
@@ -119,32 +120,38 @@ export function SpendAnalyticsPanel({
         </p>
       </div>
 
-      <div
-        className="grid grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
-        role="group"
+      <ToggleGroup
+        value={[String(days)]}
+        onValueChange={(values) => {
+          const nextDays = Number(values[0]);
+          if (RANGE_OPTIONS.some((option) => option.days === nextDays)) {
+            setDays(nextDays);
+          }
+        }}
         aria-label="Spend range"
+        spacing={0}
+        className="grid w-full grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
       >
         {RANGE_OPTIONS.map((option) => {
           const selected = option.days === days;
           return (
-            <button
+            <ToggleGroupItem
               key={option.days}
+              value={String(option.days)}
               type="button"
-              aria-pressed={selected}
-              onClick={() => setDays(option.days)}
               data-testid={`spend-range-${option.days}`}
               className={cn(
-                "min-w-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
+                "min-w-0 h-auto min-h-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
                 selected
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
+                  ? "bg-background text-foreground shadow-sm aria-pressed:bg-background"
+                  : "bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground",
               )}
             >
               {option.label}
-            </button>
+            </ToggleGroupItem>
           );
         })}
-      </div>
+      </ToggleGroup>
 
       {error ? (
         <p className="ui-body text-destructive-text" role="alert">

@@ -24,6 +24,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1079,6 +1085,11 @@ export function SettingsDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => selectTab(value as SettingsTab)}
+          className="min-h-0 flex-1 flex-col gap-4"
+        >
         {/* Mobile drill-down list — iOS Settings-style grouped rows. Shown only
             below md when no tab content is active (mobileShowList). */}
         {!isDesktop && mobileShowList ? (
@@ -1133,11 +1144,11 @@ export function SettingsDialog({
 
         {/* Desktop tab strip — the horizontal nav rail. Hidden below md. */}
         {isDesktop ? (
-        <div
-          role="tablist"
+        <TabsList
+          activateOnFocus
           aria-label="Settings sections"
           id={tablistId}
-          className="-mx-1 flex shrink-0 items-end gap-3 overflow-x-auto px-1 pb-1 [scrollbar-gutter:stable]"
+          className="-mx-1 flex !h-auto w-full shrink-0 items-end gap-3 overflow-x-auto rounded-none bg-transparent p-0 px-1 pb-1 [scrollbar-gutter:stable]"
         >
           {SETTINGS_TAB_GROUPS.map((group, groupIndex) => (
             <div
@@ -1160,44 +1171,13 @@ export function SettingsDialog({
                   const selected = activeTab === tab.id;
                   const Icon = tab.icon;
                   return (
-                    <button
+                    <TabsTrigger
                       key={tab.id}
-                      type="button"
-                      role="tab"
+                      value={tab.id}
                       id={`${tablistId}-${tab.id}`}
-                      aria-selected={selected}
-                      aria-controls={`${tablistId}-${tab.id}-panel`}
-                      tabIndex={selected ? 0 : -1}
                       data-testid={tab.testId}
-                      onClick={() => selectTab(tab.id)}
-                      onKeyDown={(event) => {
-                        const index = SETTINGS_TABS.findIndex(
-                          (t) => t.id === tab.id,
-                        );
-                        let nextIndex: number | null = null;
-                        if (event.key === "ArrowRight") {
-                          nextIndex =
-                            (index + 1 + SETTINGS_TABS.length) %
-                            SETTINGS_TABS.length;
-                        } else if (event.key === "ArrowLeft") {
-                          nextIndex =
-                            (index - 1 + SETTINGS_TABS.length) %
-                            SETTINGS_TABS.length;
-                        } else if (event.key === "Home") {
-                          nextIndex = 0;
-                        } else if (event.key === "End") {
-                          nextIndex = SETTINGS_TABS.length - 1;
-                        }
-                        if (nextIndex === null) return;
-                        event.preventDefault();
-                        const next = SETTINGS_TABS[nextIndex]!;
-                        selectTab(next.id);
-                        document
-                          .getElementById(`${tablistId}-${next.id}`)
-                          ?.focus();
-                      }}
                       className={cn(
-                        "inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 ui-list-row font-medium whitespace-nowrap transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
+                        "inline-flex h-11 flex-none items-center gap-1.5 rounded-full border-0 px-3.5 ui-list-row font-medium whitespace-nowrap transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:border-transparent focus-visible:shadow-[var(--focus-ring)] focus-visible:ring-0 focus-visible:outline-none data-active:bg-secondary data-active:text-foreground dark:data-active:bg-secondary",
                         selected
                           ? "bg-secondary text-foreground shadow-sm ring-1 ring-ring/30"
                           : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
@@ -1205,19 +1185,20 @@ export function SettingsDialog({
                     >
                       <Icon aria-hidden className="size-4 shrink-0" />
                       <span>{tab.label}</span>
-                    </button>
+                    </TabsTrigger>
                   );
                 })}
               </div>
             </div>
           ))}
-        </div>
+        </TabsList>
         ) : null}
 
         {/* General tab — the existing scrollable settings panel. */}
-        <div
-          role="tabpanel"
-          id={`${tablistId}-general-panel`}
+        <TabsContent
+          value="general"
+          keepMounted
+          tabIndex={undefined}
           {...tabPanelLabelProps("general", tablistId, isDesktop)}
           hidden={activeTab !== "general" || (!isDesktop && mobileShowList)}
           className={cn(
@@ -1617,7 +1598,7 @@ export function SettingsDialog({
             />
           </section>
           </div>
-        </div>
+        </TabsContent>
 
         {/* Folded-in surfaces. Each panel is mounted only while its tab is
             active so the body's fetch-on-open lifecycle fires exactly as it did
@@ -1625,9 +1606,9 @@ export function SettingsDialog({
             discarded on tab switch (the former dialogs reset on close).
             On mobile, hidden when showing the drill-down list. */}
         {activeTab === "memory" && (isDesktop || !mobileShowList) ? (
-          <div
-            role="tabpanel"
-            id={`${tablistId}-memory-panel`}
+          <TabsContent
+            value="memory"
+            tabIndex={undefined}
             {...tabPanelLabelProps("memory", tablistId, isDesktop)}
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
@@ -1636,35 +1617,35 @@ export function SettingsDialog({
               memoryEnabled={memoryEnabled}
               onMemoryEnabledChange={onMemoryEnabledChange}
             />
-          </div>
+          </TabsContent>
         ) : null}
 
         {activeTab === "templates" && (isDesktop || !mobileShowList) ? (
-          <div
-            role="tabpanel"
-            id={`${tablistId}-templates-panel`}
+          <TabsContent
+            value="templates"
+            tabIndex={undefined}
             {...tabPanelLabelProps("templates", tablistId, isDesktop)}
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             <TemplateLibraryBody active />
-          </div>
+          </TabsContent>
         ) : null}
 
         {activeTab === "models" && (isDesktop || !mobileShowList) ? (
-          <div
-            role="tabpanel"
-            id={`${tablistId}-models-panel`}
+          <TabsContent
+            value="models"
+            tabIndex={undefined}
             {...tabPanelLabelProps("models", tablistId, isDesktop)}
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             <ModelDirectoryBody active />
-          </div>
+          </TabsContent>
         ) : null}
 
         {activeTab === "shortcuts" && (isDesktop || !mobileShowList) ? (
-          <div
-            role="tabpanel"
-            id={`${tablistId}-shortcuts-panel`}
+          <TabsContent
+            value="shortcuts"
+            tabIndex={undefined}
             {...tabPanelLabelProps("shortcuts", tablistId, isDesktop)}
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
@@ -1677,19 +1658,20 @@ export function SettingsDialog({
               onResetAction={onResetShortcut}
               onResetAll={onResetAllShortcuts}
             />
-          </div>
+          </TabsContent>
         ) : null}
 
         {activeTab === "activity" && (isDesktop || !mobileShowList) ? (
-          <div
-            role="tabpanel"
-            id={`${tablistId}-activity-panel`}
+          <TabsContent
+            value="activity"
+            tabIndex={undefined}
             {...tabPanelLabelProps("activity", tablistId, isDesktop)}
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             <ActivityBody active onSwitchRoute={onActivitySwitchRoute} />
-          </div>
+          </TabsContent>
         ) : null}
+        </Tabs>
       </DialogContent>
     </Dialog>
   );

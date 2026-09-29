@@ -11,6 +11,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   ApiError,
   ApiNetworkError,
@@ -171,10 +173,8 @@ export function AuthDialog({
         <div className="-mx-2 -my-1 min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-2 py-1">
           <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <div className="space-y-1.5">
-            <label htmlFor={emailId} className="ui-list-row font-medium">
-              Email
-            </label>
-            <input
+            <Label htmlFor={emailId}>Email</Label>
+            <Input
               id={emailId}
               type="email"
               value={email}
@@ -188,16 +188,14 @@ export function AuthDialog({
               aria-invalid={error !== null}
               aria-describedby={error ? errorId : undefined}
               placeholder="you@example.com"
-              className="block h-11 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50 md:text-sm"
+              className="h-11 rounded-2xl border-0 bg-muted/50"
             />
           </div>
 
           <div className="space-y-1.5">
-            <label htmlFor={passwordId} className="ui-list-row font-medium">
-              Password
-            </label>
+            <Label htmlFor={passwordId}>Password</Label>
             <div className="relative">
-              <input
+              <Input
                 id={passwordId}
                 type={showPassword ? "text" : "password"}
                 value={password}
@@ -211,7 +209,7 @@ export function AuthDialog({
                 aria-invalid={error !== null}
                 aria-describedby={error ? errorId : undefined}
                 placeholder="••••••••"
-                className="block h-11 w-full rounded-2xl bg-muted/50 pl-3 pr-14 text-base text-foreground outline-none placeholder:text-muted-foreground focus-visible:shadow-[var(--focus-ring)] disabled:opacity-50 md:text-sm"
+                className="h-11 rounded-2xl border-0 bg-muted/50 pl-3 pr-14"
               />
               <button
                 type="button"

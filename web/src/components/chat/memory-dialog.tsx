@@ -6,6 +6,8 @@ import { Brain, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   createMemoryFact,
   deleteMemoryFact,
@@ -179,16 +181,14 @@ export function MemoryBody({
 
           {/* Add a fact */}
           <div className="space-y-2">
-            <label htmlFor="memory-add-input" className="ui-list-row font-medium">
-              Add a fact
-            </label>
-            <textarea
+            <Label htmlFor="memory-add-input">Add a fact</Label>
+            <Textarea
               id="memory-add-input"
               value={draft}
               maxLength={FACT_MAX}
               rows={2}
               onChange={(event) => setDraft(event.currentTarget.value)}
-              className="min-h-16 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+              className="min-h-16 [@media(hover:none)]:min-h-16 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
               placeholder="e.g. I prefer concise answers and metric units."
               data-testid="memory-add-input"
             />
@@ -230,14 +230,14 @@ export function MemoryBody({
                   >
                     {editingId === fact.id ? (
                       <>
-                        <textarea
+                        <Textarea
                           value={editingText}
                           maxLength={FACT_MAX}
                           rows={2}
                           onChange={(event) =>
                             setEditingText(event.currentTarget.value)
                           }
-                          className="min-h-16 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+                          className="min-h-16 [@media(hover:none)]:min-h-16 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                           data-testid="memory-edit-input"
                         />
                         <div className="flex justify-end gap-2">

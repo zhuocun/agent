@@ -42,6 +42,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -560,7 +561,7 @@ function ConversationRow({
           {conversation.pinned ? (
             <Pin className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
-          <input
+          <Input
             ref={inputRef}
             type="text"
             value={draft}
@@ -574,7 +575,7 @@ function ConversationRow({
             data-testid="sidebar-conversation-rename-input"
             // text-base on mobile keeps iOS Safari from auto-zooming the page
             // when the input focuses (it zooms anything under 16px).
-            className="min-w-0 flex-1 bg-transparent text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] rounded-sm md:text-sm"
+            className="h-auto [@media(hover:none)]:h-auto w-auto min-w-0 flex-1 rounded-sm border-0 bg-transparent px-0"
           />
         </div>
       ) : (
@@ -1563,7 +1564,7 @@ export function Sidebar({
             className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
             aria-hidden
           />
-          <input
+          <Input
             type="search"
             value={search}
             onChange={(e) => {
@@ -1575,7 +1576,7 @@ export function Sidebar({
             aria-label="Search conversations"
             className={cn(
               // text-base on mobile keeps iOS Safari from auto-zooming on focus.
-              "block h-11 w-full rounded-full border border-transparent bg-muted/50 pl-8 text-base text-foreground placeholder:text-muted-foreground outline-none focus-visible:shadow-[var(--focus-ring)] md:text-sm",
+              "h-11 rounded-full border-transparent bg-muted/50 pl-8",
               search.length > 0 ? "pr-12" : "pr-3",
             )}
           />
@@ -2359,7 +2360,7 @@ export function Sidebar({
               Projects group conversations and scope shared defaults.
             </DialogDescription>
           </DialogHeader>
-          <input
+          <Input
             type="text"
             value={projectDraft}
             placeholder="Project name"
@@ -2375,7 +2376,7 @@ export function Sidebar({
               }
             }}
             // text-base on mobile keeps iOS Safari from auto-zooming on focus.
-            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
           />
           <DialogFooter>
             <Button
@@ -2455,7 +2456,7 @@ export function Sidebar({
               Tags label conversations so you can filter the sidebar by them.
             </DialogDescription>
           </DialogHeader>
-          <input
+          <Input
             type="text"
             value={tagDraft}
             placeholder="Tag name"
@@ -2471,7 +2472,7 @@ export function Sidebar({
               }
             }}
             // text-base on mobile keeps iOS Safari from auto-zooming on focus.
-            className="h-9 [@media(hover:none)]:h-11 w-full rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+            className="focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
           />
           <DialogFooter>
             <Button

@@ -35,6 +35,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { AppShell } from "@/components/chat/app-shell";
 import { Sidebar } from "@/components/chat/sidebar";
 import { AppHeader } from "@/components/chat/app-header";
@@ -4413,7 +4414,7 @@ export function ChatThread() {
               handlePaletteCreateSubmit();
             }}
           >
-            <input
+            <Input
               type="text"
               autoComplete="off"
               autoFocus
@@ -4424,7 +4425,7 @@ export function ChatThread() {
                 paletteCreate === "tag" ? "Tag name" : "Project name"
               }
               placeholder={paletteCreate === "tag" ? "Tag name" : "Project name"}
-              className="block h-9 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:h-11 md:text-sm"
+              className="rounded-2xl border-0 bg-muted/50"
             />
             <DialogFooter className="mt-4">
               <Button
@@ -4511,7 +4512,7 @@ export function ChatThread() {
               </span>{" "}
               to confirm.
             </p>
-            <input
+            <Input
               type="text"
               autoComplete="off"
               autoFocus
@@ -4519,7 +4520,7 @@ export function ChatThread() {
               onChange={(e) => setDeleteConfirmText(e.target.value)}
               data-testid="delete-account-confirm-input"
               aria-label={`Type ${deleteConfirmExpected} to confirm account deletion`}
-              className="block h-9 w-full rounded-2xl bg-muted/50 px-3 text-base text-foreground outline-none focus-visible:shadow-[var(--focus-ring)] [@media(hover:none)]:h-11 md:text-sm"
+              className="rounded-2xl border-0 bg-muted/50"
             />
           </div>
           <DialogFooter>

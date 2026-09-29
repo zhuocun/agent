@@ -5,6 +5,9 @@ import { FileText, Pencil, Plus, Trash2, X } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   createPromptTemplate,
   deletePromptTemplate,
@@ -176,39 +179,34 @@ export function TemplateLibraryBody({
       <div className="-mr-2 mt-4 min-h-0 max-h-[60dvh] flex-1 space-y-5 overflow-y-auto overscroll-contain pr-2 sm:max-h-none">
           {/* Add a template */}
           <div className="space-y-2">
-            <label
-              htmlFor="template-add-title"
-              className="ui-list-row font-medium"
-            >
-              Add a template
-            </label>
-            <input
+            <Label htmlFor="template-add-title">Add a template</Label>
+            <Input
               id="template-add-title"
               value={draftTitle}
               maxLength={TITLE_MAX}
               onChange={(event) => setDraftTitle(event.currentTarget.value)}
-              className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+              className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
               placeholder="Title — e.g. Blog post outline"
               data-testid="template-add-title"
             />
-            <textarea
+            <Textarea
               id="template-add-body"
               value={draftBody}
               maxLength={BODY_MAX}
               rows={3}
               onChange={(event) => setDraftBody(event.currentTarget.value)}
-              className="min-h-20 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+              className="focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
               placeholder="Body — e.g. Write a blog post about {{topic}} for {{audience}}."
               data-testid="template-add-body"
             />
-            <input
+            <Input
               id="template-add-description"
               value={draftDescription}
               maxLength={DESCRIPTION_MAX}
               onChange={(event) =>
                 setDraftDescription(event.currentTarget.value)
               }
-              className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+              className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
               placeholder="Description (optional)"
               data-testid="template-add-description"
             />
@@ -251,32 +249,32 @@ export function TemplateLibraryBody({
                   >
                     {editingId === template.id ? (
                       <>
-                        <input
+                        <Input
                           value={editingTitle}
                           maxLength={TITLE_MAX}
                           onChange={(event) =>
                             setEditingTitle(event.currentTarget.value)
                           }
-                          className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+                          className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                           data-testid="template-edit-title"
                         />
-                        <textarea
+                        <Textarea
                           value={editingBody}
                           maxLength={BODY_MAX}
                           rows={3}
                           onChange={(event) =>
                             setEditingBody(event.currentTarget.value)
                           }
-                          className="min-h-20 w-full resize-y rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+                          className="focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                           data-testid="template-edit-body"
                         />
-                        <input
+                        <Input
                           value={editingDescription}
                           maxLength={DESCRIPTION_MAX}
                           onChange={(event) =>
                             setEditingDescription(event.currentTarget.value)
                           }
-                          className="w-full rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm"
+                          className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                           placeholder="Description (optional)"
                           data-testid="template-edit-description"
                         />

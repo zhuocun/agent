@@ -436,6 +436,18 @@ test.describe("settings — usage meter states", () => {
 
     await expect(dialog.getByText("No usage left")).toBeVisible();
     await expect(dialog.getByText(/Usage limit reached/)).toBeVisible();
+    const meter = dialog.getByRole("progressbar");
+    await expect(meter).toHaveAttribute(
+      "aria-label",
+      "Usage 1,000 / 1,000 used this month, 0 remaining — limit reached",
+    );
+    await expect(meter).toHaveAttribute("aria-valuemin", "0");
+    await expect(meter).toHaveAttribute("aria-valuemax", "100");
+    await expect(meter).toHaveAttribute("aria-valuenow", "100");
+    await expect(meter).toHaveAttribute(
+      "aria-valuetext",
+      "1,000 / 1,000 used, 0 remaining this month",
+    );
   });
 
   test("renders a near-cap spend warning meter", async ({ page }) => {
@@ -457,6 +469,12 @@ test.describe("settings — usage meter states", () => {
 
     // $10 cap, $9 spent → $1 left, 90% → warning tone, USD remaining text.
     await expect(dialog.getByText("$1.00 left")).toBeVisible();
+    const meter = dialog.getByRole("progressbar");
+    await expect(meter).toHaveAttribute("aria-valuenow", "90");
+    await expect(meter).toHaveAttribute(
+      "aria-valuetext",
+      "$9.00 of $10.00 spent this month, $1.00 remaining",
+    );
   });
 });
 

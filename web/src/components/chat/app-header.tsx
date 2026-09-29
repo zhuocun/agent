@@ -160,7 +160,8 @@ export function AppHeader({
         >
           {onOpenCommandPalette ? (
             <>
-              <button
+              <Button
+                variant="ghost"
                 type="button"
                 aria-label="Search and commands"
                 onClick={onOpenCommandPalette}
@@ -169,7 +170,9 @@ export function AppHeader({
                 // affordance doubles as shortcut education.
                 className={cn(
                   PILL_HALF,
+                  "p-0",
                   paletteShortcut && "md:w-auto md:gap-2 md:px-3.5",
+                  "active:not-aria-[haspopup]:brightness-100",
                 )}
               >
                 <Search className="size-[18px]" strokeWidth={2.25} />
@@ -179,11 +182,12 @@ export function AppHeader({
                     className="hidden md:flex"
                   />
                 ) : null}
-              </button>
+              </Button>
               <span aria-hidden className="h-4 w-px bg-foreground/10" />
             </>
           ) : null}
-          <button
+          <Button
+            variant="ghost"
             type="button"
             aria-label="New chat"
             onClick={onNewChat}
@@ -195,12 +199,12 @@ export function AppHeader({
             // thumb-zone). Ordered last, `hidden md:inline-flex` wins the merge.
             className={cn(
               PILL_HALF,
-              "hidden md:inline-flex",
+              "hidden md:inline-flex p-0 active:not-aria-[haspopup]:brightness-100",
               sidebarOpen && "md:hidden",
             )}
           >
             <SquarePen className="size-[18px]" strokeWidth={2.25} />
-          </button>
+          </Button>
           <span
             aria-hidden
             className={cn(

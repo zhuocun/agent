@@ -30,6 +30,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1224,9 +1225,9 @@ export function SettingsDialog({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <p className="truncate ui-list-row font-medium">{account.name}</p>
-                  <span className="shrink-0 rounded-full bg-secondary px-2 py-0.5 ui-caption font-medium text-secondary-foreground ring-1 ring-border">
+                  <Badge variant="plan" className="shrink-0">
                     {billing.planLabel}
-                  </span>
+                  </Badge>
                 </div>
                 <p className="truncate ui-caption text-muted-foreground">
                   {account.email}

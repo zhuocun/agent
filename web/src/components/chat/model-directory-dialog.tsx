@@ -5,6 +5,7 @@ import { Check, Database, Minus, ShieldCheck, ShieldOff } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { fetchModelDirectory } from "@/lib/apiClient";
 import type {
   ModelDirectoryEntry,
@@ -155,31 +156,32 @@ function ProviderCard({
   const status = STATUS_COPY[entry.status];
   return (
     <section
-      className="glass-clear space-y-3 rounded-2xl px-3.5 py-3"
       data-testid="directory-provider"
       data-provider={entry.providerId}
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="ui-list-row font-semibold">{entry.label}</h3>
-        <Badge variant={status.variant}>{status.label}</Badge>
-        {entry.defaultRouteEligible ? (
-          <Badge variant="outline">Default-eligible</Badge>
-        ) : null}
-      </div>
+      <Card variant="glass" density="spacious">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="ui-list-row font-semibold">{entry.label}</h3>
+          <Badge variant={status.variant}>{status.label}</Badge>
+          {entry.defaultRouteEligible ? (
+            <Badge variant="outline">Default-eligible</Badge>
+          ) : null}
+        </div>
 
-      <PolicyBlock policy={entry.dataPolicy} />
+        <PolicyBlock policy={entry.dataPolicy} />
 
-      {entry.tiers.length > 0 ? (
-        <ul className="space-y-0.5 border-t border-border/50 pt-2">
-          {entry.tiers.map((tier) => (
-            <TierRow key={tier.tierId} tier={tier} />
-          ))}
-        </ul>
-      ) : (
-        <p className="border-t border-border/50 pt-2 ui-caption text-muted-foreground">
-          No tiers available on this route yet.
-        </p>
-      )}
+        {entry.tiers.length > 0 ? (
+          <ul className="space-y-0.5 border-t border-border/50 pt-2">
+            {entry.tiers.map((tier) => (
+              <TierRow key={tier.tierId} tier={tier} />
+            ))}
+          </ul>
+        ) : (
+          <p className="border-t border-border/50 pt-2 ui-caption text-muted-foreground">
+            No tiers available on this route yet.
+          </p>
+        )}
+      </Card>
     </section>
   );
 }

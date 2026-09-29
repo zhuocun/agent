@@ -5,6 +5,7 @@ import { Globe, ShieldCheck } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { fetchActivity, fetchDataProcessing } from "@/lib/apiClient";
 import type { ActivityEvent, DataProcessingRollup } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -175,39 +176,40 @@ export function ActivityBody({
                 {buckets.map((bucket) => (
                   <li
                     key={bucket.providerId}
-                    className="glass-clear space-y-1 rounded-2xl px-3.5 py-3"
                     data-testid="data-processing-bucket"
                   >
-                    <div className="flex items-start gap-3">
-                      <Globe
-                        aria-hidden
-                        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                      />
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <p className="ui-body">
-                          <span className="font-medium tabular-nums">
-                            {bucket.messageCount}
-                          </span>{" "}
-                          {bucket.messageCount === 1 ? "message" : "messages"}{" "}
-                          processed in{" "}
-                          <span className="font-medium">
-                            {jurisdictionPhrase(bucket.jurisdiction)}
-                          </span>{" "}
-                          <span className="text-muted-foreground">
-                            ({bucket.providerLabel})
-                          </span>
-                        </p>
-                        <p className="ui-caption text-muted-foreground">
-                          {bucket.platformCount} on platform key
-                          {bucket.isByokCount > 0
-                            ? `, ${bucket.isByokCount} on your own key`
-                            : ""}
-                          {bucket.substitutionCount > 0
-                            ? ` · ${bucket.substitutionCount} re-routed`
-                            : ""}
-                        </p>
+                    <Card variant="glass" density="compact">
+                      <div className="flex items-start gap-3">
+                        <Globe
+                          aria-hidden
+                          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                        />
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <p className="ui-body">
+                            <span className="font-medium tabular-nums">
+                              {bucket.messageCount}
+                            </span>{" "}
+                            {bucket.messageCount === 1 ? "message" : "messages"}{" "}
+                            processed in{" "}
+                            <span className="font-medium">
+                              {jurisdictionPhrase(bucket.jurisdiction)}
+                            </span>{" "}
+                            <span className="text-muted-foreground">
+                              ({bucket.providerLabel})
+                            </span>
+                          </p>
+                          <p className="ui-caption text-muted-foreground">
+                            {bucket.platformCount} on platform key
+                            {bucket.isByokCount > 0
+                              ? `, ${bucket.isByokCount} on your own key`
+                              : ""}
+                            {bucket.substitutionCount > 0
+                              ? ` · ${bucket.substitutionCount} re-routed`
+                              : ""}
+                          </p>
+                        </div>
                       </div>
-                    </div>
+                    </Card>
                   </li>
                 ))}
               </ul>

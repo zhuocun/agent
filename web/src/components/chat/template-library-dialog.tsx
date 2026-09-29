@@ -5,6 +5,7 @@ import { FileText, Pencil, Plus, Trash2, X } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -244,111 +245,112 @@ export function TemplateLibraryBody({
                   <li
                     key={template.id}
                     ref={editingId === template.id ? editRowRef : undefined}
-                    className="glass-clear space-y-2 rounded-2xl px-3.5 py-3"
                     data-testid="template-item"
                   >
-                    {editingId === template.id ? (
-                      <>
-                        <Input
-                          value={editingTitle}
-                          maxLength={TITLE_MAX}
-                          onChange={(event) =>
-                            setEditingTitle(event.currentTarget.value)
-                          }
-                          className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
-                          data-testid="template-edit-title"
-                        />
-                        <Textarea
-                          value={editingBody}
-                          maxLength={BODY_MAX}
-                          rows={3}
-                          onChange={(event) =>
-                            setEditingBody(event.currentTarget.value)
-                          }
-                          className="focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
-                          data-testid="template-edit-body"
-                        />
-                        <Input
-                          value={editingDescription}
-                          maxLength={DESCRIPTION_MAX}
-                          onChange={(event) =>
-                            setEditingDescription(event.currentTarget.value)
-                          }
-                          className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
-                          placeholder="Description (optional)"
-                          data-testid="template-edit-description"
-                        />
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={cancelEdit}
-                            data-testid="template-edit-cancel"
-                          >
-                            <X aria-hidden className="size-3.5" />
-                            <span>Cancel</span>
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={() => void handleSaveEdit(template.id)}
-                            disabled={
-                              busyId === template.id ||
-                              editingTitle.trim().length === 0 ||
-                              editingBody.trim().length === 0
+                    <Card variant="glass" density="regular">
+                      {editingId === template.id ? (
+                        <>
+                          <Input
+                            value={editingTitle}
+                            maxLength={TITLE_MAX}
+                            onChange={(event) =>
+                              setEditingTitle(event.currentTarget.value)
                             }
-                            data-testid="template-edit-save"
-                          >
-                            Save
-                          </Button>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="flex items-start gap-3">
-                        <FileText
-                          aria-hidden
-                          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                        />
-                        <div className="min-w-0 flex-1 space-y-0.5">
-                          <p className="ui-list-row font-medium break-words">
-                            {template.title}
-                          </p>
-                          {template.description ? (
-                            <p className="ui-caption text-muted-foreground break-words">
-                              {template.description}
+                            className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
+                            data-testid="template-edit-title"
+                          />
+                          <Textarea
+                            value={editingBody}
+                            maxLength={BODY_MAX}
+                            rows={3}
+                            onChange={(event) =>
+                              setEditingBody(event.currentTarget.value)
+                            }
+                            className="focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
+                            data-testid="template-edit-body"
+                          />
+                          <Input
+                            value={editingDescription}
+                            maxLength={DESCRIPTION_MAX}
+                            onChange={(event) =>
+                              setEditingDescription(event.currentTarget.value)
+                            }
+                            className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
+                            placeholder="Description (optional)"
+                            data-testid="template-edit-description"
+                          />
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={cancelEdit}
+                              data-testid="template-edit-cancel"
+                            >
+                              <X aria-hidden className="size-3.5" />
+                              <span>Cancel</span>
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => void handleSaveEdit(template.id)}
+                              disabled={
+                                busyId === template.id ||
+                                editingTitle.trim().length === 0 ||
+                                editingBody.trim().length === 0
+                              }
+                              data-testid="template-edit-save"
+                            >
+                              Save
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex items-start gap-3">
+                          <FileText
+                            aria-hidden
+                            className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                          />
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <p className="ui-list-row font-medium break-words">
+                              {template.title}
                             </p>
-                          ) : null}
-                          <p className="ui-body break-words whitespace-pre-wrap text-muted-foreground">
-                            {template.body}
-                          </p>
+                            {template.description ? (
+                              <p className="ui-caption text-muted-foreground break-words">
+                                {template.description}
+                              </p>
+                            ) : null}
+                            <p className="ui-body break-words whitespace-pre-wrap text-muted-foreground">
+                              {template.body}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              aria-label="Edit template"
+                              onClick={() => startEdit(template)}
+                              disabled={busyId === template.id}
+                              data-testid="template-edit-button"
+                            >
+                              <Pencil aria-hidden className="size-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              aria-label="Delete template"
+                              onClick={() => void handleDelete(template.id)}
+                              disabled={busyId === template.id}
+                              data-testid="template-delete-button"
+                            >
+                              <Trash2 aria-hidden className="size-3.5" />
+                            </Button>
+                          </div>
                         </div>
-                        <div className="flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Edit template"
-                            onClick={() => startEdit(template)}
-                            disabled={busyId === template.id}
-                            data-testid="template-edit-button"
-                          >
-                            <Pencil aria-hidden className="size-3.5" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Delete template"
-                            onClick={() => void handleDelete(template.id)}
-                            disabled={busyId === template.id}
-                            data-testid="template-delete-button"
-                          >
-                            <Trash2 aria-hidden className="size-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    )}
+                      )}
+                    </Card>
                   </li>
                 ))}
               </ul>

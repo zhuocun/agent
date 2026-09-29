@@ -4,6 +4,7 @@ import { useEffect, useId, useState, type JSX } from "react";
 import { Brain, Pencil, Plus, Trash2, X } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -225,81 +226,82 @@ export function MemoryBody({
                 {facts.map((fact) => (
                   <li
                     key={fact.id}
-                    className="glass-clear space-y-2 rounded-2xl px-3.5 py-3"
                     data-testid="memory-fact"
                   >
-                    {editingId === fact.id ? (
-                      <>
-                        <Textarea
-                          value={editingText}
-                          maxLength={FACT_MAX}
-                          rows={2}
-                          onChange={(event) =>
-                            setEditingText(event.currentTarget.value)
-                          }
-                          className="min-h-16 [@media(hover:none)]:min-h-16 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
-                          data-testid="memory-edit-input"
-                        />
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={cancelEdit}
-                            data-testid="memory-edit-cancel"
-                          >
-                            <X aria-hidden className="size-3.5" />
-                            <span>Cancel</span>
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={() => void handleSaveEdit(fact.id)}
-                            disabled={
-                              busyId === fact.id ||
-                              editingText.trim().length === 0
+                    <Card variant="glass" density="regular">
+                      {editingId === fact.id ? (
+                        <>
+                          <Textarea
+                            value={editingText}
+                            maxLength={FACT_MAX}
+                            rows={2}
+                            onChange={(event) =>
+                              setEditingText(event.currentTarget.value)
                             }
-                            data-testid="memory-edit-save"
-                          >
-                            Save
-                          </Button>
+                            className="min-h-16 [@media(hover:none)]:min-h-16 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
+                            data-testid="memory-edit-input"
+                          />
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={cancelEdit}
+                              data-testid="memory-edit-cancel"
+                            >
+                              <X aria-hidden className="size-3.5" />
+                              <span>Cancel</span>
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => void handleSaveEdit(fact.id)}
+                              disabled={
+                                busyId === fact.id ||
+                                editingText.trim().length === 0
+                              }
+                              data-testid="memory-edit-save"
+                            >
+                              Save
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex items-start gap-3">
+                          <Brain
+                            aria-hidden
+                            className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                          />
+                          <p className="min-w-0 flex-1 ui-list-row break-words whitespace-pre-wrap">
+                            {fact.content}
+                          </p>
+                          <div className="flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              aria-label="Edit fact"
+                              onClick={() => startEdit(fact)}
+                              disabled={busyId === fact.id}
+                              data-testid="memory-edit-button"
+                            >
+                              <Pencil aria-hidden className="size-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              aria-label="Delete fact"
+                              onClick={() => void handleDelete(fact.id)}
+                              disabled={busyId === fact.id}
+                              data-testid="memory-delete-button"
+                            >
+                              <Trash2 aria-hidden className="size-3.5" />
+                            </Button>
+                          </div>
                         </div>
-                      </>
-                    ) : (
-                      <div className="flex items-start gap-3">
-                        <Brain
-                          aria-hidden
-                          className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-                        />
-                        <p className="min-w-0 flex-1 ui-list-row break-words whitespace-pre-wrap">
-                          {fact.content}
-                        </p>
-                        <div className="flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Edit fact"
-                            onClick={() => startEdit(fact)}
-                            disabled={busyId === fact.id}
-                            data-testid="memory-edit-button"
-                          >
-                            <Pencil aria-hidden className="size-3.5" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Delete fact"
-                            onClick={() => void handleDelete(fact.id)}
-                            disabled={busyId === fact.id}
-                            data-testid="memory-delete-button"
-                          >
-                            <Trash2 aria-hidden className="size-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    )}
+                      )}
+                    </Card>
                   </li>
                 ))}
               </ul>

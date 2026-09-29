@@ -1537,17 +1537,18 @@ export function Sidebar({
         {/* iOS-style pill row matching the conversation list below — no border,
             no fill until hover, so the action reads as part of the same surface
             family rather than a heavy outlined affordance. */}
-        <button
+        <Button
           type="button"
           onClick={onNewChat}
+          variant="sidebar"
+          size="sidebar"
           // E2E target: the header also has a "New chat" affordance, and the
           // testid keeps us from picking the wrong one.
           data-testid="sidebar-new-chat"
-          className="flex min-h-11 w-full select-none items-center gap-2 rounded-2xl px-3 py-2 text-left ui-list-row font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-100 touch-manipulation hover:bg-muted/60 focus-visible:shadow-[var(--focus-ring)] active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100"
         >
           <Plus className="size-4" aria-hidden />
           <span>{t("sidebar.newChat")}</span>
-        </button>
+        </Button>
       </div>
 
       {/* Search + list-management toolbar region. The quick-search input and

@@ -36,6 +36,8 @@ const buttonVariants = cva(
           "text-primary underline-offset-4 hover:underline",
         ),
         plain: "font-normal",
+      sidebar:
+        "font-medium text-sidebar-foreground transition-[transform,background-color] duration-100 ease-in-out! touch-manipulation hover:bg-muted/60 active:scale-[0.97] motion-reduce:active:scale-100",
       },
       size: {
         default:
@@ -50,6 +52,8 @@ const buttonVariants = cva(
           "size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg [@media(hover:none)]:size-11",
         "icon-lg": "size-9 hover:-translate-y-px [@media(hover:none)]:size-11",
         bare: "h-auto min-h-0 border-0 p-0",
+        sidebar:
+          "flex h-auto min-h-11 w-full shrink justify-start gap-2 rounded-2xl px-3 py-2 text-left ui-list-row whitespace-normal",
       },
     },
     defaultVariants: {

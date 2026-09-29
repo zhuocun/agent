@@ -7,7 +7,7 @@ const interactiveVariant =
   "border border-transparent bg-clip-padding font-medium active:not-aria-[haspopup]:scale-[0.96] active:not-aria-[haspopup]:brightness-[0.92] active:duration-[70ms] active:ease-out motion-reduce:active:not-aria-[haspopup]:scale-100"
 
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg text-base whitespace-nowrap md:text-sm transition-[transform,box-shadow,background-color,color,filter] duration-[280ms] ease-ios-spring outline-none select-none focus-visible:shadow-[var(--focus-ring)] motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg whitespace-nowrap transition-[transform,box-shadow,background-color,color,filter] duration-[280ms] ease-ios-spring outline-none select-none focus-visible:shadow-[var(--focus-ring)] motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -36,21 +36,21 @@ const buttonVariants = cva(
           "text-primary underline-offset-4 hover:underline",
         ),
         plain: "font-normal",
-      sidebar:
-        "font-medium text-sidebar-foreground transition-[transform,background-color] duration-100 ease-in-out! touch-manipulation hover:bg-muted/60 active:scale-[0.97] motion-reduce:active:scale-100",
+        sidebar:
+          "font-medium text-sidebar-foreground transition-[transform,background-color] duration-100 ease-in-out touch-manipulation hover:bg-muted/60 active:scale-[0.97] motion-reduce:active:scale-100",
       },
       size: {
         default:
-          "h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [@media(hover:none)]:min-h-11",
+          "text-base md:text-sm h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [@media(hover:none)]:min-h-11",
         xs: "h-6 gap-1 rounded-[min(var(--radius-md),10px)] px-2 text-[0.8125rem] md:text-xs in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3 [@media(hover:none)]:min-h-11",
         sm: "h-7 gap-1 rounded-[min(var(--radius-md),12px)] px-2.5 text-sm md:text-[0.8rem] in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3.5 [@media(hover:none)]:min-h-11",
-        lg: "h-9 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [@media(hover:none)]:min-h-11",
-        icon: "size-8 hover:-translate-y-px [@media(hover:none)]:size-11",
+        lg: "text-base md:text-sm h-9 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2 [@media(hover:none)]:min-h-11",
+        icon: "text-base md:text-sm size-8 hover:-translate-y-px [@media(hover:none)]:size-11",
         "icon-xs":
-          "size-6 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-lg [&_svg:not([class*='size-'])]:size-3 [@media(hover:none)]:size-11",
+          "text-base md:text-sm size-6 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-lg [&_svg:not([class*='size-'])]:size-3 [@media(hover:none)]:size-11",
         "icon-sm":
-          "size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg [@media(hover:none)]:size-11",
-        "icon-lg": "size-9 hover:-translate-y-px [@media(hover:none)]:size-11",
+          "text-base md:text-sm size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg [@media(hover:none)]:size-11",
+        "icon-lg": "text-base md:text-sm size-9 hover:-translate-y-px [@media(hover:none)]:size-11",
         bare: "h-auto min-h-0 border-0 p-0",
         sidebar:
           "flex h-auto min-h-11 w-full shrink justify-start gap-2 rounded-2xl px-3 py-2 text-left ui-list-row whitespace-normal",

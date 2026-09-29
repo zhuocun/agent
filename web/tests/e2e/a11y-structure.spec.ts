@@ -48,6 +48,7 @@ test.describe("desktop", () => {
         "aria-required-parent",
         "listitem",
         "list",
+        "scrollable-region-focusable",
       ]),
     ).toEqual([]);
 

@@ -4,6 +4,7 @@ import { useEffect, useState, type JSX } from "react";
 import { Check, Database, Minus, ShieldCheck, ShieldOff } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { fetchModelDirectory } from "@/lib/apiClient";
@@ -247,9 +248,9 @@ export function ModelDirectoryBody({
         {loading ? (
           <p className="ui-body text-muted-foreground">Loading…</p>
         ) : error ? (
-          <p role="alert" className="ui-body text-destructive-text">
+          <Alert variant="inline">
             {error}
-          </p>
+          </Alert>
         ) : (
           <SectionListing entries={entries} />
         )}

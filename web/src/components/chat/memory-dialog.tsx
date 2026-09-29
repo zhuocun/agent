@@ -4,6 +4,7 @@ import { useEffect, useId, useState, type JSX } from "react";
 import { Brain, Pencil, Plus, Trash2, X } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -208,9 +209,9 @@ export function MemoryBody({
           </div>
 
           {error ? (
-            <p role="alert" className="ui-body text-destructive-text">
+            <Alert variant="inline">
               {error}
-            </p>
+            </Alert>
           ) : null}
 
           {/* The ledger */}

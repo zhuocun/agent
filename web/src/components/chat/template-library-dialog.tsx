@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type JSX } from "react";
 import { FileText, Pencil, Plus, Trash2, X } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -226,9 +227,9 @@ export function TemplateLibraryBody({
           </div>
 
           {error ? (
-            <p role="alert" className="ui-body text-destructive-text">
+            <Alert variant="inline">
               {error}
-            </p>
+            </Alert>
           ) : null}
 
           {/* The library */}

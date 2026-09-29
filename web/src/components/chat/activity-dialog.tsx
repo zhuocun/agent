@@ -4,6 +4,7 @@ import { useEffect, useState, type JSX } from "react";
 import { Globe, ShieldCheck } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { fetchActivity, fetchDataProcessing } from "@/lib/apiClient";
@@ -239,9 +240,9 @@ export function ActivityBody({
             {loading ? (
               <p className="ui-body text-muted-foreground">Loading…</p>
             ) : error ? (
-              <p role="alert" className="ui-body text-destructive-text">
+              <Alert variant="inline">
                 {error}
-              </p>
+              </Alert>
             ) : showEmptyActivity ? (
               <p className="ui-body text-muted-foreground">
                 No account activity recorded yet.

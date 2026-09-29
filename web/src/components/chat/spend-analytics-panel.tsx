@@ -129,8 +129,7 @@ export function SpendAnalyticsPanel({
           }
         }}
         aria-label="Spend range"
-        spacing={0}
-        className="grid w-full grid-cols-3 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
+        className="grid w-full grid-cols-3 gap-0 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
       >
         {RANGE_OPTIONS.map((option) => {
           const selected = option.days === days;
@@ -141,7 +140,7 @@ export function SpendAnalyticsPanel({
               type="button"
               data-testid={`spend-range-${option.days}`}
               className={cn(
-                "min-w-0 h-auto min-h-0 rounded-full px-3 py-1.5 ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
+                "min-w-0 h-auto min-h-0 rounded-full px-3 py-1.5 text-base md:text-sm ui-list-row font-medium transition-colors [@media(hover:none)]:min-h-11",
                 selected
                   ? "bg-background text-foreground shadow-sm aria-pressed:bg-background"
                   : "bg-transparent text-muted-foreground hover:bg-transparent hover:text-foreground",

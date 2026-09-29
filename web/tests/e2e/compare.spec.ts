@@ -35,10 +35,15 @@ async function pickCompareTier(
   slot: 0 | 1,
   tierLabel: string,
 ): Promise<void> {
-  // Open this slot's TierPicker dropdown. The desktop trigger is the only
-  // visible button inside the slot (the mobile sheet trigger is display:none at
-  // this breakpoint, so it's out of the a11y tree).
-  await page.getByTestId(`compare-slot-${slot}`).getByRole("button").click();
+  // Open this slot's dropdown or mobile sheet, depending on the viewport.
+  const slotPicker = page.getByTestId(`compare-slot-${slot}`);
+  await slotPicker.getByRole("button").click();
+  if ((page.viewportSize()?.width ?? 1280) < 768) {
+    const sheet = page.getByRole("dialog", { name: "Model" });
+    await sheet.getByRole("button", { name: tierLabel, exact: true }).click();
+    await expect(sheet).toHaveCount(0);
+    return;
+  }
   // Click the option from the menu that just opened. Scope to currently-VISIBLE
   // menu items so a sibling slot's menu mid-close-animation can't match.
   const option = page
@@ -135,6 +140,59 @@ test.describe("compare mode", () => {
     // (d) No persisted conversation leaked into the sidebar — the compare
     // conversation was temporary, so the rail stays empty.
     await expect(page.getByTestId("sidebar-conversation-link")).toHaveCount(0);
+  });
+
+  test.describe("mobile response tabs", () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    test("keyboard switching keeps both compare streams mounted", async ({
+      page,
+    }) => {
+      await page.goto("/");
+      await waitForBootstrap(page);
+      await enableCompare(page);
+      await pickCompareTier(page, 0, "Fast");
+      await pickCompareTier(page, 1, "Smart");
+
+      await page.getByTestId("composer-textarea").fill("Compare on mobile");
+      await page.getByTestId("composer-send").click();
+
+      const columns = page.getByTestId("compare-column");
+      await expect(columns).toHaveCount(2);
+      await expect(
+        columns.nth(0).getByTestId("assistant-answer"),
+      ).toHaveCount(1, { timeout: 15_000 });
+      await expect(
+        columns.nth(1).getByTestId("assistant-answer"),
+      ).toHaveCount(1, { timeout: 15_000 });
+
+      const tabs = page.getByTestId("compare-tab");
+      const fastPanelId = await tabs.first().getAttribute("aria-controls");
+      const smartPanelId = await tabs.nth(1).getAttribute("aria-controls");
+      if (!fastPanelId || !smartPanelId) {
+        throw new Error("Compare tabs are not connected to their panels");
+      }
+      const fastPanel = page.locator(`[id="${fastPanelId}"]`);
+      const smartPanel = page.locator(`[id="${smartPanelId}"]`);
+      await expect(tabs.first()).toHaveAttribute("aria-selected", "true");
+      const fastTabId = await tabs.first().getAttribute("id");
+      if (!fastTabId) throw new Error("Fast compare tab is missing its id");
+      await expect(fastPanel).toHaveAttribute(
+        "aria-labelledby",
+        fastTabId,
+      );
+      await expect(fastPanel).toHaveAttribute("role", "tabpanel");
+      await expect(fastPanel).toBeVisible();
+      await expect(smartPanel).toBeHidden();
+
+      await tabs.first().focus();
+      await page.keyboard.press("ArrowRight");
+      await expect(tabs.nth(1)).toBeFocused();
+      await expect(tabs.nth(1)).toHaveAttribute("aria-selected", "true");
+      await expect(smartPanel).toBeVisible();
+      await expect(fastPanel).toBeHidden();
+      await expect(columns).toHaveCount(2);
+    });
   });
 
   test("anonymous user is not offered Pro as a compare slot option", async ({

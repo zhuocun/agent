@@ -211,7 +211,9 @@ export function AuthDialog({
                 placeholder="••••••••"
                 className="h-11 rounded-2xl border-0 bg-muted/50 pl-3 pr-14"
               />
-              <button
+              <Button
+                variant="plain"
+                size="bare"
                 type="button"
                 // Accessible name deliberately avoids the word "password" so it
                 // doesn't collide with getByLabel("Password") for the input.
@@ -219,14 +221,14 @@ export function AuthDialog({
                 aria-pressed={showPassword}
                 onClick={() => setShowPassword((v) => !v)}
                 disabled={pending}
-                className="absolute right-0.5 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+                className="absolute right-0.5 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
               >
                 {showPassword ? (
                   <EyeOff aria-hidden className="size-4" />
                 ) : (
                   <Eye aria-hidden className="size-4" />
                 )}
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -247,14 +249,16 @@ export function AuthDialog({
 
           <p className="text-center ui-body text-muted-foreground">
             {isSignIn ? "New here?" : "Already have an account?"}{" "}
-            <button
+            <Button
+              variant="plain"
+              size="bare"
               type="button"
               onClick={switchMode}
               disabled={pending}
-              className="font-medium text-foreground underline-offset-2 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50"
+              className="inline font-medium text-foreground underline-offset-2 hover:underline"
             >
               {isSignIn ? "Create an account" : "Sign in"}
-            </button>
+            </Button>
           </p>
         </div>
       </DialogContent>

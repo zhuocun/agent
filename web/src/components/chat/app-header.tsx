@@ -72,7 +72,7 @@ interface AppHeaderProps {
 const FLOAT_SCRIM_DARK = "dark:[--glass-regular-bg:var(--glass-strong-bg)]";
 
 const FLOAT_BUTTON = cn(
-  "glass-regular size-[45px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent",
+  "glass-regular size-[45px] rounded-full text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent",
   FLOAT_SCRIM_DARK,
 );
 
@@ -123,6 +123,7 @@ export function AppHeader({
         <Button
           type="button"
           variant="ghost"
+          size="bare"
           aria-label="Open sidebar"
           // Drawer open-by-tap buzzes to match the edge-swipe open path (G9);
           // feature-detected + no-op on iOS.
@@ -138,6 +139,7 @@ export function AppHeader({
           <Button
             type="button"
             variant="ghost"
+            size="bare"
             aria-label="Open sidebar"
             onClick={onOpenSidebar}
             className={cn("hidden md:inline-flex", FLOAT_BUTTON)}
@@ -160,7 +162,9 @@ export function AppHeader({
         >
           {onOpenCommandPalette ? (
             <>
-              <button
+              <Button
+                variant="plain"
+                size="bare"
                 type="button"
                 aria-label="Search and commands"
                 onClick={onOpenCommandPalette}
@@ -179,11 +183,13 @@ export function AppHeader({
                     className="hidden md:flex"
                   />
                 ) : null}
-              </button>
+              </Button>
               <span aria-hidden className="h-4 w-px bg-foreground/10" />
             </>
           ) : null}
-          <button
+          <Button
+            variant="plain"
+            size="bare"
             type="button"
             aria-label="New chat"
             onClick={onNewChat}
@@ -200,7 +206,7 @@ export function AppHeader({
             )}
           >
             <SquarePen className="size-[18px]" strokeWidth={2.25} />
-          </button>
+          </Button>
           <span
             aria-hidden
             className={cn(

@@ -626,7 +626,11 @@ export function CommandPalette({
           </div>
 
           <div
-            className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+            className={
+              filterMode
+                ? "min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+                : "min-h-0 flex-1 flex flex-col"
+            }
             aria-busy={(filterMode ? filterPending : searchPending) || undefined}
           >
             {filterMode ? (
@@ -844,7 +848,12 @@ export function CommandPalette({
               // listbox > group > option: the only ownership chain ARIA allows
               // here. Native <ul>/<li> would leak list/listitem roles between
               // the listbox and its options (axe aria-required-children).
-              <div role="listbox" id={listboxId} aria-label="Commands">
+              <div
+                role="listbox"
+                id={listboxId}
+                aria-label="Commands"
+                className="min-h-0 flex-1 overflow-y-auto overscroll-contain pt-2 pb-[max(env(safe-area-inset-bottom),0.5rem)]"
+              >
                 {sections.map((section, sectionIndex) => (
                   <div
                     key={section.heading}

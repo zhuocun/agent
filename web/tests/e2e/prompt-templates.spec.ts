@@ -107,6 +107,7 @@ test.describe("prompt library + user-authored templates", () => {
 
     // The body is prefilled verbatim (placeholders are literal text).
     const textarea = page.getByTestId("composer-textarea");
+    await expect(textarea).toBeFocused();
     await expect(textarea).toHaveValue(
       "Write a standup update about {{project}} for {{date}}.",
     );
@@ -122,5 +123,13 @@ test.describe("prompt library + user-authored templates", () => {
 
     // The picker closed on pick.
     await expect(page.getByTestId("template-picker")).toHaveCount(0);
+
+    // Escape closes the picker while returning to the editable draft.
+    await page.getByTestId("composer-more-actions").click();
+    await page.getByTestId("composer-templates").click();
+    await expect(page.getByTestId("template-picker")).toBeVisible();
+    await textarea.press("Escape");
+    await expect(page.getByTestId("template-picker")).toHaveCount(0);
+    await expect(textarea).toBeFocused();
   });
 });

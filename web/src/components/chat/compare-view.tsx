@@ -15,6 +15,12 @@ import {
   type CompareColumnHandle,
 } from "@/components/chat/compare-column";
 import { TierPicker } from "@/components/chat/tier-picker";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, ModelTier, ModelTierId } from "@/lib/types";
@@ -166,7 +172,14 @@ export function CompareView({
   }, [turn, tiers]);
 
   return (
-    <div
+    <Tabs
+      value={String(activeTab)}
+      onValueChange={(value) => {
+        const nextIndex = Number(value);
+        if (!Number.isInteger(nextIndex)) return;
+        haptic("selection");
+        setActiveTab(nextIndex);
+      }}
       className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4"
       data-testid="compare-view"
     >
@@ -174,46 +187,41 @@ export function CompareView({
 
       {/* Mobile tab strip — desktop shows both columns at once, so the tabs are
           hidden at md:. Each tab swaps which single column is visible below. */}
-      <div
-        role="tablist"
+      <TabsList
+        activateOnFocus
         aria-label="Compare responses"
-        className="flex gap-2 md:hidden"
+        className="flex h-auto w-full gap-2 bg-transparent p-0 md:hidden"
       >
         {tiers.map((tier, index) => (
-          <button
+          <TabsTrigger
             key={tier.id}
-            type="button"
-            role="tab"
+            value={String(index)}
             id={`compare-tab-${tier.id}`}
-            aria-selected={activeTab === index}
-            aria-controls={`compare-panel-${tier.id}`}
-            onClick={() => {
-              haptic("selection");
-              setActiveTab(index);
-            }}
             data-testid="compare-tab"
             className={cn(
-              "min-h-11 flex-1 rounded-full px-3 ui-list-row font-medium transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100",
+              "min-h-11 flex-1 rounded-full px-3 ui-list-row font-medium transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:shadow-[var(--focus-ring)] focus-visible:ring-0 focus-visible:outline-none data-active:bg-foreground/[0.08] data-active:text-foreground group-data-[variant=default]/tabs-list:data-active:[box-shadow:none]! group-data-[variant=default]/tabs-list:data-active:focus-visible:[box-shadow:var(--focus-ring)]! dark:data-active:bg-foreground/[0.08] dark:data-active:border-transparent",
               activeTab === index
                 ? "bg-foreground/[0.08] text-foreground"
                 : "text-muted-foreground hover:bg-foreground/[0.04]",
             )}
           >
             {tier.label}
-          </button>
+          </TabsTrigger>
         ))}
-      </div>
+      </TabsList>
 
       {/* Desktop: side-by-side grid. Mobile: a single column; the inactive
           column is hidden but stays MOUNTED so its stream keeps running in the
           background (switching tabs reveals its live/settled state). */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
         {tiers.map((tier, index) => (
-          <div
+          <TabsContent
             key={tier.id}
-            role="tabpanel"
-            id={`compare-panel-${tier.id}`}
-            aria-labelledby={`compare-tab-${tier.id}`}
+            value={String(index)}
+            keepMounted
+            hidden={false}
+            inert={false}
+            tabIndex={undefined}
             className={cn(activeTab === index ? "block" : "hidden md:block")}
           >
             <CompareColumn
@@ -227,9 +235,9 @@ export function CompareView({
               }}
               onStreamingChange={reportStreaming}
             />
-          </div>
+          </TabsContent>
         ))}
       </div>
-    </div>
+    </Tabs>
   );
 }

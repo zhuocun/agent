@@ -13,6 +13,7 @@ import type { LucideIcon } from "lucide-react";
 
 import type { PromptSuggestion } from "@/lib/types";
 import { AiDisclosure } from "@/components/chat/ai-disclosure";
+import { Button } from "@/components/ui/button";
 
 export interface WelcomeScreenProps {
   userName?: string;
@@ -120,7 +121,9 @@ export function WelcomeScreen({
             system and already carries its own hairline border (globals.css);
             under prefers-contrast the utility densifies its fill on its own. */}
         {compact || !onConnect ? null : (
-          <button
+          <Button
+            variant="plain"
+            size="bare"
             type="button"
             onClick={onConnect}
             className="animate-welcome-enter glass-clear mb-5 inline-flex min-h-11 items-center gap-1.5 rounded-full px-4 py-2.5 ui-eyebrow font-medium tracking-wide text-muted-foreground transition-colors duration-200 ease-out md:mb-7 [@media(hover:hover)]:min-h-0 [@media(hover:hover)]:py-1.5 [@media(hover:hover)]:hover:bg-foreground/5 [@media(hover:hover)]:hover:text-foreground active:bg-foreground/[0.08] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
@@ -128,7 +131,7 @@ export function WelcomeScreen({
           >
             Connect your API key
             <ArrowRight className="size-3.5 shrink-0" aria-hidden="true" />
-          </button>
+          </Button>
         )}
 
         {/* Hero greeting — the one display-serif moment in the app (Decision 16

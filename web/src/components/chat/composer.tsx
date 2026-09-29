@@ -25,9 +25,12 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { Popover } from "@base-ui/react/popover";
-
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Tooltip,
   TooltipContent,
@@ -308,9 +311,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     // without making them depend on `value` (which would reload every keystroke).
     const valueRef = useRef(value);
     const prevDraftKeyRef = useRef<string | undefined>(undefined);
-    // Anchor for the popover's outside-click guard — clicks anywhere on the
-    // composer surface (textarea, send button) must NOT dismiss the popover.
-    const capsuleRef = useRef<HTMLDivElement>(null);
+    // Anchor the popovers to the full composer surface and keep its interactions inside.
+    const composerContainerRef = useRef<HTMLDivElement>(null);
     // Tracks the previous value so updateValue can detect transitions — namely a
     // "fresh slash" (prev didn't start with "/", new does) which re-arms the
     // popover even when the user has dismissed an earlier token with Escape.
@@ -882,13 +884,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => {
           fileInputRef.current?.click();
           setMoreActionsOpen(false);
         }}
         disabled={isStreaming}
         aria-label={t("composer.attach")}
-        className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
       >
         <Paperclip className="size-4" />
       </Button>
@@ -898,6 +901,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => {
           cameraInputRef.current?.click();
           setMoreActionsOpen(false);
@@ -905,7 +909,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         disabled={isStreaming}
         aria-label={t("composer.takePhoto")}
         data-testid="composer-camera"
-        className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
       >
         <Camera className="size-4" />
       </Button>
@@ -915,6 +919,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => {
           setMoreActionsOpen(false);
           openTemplatePicker();
@@ -928,7 +933,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         aria-label="Insert a prompt template"
         data-testid="composer-templates"
         className={cn(
-          "size-11 shrink-0 rounded-full p-0",
+          "size-11 shrink-0 rounded-full",
           templatePickerOpen
             ? "text-brand hover:text-brand"
             : "text-muted-foreground hover:text-foreground",
@@ -942,6 +947,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => dictation.toggle()}
         // Feature-detect: when the browser lacks the Web Speech
         // recognition API the control is disabled and the tooltip
@@ -959,7 +965,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         }
         data-testid="composer-dictate"
         className={cn(
-          "size-11 shrink-0 rounded-full p-0",
+          "size-11 shrink-0 rounded-full",
           dictation.listening
             ? "text-brand hover:text-brand"
             : "text-muted-foreground hover:text-foreground",
@@ -984,6 +990,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => dictation.toggle()}
         disabled={!dictation.supported || isStreaming}
         aria-pressed={dictation.listening}
@@ -995,7 +1002,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               : "Start dictation"
         }
         className={cn(
-          "size-11 shrink-0 rounded-full p-0",
+          "size-11 shrink-0 rounded-full",
           TOOLBAR_FOCUS_VISIBLE,
           dictation.listening
             ? "text-brand hover:text-brand"
@@ -1136,7 +1143,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     return (
       // No top hairline any more — the card's own glass shadow + the bottom
       // chrome frost carry the seam against the thread scrolling beneath.
-      <div className="group/composer relative mx-auto w-full max-w-3xl min-w-0 px-4 pt-1">
+      <div
+        ref={composerContainerRef}
+        className="group/composer relative mx-auto w-full max-w-3xl min-w-0 px-4 pt-1"
+      >
         <SlashCommandsPopover
           open={slashOpen}
           commands={MOCK_COMMANDS}
@@ -1147,7 +1157,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           onClose={() => setSlashDismissed(true)}
           listboxId={slashListboxId}
           optionIdPrefix={slashOptionPrefix}
-          anchorRef={capsuleRef}
+          anchorRef={composerContainerRef}
         />
         <TemplatePickerPopover
           open={templatePickerOpen}
@@ -1160,7 +1170,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           loading={!templatesLoaded}
           listboxId={templateListboxId}
           optionIdPrefix={templateOptionPrefix}
-          anchorRef={capsuleRef}
+          anchorRef={composerContainerRef}
         />
         {attachments.length > 0 || attachmentReadPending || attachmentNotice ? (
           <div className="mb-2 flex min-w-0 flex-wrap items-center justify-end gap-2">
@@ -1234,7 +1244,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
           </div>
         ) : null}
         <div
-          ref={capsuleRef}
           // Two-row card (Lovable-style): textarea on top, toolbar beneath.
           // The glass material stays `glass-capsule`; the card swaps the old
           // perfect pill for the welcome-surface --radius-3xl rounding
@@ -1368,12 +1377,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   <Button
                     type="button"
                     variant="ghost"
+                    size="bare"
                     disabled={isStreaming}
                     aria-label={t("composer.moreActions")}
                     aria-haspopup="dialog"
                     data-testid="composer-more-actions"
                     className={cn(
-                      "size-11 shrink-0 rounded-full p-0",
+                      "size-11 shrink-0 rounded-full",
                       TOOLBAR_FOCUS_VISIBLE,
                       moreActionsOpen
                         ? "text-foreground"
@@ -1439,7 +1449,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   </>
                 );
                 return (
-                  <Popover.Root
+                  <Popover
                     open={moreActionsOpen}
                     onOpenChange={(open) => {
                       if (open) setTemplatePickerOpen(false);
@@ -1448,35 +1458,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   >
                     <Tooltip>
                       <TooltipTrigger
-                        render={<Popover.Trigger render={moreActionsTrigger} />}
+                        render={<PopoverTrigger render={moreActionsTrigger} />}
                       />
                       <TooltipContent>{t("composer.moreActions")}</TooltipContent>
                     </Tooltip>
-                    <Popover.Portal>
-                      <Popover.Positioner
-                        side="top"
-                        align="start"
-                        sideOffset={8}
-                        className="z-[60] max-w-[calc(100vw-1rem)] outline-none"
-                      >
-                        <Popover.Popup
-                          // Small anchored actions popover used on every
-                          // viewport — a full bottom sheet is over-weight for
-                          // the two or three rows the cluster ever holds.
-                          // Matches the attribution-row glass + zoom/fade
-                          // enter; motion-reduce path is provided by the
-                          // global reduced-motion CSS for animate-in.
-                          className={cn(
-                            "glass-strong flex max-w-[calc(100vw-1rem)] origin-(--transform-origin) flex-col gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] outline-none",
-                            "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
-                            "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-                          )}
-                        >
-                          {moreActionsRows}
-                        </Popover.Popup>
-                      </Popover.Positioner>
-                    </Popover.Portal>
-                  </Popover.Root>
+                    <PopoverContent
+                      side="top"
+                      align="start"
+                      sideOffset={8}
+                      className={cn(
+                        "w-auto max-w-[calc(100vw-1rem)] gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] ring-0",
+                        "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
+                        "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+                      )}
+                    >
+                      {moreActionsRows}
+                    </PopoverContent>
+                  </Popover>
                 );
               })()}
             {/* Model/mode picker — the same component the header used to host

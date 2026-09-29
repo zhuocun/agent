@@ -2,6 +2,7 @@
 
 import { CornerDownRight } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n/context";
 import { cn } from "@/lib/utils";
 
@@ -66,7 +67,9 @@ export function FollowUpChips({
       aria-label="Suggested follow-ups"
     >
       {suggestions.map((suggestion, index) => (
-        <button
+        <Button
+          variant="plain"
+          size="bare"
           key={`${index}-${suggestion}`}
           type="button"
           onClick={() => onSelect(suggestion)}
@@ -81,12 +84,11 @@ export function FollowUpChips({
             // (UI-COLOR-4). The old `border-border/70` measured 1.15:1.
             "border border-control-border bg-muted/40 ui-list-row text-foreground/80 dark:bg-muted/60 dark:text-muted-foreground",
             "transition-colors hover:bg-muted/70 hover:text-foreground",
-            "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           )}
         >
           <CornerDownRight aria-hidden className="size-3 shrink-0" />
           <span className="min-w-0 truncate">{suggestion}</span>
-        </button>
+        </Button>
       ))}
     </div>
   );

@@ -2,6 +2,7 @@
 
 import { Key } from "lucide-react";
 
+import { Progress } from "@/components/ui/progress";
 import { useT } from "@/lib/i18n/context";
 import { formatUsdMeter } from "@/lib/money";
 import { cn } from "@/lib/utils";
@@ -172,31 +173,30 @@ export function UsageMeter({ usage }: UsageMeterProps) {
       title={presentation.accessibleLabel}
     >
       {showBar ? (
-        <div
-          role="progressbar"
+        <Progress
+          value={barPct}
+          min={0}
+          max={100}
           aria-label={presentation.accessibleLabel}
-          aria-valuenow={barPct}
-          aria-valuemin={0}
-          aria-valuemax={100}
           aria-valuetext={presentation.detailText}
-          className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted shadow-[inset_0_0_0_1px_var(--border)] forced-colors:border forced-colors:border-[CanvasText]"
-        >
-          <div
-            className={cn(
-              "relative h-full rounded-full transition-[width] duration-300 ease-out motion-reduce:transition-none forced-colors:bg-[Highlight]",
-              // Nominal fill uses the brand tint — iOS capacity bars colour
-              // normal fill with the tint, not gray (gray reads inert/
-              // disabled). `/80` keeps it calm rather than fully saturated.
-              // The warning/critical threshold branches are unchanged.
-              isCritical
-                ? "bg-destructive"
-                : isWarning
-                  ? "bg-warning"
-                  : "bg-brand/80",
-            )}
-            style={{ width: `${barPct}%` }}
-          />
-        </div>
+          className={cn(
+            "h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted",
+            "shadow-[inset_0_0_0_1px_var(--border)] forced-colors:border forced-colors:border-[CanvasText]",
+            "[&_[data-slot=progress-track]]:h-full [&_[data-slot=progress-track]]:bg-transparent",
+            "[&_[data-slot=progress-indicator]]:relative [&_[data-slot=progress-indicator]]:rounded-full",
+            "[&_[data-slot=progress-indicator]]:transition-[width] [&_[data-slot=progress-indicator]]:duration-300 [&_[data-slot=progress-indicator]]:ease-out",
+            "[&_[data-slot=progress-indicator]]:motion-reduce:transition-none [&_[data-slot=progress-indicator]]:forced-colors:bg-[Highlight]",
+            // Nominal fill uses the brand tint — iOS capacity bars colour
+            // normal fill with the tint, not gray (gray reads inert/
+            // disabled). `/80` keeps it calm rather than fully saturated.
+            // The warning/critical threshold branches are unchanged.
+            isCritical
+              ? "[&_[data-slot=progress-indicator]]:bg-destructive"
+              : isWarning
+                ? "[&_[data-slot=progress-indicator]]:bg-warning"
+                : "[&_[data-slot=progress-indicator]]:bg-brand/80",
+          )}
+        />
       ) : null}
 
       <span className="min-w-0 truncate">

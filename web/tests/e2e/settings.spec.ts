@@ -159,11 +159,22 @@ test.describe("settings — tab matrix", () => {
     await expect(page.getByTestId("shortcuts-customize-toggle")).toBeVisible();
 
     // Back to General (roving-tabindex tablist; General has no testid).
-    await dialog.getByRole("tab", { name: "General" }).click();
+    const general = dialog.getByRole("tab", { name: "General" });
+    await general.click();
     await expect(page.getByTestId("export-data-button")).toBeVisible();
 
+    const generalPanelId = await general.getAttribute("aria-controls");
+    if (!generalPanelId) throw new Error("General tab panel is not connected");
+    const generalTabId = await general.getAttribute("id");
+    if (!generalTabId) throw new Error("General tab is missing its id");
+    const generalPanel = dialog.locator(`[id="${generalPanelId}"]`);
+    await expect(generalPanel).toHaveAttribute("role", "tabpanel");
+    await expect(generalPanel).toHaveAttribute(
+      "aria-labelledby",
+      generalTabId,
+    );
+
     // Roving keyboard nav: focus General then arrow across cluster boundaries.
-    const general = dialog.getByRole("tab", { name: "General" });
     await general.focus();
     await page.keyboard.press("ArrowRight");
     await expect(dialog.getByRole("tab", { name: "Activity" })).toHaveAttribute(
@@ -436,6 +447,18 @@ test.describe("settings — usage meter states", () => {
 
     await expect(dialog.getByText("No usage left")).toBeVisible();
     await expect(dialog.getByText(/Usage limit reached/)).toBeVisible();
+    const meter = dialog.getByRole("progressbar");
+    await expect(meter).toHaveAttribute(
+      "aria-label",
+      "Usage 1,000 / 1,000 used this month, 0 remaining — limit reached",
+    );
+    await expect(meter).toHaveAttribute("aria-valuemin", "0");
+    await expect(meter).toHaveAttribute("aria-valuemax", "100");
+    await expect(meter).toHaveAttribute("aria-valuenow", "100");
+    await expect(meter).toHaveAttribute(
+      "aria-valuetext",
+      "1,000 / 1,000 used, 0 remaining this month",
+    );
   });
 
   test("renders a near-cap spend warning meter", async ({ page }) => {
@@ -457,6 +480,12 @@ test.describe("settings — usage meter states", () => {
 
     // $10 cap, $9 spent → $1 left, 90% → warning tone, USD remaining text.
     await expect(dialog.getByText("$1.00 left")).toBeVisible();
+    const meter = dialog.getByRole("progressbar");
+    await expect(meter).toHaveAttribute("aria-valuenow", "90");
+    await expect(meter).toHaveAttribute(
+      "aria-valuetext",
+      "$9.00 of $10.00 spent this month, $1.00 remaining",
+    );
   });
 });
 

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Share, X } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const DISMISS_KEY = "olune.ios-install-hint.dismissed";
@@ -213,7 +214,9 @@ export function InstallCoachmark(): React.JSX.Element | null {
         <span className="font-medium">Share</span>, then{" "}
         <span className="font-medium">Add to Home Screen</span>.
       </p>
-      <button
+      <Button
+        variant="plain"
+        size="bare"
         type="button"
         onClick={dismiss}
         aria-label="Dismiss install hint"
@@ -221,11 +224,10 @@ export function InstallCoachmark(): React.JSX.Element | null {
           "inline-flex size-11 shrink-0 items-center justify-center rounded-full",
           "text-muted-foreground transition-transform hover:bg-accent hover:text-foreground",
           "active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100",
-          "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
         )}
       >
         <X aria-hidden className="size-4" />
-      </button>
+      </Button>
     </div>
   );
 }

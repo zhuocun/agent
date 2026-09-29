@@ -212,7 +212,8 @@ export function AuthDialog({
                 className="h-11 rounded-2xl border-0 bg-muted/50 pl-3 pr-14"
               />
               <Button
-                variant="ghost"
+                variant="plain"
+                size="bare"
                 type="button"
                 // Accessible name deliberately avoids the word "password" so it
                 // doesn't collide with getByLabel("Password") for the input.
@@ -220,7 +221,7 @@ export function AuthDialog({
                 aria-pressed={showPassword}
                 onClick={() => setShowPassword((v) => !v)}
                 disabled={pending}
-                className="absolute right-0.5 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50 active:not-aria-[haspopup]:scale-100 active:not-aria-[haspopup]:brightness-100"
+                className="absolute right-0.5 top-1/2 inline-flex size-11 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
               >
                 {showPassword ? (
                   <EyeOff aria-hidden className="size-4" />
@@ -249,11 +250,12 @@ export function AuthDialog({
           <p className="text-center ui-body text-muted-foreground">
             {isSignIn ? "New here?" : "Already have an account?"}{" "}
             <Button
-              variant="link"
+              variant="plain"
+              size="bare"
               type="button"
               onClick={switchMode}
               disabled={pending}
-              className="h-auto px-0 py-0 font-medium text-foreground underline-offset-2 hover:underline focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none disabled:opacity-50 [@media(hover:none)]:min-h-0 active:not-aria-[haspopup]:scale-100 active:not-aria-[haspopup]:brightness-100"
+              className="inline font-medium text-foreground underline-offset-2 hover:underline"
             >
               {isSignIn ? "Create an account" : "Sign in"}
             </Button>

@@ -215,15 +215,15 @@ export function InstallCoachmark(): React.JSX.Element | null {
         <span className="font-medium">Add to Home Screen</span>.
       </p>
       <Button
-        variant="ghost"
+        variant="plain"
+        size="bare"
         type="button"
         onClick={dismiss}
         aria-label="Dismiss install hint"
         className={cn(
-          "inline-flex size-11 shrink-0 items-center justify-center rounded-full p-0",
+          "inline-flex size-11 shrink-0 items-center justify-center rounded-full",
           "text-muted-foreground transition-transform hover:bg-accent hover:text-foreground",
-          "active:scale-[0.96] active:not-aria-[haspopup]:brightness-100 active:duration-[70ms] motion-reduce:active:scale-100",
-          "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none"
+          "active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100",
         )}
       >
         <X aria-hidden className="size-4" />

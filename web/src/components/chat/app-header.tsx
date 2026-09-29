@@ -72,7 +72,7 @@ interface AppHeaderProps {
 const FLOAT_SCRIM_DARK = "dark:[--glass-regular-bg:var(--glass-strong-bg)]";
 
 const FLOAT_BUTTON = cn(
-  "glass-regular size-[45px] rounded-full p-0 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent",
+  "glass-regular size-[45px] rounded-full text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground aria-expanded:bg-transparent",
   FLOAT_SCRIM_DARK,
 );
 
@@ -123,6 +123,7 @@ export function AppHeader({
         <Button
           type="button"
           variant="ghost"
+          size="bare"
           aria-label="Open sidebar"
           // Drawer open-by-tap buzzes to match the edge-swipe open path (G9);
           // feature-detected + no-op on iOS.
@@ -138,6 +139,7 @@ export function AppHeader({
           <Button
             type="button"
             variant="ghost"
+            size="bare"
             aria-label="Open sidebar"
             onClick={onOpenSidebar}
             className={cn("hidden md:inline-flex", FLOAT_BUTTON)}
@@ -161,7 +163,8 @@ export function AppHeader({
           {onOpenCommandPalette ? (
             <>
               <Button
-                variant="ghost"
+                variant="plain"
+                size="bare"
                 type="button"
                 aria-label="Search and commands"
                 onClick={onOpenCommandPalette}
@@ -170,9 +173,7 @@ export function AppHeader({
                 // affordance doubles as shortcut education.
                 className={cn(
                   PILL_HALF,
-                  "p-0",
                   paletteShortcut && "md:w-auto md:gap-2 md:px-3.5",
-                  "active:not-aria-[haspopup]:brightness-100",
                 )}
               >
                 <Search className="size-[18px]" strokeWidth={2.25} />
@@ -187,7 +188,8 @@ export function AppHeader({
             </>
           ) : null}
           <Button
-            variant="ghost"
+            variant="plain"
+            size="bare"
             type="button"
             aria-label="New chat"
             onClick={onNewChat}
@@ -199,7 +201,7 @@ export function AppHeader({
             // thumb-zone). Ordered last, `hidden md:inline-flex` wins the merge.
             className={cn(
               PILL_HALF,
-              "hidden md:inline-flex p-0 active:not-aria-[haspopup]:brightness-100",
+              "hidden md:inline-flex",
               sidebarOpen && "md:hidden",
             )}
           >

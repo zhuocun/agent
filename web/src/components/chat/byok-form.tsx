@@ -278,13 +278,14 @@ export function ByokForm({
               />
               {apiKey.length > 0 ? (
                 <Button
-                  variant="ghost"
+                  variant="plain"
+                  size="bare"
                   type="button"
                   onClick={() => setApiKey("")}
                   aria-label="Clear API key"
                   // Centered in the 44px row; size-11 on mobile meets the touch
                   // floor; size-9 on desktop keeps the icon compact.
-                  className="absolute right-1 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full p-0 text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none [@media(hover:none)]:size-11 active:not-aria-[haspopup]:scale-100 active:not-aria-[haspopup]:brightness-100"
+                  className="absolute right-1 top-1/2 inline-flex size-9 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground [@media(hover:none)]:size-11"
                 >
                   <X aria-hidden className="size-3.5" />
                 </Button>

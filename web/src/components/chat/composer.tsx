@@ -885,13 +885,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => {
           fileInputRef.current?.click();
           setMoreActionsOpen(false);
         }}
         disabled={isStreaming}
         aria-label={t("composer.attach")}
-        className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
       >
         <Paperclip className="size-4" />
       </Button>
@@ -901,6 +902,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => {
           cameraInputRef.current?.click();
           setMoreActionsOpen(false);
@@ -908,7 +910,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         disabled={isStreaming}
         aria-label={t("composer.takePhoto")}
         data-testid="composer-camera"
-        className="size-11 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+        className="size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
       >
         <Camera className="size-4" />
       </Button>
@@ -918,6 +920,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => {
           setMoreActionsOpen(false);
           openTemplatePicker();
@@ -931,7 +934,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         aria-label="Insert a prompt template"
         data-testid="composer-templates"
         className={cn(
-          "size-11 shrink-0 rounded-full p-0",
+          "size-11 shrink-0 rounded-full",
           templatePickerOpen
             ? "text-brand hover:text-brand"
             : "text-muted-foreground hover:text-foreground",
@@ -945,6 +948,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => dictation.toggle()}
         // Feature-detect: when the browser lacks the Web Speech
         // recognition API the control is disabled and the tooltip
@@ -962,7 +966,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         }
         data-testid="composer-dictate"
         className={cn(
-          "size-11 shrink-0 rounded-full p-0",
+          "size-11 shrink-0 rounded-full",
           dictation.listening
             ? "text-brand hover:text-brand"
             : "text-muted-foreground hover:text-foreground",
@@ -987,6 +991,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       <Button
         type="button"
         variant="ghost"
+        size="bare"
         onClick={() => dictation.toggle()}
         disabled={!dictation.supported || isStreaming}
         aria-pressed={dictation.listening}
@@ -998,7 +1003,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               : "Start dictation"
         }
         className={cn(
-          "size-11 shrink-0 rounded-full p-0",
+          "size-11 shrink-0 rounded-full",
           TOOLBAR_FOCUS_VISIBLE,
           dictation.listening
             ? "text-brand hover:text-brand"
@@ -1371,12 +1376,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   <Button
                     type="button"
                     variant="ghost"
+                    size="bare"
                     disabled={isStreaming}
                     aria-label={t("composer.moreActions")}
                     aria-haspopup="dialog"
                     data-testid="composer-more-actions"
                     className={cn(
-                      "size-11 shrink-0 rounded-full p-0",
+                      "size-11 shrink-0 rounded-full",
                       TOOLBAR_FOCUS_VISIBLE,
                       moreActionsOpen
                         ? "text-foreground"

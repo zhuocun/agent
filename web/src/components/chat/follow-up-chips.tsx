@@ -68,13 +68,14 @@ export function FollowUpChips({
     >
       {suggestions.map((suggestion, index) => (
         <Button
-          variant="ghost"
+          variant="plain"
+          size="bare"
           key={`${index}-${suggestion}`}
           type="button"
           onClick={() => onSelect(suggestion)}
           data-testid="follow-up-chip"
           className={cn(
-            "h-auto inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 [@media(hover:none)]:min-h-11",
+            "inline-flex max-w-full items-center gap-1.5 rounded-full px-3 py-1.5 [@media(hover:none)]:min-h-11",
             // A muted chip surface (not the near-transparent background tint)
             // so the chips stay visible in dark mode against the page. The
             // boundary uses --control-border, not --border: a chip's label is a
@@ -83,8 +84,6 @@ export function FollowUpChips({
             // (UI-COLOR-4). The old `border-border/70` measured 1.15:1.
             "border border-control-border bg-muted/40 ui-list-row text-foreground/80 dark:bg-muted/60 dark:text-muted-foreground",
             "transition-colors hover:bg-muted/70 hover:text-foreground",
-            "focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
-            "active:not-aria-[haspopup]:scale-100 active:not-aria-[haspopup]:brightness-100",
           )}
         >
           <CornerDownRight aria-hidden className="size-3 shrink-0" />

@@ -39,6 +39,7 @@ test.describe("composer slash commands", () => {
     // A lone "/" opens the popover with the full command list.
     await composer.fill("/");
     await expect(options.first()).toBeVisible();
+    await expect(composer).toBeFocused();
     expect(await options.count()).toBeGreaterThanOrEqual(2);
 
     // ArrowDown moves the highlight to the second row (aria-selected tracks it).
@@ -49,6 +50,7 @@ test.describe("composer slash commands", () => {
     // full prompt — the "/" token is replaced, so the popover closes.
     await composer.press("Enter");
     await expect(options).toHaveCount(0);
+    await expect(composer).toBeFocused();
     const picked = await composer.inputValue();
     expect(picked).not.toBe("/");
     expect(picked.length).toBeGreaterThan(2);
@@ -71,6 +73,18 @@ test.describe("composer slash commands", () => {
     await composer.press("Escape");
     await expect(options).toHaveCount(0);
     await expect(composer).toHaveValue("/sum");
+    await expect(composer).toBeFocused();
+
+    // Clicking elsewhere dismisses the list without changing the draft or
+    // stealing focus from the clicked control.
+    await composer.fill("");
+    await composer.fill("/");
+    await expect(options.first()).toBeVisible();
+    const accountMenu = page.getByRole("button", { name: "Account menu" });
+    await accountMenu.click();
+    await expect(options).toHaveCount(0);
+    await expect(accountMenu).toBeFocused();
+    await page.keyboard.press("Escape");
   });
 });
 

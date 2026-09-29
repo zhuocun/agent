@@ -25,9 +25,12 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { Popover } from "@base-ui/react/popover";
-
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Tooltip,
   TooltipContent,
@@ -1439,7 +1442,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   </>
                 );
                 return (
-                  <Popover.Root
+                  <Popover
                     open={moreActionsOpen}
                     onOpenChange={(open) => {
                       if (open) setTemplatePickerOpen(false);
@@ -1448,35 +1451,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   >
                     <Tooltip>
                       <TooltipTrigger
-                        render={<Popover.Trigger render={moreActionsTrigger} />}
+                        render={<PopoverTrigger render={moreActionsTrigger} />}
                       />
                       <TooltipContent>{t("composer.moreActions")}</TooltipContent>
                     </Tooltip>
-                    <Popover.Portal>
-                      <Popover.Positioner
-                        side="top"
-                        align="start"
-                        sideOffset={8}
-                        className="z-[60] max-w-[calc(100vw-1rem)] outline-none"
-                      >
-                        <Popover.Popup
-                          // Small anchored actions popover used on every
-                          // viewport — a full bottom sheet is over-weight for
-                          // the two or three rows the cluster ever holds.
-                          // Matches the attribution-row glass + zoom/fade
-                          // enter; motion-reduce path is provided by the
-                          // global reduced-motion CSS for animate-in.
-                          className={cn(
-                            "glass-strong flex max-w-[calc(100vw-1rem)] origin-(--transform-origin) flex-col gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] outline-none",
-                            "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
-                            "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-                          )}
-                        >
-                          {moreActionsRows}
-                        </Popover.Popup>
-                      </Popover.Positioner>
-                    </Popover.Portal>
-                  </Popover.Root>
+                    <PopoverContent
+                      side="top"
+                      align="start"
+                      sideOffset={8}
+                      className={cn(
+                        "w-auto max-w-[calc(100vw-1rem)] gap-1 rounded-2xl p-1.5 text-popover-foreground shadow-[var(--glass-highlight),var(--glass-shadow-ambient),var(--glass-shadow-key)] ring-0",
+                        "duration-150 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95",
+                        "data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+                      )}
+                    >
+                      {moreActionsRows}
+                    </PopoverContent>
+                  </Popover>
                 );
               })()}
             {/* Model/mode picker — the same component the header used to host

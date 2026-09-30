@@ -75,16 +75,20 @@ test.describe("composer slash commands", () => {
     await expect(composer).toHaveValue("/sum");
     await expect(composer).toBeFocused();
 
-    // Clicking elsewhere dismisses the list without changing the draft or
-    // stealing focus from the clicked control.
+    // Clicking the account menu dismisses the slash list and leaves the draft
+    // as "/". The open menu takes focus on the next frame.
     await composer.fill("");
     await composer.fill("/");
     await expect(options.first()).toBeVisible();
     const accountMenu = page.getByRole("button", { name: "Account menu" });
     await accountMenu.click();
     await expect(options).toHaveCount(0);
-    await expect(accountMenu).toBeFocused();
+    await expect(composer).toHaveValue("/");
+    await expect(accountMenu).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByRole("menu")).toBeFocused();
+    await expect(composer).not.toBeFocused();
     await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
   });
 });
 

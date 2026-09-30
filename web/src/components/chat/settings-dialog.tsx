@@ -683,9 +683,7 @@ function ProjectSettingsPanel({
       />
 
       <div className="space-y-2">
-        <label htmlFor={instructionsId} className="ui-list-row font-medium">
-          Shared instructions
-        </label>
+        <Label htmlFor={instructionsId}>Shared instructions</Label>
         <ProjectInstructionsEditor
           key={`instructions-${selected.id}`}
           id={instructionsId}

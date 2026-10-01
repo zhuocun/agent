@@ -21,6 +21,8 @@ import {
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { searchConversations, searchHistory } from "@/lib/apiClient";
 import { useSwipeDismiss } from "@/lib/use-swipe-dismiss";
 import { useVisualViewport } from "@/lib/use-visual-viewport";
@@ -89,15 +91,6 @@ const SERVED_MODEL_OPTIONS: { value: ModelTierId; label: string }[] = [
   { value: "smart", label: "Smart" },
   { value: "pro", label: "Pro" },
 ];
-
-// Filter-control styling — copied from the former dialog so the inputs read as
-// part of the same surface family.
-const FILTER_INPUT_CLASS =
-  "w-full min-w-0 [@media(hover:none)]:min-h-11 rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
-const FILTER_DATE_INPUT_CLASS =
-  "w-full min-w-[7.5rem] [@media(hover:none)]:min-h-11 rounded-xl border border-border/70 bg-background/70 px-2 py-2 text-base leading-5 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
-const FILTER_SELECT_CLASS =
-  "h-9 [@media(hover:none)]:h-11 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/25 md:text-sm";
 
 // Date input <-> ISO. The native date input gives `YYYY-MM-DD`; the BE parses
 // ISO-8601. `dateTo` widens to end-of-day so an inclusive "to" matches any time
@@ -641,12 +634,13 @@ export function CommandPalette({
                     <span className="ui-caption font-medium text-muted-foreground">
                       Model
                     </span>
-                    <select
+                    <NativeSelect
+                      icon={false}
                       value={servedModel}
                       onChange={(e) =>
                         setServedModel(e.currentTarget.value as ModelTierId | "")
                       }
-                      className={FILTER_SELECT_CLASS}
+                      selectClassName="h-9 [@media(hover:none)]:h-11 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base md:text-sm focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                       data-testid="search-filter-model"
                     >
                       <option value="">Any model</option>
@@ -655,17 +649,18 @@ export function CommandPalette({
                           {option.label}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </label>
 
                   <label className="space-y-1 ui-list-row">
                     <span className="ui-caption font-medium text-muted-foreground">
                       Project
                     </span>
-                    <select
+                    <NativeSelect
+                      icon={false}
                       value={projectId}
                       onChange={(e) => setProjectId(e.currentTarget.value)}
-                      className={FILTER_SELECT_CLASS}
+                      selectClassName="h-9 [@media(hover:none)]:h-11 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base md:text-sm focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                       data-testid="search-filter-project"
                     >
                       <option value="">Any project</option>
@@ -674,7 +669,7 @@ export function CommandPalette({
                           {project.name}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </label>
 
                   <div className="space-y-1 ui-list-row">
@@ -682,7 +677,7 @@ export function CommandPalette({
                       Cost (USD)
                     </span>
                     <div className="flex items-center gap-2">
-                      <input
+                      <Input
                         type="number"
                         min={0}
                         step="0.01"
@@ -691,13 +686,13 @@ export function CommandPalette({
                         onChange={(e) => setCostMin(e.currentTarget.value)}
                         placeholder="Min"
                         aria-label="Minimum cost"
-                        className={FILTER_INPUT_CLASS}
+                        className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto [@media(hover:none)]:min-h-11 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                         data-testid="search-filter-cost-min"
                       />
                       <span aria-hidden className="text-muted-foreground">
                         –
                       </span>
-                      <input
+                      <Input
                         type="number"
                         min={0}
                         step="0.01"
@@ -706,7 +701,7 @@ export function CommandPalette({
                         onChange={(e) => setCostMax(e.currentTarget.value)}
                         placeholder="Max"
                         aria-label="Maximum cost"
-                        className={FILTER_INPUT_CLASS}
+                        className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto [@media(hover:none)]:min-h-11 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                         data-testid="search-filter-cost-max"
                       />
                     </div>
@@ -717,23 +712,23 @@ export function CommandPalette({
                       Date
                     </span>
                     <div className="flex items-center gap-2">
-                      <input
+                      <Input
                         type="date"
                         value={dateFrom}
                         onChange={(e) => setDateFrom(e.currentTarget.value)}
                         aria-label="From date"
-                        className={FILTER_DATE_INPUT_CLASS}
+                        className="h-auto min-w-[7.5rem] px-2 py-2 leading-5 [@media(hover:none)]:h-auto [@media(hover:none)]:min-h-11 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                         data-testid="search-filter-date-from"
                       />
                       <span aria-hidden className="text-muted-foreground">
                         –
                       </span>
-                      <input
+                      <Input
                         type="date"
                         value={dateTo}
                         onChange={(e) => setDateTo(e.currentTarget.value)}
                         aria-label="To date"
-                        className={FILTER_DATE_INPUT_CLASS}
+                        className="h-auto min-w-[7.5rem] px-2 py-2 leading-5 [@media(hover:none)]:h-auto [@media(hover:none)]:min-h-11 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                         data-testid="search-filter-date-to"
                       />
                     </div>
@@ -744,10 +739,11 @@ export function CommandPalette({
                       <span className="ui-caption font-medium text-muted-foreground">
                         Tag
                       </span>
-                      <select
+                      <NativeSelect
+                        icon={false}
                         value={tagId}
                         onChange={(e) => setTagId(e.currentTarget.value)}
-                        className={FILTER_SELECT_CLASS}
+                        selectClassName="h-9 [@media(hover:none)]:h-11 w-full truncate rounded-xl border border-border/70 bg-background/70 px-3 text-base md:text-sm focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                         data-testid="search-filter-tag"
                       >
                         <option value="">Any tag</option>
@@ -756,7 +752,7 @@ export function CommandPalette({
                             {tag.name}
                           </option>
                         ))}
-                      </select>
+                      </NativeSelect>
                     </label>
                   ) : null}
                 </div>

@@ -82,14 +82,13 @@ export interface ModelModePickerProps {
 // Shared trigger styling — identical between the desktop dropdown and the
 // mobile bottom-sheet variants per PRD 06 §5.6 / PRD 01 §5.3 (the trigger's
 // appearance is stable; only the disclosure surface changes by modality).
-// Restyled for the trigger's home in the composer TOOLBAR (Lovable-style
-// model dropdown): a compact text-sm ghost pill that sits flush with the
-// surrounding muted icon buttons while keeping the 44px touch floor
-// (PRD 06 §3.3). The mobile max-width budgets for the toolbar's siblings
-// (+ / mic / send circles) so the trigger can never push them off-card. The
-// budget is in rem, so at 200% text it would exceed the viewport and crush the
-// pill to its padding; the 6rem floor keeps the label legible and the toolbar
-// wraps the right-hand circles to a second row instead (WCAG 1.4.4).
+// Restyled for the trigger's home in the composer TOOLBAR: a compact ghost
+// pill that sits flush with the surrounding muted icon buttons while keeping
+// the 44px touch floor (PRD 06 §3.3). The mobile max-width leaves room for
+// the disclosure and send circles so the trigger cannot push them off-card.
+// The budget is in rem, so at 200% text it would exceed the viewport and
+// crush the pill to its padding; the 6rem floor keeps the label legible and
+// the toolbar wraps the send circle to a second row instead (WCAG 1.4.4).
 // Lovable's "Fable 5" model selector reads as a subtle pill, not a bare text
 // run: a faint resting fill + hairline rim sets it apart from the muted icon
 // circles flanking it, while staying quiet enough not to compete with the send

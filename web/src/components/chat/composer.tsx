@@ -322,6 +322,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       caret: number;
     } | null>(null);
     const slashListboxId = useId();
+    const dictateHintId = useId();
     const slashOptionPrefix = useId();
     // Prompt library (D23) — a SIBLING popover layer to the slash commands,
     // opened from a toolbar button (NOT the "/" token), so it never touches the
@@ -336,11 +337,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
     const [templateSelectedIndex, setTemplateSelectedIndex] = useState(0);
     const templateListboxId = useId();
     const templateOptionPrefix = useId();
-    // Disclosure for the secondary-control cluster (Attach / Templates /
-    // Dictate). The cluster ALWAYS lives behind this "More actions" ("+")
-    // popover — in BOTH the empty/at-rest and composing states — so this open
-    // state drives the disclosure in every state (there is no inline-at-rest
-    // path any more).
+    // Disclosure for the secondary-control cluster (Attach / Camera /
+    // Templates / Dictate). The cluster lives behind this "More actions" ("+")
+    // popover in every composer state, so each action has one control.
     const [moreActionsOpen, setMoreActionsOpen] = useState(false);
     const prevStreamingRef = useRef(isStreaming);
     const supportsAttachmentsRef = useRef(supportsAttachments);
@@ -874,12 +873,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       !attachmentReadPending;
 
     // ---- Secondary-control renderers ---------------------------------------
-    // Each control is rendered inside the "More actions" disclosure popover (its
-    // single home in both the empty/at-rest and composing states), preserving its
-    // exact data-testid + aria contract. The labelled rows in the popover relax
-    // the rounded-pill icon button into a full-width labelled row. The toolbar
-    // additionally carries a quick-access mic (see `toolbarDictateButton`); the
-    // popover row stays the canonical dictate control.
+    // Each action is one full-width row inside the "More actions" popover.
+    // The visible label is inside the button, so the words and the icon are
+    // the same hit target. data-testid and aria names stay on that button.
+    const moreActionRow =
+      "h-auto min-h-11 w-full shrink justify-start gap-2 rounded-xl px-2 py-1.5 text-left whitespace-normal hover:bg-foreground/5";
     const attachButton = (
       <Button
         type="button"
@@ -891,9 +889,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         }}
         disabled={isStreaming}
         aria-label={t("composer.attach")}
-        className="size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+        className={cn(moreActionRow, "text-muted-foreground hover:text-foreground")}
       >
-        <Paperclip className="size-4" />
+        <Paperclip className="size-4 shrink-0" />
+        <span className="text-sm text-foreground">{t("composer.attach")}</span>
       </Button>
     );
 
@@ -909,9 +908,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         disabled={isStreaming}
         aria-label={t("composer.takePhoto")}
         data-testid="composer-camera"
-        className="size-11 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+        className={cn(moreActionRow, "text-muted-foreground hover:text-foreground")}
       >
-        <Camera className="size-4" />
+        <Camera className="size-4 shrink-0" />
+        <span className="text-sm text-foreground">{t("composer.takePhoto")}</span>
       </Button>
     );
 
@@ -933,13 +933,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         aria-label="Insert a prompt template"
         data-testid="composer-templates"
         className={cn(
-          "size-11 shrink-0 rounded-full",
+          moreActionRow,
           templatePickerOpen
             ? "text-brand hover:text-brand"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <Library className="size-4" />
+        <Library className="size-4 shrink-0" />
+        <span className="text-sm text-foreground">Prompt template</span>
       </Button>
     );
 
@@ -950,8 +951,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
         size="bare"
         onClick={() => dictation.toggle()}
         // Feature-detect: when the browser lacks the Web Speech
-        // recognition API the control is disabled and the tooltip
-        // explains why. Also disabled mid-stream (parity with attach).
+        // recognition API the control is disabled and its label says why.
+        // Also disabled mid-stream (parity with attach).
         disabled={!dictation.supported || isStreaming}
         // aria-pressed conveys the recording state to AT; the brand tint
         // gives the same "on" signal to sighted users.
@@ -963,9 +964,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               ? "Stop dictation"
               : "Start dictation"
         }
+        aria-describedby={dictation.supported ? dictateHintId : undefined}
         data-testid="composer-dictate"
         className={cn(
-          "size-11 shrink-0 rounded-full",
+          moreActionRow,
           dictation.listening
             ? "text-brand hover:text-brand"
             : "text-muted-foreground hover:text-foreground",
@@ -973,48 +975,20 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       >
         <Mic
           className={cn(
-            "size-4",
+            "size-4 shrink-0",
             dictation.listening && "motion-safe:animate-pulse-soft",
           )}
         />
-      </Button>
-    );
-
-    // Quick-access mic pinned in the toolbar (Lovable-style). Drives the SAME
-    // dictation hook as the popover's labelled Dictate row — the row keeps
-    // data-testid="composer-dictate" plus the always-visible on-device
-    // transparency caption (its testid/aria contract is load-bearing for the
-    // voice E2E), while this top-level toggle keeps start/stop one tap away in
-    // every state. Deliberately NO testid so the hook stays unique.
-    const toolbarDictateButton = (
-      <Button
-        type="button"
-        variant="ghost"
-        size="bare"
-        onClick={() => dictation.toggle()}
-        disabled={!dictation.supported || isStreaming}
-        aria-pressed={dictation.listening}
-        aria-label={
-          !dictation.supported
-            ? "Dictation not supported in this browser"
-            : dictation.listening
-              ? "Stop dictation"
-              : "Start dictation"
-        }
-        className={cn(
-          "size-11 shrink-0 rounded-full",
-          TOOLBAR_FOCUS_VISIBLE,
-          dictation.listening
-            ? "text-brand hover:text-brand"
-            : "text-muted-foreground hover:text-foreground",
-        )}
-      >
-        <Mic
-          className={cn(
-            "size-4",
-            dictation.listening && "motion-safe:animate-pulse-soft",
-          )}
-        />
+        <span className="flex min-w-0 flex-col pr-1 text-left">
+          <span className="text-sm text-foreground">
+            {!dictation.supported ? "Dictation unavailable" : "Dictate"}
+          </span>
+          {dictation.supported ? (
+            <span id={dictateHintId} className="text-2xs text-muted-foreground">
+              Voice is processed on your device by your browser
+            </span>
+          ) : null}
+        </span>
       </Button>
     );
 
@@ -1364,13 +1338,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             className="block max-h-[12.5rem] min-h-11 w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
           />
           {/* Toolbar row beneath the textarea: the "+" disclosure and the
-            model/mode picker sit left; the quick mic and the circular
-            Send/Stop sit right. The secondary cluster (Attach / Camera /
-            Templates / Dictate) still lives behind the single "More actions"
-            ("+") disclosure, mounted in ONE place so there are never duplicate
-            testid hooks or stray hidden tab stops. The disclosure expands with
-            a zoom/fade; motion-reduce makes the open instant. At 200% text
-            the row cannot hold all four controls, so it wraps (WCAG 1.4.4). */}
+            model/mode picker sit left; Send/Stop sits right. Attach, camera,
+            templates, and dictation live only inside the "+" disclosure, so
+            the toolbar does not repeat them. The disclosure expands with a
+            zoom/fade; motion-reduce makes the open instant. At 200% text the
+            row wraps (WCAG 1.4.4). */}
           <div className="flex min-w-0 flex-wrap items-center gap-1 [@media(hover:none)]:gap-2">
             {(() => {
                 const moreActionsTrigger = (
@@ -1400,52 +1372,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                 );
                 const moreActionsRows = (
                   <>
-                    {supportsAttachments ? (
-                      <div className="flex items-center gap-2">
-                        {attachButton}
-                        <span className="pr-2 text-sm text-foreground">
-                          {t("composer.attach")}
-                        </span>
-                      </div>
-                    ) : null}
-                    {/* Camera capture row (T10): a distinct entry point from the
-                        library/files picker above, surfacing the rear-camera
-                        input. Only when the tier accepts images. */}
-                    {supportsAttachments && supportsVision ? (
-                      <div className="flex items-center gap-2">
-                        {cameraButton}
-                        <span className="pr-2 text-sm text-foreground">
-                          {t("composer.takePhoto")}
-                        </span>
-                      </div>
-                    ) : null}
-                    <div className="flex items-center gap-2">
-                      {templatesButton}
-                      <span className="pr-2 text-sm text-foreground">
-                        Prompt template
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {dictateButton}
-                      <span className="flex flex-col pr-2 text-left">
-                        <span className="text-sm text-foreground">
-                          {!dictation.supported
-                            ? "Dictation unavailable"
-                            : "Dictate"}
-                        </span>
-                        {/* On-device transparency (carried over from the
-                            former inline-mic tooltip): state that the
-                            browser/device does the work, never a
-                            provider/model. Always visible in the open row —
-                            strictly better than a hover-only tooltip for
-                            touch + AT. */}
-                        {dictation.supported ? (
-                          <span className="text-2xs text-muted-foreground">
-                            Voice is processed on your device by your browser
-                          </span>
-                        ) : null}
-                      </span>
-                    </div>
+                    {supportsAttachments ? attachButton : null}
+                    {/* Camera capture (T10): a distinct entry from the file
+                        picker. Only when the tier accepts images. */}
+                    {supportsAttachments && supportsVision ? cameraButton : null}
+                    {templatesButton}
+                    {dictateButton}
                   </>
                 );
                 return (
@@ -1488,14 +1420,6 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
               </div>
             ) : null}
             <div className="ml-auto flex shrink-0 items-center gap-1 [@media(hover:none)]:gap-2">
-              <Tooltip>
-                <TooltipTrigger render={toolbarDictateButton} />
-                <TooltipContent>
-                  {dictation.listening
-                    ? "Stop dictation · processed on your device by your browser"
-                    : "Dictate · processed on your device by your browser"}
-                </TooltipContent>
-              </Tooltip>
               <div className="flex h-11 shrink-0 items-center">
                 {/* Send↔stop swap: the stop side is Tooltip-wrapped and the
                   send side isn't, so the button remounts on toggle.

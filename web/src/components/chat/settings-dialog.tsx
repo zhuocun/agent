@@ -168,75 +168,42 @@ type SettingsTabDef = {
   testId?: string;
 };
 
-// The hub's tabs, organized into named clusters so the strip reads as a small
-// hierarchy of related areas rather than six undifferentiated peers. Grouping is
-// regrouping only — every tab (and its testid) is preserved; nothing is removed
-// or hidden. The clusters:
-//   • Workspace  — your settings + your live usage (General, Activity)
-//   • Knowledge  — what the assistant draws on (Memory, Templates, Models)
-//   • Reference  — the keyboard map (Shortcuts)
-// A single flat `SETTINGS_TABS` is still derived from the groups so the
-// roving-tabindex keyboard nav and the active-tab lookup keep treating the strip
-// as one continuous tablist (arrow keys cross cluster boundaries).
-const SETTINGS_TAB_GROUPS: Array<{
-  id: string;
-  label: string;
-  tabs: SettingsTabDef[];
-}> = [
+// One row of tabs. An earlier strip grouped these under Workspace / Knowledge /
+// Reference eyebrows, including a group whose only child was Shortcuts. The
+// tab labels already name the sections, so the extra taxonomy is gone.
+const SETTINGS_TABS: SettingsTabDef[] = [
+  { id: "general", label: "General", icon: SlidersHorizontal },
   {
-    id: "workspace",
-    label: "Workspace",
-    tabs: [
-      { id: "general", label: "General", icon: SlidersHorizontal },
-      {
-        id: "activity",
-        label: "Activity",
-        icon: Activity,
-        testId: "open-activity-button",
-      },
-    ],
+    id: "activity",
+    label: "Activity",
+    icon: Activity,
+    testId: "open-activity-button",
   },
   {
-    id: "knowledge",
-    label: "Knowledge",
-    tabs: [
-      {
-        id: "memory",
-        label: "Memory",
-        icon: Brain,
-        testId: "open-memory-button",
-      },
-      {
-        id: "templates",
-        label: "Templates",
-        icon: FileText,
-        testId: "open-templates-button",
-      },
-      {
-        id: "models",
-        label: "Models",
-        icon: ModelsIcon,
-        testId: "open-model-directory-button",
-      },
-    ],
+    id: "memory",
+    label: "Memory",
+    icon: Brain,
+    testId: "open-memory-button",
   },
   {
-    id: "reference",
-    label: "Reference",
-    tabs: [
-      {
-        id: "shortcuts",
-        label: "Shortcuts",
-        icon: Keyboard,
-        testId: "open-shortcuts-button",
-      },
-    ],
+    id: "templates",
+    label: "Templates",
+    icon: FileText,
+    testId: "open-templates-button",
+  },
+  {
+    id: "models",
+    label: "Models",
+    icon: ModelsIcon,
+    testId: "open-model-directory-button",
+  },
+  {
+    id: "shortcuts",
+    label: "Shortcuts",
+    icon: Keyboard,
+    testId: "open-shortcuts-button",
   },
 ];
-
-const SETTINGS_TABS: SettingsTabDef[] = SETTINGS_TAB_GROUPS.flatMap(
-  (group) => group.tabs,
-);
 
 function tabPanelLabelProps(
   tabId: SettingsTab,
@@ -1089,41 +1056,34 @@ export function SettingsDialog({
           onValueChange={(value) => selectTab(value as SettingsTab)}
           className="min-h-0 flex-1 flex-col gap-4"
         >
-        {/* Mobile drill-down list — iOS Settings-style grouped rows. Shown only
-            below md when no tab content is active (mobileShowList). */}
+        {/* Mobile drill-down list. One list, shown only below md when no tab
+            content is active (mobileShowList). */}
         {!isDesktop && mobileShowList ? (
           <nav
             aria-label="Settings sections"
-            className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pb-8 md:space-y-4"
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8"
           >
-            {SETTINGS_TAB_GROUPS.map((group) => (
-              <div key={group.id} className="space-y-0.5 md:space-y-1">
-                <span className="px-1 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
-                  {group.label}
-                </span>
-                <div className="overflow-hidden rounded-xl border border-border/60 bg-secondary/30">
-                  {group.tabs.map((tab, tabIndex) => {
-                    const Icon = tab.icon;
-                    return (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        data-testid={tab.testId}
-                        onClick={() => selectTab(tab.id)}
-                        className={cn(
-                          "flex w-full items-center gap-3 px-4 py-2.5 text-left ui-list-row font-medium text-foreground transition-[transform,background-color,color] active:bg-secondary/60 active:scale-[0.98] active:duration-[70ms] motion-reduce:active:scale-100 md:py-3",
-                          tabIndex > 0 && "border-t border-border/40",
-                        )}
-                      >
-                        <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-                        <span className="flex-1">{tab.label}</span>
-                        <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+            <div className="overflow-hidden rounded-xl border border-border/60 bg-secondary/30">
+              {SETTINGS_TABS.map((tab, tabIndex) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    data-testid={tab.testId}
+                    onClick={() => selectTab(tab.id)}
+                    className={cn(
+                      "flex w-full items-center gap-3 px-4 py-2.5 text-left ui-list-row font-medium text-foreground transition-[transform,background-color,color] active:bg-secondary/60 active:scale-[0.98] active:duration-[70ms] motion-reduce:active:scale-100 md:py-3",
+                      tabIndex > 0 && "border-t border-border/40",
+                    )}
+                  >
+                    <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="flex-1">{tab.label}</span>
+                    <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                  </button>
+                );
+              })}
+            </div>
           </nav>
         ) : null}
 
@@ -1141,55 +1101,35 @@ export function SettingsDialog({
           </button>
         ) : null}
 
-        {/* Desktop tab strip — the horizontal nav rail. Hidden below md. */}
+        {/* Desktop tab strip — one row. Hidden below md. */}
         {isDesktop ? (
         <TabsList
           activateOnFocus
           aria-label="Settings sections"
           id={tablistId}
-          className="-mx-1 flex h-auto w-[calc(100%+0.5rem)] shrink-0 items-end justify-start gap-3 overflow-x-auto rounded-none bg-transparent p-0 px-1 pb-1 [scrollbar-gutter:stable]"
+          className="-mx-1 flex h-auto w-[calc(100%+0.5rem)] shrink-0 items-center justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 px-1 pb-1 [scrollbar-gutter:stable]"
         >
-          {SETTINGS_TAB_GROUPS.map((group, groupIndex) => (
-            <div
-              key={group.id}
-              role="presentation"
-              className={cn(
-                "flex shrink-0 flex-col gap-1",
-                groupIndex > 0 &&
-                  "border-l border-border/60 pl-3",
-              )}
-            >
-              <span
-                aria-hidden
-                className="px-2 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase"
+          {SETTINGS_TABS.map((tab) => {
+            const selected = activeTab === tab.id;
+            const Icon = tab.icon;
+            return (
+              <TabsTrigger
+                key={tab.id}
+                value={tab.id}
+                id={`${tablistId}-${tab.id}`}
+                data-testid={tab.testId}
+                className={cn(
+                  "inline-flex h-11 flex-none items-center gap-1.5 rounded-full border-0 px-3.5 ui-list-row font-medium whitespace-nowrap transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:border-transparent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none data-active:bg-secondary data-active:text-foreground dark:data-active:bg-secondary",
+                  selected
+                    ? "bg-secondary text-foreground shadow-sm ring-1 ring-ring/30"
+                    : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
+                )}
               >
-                {group.label}
-              </span>
-              <div className="flex gap-1">
-                {group.tabs.map((tab) => {
-                  const selected = activeTab === tab.id;
-                  const Icon = tab.icon;
-                  return (
-                    <TabsTrigger
-                      key={tab.id}
-                      value={tab.id}
-                      id={`${tablistId}-${tab.id}`}
-                      data-testid={tab.testId}
-                      className={cn(
-                        "inline-flex h-11 flex-none items-center gap-1.5 rounded-full border-0 px-3.5 ui-list-row font-medium whitespace-nowrap transition-[transform,background-color,color] active:scale-[0.96] active:duration-[70ms] motion-reduce:active:scale-100 focus-visible:border-transparent focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none data-active:bg-secondary data-active:text-foreground dark:data-active:bg-secondary",
-                        selected
-                          ? "bg-secondary text-foreground shadow-sm ring-1 ring-ring/30"
-                          : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
-                      )}
-                    >
-                      <Icon aria-hidden className="size-4 shrink-0" />
-                      <span>{tab.label}</span>
-                    </TabsTrigger>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+                <Icon aria-hidden className="size-4 shrink-0" />
+                <span>{tab.label}</span>
+              </TabsTrigger>
+            );
+          })}
         </TabsList>
         ) : null}
 
@@ -1212,7 +1152,6 @@ export function SettingsDialog({
 
           {/* Account */}
           <section className="space-y-3">
-            <SectionHeading>Account</SectionHeading>
             <div className="flex items-center gap-3">
               <span
                 aria-hidden
@@ -1479,9 +1418,7 @@ export function SettingsDialog({
           <div className="space-y-5">
             <GroupHeading>Privacy &amp; data</GroupHeading>
 
-          {/* Privacy & data */}
           <section className="space-y-4">
-            <SectionHeading>Privacy &amp; data</SectionHeading>
             <SettingRow
               label="Temporary chats by default"
               helper="New chats won't be saved to history."

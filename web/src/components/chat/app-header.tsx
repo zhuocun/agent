@@ -237,50 +237,45 @@ export function AppHeader({
               >
                 Temporary chat
               </DropdownMenuCheckboxItem>
-              {onCopyConversation ? (
+              {onCopyConversation && canCopyConversation ? (
                 <DropdownMenuItem
                   onClick={onCopyConversation}
-                  disabled={!canCopyConversation}
                   className="gap-2"
                 >
                   <ClipboardCopy className="size-4" aria-hidden />
                   <span>Copy conversation</span>
                 </DropdownMenuItem>
               ) : null}
-              {onDownloadConversation ? (
+              {onDownloadConversation && canDownloadConversation ? (
                 <DropdownMenuItem
                   onClick={onDownloadConversation}
-                  disabled={!canDownloadConversation}
                   className="gap-2"
                 >
                   <Download className="size-4" aria-hidden />
                   <span>Download Markdown</span>
                 </DropdownMenuItem>
               ) : null}
-              {onDownloadDocx ? (
+              {onDownloadDocx && canDownloadConversation ? (
                 <DropdownMenuItem
                   onClick={onDownloadDocx}
-                  disabled={!canDownloadConversation}
                   className="gap-2"
                 >
                   <FileText className="size-4" aria-hidden />
                   <span>Download Word (.docx)</span>
                 </DropdownMenuItem>
               ) : null}
-              {onPrintConversation ? (
+              {onPrintConversation && canDownloadConversation ? (
                 <DropdownMenuItem
                   onClick={onPrintConversation}
-                  disabled={!canDownloadConversation}
                   className="gap-2"
                 >
                   <Printer className="size-4" aria-hidden />
                   <span>Save as PDF</span>
                 </DropdownMenuItem>
               ) : null}
-              {onShareConversation ? (
+              {onShareConversation && canShareConversation ? (
                 <DropdownMenuItem
                   onClick={onShareConversation}
-                  disabled={!canShareConversation}
                   className="gap-2"
                 >
                   <Share className="size-4" aria-hidden />

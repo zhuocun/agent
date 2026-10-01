@@ -197,12 +197,8 @@ export function ModelModePicker({
           by-input-modality (02-patterns §D) — hover does not exist on touch so
           the mobile branch below renders a bottom sheet instead.
 
-          Progressive disclosure (00-principles §20, 02-patterns §75-86): the
-          surface opens as a one-decision QUICK SWITCH. Only the Model tier group
-          is shown at the first level; Provider, Reasoning effort, Data policy,
-          Web search, and JSON output all live behind the "Advanced" collapsible
-          so secondary controls never compete with the primary tier choice. This
-          matches the mobile sheet's disclosure, just rendered as a dropdown. */}
+          The menu leads with the model, then one-line mode switches. Provider,
+          reasoning effort, and data policy stay behind Advanced. */}
       <DropdownMenu>
         <DropdownMenuTrigger
           disabled={disabled}
@@ -242,11 +238,11 @@ export function ModelModePicker({
             ))}
           </DropdownMenuGroup>
 
-          {/* First-level toggles — Web search + JSON output are tap-and-go
-              switches users reach for mid-prompt, so they sit OUT of Advanced.
-              Web search is tier-gated; JSON output always renders.
-              `closeOnClick={false}` keeps the menu open across a flip so the
-              state change is seen. */}
+          {/* First-level toggles — Web search, Deep Research, and JSON stay
+              one tap away. Each row is a single line (label · On/Off); the
+              longer explanation is for assistive tech only, same idea as a
+              tier description showing only when it earns the space.
+              `closeOnClick={false}` keeps the menu open across a flip. */}
           <DropdownMenuGroup className="mt-1.5">
             {showWebSearch ? (
               <ToggleRow
@@ -408,11 +404,8 @@ export function ModelModePicker({
                 );
               })}
             </SheetSection>
-            {/* First-level toggles — Web search + JSON output are tap-and-go
-                switches users reach for mid-prompt, so they sit OUT of Advanced
-                in the mobile sheet too. Mirrors the desktop dropdown order. */}
-            {/* One untitled list, like the desktop group: a per-toggle section
-                title only repeated the row's own label. */}
+            {/* One untitled list, like the desktop group. Descriptions stay
+                available to assistive tech and do not add a second line. */}
             <SheetSection>
               {showWebSearch ? (
                 <SheetToggleRow
@@ -440,11 +433,8 @@ export function ModelModePicker({
                 testId="json-mode-toggle"
               />
             </SheetSection>
-            {/* Advanced — progressive disclosure (00-principles §20). Provider,
-                reasoning effort, and data policy collapse here for iOS-native
-                simplicity: the sheet opens showing only the Model tier and the
-                two switches, and power users expand to reach the rest. Parity
-                with the desktop dropdown's Advanced section. */}
+            {/* Advanced — provider, reasoning effort, and data policy. The
+                sheet opens on the model and the one-line mode switches. */}
             <Collapsible>
               <CollapsibleTrigger
                 data-testid="picker-advanced"
@@ -626,13 +616,13 @@ function ToggleRow({
       checked={checked}
       closeOnClick={false}
       onCheckedChange={(next) => onToggle(next)}
-      className="items-start py-1.5"
+      className="items-center py-1.5"
       data-testid={testId}
       aria-label={`${label}: ${checked ? "on" : "off"}`}
     >
       <Icon
         aria-hidden
-        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+        className="size-4 shrink-0 text-muted-foreground"
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
@@ -641,9 +631,7 @@ function ToggleRow({
             {checked ? "On" : "Off"}
           </span>
         </div>
-        <p className="ui-caption leading-snug text-muted-foreground">
-          {description}
-        </p>
+        <p className="sr-only">{description}</p>
       </div>
     </DropdownMenuCheckboxItem>
   );
@@ -728,10 +716,7 @@ function SheetToggleRow({
             {label}
           </span>
           {description ? (
-            <span
-              id={descriptionId}
-              className="mt-0.5 block ui-secondary leading-snug text-muted-foreground"
-            >
+            <span id={descriptionId} className="sr-only">
               {description}
             </span>
           ) : null}

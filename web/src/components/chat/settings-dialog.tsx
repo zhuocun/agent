@@ -261,18 +261,8 @@ function SettingRow({
   );
 }
 
-function SectionHeading({ children }: { children: ReactNode }): JSX.Element {
-  return (
-    <h3 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
-      {children}
-    </h3>
-  );
-}
-
-// A group heading sits one level ABOVE SectionHeading: it clusters the General
-// panel's many sections into a few labeled domains so the panel reads as a short
-// hierarchy instead of a flat seven-section scroll. Rendered in foreground weight
-// (vs. SectionHeading's muted uppercase) so the two levels are visually distinct.
+// One heading per cluster. Row labels already name the controls, so a second
+// uppercase eyebrow (Appearance, Chat, Your data) only repeated them.
 function GroupHeading({
   children,
   helper,
@@ -1292,9 +1282,7 @@ export function SettingsDialog({
           <div className="space-y-5">
             <GroupHeading>Workspace</GroupHeading>
 
-          {/* Appearance */}
           <section className="space-y-3">
-            <SectionHeading>Appearance</SectionHeading>
             <SettingRow
               label="Theme"
               helper="Match your system, or pick light or dark."
@@ -1304,9 +1292,7 @@ export function SettingsDialog({
 
           <Separator />
 
-          {/* Chat */}
           <section className="space-y-4">
-            <SectionHeading>Chat</SectionHeading>
             <SettingRow
               label="Default model"
               helper="The tier new chats start with."
@@ -1501,7 +1487,6 @@ export function SettingsDialog({
               callers (guests accrue data too), so these rows are ungated. The
               parent owns the download / confirm-dialog / reset side effects. */}
           <section className="space-y-4">
-            <SectionHeading>Your data</SectionHeading>
             <SettingRow
               label="Export your data"
               helper="Download your account, preferences, and conversations as JSON."

@@ -118,6 +118,7 @@ test.describe("ui primitives via real flows", () => {
     await expect(page.getByTestId("sidebar-tags")).toContainText("Bulkable");
 
     // Enter selection mode and select the conversation so the bulk bar shows.
+    await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByTestId("sidebar-select-toggle").click();
     await page
       .locator("[data-conversation-id]")

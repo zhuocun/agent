@@ -39,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { AppShell } from "@/components/chat/app-shell";
 import { Sidebar } from "@/components/chat/sidebar";
 import { AppHeader } from "@/components/chat/app-header";
+import { ComposerTools } from "@/components/chat/composer-tools";
 import { ModelModePicker } from "@/components/chat/model-mode-picker";
 import { MessageList } from "@/components/chat/message-list";
 import { UserMessage } from "@/components/chat/user-message";
@@ -4254,14 +4255,17 @@ export function ChatThread() {
                 // Pre-send estimate uses the provider-effective selected tier;
                 // suppressed in compare mode (two tiers, no single estimate).
                 estimateTier={compareMode ? undefined : selectedModelTier}
-                // The model/mode picker now lives in the composer toolbar
-                // (Lovable-style) — the same component instance the header
-                // used to host, so every testid/aria contract is unchanged.
                 modelPicker={
                   <ModelModePicker
                     tiers={modelTiers}
                     selectedTierId={selectedTierId}
                     onSelectTier={handleSelectTier}
+                  />
+                }
+                toolsPicker={
+                  <ComposerTools
+                    tiers={modelTiers}
+                    selectedTierId={selectedTierId}
                     providerOptions={providerOptions}
                     selectedProviderId={effectiveProviderId}
                     onSelectProvider={handleSelectProvider}

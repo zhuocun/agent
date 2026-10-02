@@ -8,7 +8,7 @@
 
 import { expect, test, type Locator, type Page } from "./coverage-fixture";
 
-import { modelModeTrigger, waitForBootstrap } from "./helpers";
+import { toolsTrigger, waitForBootstrap } from "./helpers";
 
 async function hitRegion(locator: Locator): Promise<{ w: number; h: number }> {
   return locator.evaluate((el) => {
@@ -50,8 +50,7 @@ async function expectInlineCitationFloor(locator: Locator): Promise<void> {
 }
 
 async function sendWebSearchTurn(page: Page): Promise<Locator> {
-  await modelModeTrigger(page).click();
-  await page.getByTestId("picker-advanced").click();
+  await toolsTrigger(page).click();
   const toggle = page.getByTestId("web-search-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();

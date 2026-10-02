@@ -12,13 +12,12 @@
 
 import { expect, test, type Locator, type Page } from "./coverage-fixture";
 
-import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, toolsTrigger, waitForBootstrap } from "./helpers";
 
-// The open model-mode dropdown content (desktop). Scoping row clicks here keeps
-// them unambiguous — the picker TRIGGER can show the same tier/effort label as
-// a menu row, so an unscoped getByText would match twice.
+// The open model dropdown (desktop). Scoping row clicks here keeps them
+// unambiguous — the trigger can show the same tier label as a menu row.
 function pickerMenu(page: Page): Locator {
-  return page.locator('[data-slot="dropdown-menu-content"]');
+  return page.locator('[data-testid="model-menu"]:visible');
 }
 
 // --- Mocked bootstrap fixtures ----------------------------------------------
@@ -213,7 +212,7 @@ test.describe("model-mode picker — no monetary prices", () => {
     await waitForBootstrap(page);
 
     await modelModeTrigger(page).click();
-    const sheet = page.getByRole("dialog", { name: "Model and reasoning" });
+    const sheet = page.getByRole("dialog", { name: "Model" });
     await expect(sheet).toBeVisible();
     expect((await sheet.innerText()) ?? "").not.toMatch(/\$\s?\d/);
   });
@@ -242,13 +241,10 @@ test.describe("reasoning effort", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    // Open the desktop picker and assert the Extended row surfaces its
-    // cost/latency hint (REASONING_EFFORTS: Extended ⇒ cost high, latency slow).
-    await modelModeTrigger(page).click();
-    const menu = pickerMenu(page);
-    // Reasoning effort now lives behind the "Advanced" collapsible (progressive
-    // disclosure); expand it before the effort rows are reachable.
-    await menu.getByTestId("picker-advanced").click();
+    // Open Tools and assert the Extended row surfaces its cost/latency hint
+    // (REASONING_EFFORTS: Extended ⇒ cost high, latency slow).
+    await toolsTrigger(page).click();
+    const menu = page.locator('[data-testid="tools-menu"]:visible');
     await expect(
       menu.getByText("Cost high · Latency slow", { exact: true }),
     ).toBeVisible();

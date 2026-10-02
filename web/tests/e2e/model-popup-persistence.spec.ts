@@ -12,7 +12,7 @@
 
 import { expect, test, type Page } from "./coverage-fixture";
 
-import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, toolsTrigger, waitForBootstrap } from "./helpers";
 
 const DATA_POLICY = {
   trainsOnData: true,
@@ -150,9 +150,8 @@ test.describe("model & reasoning popup persistence", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    // Baseline: the popup opens in the neutral default state — Auto tier, both
-    // first-level toggles off.
-    await modelModeTrigger(page).click();
+    // Baseline: Tools opens with both toggles off. The model menu is models only.
+    await toolsTrigger(page).click();
     await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
       "aria-checked",
       "false",
@@ -161,14 +160,15 @@ test.describe("model & reasoning popup persistence", () => {
       "aria-checked",
       "false",
     );
+    await page.keyboard.press("Escape");
 
-    // 1. Select the Fast tier. A tier row is a DropdownMenuItem, so the menu
-    //    closes on click — reopen it for the remaining selections.
-    await page.getByText("Fast", { exact: true }).click();
+    // 1. Select the Fast tier. A tier row closes the model menu.
+    await modelModeTrigger(page).click();
+    await page.getByTestId("model-menu").getByText("Fast", { exact: true }).click();
     await expect(modelModeTrigger(page)).toContainText("Fast");
 
-    // 2. Flip the two first-level toggles (they keep the menu open) ...
-    await modelModeTrigger(page).click();
+    // 2. Flip the two tool toggles (they keep the menu open) ...
+    await toolsTrigger(page).click();
     await page.getByTestId("web-search-toggle").click();
     await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
       "aria-checked",
@@ -180,10 +180,10 @@ test.describe("model & reasoning popup persistence", () => {
       "true",
     );
 
-    // 3. ... then pick Extended reasoning effort behind the Advanced collapsible.
-    await page.getByTestId("picker-advanced").click();
-    await page.getByText("Extended", { exact: true }).click();
-    await expect(modelModeTrigger(page)).toContainText("Extended");
+    // 3. ... then pick Extended reasoning effort in the same Tools menu.
+    await page.getByTestId("tools-menu").getByText("Extended", { exact: true }).click();
+    await expect(toolsTrigger(page)).toContainText("Extended");
+    await expect(modelModeTrigger(page)).toContainText("Fast");
 
     // Every popup change rode the existing preferences PUT path. Because each
     // PUT sends the WHOLE optimistic preferences object, the final body carries
@@ -208,9 +208,9 @@ test.describe("model & reasoning popup persistence", () => {
     await waitForBootstrap(page);
 
     await expect(modelModeTrigger(page)).toContainText("Fast");
-    await expect(modelModeTrigger(page)).toContainText("Extended");
+    await expect(toolsTrigger(page)).toContainText("Extended");
 
-    await modelModeTrigger(page).click();
+    await toolsTrigger(page).click();
     await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
       "aria-checked",
       "true",
@@ -219,10 +219,8 @@ test.describe("model & reasoning popup persistence", () => {
       "aria-checked",
       "true",
     );
-    // The persisted reasoning effort is also reflected behind Advanced.
-    await page.getByTestId("picker-advanced").click();
     await expect(
-      page.getByText("Cost high · Latency slow", { exact: true }),
+      page.getByTestId("tools-menu").getByText("Cost high · Latency slow", { exact: true }),
     ).toBeVisible();
   });
 });

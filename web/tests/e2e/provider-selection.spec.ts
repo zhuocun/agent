@@ -1,6 +1,6 @@
 import { expect, test } from "./coverage-fixture";
 
-import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, toolsTrigger, waitForBootstrap } from "./helpers";
 
 const DATA_POLICY_DEEPSEEK = {
   trainsOnData: true,
@@ -207,10 +207,7 @@ test.describe("provider selection", () => {
     await expect(page.getByRole("button", { name: "Attach file" })).toBeVisible();
     await page.keyboard.press("Escape");
 
-    await modelModeTrigger(page).click();
-    // Provider + web search now live behind the "Advanced" collapsible
-    // (progressive disclosure); expand it before reaching either.
-    await page.getByTestId("picker-advanced").click();
+    await toolsTrigger(page).click();
     await page.getByTestId("web-search-toggle").click();
     await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
       "aria-checked",
@@ -225,7 +222,7 @@ test.describe("provider selection", () => {
     await expect(page.getByRole("button", { name: "Attach file" })).toHaveCount(0);
     await page.keyboard.press("Escape");
 
-    await modelModeTrigger(page).click();
+    await toolsTrigger(page).click();
     await expect(page.getByTestId("web-search-toggle")).toHaveCount(0);
     await page.keyboard.press("Escape");
 
@@ -319,10 +316,8 @@ test.describe("provider selection", () => {
       buffer: Buffer.from("Draft"),
     });
     await expect(page.getByText("draft.txt")).toBeVisible();
-    await modelModeTrigger(page).click();
-    // Provider rows live behind "Advanced" (progressive disclosure).
-    await page.getByTestId("picker-advanced").click();
-    await page.getByText("OpenAI", { exact: true }).click();
+    await toolsTrigger(page).click();
+    await page.getByTestId("tools-menu").getByText("OpenAI", { exact: true }).click();
     await expect(
       page.getByText("Attachments were removed because the current model does not support files."),
     ).toBeVisible();
@@ -374,12 +369,12 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await expect(modelModeTrigger(page)).not.toContainText(
-      "DeepSeek",
-    );
-    await modelModeTrigger(page).click();
+    await expect(modelModeTrigger(page)).not.toContainText("DeepSeek");
+    await expect(toolsTrigger(page)).not.toContainText("DeepSeek");
+    await toolsTrigger(page).click();
     await expect(page.getByText("OpenAI", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Gemini", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Provider", { exact: true })).toHaveCount(0);
   });
 
   test("restores the stored provider preference on reload when available", async ({
@@ -399,7 +394,7 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await expect(modelModeTrigger(page)).toContainText("OpenAI");
+    await expect(toolsTrigger(page)).toContainText("OpenAI");
   });
 
   test("new chat does not overwrite the stored provider preference", async ({
@@ -416,17 +411,15 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await modelModeTrigger(page).click();
-    // Provider rows live behind "Advanced" (progressive disclosure).
-    await page.getByTestId("picker-advanced").click();
-    await page.getByText("OpenAI", { exact: true }).click();
-    await expect(modelModeTrigger(page)).toContainText("OpenAI");
+    await toolsTrigger(page).click();
+    await page.getByTestId("tools-menu").getByText("OpenAI", { exact: true }).click();
+    await expect(toolsTrigger(page)).toContainText("OpenAI");
 
     await page.getByTestId("sidebar-new-chat").click();
     await page.reload();
     await waitForBootstrap(page);
 
-    await expect(modelModeTrigger(page)).toContainText("OpenAI");
+    await expect(toolsTrigger(page)).toContainText("OpenAI");
   });
 
   test("preserves selected provider when loading another conversation", async ({
@@ -480,17 +473,15 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await modelModeTrigger(page).click();
-    // Provider rows live behind "Advanced" (progressive disclosure).
-    await page.getByTestId("picker-advanced").click();
-    await page.getByText("OpenAI", { exact: true }).click();
-    await expect(modelModeTrigger(page)).toContainText("OpenAI");
+    await toolsTrigger(page).click();
+    await page.getByTestId("tools-menu").getByText("OpenAI", { exact: true }).click();
+    await expect(toolsTrigger(page)).toContainText("OpenAI");
 
     await page
       .getByTestId("sidebar-conversation-link")
       .filter({ hasText: "Saved provider chat" })
       .click();
-    await expect(modelModeTrigger(page)).toContainText("OpenAI");
+    await expect(toolsTrigger(page)).toContainText("OpenAI");
 
     await page.getByTestId("composer-textarea").fill("Still OpenAI");
     await page.getByTestId("composer-send").click();
@@ -634,10 +625,8 @@ test.describe("provider selection", () => {
       .toBe(1);
 
     await page.keyboard.press("Escape");
-    await modelModeTrigger(page).click();
-    // Provider rows live behind "Advanced" (progressive disclosure).
-    await page.getByTestId("picker-advanced").click();
-    await expect(page.getByText("OpenAI", { exact: true })).toBeVisible();
+    await toolsTrigger(page).click();
+    await expect(page.getByTestId("tools-menu").getByText("OpenAI", { exact: true })).toBeVisible();
   });
 
   test("renders the mobile provider picker without horizontal overflow", async ({
@@ -655,15 +644,8 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await page.getByRole("button", { name: /Model Auto/ }).click();
-    const dialog = page.getByRole("dialog");
-    // Provider now lives behind the "Advanced" collapsible on mobile too
-    // (progressive disclosure); expand it before asserting the provider rows.
-    // The mobile bottom sheet's swipe-to-dismiss (useSwipeDismiss) takes pointer
-    // capture on pointerdown, which suppresses Playwright's *synthesized* click
-    // on sheet-body buttons; dispatch the click directly so the collapsible's
-    // real handler runs (a real tap/click on a device generates it natively).
-    await dialog.getByTestId("picker-advanced").dispatchEvent("click");
+    await toolsTrigger(page).click();
+    const dialog = page.getByRole("dialog", { name: "Tools" });
     await expect(dialog).toContainText("Provider");
     await expect(dialog.getByText("OpenAI", { exact: true })).toBeVisible();
     await expect(dialog.getByText("Gemini", { exact: true })).toBeVisible();

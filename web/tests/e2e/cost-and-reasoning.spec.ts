@@ -12,7 +12,7 @@
 
 import { expect, test, type Locator, type Page } from "./coverage-fixture";
 
-import { BE_URL, modelModeTrigger, toolsTrigger, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
 
 // The open model dropdown (desktop). Scoping row clicks here keeps them
 // unambiguous — the trigger can show the same tier label as a menu row.
@@ -241,10 +241,10 @@ test.describe("reasoning effort", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    // Open Tools and assert the Extended row surfaces its cost/latency hint
-    // (REASONING_EFFORTS: Extended ⇒ cost high, latency slow).
-    await toolsTrigger(page).click();
-    const menu = page.locator('[data-testid="tools-menu"]:visible');
+    // Open the model menu and assert the Extended row surfaces its
+    // cost/latency hint (REASONING_EFFORTS: Extended ⇒ cost high, latency slow).
+    await modelModeTrigger(page).click();
+    const menu = pickerMenu(page);
     await expect(
       menu.getByText("Cost high · Latency slow", { exact: true }),
     ).toBeVisible();

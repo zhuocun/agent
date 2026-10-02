@@ -198,32 +198,36 @@ test.describe("provider selection", () => {
       });
     });
 
+    await page.addInitScript(() => {
+      window.localStorage.setItem("olune.preferredProviderId", "openai");
+    });
     await page.goto("/");
     await waitForBootstrap(page);
 
-    // Attach now lives behind the composer's "More actions" (+) disclosure; open
-    // it to assert the provider's attachment capability, then close it again.
-    await page.getByTestId("composer-more-actions").click();
-    await expect(page.getByRole("button", { name: "Attach file" })).toBeVisible();
-    await page.keyboard.press("Escape");
-
-    await toolsTrigger(page).click();
-    await page.getByTestId("web-search-toggle").click();
-    await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
-    await expect(page.getByText("Gemini", { exact: true })).toBeVisible();
-    await page.getByText("OpenAI", { exact: true }).click();
-
-    // Switched to a provider without attachment support: Attach is gone from the
-    // disclosure too. Open it to assert absence, then close it.
+    // The stored provider has no attachment or web-search support, and the
+    // composer no longer offers a provider picker.
     await page.getByTestId("composer-more-actions").click();
     await expect(page.getByRole("button", { name: "Attach file" })).toHaveCount(0);
     await page.keyboard.press("Escape");
 
     await toolsTrigger(page).click();
-    await expect(page.getByTestId("web-search-toggle")).toHaveCount(0);
+    const toolsMenu = page.getByTestId("tools-menu");
+    await expect(toolsMenu.getByTestId("web-search-toggle")).toHaveCount(0);
+    for (const name of ["DeepSeek", "Anthropic", "OpenAI", "Gemini", "Grok", "Fake"]) {
+      await expect(toolsMenu.getByText(name, { exact: true })).toHaveCount(0);
+    }
+    await expect(toolsMenu.getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(toolsMenu.getByText("Data policy")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await modelModeTrigger(page).click();
+    const modelMenu = page.getByTestId("model-menu");
+    await expect(modelMenu.getByText("Reasoning effort", { exact: true })).toBeVisible();
+    for (const name of ["DeepSeek", "Anthropic", "OpenAI", "Gemini", "Grok", "Fake"]) {
+      await expect(modelMenu.getByText(name, { exact: true })).toHaveCount(0);
+    }
+    await expect(modelMenu.getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(modelMenu.getByText("Data policy")).toHaveCount(0);
     await page.keyboard.press("Escape");
 
     await page.getByTestId("composer-textarea").fill("Use the selected provider");
@@ -236,7 +240,7 @@ test.describe("provider selection", () => {
     expect(sentBody?.webSearch).toBeUndefined();
   });
 
-  test("attaches text file, sends transient payload, then clears on unsupported provider", async ({
+  test("attaches a text file and sends the transient payload", async ({
     page,
   }) => {
     await page.route(`${BE_URL}/api/bootstrap`, async (route) => {
@@ -309,19 +313,6 @@ test.describe("provider selection", () => {
       "Fast",
     );
     await expect(page.getByTestId("message-attribution")).not.toContainText("$");
-
-    await page.getByTestId("composer-file-input").setInputFiles({
-      name: "draft.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from("Draft"),
-    });
-    await expect(page.getByText("draft.txt")).toBeVisible();
-    await toolsTrigger(page).click();
-    await page.getByTestId("tools-menu").getByText("OpenAI", { exact: true }).click();
-    await expect(
-      page.getByText("Attachments were removed because the current model does not support files."),
-    ).toBeVisible();
-    await expect(page.getByText("draft.txt")).toHaveCount(0);
   });
 
   test("keeps provider UI hidden when only one provider is available", async ({
@@ -372,9 +363,15 @@ test.describe("provider selection", () => {
     await expect(modelModeTrigger(page)).not.toContainText("DeepSeek");
     await expect(toolsTrigger(page)).not.toContainText("DeepSeek");
     await toolsTrigger(page).click();
-    await expect(page.getByText("OpenAI", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("Gemini", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("Provider", { exact: true })).toHaveCount(0);
+    const toolsMenu = page.getByTestId("tools-menu");
+    await expect(toolsMenu.getByText("OpenAI", { exact: true })).toHaveCount(0);
+    await expect(toolsMenu.getByText("Gemini", { exact: true })).toHaveCount(0);
+    await expect(toolsMenu.getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(toolsMenu.getByText("Data policy")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await modelModeTrigger(page).click();
+    await expect(page.getByTestId("model-menu").getByText("OpenAI", { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("model-menu").getByText("Data policy")).toHaveCount(0);
   });
 
   test("restores the stored provider preference on reload when available", async ({
@@ -391,10 +388,44 @@ test.describe("provider selection", () => {
       });
     });
 
+    let sentBody: { providerId?: unknown } | undefined;
+    await page.route(`${BE_URL}/api/conversations`, async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "55555555-5555-4555-8555-555555555555",
+          title: "New chat",
+          messages: [],
+          selectedTierId: "auto",
+          isTemporary: false,
+        }),
+      });
+    });
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      sentBody = route.request().postDataJSON() as { providerId?: unknown };
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+        body:
+          'event: error\ndata: {"code":"TEST","severity":"error","title":"Done","body":"Test complete."}\n\n',
+      });
+    });
+
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await expect(toolsTrigger(page)).toContainText("OpenAI");
+    await expect(toolsTrigger(page)).not.toContainText("OpenAI");
+    await expect(modelModeTrigger(page)).not.toContainText("OpenAI");
+    await page.getByTestId("composer-textarea").fill("Stored provider");
+    await page.getByTestId("composer-send").click();
+    await expect
+      .poll(() => sentBody, { timeout: 5_000 })
+      .toMatchObject({ providerId: "openai" });
   });
 
   test("new chat does not overwrite the stored provider preference", async ({
@@ -408,18 +439,52 @@ test.describe("provider selection", () => {
       });
     });
 
+    await page.addInitScript(() => {
+      window.localStorage.setItem("olune.preferredProviderId", "openai");
+    });
+    let sentBody: { providerId?: unknown } | undefined;
+    await page.route(`${BE_URL}/api/conversations`, async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "66666666-6666-4666-8666-666666666666",
+          title: "New chat",
+          messages: [],
+          selectedTierId: "auto",
+          isTemporary: false,
+        }),
+      });
+    });
+    await page.route(`${BE_URL}/api/conversations/*/messages`, async (route) => {
+      sentBody = route.request().postDataJSON() as { providerId?: unknown };
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+        body:
+          'event: error\ndata: {"code":"TEST","severity":"error","title":"Done","body":"Test complete."}\n\n',
+      });
+    });
+
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await toolsTrigger(page).click();
-    await page.getByTestId("tools-menu").getByText("OpenAI", { exact: true }).click();
-    await expect(toolsTrigger(page)).toContainText("OpenAI");
+    await expect(toolsTrigger(page)).not.toContainText("OpenAI");
 
     await page.getByTestId("sidebar-new-chat").click();
     await page.reload();
     await waitForBootstrap(page);
 
-    await expect(toolsTrigger(page)).toContainText("OpenAI");
+    await expect(toolsTrigger(page)).not.toContainText("OpenAI");
+    await page.getByTestId("composer-textarea").fill("Still the stored provider");
+    await page.getByTestId("composer-send").click();
+    await expect
+      .poll(() => sentBody, { timeout: 5_000 })
+      .toMatchObject({ providerId: "openai" });
   });
 
   test("preserves selected provider when loading another conversation", async ({
@@ -470,18 +535,20 @@ test.describe("provider selection", () => {
       });
     });
 
+    await page.addInitScript(() => {
+      window.localStorage.setItem("olune.preferredProviderId", "openai");
+    });
+
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await toolsTrigger(page).click();
-    await page.getByTestId("tools-menu").getByText("OpenAI", { exact: true }).click();
-    await expect(toolsTrigger(page)).toContainText("OpenAI");
+    await expect(toolsTrigger(page)).not.toContainText("OpenAI");
 
     await page
       .getByTestId("sidebar-conversation-link")
       .filter({ hasText: "Saved provider chat" })
       .click();
-    await expect(toolsTrigger(page)).toContainText("OpenAI");
+    await expect(toolsTrigger(page)).not.toContainText("OpenAI");
 
     await page.getByTestId("composer-textarea").fill("Still OpenAI");
     await page.getByTestId("composer-send").click();
@@ -626,10 +693,12 @@ test.describe("provider selection", () => {
 
     await page.keyboard.press("Escape");
     await toolsTrigger(page).click();
-    await expect(page.getByTestId("tools-menu").getByText("OpenAI", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("tools-menu").getByText("OpenAI", { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("tools-menu").getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("tools-menu").getByText("Data policy")).toHaveCount(0);
   });
 
-  test("renders the mobile provider picker without horizontal overflow", async ({
+  test("renders the mobile tools sheet without a provider list or horizontal overflow", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -644,11 +713,21 @@ test.describe("provider selection", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
+    await modelModeTrigger(page).click();
+    const modelDialog = page.getByRole("dialog", { name: "Model" });
+    await expect(modelDialog.getByText("Reasoning effort", { exact: true })).toBeVisible();
+    await expect(modelDialog.getByText("OpenAI", { exact: true })).toHaveCount(0);
+    await expect(modelDialog.getByText("Data policy")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
     await toolsTrigger(page).click();
     const dialog = page.getByRole("dialog", { name: "Tools" });
-    await expect(dialog).toContainText("Provider");
-    await expect(dialog.getByText("OpenAI", { exact: true })).toBeVisible();
-    await expect(dialog.getByText("Gemini", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Web search", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("JSON output", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("OpenAI", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("Gemini", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText("Data policy")).toHaveCount(0);
 
     const hasHorizontalOverflow = await dialog.evaluate(
       (node) => node.scrollWidth > node.clientWidth + 1,

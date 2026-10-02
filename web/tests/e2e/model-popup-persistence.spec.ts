@@ -150,7 +150,7 @@ test.describe("model & reasoning popup persistence", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    // Baseline: Tools opens with both toggles off. The model menu is models only.
+    // Baseline: Tools opens with both toggles off. Reasoning lives on the model.
     await toolsTrigger(page).click();
     await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
       "aria-checked",
@@ -180,10 +180,13 @@ test.describe("model & reasoning popup persistence", () => {
       "true",
     );
 
-    // 3. ... then pick Extended reasoning effort in the same Tools menu.
-    await page.getByTestId("tools-menu").getByText("Extended", { exact: true }).click();
-    await expect(toolsTrigger(page)).toContainText("Extended");
+    // 3. ... then pick Extended reasoning effort in the model menu.
+    await page.keyboard.press("Escape");
+    await modelModeTrigger(page).click();
+    await page.getByTestId("model-menu").getByText("Extended", { exact: true }).click();
     await expect(modelModeTrigger(page)).toContainText("Fast");
+    await expect(modelModeTrigger(page)).toContainText("Extended");
+    await expect(toolsTrigger(page)).not.toContainText("Extended");
 
     // Every popup change rode the existing preferences PUT path. Because each
     // PUT sends the WHOLE optimistic preferences object, the final body carries
@@ -208,7 +211,8 @@ test.describe("model & reasoning popup persistence", () => {
     await waitForBootstrap(page);
 
     await expect(modelModeTrigger(page)).toContainText("Fast");
-    await expect(toolsTrigger(page)).toContainText("Extended");
+    await expect(modelModeTrigger(page)).toContainText("Extended");
+    await expect(toolsTrigger(page)).not.toContainText("Extended");
 
     await toolsTrigger(page).click();
     await expect(page.getByTestId("web-search-toggle")).toHaveAttribute(
@@ -219,8 +223,10 @@ test.describe("model & reasoning popup persistence", () => {
       "aria-checked",
       "true",
     );
+    await page.keyboard.press("Escape");
+    await modelModeTrigger(page).click();
     await expect(
-      page.getByTestId("tools-menu").getByText("Cost high · Latency slow", { exact: true }),
+      page.getByTestId("model-menu").getByText("Cost high · Latency slow", { exact: true }),
     ).toBeVisible();
   });
 });

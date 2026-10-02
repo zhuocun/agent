@@ -17,23 +17,35 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { haptic } from "@/lib/use-haptic";
 import { cn } from "@/lib/utils";
-import type { ModelTier, ModelTierId } from "@/lib/types";
+import type {
+  ModelTier,
+  ModelTierId,
+  ReasoningEffort,
+  ReasoningEffortId,
+} from "@/lib/types";
 
 export interface ModelModePickerProps {
   tiers: ModelTier[];
   selectedTierId: ModelTierId;
   onSelectTier: (id: ModelTierId) => void;
+  efforts: ReasoningEffort[];
+  selectedEffortId: ReasoningEffortId;
+  onSelectEffort: (id: ReasoningEffortId) => void;
+  // False when the served provider ignores reasoning effort (e.g. Anthropic).
+  // The whole Reasoning-effort section is then omitted.
+  effortSupported?: boolean;
   disabled?: boolean;
 }
 
 // Shared trigger styling — identical between the desktop dropdown and the
 // mobile bottom-sheet variants. A compact ghost pill in the composer toolbar
-// that keeps the 44px touch floor. The label is the model only; tools,
-// provider, reasoning effort, and data policy live on the Tools control.
+// that keeps the 44px touch floor. The label is the model, plus the reasoning
+// effort when it differs from the model name. Tools stay on the Tools control.
 const TRIGGER_CLASS =
   "inline-flex h-11 min-w-0 max-w-[min(12rem,max(6rem,calc(100vw-11rem)))] sm:max-w-[min(12rem,max(6rem,calc(100vw-16rem)))] items-center gap-1 rounded-full px-3 ui-list-row outline-none transition-colors bg-foreground/[0.04] shadow-[inset_0_0_0_1px_var(--glass-border)] hover:bg-foreground/[0.08] focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/[0.08] md:max-w-80";
 
@@ -41,18 +53,34 @@ export function ModelModePicker({
   tiers,
   selectedTierId,
   onSelectTier,
+  efforts,
+  selectedEffortId,
+  onSelectEffort,
+  effortSupported = true,
   disabled,
 }: ModelModePickerProps): JSX.Element {
   const tier = tiers.find((t) => t.id === selectedTierId) ?? tiers[0];
+  const effort = efforts.find((e) => e.id === selectedEffortId) ?? efforts[0];
   const cheapestTierId = cheapestAvailableTierId(tiers);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const triggerLabel = `Model ${tier?.label}. Change.`;
+  const showEffort = Boolean(
+    effortSupported && effort?.label && effort.label !== tier?.label,
+  );
+  const triggerLabel =
+    effortSupported && effort?.label
+      ? `Model ${tier?.label}. Reasoning ${effort.label}. Change.`
+      : `Model ${tier?.label}. Change.`;
 
   const triggerInner = (
     <>
       <span className="min-w-0 truncate font-medium text-foreground">
         {tier?.label}
       </span>
+      {showEffort && effort ? (
+        <span className="min-w-0 truncate text-muted-foreground">
+          {effort.label}
+        </span>
+      ) : null}
       <ChevronDown aria-hidden className="size-4 shrink-0 text-muted-foreground" />
     </>
   );
@@ -60,6 +88,12 @@ export function ModelModePicker({
   const handleSelectTier = (id: ModelTierId): void => {
     haptic("selection");
     onSelectTier(id);
+    setSheetOpen(false);
+  };
+
+  const handleSelectEffort = (id: ReasoningEffortId): void => {
+    haptic("selection");
+    onSelectEffort(id);
     setSheetOpen(false);
   };
 
@@ -99,6 +133,23 @@ export function ModelModePicker({
               />
             ))}
           </DropdownMenuGroup>
+          {effortSupported ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <GroupHeading>Reasoning effort</GroupHeading>
+                {efforts.map((e) => (
+                  <EffortRow
+                    key={e.id}
+                    label={e.label}
+                    meta={effortMeta(e)}
+                    selected={e.id === selectedEffortId}
+                    onSelect={() => handleSelectEffort(e.id)}
+                  />
+                ))}
+              </DropdownMenuGroup>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -124,7 +175,9 @@ export function ModelModePicker({
           <DialogHeader className="shrink-0">
             <DialogTitle>Model</DialogTitle>
             <DialogDescription className="sr-only">
-              Choose which model answers your next message.
+              {effortSupported
+                ? "Choose which model answers your next message, and how much reasoning it uses."
+                : "Choose which model answers your next message."}
             </DialogDescription>
           </DialogHeader>
           <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pb-8">
@@ -147,6 +200,19 @@ export function ModelModePicker({
                 );
               })}
             </SheetSection>
+            {effortSupported ? (
+              <SheetSection title="Reasoning effort">
+                {efforts.map((e) => (
+                  <SheetRow
+                    key={e.id}
+                    label={e.label}
+                    description={effortMeta(e) ?? e.description}
+                    selected={e.id === selectedEffortId}
+                    onSelect={() => handleSelectEffort(e.id)}
+                  />
+                ))}
+              </SheetSection>
+            ) : null}
           </div>
         </DialogContent>
       </Dialog>
@@ -195,6 +261,32 @@ function TierRow({
           </p>
         ) : null}
       </div>
+    </DropdownMenuItem>
+  );
+}
+
+function EffortRow({
+  label,
+  meta,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  meta?: string;
+  selected: boolean;
+  onSelect: () => void;
+}): JSX.Element {
+  return (
+    <DropdownMenuItem label={label} onClick={onSelect} className="py-1.5">
+      <span className="shrink-0 font-medium">{label}</span>
+      {meta ? (
+        <span className="min-w-0 ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
+          {meta}
+        </span>
+      ) : null}
+      {selected ? (
+        <Check aria-hidden className="ml-auto size-4 shrink-0 text-foreground" />
+      ) : null}
     </DropdownMenuItem>
   );
 }
@@ -279,6 +371,11 @@ function ValueBadge({ label }: { label: string }): JSX.Element {
 function tierMeta(tier: ModelTier): string {
   const parts = [tier.modelLabel, tier.supportsAttachments ? "Attachments" : ""];
   return parts.filter(Boolean).join(" · ");
+}
+
+function effortMeta(effort: ReasoningEffort): string | undefined {
+  if (effort.costHint === "auto") return undefined;
+  return `Cost ${effort.costHint} · Latency ${effort.latencyHint}`;
 }
 
 function cheapestAvailableTierId(tiers: ModelTier[]): ModelTierId | null {

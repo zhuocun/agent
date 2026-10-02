@@ -69,18 +69,22 @@ test.describe("desktop", () => {
     await expect(page.locator(`[id="${last}"]`)).toBeInViewport({ ratio: 1 });
   });
 
-  test("model menu is models only; tools toggles are menu checkboxes", async ({
+  test("model menu holds tiers and reasoning; tools toggles are menu checkboxes", async ({
     page,
   }) => {
     await page.goto("/");
     await waitForBootstrap(page);
     await modelModeTrigger(page).focus();
     await page.keyboard.press("Enter");
-    const modelMenu = page.getByRole("menu");
+    const modelMenu = page.getByTestId("model-menu");
     await expect(modelMenu).toBeVisible();
+    await expect(modelMenu.getByText("Reasoning effort", { exact: true })).toBeVisible();
+    await expect(modelMenu.getByText("Extended", { exact: true })).toBeVisible();
     await expect(modelMenu.getByTestId("web-search-toggle")).toHaveCount(0);
     await expect(modelMenu.getByTestId("json-mode-toggle")).toHaveCount(0);
     await expect(modelMenu.getByTestId("picker-advanced")).toHaveCount(0);
+    await expect(modelMenu.getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(modelMenu.getByText("Data policy", { exact: false })).toHaveCount(0);
     expect(await axeViolations(page, ["aria-required-children"])).toEqual([]);
     await page.keyboard.press("Escape");
 
@@ -88,6 +92,9 @@ test.describe("desktop", () => {
     await page.keyboard.press("Enter");
     const toolsMenu = page.getByTestId("tools-menu");
     await expect(toolsMenu).toBeVisible();
+    await expect(toolsMenu.getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(toolsMenu.getByText("Reasoning effort", { exact: true })).toHaveCount(0);
+    await expect(toolsMenu.getByText("Data policy", { exact: false })).toHaveCount(0);
     const json = toolsMenu.getByTestId("json-mode-toggle");
     await expect(json).toHaveAttribute("role", "menuitemcheckbox");
     // End lands on the last item in the menu's roving focus.

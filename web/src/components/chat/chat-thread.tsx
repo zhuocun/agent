@@ -41,6 +41,7 @@ import { Input } from "@/components/ui/input";
 import { AppShell } from "@/components/chat/app-shell";
 import { Sidebar } from "@/components/chat/sidebar";
 import { AppHeader } from "@/components/chat/app-header";
+import { ComposerTools } from "@/components/chat/composer-tools";
 import { ModelModePicker } from "@/components/chat/model-mode-picker";
 import { MessageList } from "@/components/chat/message-list";
 import { UserMessage } from "@/components/chat/user-message";
@@ -360,20 +361,6 @@ function readStoredPreferredProviderId(): string | undefined {
     return window.localStorage.getItem(PREFERRED_PROVIDER_STORAGE_KEY) ?? undefined;
   } catch {
     return undefined;
-  }
-}
-
-function storePreferredProviderId(providerId: string | undefined): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (providerId) {
-      window.localStorage.setItem(PREFERRED_PROVIDER_STORAGE_KEY, providerId);
-    } else {
-      window.localStorage.removeItem(PREFERRED_PROVIDER_STORAGE_KEY);
-    }
-  } catch {
-    // Storage can be disabled in private contexts; provider selection still
-    // works for the current session through React state.
   }
 }
 
@@ -906,10 +893,9 @@ export function ChatThread() {
   // Effective, gated view used by every consumer (mirrors web search above).
   const effectiveDeepResearch = deepResearchEnabled && agenticEnabled;
   // Whether the served provider honours a reasoning-effort knob. Anthropic
-  // ignores the control, so we DISABLE the effort rows (a graceful, honest UX:
-  // the picker shows a one-line note rather than ever surfacing an error). The
-  // check is on the effective provider id so switching provider re-evaluates.
-  // Defaults to supported while bootstrap is pending.
+  // ignores the control, so the model menu omits the effort rows. The check is
+  // on the effective provider id. Defaults to supported while bootstrap is
+  // pending.
   const effortSupported = effectiveProviderId !== "anthropic";
   // Effective, gated reasoning effort actually sent: forced to "auto" when the
   // served provider ignores effort, so an unsupported turn never carries a
@@ -1349,34 +1335,6 @@ export function ChatThread() {
       // Persist the picker's tier as the saved default (telemetry-free path so
       // we don't double-fire the chat-surface event reported just above).
       persistPopupDefault({ defaultTierId: id });
-    }
-    if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
-    if (nextTier?.supportsAttachments !== true) {
-      composerRef.current?.clearAttachments("unsupported");
-    }
-  };
-
-  const handleSelectProvider = (id: string): void => {
-    const nextProvider = providerOptions.find(
-      (option) => option.providerId === id && option.status === "available",
-    );
-    if (!nextProvider) return;
-    const previousProviderId = selectedProviderId;
-    const nextTier = baseSelectedTier
-      ? effectiveTierForProvider(baseSelectedTier, id)
-      : undefined;
-    setSelectedProviderId(id);
-    // localStorage fast-path stays the synchronous source for pre-bootstrap
-    // resolution; mirror the same value to the durable DB preference so it
-    // syncs across devices.
-    storePreferredProviderId(id);
-    if (id !== previousProviderId) {
-      reportTelemetry(preferences, "provider.changed", {
-        fromProviderId: previousProviderId ?? null,
-        toProviderId: id,
-        tierId: selectedTierId,
-      });
-      persistPopupDefault({ defaultProviderId: id });
     }
     if (nextTier?.supportsWebSearch !== true) setSearchEnabled(false);
     if (nextTier?.supportsAttachments !== true) {
@@ -4272,21 +4230,21 @@ export function ChatThread() {
                 // Pre-send estimate uses the provider-effective selected tier;
                 // suppressed in compare mode (two tiers, no single estimate).
                 estimateTier={compareMode ? undefined : selectedModelTier}
-                // The model/mode picker now lives in the composer toolbar
-                // (Lovable-style) — the same component instance the header
-                // used to host, so every testid/aria contract is unchanged.
                 modelPicker={
                   <ModelModePicker
                     tiers={modelTiers}
                     selectedTierId={selectedTierId}
                     onSelectTier={handleSelectTier}
-                    providerOptions={providerOptions}
-                    selectedProviderId={effectiveProviderId}
-                    onSelectProvider={handleSelectProvider}
                     efforts={REASONING_EFFORTS}
                     selectedEffortId={selectedReasoningEffortId}
                     onSelectEffort={handleSelectEffort}
                     effortSupported={effortSupported}
+                  />
+                }
+                toolsPicker={
+                  <ComposerTools
+                    tiers={modelTiers}
+                    selectedTierId={selectedTierId}
                     searchEnabled={searchEnabled}
                     onToggleSearch={handleToggleSearch}
                     jsonModeEnabled={jsonModeEnabled}

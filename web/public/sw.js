@@ -1,7 +1,10 @@
 // Bump on each deploy so old caches are evicted on activate.
-const VERSION = "v5";
+const VERSION = "v6";
 const SHELL_CACHE = `olune-shell-${VERSION}`;
 const RUNTIME_CACHE = `olune-runtime-${VERSION}`;
+// Hashed `/_next/static` chunks change every deploy, so an uncapped runtime
+// cache grows forever on a long-lived install. Keep the newest entries only.
+const RUNTIME_MAX_ENTRIES = 150;
 
 // The minimal shell. Pages and chunks are added on the fly via the runtime
 // cache — pre-caching the App Router HTML by URL is brittle because the
@@ -68,7 +71,7 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (isStaticAsset(url)) {
-    event.respondWith(cacheFirst(req, RUNTIME_CACHE));
+    event.respondWith(cacheFirst(event, RUNTIME_CACHE));
     return;
   }
 
@@ -79,18 +82,28 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-async function cacheFirst(req, cacheName) {
+async function trimCache(cache, maxEntries) {
+  const keys = await cache.keys();
+  // `keys()` returns insertion order, so the oldest entries go first.
+  await Promise.all(
+    keys.slice(0, Math.max(0, keys.length - maxEntries)).map((k) => cache.delete(k)),
+  );
+}
+
+async function cacheFirst(event, cacheName) {
+  const req = event.request;
   const cache = await caches.open(cacheName);
   const hit = await cache.match(req);
   if (hit) return hit;
-  try {
-    const res = await fetch(req);
-    if (res.ok) cache.put(req, res.clone());
-    return res;
-  } catch (err) {
-    if (hit) return hit;
-    throw err;
+  const res = await fetch(req);
+  if (res.ok) {
+    event.waitUntil(
+      cache
+        .put(req, res.clone())
+        .then(() => trimCache(cache, RUNTIME_MAX_ENTRIES)),
+    );
   }
+  return res;
 }
 
 async function networkFirstDocument(req) {

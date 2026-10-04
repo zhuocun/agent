@@ -7,6 +7,7 @@ import {
   Boxes,
   Brain,
   ClipboardCopy,
+  CloudOff,
   Code2,
   Columns2,
   DollarSign,
@@ -24,6 +25,7 @@ import {
   Tag as TagIcon,
   TextCursorInput,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 
 import {
@@ -46,6 +48,8 @@ import { AssistantMessage } from "@/components/chat/assistant-message";
 import { WelcomeScreen } from "@/components/chat/welcome-screen";
 import { TemporaryChatBanner } from "@/components/chat/temporary-chat-banner";
 import { DegradedStatusBanner } from "@/components/chat/degraded-status-banner";
+import { OfflineBanner } from "@/components/chat/offline-banner";
+import { useOnlineStatus } from "@/lib/use-online-status";
 import {
   SettingsDialog,
   type SettingsTab,
@@ -679,6 +683,7 @@ export function ChatThread() {
   // prioritized slot (degraded > temporary) instead of stacking into a
   // multi-banner wall. The banner stays always-mounted and self-renders null.
   const [degradedActive, setDegradedActive] = useState(false);
+  const online = useOnlineStatus();
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
   >(null);
@@ -3830,13 +3835,21 @@ export function ChatThread() {
   if (bootstrapError) {
     const { title, body } = friendlyBootstrapCopy(bootstrapError);
     return (
-      <div className="flex h-full min-h-svh flex-col items-center justify-center bg-background p-6 text-foreground">
-        <div className="max-w-sm space-y-4 text-center">
-          <p className="text-2xl font-semibold tracking-tight text-foreground/90">
-            Olune
-          </p>
+      <div className="flex h-full min-h-svh flex-col items-center justify-center bg-background px-6 pt-[env(safe-area-inset-top)] pb-[var(--bottom-inset)] text-foreground">
+        <div className="flex max-w-sm flex-col items-center gap-5 text-center">
+          <div
+            aria-hidden
+            className="flex size-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground ring-1 ring-border"
+          >
+            {bootstrapError.code === "TIMEOUT" ||
+            bootstrapError.code === "NETWORK" ? (
+              <CloudOff className="size-6" strokeWidth={1.75} />
+            ) : (
+              <TriangleAlert className="size-6" strokeWidth={1.75} />
+            )}
+          </div>
           <div className="space-y-2">
-            <h1 className="text-2xl font-semibold tracking-tight text-balance md:text-3xl">
+            <h1 className="text-xl font-semibold tracking-tight text-balance md:text-2xl">
               {title}
             </h1>
             <p className="ui-body text-muted-foreground">{body}</p>
@@ -4044,10 +4057,15 @@ export function ChatThread() {
                   ) : undefined
                 }
               />
-              {isTemporary && !degradedActive ? (
+              {/* One status slot, prioritized offline > degraded > temporary. */}
+              {online ? null : <OfflineBanner />}
+              {online && isTemporary && !degradedActive ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
               ) : null}
-              <DegradedStatusBanner onActiveChange={setDegradedActive} />
+              <DegradedStatusBanner
+                onActiveChange={setDegradedActive}
+                className={online ? undefined : "hidden"}
+              />
             </div>
           </div>
 

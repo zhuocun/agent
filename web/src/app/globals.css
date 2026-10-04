@@ -1057,8 +1057,7 @@ input[type="search"]::-webkit-search-decoration {
    the message area flow at full height on a white background. */
 @media print {
   .chrome-frost,
-  [data-slot="toaster"],
-  [data-testid="install-coachmark"] {
+  [data-slot="toaster"] {
     display: none !important;
   }
   html,

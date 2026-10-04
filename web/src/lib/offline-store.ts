@@ -1,14 +1,14 @@
 "use client";
 
 // Offline-first persistence backed by the browser's native IndexedDB — no
-// third-party dependency. Two concerns live here:
+// third-party dependency. Drafts are the live concern here:
 //
 //   1. Composer DRAFTS, keyed by conversationId, so an in-progress message
 //      survives a reload, a tab crash, or navigating between conversations.
 //      A brand-new chat (no conversation row yet) uses the NEW_CHAT_DRAFT_KEY
 //      sentinel.
-//   2. An UNSENT QUEUE of turns the user tried to send while offline / mid
-//      failure, so a future flush can retry them.
+//   2. A reserved `queue` store (created in v1, currently unused) kept so the
+//      schema stays stable for existing installs.
 //
 // All access is feature-detected and best-effort: if IndexedDB is unavailable
 // (private mode in some browsers, SSR, disabled storage) every call resolves to
@@ -24,16 +24,6 @@ const QUEUE_STORE = "queue";
 // first message of a new chat). Once the conversation is created the draft is
 // cleared on send, so this never lingers across real conversations.
 export const NEW_CHAT_DRAFT_KEY = "__new_chat__";
-
-export interface UnsentTurn {
-  // Stable client-minted id (also used to dedupe on flush).
-  id: string;
-  conversationId: string | null;
-  text: string;
-  tierId: string;
-  providerId?: string;
-  createdAt: string;
-}
 
 function hasIndexedDb(): boolean {
   return typeof window !== "undefined" && "indexedDB" in window && window.indexedDB !== null;
@@ -157,39 +147,10 @@ export async function deleteDraft(
   );
 }
 
-// --- Unsent queue ----------------------------------------------------------
-
-export async function enqueueUnsent(turn: UnsentTurn): Promise<void> {
-  await runTransaction<IDBValidKey>(QUEUE_STORE, "readwrite", (store) =>
-    store.put(turn),
-  );
-}
-
-export async function getUnsentQueue(): Promise<UnsentTurn[]> {
-  const rows = await runTransaction<unknown>(QUEUE_STORE, "readonly", (store) =>
-    store.getAll() as IDBRequest<unknown>,
-  );
-  if (!Array.isArray(rows)) return [];
-  return rows.filter((row): row is UnsentTurn => {
-    return (
-      typeof row === "object" &&
-      row !== null &&
-      typeof (row as UnsentTurn).id === "string" &&
-      typeof (row as UnsentTurn).text === "string"
-    );
-  });
-}
-
-export async function removeFromQueue(id: string): Promise<void> {
-  await runTransaction<undefined>(QUEUE_STORE, "readwrite", (store) =>
-    store.delete(id) as IDBRequest<undefined>,
-  );
-}
-
 // --- Persistent storage ----------------------------------------------------
 
 // Ask the browser to mark our origin's storage as persistent so the offline
-// drafts/queue aren't silently evicted under storage pressure. Best-effort and
+// drafts aren't silently evicted under storage pressure. Best-effort and
 // idempotent — browsers may grant silently, prompt, or ignore. Returns whether
 // storage is (now) persisted; resolves false when the API is unavailable.
 export async function requestPersistentStorage(): Promise<boolean> {

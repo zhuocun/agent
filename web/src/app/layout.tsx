@@ -6,7 +6,6 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toast";
-import { InstallCoachmark } from "@/components/chat/install-coachmark";
 import { DirController, I18nProvider } from "@/lib/i18n/context";
 
 // Display serif for hero/heading moments only (the welcome greeting) —
@@ -139,7 +138,6 @@ export default async function RootLayout({
           <I18nProvider dir={dir}>
             <TooltipProvider delay={200}>
               {children}
-              <InstallCoachmark />
               <Toaster />
             </TooltipProvider>
           </I18nProvider>

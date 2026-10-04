@@ -5,6 +5,7 @@ import {
   ClipboardCopy,
   Download,
   FileText,
+  Ghost,
   Menu,
   MoreHorizontal,
   Printer,
@@ -234,8 +235,10 @@ export function AppHeader({
                 checked={isTemporary}
                 closeOnClick
                 onCheckedChange={onToggleTemporary}
+                className="gap-2"
               >
-                Temporary chat
+                <Ghost className="size-4" aria-hidden />
+                <span>Temporary chat</span>
               </DropdownMenuCheckboxItem>
               {onCopyConversation && canCopyConversation ? (
                 <DropdownMenuItem

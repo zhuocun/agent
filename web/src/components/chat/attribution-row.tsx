@@ -72,7 +72,7 @@ export function AttributionRow({
     >
       {substitution ? (
         <span
-          className="inline-flex max-w-full flex-col items-start gap-0.5 rounded-md bg-substitution-callout px-2 py-1.5 ui-caption font-medium text-substitution-callout-foreground ring-1 ring-substitution-callout-border sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-1.5 sm:rounded-full sm:px-1.5 sm:py-0.5"
+          className="inline-flex w-full flex-col sm:w-auto sm:max-w-full items-start gap-0.5 rounded-md bg-substitution-callout px-2 py-1.5 ui-caption font-medium text-substitution-callout-foreground ring-1 ring-substitution-callout-border sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-1.5 sm:rounded-full sm:px-1.5 sm:py-0.5"
           data-testid="attribution-substitution"
         >
           <span className="inline-flex min-w-0 items-center gap-1">

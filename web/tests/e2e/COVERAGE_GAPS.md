@@ -46,8 +46,8 @@ Genuinely browser-unreachable-in-headless code keeps a few files low and is
 deliberately not pursued: feature-detect fallbacks (`scheduler-yield.ts`,
 `use-haptic.ts`, `use-visual-viewport.ts`, speech APIs in
 `use-speech-*.ts`), `prefers-reduced-motion` (`motion.ts`), touch-gesture
-handlers (`use-swipe-*.ts`), PWA `beforeinstallprompt` (`install-coachmark.tsx`),
-offline/IndexedDB replay (`offline-store.ts`), and defensive `catch`/parse-fail
+handlers (`use-swipe-*.ts`), PWA `beforeinstallprompt` (`use-pwa-install.ts`),
+offline/IndexedDB drafts (`offline-store.ts`), and defensive `catch`/parse-fail
 arms in `apiClient.ts` / `stream-client.ts`. The single biggest remaining
 Layer-B opportunity is `chat-thread.tsx` (~66% stmts) — a mega-orchestrator
 whose edit/retry/branch-switch and keyboard paths are only partially driven.

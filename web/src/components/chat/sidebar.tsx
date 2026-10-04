@@ -63,6 +63,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { InstallAppRow } from "@/components/chat/install-app-row";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/context";
 import { prefersReducedMotion } from "@/lib/motion";
@@ -2219,6 +2220,7 @@ export function Sidebar({
       </ScrollArea>
 
       <div className="mt-3 p-2 pt-3">
+        <InstallAppRow />
         <DropdownMenu>
           <DropdownMenuTrigger
             render={

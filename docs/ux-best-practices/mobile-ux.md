@@ -136,7 +136,7 @@
 - **Bootstrap guest session; first message without auth wall.** — ✅ anonymous-first flow.
 - **Show welcome with tappable prompt suggestion buttons (prefill, not auto-send).** — ✅ `welcome-screen.tsx`.
 - **Render persistent AI-interaction disclosure at first interaction.** — ✅ `ai-disclosure.tsx` rendered on the welcome screen (`welcome-screen.tsx`); #245 removed the below-composer placement, #247 restored it on the welcome/empty state. [C42]
-- **Show iOS "Add to Home Screen" coachmark at contextual moment.** — ✅ `install-coachmark.tsx`. [C58]
+- **Show iOS "Add to Home Screen" coachmark at contextual moment.** — ✅ `install-app-row.tsx` (sidebar row; toast on iOS). [C58]
 - **Render settings as bottom sheet with master-detail tab drill-down.** — ✅ `settings-dialog.tsx`.
 - **BYOK: password field, never echo, encrypted-server cue.** — ✅ `byok-form.tsx`.
 - **Cover the account lifecycle end-to-end: sign out, data export, and hard delete with confirmation — export/delete available to guests too.** — ◑ sign out, JSON export, and delete-account ship in `settings-dialog.tsx` (both data endpoints accept anonymous callers); email-change and password-change/reset flows are absent.
@@ -221,7 +221,7 @@ This section confirms/refreshes [PRD 03](../prd/03-mobile-cross-platform.md) and
 | M5 | **Keyboard avoidance (`visualViewport`)** | iOS keyboard resizes visual viewport only — `visualViewport` JS is primary; coalesce per rAF. | ✅ `use-visual-viewport.ts`. [C54] |
 | M6 | **16px input-zoom floor** | All inputs/selects/textareas ≥16px on mobile; never `user-scalable=no`. | ✅ ST-8. [C55][C56] |
 | M7 | **Haptics** | Feature-detect `navigator.vibrate` on Android; silent no-op on iOS. | ✅ `use-haptic.ts`. [C60][C61] |
-| M8 | **PWA install & shortcuts** | Contextual install prompt on Android; iOS coachmark; manifest with `standalone` + shortcuts. | ✅ `manifest.ts`, `install-coachmark.tsx`. [C58][C59] |
+| M8 | **PWA install & shortcuts** | Contextual install prompt on Android; iOS coachmark; manifest with `standalone` + shortcuts. | ✅ `manifest.ts`, `install-app-row.tsx`, `use-pwa-install.ts`. [C58][C59] |
 | M9 | **Offline behavior** | IndexedDB drafts + optimistic send + resumable replay; server stays source of truth. | ✅ `offline-store.ts`, `stream-client.ts`. [C58][C62] |
 | M10 | **Pull-to-refresh & overscroll** | Drop PTR on chat (kills streams); `overscroll-behavior: contain`. | ✅ applied. [C57] |
 | M11 | **Orientation / landscape** | Handle landscape L/R safe-area; keyboard trap check in short viewports. | ◑ insets applied; auth/share scroll shells flagged. |

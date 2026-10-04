@@ -4058,7 +4058,7 @@ export function ChatThread() {
                 }
               />
               {/* One status slot, prioritized offline > degraded > temporary. */}
-              {online ? null : <OfflineBanner />}
+              {online ? null : <OfflineBanner temporary={isTemporary} />}
               {online && isTemporary && !degradedActive ? (
                 <TemporaryChatBanner onTurnOff={handleToggleTemporary} />
               ) : null}

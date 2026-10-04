@@ -7,7 +7,13 @@ import { cn } from "@/lib/utils";
 
 // Calm connectivity pill for the top status slot. Shares the degraded and
 // temporary banners' shape so the slot never changes height.
-export function OfflineBanner({ className }: { className?: string }): JSX.Element {
+export function OfflineBanner({
+  className,
+  temporary = false,
+}: {
+  className?: string;
+  temporary?: boolean;
+}): JSX.Element {
   return (
     <div className={cn("flex justify-center px-3 pt-1", className)}>
       <div
@@ -18,7 +24,11 @@ export function OfflineBanner({ className }: { className?: string }): JSX.Elemen
         <CloudOff aria-hidden className="size-3.5 shrink-0" />
         <span className="min-w-0">
           <span className="font-medium text-foreground">Offline</span>
-          <span> — drafts stay on this device.</span>
+          <span>
+            {temporary
+              ? " · Temporary chat"
+              : " — drafts stay on this device."}
+          </span>
         </span>
       </div>
     </div>

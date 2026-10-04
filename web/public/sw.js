@@ -94,7 +94,11 @@ async function cacheFirst(event, cacheName) {
   const req = event.request;
   const cache = await caches.open(cacheName);
   const hit = await cache.match(req);
-  if (hit) return hit;
+  if (hit) {
+    // Re-insert so trimming evicts least-recently-used, not oldest.
+    event.waitUntil(cache.delete(req).then(() => cache.put(req, hit.clone())));
+    return hit;
+  }
   const res = await fetch(req);
   if (res.ok) {
     event.waitUntil(

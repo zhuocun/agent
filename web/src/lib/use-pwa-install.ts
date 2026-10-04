@@ -37,7 +37,7 @@ function isIosSafari(): boolean {
     /iPad|iPhone|iPod/.test(ua) ||
     // iPadOS 13+ identifies as Mac; gate on touch points too.
     (ua.includes("Macintosh") && navigator.maxTouchPoints > 1);
-  return isIos && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
+  return isIos && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|GSA|FBAN|FBAV|Instagram|Line\//.test(ua);
 }
 
 // Listen at module load, not on mount: the event can fire before hydration
@@ -84,7 +84,11 @@ export async function promptPwaInstall(): Promise<boolean> {
   // A deferred prompt can only be used once.
   deferredPrompt = null;
   emit();
-  await event.prompt();
-  const { outcome } = await event.userChoice;
-  return outcome === "accepted";
+  try {
+    await event.prompt();
+    const { outcome } = await event.userChoice;
+    return outcome === "accepted";
+  } catch {
+    return false;
+  }
 }

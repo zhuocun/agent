@@ -167,9 +167,10 @@ work "obviously" looks complete.
 ## Model selection
 
 Map the terminology to whatever the platform exposes (`model`, `subagent_type`,
-`reasoning_effort`, thinking budget). Set every knob the dispatch tool actually
-exposes — check its schema, don't assume — and never accept the platform
-default. Where a required knob is missing from the default tool, dispatch
+`effort`, `reasoning_effort`, an effort level encoded in the model ID). Set
+every knob the dispatch tool actually exposes — check its schema, don't
+assume — and never accept the platform default. Where a required knob is
+missing from the default tool, dispatch
 through the path **Source** names that carries it: the in-product mechanism's
 per-agent effort option, or the CLI's effort setting where **Source** sends you
 to a CLI. Where a source carries effort but not the assigned level, use the
@@ -304,9 +305,9 @@ checklist — the one the orchestrator-consultant set before the work started,
 ticked as the final-gate reviewer left it rather than by your own assessment —
 with every ticked item naming the evidence that proves it, and every unticked
 item saying what is missing and why. Any risk the checklist does not already
-carry. What remains as open work. Last, and separately, any things you need from
-the reader, at most two, each explained as if new; if you need nothing, ask
-nothing.
+carry. What remains as open work. Last, and separately, each thing you need from
+the reader — anything that blocks the work or needs their decision — explained
+as if new; if you need nothing, ask nothing.
 
 ## Self-check
 

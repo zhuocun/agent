@@ -4,7 +4,9 @@ A reusable, framework-agnostic capture script. Copy it and keep its
 structure (mocks, content wait, error capture, verification) unchanged.
 Change only the four clearly-marked repo-specific blocks: the **preview
 port**, the **API base + mock fixtures and routing**, the **capture matrix
-(media + steps per entry)**, and the **auth + theme seed**.
+(media + steps per entry)**, and the **auth + theme seed**. The one edit
+outside them is the font-abort route in `installMocks`: delete it when the
+font host is reachable.
 
 ## Why it is shaped this way
 
@@ -231,9 +233,9 @@ run().catch((e) => { console.error("fatal", e); process.exit(1); });
 ## Deep / nested / guarded routes
 
 A direct `goto` works for top-level routes. For a nested/guarded route,
-`goto` the parent and click in from the entry's `steps` — verified far more
-reliable than a deep-link `goto`, which can leave the child stuck in
-Suspense with only the app-shell queries fired:
+`goto` the parent and click in from the entry's `steps` — a deep-link
+`goto` can leave the child stuck in Suspense with only the app-shell
+queries fired:
 
 ```js
 const boardEntry = {

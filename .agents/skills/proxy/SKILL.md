@@ -150,30 +150,73 @@ work "obviously" looks complete.
 Map the terminology to whatever the platform exposes (`model`, `subagent_type`,
 `reasoning_effort`, thinking budget). Set every knob the dispatch tool actually
 exposes — check its schema, don't assume — and never accept the platform
-default. Where a required knob is missing, prefer a dispatch path that carries
-it, such as an orchestration runtime with a per-agent effort option or a
-headless CLI flag; only when no such path exists, dispatch with the inherited
-default and tell the user which parameter could not be passed, the first time it
-happens in a run. Never name a reasoning tier as in effect when the mechanism
-did not carry it.
+default. Where a required knob is missing from the default tool, dispatch
+through the path **Source** names that carries it: the in-product mechanism's
+per-agent effort option, or the CLI's effort setting where **Source** sends you
+to a CLI. Where a source carries effort but not the assigned level, use the
+highest level it supports at or below the assigned one. Only when no such path
+exists, dispatch with the inherited default. The first time each gap happens in
+a run, tell the user which parameter or level could not be passed and what the
+subagent will actually run. Never name a model or effort level as in effect
+when the mechanism did not carry it.
 
-Every subagent role — orchestrator-consultant, worker, reviewer, final-gate
-reviewer — runs on a best-available frontier model at high reasoning — the
-strongest model the platform exposes for delegated work, short of an oversized
-outlier tier whose cost outruns its marginal value there; reach past that edge
-only when the user instructs it. Never drop any role to a cheaper or distilled
-tier — the whole point is that the delegated judgment is at least as capable as
-your own would have been. If the platform forbids concurrent agents on the
-identical top model and budget, keep the frontier model and use the highest
-reasoning budget it allows, and note the exception.
+**Tier.** Every subagent role runs on the top tier — the strongest model between
+two forbidden edges: Opus on Anthropic, Sol on OpenAI, otherwise the best
+subagent model the platform exposes. Too cheap: the smallest or distilled
+variants (`*-mini`, `*-haiku`-class, GPT Luna). Too expensive: oversized tiers
+whose cost outruns their marginal value for delegated work (Fable and Mythos on
+Anthropic, Astra on OpenAI). Reach past either edge only when the user or a
+higher-priority instruction asks. A role may be as strong as you, capped at the
+top tier; the too-expensive edge stays forbidden even if you run on it. Resolve
+the ID to the newest version of the family in the source's own model list; use
+an alias only when it cannot land on a forbidden tier, and otherwise pin the
+full ID from the list. A bare `gpt` alias can resolve to Luna or Astra, so
+never use it.
+
+**Family and effort.** "Claude" means Opus and "GPT" means Sol. Reviewers and
+the final-gate reviewer are Review; the orchestrator-consultant is Other complex
+work; each worker takes the row of its subtask's task type.
+
+| Task type | First choice | Fallback | Includes |
+|---|---|---|---|
+| Coding | Claude `medium` | GPT `xhigh` | writing tests, debugging and root-causing, CI and infrastructure config, frontend implementation code |
+| Review | GPT `max` | Claude `high` | reviewers, verifiers, security review |
+| Backend architecture design | Claude `high` and GPT `max`, both run | — | independent designs; the orchestrator-consultant compares and synthesizes them |
+| Frontend UI design | Claude `high` | GPT `xhigh` | visual and interaction design (implementation code is Coding) |
+| Documentation | GPT `xhigh` | Claude `high` | translation, Chinese writing |
+| Research | GPT `max` | Claude `high` | exploration, data analysis |
+| Other simple work | GPT `high` | Claude `medium` | single-step, mechanical, verifiable in seconds |
+| Other complex work | GPT `xhigh` | Claude `high` | everything else, including the orchestrator-consultant |
+
+**Source.** Take the first available source in the family's order — Claude
+family: Claude Code, then Cursor, then Devin; GPT family: Codex, then Devin,
+then Cursor. For the source you are running in, use its in-product subagent
+mechanism before its own CLI (on Claude Code, the `Workflow` tool, since the
+default `Agent` tool cannot set effort; a user invoking this skill is the
+explicit opt-in the `Workflow` tool requires). Fall back to that source's own
+CLI only when its in-product mechanism is unavailable or cannot carry the
+assigned model and effort, and tell the user. Reach every other source through
+its headless CLI (`claude -p`, `codex exec`, `agent -p`, `devin -p`); it is
+unavailable when the CLI is absent or not authenticated. Before the first CLI
+spawn in a session, read `references/cli-dispatch.md` in this skill's directory
+and apply its guards.
+
+**Fallbacks.** An unavailable source passes to the next in the family's order.
+A family with no available source passes to the row's fallback, and you tell the
+user; a backend architecture design with only one family available runs that
+family alone, and you tell the user. If the platform forbids concurrent agents
+on the identical model and effort level, keep the model, use the highest level
+the platform allows at or below the assigned one, and note the exception. An explicit
+user instruction overrides all of the above.
 
 ## Communication
 
 - State up front that planning, review, and the done decision are delegated, and
   that you are executing and relaying.
-- Name the model (and reasoning tier) running each subagent role — the
+- Name the model, effort level, and source running each subagent role — the
   orchestrator-consultant, the workers, the reviewers, and the final-gate
-  reviewer — so the user can see what each role runs.
+  reviewer — so the user can see what each role runs, and disclose every
+  fallback when it happens.
 - Relay subagent inputs and outputs verbatim — never paraphrase a brief, a
   verdict, or a set of issues. The closing report to the user is the one
   artifact this does not cover (see **Final summary**).
@@ -236,9 +279,10 @@ Before declaring the task done, confirm:
   verdict.
 - [ ] The done decision came from a final-gate reviewer returning `done`, not
   from your own assessment.
-- [ ] Every subagent ran on a best-available frontier model at high reasoning,
-  with neither a cheaper tier nor an oversized outlier tier chosen unless
-  instructed.
+- [ ] Every subagent ran the model family and effort level **Model selection**
+  assigns its role, or a disclosed fallback or user override, on the newest
+  version in the source's model list, through the highest-priority available
+  source — with no too-cheap or too-expensive tier chosen unless instructed.
 - [ ] You relayed briefs, artifacts, and verdicts verbatim, and limited yourself
   to executing what the subagents directed.
 - [ ] The closing report re-grounds a reader who saw none of the chain — in the

@@ -40,18 +40,27 @@ Stay local only for genuinely tiny or tightly coupled work, and for the immediat
 
 Prefer one subagent per distinct subtask. Run independent work in parallel rather than serializing it: launch concurrent subagents as early as dependencies allow, and never hold back a strand that does not depend on one still in flight. Never serialize independent writers merely because they share one working tree — that is concurrency you gave up, not a limit you found. Where the shared environment is what caps parallelism, give each writing strand its own `git worktree` and record where each one is. A worktree holds tracked content only — dependencies and other ignored files do not come across — so isolate where that setup costs less than the parallelism it buys, and not for a strand that only reads.
 
-## Cursor subagent source
+## Subagent sources
 
-On Cursor Agent or Cursor Cloud Agent, where a subagent comes from is a per-dispatch decision; **Model selection** still governs its model and reasoning config:
+Four sources can run a subagent, each through an in-product mechanism or a headless CLI. **Model selection** decides each dispatch's model family and effort; this section decides which source carries it.
 
-1. Probe for a headless CLI (`command -v claude`, `command -v codex`). If either is available, dispatch every subagent through it — `claude -p "<prompt>"` for Claude Code, `codex exec "<prompt>"` for Codex — rather than through Cursor's own subagent tool.
-2. Neither CLI available: fall back to Cursor's own subagent tool — the only situation in which it may be used.
+| Source | In-product mechanism | Headless CLI |
+|---|---|---|
+| Claude Code | the `Workflow` tool (`agent(prompt, {model, effort})`); the default `Agent` tool sets `model` but has no effort knob | `claude -p` |
+| Codex | Codex subagents / custom agents (TOML with `model` and `model_reasoning_effort`) | `codex exec` |
+| Cursor | Cursor's Task-tool subagents (frontmatter `model`; effort as a bracket parameter, e.g. `<model-id>[effort=high]`) | `agent -p` (legacy binary name `cursor-agent`) |
+| Devin | Devin's subagents (custom-subagent frontmatter `model`; effort is encoded in the model ID) | `devin -p` |
 
-A headless CLI spawn needs working auth in that environment (a prior login or the relevant API key env var); if the CLI is present but unauthenticated, treat it as unavailable and fall back. Headless spawns also have sharp edges an interactive terminal never shows (stdin/EOF, flag order, model slugs, effort defaults, output capture) — before the first CLI spawn in a session, read `references/cli-dispatch.md` in this skill's directory and apply its guards to every dispatch. Rule 2 needs none of this.
+Take the first available source in the family's order:
 
-## Claude Code subagent source
+- **Claude-family models**: Claude Code → Cursor → Devin.
+- **GPT-family models**: Codex → Devin → Cursor.
 
-On Claude Code the default `Agent` tool exposes `model` but no reasoning-effort knob, while the `Workflow` tool's `agent(prompt, opts)` takes a per-agent `effort`. **A user invoking this skill is the explicit opt-in the `Workflow` tool requires, so dispatching through it is permitted for that whole task.** Take that path whenever a parameter you must set explicitly is missing from the default tool — the inherited default is the last resort, not the first. Where both tools carry every knob you need, either is fine; prefer the lighter one.
+For the source you are running in, use its in-product mechanism before its own CLI — on Claude Code the `Workflow` tool, not `claude -p`; on Codex its subagents, not `codex exec`; likewise on Cursor and Devin. Fall back to that source's own CLI only when its in-product mechanism is unavailable or cannot carry the assigned model and effort, and tell the user. Reach every other source through its CLI; such a source is unavailable when its CLI is absent (`command -v <cli>`) or not authenticated (no prior login or API-key env var); skip it and take the next source in the family's order. When the family has no available source, **Model selection** names the fallback.
+
+On Claude Code the `Workflow` tool is the in-product mechanism because the default `Agent` tool cannot set effort. **A user invoking this skill is the explicit opt-in the `Workflow` tool requires, so dispatching through it is permitted for that whole task.** A single-agent workflow script is a legitimate dispatch, not over-orchestration.
+
+Headless spawns have sharp edges an interactive terminal never shows (stdin/EOF, flag order, model IDs, effort flags, auth checks, output capture). Before the first CLI spawn in a session, read `references/cli-dispatch.md` in this skill's directory and apply its guards to every CLI dispatch.
 
 ## Reviewer
 
@@ -92,15 +101,30 @@ Map the terminology to whatever the platform exposes — `model`, `subagent_type
 
 **Always set these parameters explicitly on every subagent call.** Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config.
 
-**Parameter-gap rule.** "Set explicitly" applies only to parameters the dispatch tool actually exposes — check the tool's schema, don't assume. When a required knob (typically reasoning effort / thinking budget) is missing from the default agent tool: (1) still set every knob that does exist (model tier, agent type); (2) dispatch through the platform's orchestration/workflow runtime whenever it exposes that knob as a per-agent option (a headless CLI flag like `-c model_reasoning_effort=high` is one such path) — a single-agent wrapper script is a legitimate dispatch, not over-orchestration; where such a runtime is gated behind explicit opt-in, a user-invoked skill instructing this dispatch qualifies under the runtime's own opt-in rules; (3) only when no knob-carrying path exists or the runtime is genuinely unavailable, dispatch with the inherited default — but **disclose the gap** the first time it happens in a run: tell the user which parameter could not be passed and what the subagent will actually inherit. Never report a config label (e.g. "Opus High") as in effect when the mechanism didn't carry it.
+**Parameter-gap rule.** "Set explicitly" applies only to parameters the dispatch tool actually exposes — check the tool's schema, don't assume. When a required knob (typically reasoning effort / thinking budget) is missing from the default agent tool: (1) still set every knob that does exist (model, agent type); (2) dispatch through the path **Subagent sources** names for that source — the in-product mechanism or CLI flag that carries the knob per agent (for example `-c model_reasoning_effort=<level>` on `codex exec`); where that path is gated behind explicit opt-in, a user-invoked skill instructing this dispatch qualifies under its own opt-in rules; (3) when the source carries effort but not the level the table assigns, use the highest level it supports at or below the assigned one; (4) only when no knob-carrying path exists or the runtime is genuinely unavailable, dispatch with the inherited default. Disclose (3) and (4) the first time each happens in a run: tell the user which parameter or level could not be passed and what the subagent will actually run. Never report a config label (e.g. "Opus high") as in effect when the mechanism didn't carry it.
 
-Forbidden tiers — two edges, and neither should be chosen unless the user or a higher-priority instruction explicitly calls for it. **Too cheap**: the smallest/distilled variants (`*-mini`, `*-haiku`-class). **Too expensive**: oversized frontier models whose cost outruns their marginal value for delegated work (e.g. Fable / Mythos). Stay between these edges.
+Forbidden tiers — two edges, and neither should be chosen unless the user or a higher-priority instruction explicitly calls for it. **Too cheap**: the smallest/distilled variants (`*-mini`, `*-haiku`-class, GPT Luna). **Too expensive**: oversized frontier tiers whose cost outruns their marginal value for delegated work (Fable and Mythos on Anthropic, Astra on OpenAI). Stay between these edges.
 
-All delegated roles use top-tier models — the strongest model inside those edges: Opus on Anthropic, the best non-mini GPT on OpenAI, or the best subagent model the platform exposes elsewhere. This applies to workers, reviewers, verifiers, sidecar explorers (read-only scouts probing in parallel, off the integration path), and any specialized role spawned for the task. A worker's config may be as strong as the orchestrator's own, capped at that top tier — the too-expensive edge stays forbidden even if the orchestrator itself runs there.
+All delegated roles use top-tier models — the strongest model inside those edges: Opus on Anthropic, Sol on OpenAI, or the best subagent model the platform exposes elsewhere. In the table below, "Claude" means Opus and "GPT" means Sol. This applies to workers, reviewers, verifiers, sidecar explorers (read-only scouts probing in parallel, off the integration path), and any specialized role spawned for the task. A worker's config may be as strong as the orchestrator's own, capped at that top tier — the too-expensive edge stays forbidden even if the orchestrator itself runs there.
 
-Reasoning budget: high across the board, including sidecar exploration. Do not downgrade reasoning to save tokens.
+**Resolving the model ID.** Use the newest version of the family that the source offers, read from that source's own model list — never an ID remembered from earlier work or training. Use an alias that resolves to the latest version only when the alias cannot land on a forbidden tier; otherwise pin the full ID read from the list. A bare family alias such as `gpt` can resolve to Luna or Astra, so never use it.
 
-Platform-cap exception: if the platform forbids concurrent agents from using the exact same top-tier model and reasoning budget, keep the top-tier model and use the highest reasoning budget the platform allows. State the exception in the progress/final note if it changes a subagent's requested config.
+**Family and effort by task type.** Each delegated role runs the family and effort level its task type assigns — no lower to save tokens, no higher by habit. Classify a worker by the work it does; reviewers and verifiers are Review; sidecar explorers are Research. The orchestrator's own final gate is not delegated.
+
+| Task type | First choice | Fallback | Includes |
+|---|---|---|---|
+| Coding | Claude `medium` | GPT `xhigh` | writing tests, debugging and root-causing, CI and infrastructure config, frontend implementation code |
+| Review | GPT `max` | Claude `high` | reviewers, verifiers, security review |
+| Backend architecture design | Claude `high` and GPT `max`, both run | — | each produces an independent design; the orchestrator compares and synthesizes them |
+| Frontend UI design | Claude `high` | GPT `xhigh` | visual and interaction design (implementation code is Coding) |
+| Documentation | GPT `xhigh` | Claude `high` | translation, Chinese writing |
+| Research | GPT `max` | Claude `high` | sidecar explorers, data analysis |
+| Other simple work | GPT `high` | Claude `medium` | single-step, mechanical, verifiable in seconds |
+| Other complex work | GPT `xhigh` | Claude `high` | everything else |
+
+**Fallbacks.** An unavailable source passes to the next source in the family's order (see **Subagent sources**). When the first-choice family has no available source, run the row's fallback family at the row's fallback effort, and tell the user. When only one family is available for backend architecture design, run that one alone and tell the user. A source that cannot carry the assigned effort level falls under the parameter-gap rule. An explicit user instruction overrides all of the above.
+
+Platform-cap exception: if the platform forbids concurrent agents from using the exact same model and effort level, keep the assigned model and use the highest effort level the platform allows at or below the assigned one. State the exception in the progress/final note if it changes a subagent's requested config.
 
 ## Orchestrator final gate
 
@@ -115,7 +139,7 @@ A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask
 ## Communication
 
 - Briefly tell the user what stays local on the critical path and what is being delegated.
-- Name the model (and reasoning tier) behind each delegated role when you announce or report it — say which model is running the worker, which the reviewer, and so on — so the user can see what each role runs.
+- Name the model, effort level, and source behind each delegated role when you announce or report it — say which model is running the worker, which the reviewer, and so on — so the user can see what each role runs. Disclose every fallback (source, family, or effort) when it happens.
 - Note when a reviewer flags issues that trigger worker rework, and report when a subtask hits the two-failed-review stop (see **Reviewer**).
 - **Report milestones.** Between tool calls and dispatches, write to the user when something they would want to know has changed: key progress or a milestone, an important finding, a failure or stall, or anything that informs a decision they face. Report a dispatched piece of work when it completes or fails. When a wait has a knowable end — a test suite, a CI pipeline, a long-running delegate — check once at that end rather than polling at intervals. If the state is unchanged, arm the next check. A wait that outruns the end you expected is itself worth a line. Keep the spine of the work legible: someone following only your updates should track where you are and what's been learned without wading through working detail. Keep these updates short and integration-focused.
 - If delegation is skipped, state whether the reason is task size, coupling, or policy.
@@ -139,12 +163,13 @@ Before declaring a burst task done, confirm:
 
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny or blocking-dependency steps and the orchestrator's own final gate.
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
-- [ ] Every subagent call set every exposed parameter explicitly — no silent platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class or too-expensive oversized-frontier) unless instructed; any un-passable parameter was disclosed per the parameter-gap rule, not reported as in effect.
+- [ ] Every role ran the model family and effort level the task-type table assigns (see **Model selection**), or a disclosed fallback or explicit user override, resolved to the newest version in the source's own model list, through the highest-priority available source for that family — the host's in-product mechanism for its own source (or, disclosed, its own CLI when that mechanism cannot carry the assignment), a CLI for any other.
+- [ ] Every subagent call set every exposed parameter explicitly — no silent platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class/Luna or too-expensive Fable/Mythos/Astra) unless instructed; every fallback (source, family, or effort) and any un-passable parameter was disclosed to the user, never reported as in effect.
 - [ ] Every brief carried the standard forward — the delegate was told to own its result's quality, check decisive claims at the source, and self-review against the brief before declaring done, with that self-review added to the reviewer hop rather than replacing it.
 - [ ] Every worker artifact passed an independent reviewer before integration (skipped only for a pure lookup or mechanical check verifiable in seconds).
 - [ ] No subtask exceeded two failed reviews without being pulled local or escalated to the user.
 - [ ] Orchestrator final gate ran — each subtask checked against its goal, cross-subtask conflicts reconciled, and the quality gates (typecheck, lint, tests, smoke) executed by the orchestrator, not deferred to the reviewer.
 - [ ] Judgment grounded in the source of truth — subagent output treated as reference to verify rather than fact to adopt, and the integrated result checked against the DoD from the sources themselves.
 - [ ] Any stretch of the run you know only through a summary, rather than the thread you actually ran, was rebuilt from ground truth before the next dispatch or acceptance (see **Stay grounded**).
-- [ ] Final summary reports milestones, carries every skipped check and known gap as an unticked checklist item, notes any platform-cap config exceptions, and re-grounds a reader who saw none of the working thread — in the prescribed order, complete sentences, no run-internal shorthand (see **Final summary**).
+- [ ] Final summary reports milestones, carries every skipped check and known gap as an unticked checklist item, notes any fallback or platform-cap config exception, and re-grounds a reader who saw none of the working thread — in the prescribed order, complete sentences, no run-internal shorthand (see **Final summary**).
 - [ ] The checklist in the summary is the definition of done fixed before dispatch, not one written to fit the result; every ticked item names its evidence, and every unticked item says what is missing.

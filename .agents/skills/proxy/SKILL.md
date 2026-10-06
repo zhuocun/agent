@@ -228,12 +228,13 @@ On Claude Code a bare `Agent` call cannot set effort, so two in-product routes
 carry it: the `Workflow` tool (`agent(prompt, {model, effort})`), and a custom
 subagent whose frontmatter sets `model` and `effort`, dispatched through the
 `Agent` tool's `subagent_type`. **The `Workflow` tool needs the user's explicit
-opt-in. It holds when the user invoked or named this skill (for example
-`/proxy`) or asked for subagents or a workflow in the current task, or when
-ultracode is on for the session. It does not hold when you loaded the skill
-yourself or the skill carries over from an earlier task; then dispatch through a
-custom subagent, or through `claude -p` when that route is unavailable, and tell
-the user which route ran.** Write each
+opt-in. It holds from the moment the user invokes or names this skill (for
+example `/proxy`) and stays in force for every later task in the session. It
+also holds when the user asks for subagents or a workflow, or when ultracode is
+on for the session. It does not hold when you loaded the skill yourself and the
+user has never invoked or named it; then dispatch through a custom subagent, or
+through `claude -p` when that route is unavailable, and tell the user which
+route ran.** Write each
 custom subagent as `~/.claude/agents/<name>.md`, one file per model and effort
 pair, so no file lands in the user's repository; set `disallowedTools: Agent,
 Workflow` in its frontmatter so it stays a leaf, and pass the brief as the

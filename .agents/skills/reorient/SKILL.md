@@ -1,7 +1,7 @@
 ---
 name: reorient
 description: >-
-  Reconstruct and verify your working context after a context compaction, then resume an in-progress task safely. Use when a long conversation was summarized and detail was lost; when you are unsure what is finished versus still pending; or when the user says "catch up", "where were we", "recap", "rebuild context", "restore context", "re-orient", or "continue where we left off". The summary is a lossy pointer — confirm what is done against ground truth (git, PRs, CI, the actual files) before acting, never from the summary alone. Do not use for a brand-new task with no prior work, a trivial single-step request, or when full context is already in hand.
+  Reconstruct and verify your working context after a context compaction, then resume an in-progress task safely. Use when a long conversation was summarized and detail was lost; when you are unsure what is finished versus still pending; or when the user says "catch up", "where were we", "recap", "rebuild context", "restore context", "re-orient", or "continue where we left off" about the work in progress in this conversation. The summary is a lossy pointer — confirm what is done against ground truth (git, PRs, CI, the actual files) before acting, never from the summary alone. Do not use for a request to summarize a document, meeting, or topic, for a brand-new task with no prior work, a trivial single-step request, or when full context is already in hand.
 ---
 
 # Context Rebuild
@@ -26,7 +26,7 @@ A summary that says "implemented X" is a claim, not a fact. Confirm each claimed
 - **Remote state** — open PRs and *merged* PRs for this branch, their review state, and CI (passing, failing, pending). Work can be committed but unpushed, pushed but unmerged, or merged already.
 - **The files themselves** — open the files the work touched and read what is really there. The function the summary says you wrote either exists or it does not.
 
-Classify every item into exactly one bucket: **merged/pushed · committed-locally · in-progress (dirty/partial) · not-started.** An item with no commit, no diff, and no file change is not done, whatever the summary says.
+Classify every item into exactly one bucket: **merged/landed · pushed-unmerged · committed-locally · in-progress (dirty/partial) · not-started · unverified.** Verify each item where its output lives: a commit, a PR or its comments, a CI run, the deployed state, a remote setting, or the files. Work that leaves no commit, such as a posted comment, a deploy, or a remote setting, is landed once you see its output there. A pushed-unmerged item carries its PR's review and CI state, or notes that no PR is open yet. An item whose only evidence is the summary is unverified, not done: do not redo it until you confirm it is missing. A merged branch is closed. Do not push to it; continue on a fresh branch off the default branch unless the repo's conventions say otherwise.
 
 ### 3. Reconstruct the to-dos — goal minus verified-done
 
@@ -36,7 +36,7 @@ What remains is the one-sentence goal minus everything Pass 2 verified as done. 
 - failing or skipped tests, and `TODO` / `FIXME` markers in the touched code,
 - the user's last explicit ask — the most authoritative "what next."
 
-Order the list by dependency: what unblocks the most, or what the next step needs first.
+Order the list by dependency: what unblocks the most, or what the next step needs first. When proxy is active, do not order the list yourself: send the reconstructed list to an orchestrator-consultant and follow its order.
 
 ### 4. Fill context gaps — what is needed to continue perfectly
 
@@ -47,10 +47,12 @@ For the next one or two to-dos, list what you would need to do them correctly: t
 Give a concise recap:
 
 1. **What we have been doing** — the goal, in a sentence or two.
-2. **What is finished** — each item backed by a verifiable anchor (commit sha, PR number, merged/CI state, or file), so the user can check it.
+2. **What is finished** — each item backed by a verifiable anchor (commit sha, PR number, merged/CI state, file, or wherever a non-git output lives), so the user can check it. List unverified items apart, marked unverified.
 3. **The to-dos** — the ordered remaining work from Pass 3.
 
-End by resuming the top to-do or asking which to take, per what the user signalled.
+Item 1 is the recap's answer line, so leading with it satisfies an answer-first rule.
+
+End by resuming the top to-do or asking which to take, per what the user signalled. When a burst or proxy run is driving to a definition of done, resume the top to-do without waiting for confirmation.
 
 ## Failure modes
 
@@ -63,7 +65,7 @@ End by resuming the top to-do or asking which to take, per what the user signall
 ## Self-check
 
 - [ ] The task goal is stated in one sentence, reconciled with the user's latest instruction.
-- [ ] Every claimed-done item was checked against ground truth (git status/log/diff, open + merged PRs, CI, the actual files) and bucketed: merged/pushed · committed · in-progress · not-started.
+- [ ] Every claimed-done item was checked against ground truth where its output lives (git status/log/diff, open + merged PRs, CI, the actual files, the deployed or remote state) and bucketed: merged/landed · pushed-unmerged · committed-locally · in-progress · not-started · unverified; nothing unverified was redone without confirming it is missing, and nothing was pushed to a merged branch.
 - [ ] The to-do list is goal-minus-verified-done, cross-checked against trackers / PR checklists / failing tests / `TODO`s / the user's last ask, and ordered by dependency.
 - [ ] For the next to-dos I have the files, conventions, contracts, and prior-decision *why* in hand — or I went and read them; nothing left to guess.
 - [ ] No irreversible action (commit/push/merge/deploy/delete) was taken before the rebuild completed.

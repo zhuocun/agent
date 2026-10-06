@@ -2,8 +2,8 @@
 name: proxy
 description: >-
   Act as a thin proxy that delegates every decision and every unit of work to
-  frontier-model subagents — including how to decompose the task and whether it
-  is done. Use when subagents are authorized and you want planning, execution,
+  top-tier subagents — including how to decompose the task and whether it is
+  done. Use when subagents are authorized and you want planning, execution,
   review, and the done/not-done judgment all made by subagents rather than by
   the main agent. Do not use when subagent delegation is unavailable, or for a
   trivial single-step task that is faster to just do.
@@ -20,7 +20,7 @@ explicitly turns it off.
 
 Act as a conduit, not a decision-maker. You hold no authority over *what* to do,
 *how* to split it, or *when* it is finished — every such judgment belongs to a
-frontier-model subagent, and your job is to carry it out and relay the result.
+top-tier subagent, and your job is to carry it out and relay the result.
 You only ever: dispatch subagents, pass artifacts between them verbatim, execute
 the concrete actions a plan prescribes (file edits, commands, tool calls the
 subagents cannot perform themselves), and surface outcomes. The moment you would
@@ -41,6 +41,12 @@ The subagent roles, and the chain they form:
 Chain: **orchestrator-consultant → (worker → reviewer)\* → final-gate
 reviewer**, with you executing and relaying at every hop.
 
+**Every delegate is a leaf.** Every brief you write — orchestrator-consultant,
+reviewer, final-gate reviewer — states that the delegate must not invoke the
+burst or proxy skills, or spawn subagents or workflows. Ask the
+orchestrator-consultant to put the same line in each worker brief it drafts, so
+the worker brief still passes verbatim.
+
 ## Priority order
 
 When roles tempt you to shortcut, hold this order: never decide what a subagent
@@ -52,11 +58,12 @@ round.
 ## When this applies
 
 Use only when the session authorizes subagents and a launcher exists; if either
-is missing, this skill does not apply. Once authorized, treat *every* planning
-or gate decision as out of your hands. You may perform the mechanical execution
-a plan requires — editing files, running commands, applying a diff a worker
-produced — but the decision to do so always traces back to a subagent's
-instruction.
+is missing, this skill does not apply. A launcher is the host's in-product
+subagent mechanism, or a source CLI that passes the availability checks in
+**Source**. Once authorized, treat *every* planning or gate decision as out of
+your hands. You may perform the mechanical execution a plan requires — editing
+files, running commands, applying a diff a worker produced — but the decision to
+do so always traces back to a subagent's instruction.
 
 ## Run it to done
 
@@ -69,6 +76,12 @@ while to-dos are still open and actionable. Route trivial or obvious-answer
 decisions to a subagent, not to the user. Keep a running record of the to-dos
 and progress through the chain so nothing drifts over a long session.
 
+After a context compaction, rebuild that record from ground truth (the files,
+the branch, test output, the artifacts already integrated), not from the
+summary. Then send it to an orchestrator-consultant to order the remaining
+work, since ordering is planning, and resume from its answer without waiting
+for the user to confirm.
+
 ## Pass 1 — Consult the orchestrator-consultant
 
 Dispatch an orchestrator-consultant subagent with the task as received. Its
@@ -76,9 +89,12 @@ brief:
 
 - the user's task verbatim, plus the context and files it needs to plan;
 - ask it to return: the to-dos for the whole task and the definition of done the
-  integrated work must clear, the decomposition into subtasks, which are
-  parallel vs. sequential, the brief for each worker, the success criteria per
-  subtask, and what the final-gate reviewer should check.
+  integrated work must clear, with the updates to docs, records and to-dos the
+  work will touch included as to-dos; the decomposition into subtasks, which are
+  parallel vs. sequential; the task type of each subtask, named as one row of
+  the **Model selection** table; the brief for each worker, each stating that
+  the worker is a leaf; the success criteria
+  per subtask; and what the final-gate reviewer should check.
 
 Then follow its plan. If the plan is ambiguous, or you hit a fork it did not
 cover, go back to an orchestrator-consultant — do not resolve it yourself.
@@ -125,11 +141,14 @@ done decision are still not yours.
 ## Pass 4 — Consult the final-gate reviewer
 
 You do not declare the task done. When every subtask has passed its reviewer,
-dispatch a final-gate reviewer subagent with: the original task, each subtask's
-goal and final artifact, and the cross-cutting integration to inspect. Ask it to
-verify scope coverage, cross-subtask consistency, and that the quality gates
-(typecheck, lint, tests, the relevant suite, smoke checks) actually pass — and
-to return `done` or `not-done` with the gaps.
+dispatch a final-gate reviewer subagent with: the original task; the to-dos and
+definition of done the orchestrator-consultant set in Pass 1, with what it said
+this gate should check; each subtask's goal and final artifact; and the
+cross-cutting integration to inspect. Ask it to verify scope coverage,
+cross-subtask consistency, and that the quality gates (typecheck, lint, tests,
+the relevant suite, smoke checks) actually pass — and to return `done` or
+`not-done`, with each definition-of-done item ticked with its evidence or left
+unticked with what is missing.
 
 - `done` → you may declare completion and report.
 - `not-done` → relay its gaps into a fresh worker → reviewer cycle, or back to
@@ -154,11 +173,13 @@ default. Where a required knob is missing from the default tool, dispatch
 through the path **Source** names that carries it: the in-product mechanism's
 per-agent effort option, or the CLI's effort setting where **Source** sends you
 to a CLI. Where a source carries effort but not the assigned level, use the
-highest level it supports at or below the assigned one. Only when no such path
-exists, dispatch with the inherited default. The first time each gap happens in
-a run, tell the user which parameter or level could not be passed and what the
-subagent will actually run. Never name a model or effort level as in effect
-when the mechanism did not carry it.
+highest level it supports at or below the assigned one. Only when no available
+source in the family's order carries the knob, dispatch with the inherited
+default for that knob alone. An unavailable mechanism, source or runtime goes to
+**Source** and **Fallbacks**, never to the inherited default. The first time
+each gap happens in a run, tell the user which parameter or level could not be
+passed and what the subagent will actually run. Never name a model or effort
+level as in effect when the mechanism did not carry it.
 
 **Tier.** Every subagent role runs on the top tier — the strongest model between
 two forbidden edges: Opus on Anthropic, Sol on OpenAI, otherwise the best
@@ -175,7 +196,8 @@ never use it.
 
 **Family and effort.** "Claude" means Opus and "GPT" means Sol. Reviewers and
 the final-gate reviewer are Review; the orchestrator-consultant is Other complex
-work; each worker takes the row of its subtask's task type.
+work; each worker takes the row the orchestrator-consultant assigned its
+subtask. If it assigned none, re-consult rather than choose.
 
 | Task type | First choice | Fallback | Includes |
 |---|---|---|---|
@@ -191,15 +213,32 @@ work; each worker takes the row of its subtask's task type.
 **Source.** Take the first available source in the family's order — Claude
 family: Claude Code, then Cursor, then Devin; GPT family: Codex, then Devin,
 then Cursor. For the source you are running in, use its in-product subagent
-mechanism before its own CLI (on Claude Code, the `Workflow` tool, since the
-default `Agent` tool cannot set effort; a user invoking this skill is the
-explicit opt-in the `Workflow` tool requires). Fall back to that source's own
-CLI only when its in-product mechanism is unavailable or cannot carry the
-assigned model and effort, and tell the user. Reach every other source through
-its headless CLI (`claude -p`, `codex exec`, `agent -p`, `devin -p`); it is
-unavailable when the CLI is absent or not authenticated. Before the first CLI
+mechanism before its own CLI. Fall back to that source's own CLI only when its
+in-product mechanism is unavailable or cannot carry the assigned model and
+effort, and tell the user. Reach every other source through its headless CLI
+(`claude -p`, `codex exec`, `agent -p`, `devin -p`); it is unavailable when the
+CLI is absent or not authenticated. A source is also unavailable for a family
+when its own model list holds no top-tier model of that family (Opus for
+Claude, Sol for GPT); never substitute a forbidden tier. Before the first CLI
 spawn in a session, read `references/cli-dispatch.md` in this skill's directory
 and apply its guards.
+
+On Claude Code a bare `Agent` call cannot set effort, so two in-product routes
+carry it: the `Workflow` tool (`agent(prompt, {model, effort})`), and a custom
+subagent whose frontmatter sets `model` and `effort`, dispatched through the
+`Agent` tool's `subagent_type`. **The `Workflow` tool needs the user's explicit
+opt-in. It holds when the user invoked or named this skill (for example
+`/proxy`) or asked for subagents or a workflow in the current task, or when
+ultracode is on for the session. It does not hold when you loaded the skill
+yourself or the skill carries over from an earlier task; then dispatch through a
+custom subagent, or through `claude -p` when that route is unavailable, and tell
+the user which route ran.** Write each
+custom subagent as `~/.claude/agents/<name>.md`, one file per model and effort
+pair, so no file lands in the user's repository; set `disallowedTools: Agent,
+Workflow` in its frontmatter so it stays a leaf, and pass the brief as the
+`Agent` prompt. Claude Code picks up a new or edited file without a restart,
+except in an `agents` directory that did not exist when the session started;
+until a restart, treat that route as unavailable.
 
 **Fallbacks.** An unavailable source passes to the next in the family's order.
 A family with no available source passes to the row's fallback, and you tell the
@@ -231,11 +270,11 @@ user instruction overrides all of the above.
   a CI pipeline, a dispatched worker — check once at that end rather than
   polling at intervals. If the state is unchanged, arm the next check. A wait
   that outruns the end you expected is itself worth a line.
-- On completion (final-gate `done`), before reporting, housekeep: update the
-  docs, records, and to-dos the work touched — dispatch a worker for any that
-  need real work.
-- Then report in the structure and register **Final summary** prescribes —
-  decision-relevant only, no trivial detail.
+- Housekeeping (the docs, records, and to-dos the work touched) is part of the
+  orchestrator-consultant's plan and passes its reviewer and the final gate like
+  any other subtask.
+- After the final-gate `done`, report in the structure and register **Final
+  summary** prescribes — decision-relevant only, no trivial detail.
 - Stay optimistic, steadfast, and calm throughout every task. Report a setback
   plainly and keep going.
 
@@ -264,15 +303,18 @@ one sentence on what happened or what was found. The definition of done as a
 checklist — the one the orchestrator-consultant set before the work started,
 ticked as the final-gate reviewer left it rather than by your own assessment —
 with every ticked item naming the evidence that proves it, and every unticked
-item saying what is missing and why. What is next, and separately the one or
-two things you need from the reader, each explained as if new. Then any risk
-the checklist does not already carry.
+item saying what is missing and why. Any risk the checklist does not already
+carry. What remains as open work. Last, and separately, any things you need from
+the reader, at most two, each explained as if new; if you need nothing, ask
+nothing.
 
 ## Self-check
 
 Before declaring the task done, confirm:
 
 - [ ] The decomposition came from an orchestrator-consultant, not from you.
+- [ ] Every brief, including each worker brief the orchestrator-consultant
+  drafted, told the delegate it is a leaf.
 - [ ] Independent workers were dispatched concurrently, not needlessly
   serialized.
 - [ ] Every worker artifact passed an independent reviewer with a grounded

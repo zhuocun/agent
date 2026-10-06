@@ -22,7 +22,9 @@ regression behind a loading spinner.
    `references/playwright-harness.md`. Keep the harness structure
    (mocks, content wait, error capture, verification) unchanged;
    parameterize the port, API base, fixtures, auth and theme seed, and
-   the capture matrix, including each entry's `media` and `steps`.
+   the capture matrix, including each entry's `media` and `steps`. The
+   one edit outside the harness's four marked blocks is deleting the
+   font-abort route when the font host is reachable.
 4. **Confirm each shot rendered** before trusting it. See **Verify the
    capture** — read the harness's `UNRENDERED` and `UNMOCKED` output,
    then hash the PNGs; identical hashes across distinct routes mean a
@@ -217,7 +219,9 @@ Before declaring a sweep done, confirm:
   its structure (mocks, content wait, error capture, verification)
   unchanged, parameterizing only the port, the API base, the fixtures, the
   auth and theme seed, and the capture matrix, including each entry's
-  `media` and `steps` — not a harness written from scratch.
+  `media` and `steps`, plus at most the deletion of the font-abort route when the font host is
+  reachable —
+  not a harness written from scratch.
 - [ ] Every shot was taken against a production build served on a stable
   port that matches `BASE_URL` — a dev server only for a trivial app with
   no route splitting; any chrome that differs from dev because the build

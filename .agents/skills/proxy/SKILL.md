@@ -196,16 +196,17 @@ full ID from the list. A bare family alias such as `gpt` does not guarantee the
 required tier, effort or speed, so never use it for a dispatch under this policy.
 
 **Family and effort.** "Claude" means Opus and "GPT" means Sol. Reviewers and
-the final-gate reviewer are Review; the orchestrator-consultant is Other complex
-work; each worker takes the row the orchestrator-consultant assigned its
-subtask. If it assigned none, re-consult rather than choose.
+the final-gate reviewer are Review, except that a reviewer of Frontend UI design
+work runs Claude `high`, fallback GPT `max`; the orchestrator-consultant is
+Other complex work; each worker takes the row the orchestrator-consultant
+assigned its subtask. If it assigned none, re-consult rather than choose.
 
 | Task type | First choice | Fallback | Includes |
 |---|---|---|---|
 | Coding | Claude `medium` | GPT `xhigh` | work whose output is code: writing or fixing code, writing tests, CI and infrastructure config, frontend implementation code |
-| Review | GPT `max` | Claude `high` | reviewers, verifiers, security review |
+| Review | GPT `max` | Claude `high` | reviewers, verifiers, security review (except reviewers of Frontend UI design work) |
 | Backend architecture design | Claude `high` and GPT `max`, both run | — | independent designs; the orchestrator-consultant compares and synthesizes them |
-| Frontend UI design | Claude `high` | GPT `xhigh` | visual and interaction design (implementation code is Coding) |
+| Frontend UI design | Claude `high` | GPT `xhigh` | visual and interaction design (implementation code is Coding); a reviewer of this work runs Claude `high`, fallback GPT `max`, not the Review row |
 | Documentation | GPT `xhigh` | Claude `high` | translation, Chinese writing |
 | Research | GPT `max` | Claude `high` | exploration, data analysis, investigating a problem without changing code, such as debugging or root-causing |
 | Other simple work | GPT `high` | Claude `medium` | single-step, mechanical, verifiable in seconds |

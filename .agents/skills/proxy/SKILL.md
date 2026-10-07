@@ -280,25 +280,32 @@ instruction turns it on.
   cannot set fast mode per subagent: neither the `Workflow` tool nor a custom
   subagent's frontmatter has a fast setting, and every Codex subagent takes the
   root session's tier. A role inside an enabled scope on either source is
-  therefore a case of the rule in **Source** that falls back to the source's
-  own CLI when its in-product mechanism cannot carry the assignment: dispatch
-  it through `claude -p` or `codex exec` with fast mode on, whether or not the
+  therefore a case of the rule in **Source** that falls back to the source's own
+  CLI when its in-product mechanism cannot carry the assignment: dispatch it
+  through `claude -p` or `codex exec` with fast mode on, whether or not the
   `Workflow` opt-in holds, and tell the user which route ran. For the same
-  reason, while your own session runs in fast mode, dispatch a role outside the
-  scope through that CLI with fast mode forced off, since an in-product
-  subagent can inherit your session's setting (Codex's source shows that it
-  does; on Claude Code it is unconfirmed). On Cursor and Devin the subagent's
-  model carries the fast or standard variant: on Devin the `model` frontmatter
-  takes the same values as `--model`, so the fast or standard UID goes there (a
-  fast UID there is untested); on Cursor the parent can name the fast
-  variant ID at launch, while the fast form in a subagent file is unconfirmed
-  (`references/cli-dispatch.md`). `references/cli-dispatch.md` gives each
-  source's on and off settings, its saved-setting traps, and how it confirms
-  what ran.
+  reason, while your own session runs in fast mode (on Codex, while it has a
+  fast tier selected, even if its own model cannot run it), dispatch a role
+  outside the scope through that CLI with fast mode forced off, since an
+  in-product subagent inherits that setting: on Claude Code every `Agent` and
+  `Workflow` subagent copies the session's fast-mode flag and runs fast when its
+  model supports it, and every Codex subagent takes the root session's selected
+  tier. On Cursor and Devin the subagent's model carries the fast or standard
+  variant, so name it explicitly for every role, inside the scope or outside it,
+  and never let a role take its model from the parent (Cursor's `inherit`,
+  Devin's `subagent_general`), which runs the parent's model and can carry its
+  fast variant. On Devin the `model` frontmatter takes the same values as
+  `--model`, so the fast or standard UID goes there (a fast UID there is
+  untested); on Cursor the parent can name the fast variant ID at launch; in a
+  subagent file `<model-id>[fast=false]` selects the standard variant, while the
+  fast form there is unconfirmed (`references/cli-dispatch.md`).
+  `references/cli-dispatch.md` gives each source's on and off settings, its
+  saved-setting traps, and how it confirms what ran.
 - **Disclosure.** When you announce or report each role's model, effort and
-  source, also say whether fast mode is on for it. Report fast mode as in
-  effect only when the mechanism carried it; `references/cli-dispatch.md` says
-  how each source confirms it.
+  source, also say whether fast mode is on for it. Report fast mode as in effect
+  only when the run confirms it; where the source gives no confirmation, report
+  it as requested, not confirmed. `references/cli-dispatch.md` says how each
+  source confirms it.
 
 ## Communication
 

@@ -183,14 +183,14 @@ All delegated roles use top-tier models — the strongest model inside those edg
 
 **Resolving the model ID.** Use the newest version of the family that the source offers, read from that source's own model list — never an ID remembered from earlier work or training. Use an alias that resolves to the latest version only when the alias cannot land on a forbidden tier; otherwise pin the full ID read from the list. A bare family alias such as `gpt` does not guarantee the required tier, effort or speed, so never use it for a dispatch under this policy.
 
-**Family and effort by task type.** Each delegated role runs the family and effort level its task type assigns — no lower to save tokens, no higher by habit. Classify a worker by what it delivers: one whose output is code is Coding, and one that investigates and reports without changing code is Research; reviewers and verifiers are Review, except that a reviewer of Frontend UI design work runs Claude `high`, fallback GPT `max`; sidecar explorers are Research. The orchestrator's own final gate is not delegated.
+**Family and effort by task type.** Each delegated role runs the family and effort level its task type assigns — no lower to save tokens, no higher by habit. Classify a worker by what it delivers: one whose output is code is Coding, and one that investigates and reports without changing code is Research; reviewers and verifiers are Review, except that a reviewer of Frontend UI design work is Frontend UI design; sidecar explorers are Research. The orchestrator's own final gate is not delegated.
 
 | Task type | First choice | Fallback | Includes |
 |---|---|---|---|
 | Coding | Claude `medium` | GPT `xhigh` | work whose output is code: writing or fixing code, writing tests, CI and infrastructure config, frontend implementation code |
-| Review | GPT `max` | Claude `high` | reviewers, verifiers, security review (except reviewers of Frontend UI design work) |
+| Review | GPT `max` | Claude `high` | reviewers, verifiers, security review (a review of Frontend UI design work is Frontend UI design) |
 | Backend architecture design | Claude `high` and GPT `max`, both run | — | each produces an independent design; the orchestrator compares and synthesizes them |
-| Frontend UI design | Claude `high` | GPT `xhigh` | visual and interaction design (implementation code is Coding); a reviewer of this work runs Claude `high`, fallback GPT `max`, not the Review row |
+| Frontend UI design | Claude `high` | GPT `max` | visual and interaction design, and the review of that work (implementation code is Coding) |
 | Documentation | GPT `xhigh` | Claude `high` | translation, Chinese writing |
 | Research | GPT `max` | Claude `high` | sidecar explorers, data analysis, investigating a problem without changing code, such as debugging or root-causing |
 | Other simple work | GPT `high` | Claude `medium` | single-step, mechanical, verifiable in seconds |

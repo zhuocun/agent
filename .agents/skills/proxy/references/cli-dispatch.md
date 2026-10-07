@@ -1,57 +1,421 @@
 # CLI dispatch hygiene
 
-Mechanics for running a source's headless CLI as a subagent: Claude Code (`claude -p`), Codex (`codex exec`), Cursor (`agent -p`) and Devin (`devin -p`). The routing rules in `SKILL.md` decide the source, model family, effort level and fast-mode setting for each role; this file covers how each CLI carries that choice. A spawn that works in a terminal can hang, mis-parse or silently drop a setting when launched headless. Apply every guard on every dispatch.
+Use this reference when running a headless CLI as a subagent. `SKILL.md` assigns
+the source, model family, effort and Fast scope; this file carries that
+assignment into the invocation and checks the result. Apply the common guards
+and the selected source's guidance on every dispatch.
+
+Discover capabilities in the dispatch environment before using the source
+guidance below. Confirm the installed product, its supported platform and
+provider, current help/configuration schema, and a fresh applicable model
+catalog. Use a flag, setting, output field or sandbox mechanism only when that
+build and host support it. These are dispatch mechanisms, not requirements to
+install a CLI or change persistent configuration. A catalog or configuration
+records availability or selection; it does not prove which model or serving
+tier handled a turn.
+
+Shell commands below are **POSIX illustrations**, not universal command lines.
+Replace placeholders and quote literal prompts, paths and JSON/TOML values for
+the actual shell. Prefer an argument-vector process API when available. In
+other shells or launchers, use their executable lookup, child environment and
+stdin-close/null-input equivalents. Do not paste POSIX redirection or variable
+assignment into a different shell unchanged.
 
 ## Rules for every CLI
 
-- **Availability**: a source is usable only when its binary resolves (`command -v <binary>`) and its auth check below passes. Run both before the first dispatch to that source; if either fails, treat the source as unavailable and take the next source in the family's order. A source is also unavailable for a family when its own model list holds no top-tier model of that family (Opus for Claude, Sol for GPT): skip it like an absent CLI and never substitute a forbidden tier.
-- **Stdin and EOF**: an open pipe with no writer can make a CLI wait forever for EOF. Pass the prompt as an argument and close stdin (`< /dev/null`). For a brief too long for an argument, use that CLI's file route below; a regular file always reaches EOF.
-- **Prompt placement**: never put the prompt right after a flag that takes several values (Claude Code's `--allowedTools` is one), which swallows it. Put it directly after the headless flag, after `--`, or last when no such flag precedes it.
-- **Model**: pass the model on every dispatch. Never rely on the account's or config file's default, and never on a router (Cursor's Auto, Devin's `adaptive` or `fusion`). Before the first dispatch to a source in a session, read the IDs from that source's own model list and take the newest version of the required family. Use an alias only when it cannot resolve to anything but the required family (Claude Code's `opus`); otherwise pin the full ID. Never pass a bare family or partial name such as `gpt`, which can resolve to a forbidden tier such as Luna or Astra. If the CLI rejects the ID, pick the next-newest ID of the same family from the list, never the default, and tell the user.
-- **Effort**: defaults vary by model and account and are often below what the routing table asks for, so set effort on every dispatch. Spell the level exactly (`low`, `medium`, `high`, `xhigh`, `max`): some CLIs ignore or pass through an unknown value without failing. Codex's `ultra` and Claude Code's `ultracode` are modes, not levels; never use them in place of `max`. When a source cannot carry the requested level, use the highest level it supports at or below it and tell the user. Report effort as in effect only when the mechanism carried it.
-- **Fast mode**: a fast variant ID, service tier or speed setting runs the same model faster at a higher price; it changes neither the model nor the effort. Use one only for a model inside a scope the user enabled (see **Fast mode** under **Model selection** in `SKILL.md`). Everywhere else, pass the CLI's off setting below on every dispatch rather than relying on its default: a fast choice saved in an interactive session reaches later headless runs on Codex and through a bare model ID on Cursor; on Claude Code it does not, because a non-interactive run serves fast mode only when its own `--settings` turns it on; on Devin whether it does is unconfirmed. When a model in scope has no fast option on the source, run it at standard speed with that CLI's off setting and tell the user. Report fast mode as in effect only when the run confirms it; where the CLI gives no confirmation, report it as requested, not confirmed.
-- **Output and exit**: capture only the final answer (see each CLI) and check the exit status as well as the text, because some CLIs print an in-run failure as ordinary output. Expect multi-minute runs; set generous timeouts, or run in the background and check once when the run exits rather than polling at intervals.
-- **Permissions**: a headless run has no one to answer a prompt. Set the permission, trust and sandbox flags below so the run neither stalls nor quietly loses the tools its task needs. Grant write or full access only as far as the task requires, and use a bypass mode only in an isolated environment.
-- **Reviewers that run code**: give a reviewer or verifier that must run tests, builds or reproductions its own disposable `git worktree` or copy of the artifact, and grant it there the access its commands need (Codex `--sandbox workspace-write`, plus network if required; Cursor `--force`; Claude Code `--permission-mode acceptEdits` with `--allowedTools` for the test commands). State in the brief that it must not edit the deliverable, and never give it write access to the shared tree. If it cannot execute, its verdict is low confidence.
-- **Leaf delegates**: a non-bare child loads the skills, subagents and instructions configured in its working directory and home, which can include the burst and proxy skills. Every brief states that the delegate is a leaf unless the brief explicitly lets it fan out; on Claude Code, the **Permissions** flags below also enforce it.
-- **Rework**: for `revise`, resume the worker's own session with the reviewer's issues verbatim, using the same model, effort, fast-mode and permission flags as the first run: Claude Code `--resume <session_id>` (from `.session_id` in json output); `codex exec resume <SESSION_ID>` (the `thread_id` of the `thread.started` event, so pass `--json` on any Codex dispatch that may need rework). Cursor (`--resume <chatId>`, from `session_id` in its output) and Devin (`-r <SESSION_ID>`) document a resume flag, but not for print mode: try it once, and if it errors or ignores print mode, dispatch fresh. If the session ID was not captured or resuming fails, dispatch a fresh worker with the original brief, the current artifact and the issues verbatim, never the issues alone.
+- **Availability**: resolve and identify the executable in the child's runtime
+  (`command -v` in a POSIX shell), then check platform support and a supported
+  credential route using that invocation's environment, provider and settings.
+  A binary on the parent machine does not establish access in a remote host,
+  container or other runtime. Saved-login status alone does not validate or rule
+  out per-run credentials. Diagnose credential and transport failures separately.
+  Retry a failed catalog request through an already authorized network or proxy
+  route where available, and disclose unresolved availability before falling
+  back. Treat a family as absent only when a successfully retrieved applicable
+  catalog contains no required top-tier model. Skip unavailable sources in the
+  family's order; never substitute a forbidden tier.
+- **Prompt and EOF**: pass literal prompt text as one argument and close unused
+  stdin with the launcher's supported mechanism (`< /dev/null` in POSIX).
+  Do not interpolate a brief as shell code. An open pipe can leave the child
+  waiting for EOF. For a long brief, use the source's supported file/stdin route
+  below and close that stream after the input. Put the prompt directly after the
+  print flag, after `--`, or before any multi-value flag; Claude's
+  `--allowedTools` and `--disallowedTools` can swallow a following prompt.
+- **Configuration and environment**: discover the effective configuration roots,
+  profiles, project settings, managed restrictions and precedence from supported
+  flags, environment variables and documentation. A default home path is an
+  example, not the active path on every machine. Prefer supported invocation-scoped
+  overrides for the assignment. Preserve the already authorized credential,
+  provider and network/proxy route needed by the child without exposing secrets.
+  Check what a launcher actually forwards; do not assume parent environment or
+  host settings reach a remote child. Reuse existing or already-authorized setup.
+  Examples do not imply authorization for new login, proxy or persistent settings
+  setup, and do not require such changes.
+- **Model and effort**: pass them on every dispatch, using the newest required
+  family in the source's current model list. Never rely on defaults or a router
+  such as Cursor Auto or Devin `adaptive`/`fusion`. Use an alias only when its
+  verified mapping selects the required version and tier; a bare family or
+  partial name such as `gpt` does not guarantee tier, effort or speed. Spell
+  effort exactly and check the selected model's support. A missing assigned
+  level is a parameter gap: use the highest supported level at or below it and
+  disclose the gap. If an ID is rejected, select the next-newest listed ID of
+  the same family and tell the user; never let the CLI choose its default.
+- **Fast**: enable it only inside the user's named scope. Explicitly select
+  standard elsewhere, and use standard with disclosure when the assigned model
+  has no Fast option on the selected source. Saved settings and defaults can
+  affect headless runs. Keep the assigned family and effort. Report the
+  established requested tier; claim actual serving only from authoritative run
+  evidence. Without it, report “Fast requested, actual serving unconfirmed” or
+  “Standard requested, actual serving unconfirmed”, matching the request.
+- **Output and completion**: capture the final answer and check the exit status,
+  stderr and terminal outcome; ordinary-looking text can describe a failed run.
+  Allow multi-minute execution with a generous timeout or background execution
+  and completion notification. A partial stream or truncated answer is not a
+  completed deliverable.
+- **Permissions**: select supported permission, trust and sandbox settings for
+  the task and check the host's enforcement prerequisites. A named mode does not
+  establish an operational sandbox on every OS, container or remote runtime.
+  Unattended approval can deny, fail or wait, depending on the host. Grant only
+  authorized access; use a bypass mode only in an isolated runner. If required
+  isolation or tools are unavailable, disclose the limitation and use another
+  authorized source or runtime rather than silently removing protection.
+- **Reviewers running code**: give a reviewer or verifier its own disposable
+  `git worktree` or artifact copy and the access needed for tests, builds or
+  reproductions. Where supported and authorized, use Codex workspace-write with
+  required network access, Cursor allow rules or force, or Claude acceptEdits
+  plus shell allow rules. Verify the host's effective enforcement. The brief
+  prohibits editing the deliverable; never grant write access to the shared tree.
+  If it cannot execute, its verdict is low confidence.
+- **Leaf delegates**: a non-bare child can load home and project instructions,
+  skills and subagents, including burst/proxy. Every brief prohibits further
+  delegation unless expressly permitted. Removing Claude's native `Agent` and
+  `Workflow` tools does not prevent Bash/CLI delegation; the brief must cover
+  every route.
+- **Rework**: check the installed resume interface, then resume the worker's own
+  session with the reviewer's issues verbatim and repeat the same model, effort,
+  tier, permissions and output settings.
+  Claude uses `--resume <session_id>` from JSON `.session_id`; Codex uses
+  `codex exec [exec-level options] resume <SESSION_ID> "<issues>"`, with the ID
+  from `thread.started.thread_id` (capture `--json` when rework is possible).
+  Put exec-level options such as `--sandbox` before `resume` when its subcommand
+  lacks them. Cursor's supported `--resume <chatId>` uses output `session_id`;
+  Devin's supported resume form is `-r <SESSION_ID>`. Check print-mode resume
+  support on the installed build: try once, then dispatch fresh if it errors or
+  ignores print mode. If any resume
+  fails or no ID was captured, provide the original brief, current artifact and
+  issues to a fresh worker; never send the issues alone.
 
 ## Claude Code: `claude -p`
 
-- **Invocation**: `claude -p "<prompt>" --model opus --effort <level> --output-format json < /dev/null`. Whether `claude -p` waits for EOF on a pipe that never closes is unconfirmed, so always close stdin. Piped stdin is read as extra input beside the prompt, so a long brief can go `claude -p "<instruction>" < brief.md`. `--allowedTools` takes space-separated values and swallows a prompt placed after it; keep the prompt first.
-- **Model**: on the Anthropic API, `--model opus` resolves to the newest Opus, so use it rather than a pinned ID; a cloud provider can map the alias differently, so there pin the full Opus ID. Never use `best`, `default`, `opusplan`, `sonnet`, `haiku` or `fable`. If `ANTHROPIC_DEFAULT_OPUS_MODEL` is set in the environment it repoints the alias; confirm it names an Opus ID, or pin `--model <model-id>` with the full Opus ID from Claude Code's model list (its model-configuration docs, or `/model` in an interactive session).
-- **Effort**: `--effort <level>`, for that run only. An unknown value is only warned about on stderr (`Unknown --effort value`) and ignored: the run continues at default effort and exits 0, so spell the level exactly and check stderr. A level the model does not support runs at the highest supported level at or below it; disclose that as a parameter gap. `CLAUDE_CODE_EFFORT_LEVEL` overrides `--effort`, so unset it for the child or set it to the same level. A `maxEffortLevel` setting in any scope, including managed settings, silently caps every route (flag, env var, subagent frontmatter); if a cap below the assigned level applies, treat it as a parameter gap and report the capped level.
-- **Output**: plain `-p` prints only the final text; `--output-format json` puts it in `.result` (`jq -r .result`). Exit status is 0 on success and non-zero on failure, but an in-run failure such as missing auth is printed as the result on stdout, so check the exit status before trusting `.result`. To confirm the model, read the keys of `.modelUsage`: the assigned Opus ID must be among them, and a small Haiku entry beside it is Claude Code's own auxiliary work, not a tier violation. `-p` stays open until background subagents or workflows it started finish, up to an idle cap set by `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`.
-- **Auth**: `claude auth status` exits 0 when logged in and 1 when not; its JSON `authMethod` names the method. When `ANTHROPIC_API_KEY` is set, `-p` always uses it ahead of a subscription login. Without a browser login, `CLAUDE_CODE_OAUTH_TOKEN` (made by `claude setup-token`) works. `--bare` ignores OAuth and that token and also skips discovery of CLAUDE.md, skills, hooks and subagents; do not pass it unless the run should be bare and authenticates with `ANTHROPIC_API_KEY`. The docs say bare mode will become the default for `-p`; if a `-p` run reports missing auth while `claude auth status` passes, the child is running bare: supply `ANTHROPIC_API_KEY`, or treat Claude Code as unavailable.
-- **Permissions**: in `-p`, a call that would prompt is denied instead of waited on, so the run cannot stall but can fail its task for lack of a tool. The starting permission mode depends on the environment, so always pass one: `--permission-mode acceptEdits` for a worker that edits files, plus `--allowedTools` for the shell commands it needs (`--allowedTools "Bash(git *)"`); `--permission-mode dontAsk` with `--allowedTools` for a locked-down run that denies everything else. `--dangerously-skip-permissions` (the same as `bypassPermissions`) is for fully unattended runs only, inside a container or VM as a non-root user. `--permission-prompts none` also removes tools that need a person, such as `AskUserQuestion`. For a leaf delegate, also pass `--disallowedTools Agent Workflow` so it cannot fan out; it takes several values, so place it after the prompt.
-- **Fast mode**: no flag and no fast model ID; it is the `fastMode` settings key, offered only on the Opus models the fast-mode docs list, and only through the Anthropic API or a Claude subscription, not a cloud provider (an organization can also block it, and a managed `fastModePerSessionOptIn: true` blocks it in `-p` even when `--settings` turns it on). On for one run: `--settings '{"fastMode": true}'`, which applies to that session only and is not saved (older builds lack this `-p` form); make sure `CLAUDE_CODE_DISABLE_FAST_MODE` is unset for that child. Off: set `CLAUDE_CODE_DISABLE_FAST_MODE=1` in the child's environment, which no settings key can override. Pass it on every run outside the scope, because interactive `/fast` saves `fastMode: true` to `~/.claude/settings.json` and it carries into later sessions; a plain `-p` run ignores that saved value, since outside an interactive session fast mode serves only when the run's own `--settings` sets `fastMode: true` (otherwise the run reports `fast_mode_disabled_reason: sdk_opt_in_required`), so the off setting is a guard that does not depend on that rule. `--settings '{"fastMode": false}'` also keeps it off, since `--settings` overrides the same keys in your settings files for that session; the environment variable remains the stronger off switch. Per subagent: custom-subagent frontmatter, `--agents` JSON and the `Workflow` tool's `agent()` options have no fast field, and although the subagent docs do not say so, every subagent and `Workflow` agent copies the session's fast-mode flag (shipped source) and runs fast whenever the session does and its model supports fast mode (the agent-teams docs likewise say a teammate's fast mode is fixed when it spawns). So a role inside the scope runs through `claude -p`, and while your own session is fast, a role outside the scope also goes through `claude -p` with fast mode off. Confirm: `json` and `stream-json` output carry `fast_mode_state` (`on`, `off` or `cooldown`) and, when it is blocked, `fast_mode_disabled_reason` (on the result message and the `system` `init` event), and each request's usage records `speed` (`fast`, `standard` or null); the result's usage covers the main loop only. Report fast as in effect only when these say so; if a build omits them, report it as requested, not confirmed. A model without fast mode runs at standard speed with no error, as does a `--fallback-model` retry on current builds (older builds failed that retry), and turning fast mode on from such a model can switch the session to the default fast-mode Opus, so check `.modelUsage` for the assigned ID. On a fast-mode rate limit the run drops to standard speed until a cooldown ends, and with usage credits exhausted it retries at standard speed, both without failing, so a run can be only partly fast. While credits are exhausted `fast_mode_state` stays `on`, so confirm fast from each request's `usage.speed` in `stream-json` output (and watch for the `system` `notification` message), not from `fast_mode_state` alone.
+Read the [headless](https://code.claude.com/docs/en/headless),
+[model](https://code.claude.com/docs/en/model-config),
+[effort](https://code.claude.com/docs/en/effort) and
+[subagent](https://code.claude.com/docs/en/sub-agents) references when checking
+a new build or provider. Discover settings through the
+[settings reference](https://code.claude.com/docs/en/settings), including a
+supported `CLAUDE_CONFIG_DIR` override rather than assuming a home location.
+
+- **Invocation**: where those options are supported, use
+  `claude -p "<prompt>" --model <model-id> --effort <level>
+  --output-format json < /dev/null`. For a long brief, use
+  `claude -p "<instruction>" < brief.md`; piped stdin adds input beside the
+  argument. Keep the prompt before multi-value tool flags.
+- **Model**: `opus` selects the Opus version recommended by the installed build,
+  subject to environment overrides and restrictions. Verify it is the newest
+  required Opus; otherwise pin the full supported ID from `/model` or the model
+  configuration reference. `ANTHROPIC_DEFAULT_OPUS_MODEL` repoints the alias;
+  cloud providers can map it differently, so pin their full Opus ID. Do not use
+  `best`, `default`, `opusplan`, `sonnet`, `haiku` or `fable` for delegated roles.
+- **Effort**: where exposed, pass `--effort <level>` and unset
+  `CLAUDE_CODE_EFFORT_LEVEL` for the child or set it to the same level, because
+  it overrides the flag. Check stderr and effective settings: builds can ignore
+  an unknown flag value, emit `Unknown --effort value`, and still exit 0 while
+  environment/settings/default effort remains in effect.
+  Unsupported levels use the highest supported at or below the request.
+  Inspect the effective cap: settings and organization limits take the lowest
+  applicable cap across scopes, with `modelSettings.<model>.maxEffortLevel`
+  replacing the same file's top-level cap for that model. Caps constrain flag,
+  environment and frontmatter routes. Organization-cap warnings are suppressed
+  in JSON output. Disclose any lower effective level as a parameter gap.
+  `ultracode` is a separate mode, not an effort level.
+- **Auth**: `claude auth status` returns 0 for a login and 1 otherwise; JSON
+  `authMethod` identifies the method. `ANTHROPIC_API_KEY` takes precedence over
+  subscription login in `-p`; `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`
+  can replace browser login. `--bare` ignores OAuth/subscription credentials and
+  skips automatic CLAUDE.md, skill, hook and subagent discovery. Supply an
+  Anthropic API key through `ANTHROPIC_API_KEY` or an `apiKeyHelper` in
+  `--settings`; Bedrock, Vertex and Foundry retain provider authentication.
+  Select bare mode only when intended and supported credentials exist. It is
+  not the current default. If status passes but the child reports missing auth,
+  check its bare/SIMPLE mode, provider and credential selection; resolve the
+  mismatch or treat this invocation as unavailable.
+- **Permissions**: pass a mode explicitly. Use `--permission-mode acceptEdits`
+  for an editing worker with `--allowedTools` for required shell commands, such
+  as `--allowedTools "Bash(git *)"`. Use `dontAsk` plus allow rules to deny calls
+  that would need approval while allowing actions requiring none. Without a
+  permission host, unresolved `-p` prompts are denied; an Agent SDK host or
+  `--permission-prompt-tool` can instead wait. Where available, pass
+  `--permission-prompts none` for unattended runs; it also removes
+  person-dependent tools such as
+  `AskUserQuestion`, and denied tools can still prevent completion. Reserve
+  `--dangerously-skip-permissions`/`bypassPermissions` for an isolated container
+  or VM as a non-root user. A leaf also needs `--disallowedTools Agent Workflow`
+  after the prompt, plus the brief's prohibition on all delegation routes.
+- **Fast selection**: there is no dedicated flag or Fast model ID. Request it
+  for one run with `--settings '{"fastMode": true}'`, and unset
+  `CLAUDE_CODE_DISABLE_FAST_MODE` for that child. This session setting is not
+  saved. Request standard with `CLAUDE_CODE_DISABLE_FAST_MODE=1`; no settings
+  key overrides that switch. `--settings '{"fastMode": false}'` is a weaker
+  session-only off setting. Fast is offered only for supported Opus models via
+  Anthropic API/subscription, not cloud providers; organizations can block it.
+  Managed `fastModePerSessionOptIn: true` blocks it in `-p` even with settings.
+  Interactive `/fast` saves a home setting. An ordinary local non-interactive
+  run outside a cloud session requires its own settings opt-in, but use the off
+  switch on every out-of-scope run rather than depending on that gate.
+- **Native Fast dispatch**: custom frontmatter, `--agents` JSON and `Workflow`
+  options have no per-agent Fast field. Children copy the session Fast flag.
+  Use `claude -p` with Fast on for in-scope roles, and with the off switch for
+  out-of-scope roles when the parent is fast, as `SKILL.md` requires.
+- **Output and verification**: plain `-p` prints final text; JSON puts it in
+  `.result`. Check exit status before accepting it. For current-invocation
+  model evidence, capture `--output-format stream-json --verbose` and read
+  `.message.model` on assistant records whose `parent_tool_use_id` is null.
+  `.modelUsage` is cumulative on resume and does not alone prove which model
+  ran this invocation; compare prior totals. A small Haiku usage entry can be
+  auxiliary and does not alone establish a delegated Haiku run. Print mode can
+  wait for background subagents/workflows up to
+  `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`.
+
+  Check `fast_mode_state` (`on`, `off`, `cooldown`) and
+  `fast_mode_disabled_reason` on init/result events, then each main-loop
+  request's `usage.speed` (`fast`, `standard`, null). State `on` alone is
+  insufficient: exhausted credits can leave it on while requests use standard;
+  rate limits can also cause standard requests during cooldown. Unsupported
+  models and fallback retries can run standard, and enabling Fast from an
+  unsupported model can switch to the default Fast Opus. Check the main-loop
+  model as well as request speed. Report partial Fast service when the records
+  show a mixture; if the build lacks these fields, report only the request.
 
 ## Codex: `codex exec`
 
-- **Invocation**: `codex exec -m <model-id> -c model_reasoning_effort=<level> -o <file> "<prompt>" < /dev/null`. With a prompt argument and a stdin that is not a terminal, `codex exec` reads stdin to EOF and appends it as context, so an inherited open pipe hangs the run; always redirect `< /dev/null`. For a long brief, `codex exec - < brief.md` reads the whole prompt from the file. Outside a Git repository the run exits 1 unless you pass `--skip-git-repo-check`.
-- **Model**: `-m <model-id>`; without it, `model` in `~/.codex/config.toml` applies, so always pass it. No family alias is documented for Codex: pin the full ID of the newest Sol, read from Codex's own model list (the Models page of the Codex docs, or `/model` in an interactive session). Several Sol versions can be listed at once; take the newest. Never pick an Astra, Luna or `-mini` ID. Availability depends on plan and sign-in method; if the ID is rejected, take the next-newest Sol in the list and tell the user. If the list has no Sol, treat Codex as unavailable for the GPT family.
-- **Effort**: no dedicated flag; use `-c model_reasoning_effort=<level>`. Supported levels depend on the model; the interactive `/model` picker ("More reasoning…") shows them. The parser passes an unknown string through without complaint, so a misspelled level is not caught; spell it exactly. Whether a level the model lacks is rejected or clamped is unconfirmed, so check support first and treat a missing level as a parameter gap. A model's Codex default effort can be as low as `low`; never omit the setting.
-- **Output**: stdout carries only the final message, and progress goes to stderr. `-o`/`--output-last-message <file>` also writes the final message to a file. `--json` turns stdout into a JSONL event stream; `--output-schema <file>` asks for a final answer that matches a JSON Schema. No exit-code contract is documented; the source exits 1 when the turn fails or is interrupted, on a non-retrying error, on an approval request it cannot handle, outside a Git repository without the skip flag, and on an empty prompt. Treat any non-zero exit as failure.
-- **Auth**: `codex login status` exits 0 when credentials are present. `codex exec` reuses the saved login; `CODEX_API_KEY=<key> codex exec ...` uses an API key for one run.
-- **Permissions**: `codex exec` never asks for approval: an action that needs one fails and is reported instead of stalling. Its sandbox is read-only by default: commands run but cannot write, which suits research and reviews that only read (a reviewer that runs tests follows **Reviewers that run code** above); pass `--sandbox workspace-write` for a worker that edits. Network access is off even under `workspace-write`; enable it with `-c sandbox_workspace_write.network_access=true` when the task needs it. `--sandbox danger-full-access` and `--dangerously-bypass-approvals-and-sandbox` (`--yolo`) belong only in an isolated runner. Do not pass `-a`/`--ask-for-approval`, which only the interactive CLI accepts, or the deprecated `--full-auto`.
-- **Fast mode**: a service tier on the same model ID, not a separate ID, and `codex exec` has no flag for it, so set it per run with `-c`. On: `-c service_tier=fast -c features.fast_mode=true` (the tier alone is enough unless a config sets `features.fast_mode=false`, which drops the tier silently; a managed `requirements.toml` pin of `features.fast_mode=false` overrides even `-c features.fast_mode=true`, so on such a machine fast cannot run: report it as not applied). Off: `-c service_tier=default`, the explicit standard tier. Never pass `ultrafast` or `flex`, which are other tiers. Pass the off setting on every run outside the scope: interactive `/fast` saves a single global `service_tier = "fast"` to `config.toml`, not per model, and later `codex exec` runs read the same file (a profile selected with `--profile` can set the key too). Some models default to Fast in the interactive TUI when no tier is set; `codex exec` does not apply that default (its source applies it only in the TUI), but a saved tier still reaches exec, so pass the tier every time. Per subagent: a custom agent's `service_tier` is overwritten at spawn by the root session's tier, the `[agents]` table and `spawn_agent` have no tier field, and every subagent shares the root session's tier wherever its model supports it; so a role inside the scope runs through `codex exec`, and while the root session has a fast tier selected (configured, saved by `/fast`, or the TUI's default), even if its own model cannot run it, a role outside the scope also goes through `codex exec`, with the tier forced off. Confirm: `codex exec` gives no positive confirmation, since neither the human header nor the `--json` usage shows the tier, so report fast as requested, not confirmed. A model that does not advertise the tier runs at standard speed without failing and warns that the configured tier "will be omitted from requests" (`warning:` in human output, an error item in `--json`); that warning means fast did not apply, though with `features.fast_mode=false` the tier drops without one. Fast is documented for ChatGPT sign-in; whether an API-key run (`CODEX_API_KEY`) sends it is unconfirmed. With an API key, the off setting sends no `service_tier` field at all, so a project whose Project Service Tier is set to Fast can still run the request fast (inferred from Codex's source and the API docs); Codex cannot force standard there.
+Use the [configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
+[precedence](https://learn.chatgpt.com/docs/config-file/config-basic),
+[environment](https://learn.chatgpt.com/docs/config-file/environment-variables),
+[non-interactive](https://learn.chatgpt.com/docs/non-interactive-mode),
+[subagent](https://learn.chatgpt.com/docs/agent-configuration/subagents) and
+[API Fast](https://developers.openai.com/api/docs/guides/fast-mode) references
+alongside the installed CLI's help. Resolve the active state/configuration root,
+including a supported `CODEX_HOME` override. Check
+[platform sandbox prerequisites](https://learn.chatgpt.com/docs/agent-approvals-security)
+before relying on a sandbox mode.
+
+- **Invocation**: `codex exec -m <model-id>
+  -c model_reasoning_effort=<level> -o <file> "<prompt>" < /dev/null`. A prompt
+  argument with nonterminal stdin still reads to EOF and appends that input;
+  always close stdin. For a long brief, use `codex exec - < brief.md` with the
+  other assignment flags. Outside a Git repository, pass
+  `--skip-git-repo-check`.
+- **Model**: always pass `-m` because omission uses effective configuration and
+  built-in defaults. Pin the newest full Sol ID from the current launcher,
+  interactive `/model` picker or fresh applicable account catalog; no family
+  alias is documented. `codex debug models --bundled` and the documentation's
+  Models page describe capabilities, not account access. Never pick Astra,
+  Luna or `-mini`. A failed fetch or bundled fallback does not prove account
+  unavailability; only a successful applicable catalog lacking Sol establishes
+  that the family is absent.
+- **Effort**: use `-c model_reasoning_effort=<level>`; there is no dedicated
+  effort flag. Check the model's advertised levels in `/model` or the catalog.
+  Supported models/clients can offer `ultra`, including proactive delegation
+  in applicable interfaces; retain the table's assigned `max` when it asks for
+  `max`. Configuration-layer acceptance of an effort string does not prove
+  backend acceptance or clamping. Do not invent a level or assume
+  unsupported-level behavior. Omission can select an effort as low as
+  `low`; explicitly set the assigned supported level.
+- **Auth**: `codex login status` returns 0 when saved credentials are present.
+  Exec reuses them; `CODEX_API_KEY=<key> codex exec ...` supplies an API key for
+  one run. Apply the common availability check to the selected credential route.
+- **Permissions**: pass `--sandbox read-only` for research that must not write
+  or `--sandbox workspace-write` for authorized edits and disposable test runs.
+  The documented built-in exec default is read-only, but configuration can
+  override it. Where `--approve-for-me` is exposed with automatic approval review
+  and workspace-write, do not combine it with a read-only option expecting
+  read-only precedence. When human approval cannot be surfaced, an action can
+  fail. Network depends on effective configuration and managed policy;
+  `-c sandbox_workspace_write.network_access=true` requests outbound command
+  access where allowed. Reserve `danger-full-access` and
+  `--dangerously-bypass-approvals-and-sandbox`/`--yolo` for isolated runners.
+  Follow installed help for flag placement: where approval is a global option,
+  put `-a`/`--ask-for-approval` before `exec`; where sandbox is exec-level only,
+  put `--sandbox` before `resume`. Do not require the retired `--full-auto`
+  compatibility flag or assume another build accepts it.
+- **Fast selection**: keep the same model ID. Where the installed schema and
+  selected provider support these keys, request Fast per run with
+  `-c service_tier=fast -c features.fast_mode=true`; request standard with
+  `-c service_tier=default`. If the supported interface differs, use its verified
+  equivalent or report the gap. Never use `ultrafast` or `flex` under this policy.
+  Check effective settings, profiles, feature gates, managed restrictions and
+  the model's advertised tiers; explicitly select the required tier on new and
+  resumed runs. Do not rely on interactive `/fast` storage or TUI defaults to
+  configure exec. An omitted service tier can inherit Project Fast.
+- **Native Fast dispatch**: use native dispatch only when an explicit request
+  setting, host request contract or verified inheritance establishes the role's
+  assigned requested tier. Set exposed model and effort parameters and inspect
+  fork restrictions. Capability advertising alone is insufficient. Verified
+  inheritance that matches the assignment can carry it without a separate
+  tier selector. Otherwise use exec with explicit tier settings and disclose
+  the route; independently request standard for an out-of-scope role if native
+  dispatch would select Fast. Verify the current host rather than assuming
+  root-tier inheritance or overwrite behavior.
+- **Output and verification**: progress goes to stderr; stdout and
+  `-o`/`--output-last-message` contain the final message. `--json` emits JSONL;
+  `--output-schema <file>` requests a final answer matching a JSON Schema.
+  Treat nonzero exit or a failed terminal JSONL outcome as failure. Do not depend
+  on one build's exact exit-code number. The exec header and usage events do not
+  positively confirm the serving tier. Without an authoritative serving receipt, report
+  the established requested tier and actual serving as unconfirmed, for both
+  Fast and standard assignments. Do not promise an unsupported-tier warning
+  or fallback without build-specific evidence. API Fast accepts `fast` and
+  `priority`, but API-key auth alone does not establish how this build transmits
+  its configured tier. Claim standard processing only from serving evidence.
 
 ## Cursor: `agent -p`
 
-- **Invocation**: `agent -p "<prompt>" --model <model-id> --output-format stream-json --trust < /dev/null`. Read `.model` from the `system` `init` event and the answer from `.result` of the terminal `result` event. The binary is `agent`; `cursor-agent` is the legacy name for the same executable, so probe both. `agent` is a generic name: confirm the binary found is Cursor's (`agent status` reports a Cursor login) before using it. Reading the prompt from stdin is undocumented, so pass it as an argument; closing stdin also guards against the open-pipe hang older builds had.
-- **Model**: `--model <model-id>`; list the account's IDs with `agent models` (or `agent --list-models`). Fresh installs default to Auto routing, so always pass `--model` with the newest version of the required family from the list. Cursor's subagent docs say it falls back to another model when the requested one is blocked by an admin or missing from the plan. Headless `--model` instead exits 1 with `Cannot use this model` when the string matches no listed variant, alias or model; current builds leave an admin-blocked model out of `agent models`, and passing it to `--model` exits 1 with the restriction message rather than falling back (a saved config model outside the allowed list is switched to an allowed one, one more reason to always pass `--model`). Check what was requested: the `system` `init` event's `model` field in the invocation's stream gives the display name (not the ID), which the CLI builds from the selection it sends, so it records the request, not what ran (see **Fast mode**); check that it names the required family and version, and take what ran from the usage dashboard.
-- **Effort**: no effort flag. Effort lives in the variant: the model list carries effort variants of a model, and a variant passed to `--model` keeps its effort (and Max Mode) in `-p`. The current CLI's `--help` documents quoted bracket overrides on `--model`, in the form `'<model-id>[context=1m,effort=high,fast=false]'`; older builds lacked this, and it supersedes the staff guidance that `--model` took no brackets. The CLI does not parse the brackets, though: it matches the whole string against the account's listed variants, so a string you compose may match nothing and fail. Copy the variant ID exactly from `agent models`. A bracket string works only if it equals one of the account's catalog variant strings character for character, and `agent models` does not print those strings, so treat a composed bracket string as unconfirmed until a run accepts it (a mismatch exits 1 with `Cannot use this model`); if the list has no variant at the required level, take the highest listed at or below it and treat it as a parameter gap. In subagent frontmatter, effort is a bracket parameter (`<model-id>[effort=high]`).
-- **Output**: the default `text` format prints only the final answer; `--output-format json` prints one object with the answer in `.result` but carries no `model` field, which is why the invocation uses `stream-json`. On failure the process exits non-zero and writes to stderr, and a `stream-json` stream can end without a terminal `result` event; treat a non-zero exit or a missing `result` event as failure. Headless runs wait for the subagents they started before exiting.
-- **Auth**: `agent status --format json` (alias `whoami`) shows whether the CLI is logged in; an unauthenticated run fails with "Not authenticated". For scripts, set `CURSOR_API_KEY` (or pass `--api-key`); otherwise the credentials stored by `agent login` apply.
-- **Permissions**: a headless run in an untrusted workspace fails unless `--trust` (or `--force`) is passed. Without `-f`/`--force` (alias `--yolo`), print mode only proposes file changes and writes nothing, so a worker that must edit files or run commands needs `--force`, which allows commands unless a deny rule matches and also approves trust and MCP prompts. For a narrower grant, put allow and deny rules in `<project>/.cursor/cli.json` or `~/.cursor/cli-config.json` (deny wins). Each web fetch prompts unless its domain is allowlisted as `WebFetch(<domain>)` or `--force` is set. `--approve-mcps` approves MCP servers; `--sandbox enabled|disabled` sets sandboxing.
-- **Fast mode**: a per-model `fast` parameter that only some models define; `agent models` prints the account's model IDs and display names, and whether it lists `-fast` IDs (the form the docs give) depends on the account's catalog. There is no fast flag, environment variable or user-settable config key (the config does save per-model parameters; see below). On: pass the fast variant exactly as `agent models` lists it, a `-fast` ID or a bracket string with `fast=true` (accepted only if it matches a catalog variant exactly; see **Effort**). Off: pass a bracket string with `fast=false` (the form `--help` documents; it too must match a catalog variant exactly), or a standard variant string exactly as `agent models` lists it; an ID with `-fast` stripped is a bare parameterized ID, not an off setting, unless the list shows it as a standard variant. Never pass a bare parameterized ID: it reuses the per-model parameters an interactive `/fast` or `/model` saved, which can include `fast=true`, or else the model's default variant, which for some models is the fast one (and a bare ID that matches a listed model or alias goes out with no parameters, so the server's default applies, which is fast for some models). A headless `--model` choice is also written to the CLI config, so never rely on what the config holds. A fast ID that is not in the account's list fails with `Cannot use this model` and exit 1; run the standard variant (as above) and tell the user. Per subagent: frontmatter `model` takes the bracket form, with `<model-id>[fast=false]` the documented off form and empty brackets (`<model-id>[]`) selecting the standard variant; the docs show no `fast=true` example; frontmatter takes the SDK's `id=value` model parameters and the SDK documents `fast` = `true`, so `<model-id>[fast=true]` is the inferred on form, untested in a subagent file, while the docs let a parent name a model when it launches a subagent, and users report the parent picking `-fast` IDs for Task subagents on its own, which no setting prevents; so name the standard or in-scope variant explicitly in every launch and check the task card. `model: fast` is no longer valid. Always set the fast parameter explicitly in a subagent file: Cursor staff say a bare model there can silently run its fast variant, and the built-in subagent picker in Settings can still run the fast variant despite its setting, which staff track as an open issue across several models. Confirm: headless output gives the model's display name in the `init` event, which the CLI builds from the selection it sends (a parameterized selection with `fast=true` gets the fast parameter's name appended, while an ID sent with no parameters shows the plain name even where the server defaults to fast), so it records what was requested, not what ran; the terminal `result` event's `usage`, when present, holds only token counts, with no cost, ID or variant. The authoritative record is the usage dashboard, which lists the variant that ran, and for a subagent its task card; until one of those shows the fast variant, report fast as requested, not confirmed. Older builds could run a model whose ID is a prefix of the one requested, such as the standard model for a `-fast` ID; current builds run the exact ID.
+Check the [permissions](https://cursor.com/docs/cli/reference/permissions) and
+[headless](https://cursor.com/docs/cli/headless) references against the installed
+build. Their current descriptions conflict about behavior without `--force`;
+omission is not a read-only guarantee.
+Use the [configuration reference](https://cursor.com/docs/cli/reference/configuration)
+to discover active global and project settings, including supported
+`CURSOR_CONFIG_DIR` or platform-specific `XDG_CONFIG_HOME` overrides.
+
+- **Invocation**: `agent -p "<prompt>" --model <model-id>
+  --output-format stream-json --trust < /dev/null`. Probe `agent` and its legacy
+  name `cursor-agent`; identify a generic `agent` binary from its product help
+  or version output before using Cursor commands. Prompt stdin is undocumented,
+  so use an argument and close stdin.
+- **Model**: copy the newest required variant from `agent models` or
+  `agent --list-models` and pass `--model` every time; fresh installs default to
+  Auto. Builds that match exact catalog variants reject unmatched IDs with
+  `Cannot use this model` and reject admin-blocked models rather than using
+  the native subagent documentation's fallback behavior. A saved config model
+  can be replaced by an allowed model, so explicit selection matters. Check
+  the init event's display name against the requested family/version, then
+  check serving evidence as described below.
+- **Effort**: select an exact listed effort variant when the CLI exposes no
+  separate effort flag; its ID carries effort and Max Mode. Some help versions
+  advertise bracket parameters for context, effort and Fast. In builds that
+  match the whole string to catalog variants, help syntax does not establish
+  arbitrary bracket parsing. Do not compose an assumed variant: catalog strings
+  need not all appear in the printed model list, so treat an unlisted bracket
+  form as unconfirmed until validated by the supported interface. A mismatch
+  can fail with `Cannot use this model`. In supported native subagent
+  frontmatter, effort is a bracket parameter: `<model-id>[effort=high]`.
+- **Auth**: `agent status --format json` (`whoami`) reports login. Scripts can
+  use `CURSOR_API_KEY` or `--api-key`; otherwise saved `agent login` credentials
+  apply. An unauthenticated run fails with `Not authenticated`.
+- **Permissions**: an untrusted workspace needs `--trust` or `--force`.
+  Print mode has write and shell tools. Grant required operations through allow
+  rules or `-f`/`--force` (`--yolo`) as appropriate; omission of force does not
+  prevent writes. Force automatically allows commands unless denied and
+  approves trust and MCP prompts. Narrow rules use the active project or global
+  configuration; `.cursor/cli.json` and `~/.cursor/cli-config.json` are documented
+  default examples, subject to platform and root overrides. Deny wins. Web fetch
+  needs a domain grant
+  such as `WebFetch(<domain>)` or force. `--approve-mcps` approves MCP servers;
+  where supported, `--sandbox enabled|disabled` selects sandboxing. Check its
+  platform prerequisites and effective enforcement. The permissions page permits
+  narrower grants while the headless page describes proposal-only behavior
+  without force. Check the actual build and use an OS sandbox when writes must
+  be prevented.
+- **Fast selection**: Fast is a per-model parameter or listed variant; there is
+  no dedicated CLI flag, environment variable or direct user config key. Copy
+  an exact catalog Fast variant for in-scope runs and an exact standard variant
+  outside scope. A listed `-fast` ID or accepted bracket variant can carry Fast;
+  In builds that match whole strings to catalog variants, `fast=false` must also
+  match one; otherwise use the installed interface's verified Fast-off form.
+  Do not strip a
+  suffix to derive standard unless that exact ID is listed as standard. Bare
+  parameterized IDs can reuse saved per-model choices or server defaults,
+  including Fast. Headless model selection can also update CLI configuration.
+  If the Fast variant is unavailable, explicitly select standard and disclose.
+- **Native Fast dispatch**: frontmatter documents `<model-id>[fast=false]` and
+  `<model-id>[]` for standard. `<model-id>[fast=true]` follows SDK parameters
+  but remains untested in a subagent file; a parent can name a model at launch.
+  Do not use `inherit` or the undocumented `model: fast` form. Set each role's
+  variant explicitly and inspect its task card because a saved/default or
+  parent-selected Fast variant can differ from the intended setting.
+- **Output and verification**: text is final text; JSON `.result` holds the
+  answer but no model field. Stream JSON adds the init display name and terminal
+  `result`. Reject nonzero exit or a stream lacking that terminal event. Runs
+  wait for their own subagents before exit. Init `model` is built from the
+  outgoing selection, and result `usage` holds token counts, not served model,
+  variant or cost. Use the usage dashboard and native task card to check which
+  variant ran. Until then, report the request rather than confirmed service;
+  exact local ID matching alone does not prove backend identity.
 
 ## Devin: `devin -p`
 
-- **Invocation**: `devin --model <model-id> --permission-mode <mode> --respect-workspace-trust false -p -- "<prompt>" < /dev/null`, with `<mode>` chosen per the Permissions bullet below and the whole command under a timeout. `-p` runs one turn, prints the response and exits; `--` keeps the prompt from being read as a subcommand. For a long brief, use `--prompt-file <file>`. Whether `-p` reads stdin is undocumented, so pass the prompt as an argument or file and close stdin.
-- **Model**: `--model <model-id>` (or `DEVIN_MODEL`); the config default `agent.model` is a Cognition SWE model, so always pass it. List the account's IDs with `devin models list --format json` (it needs a login) and copy the exact ID. `--model` matches loosely (family slug, alias, partial name or full ID), so pass the full ID. An alias such as `opus` resolves to the newest version of its family, but whether a headless run then uses the effort and fast setting that family last remembered or a default is unconfirmed; either way the alias does not carry the level you need. Devin's docs use `gpt` as a model name but do not say which GPT tier it resolves to, so it can land on Luna or Astra, and it carries no effort level; `adaptive` and `fusion` are routers. Never use any of these.
-- **Effort**: no flag, environment variable or config key sets it; effort is part of the model ID. The official binary contains IDs of the form `<model>-<level>` for `low` through `max` (some GPT models also have `none`), many with a `-fast` speed variant (not every model has one; see **Fast mode** below), and a `devin models` message in the binary says `--model` takes "a family slug, alias, or model UID". This has not been run end to end: before the first dispatch, confirm the exact `<model>-<level>` ID in `devin models list --format json`, and if the list has no ID at the required level, treat it as a parameter gap (the highest listed level at or below it, and tell the user). Until a run has shown which model it used (its `--export` file may record it; that is unconfirmed), report the effort as requested, not as confirmed. The interactive controls (`Alt+T`, the `/model` picker, `/fusion`) do not exist headless.
-- **Output**: `-p` prints the response to stdout; there is no JSON output mode. `--export <path>` writes the conversation in ATIF format after each turn. A response cut off at the model's output limit prints a warning and exits non-zero; no full exit-code table is documented.
-- **Auth**: `devin auth status` reports the login; `devin auth login` (with `--force-manual-token-flow` on a remote host) stores a token that does not expire by default. No API-key environment variable is documented for `-p` (`WINDSURF_API_KEY` is documented only for `devin acp`). A login can succeed while requests fail with `CLI access is disabled for this user`; treat that as unavailable.
-- **Permissions**: `--print` cannot show the workspace-trust prompt and fails in an untrusted directory; pass `--respect-workspace-trust false`. What `-p` does when a tool call needs approval (deny, fail or hang) is undocumented, and only `--permission-mode dangerous` (aliases `bypass`, `yolo`) auto-approves every tool including edits; `autonomous` requires `--sandbox` and still prompts for edits. Use `dangerous` for unattended runs in an isolated environment. Outside one, pass the narrowest mode that covers the task, such as `accept-edits` for an editing worker or `normal` for a read-only one. Organization deny and ask rules apply in every mode, so an ask rule can still prompt even under `dangerous`: on every Devin dispatch, set a timeout and treat a stall as failure.
-- **Fast mode**: a fast variant is a separate model UID paired with its standard one (the `-fast` IDs under **Effort**), and only some models have one. No flag, environment variable or config key sets it; `-c` is `--continue`, not a config override, so a Codex-style `-c` setting resumes the last session instead. On: pass the exact fast UID from `devin models list --format json` to `--model`. Off: pass the exact standard UID (inferred from the paired-UID design, not documented). Do not derive a UID from the naming pattern, which has exceptions, and use only a `-fast` UID: `-ultrafast` and `-priority` IDs are other tiers, and which of them the picker's Fast Mode maps to is unconfirmed. Never pass an alias or family slug: each model family remembers its last configuration, fast setting included, and whether a headless run through an alias picks that up is unconfirmed; pass the full UID on every run, including a resume, which otherwise keeps the session's saved model. `/fast` is not fast mode: it switches the session to a fast Cognition model rather than to the current model's fast variant. The default `agent.model` is the faster serving of a Cognition SWE model, not a variant of any model you assign, so a run that omits `--model` lands on it. Per subagent: a custom subagent's `model` frontmatter, and a skill's `model`, which overrides it, take the same values as `--model`, so the fast or standard UID goes there; `subagent_general` always runs its parent's model; since a fast variant is its own UID it probably keeps the parent's fast variant, but no doc says so, so never use it for a role; give each role a custom subagent whose `model` names its UID. If the list has no fast UID for the model, run the standard UID and tell the user; whether a fast UID the account cannot use fails with `Unknown model` or falls back to another model is unconfirmed, so treat either message as the fast variant not having run. Confirm: the model list appears to have no fast field (a fast variant shows only in its UID and label, read from the binary's field names, not a run), `-p` is documented to print only the response, and no documented `-p` output names the model; `/session-stats`, which names the model that served the billed turns, is documented for the interactive CLI and ACP hosts, not for `-p`; report fast as requested, not confirmed.
+Check [models](https://docs.devin.ai/cli/models),
+[configuration](https://docs.devin.ai/cli/reference/configuration/config-file)
+and [permissions](https://docs.devin.ai/cli/reference/permissions) when checking
+a new account or build.
+
+- **Invocation**: `devin --model <model-uid> --permission-mode <mode>
+  --respect-workspace-trust false -p -- "<prompt>" < /dev/null`, under a timeout.
+  Print mode runs one turn and prints the response; that alone does not prove
+  useful completion. `--` separates the prompt from subcommands. For a long
+  brief, use `--prompt-file <file>`. Prompt stdin is undocumented.
+- **Model and effort**: fetch `devin models list --format json` with the planned
+  account and copy the full UID for the newest required model and assigned
+  effort. `--model` also accepts loose aliases, family slugs and partial names;
+  do not use them. A latest-family alias can lag the catalog's newest version
+  and leaves effort/speed ambiguous. Effort is encoded in the UID; no dedicated
+  effort flag, environment variable or config key is exposed. Select a listed
+  supported effort, never synthesize `<model>-<level>` from naming patterns.
+  Interactive `Alt+T`, `/model` and `/fusion` controls do not set headless effort.
+  Never use `adaptive` or `fusion` routers.
+- **Defaults and resume**: pass the exact UID on new runs and resumes.
+  `DEVIN_MODEL` or effective user/organization `agent.model` can select a
+  default; the documented built-in default is a fast Cognition SWE model. A
+  resume without `--model` keeps its saved model. Do not depend on unverified
+  family-preference reuse. `/fast` switches to a fast Cognition model instead
+  of selecting the current assigned model's Fast variant. `-c` is `--continue`,
+  not a Codex-style configuration override.
+- **Auth**: check the supported `devin auth status` with the child's effective
+  configuration and existing credentials. No API-key environment route is
+  documented for `-p`;
+  `WINDSURF_API_KEY` is documented for ACP. Successful login can coexist with
+  `CLI access is disabled for this user`; treat that invocation as unavailable.
+- **Permissions**: print mode cannot show a workspace-trust prompt, so pass
+  `--respect-workspace-trust false`. Headless approval behavior is not
+  established; choose the narrowest applicable mode, such as `accept-edits`
+  for edits or `normal` for read-only work. `dangerous` (`bypass`, `yolo`)
+  auto-approves tools and belongs in an isolated runner. `autonomous` requires
+  a sandbox and still prompts for edits. Organization deny/ask rules apply in
+  every mode, including dangerous; set a timeout and treat a stall as failure.
+- **Fast selection**: choose the exact catalog variant labelled Fast for the
+  assigned model and effort, and its exact standard counterpart outside scope.
+  There is no dedicated Fast flag/environment/config key. Suffixes are not the
+  contract: a catalog can label either a `-fast` or `-priority` variant Fast.
+  Copy the current catalog's exact UID and label instead of deriving or rejecting
+  a UID from its suffix. An unlabelled speed variant, including
+  an unverified `-ultrafast` UID, is unconfirmed. If no Fast counterpart exists,
+  use standard and disclose. Treat rejection or fallback from the requested
+  Fast UID as failure to carry that assignment, rather than assuming its tier.
+- **Native Fast dispatch**: custom-subagent `model` uses the same UID as
+  `--model`; a skill's model overrides the profile. Give each role a custom
+  definition naming its exact variant. `subagent_general` inherits the parent
+  model and does not independently establish the role's speed. Fast UIDs in
+  custom frontmatter remain untested; inspect run evidence before claiming
+  actual Fast service.
+- **Output and verification**: print mode outputs the response, with no JSON
+  response mode. `--export <path>` writes ATIF conversation data after each
+  turn; whether it establishes served-model identity remains unconfirmed.
+  Treat an output-limit warning or truncated response as incomplete and check
+  exit status; no full exit-code contract is documented. Catalog UID/label
+  establishes the offered variant, not actual serving; do not require a Fast
+  boolean when the catalog identifies Fast through its label. Print output has
+  no documented serving receipt.
+  `/session-stats` reports billed-turn models in interactive/ACP hosts, not a
+  documented print-mode receipt. Until authoritative run evidence exists,
+  report model effort and tier as requested rather than confirmed.

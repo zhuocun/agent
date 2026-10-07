@@ -192,8 +192,8 @@ higher-priority instruction asks. A role may be as strong as you, capped at the
 top tier; the too-expensive edge stays forbidden even if you run on it. Resolve
 the ID to the newest version of the family in the source's own model list; use
 an alias only when it cannot land on a forbidden tier, and otherwise pin the
-full ID from the list. A bare `gpt` alias can resolve to Luna or Astra, so
-never use it.
+full ID from the list. A bare family alias such as `gpt` does not guarantee the
+required tier, effort or speed, so never use it for a dispatch under this policy.
 
 **Family and effort.** "Claude" means Opus and "GPT" means Sol. Reviewers and
 the final-gate reviewer are Review; the orchestrator-consultant is Other complex
@@ -213,34 +213,88 @@ subtask. If it assigned none, re-consult rather than choose.
 
 **Source.** Take the first available source in the family's order — Claude
 family: Claude Code, then Cursor, then Devin; GPT family: Codex, then Devin,
-then Cursor. For the source you are running in, use its in-product subagent
-mechanism before its own CLI. Fall back to that source's own CLI only when its
-in-product mechanism is unavailable or cannot carry the assigned model, effort
-and fast-mode setting (see **Fast mode** below), and tell the user. Reach every
-other source through its headless CLI (`claude -p`, `codex exec`, `agent -p`,
-`devin -p`); it is unavailable when the CLI is absent or not authenticated. A source is also unavailable for a family
-when its own model list holds no top-tier model of that family (Opus for
-Claude, Sol for GPT); never substitute a forbidden tier. Before the first CLI
-spawn in a session, read `references/cli-dispatch.md` in this skill's directory
-and apply its guards.
+then Cursor.
 
-On Claude Code a bare `Agent` call cannot set effort, so two in-product routes
-carry it: the `Workflow` tool (`agent(prompt, {model, effort})`), and a custom
-subagent whose frontmatter sets `model` and `effort`, dispatched through the
-`Agent` tool's `subagent_type`. **The `Workflow` tool needs the user's explicit
-opt-in. It holds from the moment the user invokes or names this skill (for
-example `/proxy`) and stays in force for every later task in the session. It
-also holds when the user asks for subagents or a workflow, or when ultracode is
-on for the session. It does not hold when you loaded the skill yourself and the
-user has never invoked or named it; then dispatch through a custom subagent, or
-through `claude -p` when that route is unavailable or cannot carry the
-assignment, and tell the user which route ran.** Write each
-custom subagent as `~/.claude/agents/<name>.md`, one file per model and effort
-pair, so no file lands in the user's repository; set `disallowedTools: Agent,
-Workflow` in its frontmatter so it stays a leaf, and pass the brief as the
-`Agent` prompt. Claude Code picks up a new or edited file without a restart,
-except in an `agents` directory that did not exist when the session started;
-until a restart, treat that route as unavailable.
+Resolve routes from the current host's exposed tools, permissions and installed
+CLI help. Tool names, arguments and commands in this skill describe supported routes,
+not capabilities every host provides. Honor concurrency and fork limits. A
+host without shell execution cannot use a CLI route; one without writable
+configuration cannot create file-based custom definitions. Carry the brief and required files
+through the chosen route, and verify the child can access them rather than
+assuming a shared filesystem or inherited tools, credentials and network.
+
+For the source you are running in, prefer its available in-product mechanism.
+Use that source's CLI only when the native route is unavailable or cannot carry
+the assigned model, effort and fast-mode setting, and disclose the route. Reach
+other sources through available CLIs. Resolve the executable in the invocation's
+actual environment, including any configured wrapper, and verify its supported
+syntax. Check a supported credential route with that invocation's provider,
+configuration and transport. Saved-login status alone does not establish
+availability. Do not assume installed CLIs, credentials, internet access or a
+proxy from another machine. Use only already authorized setup and network
+routes; availability checks do not authorize installation, login or changes to
+provider, permission or proxy configuration. Diagnose credential and transport
+failures separately; retry a failed catalog request through an already
+authorized network or proxy route where available. Disclose unresolved
+availability before choosing a fallback. Treat a family as absent only when a
+successfully retrieved applicable catalog contains no required top-tier model
+(Opus for Claude, Sol for GPT). Skip an unavailable source in the family's
+order; never substitute a forbidden tier.
+
+On Claude Code, when a bare `Agent` call exposes model but no effort parameter,
+use an available `Workflow` tool (`agent(prompt, {model, effort})`) or an
+effort-setting custom subagent dispatched through `Agent`'s `subagent_type`.
+Check that the host exposes the selected tool and fields before using them.
+
+**This skill requires explicit opt-in for `Workflow`, separately from the
+host's availability and permission checks. Opt-in starts when the user invokes
+or names this skill (for example `/proxy`), asks for subagents or a workflow,
+or enables ultracode. It stays in force for later tasks in the session. Loading
+this skill yourself does not establish opt-in when the user has never invoked
+or named it. In that case, use a custom subagent, or `claude -p` when that route
+is unavailable or cannot carry the assignment, and disclose the route.** A
+single-agent workflow is a valid dispatch under this opt-in.
+
+Write each generated Claude custom definition under the active user
+configuration directory's `agents/<name>.md`, one file per model and effort
+pair. `CLAUDE_CONFIG_DIR` can relocate that directory;
+`~/.claude/agents/<name>.md` is the conventional default, not a fixed
+destination. Verify that the directory is writable and loaded by the session.
+Existing project `.claude/agents/` definitions may be selected, but write a
+project definition only when that repository change is already authorized.
+Otherwise use another available route. Verify scope and name precedence so
+the intended definition wins. Include required `name` and `description`
+plus `model` and `effort` in the frontmatter. Pass the brief as the `Agent`
+prompt. For a leaf, deny the available native delegation tools through the
+supported tool restrictions (`disallowedTools: Agent, Workflow` on hosts with
+those tools); also prohibit delegation through CLIs and other routes in the
+brief.
+
+Check that the updated definition is discoverable before dispatch. Claude Code
+watches existing user-scope and project agent directories and uses edits on
+the next delegation. Restart when the directory did not exist at session
+start. Directories introduced by `--add-dir` or `/add-dir` are not watched, and
+`--disable-slash-commands` disables these watchers. Verify reload support for
+the running version; if a restart is unavailable, use another available route.
+
+On Codex, inspect the current host's launcher schema and configuration format.
+Use exposed model and effort parameters (for example `model` and
+`reasoning_effort`), or supported TOML custom agents with `model` and
+`model_reasoning_effort`. Resolve custom-agent discovery against the active user
+configuration root and project scope, and include that version's required
+fields. Keep generated definitions in a writable, loaded user scope; create
+or alter project definitions only when that repository change is already
+authorized. Otherwise use another available route. Hosts supporting the current standalone custom-agent discovery format
+require `name`, `description` and `developer_instructions` in each file; do
+not impose that manifest on a host using a different TOML role-config format.
+Fork controls vary by host: use
+`fork_turns: "none"` or a positive history count only when the schema exposes those forms
+and requires them for overrides. The full-history restriction applies only
+where the host specifies that such forks inherit parent settings and reject
+overrides. Do not translate it into an unsupported argument on another host.
+
+Before the first CLI spawn in a session, read `references/cli-dispatch.md` in
+this skill's directory and apply its guards.
 
 **Fallbacks.** An unavailable source passes to the next in the family's order.
 A family with no available source passes to the row's fallback, and you tell the
@@ -276,36 +330,37 @@ instruction turns it on.
   never unlocks a forbidden tier, never changes the model family or effort
   level the task-type table assigns, and is not a reason to pick a different
   source.
-- **Carrying it.** On Claude Code and Codex the in-product subagent mechanism
-  cannot set fast mode per subagent: neither the `Workflow` tool nor a custom
-  subagent's frontmatter has a fast setting, and every Codex subagent takes the
-  root session's tier. A role inside an enabled scope on either source is
-  therefore a case of the rule in **Source** that falls back to the source's own
-  CLI when its in-product mechanism cannot carry the assignment: dispatch it
-  through `claude -p` or `codex exec` with fast mode on, whether or not the
-  `Workflow` opt-in holds, and tell the user which route ran. For the same
-  reason, while your own session runs in fast mode (on Codex, while it has a
-  fast tier selected, even if its own model cannot run it), dispatch a role
-  outside the scope through that CLI with fast mode forced off, since an
-  in-product subagent inherits that setting: on Claude Code every `Agent` and
-  `Workflow` subagent copies the session's fast-mode flag and runs fast when its
-  model supports it, and every Codex subagent takes the root session's selected
-  tier. On Cursor and Devin the subagent's model carries the fast or standard
-  variant, so name it explicitly for every role, inside the scope or outside it,
-  and never let a role take its model from the parent (Cursor's `inherit`,
-  Devin's `subagent_general`), which runs the parent's model and can carry its
-  fast variant. On Devin the `model` frontmatter takes the same values as
-  `--model`, so the fast or standard UID goes there (a fast UID there is
-  untested); on Cursor the parent can name the fast variant ID at launch; in a
-  subagent file `<model-id>[fast=false]` selects the standard variant, while the
-  fast form there is unconfirmed (`references/cli-dispatch.md`).
-  `references/cli-dispatch.md` gives each source's on and off settings, its
-  saved-setting traps, and how it confirms what ran.
-- **Disclosure.** When you announce or report each role's model, effort and
-  source, also say whether fast mode is on for it. Report fast mode as in effect
-  only when the run confirms it; where the source gives no confirmation, report
-  it as requested, not confirmed. `references/cli-dispatch.md` says how each
-  source confirms it.
+- **Carrying it.** Choose a route that establishes the required requested
+  tier for each role, including standard requests outside the enabled scope.
+
+  On Claude Code, `Workflow` and custom-subagent frontmatter have no per-agent
+  fast setting. `Agent` and `Workflow` children copy the session's fast flag
+  and run fast when their model supports it. Use `claude -p` with Fast on for
+  an in-scope role, whether or not `Workflow` opt-in holds. When the parent
+  session is fast, use that CLI with Fast forced off for an out-of-scope role.
+  Disclose the CLI route.
+
+  On Codex, use native dispatch only when an explicit request setting, the
+  host request contract or verified inheritance establishes the assigned
+  requested tier. Set the exposed model and effort parameters. Advertised
+  tier capability alone does not establish a request; a missing per-agent
+  selector does not preclude native dispatch when verified inheritance matches
+  the assignment. Otherwise use `codex exec` with the tier set explicitly and
+  disclose the route. An out-of-scope role needs an independently standard
+  request when native dispatch would select Fast.
+
+  On Cursor and Devin, explicitly select each role's fast or standard model
+  variant. Do not use Cursor's `inherit` or Devin's `subagent_general`. Cursor
+  documents `<model-id>[fast=false]` for standard subagent frontmatter; verify
+  a Fast selection against the task card because the frontmatter Fast form
+  remains unconfirmed. Devin custom-subagent `model` takes the same UID as
+  `--model`; its Fast frontmatter selection remains untested. Read
+  `references/cli-dispatch.md` for each source's settings and verification.
+- **Disclosure.** Report each role's model, effort, source and established
+  requested tier. Claim the serving tier only from authoritative run evidence.
+  Without it, say that actual serving is unconfirmed: “Fast requested, actual
+  serving unconfirmed” for a Fast request, or “Standard requested, actual
+  serving unconfirmed” for a standard request.
 
 ## Communication
 

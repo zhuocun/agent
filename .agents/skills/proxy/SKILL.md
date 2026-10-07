@@ -202,12 +202,12 @@ subtask. If it assigned none, re-consult rather than choose.
 
 | Task type | First choice | Fallback | Includes |
 |---|---|---|---|
-| Coding | Claude `medium` | GPT `xhigh` | writing tests, debugging and root-causing, CI and infrastructure config, frontend implementation code |
+| Coding | Claude `medium` | GPT `xhigh` | work whose output is code: writing or fixing code, writing tests, CI and infrastructure config, frontend implementation code |
 | Review | GPT `max` | Claude `high` | reviewers, verifiers, security review |
 | Backend architecture design | Claude `high` and GPT `max`, both run | — | independent designs; the orchestrator-consultant compares and synthesizes them |
 | Frontend UI design | Claude `high` | GPT `xhigh` | visual and interaction design (implementation code is Coding) |
 | Documentation | GPT `xhigh` | Claude `high` | translation, Chinese writing |
-| Research | GPT `max` | Claude `high` | exploration, data analysis |
+| Research | GPT `max` | Claude `high` | exploration, data analysis, investigating a problem without changing code, such as debugging or root-causing |
 | Other simple work | GPT `high` | Claude `medium` | single-step, mechanical, verifiable in seconds |
 | Other complex work | GPT `xhigh` | Claude `high` | everything else, including the orchestrator-consultant |
 

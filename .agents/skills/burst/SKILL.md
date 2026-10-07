@@ -109,16 +109,16 @@ All delegated roles use top-tier models — the strongest model inside those edg
 
 **Resolving the model ID.** Use the newest version of the family that the source offers, read from that source's own model list — never an ID remembered from earlier work or training. Use an alias that resolves to the latest version only when the alias cannot land on a forbidden tier; otherwise pin the full ID read from the list. A bare family alias such as `gpt` can resolve to Luna or Astra, so never use it.
 
-**Family and effort by task type.** Each delegated role runs the family and effort level its task type assigns — no lower to save tokens, no higher by habit. Classify a worker by the work it does; reviewers and verifiers are Review; sidecar explorers are Research. The orchestrator's own final gate is not delegated.
+**Family and effort by task type.** Each delegated role runs the family and effort level its task type assigns — no lower to save tokens, no higher by habit. Classify a worker by what it delivers: one whose output is code is Coding, and one that investigates and reports without changing code is Research; reviewers and verifiers are Review; sidecar explorers are Research. The orchestrator's own final gate is not delegated.
 
 | Task type | First choice | Fallback | Includes |
 |---|---|---|---|
-| Coding | Claude `medium` | GPT `xhigh` | writing tests, debugging and root-causing, CI and infrastructure config, frontend implementation code |
+| Coding | Claude `medium` | GPT `xhigh` | work whose output is code: writing or fixing code, writing tests, CI and infrastructure config, frontend implementation code |
 | Review | GPT `max` | Claude `high` | reviewers, verifiers, security review |
 | Backend architecture design | Claude `high` and GPT `max`, both run | — | each produces an independent design; the orchestrator compares and synthesizes them |
 | Frontend UI design | Claude `high` | GPT `xhigh` | visual and interaction design (implementation code is Coding) |
 | Documentation | GPT `xhigh` | Claude `high` | translation, Chinese writing |
-| Research | GPT `max` | Claude `high` | sidecar explorers, data analysis |
+| Research | GPT `max` | Claude `high` | sidecar explorers, data analysis, investigating a problem without changing code, such as debugging or root-causing |
 | Other simple work | GPT `high` | Claude `medium` | single-step, mechanical, verifiable in seconds |
 | Other complex work | GPT `xhigh` | Claude `high` | everything else |
 

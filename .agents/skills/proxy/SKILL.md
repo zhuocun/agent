@@ -215,10 +215,10 @@ subtask. If it assigned none, re-consult rather than choose.
 family: Claude Code, then Cursor, then Devin; GPT family: Codex, then Devin,
 then Cursor. For the source you are running in, use its in-product subagent
 mechanism before its own CLI. Fall back to that source's own CLI only when its
-in-product mechanism is unavailable or cannot carry the assigned model and
-effort, and tell the user. Reach every other source through its headless CLI
-(`claude -p`, `codex exec`, `agent -p`, `devin -p`); it is unavailable when the
-CLI is absent or not authenticated. A source is also unavailable for a family
+in-product mechanism is unavailable or cannot carry the assigned model, effort
+and fast-mode setting (see **Fast mode** below), and tell the user. Reach every
+other source through its headless CLI (`claude -p`, `codex exec`, `agent -p`,
+`devin -p`); it is unavailable when the CLI is absent or not authenticated. A source is also unavailable for a family
 when its own model list holds no top-tier model of that family (Opus for
 Claude, Sol for GPT); never substitute a forbidden tier. Before the first CLI
 spawn in a session, read `references/cli-dispatch.md` in this skill's directory
@@ -233,8 +233,8 @@ example `/proxy`) and stays in force for every later task in the session. It
 also holds when the user asks for subagents or a workflow, or when ultracode is
 on for the session. It does not hold when you loaded the skill yourself and the
 user has never invoked or named it; then dispatch through a custom subagent, or
-through `claude -p` when that route is unavailable, and tell the user which
-route ran.** Write each
+through `claude -p` when that route is unavailable or cannot carry the
+assignment, and tell the user which route ran.** Write each
 custom subagent as `~/.claude/agents/<name>.md`, one file per model and effort
 pair, so no file lands in the user's repository; set `disallowedTools: Agent,
 Workflow` in its frontmatter so it stays a leaf, and pass the brief as the
@@ -250,14 +250,64 @@ on the identical model and effort level, keep the model, use the highest level
 the platform allows at or below the assigned one, and note the exception. An explicit
 user instruction overrides all of the above.
 
+**Fast mode.** Fast mode is the faster, pricier serving tier or speed setting
+of the same model — a fast variant ID, a service tier or a settings switch,
+depending on the source. It is off for every model unless the user's own
+instruction turns it on.
+
+- **Off by default.** Never enable it on your own initiative, for a subagent or
+  for yourself, and never infer it from urgency ("this is urgent", "be quick").
+- **An enabling instruction names a scope**: one model (for example "use the
+  fast variant of <model> for this task"); a set of models (for example "use
+  fast mode for all GPT models", or for one family or provider); or every model
+  where a source offers it ("use fast mode for all models as long as it's
+  available"). A request with no model scope, such as "use fast mode for this
+  task", is not yet an instruction: keep fast mode off, and ask the user once
+  which scope they mean — one model, a set, or all models where available —
+  giving those three forms as examples.
+- **Persistence.** Once enabled, fast mode stays on for that scope, across
+  later tasks in the session, until the user turns it off or changes the scope.
+  When the user bounds it ("for this task"), it ends with that bound.
+- **Scope matching.** A model outside the enabled scope runs at standard speed.
+  When a model inside the scope has no fast option on the source that carries
+  it, run it at standard speed and tell the user; never switch to another model
+  or family to get fast mode.
+- **Tiers and effort are unchanged.** Fast mode changes serving speed only. It
+  never unlocks a forbidden tier, never changes the model family or effort
+  level the task-type table assigns, and is not a reason to pick a different
+  source.
+- **Carrying it.** On Claude Code and Codex the in-product subagent mechanism
+  cannot set fast mode per subagent: neither the `Workflow` tool nor a custom
+  subagent's frontmatter has a fast setting, and every Codex subagent takes the
+  root session's tier. A role inside an enabled scope on either source is
+  therefore a case of the rule in **Source** that falls back to the source's
+  own CLI when its in-product mechanism cannot carry the assignment: dispatch
+  it through `claude -p` or `codex exec` with fast mode on, whether or not the
+  `Workflow` opt-in holds, and tell the user which route ran. For the same
+  reason, while your own session runs in fast mode, dispatch a role outside the
+  scope through that CLI with fast mode forced off, since an in-product
+  subagent can inherit your session's setting (Codex's source shows that it
+  does; on Claude Code it is unconfirmed). On Cursor and Devin the subagent's
+  model carries the fast or standard variant: on Devin the `model` frontmatter
+  takes the same values as `--model`, so the fast or standard UID goes there (a
+  fast UID there is untested); on Cursor the parent can name the fast
+  variant ID at launch, while the fast form in a subagent file is unconfirmed
+  (`references/cli-dispatch.md`). `references/cli-dispatch.md` gives each
+  source's on and off settings, its saved-setting traps, and how it confirms
+  what ran.
+- **Disclosure.** When you announce or report each role's model, effort and
+  source, also say whether fast mode is on for it. Report fast mode as in
+  effect only when the mechanism carried it; `references/cli-dispatch.md` says
+  how each source confirms it.
+
 ## Communication
 
 - State up front that planning, review, and the done decision are delegated, and
   that you are executing and relaying.
 - Name the model, effort level, and source running each subagent role — the
   orchestrator-consultant, the workers, the reviewers, and the final-gate
-  reviewer — so the user can see what each role runs, and disclose every
-  fallback when it happens.
+  reviewer — and whether fast mode is on for it, so the user can see what each
+  role runs, and disclose every fallback when it happens.
 - Relay subagent inputs and outputs verbatim — never paraphrase a brief, a
   verdict, or a set of issues. The closing report to the user is the one
   artifact this does not cover (see **Final summary**).
@@ -327,6 +377,8 @@ Before declaring the task done, confirm:
   assigns its role, or a disclosed fallback or user override, on the newest
   version in the source's model list, through the highest-priority available
   source — with no too-cheap or too-expensive tier chosen unless instructed.
+- [ ] Fast mode ran only inside a scope the user named, and was off everywhere
+  else (see **Fast mode** under **Model selection**).
 - [ ] You relayed briefs, artifacts, and verdicts verbatim, and limited yourself
   to executing what the subagents directed.
 - [ ] The closing report re-grounds a reader who saw none of the chain — in the

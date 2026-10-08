@@ -66,21 +66,20 @@ assuming a shared filesystem or inherited tools, credentials and network.
 
 For the source you are running in, prefer its available in-product mechanism.
 Use that source's CLI only when the native route is unavailable or cannot carry
-the assigned model, effort and fast-mode setting, and disclose the route. Reach
-other sources through available CLIs. Resolve the executable in the invocation's
-actual environment, including any configured wrapper, and verify its supported
-syntax. Check a supported credential route with that invocation's provider,
-configuration and transport. Saved-login status alone does not establish
-availability. Do not assume installed CLIs, credentials, internet access or a
-proxy from another machine. Use only already authorized setup and network
-routes; availability checks do not authorize installation, login or changes to
-provider, permission or proxy configuration. Diagnose credential and transport
-failures separately; retry a failed catalog request through an already
-authorized network or proxy route where available. Disclose unresolved
-availability before choosing a fallback. Treat a family as absent only when a
-successfully retrieved applicable catalog contains no required top-tier model
-(Opus for Claude, Sol for GPT). Skip an unavailable source in the family's
-order; never substitute a forbidden tier.
+the assigned model, effort and fast-mode setting. Reach other sources through
+available CLIs. Resolve the executable in the invocation's actual environment,
+including any configured wrapper, and verify its supported syntax. Check a
+supported credential route with that invocation's provider, configuration and
+transport. Saved-login status alone does not establish availability. Do not
+assume installed CLIs, credentials, internet access or a proxy from another
+machine. Use only already authorized setup and network routes; availability
+checks do not authorize installation, login or changes to provider, permission
+or proxy configuration. Diagnose credential and transport failures separately;
+retry a failed catalog request through an already authorized network or proxy
+route where available. Treat a family as absent only when a successfully
+retrieved applicable catalog contains no required top-tier model (Opus for
+Claude, Sol for GPT). Skip an unavailable source in the family's order; never
+substitute a forbidden tier.
 
 On Claude Code, when a bare `Agent` call exposes model but no effort parameter,
 use an available `Workflow` tool (`agent(prompt, {model, effort})`) or an
@@ -92,9 +91,9 @@ host's availability and permission checks. Opt-in starts when the user invokes
 or names this skill (for example `/burst`), asks for subagents or a workflow,
 or enables ultracode. It stays in force for later tasks in the session. Loading
 this skill yourself does not establish opt-in when the user has never invoked
-or named it. In that case, use a custom subagent, or `claude -p` when that route
-is unavailable or cannot carry the assignment, and disclose the route.** A
-single-agent workflow is a valid dispatch under this opt-in.
+or named it. In that case, use a custom subagent, or `claude -p` when that
+route is unavailable or cannot carry the assignment.** A single-agent workflow
+is a valid dispatch under this opt-in.
 
 Write each generated Claude custom definition under the active user
 configuration directory's `agents/<name>.md`, one file per model and effort
@@ -171,84 +170,86 @@ A **verifier** is the same gate in narrower form: a subagent dispatched to confi
 
 ## Model selection
 
-Map the terminology to whatever the platform exposes — `model`, `subagent_type`, `effort`, `reasoning_effort`, an effort level encoded in the model ID, etc.
+Map these terms to whatever the platform exposes: `model`, `subagent_type`, `effort`, `reasoning_effort`, or an effort level encoded in the model ID. On every subagent call, set every parameter the dispatch tool exposes, checking its schema rather than assuming. Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config. An explicit instruction from the user or from a higher-priority source overrides any rule in this section or in **Subagent sources**.
 
-**Always set these parameters explicitly on every subagent call.** Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config.
+**Tiers.** Every delegated role runs on the top tier: the strongest model between two forbidden edges, which is Opus on Anthropic and Sol on OpenAI. The rule covers sidecar explorers too: read-only scouts probing in parallel, off the integration path. The too-cheap edge is the smallest or distilled variants: `*-mini`, `*-haiku`-class, GPT Luna. The too-expensive edge is the oversized tiers whose cost outruns their marginal value for delegated work: Fable and Mythos on Anthropic, Astra on OpenAI. A role may be as strong as the orchestrator, capped at the top tier, so the too-expensive edge is forbidden even when the orchestrator runs on it. **Fallbacks** covers the case where no source offers a model of either family.
 
-**Parameter-gap rule.** "Set explicitly" applies only to parameters the dispatch tool actually exposes — check the tool's schema, don't assume. When a required knob (typically the effort level) is missing from the default agent tool: (1) still set every knob that does exist (model, agent type); (2) dispatch through the path **Subagent sources** names for that source — the in-product mechanism or CLI flag that carries the knob per agent (for example `-c model_reasoning_effort=<level>` on `codex exec`), subject to the `Workflow` opt-in rule in **Subagent sources**; (3) when the source carries effort but not the assigned level (the row's First choice effort, or its Fallback effort once the family has fallen back), stay on that source and use the highest level it supports below that level — a level gap never moves to the next source; (4) only when no available source in the family's order carries the knob, dispatch with the inherited default for that knob alone. An unavailable mechanism, source or runtime goes to **Subagent sources** and **Fallbacks**, never to the inherited default. Disclose (3) and (4) the first time each happens in a run: tell the user which parameter or level could not be passed and what the subagent will actually run. Never report a config label (e.g. "Opus high") as in effect when the mechanism didn't carry it.
+**Model ID.** Use the newest version of the family that the source offers, read from that source's own model list, never an ID remembered from earlier work or training. Use an alias that resolves to the latest version only when it cannot land on a forbidden tier; otherwise pin the full ID from the list. Never use a bare family alias such as `gpt`: it does not guarantee the required tier, effort or speed.
 
-Forbidden tiers — two edges, and neither should be chosen unless the user or a higher-priority instruction explicitly calls for it. **Too cheap**: the smallest/distilled variants (`*-mini`, `*-haiku`-class, GPT Luna). **Too expensive**: oversized tiers whose cost outruns their marginal value for delegated work (Fable and Mythos on Anthropic, Astra on OpenAI). Stay between these edges.
+**Task types.** Each delegated role runs the family and effort level of its row, never lower to save tokens and never higher by habit. The orchestrator's own final gate is not delegated and takes no row.
 
-All delegated roles use top-tier models — the strongest model inside those edges: Opus on Anthropic, Sol on OpenAI, or, when neither is available, the best subagent model the platform exposes (see **Fallbacks**). This applies to workers, reviewers, verifiers, sidecar explorers (read-only scouts probing in parallel, off the integration path), and any specialized role spawned for the task. A worker's config may be as strong as the orchestrator's own, capped at that top tier — the too-expensive edge stays forbidden even if the orchestrator itself runs there.
-
-**Resolving the model ID.** Use the newest version of the family that the source offers, read from that source's own model list — never an ID remembered from earlier work or training. Use an alias that resolves to the latest version only when the alias cannot land on a forbidden tier; otherwise pin the full ID read from the list. A bare family alias such as `gpt` does not guarantee the required tier, effort or speed, so never use it for a dispatch under this policy.
-
-**Family and effort by task type.** Each delegated role runs the family and effort level its row assigns — no lower to save tokens, no higher by habit. The orchestrator's own final gate is not delegated.
-
-Columns: First choice is the family and effort to dispatch; Fallback is the family and effort used only when the first-choice family has no available source (an effort level a source cannot carry is the parameter-gap rule, not a fallback); Includes lists what routes to the row, by example. "Claude" means Opus and "GPT" means Sol.
+First choice is the family and effort to dispatch, Fallback the family and effort to dispatch when the first-choice family has no available source, and Includes, by example, what routes to the row; "Claude" means Opus and "GPT" means Sol.
 
 | Task type | First choice | Fallback | Includes |
 |---|---|---|---|
 | Coding | Claude `medium` | GPT `xhigh` | any code deliverable, however small: writing or fixing code, tests, CI, infrastructure and other repository config, frontend implementation code with its styling, comments and docstrings in source, a script delivered to the repo |
 | Review | GPT `max` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
-| Backend architecture design | Claude `high` and GPT `max`, both run (rule 6) | whichever one is available, alone; tell the user | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices |
+| Backend architecture design | Claude `high` and GPT `max`, both run (rule 6) | whichever one is available, alone | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices |
 | Frontend UI design | Claude `high` | GPT `max` | visual and interaction design, design prototypes made to explore or present a design (not to ship), and the review, verification or audit of that work (rule 4) |
 | Documentation | GPT `xhigh` | Claude `high` | prose documents (docs, READMEs, guides, reports, code samples inside them included), agent-instruction files (SKILL.md, AGENTS.md, prompts, briefs), UI strings, written or translated, other translation, Chinese writing |
 | Research | GPT `max` | Claude `high` | sidecar explorers, exploration, data analysis, debugging or root-causing that reports a cause, reproducing a user-reported problem before any work exists |
-| Brainstorming and discussion | Claude `high` and GPT `xhigh` or `max`, both run (rule 7) | whichever one is available, alone; tell the user | brainstorming (generating ideas, options, names, hypotheses, test-case ideas) and multi-agent discussion, where agents read and respond to each other (debate, critique panel, deliberation) |
+| Brainstorming and discussion | Claude `high` and GPT `xhigh` or `max`, both run (rule 7) | whichever one is available, alone | brainstorming (generating ideas, options, names, hypotheses, test-case ideas) and multi-agent discussion, where agents read and respond to each other (debate, critique panel, deliberation) |
 | Other simple work | GPT `high` | Claude `medium` | a single-step fact lookup, or any other task that is single-step, mechanical and verifiable in seconds (rule 2) |
 | Other complex work | GPT `xhigh` | Claude `high` | client-only architecture (frontend state, data fetching, a CLI's module structure), a small task that turns on judgment, anything else no named row covers (rule 2) |
 
 1. Classify each delegated role by its deliverable, not by the tools or steps along the way. A fix that follows the worker's own investigation is Coding, and so is debugging that ships a fix; a throwaway script written only to get findings stays Research; a design doc goes to its design row.
-2. Named rows win: Other simple work and Other complex work apply only when no named row matches. Other simple work needs all three of single-step, mechanical and verifiable in seconds; a single-step fact lookup is Other simple work, not Research, unless a sidecar explorer runs it. Any other work no named row matches is Other complex work.
+2. Named rows win: Other simple work and Other complex work apply only when no named row matches. Other simple work needs all three of single-step, mechanical and verifiable in seconds; a single-step fact lookup is Other simple work, not Research; a sidecar explorer is Research whatever it looks up. Any other work no named row matches is Other complex work.
 3. Reviewers and verifiers (see **Reviewer**) go to Review, and so does any subtask whose deliverable is a review or audit of existing work, security review included.
-4. Exception: a reviewer, verifier, review or audit of Frontend UI design work goes to Frontend UI design. Key it on the row the reviewed work was routed to; for an audit of existing work, on whether the audited work is visual and interaction design. Frontend implementation code, styling included, is Coding, and its review is Review.
+4. A reviewer, verifier, review or audit of Frontend UI design work goes to Frontend UI design. Key it on the row the reviewed work was routed to, or, for an audit of existing work, on whether the audited work is visual and interaction design. Frontend implementation code, styling included, is Coding, and its review is Review.
 5. A subtask that both designs and implements is split: the design runs on its design row, then the implementation runs as Coding against the accepted design.
-6. "Both run" means two workers dispatched concurrently with the same brief, one per family; each design passes its own reviewer; then the orchestrator compares and synthesizes them.
-7. For Brainstorming and discussion, "both run" means at least one agent per family on the same brief, then the orchestrator synthesizes the result; it applies even when the request names a single agent, since brainstorming always needs both families. Claude runs `high`; GPT runs `max` when the discussion's subject would route to a row whose GPT effort is `max` (Review, Research, Backend architecture design, Frontend UI design), and `xhigh` otherwise (for example Coding, Documentation, or either Other row). The row applies only when the deliverable is ideas, options, hypotheses or a recommendation from discussion: a backend or full-stack design stays Backend architecture design, reviewers who each review without seeing the others are Review, and the work that follows a brainstorm (writing the tests, the doc, the code) routes by its own deliverable.
+6. Backend architecture design runs both families: two workers, one per family, dispatched concurrently with the same brief. Claude runs `high` and GPT runs `max`. Each design passes its own reviewer, then the orchestrator compares and synthesizes them. The row keeps a backend or full-stack design even when it is discussed.
+7. Brainstorming and discussion runs both families: at least one agent per family on the same brief, even when the request names a single agent. Claude runs `high`, and GPT runs `max` when the discussion's subject would route to a row whose GPT effort is `max`, `xhigh` otherwise. The orchestrator synthesizes the result. The row keeps only a deliverable of ideas, options, hypotheses or a recommendation from discussion: reviewers who each review without seeing the others are Review, and the work that follows a brainstorm, such as writing the tests, the doc or the code, routes by its own deliverable.
 
-**Fallbacks.** An unavailable source passes to the next source in the family's order (see **Subagent sources**). When the first-choice family has no available source, run the row's Fallback family at its Fallback effort, and tell the user. When neither family is available, run the platform's best subagent model inside the tier edges at the row's First choice effort — one agent at the higher level for a row whose First choice holds two levels (Backend architecture design: `max`; Brainstorming and discussion: the GPT level rule 7 gives) — and tell the user. A source that cannot carry the assigned effort level falls under the parameter-gap rule. An explicit user instruction overrides all of the above.
+**Fallbacks.** An unavailable source passes to the next source in its family's order (see **Subagent sources**). When the first-choice family has no available source, the row's Fallback family runs at its Fallback effort. When no source offers a model of either family, choose for each role the model and effort that best fit its task from what the available sources offer: the strongest model suited to the task type, with effort set by the task's type and complexity, taking the table's levels as the guide to how demanding each task type is. That choice keeps to the tier edges and sets every parameter explicitly. A both-run row then uses two different model families when the platform offers them, and one model otherwise.
 
-Platform-cap exception: if the platform forbids concurrent agents from using the exact same model and effort level, keep the assigned model; the first agent keeps the assigned level (as defined in the parameter-gap rule), and each later concurrent agent takes the highest level the platform still allows below it. State the exception in the progress/final note if it changes a subagent's requested config.
+**Effort limits.** The assigned level is the row's First choice effort, or its Fallback effort once the family has fallen back. When the default tool lacks a required knob, usually effort, set every knob it does have, such as model and agent type, and dispatch through the path **Subagent sources** names as carrying that knob per agent: the in-product mechanism's effort option, subject to the `Workflow` opt-in, or the CLI's effort setting, such as `-c model_reasoning_effort=<level>` on `codex exec`. When a source carries effort but not the assigned level, stay on that source at the highest level it supports below the assigned one; a level gap is not a fallback and never moves the dispatch to another source. Only when no available source in the family's order carries the knob, dispatch with the inherited default for that knob alone. An unavailable mechanism, source or runtime goes to **Subagent sources** and **Fallbacks**, never to the inherited default. When the platform forbids concurrent agents on the same model and effort level, keep the model: the first agent keeps its level, and each later concurrent agent takes the highest level the platform allows below it.
 
-**Fast mode.** Fast mode is the faster, pricier serving tier or speed setting of the same model — a fast variant ID, a service tier or a settings switch, depending on the source. It is off for every model unless the user's own instruction turns it on.
+**Fast mode.** Fast mode is the faster, pricier serving tier or speed setting of the same model: a fast variant ID, a service tier or a settings switch, depending on the source.
 
-- **Off by default.** Never enable it on your own initiative, for a subagent or for yourself, and never infer it from urgency ("this is urgent", "be quick").
-- **An enabling instruction names a scope**: one model (for example "use the fast variant of <model> for this task"); a set of models (for example "use fast mode for all GPT models", or for one family or provider); or every model where a source offers it ("use fast mode for all models as long as it's available"). A request with no model scope, such as "use fast mode for this task", is not yet an instruction: keep fast mode off, and ask the user once which scope they mean — one model, a set, or all models where available — giving those three forms as examples.
-- **Persistence.** Once enabled, fast mode stays on for that scope, across later tasks in the session, until the user turns it off or changes the scope. When the user bounds it ("for this task"), it ends with that bound.
-- **Scope matching.** A model outside the enabled scope runs at standard speed. When a model inside the scope has no fast option on the source that carries it, run it at standard speed and tell the user; never switch to another model or family to get fast mode.
-- **Tiers and effort are unchanged.** Fast mode changes serving speed only. It never unlocks a forbidden tier, never changes the model family or effort level the task-type table assigns, and is not a reason to pick a different source.
-- **Carrying it.** Choose a route that establishes the required requested
-  tier for each role, including standard requests outside the enabled scope.
+- **Off by default.** Only the user's own instruction turns it on. Never enable it on your own initiative, for a subagent or for yourself, and never infer it from urgency ("this is urgent", "be quick").
+- **Scope.** An enabling instruction names a scope: one model ("use the fast variant of <model> for this task"), a set of models ("use fast mode for all GPT models", or for one family or provider), or every model where a source offers it ("use fast mode for all models as long as it's available"). A request with no model scope, such as "use fast mode for this task", is not yet an instruction: keep fast mode off and ask the user once which scope they mean, giving those three forms as examples.
+- **Persistence.** Once enabled, fast mode stays on for its scope across later tasks in the session until the user turns it off or changes the scope. When the user bounds it, as in "for this task", it ends with that bound.
+- **Matching.** A model outside the scope runs at standard speed, and so does a model inside the scope that has no fast option on the source carrying it. Fast mode changes serving speed only: it never unlocks a forbidden tier, never changes the family or effort level the table assigns, and is never a reason to switch model, family or source.
+- **Carrying it.** Choose a route that carries each role's required speed request, a standard request included for a role outside the scope.
 
   On Claude Code, `Workflow` and custom-subagent frontmatter have no per-agent
-  fast setting. `Agent` and `Workflow` children copy the session's fast flag
-  and run fast when their model supports it. Use `claude -p` with Fast on for
-  an in-scope role, whether or not `Workflow` opt-in holds. When the parent
-  session is fast, use that CLI with Fast forced off for an out-of-scope role.
-  Disclose the CLI route.
+  fast setting, and `Agent` and `Workflow` children copy the session's fast
+  flag and run fast when their model supports it. Use `claude -p` with Fast on
+  for an in-scope role, whether or not `Workflow` opt-in holds, and, when the
+  parent session is fast, with Fast forced off for an out-of-scope role.
 
   On Codex, use native dispatch only when an explicit request setting, the
-  host request contract or verified inheritance establishes the assigned
-  requested tier. Set the exposed model and effort parameters. Advertised
-  tier capability alone does not establish a request; a missing per-agent
-  selector does not preclude native dispatch when verified inheritance matches
-  the assignment. Otherwise use `codex exec` with the tier set explicitly and
-  disclose the route. An out-of-scope role needs an independently standard
-  request when native dispatch would select Fast.
+  host request contract or verified inheritance establishes the role's
+  requested tier, and set the exposed model and effort parameters. Advertised
+  tier capability alone does not establish a request. Otherwise use
+  `codex exec` with the tier set explicitly. An out-of-scope role needs its
+  own standard request when native dispatch would select Fast.
 
   On Cursor and Devin, explicitly select each role's fast or standard model
-  variant. Do not use Cursor's `inherit` or Devin's `subagent_general`. Cursor
-  documents `<model-id>[fast=false]` for standard subagent frontmatter; verify
-  a Fast selection against the task card because the frontmatter Fast form
-  remains unconfirmed. Devin custom-subagent `model` takes the same UID as
-  `--model`; its Fast frontmatter selection remains untested. Read
-  `references/cli-dispatch.md` for each source's settings and verification.
-- **Disclosure.** Report each role's model, effort, source and established
-  requested tier. Claim the serving tier only from authoritative run evidence.
-  Without it, say that actual serving is unconfirmed: “Fast requested, actual
-  serving unconfirmed” for a Fast request, or “Standard requested, actual
-  serving unconfirmed” for a standard request.
+  variant, never Cursor's `inherit` or Devin's `subagent_general`. Cursor
+  documents `<model-id>[fast=false]` for standard subagent frontmatter; its
+  frontmatter Fast form is unconfirmed, so check a Fast selection against the
+  task card. Devin custom-subagent `model` takes the same UID as `--model`,
+  and its Fast frontmatter selection is untested. Read
+  `references/cli-dispatch.md` for each source's settings and checks.
+
+**Reporting.** Every announcement or report of a delegated agent is one line:
+
+```
+<Role>: <model> <effort>[ Fast][ via <route>][ (<tags>)]
+```
+
+- **Role**: a short label for what the agent does.
+- **Model**: the model's name with its version, not its ID or an alias.
+- **Effort**: the level the dispatch carried, written Low, Medium, High, xHigh or Max; left out when the dispatch carried none.
+- **Fast**: present only when fast mode was requested for that agent.
+- **Route**: left out when the host's own in-product subagent mechanism launched the agent, whatever the host calls it; otherwise "<source> CLI" for a headless command line, or the product name plus the kind of interface for any other interface, never a command, flag or internal tool identifier.
+- **Tags**: comma-separated, two in all. "fallback model": the row's Fallback family ran because a source for the first-choice family was present but could not run that family's required model; with no source for that family at all, the Fallback family is the normal case and takes no tag. "Fast unavailable": the agent's model is inside a fast-mode scope the user enabled but has no fast option on the source carrying it.
+- **Both-run rows**: one line per agent that ran, or the lines joined with " + ".
+
+For example: "Reviewer: <model> Max via <source> CLI", "Reviewer: <model> High (fallback model)", "Designer: <model> High", "Architect: <model> High + Architect: <model> Max via <source> CLI".
+
+The line is the whole report for a dispatch, and never claims a serving tier from a label.
 
 ## Orchestrator final gate
 
@@ -263,7 +264,7 @@ A reviewer `pass` does not bypass the orchestrator. The reviewer catches subtask
 ## Communication
 
 - Briefly tell the user what stays local on the critical path and what is being delegated.
-- Name the model, effort level, and source behind each delegated role, and whether fast mode is on for it, when you announce or report it — say which model is running the worker, which the reviewer, and so on — so the user can see what each role runs. Disclose every fallback (source or family) and every parameter-gap level when it happens.
+- Announce and report each delegated agent in the one-line form **Reporting** under **Model selection** gives, so the user can see what runs each role.
 - Note when a reviewer flags issues that trigger worker rework, and report when a subtask hits the two-failed-review stop (see **Reviewer**).
 - **Report milestones.** Between tool calls and dispatches, write to the user when something they would want to know has changed: key progress or a milestone, an important finding, a failure or stall, or anything that informs a decision they face. Report a dispatched piece of work when it completes or fails. When a wait has a knowable end — a test suite, a CI pipeline, a long-running delegate — check once at that end rather than polling at intervals. If the state is unchanged, arm the next check. A wait that outruns the end you expected is itself worth a line. Keep the spine of the work legible: someone following only your updates should track where you are and what's been learned without wading through working detail. Keep these updates short and integration-focused.
 - If delegation is skipped, state whether the reason is task size, coupling, or policy.
@@ -287,14 +288,15 @@ Before declaring a burst task done, confirm:
 
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny or blocking-dependency steps, the orchestrator's own final gate, and work pulled local after two failed reviews or an integration redo (see **Reviewer** and **Orchestrator final gate**).
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
-- [ ] Every delegated role ran the family and effort level its **Model selection** row assigns, or what those rules put in its place — a disclosed fallback, a disclosed parameter-gap level or inherited default, a platform-cap level, or an explicit user override — resolved to the newest version in the source's own model list, through the highest-priority available source for that family — the host's in-product mechanism for its own source (or, disclosed, its own CLI when that mechanism cannot carry the assignment), a CLI for any other.
-- [ ] Every subagent call set every exposed parameter explicitly — no silent platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class/Luna or too-expensive Fable/Mythos/Astra) unless instructed; every fallback (source or family), every parameter-gap level and any un-passable parameter was disclosed to the user, never reported as in effect.
+- [ ] Every delegated role ran the family and effort level its **Model selection** row assigns, or what those rules put in its place — a fallback, an effort-limit level or inherited default, the choice when no source offers either family, or an explicit instruction — on the newest version in the source's own model list, through the highest-priority available source for that family: the host's in-product mechanism for its own source, its own CLI when that mechanism cannot carry the assignment, and a CLI for any other.
+- [ ] Every subagent call set every exposed parameter explicitly — no silent platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class/Luna or too-expensive Fable/Mythos/Astra) unless instructed.
 - [ ] Fast mode ran only inside a scope the user named, and was off everywhere else (see **Fast mode** under **Model selection**).
+- [ ] Every announcement and report of a delegated agent was one line in the **Reporting** form, with no effort or Fast the dispatch did not carry.
 - [ ] Every brief carried the standard forward — the delegate was told to own its result's quality, check decisive claims at the source, and self-review against the brief before declaring done, with that self-review added to the reviewer hop rather than replacing it; and told it is a leaf unless the brief let it fan out.
 - [ ] Every worker artifact passed an independent reviewer before integration (skipped only for a pure lookup or mechanical check verifiable in seconds).
 - [ ] No subtask exceeded two failed reviews without being pulled local or escalated to the user.
 - [ ] Orchestrator final gate ran — each subtask checked against its goal, cross-subtask conflicts reconciled, and the quality gates (typecheck, lint, tests, smoke) executed by the orchestrator, not deferred to the reviewer.
 - [ ] Judgment grounded in the source of truth — subagent output treated as reference to verify rather than fact to adopt, and the integrated result checked against the DoD from the sources themselves.
 - [ ] Any stretch of the run you know only through a summary, rather than the thread you actually ran, was rebuilt from ground truth before the next dispatch or acceptance (see **Stay grounded**).
-- [ ] Final summary reports milestones, carries every skipped check and known gap as an unticked checklist item, notes any fallback or platform-cap config exception, and re-grounds a reader who saw none of the working thread — in the prescribed order, complete sentences, no run-internal shorthand (see **Final summary**).
+- [ ] Final summary reports milestones, carries every skipped check and known gap as an unticked checklist item, and re-grounds a reader who saw none of the working thread — in the prescribed order, complete sentences, no run-internal shorthand (see **Final summary**).
 - [ ] The checklist in the summary is the definition of done fixed before dispatch, not one written to fit the result; every ticked item names its evidence, and every unticked item says what is missing.

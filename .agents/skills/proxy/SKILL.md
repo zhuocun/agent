@@ -92,12 +92,11 @@ brief:
   integrated work must clear, with the updates to docs, records and to-dos the
   work will touch included as to-dos; the decomposition into subtasks, which are
   parallel vs. sequential; the task type of each subtask, named as exactly one
-  row of the **Model selection** table, plus the GPT level rule 7 gives a
-  Brainstorming and discussion subtask; the brief for each worker, each stating
-  that the worker is a leaf; the success criteria per subtask; and what the
-  final-gate reviewer should check;
-- that table, its column legend and its numbered rules, verbatim, to classify
-  by.
+  row of the **Model selection** table, with the GPT level a Brainstorming and
+  discussion subtask runs; the brief for each worker, each stating that the
+  worker is a leaf; the success criteria per subtask; and what the final-gate
+  reviewer should check;
+- that table, its legend and its numbered rules, verbatim, to classify by.
 
 If it names no row, or more than one, for a subtask, re-consult rather than
 choose. Then follow its plan. If the plan is ambiguous, or you hit a fork it did
@@ -170,143 +169,57 @@ work "obviously" looks complete.
 
 ## Model selection
 
-Map the terminology to whatever the platform exposes (`model`, `subagent_type`,
-`effort`, `reasoning_effort`, an effort level encoded in the model ID). Set
-every knob the dispatch tool actually exposes — check its schema, don't assume —
-and never accept the platform default.
+Map these terms to whatever the platform exposes: `model`, `subagent_type`,
+`effort`, `reasoning_effort`, or an effort level encoded in the model ID. On
+every subagent call, set every parameter the dispatch tool exposes, checking its
+schema rather than assuming. Never accept the platform default: it can route to
+a forbidden tier, silently downgrade reasoning, or mirror your own config. An
+explicit instruction from the user or from a higher-priority source overrides
+any rule in this section, **Source** included.
 
-**Parameter-gap rule.** Where a required knob is missing from the default tool,
-dispatch through the path **Source** names that carries it: the in-product
-mechanism's per-agent effort option, or the CLI's effort setting where
-**Source** sends you to a CLI. Where a source carries effort but not the
-assigned level (the row's First choice effort, or its Fallback effort once the
-family has fallen back), stay on that source and use the highest level it
-supports below that level; a level gap never moves to the next source. Only when
-no available source in the family's order carries the knob, dispatch with the
-inherited default for that knob alone. An unavailable mechanism, source or
-runtime goes to **Source** and **Fallbacks**, never to the inherited default.
-The first time each gap happens in a run, tell the user which parameter or level
-could not be passed and what the subagent will actually run. Never name a model
-or effort level as in effect when the mechanism did not carry it.
-
-**Tier.** Every subagent role runs on the top tier — the strongest model between
-two forbidden edges: Opus on Anthropic, Sol on OpenAI, or, when neither is
-available, the best subagent model the platform exposes (see **Fallbacks**). Too
-cheap: the smallest or distilled variants (`*-mini`, `*-haiku`-class, GPT Luna).
-Too expensive: oversized tiers whose cost outruns their marginal value for
-delegated work (Fable and Mythos on Anthropic, Astra on OpenAI). Reach past
-either edge only when the user or a higher-priority instruction asks. A role may
-be as strong as you, capped at the top tier; the too-expensive edge stays
-forbidden even if you run on it. Resolve the ID to the newest version of the
-family in the source's own model list; use an alias only when it cannot land on
-a forbidden tier, and otherwise pin the full ID from the list. A bare family
-alias such as `gpt` does not guarantee the required tier, effort or speed, so
-never use it for a dispatch under this policy.
-
-**Family and effort.** The orchestrator-consultant, re-consults included, is
-Other complex work. The final-gate reviewer is Frontend UI design when every
-subtask was routed to Frontend UI design, and Review otherwise. Each worker
-takes the row the orchestrator-consultant named for its subtask (see
-**Pass 1**), and each reviewer takes the row rules 3 and 4 give it.
-
-Columns: First choice is the family and effort to dispatch; Fallback is the
-family and effort used only when the first-choice family has no available
-source (an effort level a source cannot carry is the parameter-gap rule, not a
-fallback); Includes lists what routes to the row, by example. "Claude" means
-Opus and "GPT" means Sol.
-
-| Task type | First choice | Fallback | Includes |
-|---|---|---|---|
-| Coding | Claude `medium` | GPT `xhigh` | any code deliverable, however small: writing or fixing code, tests, CI, infrastructure and other repository config, frontend implementation code with its styling, comments and docstrings in source, a script delivered to the repo |
-| Review | GPT `max` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
-| Backend architecture design | Claude `high` and GPT `max`, both run (rule 6) | whichever one is available, alone; tell the user | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices |
-| Frontend UI design | Claude `high` | GPT `max` | visual and interaction design, design prototypes made to explore or present a design (not to ship), and the review, verification or audit of that work (rule 4) |
-| Documentation | GPT `xhigh` | Claude `high` | prose documents (docs, READMEs, guides, reports, code samples inside them included), agent-instruction files (SKILL.md, AGENTS.md, prompts, briefs), UI strings, written or translated, other translation, Chinese writing |
-| Research | GPT `max` | Claude `high` | exploration, data analysis, debugging or root-causing that reports a cause, reproducing a user-reported problem before any work exists |
-| Brainstorming and discussion | Claude `high` and GPT `xhigh` or `max`, both run (rule 7) | whichever one is available, alone; tell the user | brainstorming (generating ideas, options, names, hypotheses, test-case ideas) and multi-agent discussion, where agents read and respond to each other (debate, critique panel, deliberation) |
-| Other simple work | GPT `high` | Claude `medium` | a single-step fact lookup, or any other task that is single-step, mechanical and verifiable in seconds (rule 2) |
-| Other complex work | GPT `xhigh` | Claude `high` | the orchestrator-consultant, client-only architecture (frontend state, data fetching, a CLI's module structure), a small task that turns on judgment, anything else no named row covers (rule 2) |
-
-1. Classify each subtask by its deliverable, not by the tools or steps along
-   the way. A fix that follows the worker's own investigation is Coding, and so
-   is debugging that ships a fix; a throwaway script written only to get
-   findings stays Research; a design doc goes to its design row.
-2. Named rows win: Other simple work and Other complex work apply only when no
-   named row matches. Other simple work needs all three of single-step,
-   mechanical and verifiable in seconds; a single-step fact lookup is Other
-   simple work, not Research. Any other work no named row matches is Other
-   complex work.
-3. Reviewers and verifiers go to Review, and so does any subtask whose
-   deliverable is a review or audit of existing work, security review
-   included. A verifier is a subtask that confirms one claim a worker, artifact
-   or reviewer asserted, such as running a suite or re-checking a cited source.
-4. Exception: a reviewer, verifier, review or audit of Frontend UI design work
-   goes to Frontend UI design. Key it on the row the reviewed work was routed
-   to; for an audit of existing work, on whether the audited work is visual and
-   interaction design. Frontend implementation code, styling included, is
-   Coding, and its review is Review.
-5. A subtask that both designs and implements is split: the design runs on its
-   design row, then the implementation runs as Coding against the accepted
-   design.
-6. "Both run" means two workers dispatched concurrently with the same brief,
-   one per family; each design passes its own reviewer; then the
-   orchestrator-consultant compares and synthesizes them.
-7. For Brainstorming and discussion, "both run" means at least one agent per
-   family on the same brief, then the orchestrator-consultant synthesizes the
-   result; it applies even when the request names a single agent, since
-   brainstorming always needs both families. Claude runs `high`; GPT runs `max`
-   when the discussion's subject would route to a row whose GPT effort is `max`
-   (Review, Research, Backend architecture design, Frontend UI design), and
-   `xhigh` otherwise (for example Coding, Documentation, or either Other row).
-   The row applies only when the deliverable is ideas, options, hypotheses or a
-   recommendation from discussion: a backend or full-stack design stays Backend
-   architecture design, reviewers who each review without seeing the others are
-   Review, and the work that follows a brainstorm (writing the tests, the doc,
-   the code) routes by its own deliverable.
-
-**Source.** Take the first available source in the family's order — Claude
-family: Claude Code, then Cursor, then Devin; GPT family: Codex, then Devin,
-then Cursor.
+**Source.** Take the first available source in the family's order: for the
+Claude family, Claude Code, then Cursor, then Devin; for the GPT family, Codex,
+then Devin, then Cursor.
 
 Resolve routes from the current host's exposed tools, permissions and installed
-CLI help. Tool names, arguments and commands in this skill describe supported routes,
-not capabilities every host provides. Honor concurrency and fork limits. A
-host without shell execution cannot use a CLI route; one without writable
-configuration cannot create file-based custom definitions. Carry the brief and required files
-through the chosen route, and verify the child can access them rather than
-assuming a shared filesystem or inherited tools, credentials and network.
+CLI help. Tool names, arguments and commands in this skill describe supported
+routes, not capabilities every host provides. Honor concurrency and fork limits.
+A host without shell execution cannot use a CLI route; one without writable
+configuration cannot create file-based custom definitions. Carry the brief and
+required files through the chosen route, and verify the child can access them
+rather than assuming a shared filesystem or inherited tools, credentials and
+network.
 
 For the source you are running in, prefer its available in-product mechanism.
 Use that source's CLI only when the native route is unavailable or cannot carry
-the assigned model, effort and fast-mode setting, and disclose the route. Reach
-other sources through available CLIs. Resolve the executable in the invocation's
-actual environment, including any configured wrapper, and verify its supported
-syntax. Check a supported credential route with that invocation's provider,
-configuration and transport. Saved-login status alone does not establish
-availability. Do not assume installed CLIs, credentials, internet access or a
-proxy from another machine. Use only already authorized setup and network
-routes; availability checks do not authorize installation, login or changes to
-provider, permission or proxy configuration. Diagnose credential and transport
-failures separately; retry a failed catalog request through an already
-authorized network or proxy route where available. Disclose unresolved
-availability before choosing a fallback. Treat a family as absent only when a
-successfully retrieved applicable catalog contains no required top-tier model
-(Opus for Claude, Sol for GPT). Skip an unavailable source in the family's
-order; never substitute a forbidden tier.
+the assigned model, effort and fast-mode setting. Reach other sources through
+available CLIs. Resolve the executable in the invocation's actual environment,
+including any configured wrapper, and verify its supported syntax. Check a
+supported credential route with that invocation's provider, configuration and
+transport. Saved-login status alone does not establish availability. Do not
+assume installed CLIs, credentials, internet access or a proxy from another
+machine. Use only already authorized setup and network routes; availability
+checks do not authorize installation, login or changes to provider, permission
+or proxy configuration. Diagnose credential and transport failures separately;
+retry a failed catalog request through an already authorized network or proxy
+route where available. Treat a family as absent only when a successfully
+retrieved applicable catalog contains no required top-tier model (Opus for
+Claude, Sol for GPT). Skip an unavailable source in the family's order; never
+substitute a forbidden tier.
 
 On Claude Code, when a bare `Agent` call exposes model but no effort parameter,
 use an available `Workflow` tool (`agent(prompt, {model, effort})`) or an
 effort-setting custom subagent dispatched through `Agent`'s `subagent_type`.
 Check that the host exposes the selected tool and fields before using them.
 
-**This skill requires explicit opt-in for `Workflow`, separately from the
-host's availability and permission checks. Opt-in starts when the user invokes
-or names this skill (for example `/proxy`), asks for subagents or a workflow,
-or enables ultracode. It stays in force for later tasks in the session. Loading
-this skill yourself does not establish opt-in when the user has never invoked
-or named it. In that case, use a custom subagent, or `claude -p` when that route
-is unavailable or cannot carry the assignment, and disclose the route.** A
-single-agent workflow is a valid dispatch under this opt-in.
+**This skill requires explicit opt-in for `Workflow`, separately from the host's
+availability and permission checks. Opt-in starts when the user invokes or names
+this skill (for example `/proxy`), asks for subagents or a workflow, or enables
+ultracode. It stays in force for later tasks in the session. Loading this skill
+yourself does not establish opt-in when the user has never invoked or named it.
+In that case, use a custom subagent, or `claude -p` when that route is
+unavailable or cannot carry the assignment.** A single-agent workflow is a valid
+dispatch under this opt-in.
 
 Write each generated Claude custom definition under the active user
 configuration directory's `agents/<name>.md`, one file per model and effort
@@ -315,18 +228,17 @@ pair. `CLAUDE_CONFIG_DIR` can relocate that directory;
 destination. Verify that the directory is writable and loaded by the session.
 Existing project `.claude/agents/` definitions may be selected, but write a
 project definition only when that repository change is already authorized.
-Otherwise use another available route. Verify scope and name precedence so
-the intended definition wins. Include required `name` and `description`
-plus `model` and `effort` in the frontmatter. Pass the brief as the `Agent`
-prompt. For a leaf, deny the available native delegation tools through the
-supported tool restrictions (`disallowedTools: Agent, Workflow` on hosts with
-those tools); also prohibit delegation through CLIs and other routes in the
-brief.
+Otherwise use another available route. Verify scope and name precedence so the
+intended definition wins. Include required `name` and `description` plus `model`
+and `effort` in the frontmatter. Pass the brief as the `Agent` prompt. For a
+leaf, deny the available native delegation tools through the supported tool
+restrictions (`disallowedTools: Agent, Workflow` on hosts with those tools);
+also prohibit delegation through CLIs and other routes in the brief.
 
 Check that the updated definition is discoverable before dispatch. Claude Code
-watches existing user-scope and project agent directories and uses edits on
-the next delegation. Restart when the directory did not exist at session
-start. Directories introduced by `--add-dir` or `/add-dir` are not watched, and
+watches existing user-scope and project agent directories and uses edits on the
+next delegation. Restart when the directory did not exist at session start.
+Directories introduced by `--add-dir` or `/add-dir` are not watched, and
 `--disable-slash-commands` disables these watchers. Verify reload support for
 the running version; if a restart is unavailable, use another available route.
 
@@ -335,98 +247,209 @@ Use exposed model and effort parameters (for example `model` and
 `reasoning_effort`), or supported TOML custom agents with `model` and
 `model_reasoning_effort`. Resolve custom-agent discovery against the active user
 configuration root and project scope, and include that version's required
-fields. Keep generated definitions in a writable, loaded user scope; create
-or alter project definitions only when that repository change is already
-authorized. Otherwise use another available route. Hosts supporting the current standalone custom-agent discovery format
-require `name`, `description` and `developer_instructions` in each file; do
-not impose that manifest on a host using a different TOML role-config format.
-Fork controls vary by host: use
-`fork_turns: "none"` or a positive history count only when the schema exposes those forms
-and requires them for overrides. The full-history restriction applies only
-where the host specifies that such forks inherit parent settings and reject
-overrides. Do not translate it into an unsupported argument on another host.
+fields. Keep generated definitions in a writable, loaded user scope; create or
+alter project definitions only when that repository change is already
+authorized. Otherwise use another available route. Hosts supporting the current
+standalone custom-agent discovery format require `name`, `description` and
+`developer_instructions` in each file; do not impose that manifest on a host
+using a different TOML role-config format. Fork controls vary by host: use
+`fork_turns: "none"` or a positive history count only when the schema exposes
+those forms and requires them for overrides. The full-history restriction
+applies only where the host specifies that such forks inherit parent settings
+and reject overrides. Do not translate it into an unsupported argument on
+another host.
 
 Before the first CLI spawn in a session, read `references/cli-dispatch.md` in
 this skill's directory and apply its guards.
 
-**Fallbacks.** An unavailable source passes to the next in the family's order.
-A family with no available source passes to the row's Fallback family at its
-Fallback effort, and you tell the user. When neither family is available, run
-the platform's best subagent model inside the tier edges at the row's First
-choice effort — one agent at the higher level for a row whose First choice
-holds two levels (Backend architecture design: `max`; Brainstorming and
-discussion: the GPT level rule 7 gives) — and tell the user. If the platform forbids concurrent agents on the identical
-model and effort level, keep the model; the first agent keeps the assigned
-level (as defined in the parameter-gap rule), and each later concurrent agent
-takes the highest level the platform still allows below it; note the
-exception. An explicit user instruction overrides all of the above.
+**Tiers.** Every subagent role runs on the top tier: the strongest model between
+two forbidden edges, which is Opus on Anthropic and Sol on OpenAI. The too-cheap
+edge is the smallest or distilled variants: `*-mini`, `*-haiku`-class, GPT Luna.
+The too-expensive edge is the oversized tiers whose cost outruns their marginal
+value for delegated work: Fable and Mythos on Anthropic, Astra on OpenAI. A role
+may be as strong as you, capped at the top tier, so the too-expensive edge is
+forbidden even when you run on it. **Fallbacks** covers the case where no source
+offers a model of either family.
 
-**Fast mode.** Fast mode is the faster, pricier serving tier or speed setting
-of the same model — a fast variant ID, a service tier or a settings switch,
-depending on the source. It is off for every model unless the user's own
-instruction turns it on.
+**Model ID.** Use the newest version of the family that the source offers, read
+from that source's own model list, never an ID remembered from earlier work or
+training. Use an alias that resolves to the latest version only when it cannot
+land on a forbidden tier; otherwise pin the full ID from the list. Never use a
+bare family alias such as `gpt`: it does not guarantee the required tier, effort
+or speed.
 
-- **Off by default.** Never enable it on your own initiative, for a subagent or
-  for yourself, and never infer it from urgency ("this is urgent", "be quick").
-- **An enabling instruction names a scope**: one model (for example "use the
-  fast variant of <model> for this task"); a set of models (for example "use
-  fast mode for all GPT models", or for one family or provider); or every model
-  where a source offers it ("use fast mode for all models as long as it's
-  available"). A request with no model scope, such as "use fast mode for this
-  task", is not yet an instruction: keep fast mode off, and ask the user once
-  which scope they mean — one model, a set, or all models where available —
-  giving those three forms as examples.
-- **Persistence.** Once enabled, fast mode stays on for that scope, across
-  later tasks in the session, until the user turns it off or changes the scope.
-  When the user bounds it ("for this task"), it ends with that bound.
-- **Scope matching.** A model outside the enabled scope runs at standard speed.
-  When a model inside the scope has no fast option on the source that carries
-  it, run it at standard speed and tell the user; never switch to another model
-  or family to get fast mode.
-- **Tiers and effort are unchanged.** Fast mode changes serving speed only. It
-  never unlocks a forbidden tier, never changes the model family or effort
-  level the task-type table assigns, and is not a reason to pick a different
-  source.
-- **Carrying it.** Choose a route that establishes the required requested
-  tier for each role, including standard requests outside the enabled scope.
+**Task types.** Each subagent runs the family and effort level of its row, never
+lower to save tokens and never higher by habit. The orchestrator-consultant,
+re-consults included, is Other complex work. The final-gate reviewer is Frontend
+UI design when every subtask was routed to Frontend UI design, and Review
+otherwise. Each worker takes the row the orchestrator-consultant named for its
+subtask (see **Pass 1**), and each reviewer takes the row rules 3 and 4 give it.
+
+First choice is the family and effort to dispatch, Fallback the family and
+effort to dispatch when the first-choice family has no available source, and
+Includes, by example, what routes to the row; "Claude" means Opus and "GPT"
+means Sol.
+
+| Task type | First choice | Fallback | Includes |
+|---|---|---|---|
+| Coding | Claude `medium` | GPT `xhigh` | any code deliverable, however small: writing or fixing code, tests, CI, infrastructure and other repository config, frontend implementation code with its styling, comments and docstrings in source, a script delivered to the repo |
+| Review | GPT `max` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
+| Backend architecture design | Claude `high` and GPT `max`, both run (rule 6) | whichever one is available, alone | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices |
+| Frontend UI design | Claude `high` | GPT `max` | visual and interaction design, design prototypes made to explore or present a design (not to ship), and the review, verification or audit of that work (rule 4) |
+| Documentation | GPT `xhigh` | Claude `high` | prose documents (docs, READMEs, guides, reports, code samples inside them included), agent-instruction files (SKILL.md, AGENTS.md, prompts, briefs), UI strings, written or translated, other translation, Chinese writing |
+| Research | GPT `max` | Claude `high` | exploration, data analysis, debugging or root-causing that reports a cause, reproducing a user-reported problem before any work exists |
+| Brainstorming and discussion | Claude `high` and GPT `xhigh` or `max`, both run (rule 7) | whichever one is available, alone | brainstorming (generating ideas, options, names, hypotheses, test-case ideas) and multi-agent discussion, where agents read and respond to each other (debate, critique panel, deliberation) |
+| Other simple work | GPT `high` | Claude `medium` | a single-step fact lookup, or any other task that is single-step, mechanical and verifiable in seconds (rule 2) |
+| Other complex work | GPT `xhigh` | Claude `high` | the orchestrator-consultant, client-only architecture (frontend state, data fetching, a CLI's module structure), a small task that turns on judgment, anything else no named row covers (rule 2) |
+
+1. Classify each subtask by its deliverable, not by the tools or steps along the
+   way. A fix that follows the worker's own investigation is Coding, and so is
+   debugging that ships a fix; a throwaway script written only to get findings
+   stays Research; a design doc goes to its design row.
+2. Named rows win: Other simple work and Other complex work apply only when no
+   named row matches. Other simple work needs all three of single-step,
+   mechanical and verifiable in seconds; a single-step fact lookup is Other
+   simple work, not Research. Any other work no named row matches is Other
+   complex work.
+3. Reviewers and verifiers go to Review, and so does any subtask whose
+   deliverable is a review or audit of existing work, security review included.
+   A verifier is a subtask that confirms one claim a worker, artifact or
+   reviewer asserted, such as running a suite or re-checking a cited source.
+4. A reviewer, verifier, review or audit of Frontend UI design work goes to
+   Frontend UI design. Key it on the row the reviewed work was routed to, or,
+   for an audit of existing work, on whether the audited work is visual and
+   interaction design. Frontend implementation code, styling included, is
+   Coding, and its review is Review.
+5. A subtask that both designs and implements is split: the design runs on its
+   design row, then the implementation runs as Coding against the accepted
+   design.
+6. Backend architecture design runs both families: two workers, one per family,
+   dispatched concurrently with the same brief. Claude runs `high` and GPT runs
+   `max`. Each design passes its own reviewer, then the orchestrator-consultant
+   compares and synthesizes them. The row keeps a backend or full-stack design
+   even when it is discussed.
+7. Brainstorming and discussion runs both families: at least one agent per
+   family on the same brief, even when the request names a single agent. Claude
+   runs `high`, and GPT runs `max` when the discussion's subject would route to
+   a row whose GPT effort is `max`, `xhigh` otherwise. The
+   orchestrator-consultant synthesizes the result. The row keeps only a
+   deliverable of ideas, options, hypotheses or a recommendation from
+   discussion: reviewers who each review without seeing the others are Review,
+   and the work that follows a brainstorm, such as writing the tests, the doc or
+   the code, routes by its own deliverable.
+
+**Fallbacks.** An unavailable source passes to the next source in its family's
+order (see **Source**). When the first-choice family has no available source,
+the row's Fallback family runs at its Fallback effort. When no source offers a
+model of either family, choose for each role the model and effort that best fit
+its task from what the available sources offer: the strongest model suited to
+the task type, with effort set by the task's type and complexity, taking the
+table's levels as the guide to how demanding each task type is. That choice
+keeps to the tier edges and sets every parameter explicitly. A both-run row then
+uses two different model families when the platform offers them, and one model
+otherwise.
+
+**Effort limits.** The assigned level is the row's First choice effort, or its
+Fallback effort once the family has fallen back. When the default tool lacks a
+required knob, usually effort, set every knob it does have, such as model and
+agent type, and dispatch through the path **Source** names as carrying that knob
+per agent: the in-product mechanism's effort option, subject to the `Workflow`
+opt-in, or the CLI's effort setting, such as `-c model_reasoning_effort=<level>`
+on `codex exec`. When a source carries effort but not the assigned level, stay
+on that source at the highest level it supports below the assigned one; a level
+gap is not a fallback and never moves the dispatch to another source. Only when
+no available source in the family's order carries the knob, dispatch with the
+inherited default for that knob alone. An unavailable mechanism, source or
+runtime goes to **Source** and **Fallbacks**, never to the inherited default.
+When the platform forbids concurrent agents on the same model and effort level,
+keep the model: the first agent keeps its level, and each later concurrent agent
+takes the highest level the platform allows below it.
+
+**Fast mode.** Fast mode is the faster, pricier serving tier or speed setting of
+the same model: a fast variant ID, a service tier or a settings switch,
+depending on the source.
+
+- **Off by default.** Only the user's own instruction turns it on. Never enable
+  it on your own initiative, for a subagent or for yourself, and never infer it
+  from urgency ("this is urgent", "be quick").
+- **Scope.** An enabling instruction names a scope: one model ("use the fast
+  variant of <model> for this task"), a set of models ("use fast mode for all
+  GPT models", or for one family or provider), or every model where a source
+  offers it ("use fast mode for all models as long as it's available"). A
+  request with no model scope, such as "use fast mode for this task", is not yet
+  an instruction: keep fast mode off and ask the user once which scope they
+  mean, giving those three forms as examples.
+- **Persistence.** Once enabled, fast mode stays on for its scope across later
+  tasks in the session until the user turns it off or changes the scope. When
+  the user bounds it, as in "for this task", it ends with that bound.
+- **Matching.** A model outside the scope runs at standard speed, and so does a
+  model inside the scope that has no fast option on the source carrying it. Fast
+  mode changes serving speed only: it never unlocks a forbidden tier, never
+  changes the family or effort level the table assigns, and is never a reason to
+  switch model, family or source.
+- **Carrying it.** Choose a route that carries each role's required speed
+  request, a standard request included for a role outside the scope.
 
   On Claude Code, `Workflow` and custom-subagent frontmatter have no per-agent
-  fast setting. `Agent` and `Workflow` children copy the session's fast flag
-  and run fast when their model supports it. Use `claude -p` with Fast on for
-  an in-scope role, whether or not `Workflow` opt-in holds. When the parent
-  session is fast, use that CLI with Fast forced off for an out-of-scope role.
-  Disclose the CLI route.
+  fast setting, and `Agent` and `Workflow` children copy the session's fast flag
+  and run fast when their model supports it. Use `claude -p` with Fast on for an
+  in-scope role, whether or not `Workflow` opt-in holds, and, when the parent
+  session is fast, with Fast forced off for an out-of-scope role.
 
-  On Codex, use native dispatch only when an explicit request setting, the
-  host request contract or verified inheritance establishes the assigned
-  requested tier. Set the exposed model and effort parameters. Advertised
-  tier capability alone does not establish a request; a missing per-agent
-  selector does not preclude native dispatch when verified inheritance matches
-  the assignment. Otherwise use `codex exec` with the tier set explicitly and
-  disclose the route. An out-of-scope role needs an independently standard
-  request when native dispatch would select Fast.
+  On Codex, use native dispatch only when an explicit request setting, the host
+  request contract or verified inheritance establishes the role's requested
+  tier, and set the exposed model and effort parameters. Advertised tier
+  capability alone does not establish a request. Otherwise use `codex exec` with
+  the tier set explicitly. An out-of-scope role needs its own standard request
+  when native dispatch would select Fast.
 
   On Cursor and Devin, explicitly select each role's fast or standard model
-  variant. Do not use Cursor's `inherit` or Devin's `subagent_general`. Cursor
-  documents `<model-id>[fast=false]` for standard subagent frontmatter; verify
-  a Fast selection against the task card because the frontmatter Fast form
-  remains unconfirmed. Devin custom-subagent `model` takes the same UID as
-  `--model`; its Fast frontmatter selection remains untested. Read
-  `references/cli-dispatch.md` for each source's settings and verification.
-- **Disclosure.** Report each role's model, effort, source and established
-  requested tier. Claim the serving tier only from authoritative run evidence.
-  Without it, say that actual serving is unconfirmed: “Fast requested, actual
-  serving unconfirmed” for a Fast request, or “Standard requested, actual
-  serving unconfirmed” for a standard request.
+  variant, never Cursor's `inherit` or Devin's `subagent_general`. Cursor
+  documents `<model-id>[fast=false]` for standard subagent frontmatter; its
+  frontmatter Fast form is unconfirmed, so check a Fast selection against the
+  task card. Devin custom-subagent `model` takes the same UID as `--model`, and
+  its Fast frontmatter selection is untested. Read `references/cli-dispatch.md`
+  for each source's settings and checks.
+
+**Reporting.** Every announcement or report of a subagent is one line:
+
+```
+<Role>: <model> <effort>[ Fast][ via <route>][ (<tags>)]
+```
+
+- **Role**: a short label for what the agent does.
+- **Model**: the model's name with its version, not its ID or an alias.
+- **Effort**: the level the dispatch carried, written Low, Medium, High, xHigh
+  or Max; left out when the dispatch carried none.
+- **Fast**: present only when fast mode was requested for that agent.
+- **Route**: left out when the host's own in-product subagent mechanism launched
+  the agent, whatever the host calls it; otherwise "<source> CLI" for a headless
+  command line, or the product name plus the kind of interface for any other
+  interface, never a command, flag or internal tool identifier.
+- **Tags**: comma-separated, two in all. "fallback model": the row's Fallback
+  family ran because a source for the first-choice family was present but could
+  not run that family's required model; with no source for that family at all,
+  the Fallback family is the normal case and takes no tag. "Fast unavailable":
+  the agent's model is inside a fast-mode scope the user enabled but has no fast
+  option on the source carrying it.
+- **Both-run rows**: one line per agent that ran, or the lines joined with
+  " + ".
+
+For example: "Reviewer: <model> Max via <source> CLI", "Reviewer: <model> High
+(fallback model)", "Designer: <model> High", "Architect: <model> High +
+Architect: <model> Max via <source> CLI".
+
+The line is the whole report for a dispatch, and never claims a serving tier
+from a label.
 
 ## Communication
 
 - State up front that planning, review, and the done decision are delegated, and
   that you are executing and relaying.
-- Name the model, effort level, and source running each subagent role — the
-  orchestrator-consultant, the workers, the reviewers, and the final-gate
-  reviewer — and whether fast mode is on for it, so the user can see what each
-  role runs, and disclose every fallback when it happens.
+- Announce and report each subagent role — the orchestrator-consultant, the
+  workers, the reviewers and the final-gate reviewer — in the one-line form
+  **Reporting** under **Model selection** gives, so the user can see what runs
+  each role.
 - Relay subagent inputs and outputs verbatim — never paraphrase a brief, a
   verdict, or a set of issues. The closing report to the user is the one
   artifact this does not cover (see **Final summary**).
@@ -492,14 +515,19 @@ Before declaring the task done, confirm:
   verdict.
 - [ ] The done decision came from a final-gate reviewer returning `done`, not
   from your own assessment.
-- [ ] Every subagent ran the family and effort level **Model selection**
-  assigns its role, or what those rules put in its place — a disclosed
-  fallback, a disclosed parameter-gap level or inherited default, a
-  platform-cap level, or a user override — on the newest version in the
-  source's model list, through the highest-priority available
-  source — with no too-cheap or too-expensive tier chosen unless instructed.
+- [ ] Every subagent ran the family and effort level **Model selection** assigns
+  its role, or what those rules put in its place — a fallback, an effort-limit
+  level or inherited default, the choice when no source offers either family, or
+  an explicit instruction — on the newest version in the source's own model
+  list, through the highest-priority available source for that family: the
+  host's in-product mechanism for its own source, its own CLI when that
+  mechanism cannot carry the assignment, and a CLI for any other.
+- [ ] Every subagent call set every exposed parameter explicitly — no silent
+  platform default, and no too-cheap or too-expensive tier unless instructed.
 - [ ] Fast mode ran only inside a scope the user named, and was off everywhere
   else (see **Fast mode** under **Model selection**).
+- [ ] Every announcement and report of a subagent was one line in the
+  **Reporting** form, with no effort or Fast the dispatch did not carry.
 - [ ] You relayed briefs, artifacts, and verdicts verbatim, and limited yourself
   to executing what the subagents directed.
 - [ ] The closing report re-grounds a reader who saw none of the chain — in the

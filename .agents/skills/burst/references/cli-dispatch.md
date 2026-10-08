@@ -30,10 +30,9 @@ assignment into a different shell unchanged.
   container or other runtime. Saved-login status alone does not validate or rule
   out per-run credentials. Diagnose credential and transport failures separately.
   Retry a failed catalog request through an already authorized network or proxy
-  route where available, and disclose unresolved availability before falling
-  back. Treat a family as absent only when a successfully retrieved applicable
-  catalog contains no required top-tier model. Skip unavailable sources in the
-  family's order; never substitute a forbidden tier.
+  route where available. Treat a family as absent only when a successfully
+  retrieved applicable catalog contains no required top-tier model. Skip
+  unavailable sources in the family's order; never substitute a forbidden tier.
 - **Prompt and EOF**: pass literal prompt text as one argument and close unused
   stdin with the launcher's supported mechanism (`< /dev/null` in POSIX).
   Do not interpolate a brief as shell code. An open pipe can leave the child
@@ -56,17 +55,19 @@ assignment into a different shell unchanged.
   such as Cursor Auto or Devin `adaptive`/`fusion`. Use an alias only when its
   verified mapping selects the required version and tier; a bare family or
   partial name such as `gpt` does not guarantee tier, effort or speed. Spell
-  effort exactly and check the selected model's support. A missing assigned
-  level is a parameter gap: use the highest supported level at or below it and
-  disclose the gap. If an ID is rejected, select the next-newest listed ID of
-  the same family and tell the user; never let the CLI choose its default.
+  effort exactly and check the selected model's support. When the assigned
+  level is missing, use the highest supported level below it, as
+  **Effort limits** in `SKILL.md` requires. If an ID is rejected, select the
+  next-newest listed ID of the same family; never let the CLI choose its
+  default.
 - **Fast**: enable it only inside the user's named scope. Explicitly select
-  standard elsewhere, and use standard with disclosure when the assigned model
-  has no Fast option on the selected source. Saved settings and defaults can
-  affect headless runs. Keep the assigned family and effort. Report the
-  established requested tier; claim actual serving only from authoritative run
-  evidence. Without it, report “Fast requested, actual serving unconfirmed” or
-  “Standard requested, actual serving unconfirmed”, matching the request.
+  standard elsewhere, including for an assigned model that has no Fast option on
+  the selected source. Saved settings and defaults can affect headless runs.
+  Keep the assigned family and effort.
+- **Reporting**: report each run in the one-line form of **Reporting** in
+  `SKILL.md`, from what the invocation carried. Run records and catalog labels
+  below help confirm that the run used the intended model, effort and request;
+  the report never claims a serving tier from a label.
 - **Output and completion**: capture the final answer and check the exit status,
   stderr and terminal outcome; ordinary-looking text can describe a failed run.
   Allow multi-minute execution with a generous timeout or background execution
@@ -77,8 +78,8 @@ assignment into a different shell unchanged.
   establish an operational sandbox on every OS, container or remote runtime.
   Unattended approval can deny, fail or wait, depending on the host. Grant only
   authorized access; use a bypass mode only in an isolated runner. If required
-  isolation or tools are unavailable, disclose the limitation and use another
-  authorized source or runtime rather than silently removing protection.
+  isolation or tools are unavailable, use another authorized source or runtime
+  rather than removing protection.
 - **Reviewers running code**: give a reviewer or verifier its own disposable
   `git worktree` or artifact copy and the access needed for tests, builds or
   reproductions. Where supported and authorized, use Codex workspace-write with
@@ -136,7 +137,8 @@ supported `CLAUDE_CONFIG_DIR` override rather than assuming a home location.
   applicable cap across scopes, with `modelSettings.<model>.maxEffortLevel`
   replacing the same file's top-level cap for that model. Caps constrain flag,
   environment and frontmatter routes. Organization-cap warnings are suppressed
-  in JSON output. Disclose any lower effective level as a parameter gap.
+  in JSON output. A lower effective level is the level the run carries, and
+  the report names it.
   `ultracode` is a separate mode, not an effort level.
 - **Auth**: `claude auth status` returns 0 for a login and 1 otherwise; JSON
   `authMethod` identifies the method. `ANTHROPIC_API_KEY` takes precedence over
@@ -193,8 +195,7 @@ supported `CLAUDE_CONFIG_DIR` override rather than assuming a home location.
   rate limits can also cause standard requests during cooldown. Unsupported
   models and fallback retries can run standard, and enabling Fast from an
   unsupported model can switch to the default Fast Opus. Check the main-loop
-  model as well as request speed. Report partial Fast service when the records
-  show a mixture; if the build lacks these fields, report only the request.
+  model as well as request speed.
 
 ## Codex: `codex exec`
 
@@ -252,7 +253,8 @@ before relying on a sandbox mode.
   selected provider support these keys, request Fast per run with
   `-c service_tier=fast -c features.fast_mode=true`; request standard with
   `-c service_tier=default`. If the supported interface differs, use its verified
-  equivalent or report the gap. Never use `ultrafast` or `flex` under this policy.
+  equivalent; without one, the source has no Fast option for that run. Never use
+  `ultrafast` or `flex` under this policy.
   Check effective settings, profiles, feature gates, managed restrictions and
   the model's advertised tiers; explicitly select the required tier on new and
   resumed runs. Do not rely on interactive `/fast` storage or TUI defaults to
@@ -262,21 +264,19 @@ before relying on a sandbox mode.
   assigned requested tier. Set exposed model and effort parameters and inspect
   fork restrictions. Capability advertising alone is insufficient. Verified
   inheritance that matches the assignment can carry it without a separate
-  tier selector. Otherwise use exec with explicit tier settings and disclose
-  the route; independently request standard for an out-of-scope role if native
-  dispatch would select Fast. Verify the current host rather than assuming
+  tier selector. Otherwise use exec with explicit tier settings, and
+  independently request standard for an out-of-scope role if native dispatch
+  would select Fast. Verify the current host rather than assuming
   root-tier inheritance or overwrite behavior.
 - **Output and verification**: progress goes to stderr; stdout and
   `-o`/`--output-last-message` contain the final message. `--json` emits JSONL;
   `--output-schema <file>` requests a final answer matching a JSON Schema.
   Treat nonzero exit or a failed terminal JSONL outcome as failure. Do not depend
   on one build's exact exit-code number. The exec header and usage events do not
-  positively confirm the serving tier. Without an authoritative serving receipt, report
-  the established requested tier and actual serving as unconfirmed, for both
-  Fast and standard assignments. Do not promise an unsupported-tier warning
+  positively confirm the serving tier. Do not assume an unsupported-tier warning
   or fallback without build-specific evidence. API Fast accepts `fast` and
   `priority`, but API-key auth alone does not establish how this build transmits
-  its configured tier. Claim standard processing only from serving evidence.
+  its configured tier.
 
 ## Cursor: `agent -p`
 
@@ -337,7 +337,7 @@ to discover active global and project settings, including supported
   suffix to derive standard unless that exact ID is listed as standard. Bare
   parameterized IDs can reuse saved per-model choices or server defaults,
   including Fast. Headless model selection can also update CLI configuration.
-  If the Fast variant is unavailable, explicitly select standard and disclose.
+  If the Fast variant is unavailable, explicitly select standard.
 - **Native Fast dispatch**: frontmatter documents `<model-id>[fast=false]` and
   `<model-id>[]` for standard. `<model-id>[fast=true]` follows SDK parameters
   but remains untested in a subagent file; a parent can name a model at launch.
@@ -350,8 +350,7 @@ to discover active global and project settings, including supported
   wait for their own subagents before exit. Init `model` is built from the
   outgoing selection, and result `usage` holds token counts, not served model,
   variant or cost. Use the usage dashboard and native task card to check which
-  variant ran. Until then, report the request rather than confirmed service;
-  exact local ID matching alone does not prove backend identity.
+  variant ran; exact local ID matching alone does not prove backend identity.
 
 ## Devin: `devin -p`
 
@@ -400,14 +399,14 @@ a new account or build.
   Copy the current catalog's exact UID and label instead of deriving or rejecting
   a UID from its suffix. An unlabelled speed variant, including
   an unverified `-ultrafast` UID, is unconfirmed. If no Fast counterpart exists,
-  use standard and disclose. Treat rejection or fallback from the requested
-  Fast UID as failure to carry that assignment, rather than assuming its tier.
+  use standard. Treat rejection or fallback from the requested Fast UID as
+  failure to carry that assignment, rather than assuming its tier.
 - **Native Fast dispatch**: custom-subagent `model` uses the same UID as
   `--model`; a skill's model overrides the profile. Give each role a custom
   definition naming its exact variant. `subagent_general` inherits the parent
   model and does not independently establish the role's speed. Fast UIDs in
-  custom frontmatter remain untested; inspect run evidence before claiming
-  actual Fast service.
+  custom frontmatter are untested; inspect run evidence to confirm the role ran
+  its intended variant.
 - **Output and verification**: print mode outputs the response, with no JSON
   response mode. `--export <path>` writes ATIF conversation data after each
   turn; whether it establishes served-model identity remains unconfirmed.
@@ -417,5 +416,4 @@ a new account or build.
   boolean when the catalog identifies Fast through its label. Print output has
   no documented serving receipt.
   `/session-stats` reports billed-turn models in interactive/ACP hosts, not a
-  documented print-mode receipt. Until authoritative run evidence exists,
-  report model effort and tier as requested rather than confirmed.
+  documented print-mode receipt.

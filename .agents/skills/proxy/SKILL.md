@@ -33,8 +33,9 @@ The subagent roles, and the chain they form:
    yourself.
 2. **worker** — performs one delegated subtask (research, implementation, fix,
    test, lookup).
-3. **reviewer** — one per worker; judges that worker's artifact before it is
-   integrated.
+3. **reviewer** — one per worker, or one per family where the worker's row
+   runs both (see **Model selection**); judges that worker's artifact before it
+   is integrated.
 4. **final-gate reviewer** — decides whether the whole task may be declared
    done. You consult it before declaring; you never gate yourself.
 
@@ -280,10 +281,12 @@ or speed.
 
 **Task types.** Each subagent runs the family and effort level of its row, never
 lower to save tokens and never higher by habit. The orchestrator-consultant,
-re-consults included, is Other complex work. The final-gate reviewer is Frontend
-UI design when every subtask was routed to Frontend UI design, and Review
-otherwise. Each worker takes the row the orchestrator-consultant named for its
-subtask (see **Pass 1**), and each reviewer takes the row rules 3 and 4 give it.
+re-consults included, is Other complex work. The final-gate reviewer takes the
+design row every subtask was routed to, when they all share one, and Review
+otherwise; where that row runs both families, the task is done only when both
+final-gate reviewers return `done`, and every gap either names is relayed. Each
+worker takes the row the orchestrator-consultant named for its subtask (see
+**Pass 1**), and each reviewer takes the row rules 3 and 4 give it.
 
 First choice is the family and effort to dispatch, Fallback the family and
 effort to dispatch when the first-choice family has no available source, and
@@ -294,7 +297,7 @@ means Sol.
 |---|---|---|---|
 | Coding | Claude `medium` | GPT `xhigh` | any code deliverable, however small: writing or fixing code, tests, CI, infrastructure and other repository config, frontend implementation code with its styling, comments and docstrings in source, a script delivered to the repo |
 | Review | GPT `max` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
-| Backend architecture design | Claude `high` and GPT `max`, both run (rule 6) | whichever one is available, alone | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices |
+| Backend architecture design | Claude `high` and GPT `max`, both run (rule 6) | whichever one is available, alone | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices, and the review, verification or audit of that work (rules 4 and 6) |
 | Frontend UI design | Claude `high` | GPT `max` | visual and interaction design, design prototypes made to explore or present a design (not to ship), and the review, verification or audit of that work (rule 4) |
 | Documentation | GPT `xhigh` | Claude `high` | prose documents (docs, READMEs, guides, reports, code samples inside them included), agent-instruction files (SKILL.md, AGENTS.md, prompts, briefs), UI strings, written or translated, other translation, Chinese writing |
 | Research | GPT `max` | Claude `high` | exploration, data analysis, debugging or root-causing that reports a cause, reproducing a user-reported problem before any work exists |
@@ -315,28 +318,35 @@ means Sol.
    deliverable is a review or audit of existing work, security review included.
    A verifier is a subtask that confirms one claim a worker, artifact or
    reviewer asserted, such as running a suite or re-checking a cited source.
-4. A reviewer, verifier, review or audit of Frontend UI design work goes to
-   Frontend UI design. Key it on the row the reviewed work was routed to, or,
-   for an audit of existing work, on whether the audited work is visual and
-   interaction design. Frontend implementation code, styling included, is
-   Coding, and its review is Review.
+4. A reviewer, verifier, review or audit of work on a design row goes to that
+   row: Frontend UI design work to Frontend UI design, and Backend architecture
+   design work to Backend architecture design, which runs both families
+   (rule 6). Key it on the row the reviewed work was routed to, or, for an audit of
+   existing work, on the row the audited work itself would route to.
+   Implementation code, frontend styling included, is Coding, and its review is
+   Review; client-only architecture is Other complex work, and its review is
+   Review.
 5. A subtask that both designs and implements is split: the design runs on its
    design row, then the implementation runs as Coding against the accepted
    design.
-6. Backend architecture design runs both families: two workers, one per family,
-   dispatched concurrently with the same brief. Claude runs `high` and GPT runs
-   `max`. Each design passes its own reviewer, then the orchestrator-consultant
-   compares and synthesizes them. The row keeps a backend or full-stack design
-   even when it is discussed.
+6. Backend architecture design runs both families, Claude `high` and GPT `max`,
+   for design and review alike. A design is two workers, one per family,
+   dispatched concurrently with the same brief; a review, verification or audit
+   is two agents, one per family, judging the same artifact independently. The
+   review passes only when both pass; a `revise` or `redo` from either sends the
+   worker back with both reviewers' issues verbatim, and the pair counts as one
+   review toward the two-failed-review stop. Each design passes its own review,
+   then the orchestrator-consultant compares and synthesizes the designs. The
+   row keeps a backend or full-stack design even when it is discussed.
 7. Brainstorming and discussion runs both families: at least one agent per
    family on the same brief, even when the request names a single agent. Claude
    runs `high`, and GPT runs `max` when the discussion's subject would route to
    a row whose GPT effort is `max`, `xhigh` otherwise. The
    orchestrator-consultant synthesizes the result. The row keeps only a
    deliverable of ideas, options, hypotheses or a recommendation from
-   discussion: reviewers who each review without seeing the others are Review,
-   and the work that follows a brainstorm, such as writing the tests, the doc or
-   the code, routes by its own deliverable.
+   discussion: reviewers who each review without seeing the others route by
+   rules 3 and 4, and the work that follows a brainstorm, such as writing the
+   tests, the doc or the code, routes by its own deliverable.
 
 **Fallbacks.** An unavailable source passes to the next source in its family's
 order (see **Source**). When the first-choice family has no available source,

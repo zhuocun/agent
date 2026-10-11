@@ -298,7 +298,7 @@ means Sol.
 | Coding | Claude `medium` | GPT `xhigh` | any code deliverable, however small: writing or fixing code, tests, CI, infrastructure and other repository config, frontend implementation code with its styling, comments and docstrings in source, a script delivered to the repo |
 | Review | GPT `max` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
 | Backend architecture design | Claude `high` and GPT `max`, both run (rule 6) | whichever one is available, alone | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices, and the review, verification or audit of that work (rules 4 and 6) |
-| Frontend UI design | Claude `high` | GPT `max` | visual and interaction design, design prototypes made to explore or present a design (not to ship), and the review, verification or audit of that work (rule 4) |
+| Visual design | Claude `high` | GPT `max` | visual and interaction design of a product UI, visualizations that present information (diagrams, charts, HTML pages, slide decks) with the markup that draws them, design prototypes not meant to ship, and the review, verification or audit of that work (rule 4) |
 | Documentation | GPT `xhigh` | Claude `high` | prose documents (docs, READMEs, guides, reports, code samples inside them included), agent-instruction files (SKILL.md, AGENTS.md, prompts, briefs), UI strings, written or translated, other translation, Chinese writing |
 | Research | GPT `max` | Claude `high` | exploration, data analysis, debugging or root-causing that reports a cause, reproducing a user-reported problem before any work exists |
 | Brainstorming and discussion | Claude `high` and GPT `xhigh` or `max`, both run (rule 7) | whichever one is available, alone | brainstorming (generating ideas, options, names, hypotheses, test-case ideas) and multi-agent discussion, where agents read and respond to each other (debate, critique panel, deliberation) |
@@ -306,9 +306,10 @@ means Sol.
 | Other complex work | GPT `xhigh` | Claude `high` | the orchestrator-consultant, client-only architecture (frontend state, data fetching, a CLI's module structure), a small task that turns on judgment, anything else no named row covers (rule 2) |
 
 1. Classify each subtask by its deliverable, not by the tools or steps along the
-   way. A fix that follows the worker's own investigation is Coding, and so is
-   debugging that ships a fix; a throwaway script written only to get findings
-   stays Research; a design doc goes to its design row.
+   way. Code that ships in a product is Coding, including a fix that follows the
+   worker's own investigation and a chart component. A visualization made to
+   present information is Visual design, its markup included. A script or chart
+   made only to get findings is Research. A design doc goes to its design row.
 2. Named rows win: Other simple work and Other complex work apply only when no
    named row matches. Other simple work needs all three of single-step,
    mechanical and verifiable in seconds; a single-step fact lookup is Other
@@ -318,17 +319,16 @@ means Sol.
    deliverable is a review or audit of existing work, security review included.
    A verifier is a subtask that confirms one claim a worker, artifact or
    reviewer asserted, such as running a suite or re-checking a cited source.
-4. A reviewer, verifier, review or audit of work on a design row goes to that
-   row: Frontend UI design work to Frontend UI design, and Backend architecture
-   design work to Backend architecture design, which runs both families
-   (rule 6). Key it on the row the reviewed work was routed to, or, for an audit of
-   existing work, on the row the audited work itself would route to.
-   Implementation code, frontend styling included, is Coding, and its review is
-   Review; client-only architecture is Other complex work, and its review is
-   Review.
-5. A subtask that both designs and implements is split: the design runs on its
-   design row, then the implementation runs as Coding against the accepted
-   design.
+4. A reviewer, verifier, review or audit of work on a design row stays on that
+   row: Visual design, or Backend architecture design, which runs both families
+   (rule 6). Key it on the row the reviewed work was routed to, or, for existing
+   work, the row that work would route to. Every other review goes to Review
+   (rule 3).
+5. A subtask that spans rows is split by deliverable. A design runs on its
+   design row, and its implementation then runs as Coding against the accepted
+   design. A document's prose runs on the row the document takes on its own,
+   Documentation or a design row, and each visualization in it runs as Visual
+   design, drawing what the prose sets out. A slide deck is one visualization.
 6. Backend architecture design runs both families, Claude `high` and GPT `max`,
    for design and review alike. A design is two workers, one per family,
    dispatched concurrently with the same brief; a review, verification or audit

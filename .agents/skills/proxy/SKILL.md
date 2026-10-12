@@ -93,8 +93,8 @@ brief:
   integrated work must clear, with the updates to docs, records and to-dos the
   work will touch included as to-dos; the decomposition into subtasks, which are
   parallel vs. sequential; the task type of each subtask, named as exactly one
-  row of the **Model selection** table, with the GPT level a Brainstorming and
-  discussion subtask runs; the brief for each worker, each stating that the
+  row of the **Model selection** table, with the families and effort levels its
+  row assigns; the brief for each worker, each stating that the
   worker is a leaf; the success criteria per subtask; and what the final-gate
   reviewer should check;
 - that table, its legend and its numbered rules, verbatim, to classify by.
@@ -170,13 +170,14 @@ work "obviously" looks complete.
 
 ## Model selection
 
-Map these terms to whatever the platform exposes: `model`, `subagent_type`,
-`effort`, `reasoning_effort`, or an effort level encoded in the model ID. On
-every subagent call, set every parameter the dispatch tool exposes, checking its
-schema rather than assuming. Never accept the platform default: it can route to
-a forbidden tier, silently downgrade reasoning, or mirror your own config. An
-explicit instruction from the user or from a higher-priority source overrides
-any rule in this section, **Source** included.
+Map each assignment to the platform's fields: `model`, `subagent_type`,
+`effort`, `reasoning_effort`, or an effort level encoded in the model ID.
+Inspect the dispatch schema and set every exposed parameter on every subagent
+call, using the source's exact advertised effort token (lowercase `xhigh` on
+Codex). Never accept the platform default: it can route to a forbidden tier,
+silently downgrade reasoning, or mirror your own config. An explicit instruction
+from the user or from a higher-priority source overrides any rule in this
+section, **Source** included.
 
 **Source.** Take the first available source in the family's order: for the
 Claude family, Claude Code, then Cursor, then Devin; for the GPT family, Codex,
@@ -341,11 +342,11 @@ means Sol.
 7. Brainstorming and discussion runs both families: at least one agent per
    family on the same brief, even when the request names a single agent. Claude
    runs `high`, and GPT runs `xhigh`. The orchestrator-consultant synthesizes
-   the result. The row keeps only a
-   deliverable of ideas, options, hypotheses or a recommendation from
-   discussion: reviewers who each review without seeing the others route by
-   rules 3 and 4, and the work that follows a brainstorm, such as writing the
-   tests, the doc or the code, routes by its own deliverable.
+   the result. The row keeps only a deliverable of ideas, options, hypotheses
+   or a recommendation from discussion: reviewers who each review without
+   seeing the others route by rules 3 and 4, and the work that follows a
+   brainstorm, such as writing the tests, the doc or the code, routes by its
+   own deliverable.
 
 **Fallbacks.** An unavailable source passes to the next source in its family's
 order (see **Source**). When the first-choice family has no available source,
@@ -359,20 +360,22 @@ uses two different model families when the platform offers them, and one model
 otherwise.
 
 **Effort limits.** The assigned level is the row's First choice effort, or its
-Fallback effort once the family has fallen back. When the default tool lacks a
-required knob, usually effort, set every knob it does have, such as model and
-agent type, and dispatch through the path **Source** names as carrying that knob
-per agent: the in-product mechanism's effort option, subject to the `Workflow`
-opt-in, or the CLI's effort setting, such as `-c model_reasoning_effort=<level>`
-on `codex exec`. When a source carries effort but not the assigned level, stay
-on that source at the highest level it supports below the assigned one; a level
-gap is not a fallback and never moves the dispatch to another source. Only when
-no available source in the family's order carries the knob, dispatch with the
-inherited default for that knob alone. An unavailable mechanism, source or
-runtime goes to **Source** and **Fallbacks**, never to the inherited default.
-When the platform forbids concurrent agents on the same model and effort level,
-keep the model: the first agent keeps its level, and each later concurrent agent
-takes the highest level the platform allows below it.
+Fallback effort once the family has fallen back. Apply these cases:
+
+- **Unavailable mechanism, source or runtime**: follow **Source** and
+  **Fallbacks**, never the inherited-default case.
+- **Missing parameter on the default tool**: set every parameter it exposes,
+  such as model and agent type, and use a route in **Source** that carries the
+  missing parameter per agent. For effort, use an in-product effort option,
+  subject to the `Workflow` opt-in, or the CLI's effort setting.
+- **Unsupported assigned level**: when the source carries effort, stay on that
+  source at its highest supported level below the assignment. A level gap is
+  not a fallback and never changes the source.
+- **No available source in the family's order carries the parameter**: only
+  then inherit the default for that parameter alone.
+- **Concurrent agents forbidden on the same model and effort level**: keep the model. The
+  first agent keeps its level; each later concurrent agent takes the highest
+  level the platform allows below it.
 
 **Fast mode.** Fast mode is the faster, pricier serving tier or speed setting of
 the same model: a fast variant ID, a service tier or a settings switch,
@@ -420,7 +423,9 @@ depending on the source.
   its Fast frontmatter selection is untested. Read `references/cli-dispatch.md`
   for each source's settings and checks.
 
-**Reporting.** Every announcement or report of a subagent is one line:
+**Reporting.** Use this one-line form as the whole announcement or report of a
+subagent. Describe only what the dispatch carried; `Fast` records a request,
+not proof of the serving tier:
 
 ```
 <Role>: <model> <effort>[ Fast][ via <route>][ (<tags>)]
@@ -428,10 +433,9 @@ depending on the source.
 
 - **Role**: a short label for what the agent does.
 - **Model**: the model's name with its version, not its ID or an alias.
-- **Effort**: the level the dispatch carried, written Low, Medium, High, xHigh,
-  Max or Ultra; left out when the dispatch carried none. These are reporting
-  labels; pass the source's exact advertised token to dispatch or configuration
-  ([`xhigh` for Codex](https://learn.chatgpt.com/docs/config-file/config-reference)).
+- **Effort**: the level the dispatch carried, including an explicit override,
+  written Low, Medium, High, xHigh, Max or Ultra; left out when the dispatch
+  carried none.
 - **Fast**: present only when fast mode was requested for that agent.
 - **Route**: left out when the host's own in-product subagent mechanism launched
   the agent, whatever the host calls it; otherwise "<source> CLI" for a headless
@@ -449,9 +453,6 @@ depending on the source.
 For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High
 (fallback model)", "Designer: <model> High", "Architect: <model> High +
 Architect: <model> xHigh via <source> CLI".
-
-The line is the whole report for a dispatch, and never claims a serving tier
-from a label.
 
 ## Communication
 

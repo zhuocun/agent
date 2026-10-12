@@ -226,12 +226,16 @@ before relying on a sandbox mode.
   that the family is absent.
 - **Effort**: use `-c model_reasoning_effort=<level>`; there is no dedicated
   effort flag. Check the model's advertised levels in `/model` or the catalog.
-  Supported models/clients can offer `max` or `ultra`, including proactive
-  delegation in applicable interfaces; retain the table's assigned `xhigh`
-  rather than increasing it to a higher level. Configuration-layer acceptance
-  of an effort string does not prove backend acceptance or clamping. Do not invent a level or assume
-  unsupported-level behavior. Omission can select an effort as low as
-  `low`; explicitly set the assigned supported level.
+  Supported models/clients can also offer `max` for deeper single-task reasoning
+  or `ultra` for maximum reasoning with subagents; see
+  [Models](https://learn.chatgpt.com/docs/models).
+  Where supported in ChatGPT Work, Ultra can proactively delegate suitable work.
+  Retain the row's assigned supported effort (`high` for Other simple work,
+  `xhigh` for the other GPT assignments) rather than increasing it to a higher
+  level. Configuration-layer acceptance of an effort string does not prove
+  backend acceptance or clamping. Do not invent a level or assume
+  unsupported-level behavior. Omission can select an effort as low as `low`;
+  explicitly set the assigned supported level.
 - **Auth**: `codex login status` returns 0 when saved credentials are present.
   Exec reuses them; `CODEX_API_KEY=<key> codex exec ...` supplies an API key for
   one run. Apply the common availability check to the selected credential route.

@@ -296,12 +296,12 @@ means Sol.
 | Task type | First choice | Fallback | Includes |
 |---|---|---|---|
 | Coding | Claude `medium` | GPT `xhigh` | any code deliverable, however small: writing or fixing code, tests, CI, infrastructure and other repository config, frontend implementation code with its styling, comments and docstrings in source, a script delivered to the repo |
-| Review | GPT `max` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
-| Backend architecture design | Claude `high` and GPT `max`, both run (rule 6) | whichever one is available, alone | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices, and the review, verification or audit of that work (rules 4 and 6) |
-| Visual design | Claude `high` | GPT `max` | visual and interaction design of a product UI, visualizations that present information (diagrams, charts, HTML pages, slide decks) with the markup that draws them, design prototypes not meant to ship, and the review, verification or audit of that work (rule 4) |
+| Review | GPT `xhigh` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
+| Backend architecture design | Claude `high` and GPT `xhigh`, both run (rule 6) | whichever one is available, alone | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices, and the review, verification or audit of that work (rules 4 and 6) |
+| Visual design | Claude `high` | GPT `xhigh` | visual and interaction design of a product UI, visualizations that present information (diagrams, charts, HTML pages, slide decks) with the markup that draws them, design prototypes not meant to ship, and the review, verification or audit of that work (rule 4) |
 | Documentation | GPT `xhigh` | Claude `high` | prose documents (docs, READMEs, guides, reports, code samples inside them included), agent-instruction files (SKILL.md, AGENTS.md, prompts, briefs), UI strings, written or translated, other translation, Chinese writing |
-| Research | GPT `max` | Claude `high` | exploration, data analysis, debugging or root-causing that reports a cause, reproducing a user-reported problem before any work exists |
-| Brainstorming and discussion | Claude `high` and GPT `xhigh` or `max`, both run (rule 7) | whichever one is available, alone | brainstorming (generating ideas, options, names, hypotheses, test-case ideas) and multi-agent discussion, where agents read and respond to each other (debate, critique panel, deliberation) |
+| Research | GPT `xhigh` | Claude `high` | exploration, data analysis, debugging or root-causing that reports a cause, reproducing a user-reported problem before any work exists |
+| Brainstorming and discussion | Claude `high` and GPT `xhigh`, both run (rule 7) | whichever one is available, alone | brainstorming (generating ideas, options, names, hypotheses, test-case ideas) and multi-agent discussion, where agents read and respond to each other (debate, critique panel, deliberation) |
 | Other simple work | GPT `high` | Claude `medium` | a single-step fact lookup, or any other task that is single-step, mechanical and verifiable in seconds (rule 2) |
 | Other complex work | GPT `xhigh` | Claude `high` | the orchestrator-consultant, client-only architecture (frontend state, data fetching, a CLI's module structure), a small task that turns on judgment, anything else no named row covers (rule 2) |
 
@@ -329,7 +329,7 @@ means Sol.
    design. A document's prose runs on the row the document takes on its own,
    Documentation or a design row, and each visualization in it runs as Visual
    design, drawing what the prose sets out. A slide deck is one visualization.
-6. Backend architecture design runs both families, Claude `high` and GPT `max`,
+6. Backend architecture design runs both families, Claude `high` and GPT `xhigh`,
    for design and review alike. A design is two workers, one per family,
    dispatched concurrently with the same brief; a review, verification or audit
    is two agents, one per family, judging the same artifact independently. The
@@ -340,9 +340,8 @@ means Sol.
    row keeps a backend or full-stack design even when it is discussed.
 7. Brainstorming and discussion runs both families: at least one agent per
    family on the same brief, even when the request names a single agent. Claude
-   runs `high`, and GPT runs `max` when the discussion's subject would route to
-   a row whose GPT effort is `max`, `xhigh` otherwise. The
-   orchestrator-consultant synthesizes the result. The row keeps only a
+   runs `high`, and GPT runs `xhigh`. The orchestrator-consultant synthesizes
+   the result. The row keeps only a
    deliverable of ideas, options, hypotheses or a recommendation from
    discussion: reviewers who each review without seeing the others route by
    rules 3 and 4, and the work that follows a brainstorm, such as writing the
@@ -445,9 +444,9 @@ depending on the source.
 - **Both-run rows**: one line per agent that ran, or the lines joined with
   " + ".
 
-For example: "Reviewer: <model> Max via <source> CLI", "Reviewer: <model> High
+For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High
 (fallback model)", "Designer: <model> High", "Architect: <model> High +
-Architect: <model> Max via <source> CLI".
+Architect: <model> xHigh via <source> CLI".
 
 The line is the whole report for a dispatch, and never claims a serving tier
 from a label.

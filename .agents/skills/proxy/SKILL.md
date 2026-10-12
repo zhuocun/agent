@@ -428,8 +428,10 @@ depending on the source.
 
 - **Role**: a short label for what the agent does.
 - **Model**: the model's name with its version, not its ID or an alias.
-- **Effort**: the level the dispatch carried, written Low, Medium, High, xHigh
-  or Max; left out when the dispatch carried none.
+- **Effort**: the level the dispatch carried, written Low, Medium, High, xHigh,
+  Max or Ultra; left out when the dispatch carried none. These are reporting
+  labels; pass the source's exact advertised token to dispatch or configuration
+  ([`xhigh` for Codex](https://learn.chatgpt.com/docs/config-file/config-reference)).
 - **Fast**: present only when fast mode was requested for that agent.
 - **Route**: left out when the host's own in-product subagent mechanism launched
   the agent, whatever the host calls it; otherwise "<source> CLI" for a headless

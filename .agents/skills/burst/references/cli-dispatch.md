@@ -102,9 +102,9 @@ assignment into a different shell unchanged.
   lacks them. Cursor's supported `--resume <chatId>` uses output `session_id`;
   Devin's supported resume form is `-r <SESSION_ID>`. Check print-mode resume
   support on the installed build: try once, then dispatch fresh if it errors or
-  ignores print mode. If any resume
-  fails or no ID was captured, provide the original brief, current artifact and
-  issues to a fresh worker; never send the issues alone.
+  ignores print mode. If any resume fails or no ID was captured, provide the
+  original brief, current artifact and issues to a fresh worker; never send the
+  issues alone.
 
 ## Claude Code: `claude -p`
 
@@ -203,6 +203,7 @@ Use the [configuration](https://learn.chatgpt.com/docs/config-file/config-refere
 [precedence](https://learn.chatgpt.com/docs/config-file/config-basic),
 [environment](https://learn.chatgpt.com/docs/config-file/environment-variables),
 [non-interactive](https://learn.chatgpt.com/docs/non-interactive-mode),
+[models](https://learn.chatgpt.com/docs/models),
 [subagent](https://learn.chatgpt.com/docs/agent-configuration/subagents) and
 [API Fast](https://developers.openai.com/api/docs/guides/fast-mode) references
 alongside the installed CLI's help. Resolve the active state/configuration root,
@@ -224,18 +225,16 @@ before relying on a sandbox mode.
   Luna or `-mini`. A failed fetch or bundled fallback does not prove account
   unavailability; only a successful applicable catalog lacking Sol establishes
   that the family is absent.
-- **Effort**: use `-c model_reasoning_effort=<level>`; there is no dedicated
-  effort flag. Check the model's advertised levels in `/model` or the catalog.
-  Supported models/clients can also offer `max` for deeper single-task reasoning
-  or `ultra` for maximum reasoning with subagents; see
-  [Models](https://learn.chatgpt.com/docs/models).
-  Where supported in ChatGPT Work, Ultra can proactively delegate suitable work.
-  Retain the row's assigned supported effort (`high` for Other simple work,
-  `xhigh` for the other GPT assignments) rather than increasing it to a higher
-  level. Configuration-layer acceptance of an effort string does not prove
-  backend acceptance or clamping. Do not invent a level or assume
-  unsupported-level behavior. Omission can select an effort as low as `low`;
-  explicitly set the assigned supported level.
+- **Effort**: explicitly set the assigned supported level with
+  `-c model_reasoning_effort=<level>`; there is no dedicated effort flag. Check
+  the effort levels available for the selected model and client in `/model` or
+  the catalog, and copy the exact token, such as lowercase `xhigh`. Do not raise
+  the assigned effort merely because `max` or `ultra` is available. Max adds
+  reasoning depth within one task; Ultra uses maximum reasoning and can
+  proactively delegate suitable work in supported ChatGPT Work. Verify the
+  effective effort: configuration acceptance alone does not prove backend
+  support or clamping. Do not invent levels, assume unsupported-level behavior
+  or rely on defaults, which can be as low as `low`.
 - **Auth**: `codex login status` returns 0 when saved credentials are present.
   Exec reuses them; `CODEX_API_KEY=<key> codex exec ...` supplies an API key for
   one run. Apply the common availability check to the selected credential route.
@@ -335,12 +334,11 @@ to discover active global and project settings, including supported
   no dedicated CLI flag, environment variable or direct user config key. Copy
   an exact catalog Fast variant for in-scope runs and an exact standard variant
   outside scope. A listed `-fast` ID or accepted bracket variant can carry Fast;
-  In builds that match whole strings to catalog variants, `fast=false` must also
+  in builds that match whole strings to catalog variants, `fast=false` must also
   match one; otherwise use the installed interface's verified Fast-off form.
-  Do not strip a
-  suffix to derive standard unless that exact ID is listed as standard. Bare
-  parameterized IDs can reuse saved per-model choices or server defaults,
-  including Fast. Headless model selection can also update CLI configuration.
+  Do not strip a suffix to derive standard unless that exact ID is listed as
+  standard. Bare parameterized IDs can reuse saved per-model choices or server
+  defaults, including Fast. Headless model selection can also update CLI configuration.
   If the Fast variant is unavailable, explicitly select standard.
 - **Native Fast dispatch**: frontmatter documents `<model-id>[fast=false]` and
   `<model-id>[]` for standard. `<model-id>[fast=true]` follows SDK parameters

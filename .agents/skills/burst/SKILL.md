@@ -170,7 +170,7 @@ A **verifier** is the same gate in narrower form: a subagent dispatched to confi
 
 ## Model selection
 
-Map these terms to whatever the platform exposes: `model`, `subagent_type`, `effort`, `reasoning_effort`, or an effort level encoded in the model ID. On every subagent call, set every parameter the dispatch tool exposes, checking its schema rather than assuming. Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config. An explicit instruction from the user or from a higher-priority source overrides any rule in this section or in **Subagent sources**.
+Map each assignment to the platform's fields: `model`, `subagent_type`, `effort`, `reasoning_effort`, or an effort level encoded in the model ID. Inspect the dispatch schema and set every exposed parameter on every subagent call, using the source's exact advertised effort token (lowercase `xhigh` on Codex). Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config. An explicit instruction from the user or from a higher-priority source overrides any rule in this section or in **Subagent sources**.
 
 **Tiers.** Every delegated role runs on the top tier: the strongest model between two forbidden edges, which is Opus on Anthropic and Sol on OpenAI. The rule covers sidecar explorers too: read-only scouts probing in parallel, off the integration path. The too-cheap edge is the smallest or distilled variants: `*-mini`, `*-haiku`-class, GPT Luna. The too-expensive edge is the oversized tiers whose cost outruns their marginal value for delegated work: Fable and Mythos on Anthropic, Astra on OpenAI. A role may be as strong as the orchestrator, capped at the top tier, so the too-expensive edge is forbidden even when the orchestrator runs on it. **Fallbacks** covers the case where no source offers a model of either family.
 
@@ -202,7 +202,13 @@ First choice is the family and effort to dispatch, Fallback the family and effor
 
 **Fallbacks.** An unavailable source passes to the next source in its family's order (see **Subagent sources**). When the first-choice family has no available source, the row's Fallback family runs at its Fallback effort. When no source offers a model of either family, choose for each role the model and effort that best fit its task from what the available sources offer: the strongest model suited to the task type, with effort set by the task's type and complexity, taking the table's levels as the guide to how demanding each task type is. That choice keeps to the tier edges and sets every parameter explicitly. A both-run row then uses two different model families when the platform offers them, and one model otherwise.
 
-**Effort limits.** The assigned level is the row's First choice effort, or its Fallback effort once the family has fallen back. When the default tool lacks a required knob, usually effort, set every knob it does have, such as model and agent type, and dispatch through the path **Subagent sources** names as carrying that knob per agent: the in-product mechanism's effort option, subject to the `Workflow` opt-in, or the CLI's effort setting, such as `-c model_reasoning_effort=<level>` on `codex exec`. When a source carries effort but not the assigned level, stay on that source at the highest level it supports below the assigned one; a level gap is not a fallback and never moves the dispatch to another source. Only when no available source in the family's order carries the knob, dispatch with the inherited default for that knob alone. An unavailable mechanism, source or runtime goes to **Subagent sources** and **Fallbacks**, never to the inherited default. When the platform forbids concurrent agents on the same model and effort level, keep the model: the first agent keeps its level, and each later concurrent agent takes the highest level the platform allows below it.
+**Effort limits.** The assigned level is the row's First choice effort, or its Fallback effort once the family has fallen back. Apply these cases:
+
+- **Unavailable mechanism, source or runtime**: follow **Subagent sources** and **Fallbacks**, never the inherited-default case.
+- **Missing parameter on the default tool**: set every parameter it exposes, such as model and agent type, and use a route in **Subagent sources** that carries the missing parameter per agent. For effort, use an in-product effort option, subject to the `Workflow` opt-in, or the CLI's effort setting.
+- **Unsupported assigned level**: when the source carries effort, stay on that source at its highest supported level below the assignment. A level gap is not a fallback and never changes the source.
+- **No available source in the family's order carries the parameter**: only then inherit the default for that parameter alone.
+- **Concurrent agents forbidden on the same model and effort level**: keep the model. The first agent keeps its level; each later concurrent agent takes the highest level the platform allows below it.
 
 **Fast mode.** Fast mode is the faster, pricier serving tier or speed setting of the same model: a fast variant ID, a service tier or a settings switch, depending on the source.
 
@@ -233,7 +239,7 @@ First choice is the family and effort to dispatch, Fallback the family and effor
   and its Fast frontmatter selection is untested. Read
   `references/cli-dispatch.md` for each source's settings and checks.
 
-**Reporting.** Every announcement or report of a delegated agent is one line:
+**Reporting.** Use this one-line form as the whole announcement or report of a delegated agent. Describe only what the dispatch carried; `Fast` records a request, not proof of the serving tier:
 
 ```
 <Role>: <model> <effort>[ Fast][ via <route>][ (<tags>)]
@@ -241,18 +247,15 @@ First choice is the family and effort to dispatch, Fallback the family and effor
 
 - **Role**: a short label for what the agent does.
 - **Model**: the model's name with its version, not its ID or an alias.
-- **Effort**: the level the dispatch carried, written Low, Medium, High, xHigh,
-  Max or Ultra; left out when the dispatch carried none. These are reporting
-  labels; pass the source's exact advertised token to dispatch or configuration
-  ([`xhigh` for Codex](https://learn.chatgpt.com/docs/config-file/config-reference)).
+- **Effort**: the level the dispatch carried, including an explicit override,
+  written Low, Medium, High, xHigh, Max or Ultra; left out when the dispatch
+  carried none.
 - **Fast**: present only when fast mode was requested for that agent.
 - **Route**: left out when the host's own in-product subagent mechanism launched the agent, whatever the host calls it; otherwise "<source> CLI" for a headless command line, or the product name plus the kind of interface for any other interface, never a command, flag or internal tool identifier.
 - **Tags**: comma-separated, two in all. "fallback model": the row's Fallback family ran because a source for the first-choice family was present but could not run that family's required model; with no source for that family at all, the Fallback family is the normal case and takes no tag. "Fast unavailable": the agent's model is inside a fast-mode scope the user enabled but has no fast option on the source carrying it.
 - **Both-run rows**: one line per agent that ran, or the lines joined with " + ".
 
 For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High (fallback model)", "Designer: <model> High", "Architect: <model> High + Architect: <model> xHigh via <source> CLI".
-
-The line is the whole report for a dispatch, and never claims a serving tier from a label.
 
 ## Orchestrator final gate
 

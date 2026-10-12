@@ -226,10 +226,10 @@ before relying on a sandbox mode.
   that the family is absent.
 - **Effort**: use `-c model_reasoning_effort=<level>`; there is no dedicated
   effort flag. Check the model's advertised levels in `/model` or the catalog.
-  Supported models/clients can offer `ultra`, including proactive delegation
-  in applicable interfaces; retain the table's assigned `max` when it asks for
-  `max`. Configuration-layer acceptance of an effort string does not prove
-  backend acceptance or clamping. Do not invent a level or assume
+  Supported models/clients can offer `max` or `ultra`, including proactive
+  delegation in applicable interfaces; retain the table's assigned `xhigh`
+  rather than increasing it to a higher level. Configuration-layer acceptance
+  of an effort string does not prove backend acceptance or clamping. Do not invent a level or assume
   unsupported-level behavior. Omission can select an effort as low as
   `low`; explicitly set the assigned supported level.
 - **Auth**: `codex login status` returns 0 when saved credentials are present.

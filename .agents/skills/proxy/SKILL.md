@@ -180,7 +180,7 @@ from the user or from a higher-priority source overrides any rule in this
 section, **Source** included.
 
 **Source.** Take the first available source in the family's order: for the
-Claude family, Claude Code, then Cursor, then Devin; for the GPT family, Codex,
+Claude family, Claude Code, then Devin, then Cursor; for the GPT family, Codex,
 then Devin, then Cursor.
 
 Resolve routes from the current host's exposed tools, permissions and installed

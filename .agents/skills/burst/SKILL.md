@@ -53,7 +53,7 @@ Four sources can run a subagent when the host provides a supported in-product me
 
 Take the first available source in the family's order:
 
-- **Claude-family models**: Claude Code → Cursor → Devin.
+- **Claude-family models**: Claude Code → Devin → Cursor.
 - **GPT-family models**: Codex → Devin → Cursor.
 
 Resolve routes from the current host's exposed tools, permissions and installed

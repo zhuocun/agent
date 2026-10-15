@@ -27,7 +27,7 @@ Ground your own judgment; do not inherit it. Read the source of truth continuous
 
 ## When to delegate
 
-Only delegate when the session or user authorizes subagents. A launcher is the host's in-product subagent mechanism, or a source CLI that passes the availability checks in **Subagent sources**. If no launcher exists, ignore this skill.
+Only delegate when the session or user authorizes subagents. A launcher is the host's in-product subagent mechanism, a source CLI that passes the availability checks in **Subagent sources**, or a mode-only route described there. If no launcher exists, ignore this skill.
 
 When delegation is allowed, **subagents are the default executor**. Treat staying local as the exception. A task is worth delegating if any of these are true:
 
@@ -55,6 +55,8 @@ Take the first available source in the family's order:
 
 - **Claude-family models**: Claude Code → Devin → Cursor.
 - **GPT-family models**: Codex → Devin → Cursor.
+
+A mode-only route, one that lets the caller pick a product mode bundling model, effort and speed but not a model or an effort, such as Devin child sessions, is never a source's in-product mechanism and is the last resort: it ranks after every available route that carries the model per agent, the row's Fallback family included, and **Fallbacks** treats it as a source that offers no model of either family.
 
 Resolve routes from the current host's exposed tools, permissions and installed
 CLI help. Tool names, arguments and commands in this skill describe supported routes,
@@ -170,7 +172,7 @@ A **verifier** is the same gate in narrower form: a subagent dispatched to confi
 
 ## Model selection
 
-Map each assignment to the platform's fields: `model`, `subagent_type`, `effort`, `reasoning_effort`, or an effort level encoded in the model ID. Inspect the dispatch schema and set every exposed parameter on every subagent call, using the source's exact advertised effort token (lowercase `xhigh` on Codex). Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config. An explicit instruction from the user or from a higher-priority source overrides any rule in this section or in **Subagent sources**.
+Map each assignment to the platform's fields: `model`, `subagent_type`, `effort`, `reasoning_effort`, or an effort level encoded in the model ID. On a mode-only route (see **Subagent sources**), map it to the product mode, applying the tier edges to the product's own description of its modes: the standard full-capability mode, never a light or cheap mode (too-cheap edge) or an oversized premium mode meant for orchestration (too-expensive edge), and never a mode that exists mainly for speed unless the user's fast-mode scope covers every model or names that mode, where it counts as the Fast request. Inspect the dispatch schema and set every exposed parameter on every subagent call, using the source's exact advertised effort token (lowercase `xhigh` on Codex). Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config. An explicit instruction from the user or from a higher-priority source overrides any rule in this section or in **Subagent sources**.
 
 **Tiers.** Every delegated role runs on the top tier: the strongest model between two forbidden edges, which is Opus on Anthropic and Sol on OpenAI. The rule covers sidecar explorers too: read-only scouts probing in parallel, off the integration path. The too-cheap edge is the smallest or distilled variants: `*-mini`, `*-haiku`-class, GPT Luna. The too-expensive edge is the oversized tiers whose cost outruns their marginal value for delegated work: Fable and Mythos on Anthropic, Astra on OpenAI. A role may be as strong as the orchestrator, capped at the top tier, so the too-expensive edge is forbidden even when the orchestrator runs on it. **Fallbacks** covers the case where no source offers a model of either family.
 
@@ -207,7 +209,7 @@ First choice is the family and effort to dispatch, Fallback the family and effor
 - **Unavailable mechanism, source or runtime**: follow **Subagent sources** and **Fallbacks**, never the inherited-default case.
 - **Missing parameter on the default tool**: set every parameter it exposes, such as model and agent type, and use a route in **Subagent sources** that carries the missing parameter per agent. For effort, use an in-product effort option, subject to the `Workflow` opt-in, or the CLI's effort setting.
 - **Unsupported assigned level**: when the source carries effort, stay on that source at its highest supported level below the assignment. A level gap is not a fallback and never changes the source.
-- **No available source in the family's order carries the parameter**: only then inherit the default for that parameter alone.
+- **No available source in the family's order carries the parameter**: only then inherit the default for that parameter alone, or, on a mode-only route, set the mode, which decides every parameter the route cannot carry.
 - **Concurrent agents forbidden on the same model and effort level**: keep the model. The first agent keeps its level; each later concurrent agent takes the highest level the platform allows below it.
 
 **Fast mode.** Fast mode is the faster, pricier serving tier or speed setting of the same model: a fast variant ID, a service tier or a settings switch, depending on the source.
@@ -246,7 +248,7 @@ First choice is the family and effort to dispatch, Fallback the family and effor
 ```
 
 - **Role**: a short label for what the agent does.
-- **Model**: the model's name with its version, not its ID or an alias.
+- **Model**: the model's name with its version, not its ID or an alias; when the dispatch carried a mode instead of a model, the product name and the mode, such as "Devin Normal", with no Fast slot when the mode carried the Fast request.
 - **Effort**: the level the dispatch carried, including an explicit override,
   written Low, Medium, High, xHigh, Max or Ultra; left out when the dispatch
   carried none.
@@ -255,7 +257,7 @@ First choice is the family and effort to dispatch, Fallback the family and effor
 - **Tags**: comma-separated, two in all. "fallback model": the row's Fallback family ran because a source for the first-choice family was present but could not run that family's required model; with no source for that family at all, the Fallback family is the normal case and takes no tag. "Fast unavailable": the agent's model is inside a fast-mode scope the user enabled but has no fast option on the source carrying it.
 - **Both-run rows**: one line per agent that ran, or the lines joined with " + ".
 
-For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High (fallback model)", "Designer: <model> High", "Architect: <model> High + Architect: <model> xHigh via <source> CLI".
+For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High (fallback model)", "Designer: <model> High", "Architect: <model> High + Architect: <model> xHigh via <source> CLI", "Researcher: Devin Normal via Devin child session".
 
 ## Orchestrator final gate
 
@@ -294,8 +296,8 @@ Before declaring a burst task done, confirm:
 
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny or blocking-dependency steps, the orchestrator's own final gate, and work pulled local after two failed reviews or an integration redo (see **Reviewer** and **Orchestrator final gate**).
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
-- [ ] Every delegated role ran the family and effort level its **Model selection** row assigns, or what those rules put in its place — a fallback, an effort-limit level or inherited default, the choice when no source offers either family, or an explicit instruction — on the newest version in the source's own model list, through the highest-priority available source for that family: the host's in-product mechanism for its own source, its own CLI when that mechanism cannot carry the assignment, and a CLI for any other.
-- [ ] Every subagent call set every exposed parameter explicitly — no silent platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class/Luna or too-expensive Fable/Mythos/Astra) unless instructed.
+- [ ] Every delegated role ran the family and effort level its **Model selection** row assigns, or what those rules put in its place — a fallback, an effort-limit level or inherited default, the choice when no source offers either family, a mode chosen by those rules, or an explicit instruction — on the newest version in the source's own model list, through the highest-priority available source for that family: the host's in-product mechanism for its own source, its own CLI when that mechanism cannot carry the assignment, and a CLI for any other, or a mode-only route only when no route that carries the model was available.
+- [ ] Every subagent call set every exposed parameter explicitly, the mode included on a mode-only route — no silent platform default, and no forbidden tier (too-cheap `*-mini`/`*-haiku`-class/Luna or too-expensive Fable/Mythos/Astra) unless instructed.
 - [ ] Fast mode ran only inside a scope the user named, and was off everywhere else (see **Fast mode** under **Model selection**).
 - [ ] Every announcement and report of a delegated agent was one line in the **Reporting** form, with no effort or Fast the dispatch did not carry.
 - [ ] Every brief carried the standard forward — the delegate was told to own its result's quality, check decisive claims at the source, and self-review against the brief before declaring done, with that self-review added to the reviewer hop rather than replacing it; and told it is a leaf unless the brief let it fan out.

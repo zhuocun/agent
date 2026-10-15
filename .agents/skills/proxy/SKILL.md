@@ -60,9 +60,10 @@ round.
 
 Use only when the session authorizes subagents and a launcher exists; if either
 is missing, this skill does not apply. A launcher is the host's in-product
-subagent mechanism, or a source CLI that passes the availability checks in
-**Source**. Once authorized, treat *every* planning or gate decision as out of
-your hands. You may perform the mechanical execution a plan requires — editing
+subagent mechanism, a source CLI that passes the availability checks in
+**Source**, or a mode-only route described there. Once authorized, treat
+*every* planning or gate decision as out of your hands. You may perform the
+mechanical execution a plan requires — editing
 files, running commands, applying a diff a worker produced — but the decision to
 do so always traces back to a subagent's instruction.
 
@@ -172,6 +173,12 @@ work "obviously" looks complete.
 
 Map each assignment to the platform's fields: `model`, `subagent_type`,
 `effort`, `reasoning_effort`, or an effort level encoded in the model ID.
+On a mode-only route (see **Source**), map it to the product mode, applying
+the tier edges to the product's own description of its modes: the standard
+full-capability mode, never a light or cheap mode (too-cheap edge) or an
+oversized premium mode meant for orchestration (too-expensive edge), and never
+a mode that exists mainly for speed unless the user's fast-mode scope covers
+every model or names that mode, where it counts as the Fast request.
 Inspect the dispatch schema and set every exposed parameter on every subagent
 call, using the source's exact advertised effort token (lowercase `xhigh` on
 Codex). Never accept the platform default: it can route to a forbidden tier,
@@ -181,7 +188,12 @@ section, **Source** included.
 
 **Source.** Take the first available source in the family's order: for the
 Claude family, Claude Code, then Devin, then Cursor; for the GPT family, Codex,
-then Devin, then Cursor.
+then Devin, then Cursor. A mode-only route, one that lets the caller pick a
+product mode bundling model, effort and speed but not a model or an effort,
+such as Devin child sessions, is never a source's in-product mechanism and is
+the last resort: it ranks after every available route that carries the model
+per agent, the row's Fallback family included, and **Fallbacks** treats it as
+a source that offers no model of either family.
 
 Resolve routes from the current host's exposed tools, permissions and installed
 CLI help. Tool names, arguments and commands in this skill describe supported
@@ -372,7 +384,8 @@ Fallback effort once the family has fallen back. Apply these cases:
   source at its highest supported level below the assignment. A level gap is
   not a fallback and never changes the source.
 - **No available source in the family's order carries the parameter**: only
-  then inherit the default for that parameter alone.
+  then inherit the default for that parameter alone, or, on a mode-only route,
+  set the mode, which decides every parameter the route cannot carry.
 - **Concurrent agents forbidden on the same model and effort level**: keep the model. The
   first agent keeps its level; each later concurrent agent takes the highest
   level the platform allows below it.
@@ -432,7 +445,10 @@ not proof of the serving tier:
 ```
 
 - **Role**: a short label for what the agent does.
-- **Model**: the model's name with its version, not its ID or an alias.
+- **Model**: the model's name with its version, not its ID or an alias; when
+  the dispatch carried a mode instead of a model, the product name and the
+  mode, such as "Devin Normal", with no Fast slot when the mode carried the
+  Fast request.
 - **Effort**: the level the dispatch carried, including an explicit override,
   written Low, Medium, High, xHigh, Max or Ultra; left out when the dispatch
   carried none.
@@ -452,7 +468,8 @@ not proof of the serving tier:
 
 For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High
 (fallback model)", "Designer: <model> High", "Architect: <model> High +
-Architect: <model> xHigh via <source> CLI".
+Architect: <model> xHigh via <source> CLI", "Researcher: Devin Normal via
+Devin child session".
 
 ## Communication
 
@@ -529,13 +546,15 @@ Before declaring the task done, confirm:
   from your own assessment.
 - [ ] Every subagent ran the family and effort level **Model selection** assigns
   its role, or what those rules put in its place — a fallback, an effort-limit
-  level or inherited default, the choice when no source offers either family, or
-  an explicit instruction — on the newest version in the source's own model
-  list, through the highest-priority available source for that family: the
-  host's in-product mechanism for its own source, its own CLI when that
-  mechanism cannot carry the assignment, and a CLI for any other.
-- [ ] Every subagent call set every exposed parameter explicitly — no silent
-  platform default, and no too-cheap or too-expensive tier unless instructed.
+  level or inherited default, the choice when no source offers either family, a
+  mode chosen by those rules, or an explicit instruction — on the newest version
+  in the source's own model list, through the highest-priority available source
+  for that family: the host's in-product mechanism for its own source, its own
+  CLI when that mechanism cannot carry the assignment, and a CLI for any other,
+  or a mode-only route only when no route that carries the model was available.
+- [ ] Every subagent call set every exposed parameter explicitly, the mode
+  included on a mode-only route — no silent platform default, and no too-cheap
+  or too-expensive tier unless instructed.
 - [ ] Fast mode ran only inside a scope the user named, and was off everywhere
   else (see **Fast mode** under **Model selection**).
 - [ ] Every announcement and report of a subagent was one line in the

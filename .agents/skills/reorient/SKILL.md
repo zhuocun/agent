@@ -8,7 +8,7 @@ description: >-
 
 A compaction replaces a long conversation with a short summary: detail is dropped, "done" is asserted without proof, and the *why* behind earlier decisions is gone. The summary is a pointer to ground truth, not ground truth itself. Before you take any action that assumes the prior state, **rebuild that state from the sources that cannot lie — the repo, the history, the files — then report a crisp recap so the user can check you are oriented.**
 
-Priority order, highest first: **ground truth over the summary → understand before acting → verified-done over assumed-done → report 1–3 to the user, keep #4 internal.** When the summary and the repo disagree, the repo wins.
+Priority order, highest first: **ground truth over the summary → understand before acting → verified-done over assumed-done → report what passes 1–3 found to the user, keep pass 4 internal.** When the summary and the repo disagree, the repo wins.
 
 ## Rebuild passes
 
@@ -23,20 +23,20 @@ Read the compaction summary, the system reminders, and the user's most recent ex
 A summary that says "implemented X" is a claim, not a fact. Confirm each claimed-done item against ground truth before you treat it as complete:
 
 - **Local state** — `git status`, `git log --oneline -20`, `git diff` and `git diff --staged`. What is actually committed, staged, or still dirty in the tree?
-- **Remote state** — open PRs and *merged* PRs for this branch, their review state, and CI (passing, failing, pending). Work can be committed but unpushed, pushed but unmerged, or merged already.
+- **Remote state** — open PRs and *merged* PRs for this branch and for any earlier branch of the same task, their review state, and CI (passing, failing, pending). Work can be committed but unpushed, pushed but unmerged, or merged already.
 - **The files themselves** — open the files the work touched and read what is really there. The function the summary says you wrote either exists or it does not.
 
-Classify every item into exactly one bucket: **merged/landed · pushed-unmerged · committed-locally · in-progress (dirty/partial) · not-started · unverified**. A job or process still executing is in-progress, with evidence that it is still running, such as its process, log output or status page. Verify each item where its output lives: a commit, a PR or its comments, a CI run, the deployed state, a remote setting, or the files. Work that leaves no commit, such as a posted comment, a deploy, or a remote setting, is landed once you see its output there. A pushed-unmerged item carries its PR's review and CI state, or notes that no PR is open yet. An item whose only evidence is the summary is unverified, not done: do not redo it until you confirm it is missing. A merged branch is closed. Do not push to it; continue on a fresh branch off the default branch unless the repo's conventions say otherwise.
+Classify every item into exactly one bucket: **merged/landed · pushed-unmerged · committed-locally · in-progress (dirty/partial) · not-started · unverified**. A job or process still executing is in-progress, with evidence that it is still running, such as its process, log output or status page. Verify each item where its output lives: a commit, a PR or its comments, a CI run, the deployed state, a remote setting, or the files. Work that leaves no commit, such as a posted comment, a deploy, or a remote setting, is landed once you see its output there. A pushed-unmerged item carries its PR's review and CI state, or notes that no PR is open yet. An item whose only evidence is the summary is unverified, not done: do not redo it until you confirm it is missing, and once you confirm it is missing it is not-started. A merged branch is closed. Do not push to it; continue on a fresh branch off the default branch unless the repo's conventions say otherwise.
 
 ### 3. Reconstruct the to-dos — goal minus verified-done
 
-What remains is the one-sentence goal minus everything Pass 2 verified as done. Cross-check that delta against every record of remaining work, then order it:
+What remains is the one-sentence goal minus everything Pass 2 verified as done, with each unverified item entered as a check that settles whether it is missing, never as work to redo. Cross-check that delta against every record of remaining work, then order it:
 
 - todo trackers and work logs (`docs/todo/*`, issue lists, plan docs) and PR-description checklists,
 - failing or skipped tests, and `TODO` / `FIXME` markers in the touched code,
 - the user's last explicit ask — the most authoritative "what next."
 
-Order the list by dependency: what unblocks the most, or what the next step needs first, unless the user already set an order.
+Order the list by dependency: each item after the items it needs, and among items that are ready, first the one that unblocks the most, unless the user already set an order or named what to do next, which goes first with only its prerequisites ahead of it.
 
 ### 4. Fill context gaps — what is needed to continue perfectly
 
@@ -48,9 +48,9 @@ Give a concise recap:
 
 1. **What we have been doing** — the goal, in a sentence or two.
 2. **What is finished** — each item backed by a verifiable anchor (commit sha, PR number, merged/CI state, file, or wherever a non-git output lives), so the user can check it. List unverified items apart, marked unverified.
-3. **The to-dos** — the ordered remaining work from Pass 3.
+3. **The to-dos** — the ordered remaining work from Pass 3, each in-progress item with its running state and the evidence for it.
 
-End by resuming the top to-do without waiting for confirmation when the user signalled to continue or the task's success criteria were already agreed; otherwise ask which to take.
+End by resuming the top to-do without waiting for confirmation when the user signalled to continue or the task's success criteria were already agreed, shown by the user's own words or a record outside the summary; otherwise ask which to take.
 
 ## Failure modes
 

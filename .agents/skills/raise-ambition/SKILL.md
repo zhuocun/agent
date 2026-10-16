@@ -8,9 +8,10 @@ description: >-
   the result) and Speed (a deadline, an early first check, parallel work and no avoidable waits).
   Keeps the user's scope, constraints, permissions and budget; the result is one brief,
   definition of done included, that whoever does the work follows.
-  Use when a non-trivial task is about to start and its description names only the
-  deliverable: a design or architecture, a research or analysis question, a business review,
-  a strategy or plan, a piece of writing, an operational process, a personal project.
+  Use when a non-trivial task is about to start and its description names the deliverable
+  — a design or architecture, a research or analysis question, a business review, a strategy
+  or plan, a piece of writing, an operational process, a personal project — with any
+  constraints but no acceptance criteria or method.
   Also use when asked to make a task, prompt or plan more ambitious or to raise its standard.
   Do not use, unless the user asks, for a trivial or mechanical task, a fix whose cause is
   already known, a task that already has acceptance criteria or a spec, a task whose method
@@ -20,11 +21,11 @@ description: >-
 
 # Raise Ambition
 
-Before work starts, rewrite an ordinary task description into one self-contained brief that aims higher and can still be checked, so whoever executes it holds the work to at least the brief's definition of done. The brief rests on four lenses: **Altitude**, the outcome the deliverable serves, one level up; **Depth**, the raw inputs, methods, targets and outside checks a field-leading expert would use; **Range**, methods borrowed from other fields that change the result; and **Speed**, a schedule that reaches a verified result early. It keeps the user's scope, constraints, permissions and budget, and asks the user about every change that needs consent before any work on that change starts. The skill rewrites only: it does not execute the task, review finished work, or grade an existing plan. The lenses come from Felix Rieseberg's essay "How to be more ambitious: A tutorial for humans with models" (2026-10-13, https://felixrieseberg.com/how-to-be-more-ambitious-a-tutorial-for-humans-with-models/); Speed is not developed there, and its mechanisms below come from other sources, cited where they are used.
+Before work starts, rewrite an ordinary task description into one self-contained brief that aims higher and can still be checked, so whoever executes it holds the work to at least the brief's definition of done. The brief rests on four lenses: **Altitude**, the outcome the deliverable serves, one level up; **Depth**, the raw inputs, methods, targets and outside checks a field-leading expert would use; **Range**, methods borrowed from other fields that change the result; and **Speed**, a schedule that reaches a verified result early. It keeps the user's scope, constraints, permissions and budget, and asks the user about every change that needs consent before any work on that change starts. The skill rewrites only: it does not execute the task, review finished work, or grade an existing plan, and whoever was asked to do the task, including you if you were, then does it under the brief. The lenses come from Felix Rieseberg's essay "How to be more ambitious: A tutorial for humans with models" (2026-10-13, https://felixrieseberg.com/how-to-be-more-ambitious-a-tutorial-for-humans-with-models/; summarized in `references/rieseberg-ambition.md` for reading offline); Speed is not developed there, and its mechanisms below come from other sources, cited where they are used.
 
 Priority order, highest first: **the user's constraints, safety and permissions → verifiability → Altitude → Depth → Range → Speed → concision.** A target raised beyond what an outside check can confirm is worse than the original target, so verifiability caps every lens. Apply the lenses in the same order: Altitude sets the outcome, Depth sets the standard and methods that reach it, Range adds methods to Depth, and Speed schedules the work the first three define.
 
-Run the skill once per task, adding the user's later approvals to Definition of done as pass 6 directs, and never raise a brief this skill already produced. Scale the rewrite to the task: a small task keeps only Task as given, Constraints kept, Outcome, Targets, Verification, Definition of done, Fields and Confirm before starting, with the other slots dropped and listed together in one line of Lenses skipped; on any task, a lens that does not fit is skipped with its reason. Write the brief in the task's language (slot labels may stay English), gloss each lens name in plain words on first use, and return one recommended brief, never alternatives side by side. Word the whole brief, the disproof line in Fields included, in correctness and reliability terms (the rule, the input, the expected result) rather than security-testing terms, since a model executing the brief may decline work that reads as security testing.
+Run the skill once per task, adding the user's later approvals to Definition of done as pass 6 directs, and never raise a brief this skill already produced unless the user asks for a further raise. Scale the rewrite to the task: a small task keeps only Task as given, Constraints kept, Outcome, Targets, Verification, Definition of done, Fields, Confirm before starting and Lenses skipped, which lists the other slots, dropped, in one line; on any task, a lens that does not fit is skipped with its reason. Write the brief in the task's language (slot labels may stay English), gloss each lens name in plain words on first use, and return one recommended brief, never alternatives side by side. Word the whole brief, the disproof line in Fields included, in correctness and reliability terms (the rule, the input, the expected result) rather than security-testing terms, since a model executing the brief may decline work that reads as security testing.
 
 ## The brief
 
@@ -34,7 +35,7 @@ Fixed slots, in this order, at most about 40 lines:
 Task as given:        <the original task, verbatim>
 Constraints kept:     <each user constraint, verbatim>
 Outcome:              <what the deliverable must cause, one level up, observable>
-Targets:              <high target; minimum acceptable target; learning target if novel; guardrails>
+Targets:              <high target; minimum acceptable target; learning target if novel or complex; guardrails>
 Inputs:               <primary sources and raw data>
 Methods:              <method or tool → what it produces>
 Assumptions to test:  <assumption → test that could disprove it> (2–3)
@@ -51,11 +52,11 @@ Lenses skipped:       <lens or slot → reason>
 
 ### 1. Fix the frame and check resources
 
-Copy the task and every explicit user constraint verbatim: scope, deadline, budget, tools, audience, actions to ask about first. Then make one read-only check of what actually exists: the data, tools, access, prior work, and who uses the result. Name only resources the check found; one the raised brief needs but the check did not find becomes a precondition in Confirm before starting. Neither the check nor the brief obtains access, spends money, contacts anyone outside or takes an irreversible step on its own authority.
+Copy the task verbatim, and copy verbatim every explicit user constraint (scope, length, deadline, budget, tools, audience, actions to ask about first), meaning each limit the user set beyond the deliverable and its subject, which Task as given already carries. Then make one read-only check of what actually exists: the data, tools, access, prior work, and who uses the result. Name only resources the check found; one the raised brief needs but the check did not find becomes a precondition in Confirm before starting. Neither the check nor the brief obtains access, spends money, contacts anyone outside or takes an irreversible step on its own authority.
 
 ### 2. Altitude — the outcome the deliverable serves
 
-Ask who uses the deliverable for which decision, and what would stop this task recurring. Write the Outcome one level up from the deliverable, in observable terms, and keep the deliverable's type. A higher outcome that would replace the deliverable or change its audience goes to Confirm before starting, not into the brief's working plan. Altitude fits best when the result feeds a discussion or a decision; for work judged mainly on taste, such as fiction, visual design or a personal letter, apply it lightly and put the ambition into Depth and Range.
+Work out from the task and the resource check who uses the deliverable for which decision, and what would stop this task recurring. Write the Outcome one level up from the deliverable, in observable terms, and keep the deliverable's type. A higher outcome that would replace the deliverable or change its audience goes to Confirm before starting, not into the brief's working plan. Altitude fits best when the result feeds a discussion or a decision; for work judged mainly on taste, such as fiction, visual design or a personal letter, apply it lightly and put the ambition into Depth and Range.
 
 ### 3. Depth — the standard a field-leading expert would hold
 

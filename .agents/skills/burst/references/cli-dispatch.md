@@ -58,8 +58,8 @@ assignment into a different shell unchanged.
   effort exactly and check the selected model's support. When the assigned
   level is missing, use the highest supported level below it, as
   **Effort limits** in `SKILL.md` requires. If an ID is rejected, select the
-  next-newest listed ID of the same family; never let the CLI choose its
-  default.
+  next-newest listed ID of the same family and tier; never let the CLI choose
+  its default.
 - **Fast**: enable it only inside the user's named scope. Explicitly select
   standard elsewhere, including for an assigned model that has no Fast option on
   the selected source. Saved settings and defaults can affect headless runs.

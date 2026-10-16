@@ -265,6 +265,11 @@ auto-compact event's `preTokens` in the session `.jsonl`: ~320K means it works,
   fails on it. That workflow runs on PRs touching `.agents/skills/**` and
   weekly — the weekly run is what catches canonical moving ahead of this repo,
   which no PR here can see.
+- **Sync `baseline.md` with `communicate`.** When copying skills over, also
+  make the body of `.claude/output-styles/baseline.md` equal the canonical
+  `communicate` body, keeping this file's own frontmatter and H1.
+  `skills-drift` does not check this file, so nothing else catches a stale
+  copy.
 - **Commits**: imperative subject, concise body explaining *why*. Never
   include AI model identifiers in commits, PR titles/bodies, or code comments.
 - **PRs**: small, one concern each, squash-merge for clean main history.

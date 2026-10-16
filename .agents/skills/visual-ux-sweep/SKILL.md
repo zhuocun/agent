@@ -43,7 +43,7 @@ regression behind a loading spinner.
    batch and confirm the issue is gone.
 8. **Quality gates + clean repo** before commit. See **Quality bar**.
 
-## Setup (do every step — this is where sweeps fail)
+## Setup
 
 1. **Install the browser driver and a browser binary** without touching
    the repo's manifest or lockfile:

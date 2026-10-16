@@ -123,10 +123,12 @@ supported `CLAUDE_CONFIG_DIR` override rather than assuming a home location.
   argument. Keep the prompt before multi-value tool flags.
 - **Model**: `opus` selects the Opus version recommended by the installed build,
   subject to environment overrides and restrictions. Verify it is the newest
-  required Opus; otherwise pin the full supported ID from `/model` or the model
-  configuration reference. `ANTHROPIC_DEFAULT_OPUS_MODEL` repoints the alias;
-  cloud providers can map it differently, so pin their full Opus ID. Do not use
-  `best`, `default`, `opusplan`, `sonnet`, `haiku` or `fable` for delegated roles.
+  version of the top-tier line **Tiers.** defines, today Opus; otherwise pin the
+  full supported ID from `/model` or the model configuration reference.
+  `ANTHROPIC_DEFAULT_OPUS_MODEL` repoints the alias; cloud providers can map it
+  differently, so pin their full ID for that line. Do not use `best`,
+  `default`, `opusplan`, `sonnet`, `haiku`, `fable` or any other alias or ID
+  for a tier **Tiers.** forbids.
 - **Effort**: where exposed, pass `--effort <level>` and unset
   `CLAUDE_CODE_EFFORT_LEVEL` for the child or set it to the same level, because
   it overrides the flag. Check stderr and effective settings: builds can ignore
@@ -218,13 +220,14 @@ before relying on a sandbox mode.
   other assignment flags. Outside a Git repository, pass
   `--skip-git-repo-check`.
 - **Model**: always pass `-m` because omission uses effective configuration and
-  built-in defaults. Pin the newest full Sol ID from the current launcher,
-  interactive `/model` picker or fresh applicable account catalog; no family
-  alias is documented. `codex debug models --bundled` and the documentation's
-  Models page describe capabilities, not account access. Never pick Astra,
-  Luna or `-mini`. A failed fetch or bundled fallback does not prove account
-  unavailability; only a successful applicable catalog lacking Sol establishes
-  that the family is absent.
+  built-in defaults. Pin the newest full ID of the top-tier line **Tiers.**
+  defines, today Sol, from the current launcher, interactive `/model` picker or
+  fresh applicable account catalog; no family alias is documented.
+  `codex debug models --bundled` and the documentation's Models page describe
+  capabilities, not account access. Never pick Astra, Luna, `-mini` or any
+  other model **Tiers.** forbids. A failed fetch or bundled fallback does not
+  prove account unavailability; only a successful applicable catalog lacking
+  that line establishes that the family is absent.
 - **Effort**: explicitly set the assigned supported level with
   `-c model_reasoning_effort=<level>`; there is no dedicated effort flag. Check
   the effort levels available for the selected model and client in `/model` or

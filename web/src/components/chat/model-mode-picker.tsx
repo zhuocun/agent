@@ -1,20 +1,7 @@
 "use client";
 
-import { useId, useState, type JSX, type ReactNode } from "react";
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Globe,
-  Braces,
-  Telescope,
-} from "lucide-react";
-
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { useState, type JSX, type ReactNode } from "react";
+import { Check, ChevronDown } from "lucide-react";
 
 import {
   Dialog,
@@ -26,11 +13,11 @@ import {
 } from "@/components/ui/dialog";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { haptic } from "@/lib/use-haptic";
@@ -38,8 +25,6 @@ import { cn } from "@/lib/utils";
 import type {
   ModelTier,
   ModelTierId,
-  ProviderDataPolicy,
-  ProviderTierOption,
   ReasoningEffort,
   ReasoningEffortId,
 } from "@/lib/types";
@@ -48,51 +33,19 @@ export interface ModelModePickerProps {
   tiers: ModelTier[];
   selectedTierId: ModelTierId;
   onSelectTier: (id: ModelTierId) => void;
-  providerOptions: ProviderTierOption[];
-  selectedProviderId?: string;
-  onSelectProvider: (id: string) => void;
   efforts: ReasoningEffort[];
   selectedEffortId: ReasoningEffortId;
   onSelectEffort: (id: ReasoningEffortId) => void;
   // False when the served provider ignores reasoning effort (e.g. Anthropic).
-  // The whole Reasoning-effort section is then OMITTED (progressive disclosure,
-  // 00-principles §20) rather than shown as disabled rows — never an error.
-  // Defaults to true (supported) when omitted.
+  // The whole Reasoning-effort section is then omitted.
   effortSupported?: boolean;
-  // Web-search toggle. The "Web search" section is shown ONLY when the
-  // currently-selected tier reports `supportsWebSearch`; on a tier that can't
-  // search, the toggle is hidden entirely (the BE would ignore the flag).
-  searchEnabled: boolean;
-  onToggleSearch: (next: boolean) => void;
-  // JSON-mode (structured-output) toggle. Unlike web search this is NOT
-  // tier-gated — every tier accepts it (the BE handles provider-specific
-  // best-effort), so the "JSON output" section always renders.
-  jsonModeEnabled: boolean;
-  onToggleJsonMode: (next: boolean) => void;
-  // Deep Research (agentic multi-agent) toggle — a peer of web search. The
-  // section is shown ONLY when the server advertised agentic mode on bootstrap
-  // (`agenticEnabled`); against a flag-off server the toggle is hidden entirely
-  // (the BE would ignore the mode). Not tier-gated: every tier can orchestrate.
-  showDeepResearch?: boolean;
-  deepResearchEnabled?: boolean;
-  onToggleDeepResearch?: (next: boolean) => void;
   disabled?: boolean;
 }
 
 // Shared trigger styling — identical between the desktop dropdown and the
-// mobile bottom-sheet variants per PRD 06 §5.6 / PRD 01 §5.3 (the trigger's
-// appearance is stable; only the disclosure surface changes by modality).
-// Restyled for the trigger's home in the composer TOOLBAR: a compact ghost
-// pill that sits flush with the surrounding muted icon buttons while keeping
-// the 44px touch floor (PRD 06 §3.3). The mobile max-width leaves room for
-// the disclosure and send circles so the trigger cannot push them off-card.
-// The budget is in rem, so at 200% text it would exceed the viewport and
-// crush the pill to its padding; the 6rem floor keeps the label legible and
-// the toolbar wraps the send circle to a second row instead (WCAG 1.4.4).
-// Lovable's "Fable 5" model selector reads as a subtle pill, not a bare text
-// run: a faint resting fill + hairline rim sets it apart from the muted icon
-// circles flanking it, while staying quiet enough not to compete with the send
-// button. Hover/expanded deepen the fill; focus shows the ring.
+// mobile bottom-sheet variants. A compact ghost pill in the composer toolbar
+// that keeps the 44px touch floor. The label is the model, plus the reasoning
+// effort when it differs from the model name. Tools stay on the Tools control.
 const TRIGGER_CLASS =
   "inline-flex h-11 min-w-0 max-w-[min(12rem,max(6rem,calc(100vw-11rem)))] sm:max-w-[min(12rem,max(6rem,calc(100vw-16rem)))] items-center gap-1 rounded-full px-3 ui-list-row outline-none transition-colors bg-foreground/[0.04] shadow-[inset_0_0_0_1px_var(--glass-border)] hover:bg-foreground/[0.08] focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-foreground/[0.08] md:max-w-80";
 
@@ -100,72 +53,31 @@ export function ModelModePicker({
   tiers,
   selectedTierId,
   onSelectTier,
-  providerOptions,
-  selectedProviderId,
-  onSelectProvider,
   efforts,
   selectedEffortId,
   onSelectEffort,
   effortSupported = true,
-  searchEnabled,
-  onToggleSearch,
-  jsonModeEnabled,
-  onToggleJsonMode,
-  showDeepResearch = false,
-  deepResearchEnabled = false,
-  onToggleDeepResearch,
   disabled,
 }: ModelModePickerProps): JSX.Element {
   const tier = tiers.find((t) => t.id === selectedTierId) ?? tiers[0];
-  // Value-aware hint (PRD 05 §4.5 D27 / PRD 07 §6.3): flag the cheapest capable
-  // route. A LABEL ONLY — it never changes the selection automatically.
-  const cheapestTierId = cheapestAvailableTierId(tiers);
-  const provider =
-    providerOptions.find((p) => p.providerId === selectedProviderId) ??
-    providerOptions.find((p) => p.status === "available") ??
-    providerOptions[0];
   const effort = efforts.find((e) => e.id === selectedEffortId) ?? efforts[0];
+  const cheapestTierId = cheapestAvailableTierId(tiers);
   const [sheetOpen, setSheetOpen] = useState(false);
-  // The web-search section only exists for tiers that support it; the parent
-  // also clears `searchEnabled` when switching to a non-supporting tier, so
-  // this is a pure display gate.
-  const showWebSearch = tier?.supportsWebSearch === true;
-  const availableProviderCount = providerOptions.filter(
-    (p) => p.status === "available",
-  ).length;
-  const showProviderPicker = availableProviderCount > 1;
-  const providerLabel =
-    showProviderPicker && provider?.providerId ? provider.label : undefined;
-  const dataPolicy = provider?.dataPolicy ?? tier?.dataPolicy ?? null;
+  const showEffort = Boolean(
+    effortSupported && effort?.label && effort.label !== tier?.label,
+  );
+  const triggerLabel =
+    effortSupported && effort?.label
+      ? `Model ${tier?.label}. Reasoning ${effort.label}. Change.`
+      : `Model ${tier?.label}. Change.`;
 
-  const triggerLabel = `Model ${tier?.label}${
-    providerLabel ? ` on ${providerLabel}` : ""
-  }, reasoning ${effort?.label}. Change.`;
-
-  // Hide the reasoning-effort label when it duplicates the tier label (the
-  // default "Auto"/"Auto" case, and any future collision) so the header states
-  // the model state once rather than stuttering. The accessible triggerLabel
-  // above still announces both values for screen-reader users.
-  const showEffort = effort?.label && effort.label !== tier?.label;
-  // Mobile minimalism: under md the trigger collapses to just the tier label so
-  // the bar reads as one tap-target word; the provider + effort meta only return
-  // at md+ where there's room for the full state line. The accessible
-  // `triggerLabel` (above) still announces every value to AT regardless.
-  // Tier → provider → effort is an LTR label sequence (e.g. "Auto Fake").
-  // `dir=ltr` lands on the trigger buttons below so flex children keep that
-  // order under a document-level RTL (a `contents` wrapper would not).
   const triggerInner = (
     <>
       <span className="min-w-0 truncate font-medium text-foreground">
         {tier?.label}
       </span>
-      {providerLabel ? (
-        <span className="hidden max-w-24 truncate text-muted-foreground md:inline">
-          {providerLabel}
-        </span>
-      ) : null}
-      {showEffort ? (
-        <span className="hidden text-muted-foreground md:inline">
+      {showEffort && effort ? (
+        <span className="min-w-0 truncate text-muted-foreground">
           {effort.label}
         </span>
       ) : null}
@@ -179,12 +91,6 @@ export function ModelModePicker({
     setSheetOpen(false);
   };
 
-  const handleSelectProvider = (id: string): void => {
-    haptic("selection");
-    onSelectProvider(id);
-    setSheetOpen(false);
-  };
-
   const handleSelectEffort = (id: ReasoningEffortId): void => {
     haptic("selection");
     onSelectEffort(id);
@@ -193,16 +99,6 @@ export function ModelModePicker({
 
   return (
     <>
-      {/* Desktop: hover/click dropdown anchored to the trigger. Density-splits-
-          by-input-modality (02-patterns §D) — hover does not exist on touch so
-          the mobile branch below renders a bottom sheet instead.
-
-          Progressive disclosure (00-principles §20, 02-patterns §75-86): the
-          surface opens as a one-decision QUICK SWITCH. Only the Model tier group
-          is shown at the first level; Provider, Reasoning effort, Data policy,
-          Web search, and JSON output all live behind the "Advanced" collapsible
-          so secondary controls never compete with the primary tier choice. This
-          matches the mobile sheet's disclosure, just rendered as a dropdown. */}
       <DropdownMenu>
         <DropdownMenuTrigger
           disabled={disabled}
@@ -220,15 +116,11 @@ export function ModelModePicker({
         />
         <DropdownMenuContent
           align="start"
-          // The trigger now anchors at the BOTTOM of the viewport (composer
-          // toolbar), so the menu opens upward by default.
           side="top"
           sideOffset={8}
+          data-testid="model-menu"
           className="w-80 max-w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl p-1.5"
         >
-          {/* Model tier — the only first-level decision, so it leads. Each row
-              is one tight line (label · model); the longer description renders
-              ONLY under the selected tier, in a quieter treatment. */}
           <DropdownMenuGroup>
             <GroupHeading>Model</GroupHeading>
             {tiers.map((t) => (
@@ -241,127 +133,26 @@ export function ModelModePicker({
               />
             ))}
           </DropdownMenuGroup>
-
-          {/* First-level toggles — Web search + JSON output are tap-and-go
-              switches users reach for mid-prompt, so they sit OUT of Advanced.
-              Web search is tier-gated; JSON output always renders.
-              `closeOnClick={false}` keeps the menu open across a flip so the
-              state change is seen. */}
-          <DropdownMenuGroup className="mt-1.5">
-            {showWebSearch ? (
-              <ToggleRow
-                icon={Globe}
-                label="Web search"
-                description="Ground answers with a live web search."
-                checked={searchEnabled}
-                onToggle={onToggleSearch}
-                testId="web-search-toggle"
-              />
-            ) : null}
-            {showDeepResearch && onToggleDeepResearch ? (
-              <ToggleRow
-                icon={Telescope}
-                label="Deep Research"
-                description="Fan out parallel research agents and synthesize their findings."
-                checked={deepResearchEnabled}
-                onToggle={onToggleDeepResearch}
-                testId="deep-research-toggle"
-              />
-            ) : null}
-            <ToggleRow
-              icon={Braces}
-              label="JSON output"
-              description="Ask the model to reply with a JSON object."
-              checked={jsonModeEnabled}
-              onToggle={onToggleJsonMode}
-              testId="json-mode-toggle"
-            />
-          </DropdownMenuGroup>
-
-          {/* Advanced — progressive disclosure (00-principles §20). Provider,
-              reasoning effort, and data policy collapse here so the picker
-              opens minimal; power users expand to reach them. Mirrors the
-              mobile sheet's Advanced section for cross-modality parity. */}
-          <Collapsible className="mt-1">
-            {/* Rendered AS a menu item: a bare <button> is not a child the
-                menu role may own (axe aria-required-children), and outside
-                the menu's roving focus it was unreachable by keyboard. */}
-            <CollapsibleTrigger
-              nativeButton={false}
-              role="menuitem"
-              // The menu's roving focus owns tab order; the trigger's own
-              // tabIndex=0 would otherwise pin this row as the entry point.
-              tabIndex={-1}
-              render={
-                <DropdownMenuItem
-                  closeOnClick={false}
-                  data-testid="picker-advanced"
-                  className="w-full gap-1.5 px-2 py-1.5 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors"
-                />
-              }
-            >
-              <ChevronRight
-                aria-hidden
-                className="size-3.5 shrink-0 transition-transform motion-reduce:transition-none [[data-panel-open]_&]:rotate-90"
-              />
-              Advanced
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              {showProviderPicker ? (
-                <DropdownMenuGroup className="mt-1">
-                  <GroupHeading>Provider</GroupHeading>
-                  {providerOptions.map((p) => {
-                    const available = p.status === "available";
-                    return (
-                      <CompactRow
-                        key={p.providerId}
-                        label={p.label}
-                        meta={providerDescription(p)}
-                        selected={p.providerId === provider?.providerId}
-                        disabled={!available}
-                        onSelect={() => handleSelectProvider(p.providerId)}
-                      />
-                    );
-                  })}
-                </DropdownMenuGroup>
-              ) : null}
-
-              {dataPolicy ? <DataPolicyRow policy={dataPolicy} /> : null}
-
-              {/* Reasoning effort — omitted ENTIRELY when the served provider
-                  ignores it (effortSupported=false): per progressive disclosure
-                  (00-principles §20) we hide the whole section rather than show
-                  disabled rows plus a note. */}
-              {effortSupported ? (
-                <DropdownMenuGroup className="mt-1">
-                  <GroupHeading>Reasoning effort</GroupHeading>
-                  {efforts.map((e) => (
-                    <CompactRow
-                      key={e.id}
-                      label={e.label}
-                      meta={effortMeta(e)}
-                      selected={e.id === selectedEffortId}
-                      onSelect={() => handleSelectEffort(e.id)}
-                    />
-                  ))}
-                </DropdownMenuGroup>
-              ) : null}
-            </CollapsibleContent>
-          </Collapsible>
+          {effortSupported ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <GroupHeading>Reasoning effort</GroupHeading>
+                {efforts.map((e) => (
+                  <EffortRow
+                    key={e.id}
+                    label={e.label}
+                    meta={effortMeta(e)}
+                    selected={e.id === selectedEffortId}
+                    onSelect={() => handleSelectEffort(e.id)}
+                  />
+                ))}
+              </DropdownMenuGroup>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* Mobile: bottom sheet. Decision 10 + Pattern: Thumb zone primacy. We
-          ride the shared <DialogContent> shell, which already supplies the
-          bottom-sheet geometry (fixed inset-x-0 bottom-0, rounded top, spring
-          slide, grabber, swipe-to-dismiss, home-indicator-safe bottom padding)
-          and reverts to the centered modal at sm:. So we pass ONLY intent here:
-          a slightly tighter `gap-3 px-4 pt-4` density for the dense option rows
-          and a 80dvh cap (vs the shell's 90dvh) so the sheet sits a touch lower.
-          We re-state the shell's safe-area `pb` explicitly because a bare `p-4`
-          shorthand would twMerge-clobber it and drop the last row under the home
-          indicator; `sm:p-6` then restores even padding on the desktop modal.
-          Each row still meets the PRD 06 §3.3 44px touch floor. */}
       <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
         <DialogTrigger
           disabled={disabled}
@@ -377,18 +168,19 @@ export function ModelModePicker({
             </button>
           }
         />
-        <DialogContent className="flex [--dialog-max-h:80dvh] max-h-[80dvh] min-h-0 flex-col gap-3 overflow-hidden px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6">
+        <DialogContent
+          data-testid="model-sheet"
+          className="flex [--dialog-max-h:80dvh] max-h-[80dvh] min-h-0 flex-col gap-3 overflow-hidden px-4 pt-4 pb-[max(env(safe-area-inset-bottom),1rem)] sm:max-h-none sm:p-6"
+        >
           <DialogHeader className="shrink-0">
-            <DialogTitle>Model and reasoning</DialogTitle>
+            <DialogTitle>Model</DialogTitle>
             <DialogDescription className="sr-only">
-              Choose which capability tier and reasoning effort answer your next
-              message.
+              {effortSupported
+                ? "Choose which model answers your next message, and how much reasoning it uses."
+                : "Choose which model answers your next message."}
             </DialogDescription>
           </DialogHeader>
           <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain pb-8">
-            {/* Tier leads on mobile too, and is the ONLY section shown by
-                default. The full description rides only on the selected row; the
-                rest carry the compact model meta. */}
             <SheetSection title="Model">
               {tiers.map((t) => {
                 const selected = t.id === selectedTierId;
@@ -408,101 +200,19 @@ export function ModelModePicker({
                 );
               })}
             </SheetSection>
-            {/* First-level toggles — Web search + JSON output are tap-and-go
-                switches users reach for mid-prompt, so they sit OUT of Advanced
-                in the mobile sheet too. Mirrors the desktop dropdown order. */}
-            {/* One untitled list, like the desktop group: a per-toggle section
-                title only repeated the row's own label. */}
-            <SheetSection>
-              {showWebSearch ? (
-                <SheetToggleRow
-                  label="Web search"
-                  description="Ground answers with a live web search."
-                  checked={searchEnabled}
-                  onCheckedChange={onToggleSearch}
-                  testId="web-search-toggle"
-                />
-              ) : null}
-              {showDeepResearch && onToggleDeepResearch ? (
-                <SheetToggleRow
-                  label="Deep Research"
-                  description="Fan out parallel research agents and synthesize their findings."
-                  checked={deepResearchEnabled}
-                  onCheckedChange={onToggleDeepResearch}
-                  testId="deep-research-toggle"
-                />
-              ) : null}
-              <SheetToggleRow
-                label="JSON output"
-                description="Ask the model to reply with a JSON object."
-                checked={jsonModeEnabled}
-                onCheckedChange={onToggleJsonMode}
-                testId="json-mode-toggle"
-              />
-            </SheetSection>
-            {/* Advanced — progressive disclosure (00-principles §20). Provider,
-                reasoning effort, and data policy collapse here for iOS-native
-                simplicity: the sheet opens showing only the Model tier and the
-                two switches, and power users expand to reach the rest. Parity
-                with the desktop dropdown's Advanced section. */}
-            <Collapsible>
-              <CollapsibleTrigger
-                data-testid="picker-advanced"
-                className="flex min-h-11 w-full items-center gap-2 rounded-xl px-4 py-2.5 text-left ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase transition-colors hover:bg-foreground/[0.04]"
-              >
-                <ChevronRight
-                  aria-hidden
-                  className="size-3.5 shrink-0 transition-transform motion-reduce:transition-none [[data-panel-open]_&]:rotate-90"
-                />
-                Advanced
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="flex flex-col gap-4 pt-2">
-                  {showProviderPicker ? (
-                    <SheetSection title="Provider">
-                      {providerOptions.map((p) => {
-                        const available = p.status === "available";
-                        return (
-                          <SheetRow
-                            key={p.providerId}
-                            label={p.label}
-                            description={providerDescription(p)}
-                            selected={p.providerId === provider?.providerId}
-                            disabled={!available}
-                            onSelect={() => handleSelectProvider(p.providerId)}
-                          />
-                        );
-                      })}
-                    </SheetSection>
-                  ) : null}
-                  {/* Reasoning effort — omitted ENTIRELY when the served provider
-                      ignores it (effortSupported=false), rather than rendering
-                      disabled rows plus a note (00-principles §20). */}
-                  {effortSupported ? (
-                    <SheetSection title="Reasoning effort">
-                      {efforts.map((e) => (
-                        <SheetRow
-                          key={e.id}
-                          label={e.label}
-                          description={effortMeta(e) ?? ""}
-                          selected={e.id === selectedEffortId}
-                          onSelect={() => handleSelectEffort(e.id)}
-                        />
-                      ))}
-                    </SheetSection>
-                  ) : null}
-                  {dataPolicy ? (
-                    <SheetSection title="Data policy">
-                      <li>
-                        <p className="px-4 py-2 ui-caption leading-snug text-muted-foreground">
-                          {dataPolicy.policyLabel}
-                        </p>
-                      </li>
-                    </SheetSection>
-                  ) : null}
-                </div>
-              </CollapsibleContent>
-            </Collapsible>
+            {effortSupported ? (
+              <SheetSection title="Reasoning effort">
+                {efforts.map((e) => (
+                  <SheetRow
+                    key={e.id}
+                    label={e.label}
+                    description={effortMeta(e) ?? e.description}
+                    selected={e.id === selectedEffortId}
+                    onSelect={() => handleSelectEffort(e.id)}
+                  />
+                ))}
+              </SheetSection>
+            ) : null}
           </div>
         </DialogContent>
       </Dialog>
@@ -510,9 +220,6 @@ export function ModelModePicker({
   );
 }
 
-// Group heading for the dropdown. A tight, quiet caption that delineates groups
-// via typographic hierarchy + spacing rather than full-bleed rules
-// (00-principles §20). Reuses the menu label primitive for role/semantics.
 function GroupHeading({ children }: { children: ReactNode }): JSX.Element {
   return (
     <DropdownMenuLabel className="px-2 pt-1 pb-0.5 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
@@ -521,10 +228,6 @@ function GroupHeading({ children }: { children: ReactNode }): JSX.Element {
   );
 }
 
-// The primary tier row: a single scannable line (label · model) with a trailing
-// check. The longer marketing `description` is revealed ONLY for the
-// selected tier, in a lighter caption — matching visual weight to the user's
-// current intent (02-patterns §75-86) instead of repeating prose on every row.
 function TierRow({
   tier,
   badge,
@@ -538,11 +241,7 @@ function TierRow({
 }): JSX.Element {
   const meta = tierMeta(tier);
   return (
-    <DropdownMenuItem
-      label={tier.label}
-      onClick={onSelect}
-      className="py-1.5"
-    >
+    <DropdownMenuItem label={tier.label} onClick={onSelect} className="py-1.5">
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="shrink-0 font-medium">{tier.label}</span>
@@ -566,28 +265,19 @@ function TierRow({
   );
 }
 
-// A secondary single-line row (Provider / Reasoning effort): label on the left,
-// a compact muted meta clause, trailing check. No wrapped description block.
-function CompactRow({
+function EffortRow({
   label,
   meta,
   selected,
-  disabled,
   onSelect,
 }: {
   label: string;
   meta?: string;
   selected: boolean;
-  disabled?: boolean;
   onSelect: () => void;
 }): JSX.Element {
   return (
-    <DropdownMenuItem
-      label={label}
-      onClick={onSelect}
-      disabled={disabled}
-      className="py-1.5"
-    >
+    <DropdownMenuItem label={label} onClick={onSelect} className="py-1.5">
       <span className="shrink-0 font-medium">{label}</span>
       {meta ? (
         <span className="min-w-0 ui-caption leading-snug text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
@@ -598,66 +288,6 @@ function CompactRow({
         <Check aria-hidden className="ml-auto size-4 shrink-0 text-foreground" />
       ) : null}
     </DropdownMenuItem>
-  );
-}
-
-// Switch-like toggle row for Web search / JSON output. `closeOnClick={false}`
-// keeps the menu open so the on/off flip is visible mid-decision; the checkbox
-// item exposes role="menuitemcheckbox"/aria-checked and renders its own check
-// indicator on the right. A leading Lucide icon (currentColor) anchors the row;
-// the compact On/Off state sits inline so the row stays a single line.
-function ToggleRow({
-  icon: Icon,
-  label,
-  description,
-  checked,
-  onToggle,
-  testId,
-}: {
-  icon: typeof Globe;
-  label: string;
-  description: string;
-  checked: boolean;
-  onToggle: (next: boolean) => void;
-  testId: string;
-}): JSX.Element {
-  return (
-    <DropdownMenuCheckboxItem
-      checked={checked}
-      closeOnClick={false}
-      onCheckedChange={(next) => onToggle(next)}
-      className="items-start py-1.5"
-      data-testid={testId}
-      aria-label={`${label}: ${checked ? "on" : "off"}`}
-    >
-      <Icon
-        aria-hidden
-        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-medium">{label}</span>
-          <span className="ui-caption text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground/70">
-            {checked ? "On" : "Off"}
-          </span>
-        </div>
-        <p className="ui-caption leading-snug text-muted-foreground">
-          {description}
-        </p>
-      </div>
-    </DropdownMenuCheckboxItem>
-  );
-}
-
-// Data policy line for the dropdown — display only. Sits inline (label + value)
-// rather than as its own boxed section so it reads as a quiet footnote.
-function DataPolicyRow({ policy }: { policy: ProviderDataPolicy }): JSX.Element {
-  return (
-    <div className="mt-1 px-2 py-1">
-      <p className="ui-caption leading-snug text-muted-foreground">
-        <span className="font-semibold">Data policy:</span> {policy.policyLabel}
-      </p>
-    </div>
   );
 }
 
@@ -680,78 +310,6 @@ function SheetSection({
   );
 }
 
-// Mobile sheet toggles: the whole row is ONE control, a button carrying
-// role="switch". The row is the tap target because Base UI Switch pointer hits
-// were flaky on iOS-width sheets; nesting that Switch inside the row button
-// (even aria-hidden, tabIndex=-1) was a nested interactive control, so the
-// track and thumb here are plain decoration. The name is the visible label
-// (label-in-name) and aria-checked carries the state.
-function SheetToggleRow({
-  label,
-  description,
-  checked,
-  onCheckedChange,
-  testId,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  onCheckedChange: (next: boolean) => void;
-  testId: string;
-}): JSX.Element {
-  const labelId = useId();
-  const descriptionId = useId();
-  return (
-    <li>
-      <button
-        type="button"
-        role="switch"
-        data-testid={testId}
-        aria-checked={checked}
-        aria-labelledby={labelId}
-        aria-describedby={description ? descriptionId : undefined}
-        onClick={() => {
-          haptic("selection");
-          onCheckedChange(!checked);
-        }}
-        className={cn(
-          "flex min-h-11 w-full items-center gap-3 rounded-xl px-4 py-2.5 text-left transition-colors",
-          "hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
-          checked && "bg-foreground/[0.06]",
-        )}
-      >
-        <span className="min-w-0 flex-1">
-          <span
-            id={labelId}
-            className="block ui-list-row font-medium text-foreground"
-          >
-            {label}
-          </span>
-          {description ? (
-            <span
-              id={descriptionId}
-              className="mt-0.5 block ui-secondary leading-snug text-muted-foreground"
-            >
-              {description}
-            </span>
-          ) : null}
-        </span>
-        {/* Visual twin of <Switch>: same track/thumb geometry, no semantics. */}
-        <span
-          aria-hidden
-          data-checked={checked ? "" : undefined}
-          className="inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-border bg-muted/60 transition-colors data-[checked]:border-transparent data-[checked]:bg-brand"
-        >
-          <span
-            data-checked={checked ? "" : undefined}
-            className="block size-4 translate-x-0.5 rounded-full bg-card shadow-glass-ambient transition-transform duration-[250ms] ease-ios-spring motion-reduce:duration-150 motion-reduce:ease-out data-[checked]:translate-x-4"
-          />
-        </span>
-      </button>
-    </li>
-  );
-}
-
 function SheetRow({
   label,
   description,
@@ -759,7 +317,6 @@ function SheetRow({
   selected,
   disabled,
   onSelect,
-  testId,
 }: {
   label: string;
   description: string;
@@ -767,7 +324,6 @@ function SheetRow({
   selected: boolean;
   disabled?: boolean;
   onSelect: () => void;
-  testId?: string;
 }): JSX.Element {
   return (
     <li>
@@ -777,7 +333,6 @@ function SheetRow({
         disabled={disabled}
         aria-label={label}
         aria-pressed={selected}
-        data-testid={testId}
         className={cn(
           "flex min-h-11 w-full items-start gap-3 rounded-xl px-4 py-2.5 text-left transition-colors hover:bg-foreground/[0.04] focus-visible:bg-foreground/[0.04] focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none",
           selected && "bg-foreground/[0.06]",
@@ -798,25 +353,13 @@ function SheetRow({
           ) : null}
         </div>
         {selected ? (
-          <Check
-            aria-hidden
-            className="mt-0.5 size-4 shrink-0 text-foreground"
-          />
+          <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-foreground" />
         ) : null}
       </button>
     </li>
   );
 }
 
-function providerDescription(provider: ProviderTierOption): string {
-  if (provider.status === "pending") return "Coming soon.";
-  if (provider.status === "unavailable") return "Unavailable.";
-  return provider.dataPolicy?.policyLabel ?? "Available for this turn.";
-}
-
-// A subtle "Cheapest" (or similar) pill rendered next to a model row's label.
-// Purely informational — selection never changes on its own. STATIC chip (never
-// animated/pulsing, per 02-patterns §73).
 function ValueBadge({ label }: { label: string }): JSX.Element {
   return (
     <span className="shrink-0 rounded-full bg-foreground/[0.06] px-1.5 py-0.5 ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
@@ -830,14 +373,14 @@ function tierMeta(tier: ModelTier): string {
   return parts.filter(Boolean).join(" · ");
 }
 
-// The cheapest tier with an AVAILABLE route and a real price, by combined
-// in+out list price. Returns null when no priced+available tier exists (e.g.
-// only "auto" is priced at 0, or all routes are pending/unavailable).
+function effortMeta(effort: ReasoningEffort): string | undefined {
+  if (effort.costHint === "auto") return undefined;
+  return `Cost ${effort.costHint} · Latency ${effort.latencyHint}`;
+}
+
 function cheapestAvailableTierId(tiers: ModelTier[]): ModelTierId | null {
   let best: { id: ModelTierId; price: number } | null = null;
   for (const t of tiers) {
-    // "auto" is a per-turn router, not a single route — its price varies by
-    // message, so it's never the thing we flag as "cheapest".
     if (t.id === "auto") continue;
     if (t.providerRouteStatus !== "available") continue;
     const price = t.listPriceInPerM + t.listPriceOutPerM;
@@ -847,12 +390,4 @@ function cheapestAvailableTierId(tiers: ModelTier[]): ModelTierId | null {
     }
   }
   return best?.id ?? null;
-}
-
-// Relative cost/latency hint for an effort row, surfacing the trade-off so a
-// "max reasoning" pick can't be made without seeing it (PRD 01 §4.2). Skipped
-// for "Auto" (its hints are "auto", which carry no signal worth showing).
-function effortMeta(effort: ReasoningEffort): string | undefined {
-  if (effort.costHint === "auto") return undefined;
-  return `Cost ${effort.costHint} · Latency ${effort.latencyHint}`;
 }

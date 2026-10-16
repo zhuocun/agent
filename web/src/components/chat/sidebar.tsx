@@ -1552,14 +1552,10 @@ export function Sidebar({
         </Button>
       </div>
 
-      {/* Search + list-management toolbar region. The quick-search input and
-          New-chat row above are primary and always paint; the low-frequency
-          management affordances inside this region (Advanced search, Select)
-          are desktop-only and hover/focus-revealed so the rail quiets at rest.
-          On touch the mobile drawer stays minimal — Cmd+K covers advanced
-          search and the per-row overflow menu covers selection. `group/toolbar`
-          scopes the reveal to this region (not the whole sidebar). */}
-      <div className="group/toolbar">
+      {/* Quick search stays in the rail. Advanced search and multi-select
+          live in the account menu (and Cmd/Ctrl+K for search) so the rail
+          does not reserve a second row for controls that were invisible
+          until hover. */}
       <div className="px-2 pb-2">
         <div className="relative">
           <Search
@@ -1593,52 +1589,7 @@ export function Sidebar({
             </button>
           ) : null}
         </div>
-        {/* Advanced search opens the filter-rich dialog (model / cost / date /
-            project / tag) — the inline box stays a quick title/snippet search. */}
-        {onOpenAdvancedSearch ? (
-          <button
-            type="button"
-            onClick={onOpenAdvancedSearch}
-            data-testid="sidebar-advanced-search"
-            className={cn(
-              "mt-1 hidden items-center gap-1.5 rounded-full px-2.5 py-1 ui-caption text-muted-foreground outline-none transition-[color,opacity] motion-reduce:transition-none hover:text-foreground focus-visible:shadow-[var(--focus-ring)] focus-visible:outline-none md:inline-flex",
-              // A touch tablet gets this rail too (≥768 px), so it needs the
-              // 44 px touch floor; mouse density is unchanged (UI-TOUCH-4/5).
-              "[@media(hover:none)]:min-h-11",
-              // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
-              // rest. Mobile users reach advanced search via Cmd+K instead.
-              "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/toolbar:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100",
-            )}
-          >
-            <SlidersHorizontal aria-hidden className="size-3" />
-            <span>Advanced search</span>
-          </button>
-        ) : null}
       </div>
-
-      {/* Select toggle (Conversation Org v2). Entry point into multi-select; the
-          per-row checkboxes only render once selection mode is on. Hidden while
-          searching and once selection mode is already active (the bulk bar's
-          Cancel exits). */}
-      {bulkInteractable && !selectionMode ? (
-        <div className="px-2 pb-2">
-          <button
-            type="button"
-            onClick={() => setSelectionActive(true)}
-            data-testid="sidebar-select-toggle"
-            className={cn(
-              "hidden min-h-9 w-full select-none items-center gap-2 rounded-2xl px-3 py-1.5 text-left ui-caption font-medium text-muted-foreground outline-none transition-[color,background-color,opacity] motion-reduce:transition-none hover:bg-muted/60 hover:text-foreground focus-visible:shadow-[var(--focus-ring)] md:flex [@media(hover:none)]:min-h-11",
-              // Desktop-only: hover/focus-reveal pattern keeps the rail quiet at
-              // rest. Mobile users use the conversation row's overflow menu.
-              "[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/toolbar:opacity-100 [@media(hover:hover)]:focus-within:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100",
-            )}
-          >
-            <Check className="size-3.5" aria-hidden />
-            <span>Select</span>
-          </button>
-        </div>
-      ) : null}
-      </div>{/* /group/toolbar */}
 
       {/* Bulk action bar (Conversation Org v2). Shown in selection mode.
           Archive / unarchive / delete + an "Add tag" submenu over the user's
@@ -2265,19 +2216,19 @@ export function Sidebar({
               <DropdownMenuItem
                 label="Advanced search"
                 onClick={onOpenAdvancedSearch}
-                className="gap-2 md:hidden"
-                data-testid="sidebar-advanced-search-mobile"
+                className="gap-2"
+                data-testid="sidebar-advanced-search"
               >
                 <SlidersHorizontal className="size-4" aria-hidden />
                 <span>Advanced search</span>
               </DropdownMenuItem>
             ) : null}
-            {bulkEnabled && !selectionMode && !isSearching ? (
+            {bulkInteractable && !selectionMode ? (
               <DropdownMenuItem
                 label="Select conversations"
                 onClick={() => setSelectionActive(true)}
-                className="gap-2 md:hidden"
-                data-testid="sidebar-select-mobile"
+                className="gap-2"
+                data-testid="sidebar-select-toggle"
               >
                 <Check className="size-4" aria-hidden />
                 <span>Select conversations</span>

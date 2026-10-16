@@ -88,10 +88,10 @@ assignment into a different shell unchanged.
   prohibits editing the deliverable; never grant write access to the shared tree.
   If it cannot execute, its verdict is low confidence.
 - **Leaf delegates**: a non-bare child can load home and project instructions,
-  skills and subagents, including burst/proxy. Every brief prohibits further
-  delegation unless expressly permitted. Removing Claude's native `Agent` and
-  `Workflow` tools does not prevent Bash/CLI delegation; the brief must cover
-  every route.
+  skills and subagents, including skills that delegate to subagents. Every brief
+  prohibits further delegation unless expressly permitted. Removing Claude's
+  native `Agent` and `Workflow` tools does not prevent Bash/CLI delegation; the
+  brief must cover every route.
 - **Rework**: check the installed resume interface, then resume the worker's own
   session with the reviewer's issues verbatim and repeat the same model, effort,
   tier, permissions and output settings.

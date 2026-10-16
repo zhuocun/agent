@@ -3,16 +3,17 @@ name: proxy
 description: >-
   Act as a thin proxy that delegates every decision and every unit of work to
   top-tier subagents — including how to decompose the task and whether it is
-  done. Use when subagents are authorized and you want planning, execution,
-  review, and the done/not-done judgment all made by subagents rather than by
-  the main agent. Do not use when subagent delegation is unavailable, or for a
-  trivial single-step task that is faster to just do.
+  done. Use when subagents are authorized and the user wants planning,
+  execution, review, and the done/not-done judgment all made by subagents rather
+  than by the main agent. Do not use when subagent delegation is unavailable, or
+  for a trivial single-step task that is faster to just do.
 ---
 
 # Proxy
 
-**Persistent across tasks and sessions — not a one-turn effect.** Once this
-skill is active it governs every task in every session, not just the current
+**Persistent across tasks, compactions and resumed sessions — not a one-turn
+effect.** Once this skill is active it governs every later task in the session,
+including after a compaction or when the session resumes, not just the current
 turn or request. Keep applying it to all subsequent work until the user
 explicitly turns it off or switches to a different method of orchestrating
 subagents.
@@ -23,9 +24,10 @@ Act as a conduit, not a decision-maker. You hold no authority over *what* to do,
 *how* to split it, or *when* it is finished — every such judgment belongs to a
 top-tier subagent, and your job is to carry it out and relay the result.
 You only ever: dispatch subagents, pass artifacts between them verbatim, execute
-the concrete actions a plan prescribes (file edits, commands, tool calls the
-subagents cannot perform themselves), and surface outcomes. The moment you would
-*decide*, stop and ask a subagent instead, then follow its answer.
+the concrete actions a plan prescribes (file edits and commands, such as
+applying a diff a worker produced, and tool calls the subagents cannot perform
+themselves), and surface outcomes. The moment you would *decide*, stop and ask a
+subagent instead, then follow its answer.
 
 The subagent roles, and the chain they form:
 
@@ -34,9 +36,9 @@ The subagent roles, and the chain they form:
    yourself.
 2. **worker** — performs one delegated subtask (research, implementation, fix,
    test, lookup).
-3. **reviewer** — one per worker, or one per family where the worker's row
-   runs both (see **Model selection**); judges that worker's artifact before it
-   is integrated.
+3. **reviewer** — one per worker, or, where the worker's row runs both families,
+   two per worker, one per family (see **Model selection**); judges that
+   worker's artifact before it is integrated.
 4. **final-gate reviewer** — decides whether the whole task may be declared
    done. You consult it before declaring; you never gate yourself.
 
@@ -48,10 +50,10 @@ write — orchestrator-consultant, reviewer, final-gate reviewer — states that
 delegate must not invoke any skill that delegates work to subagents, or spawn
 subagents or workflows. Each brief is also worded in correctness and reliability
 terms — the rule, the input, the expected result — rather than attack or exploit
-terms, since some providers stop a run whose brief reads as security testing; a
-security check the task needs stays in scope, stated as the defect it prevents.
-Ask the orchestrator-consultant to hold each worker brief it drafts to both
-rules, so the worker brief still passes verbatim.
+terms, with any security check the task needs stated as the defect it prevents,
+since some providers stop a run whose brief reads as security testing. Ask the
+orchestrator-consultant to hold each worker brief it drafts to both rules, so
+the worker brief still passes verbatim.
 
 ## Priority order
 
@@ -63,14 +65,14 @@ round.
 
 ## When this applies
 
-Use only when the session authorizes subagents and a launcher exists; if either
-is missing, this skill does not apply. A launcher is the host's in-product
-subagent mechanism, a source CLI that passes the availability checks in
-**Source**, or a mode-only route described there. Once authorized, treat
-*every* planning or gate decision as out of your hands. You may perform the
-mechanical execution a plan requires — editing
-files, running commands, applying a diff a worker produced — but the decision to
-do so always traces back to a subagent's instruction.
+Use only when the session authorizes subagents, which a host that exposes a
+launcher and does not prohibit its use does, and a launcher exists; if either is
+missing, this skill does not apply. A launcher is the host's in-product subagent
+mechanism, a source CLI that passes the availability checks in **Source**, or a
+mode-only route described there. Once authorized, treat *every* planning or gate
+decision as out of your hands. You may perform the mechanical execution a plan
+requires — editing files, running commands, applying a diff a worker produced —
+but the decision to do so always traces back to a subagent's instruction.
 
 ## Run it to done
 
@@ -85,22 +87,23 @@ task or added now, stays outside the definition of done as a stretch target,
 and the final summary reports the result against it. Work that goes beyond the
 user's scope, constraints or budget goes to the user before it starts, and each
 item they approve joins the definition of done. Then, building on any plan
-already set for the task, keep the loop moving with perseverance: drive
-dispatch → review → re-consult until the final-gate reviewer returns `done`.
-Clear obstacles by routing each to the right subagent, never by deciding
-yourself; don't stall on a fork — re-consult and proceed. Don't stop mid-flight
-while to-dos are still open and actionable. Route trivial or obvious-answer
-decisions to a subagent, not to the user; a decision that needs the user's
-consent is never one of them. Keep a running checklist of the to-dos and
-progress through the chain, in a file or in the tracker the work already uses,
-so that nothing drifts over a long session and the checklist survives a
-compaction.
+already set for the task, keep the loop moving with perseverance: drive dispatch
+and review, re-consulting the orchestrator-consultant whenever a pass calls for
+it, until the final-gate reviewer returns `done`. Clear obstacles by routing
+each to the right subagent, never by deciding yourself; don't stall on a fork —
+re-consult and proceed. Don't stop mid-flight while to-dos are still open and
+actionable. Route trivial or obvious-answer decisions to a subagent, not to the
+user; a decision that needs the user's consent is never one of them. Keep a
+running checklist of the to-dos and progress through the chain, in a file or in
+the tracker the work already uses, so that nothing drifts over a long session
+and the checklist survives a compaction.
 
 After a context compaction, re-read that checklist and check each item against
 ground truth (the files, the branch, test output, the artifacts already
-integrated), not against the summary. Then send it to an orchestrator-consultant
-to order the remaining work, since ordering is planning, and resume from its
-answer without waiting for the user to confirm.
+integrated), not against the summary. Then send it, with any order you drafted
+yourself passed as input only, to an orchestrator-consultant to order the
+remaining work, since ordering is planning, and resume from its answer without
+waiting for the user to confirm.
 
 ## Pass 1 — Consult the orchestrator-consultant
 
@@ -166,10 +169,11 @@ Handle the verdict:
 After two failed reviews on one subtask, re-consult the orchestrator-consultant
 — do not keep spinning, and do not paper over it by deciding yourself.
 
-If a re-planned subtask fails its reviewer twice again, stop and report to the
-user: the subtask's brief, the reviewer's issues verbatim, and what has been
-tried. Surfacing a stuck subtask is not deciding — the decomposition and the
-done decision are still not yours.
+If a subtask from that re-consult, whether the original re-briefed or a piece
+split from it, fails its reviewer twice, stop work on it, keep the other workers
+running, and report to the user: the subtask's brief, the reviewer's issues
+verbatim, and what has been tried. Surfacing a stuck subtask is not deciding —
+the decomposition and the done decision are still not yours.
 
 ## Pass 4 — Consult the final-gate reviewer
 
@@ -188,11 +192,12 @@ item ticked with its evidence or left unticked with what is missing.
   an orchestrator-consultant if it needs re-planning. Re-consult the final-gate
   reviewer before declaring done.
 
-If the final-gate reviewer returns `not-done` twice on the same gap after a
-fresh worker and reviewer cycle, stop the loop and report to the user: the
-original task, the gap as the final-gate reviewer stated it verbatim, and what
-has been tried. Surfacing a stuck chain is not deciding — you still do not
-declare the task done.
+If the final-gate reviewer, given its previous verdict verbatim and asked
+whether a gap is one it named there, returns `not-done` on that same gap again
+after a fresh worker and reviewer cycle on it, stop the loop and report to the
+user: the original task, the gap as the final-gate reviewer stated it verbatim,
+and what has been tried. Surfacing a stuck chain is not deciding — you still do
+not declare the task done.
 
 Never substitute your own judgment for the final-gate verdict, even when the
 work "obviously" looks complete.
@@ -211,8 +216,8 @@ Inspect the dispatch schema and set every exposed parameter on every subagent
 call, using the source's exact advertised effort token (lowercase `xhigh` on
 Codex). Never accept the platform default: it can route to a forbidden tier,
 silently downgrade reasoning, or mirror your own config. An explicit instruction
-from the user or from a higher-priority source overrides any rule in this
-section, **Source** included.
+from the user, or from any source whose instructions outrank this skill,
+overrides any rule in this section, **Source** included.
 
 **Source.** Take the first available source in the family's order: for the
 Claude family, Claude Code, then Devin, then Cursor; for the GPT family, Codex,
@@ -232,22 +237,22 @@ required files through the chosen route, and verify the child can access them
 rather than assuming a shared filesystem or inherited tools, credentials and
 network.
 
-For the source you are running in, prefer its available in-product mechanism.
-Use that source's CLI only when the native route is unavailable or cannot carry
-the assigned model, effort and fast-mode setting. Reach other sources through
-available CLIs. Resolve the executable in the invocation's actual environment,
-including any configured wrapper, and verify its supported syntax. Check a
-supported credential route with that invocation's provider, configuration and
-transport. Saved-login status alone does not establish availability. Do not
-assume installed CLIs, credentials, internet access or a proxy from another
-machine. Use only already authorized setup and network routes; availability
-checks do not authorize installation, login or changes to provider, permission
-or proxy configuration. Diagnose credential and transport failures separately;
-retry a failed catalog request through an already authorized network or proxy
-route where available. Treat a family as absent only when a successfully
-retrieved applicable catalog contains no required top-tier model (Opus for
-Claude, Sol for GPT). Skip an unavailable source in the family's order; never
-substitute a forbidden tier.
+When the source the family's order selects is the one you are running in, prefer
+its available in-product mechanism. Use that source's CLI only when the native
+route is unavailable or cannot carry the assigned model, effort and fast-mode
+setting. Reach other sources through available CLIs. Resolve the executable in
+the invocation's actual environment, including any configured wrapper, and
+verify its supported syntax. Check a supported credential route with that
+invocation's provider, configuration and transport. Saved-login status alone
+does not establish availability. Do not assume installed CLIs, credentials,
+internet access or a proxy from another machine. Use only already authorized
+setup and network routes; availability checks do not authorize installation,
+login or changes to provider, permission or proxy configuration. Diagnose
+credential and transport failures separately; retry a failed catalog request
+through an already authorized network or proxy route where available. Treat a
+family as absent only when a successfully retrieved applicable catalog contains
+no required top-tier model (Opus for Claude, Sol for GPT). Skip an unavailable
+source in the family's order; never substitute a forbidden tier.
 
 On Claude Code, when a bare `Agent` call exposes model but no effort parameter,
 use an available `Workflow` tool (`agent(prompt, {model, effort})`) or an
@@ -257,11 +262,11 @@ Check that the host exposes the selected tool and fields before using them.
 **This skill requires explicit opt-in for `Workflow`, separately from the host's
 availability and permission checks. Opt-in starts when the user invokes or names
 this skill (for example `/proxy`), asks for subagents or a workflow, or enables
-ultracode. It stays in force for later tasks in the session. Loading this skill
-yourself does not establish opt-in when the user has never invoked or named it.
-In that case, use a custom subagent, or `claude -p` when that route is
-unavailable or cannot carry the assignment.** A single-agent workflow is a valid
-dispatch under this opt-in.
+Claude Code's ultracode mode. It stays in force for later tasks in the session.
+Loading this skill yourself does not establish opt-in when the user has never
+invoked or named it. In that case, use a custom subagent, or `claude -p` when
+that route is unavailable or cannot carry the assignment.** A single-agent
+workflow is a valid dispatch under this opt-in.
 
 Write each generated Claude custom definition under the active user
 configuration directory's `agents/<name>.md`, one file per model and effort
@@ -340,7 +345,7 @@ means Sol.
 | Review | GPT `xhigh` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
 | Backend architecture design | Claude `high` and GPT `xhigh`, both run (rule 6) | whichever one is available, alone | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices, and the review, verification or audit of that work (rules 4 and 6) |
 | Visual design | Claude `high` | GPT `xhigh` | visual and interaction design of a product UI, visualizations that present information (diagrams, charts, HTML pages, slide decks) with the markup that draws them, design prototypes not meant to ship, and the review, verification or audit of that work (rule 4) |
-| Documentation | GPT `xhigh` | Claude `high` | prose documents (docs, READMEs, guides, reports, code samples inside them included), agent-instruction files (SKILL.md, AGENTS.md, prompts, briefs), UI strings, written or translated, other translation, Chinese writing |
+| Documentation | GPT `xhigh` | Claude `high` | prose documents (docs, READMEs, guides, reports, code samples inside them included), agent-instruction files (SKILL.md, AGENTS.md, prompts, briefs), UI strings, and any other prose or translation, in any language |
 | Research | GPT `xhigh` | Claude `high` | exploration, data analysis, debugging or root-causing that reports a cause, reproducing a user-reported problem before any work exists |
 | Brainstorming and discussion | Claude `high` and GPT `xhigh`, both run (rule 7) | whichever one is available, alone | brainstorming (generating ideas, options, names, hypotheses, test-case ideas) and multi-agent discussion, where agents read and respond to each other (debate, critique panel, deliberation) |
 | Other simple work | GPT `high` | Claude `medium` | a single-step fact lookup, or any other task that is single-step, mechanical and verifiable in seconds (rule 2) |
@@ -417,7 +422,9 @@ Fallback effort once the family has fallen back. Apply these cases:
   set the mode, which decides every parameter the route cannot carry.
 - **Concurrent agents forbidden on the same model and effort level**: keep the model. The
   first agent keeps its level; each later concurrent agent takes the highest
-  level the platform allows below it.
+  level below the previous agent's that the platform allows, and an agent with
+  no such level left waits until a running agent on that model finishes and then
+  takes the level that agent freed, never changing the model or its source.
 
 **Fast mode.** Fast mode is the faster, pricier serving tier or speed setting of
 the same model: a fast variant ID, a service tier or a settings switch,
@@ -465,9 +472,10 @@ depending on the source.
   its Fast frontmatter selection is untested. Read `references/cli-dispatch.md`
   for each source's settings and checks.
 
-**Reporting.** Use this one-line form as the whole announcement or report of a
-subagent. Describe only what the dispatch carried; `Fast` records a request,
-not proof of the serving tier:
+**Reporting.** Use this one-line form as the whole announcement of a subagent
+and to name it in any report of it; what it returned is relayed as
+**Communication** directs. Describe only what the dispatch carried; `Fast`
+records a request, not proof of the serving tier:
 
 ```
 <Role>: <model> <effort>[ Fast][ via <route>][ (<tags>)]
@@ -486,12 +494,12 @@ not proof of the serving tier:
   the agent, whatever the host calls it; otherwise "<source> CLI" for a headless
   command line, or the product name plus the kind of interface for any other
   interface, never a command, flag or internal tool identifier.
-- **Tags**: comma-separated, two in all. "fallback model": the row's Fallback
-  family ran because a source for the first-choice family was present but could
-  not run that family's required model; with no source for that family at all,
-  the Fallback family is the normal case and takes no tag. "Fast unavailable":
-  the agent's model is inside a fast-mode scope the user enabled but has no fast
-  option on the source carrying it.
+- **Tags**: comma-separated, only those that apply, from these two. "fallback
+  model": the row's Fallback family ran because a source for the first-choice
+  family was present but could not run that family's required model; with no
+  source for that family at all, the Fallback family is the normal case and
+  takes no tag. "Fast unavailable": the agent's model is inside a fast-mode
+  scope the user enabled but has no fast option on the source carrying it.
 - **Both-run rows**: one line per agent that ran, or the lines joined with
   " + ".
 
@@ -509,8 +517,9 @@ Devin child session".
   **Reporting** under **Model selection** gives, so the user can see what runs
   each role.
 - Relay subagent inputs and outputs verbatim — never paraphrase a brief, a
-  verdict, or a set of issues; only the closing report is yours to write (see
-  **Final summary**).
+  verdict, or a set of issues; beyond the closing report (see **Final
+  summary**), your own words are limited to saying, in an update, what happened
+  around the quoted material, such as that a reviewer forced rework.
 - Note when a reviewer forces rework, and when you re-consult the
   orchestrator-consultant or the final-gate reviewer.
 - Your updates relay the subagents' judgments, which are the record, rather
@@ -556,10 +565,11 @@ plus the items the user approved since, never one written to fit the result,
 ticked as the final-gate reviewer left it rather than by your own assessment —
 with every ticked item naming the evidence that proves it, and every unticked
 item saying what is missing and why. The result against any stretch target.
-Any risk the checklist does not already carry. What remains as open work. Last,
-and separately, each thing you need from the reader — anything that blocks the
-work or needs their decision — explained as if new; if you need nothing, ask
-nothing.
+Any risk a subagent reported, or a failure you observed while executing, that
+the checklist does not already carry. What remains as open work, as the
+final-gate reviewer and the orchestrator-consultant left it. Last, and
+separately, each thing you need from the reader — anything that blocks the work
+or needs their decision — explained as if new; if you need nothing, ask nothing.
 
 ## Self-check
 
@@ -587,8 +597,8 @@ Before declaring the task done, confirm:
   or too-expensive tier unless instructed.
 - [ ] Fast mode ran only inside a scope the user named, and was off everywhere
   else (see **Fast mode** under **Model selection**).
-- [ ] Every announcement and report of a subagent was one line in the
-  **Reporting** form, with no effort or Fast the dispatch did not carry.
+- [ ] Every announcement of a subagent, and its name in any report, was one line
+  in the **Reporting** form, with no effort or Fast the dispatch did not carry.
 - [ ] You relayed briefs, artifacts, and verdicts verbatim, and limited yourself
   to executing what the subagents directed.
 - [ ] The closing report re-grounds a reader who saw none of the chain — in the

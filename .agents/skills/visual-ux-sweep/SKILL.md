@@ -1,6 +1,6 @@
 ---
 name: visual-ux-sweep
-description: Review (and, when asked, fix) UI/UX regressions in a web app via headless-browser screenshots across routes, viewports, themes, and interaction states. Use when asked to audit the UI, review the design, find visual or accessibility regressions, screenshot the app, verify visual changes look right, or "make the UI look right." Framework-agnostic (React/Vue/Svelte/plain). Renders the running app and pairs each screenshot with a root-cause probe and, when fixes are wanted, a surgical fix. Needs an app that builds and runs locally; not for product/feature work or new pages.
+description: Review (and, when asked, fix) UI/UX regressions in a web app via headless-browser screenshots across routes, viewports, themes, and interaction states. Use when asked to audit the UI, review the design, find visual or accessibility regressions, screenshot the app, verify visual changes look right, or "make the UI look right." Framework-agnostic (React/Vue/Svelte/plain). Builds and serves the app, renders it headlessly, and pairs each screenshot with a root-cause probe and, when fixes are wanted, a surgical fix. Needs an app that builds and runs locally; not for product/feature work or new pages.
 ---
 
 # Visual UX Sweep
@@ -15,15 +15,16 @@ regression behind a loading spinner.
 
 1. **Set up the capture environment.** See **Setup** — this is where
    sweeps fail, so do every step.
-2. **Discover the surface** (routes × viewports × themes × interaction
-   states) from the repo, not from memory. See **Repo-agnostic
-   discovery**.
+2. **Discover the surface** (routes × themes × interaction states, at
+   the harness's viewports) from the repo, not from memory. See
+   **Repo-agnostic discovery**.
 3. **Capture** the matrix with the harness in
    `references/playwright-harness.md`. Keep the harness structure
    (mocks, content wait, error capture, verification) unchanged;
-   parameterize the port, API base, fixtures, auth and theme seed, and
-   the capture matrix, including each entry's `media` and `steps`, and
-   delete the font-abort route only when the font host is reachable.
+   parameterize the port, API base, fixtures and routing, auth and theme
+   seed, and the capture matrix, including each entry's `media`, `steps`
+   and choice of one of the harness's existing viewports, and delete the
+   font-abort route only when the font host is reachable.
 4. **Confirm each shot rendered** before trusting it. See **Verify the
    capture** — read the harness's `UNRENDERED` and `UNMOCKED` output,
    then hash the PNGs; identical hashes across distinct routes mean a
@@ -36,7 +37,8 @@ regression behind a loading spinner.
    here and report each issue with its severity (blocks use, degrades
    use, or cosmetic), confidence, route × viewport × theme, the
    screenshot, the probe result and the `file:line` of the cause; run
-   steps 7–8 only when the user asked for fixes or confirms them.
+   steps 7–8 only when the user asks for fixes or confirms a fix you
+   proposed, not when they only agree that the issues are real.
 7. **Fix in themed batches**, one commit each. Re-capture after each
    batch and confirm the issue is gone.
 8. **Quality gates + clean repo** before commit. See **Quality bar**.
@@ -79,7 +81,9 @@ regression behind a loading spinner.
     - Caveat: a build may use different env defaults than dev (feature
       flags, API engine), so some chrome differs — fine for visual
       review; note it. Only fall back to the dev server for a trivial
-      app with no route splitting.
+      app with no route splitting; for any other app whose build fails,
+      supply what the build lacks through its environment without
+      editing the repo, and stop and tell the user if it still fails.
 3. **Put the capture script where its imports resolve.** ESM resolves
    `import "playwright"` from the script file's own directory, not the
    cwd. Running a script from `/tmp` fails with `ERR_MODULE_NOT_FOUND`
@@ -119,14 +123,15 @@ regression behind a loading spinner.
 
 ## Navigation + timing (stable rendering)
 
-- **Drive the app like a user.** A direct `goto` is fine for top-level /
-  public routes (login, a list page). For a deeply nested or guarded
-  route (e.g. `/projects/:id/board`), render the parent and click into
-  the child — do not deep-link `goto` it or fake `history.pushState`.
-  A direct `goto` to a nested route can leave it stuck in Suspense with
+- **Drive the app like a user.** A direct `goto` is fine for top-level
+  routes, public or behind the seeded auth (login, a list page). For a
+  deeply nested route, or one a guard admits only after its parent loads
+  (e.g. `/projects/:id/board`), render the parent and click into the
+  child — do not deep-link `goto` it or fake `history.pushState`. A
+  direct `goto` to a nested route can leave it stuck in Suspense with
   only the app-shell queries firing; clicking into it from the rendered
-  parent fires the route's own data queries and renders it fully. In
-  the harness, the click-through goes in the capture entry's `steps`.
+  parent fires the route's own data queries and renders it fully. In the
+  harness, the click-through goes in the capture entry's `steps`.
 - **Wait for content, not for "loading" to vanish.** A "no loading
   text" or `networkidle` check passes prematurely (e.g. just before an
   auth redirect kicks off the next load). Wait for a known content
@@ -143,10 +148,11 @@ regression behind a loading spinner.
   placeholder (`[]` for a GET, `{ ok: true }` otherwise) that breaks any
   page expecting an object and looks like an app bug. Add a typed fixture
   and re-capture.
-- **Hash every PNG** (`md5sum`). Identical hashes across distinct routes
-  mean the route did not render — you captured the same loading/error
-  screen. Re-navigate or fix the harness; never review or commit off
-  un-rendered shots.
+- **Hash every PNG** (`md5sum`). Identical hashes across distinct
+  routes, or between a shot whose `steps` set a state and the base shot
+  of its route, mean the route or state did not render — you captured
+  the same loading/error screen. Re-navigate or fix the harness; never
+  review or commit off un-rendered shots.
 - **Identical hashes between media variants** of the same route
   (light/dark, contrast, forced-colors, reduced-transparency) mean the
   app ignores that feature. If both shots passed their content
@@ -173,7 +179,8 @@ Per PNG, in both light and dark and at phone + desktop widths:
 - **Layout:** overflow / clipping, content under fixed chrome, broken
   grids, text truncation/ellipsis on labels, safe-area gaps. If web
   fonts were blocked, confirm truncation and wrapping issues with the
-  real font before filing.
+  real font before filing them as confirmed; where the real font cannot
+  load, report them at low confidence and name the fallback font.
 - **Theme:** any element that ignores dark mode (light-mode hex baked as
   a CSS-var fallback), low-contrast text, invisible borders.
 - **State:** loading/empty/error parity; focus rings present and
@@ -221,10 +228,11 @@ Before declaring a sweep done, confirm:
   placed where `import "playwright"` resolves.
 - [ ] The capture used the recipe in `references/playwright-harness.md` with
   its structure (mocks, content wait, error capture, verification)
-  unchanged, parameterizing only the port, the API base, the fixtures, the
-  auth and theme seed, and the capture matrix (each entry's `media` and
-  `steps`), and at most deleting the font-abort route when the font host
-  is reachable — not a harness written from scratch.
+  unchanged, parameterizing only the port, the API base, the fixtures and
+  routing, the auth and theme seed, and the capture matrix (each entry's
+  `media`, `steps` and choice of one of the existing viewports), and at most
+  deleting the font-abort route when the font host is reachable — not a
+  harness written from scratch.
 - [ ] Every shot was taken against a production build served on a stable
   port that matches `BASE_URL` — a dev server only for a trivial app with
   no route splitting; any chrome that differs from dev because the build
@@ -238,24 +246,27 @@ Before declaring a sweep done, confirm:
   endpoints the app maps over return arrays; auth is seeded before first
   paint with `addInitScript` and the session/identity endpoint is mocked,
   returning `401` for the public routes.
-- [ ] Every nested or guarded route was reached by clicking through from its
-  rendered parent in the entry's `steps` — no direct `goto`, no faked
-  `history.pushState` — and each shot waited for a known content selector
-  or text to appear plus a short settle, not on `networkidle` or on
-  "loading" disappearing.
-- [ ] The captured matrix covers the discovered routes at phone and desktop
-  widths in both light and dark, plus the interaction states under review,
-  each driven by an entry's `steps` and named by its `state`.
+- [ ] Every deeply nested route, or one a guard admits only after its parent
+  loads, was reached by clicking through from its rendered parent in the
+  entry's `steps` — no direct `goto`, no faked `history.pushState` — and
+  each shot waited for a known content selector or text to appear plus a
+  short settle, not on `networkidle` or on "loading" disappearing.
+- [ ] The captured matrix covers the picked routes — the highest-traffic
+  ones plus every route the change under review touched — at phone and
+  desktop widths in both light and dark, plus the interaction states under
+  review, each in at least one viewport and theme, driven by an entry's
+  `steps` and named by its `state`.
 - [ ] No shot reviewed as rendered appears in the harness's `UNRENDERED`
   list (content wait missed or page error), whatever its hash. Every PNG
-  was hashed (`md5sum`) and no two distinct routes share a hash; identical
-  hashes between media variants of one route, other than reduced motion,
-  were filed as findings rather than re-captured when both shots passed
-  their content wait, and reduced motion was judged by the computed-style
-  probe or in code, never by its hash. Any blank, stuck,
-  or odd shot got its recorded API hits and console/page errors read,
-  together with a one-shot `page.evaluate` dump of `location.href` and
-  trimmed `document.body.innerText`, before the app's code was blamed.
+  was hashed (`md5sum`), and no two distinct routes, and no state shot and
+  its route's base shot, share a hash; identical hashes between media
+  variants of one route, other than reduced motion, were filed as findings
+  rather than re-captured when both shots passed their content wait, and
+  reduced motion was judged by the computed-style probe or in code, never by
+  its hash. Any blank, stuck, or odd shot got its recorded API hits and
+  console/page errors read, together with a one-shot `page.evaluate` dump of
+  `location.href` and trimmed `document.body.innerText`, before the app's
+  code was blamed.
 - [ ] Every PNG was reviewed against all five checklist groups — layout,
   theme, state, a11y modes, looks-wrong-but-correct — and the issue list was written
   before the first fix. `colorScheme`, `contrast: "more"`,

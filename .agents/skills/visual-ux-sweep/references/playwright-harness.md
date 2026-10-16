@@ -4,9 +4,10 @@ A reusable, framework-agnostic capture script. Copy it and keep its
 structure (mocks, content wait, error capture, verification) unchanged.
 Change only the four clearly-marked repo-specific blocks: the **preview
 port**, the **API base + mock fixtures and routing**, the **capture matrix
-(media + steps per entry)**, and the **auth + theme seed**. The one edit
-outside them is the font-abort route in `installMocks`: delete it when the
-font host is reachable.
+(media + steps per entry, each entry choosing one of the existing
+`VIEWPORTS`)**, and the **auth + theme seed**. The one edit outside them
+is the font-abort route in `installMocks`: delete it when the font host is
+reachable.
 
 ## Why it is shaped this way
 
@@ -255,7 +256,8 @@ misses.
 
 The harness already prints each shot's API hits, page errors and console
 errors. When a shot is blank, stuck or odd, don't guess from code — filter
-`captures` to that entry, re-run, and dump the page after the content wait:
+`captures` to that entry, give it a `steps` function that runs the dump
+below (steps run after the content wait), and re-run:
 
 ```js
 const info = await page.evaluate(() => ({

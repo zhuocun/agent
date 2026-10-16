@@ -265,13 +265,8 @@ auto-compact event's `preTokens` in the session `.jsonl`: ~320K means it works,
   fails on it. That workflow runs on PRs touching `.agents/skills/**` and
   weekly — the weekly run is what catches canonical moving ahead of this repo,
   which no PR here can see.
-- **Branch names** for AI-authored work: `claude/<short-topic>` —
-  `claude/burst-post-m4-hardening`, `claude/resolve-auto-tier-in-attribution`,
-  `claude/fly-auto-deploy`.
-- **Commits**: imperative subject, concise body explaining *why*, footer
-  `https://claude.ai/code/session_01Hvw3QNjvo9XwVycsq7tFd8` per the precedent in
-  the log. Never include AI model identifiers in commits, PR titles/bodies, or
-  code comments.
+- **Commits**: imperative subject, concise body explaining *why*. Never
+  include AI model identifiers in commits, PR titles/bodies, or code comments.
 - **PRs**: small, one concern each, squash-merge for clean main history.
   Multi-concern bursts are OK as one PR with logical commits if the changes
   share an integration story (see PR #75 — 5 commits, one per concern, one
@@ -328,7 +323,7 @@ auto-compact event's `preTokens` in the session `.jsonl`: ~320K means it works,
 
 ## When you need to ship something new
 
-1. Branch off `main`, name it `claude/<topic>`.
+1. Branch off `main`.
 2. Run `uv sync` in `api/` and `pnpm install` in `web/` if deps drift.
 3. Make changes. Tests + types must stay green:
    - `cd api && uv run ruff check . && uv run mypy app && uv run pytest`

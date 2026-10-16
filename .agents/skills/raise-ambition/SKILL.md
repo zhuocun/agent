@@ -1,0 +1,157 @@
+---
+name: raise-ambition
+description: >-
+  Rewrite a task's brief before work starts so it aims higher, in any domain, through four
+  lenses from Felix Rieseberg's essay on ambition: Altitude (the outcome the task serves, one level
+  up), Depth (the raw material, methods, hard targets, tested assumptions and outside
+  verification a field-leading expert would use), Range (methods from other fields that change
+  the result) and Speed (a deadline, an early first check, parallel work and no avoidable waits).
+  Keeps the user's scope, constraints, permissions and budget; the result is one brief that
+  this agent, a subagent or the user executes. Use when a non-trivial task is about to start,
+  including before burst or proxy sets its definition of done, and its description names only
+  the deliverable: a design or architecture, a research or analysis question, a business
+  review, a strategy or plan, a piece of writing, an operational process, a personal project.
+  Also use when asked to make a task, prompt or plan more ambitious or to raise its standard.
+  Do not use, unless the user asks, for a trivial or mechanical task, a fix whose cause is
+  already known, a task that already has acceptance criteria or a spec, a task whose method the
+  user fixed, a follow-up inside a task already briefed, or a question that needs only an
+  answer; never use it for executing the task, the orchestration itself (burst or proxy), or
+  reviewing finished work.
+---
+
+# Raise Ambition
+
+Before work starts, rewrite an ordinary task description into one brief that aims higher and can still be checked. The brief rests on four lenses: **Altitude**, the outcome the deliverable serves, one level up; **Depth**, the raw inputs, methods, targets and outside checks a field-leading expert would use; **Range**, methods borrowed from other fields that change the result; and **Speed**, a schedule that reaches a verified result early. It keeps the user's scope, constraints, permissions and budget, and asks the user about every change that needs consent before any work on that change starts. The skill rewrites only: it does not execute the task, decompose or dispatch work, choose models (burst and proxy own those), or review finished work or grade an existing plan. The lenses come from Felix Rieseberg's essay "How to be more ambitious: A tutorial for humans with models" (2026-10-13, https://felixrieseberg.com/how-to-be-more-ambitious-a-tutorial-for-humans-with-models/); Speed is not developed there, and its mechanisms below come from other sources, cited where they are used.
+
+Priority order, highest first: **the user's constraints, safety and permissions → verifiability → Altitude → Depth → Range → Speed → concision.** A target raised beyond what an outside check can confirm is worse than the original target, so verifiability caps every lens. Apply the lenses in the same order: Altitude sets the outcome, Depth sets the standard and methods that reach it, Range adds methods to Depth, and Speed schedules the work the first three define.
+
+Run the skill once per task, in one pass; do not raise a brief that this skill already produced. Scale the rewrite to the task: a small task keeps only Task as given, Constraints kept, Outcome, Targets, Verification, Fields and Confirm before starting, with the other slots dropped and listed together in one line of Lenses skipped; on any task, a lens that does not fit is skipped with its reason. Write the brief in the task's language (slot labels may stay English) and return one recommended brief, never alternatives side by side. Word the whole brief in correctness and reliability terms; avoid security-testing vocabulary, because some model providers stop a run whose brief reads as security testing.
+
+## The brief
+
+Fixed slots, in this order, at most about 40 lines:
+
+```
+Task as given:        <the original task, verbatim>
+Constraints kept:     <each user constraint, verbatim>
+Outcome:              <what the deliverable must cause, one level up, observable>
+Targets:              <high target; minimum acceptable target; learning target if novel; guardrails>
+Inputs:               <primary sources and raw data>
+Methods:              <method or tool → what it produces>
+Assumptions to test:  <assumption → test that could disprove it> (2–3)
+Verification:         <check outside the author → how to run it → pass condition>
+Fields:               <field → method → what it changes> (3–5, one tries to disprove the result; a small task keeps one method and the disproof line)
+Schedule:             <deadline; critical path; parallel lines; waits removed; time of first outside check>
+Out of scope:         <what this brief does not cover>
+Confirm before starting: <each item that needs the user's consent, per pass 6>
+Lenses skipped:       <lens or slot → reason>
+```
+
+## Passes
+
+### 1. Fix the frame and check resources
+
+Copy the task and every explicit user constraint verbatim: scope, deadline, budget, tools, audience, actions to ask about first. Then make one read-only check of what actually exists: the data, tools, access, prior work, and who uses the result. Name only resources the check found; one the raised brief needs but the check did not find becomes a precondition in Confirm before starting. Neither the check nor the brief obtains access, spends money, contacts anyone outside or takes an irreversible step on its own authority.
+
+### 2. Altitude — the outcome the deliverable serves
+
+Ask who uses the deliverable for which decision, and what would stop this task recurring. Write the Outcome one level up from the deliverable, in observable terms, and keep the deliverable's type. A higher outcome that would replace the deliverable or change its audience goes to Confirm before starting, not into the brief's working plan. Altitude fits best when the result feeds a discussion or a decision; for work judged mainly on taste, such as fiction, visual design or a personal letter, apply it lightly and put the ambition into Depth and Range.
+
+### 3. Depth — the standard a field-leading expert would hold
+
+Answer the essay's four questions: what would a top practitioner do beyond the ordinary version, which raw material would they start from, which methods and tools would they use, and which outside signal would show the result is right. Every addition changes a method, an input, a target or the verification, never the number of deliverables. Fill the slots from those answers:
+
+- **Inputs** are primary sources and raw data, not someone else's summary of them.
+- **Methods** name concrete methods or tools and what each produces.
+- **Targets**: each target carries a number and a unit where the result can be measured. Where it is judged on quality or taste, state it as a pass condition an outside reader applies, such as "two of three readers who did not see the drafts restate the argument in one sentence". Set one high target and one minimum acceptable target. For a novel or complex task (a design, a study, a strategy) add a learning target, such as "compare at least N distinct approaches before choosing": in goal-setting research on people, hard specific goals beat vague ones, but when the strategy for a complex task is not yet known, a hard performance goal alone can lead to worse strategies than a goal to discover them (Locke & Latham, 2002). Add guardrails, the qualities that must not get worse, because a single pursued metric degrades what it does not measure (Goodhart's law; Ordóñez et al., 2009). When the work misses the high target, report the result against the minimum as it stands; never lower a target after the fact.
+- **Assumptions to test** are the two or three the result rests on, each with a test that could disprove it.
+- **Verification** is a check the author does not grade: a test suite, held-out data, a measurement, a blind second reviewer, a pilot. State how to run it and what counts as a pass. Self-assessment is not verification; models in particular rarely fix their own reasoning without an outside signal (Huang et al., 2024). The brief may aim at new knowledge, provided held-out data or another outside check is reserved to confirm it.
+
+### 4. Range — methods from other fields
+
+First restate the deliverable as what it must accomplish, starting with a verb ("a deck" becomes "in 30 minutes, convince the decision-makers of one causal chain and get a decision"), then pick the fields that are good at that verb. Each Fields line names a concrete method and the result it changes, never a persona or a tone ("think like an economist" is not a method). One line always tries to disprove the conclusion: a reviewer who argues the opposite from the same evidence, or a review of the design's weakest point. Phrase that line as a challenge review.
+
+### 5. Speed — time to a verified result
+
+Speed shortens the time to a result that passed its outside check, not to an unchecked draft. It rests on four mechanisms, each cited where it is stated:
+
+1. Set a tight deadline at the start (Collison's "Fast" list of projects that met hard goals on short deadlines).
+2. Get the first outside check early: a small part of the result, a sample, a pilot, a draft review; a short observe–decide–act cycle (the OODA loop) corrects course sooner.
+3. List the lines of work that can run in parallel and name the serial critical path, since the serial part, not the parallel work, sets the finish time (Amdahl's law).
+4. Remove avoidable waits, starting with the step that holds up everything else (theory of constraints): batch the questions and approvals at the start, get data and access in place before work begins, and cut work that does not serve the Outcome, never a part the user asked for.
+
+Never buy speed by skipping verification, and never write "faster" without a mechanism. Speed is about the schedule; do not infer from it that a model's fast mode should be switched on.
+
+### 6. Close the brief
+
+Fill Out of scope with what the brief deliberately leaves out. Fill Confirm before starting with every item that changes the deliverable or its audience, needs access the resource check did not find, spends money, exceeds a budget or deadline the user set, or, when the user set none, needs clearly more effort than the task as given implies (as a rule of thumb, more than about twice). Include any proposal to relax a user constraint. Ask about these items before starting them. Work that does not depend on them proceeds, and until the user agrees, each such item stays out of the working plan. Raises of methods, targets and verification that fit inside those limits need no consent: state them in the brief and proceed. A deadline set earlier than the user's is a raise, not a change of time. Fill Lenses skipped with each skipped or lightened lens and its reason.
+
+## Hand-offs to other skills
+
+- **burst and proxy**: the definition of done they take from the brief is its minimum targets, its guardrails and the pass conditions in Verification. The high target is what the work aims for, and the final report states the result against both. Items still in Confirm before starting are not part of the definition of done.
+- **burst**: when this skill applies to the task, run it before burst sets its definition of done. Fields, Schedule and Verification are inputs to burst's planning. Decomposition, dispatch and models stay with burst.
+- **proxy**: do not rewrite the brief yourself, since rewriting the task is a planning decision. Send an orchestrator-consultant this skill's body verbatim, with the task, the user's constraints and the resource check. Relay its Confirm before starting items to the user verbatim: they ask for the user's consent, so a subagent cannot answer them. Then pass the returned brief and the user's answers verbatim into proxy's Pass 1 consultant brief.
+- **document-editor**: when the deliverable is a document, this skill sets the standard and document-editor owns the document's structure.
+- **communicate**: governs how the brief and any later report are written to the user. Gloss each lens name in plain words on first use.
+
+## Examples
+
+Extracts; a real brief fills every slot it keeps.
+
+**Software — "Design the architecture of a multi-tenant notification service."**
+- Outcome: each tenant's messages arrive on time and exactly once; on-call finds the cause of a failed delivery within 5 minutes.
+- Targets: high, p99 ≤ 1 s at 10× peak; minimum, p99 ≤ 3 s at current peak with no tenant delayed by another's load; guardrail, cost per message does not rise. The numbers are placeholders until checked against real traffic.
+- Methods: a queueing capacity model, a load simulation, a TLA+ model of retries and deduplication.
+- Fields: SRE (failure drills that switch off a dependency), scheduling theory (weighted fair queueing); a reviewer argues the design fails when one tenant floods the queue.
+- Verification: model-checker output, load data, a replay of historical peaks.
+- Confirm before starting: access to production logs.
+
+**Research — "Summarize the research on whether remote work lowers productivity, for the company's office policy."**
+- Outcome: a policy decision the executives can defend, plus how it will be checked after rollout.
+- Methods: a systematic search with stated inclusion criteria, effect sizes weighted by study design, split by task type.
+- Assumptions to test: productivity means output, not hours.
+- Verification: a second reviewer applies the inclusion criteria blind to the conclusions; conclusions are written down before the internal data is opened.
+- Fields: labor economics (causal identification), organizational psychology (team coordination); one line argues the opposite policy from the same evidence.
+- Confirm before starting: use of internal HR data.
+
+**Business — "Prepare the quarterly business review deck."** (the essay's example)
+- Outcome: leadership spots problems earlier and decides on resources.
+- Methods: start from the raw data, find the three most urgent decisions, and give the case for and against each.
+- Confirm before starting (Altitude one more level): a mechanism that catches problems before the quarterly review, run alongside it for one quarter.
+
+**Writing — "Write a 1,500-word essay arguing that cities should remove parking minimums."**
+- Outcome (Altitude light): a reader who disagreed can state the strongest version of the argument.
+- Targets: high, 3 of 3 test readers who did not see the drafts restate the thesis and its main evidence in one sentence each; minimum, 2 of 3; guardrail, no figure without a primary source.
+- Inputs: the zoning codes and before-and-after permit data from cities that removed minimums, not commentary about them.
+- Fields: urban economics (estimate the effect from the permit data), journalism (lead with one case a reader can picture); one line argues for keeping minimums from the same data.
+- Schedule: draft by Thursday; first outside check, two test readers on the outline on Tuesday; no parallel lines, since one author writes in sequence.
+
+## Failure modes
+
+1. **New vocabulary, same method** — bolder words, no changed method, input, target or check.
+2. **Scope growth passed off as depth** — more deliverables, not a higher standard.
+3. **Altitude too high or swapped** — an outcome nobody can act on, or a different task quietly replacing the one given.
+4. **Self-assessment as verification** — the author grades its own result.
+5. **Role-play instead of method** — a persona or tone where a method belongs.
+6. **Targets nobody can check** — "fast", "scalable", "best-in-class", with no number or reader pass condition.
+7. **Secondhand inputs only** — summaries where the raw material exists.
+8. **False speed** — no mechanism, or the check skipped.
+9. **Overstepped bounds** — a constraint, permission or cost crossed without asking.
+10. **One metric chased** — no guardrails or no minimum target, so the result cannot be reported honestly.
+11. **Invented resources** — data, tools or access the resource check did not find.
+12. **Full process on a small task** — thirteen slots for a two-line job.
+13. **A generic brief** — it would fit a different task unchanged.
+
+## Self-check
+
+- [ ] Each item below applies to the slots the brief fills; a slot dropped for a small task is named in Lenses skipped.
+- [ ] The task and constraints are copied verbatim; the number of deliverables is unchanged or the change is in Confirm before starting.
+- [ ] The Outcome is observable, one level up, and does not replace the task.
+- [ ] Every target has a number and a unit, or, for work judged on quality, a pass condition an outside reader applies; there is a high target and a minimum target, a learning target if the task is novel or complex, and guardrails.
+- [ ] Inputs are primary sources where they exist; Methods name concrete tools; two or three assumptions each have a test that could disprove them.
+- [ ] Verification comes from outside the author and states how to run it and what passes.
+- [ ] Each Fields line names a method and what it changes, with no persona; one tries to disprove the result, worded so it does not read as security testing.
+- [ ] The Schedule has a deadline, critical path, parallel lines, waits removed (questions and approvals first) and the time of the first outside check.
+- [ ] Every item pass 6 requires consent for is in Confirm before starting, and no work that depends on those items starts until the user agrees.
+- [ ] The brief obtains no access, spends no money, contacts no one outside and takes no irreversible step on its own authority.
+- [ ] Out of scope is filled; skipped lenses carry reasons; one brief of at most about 40 lines, in the task's language, naming only resources the check found.

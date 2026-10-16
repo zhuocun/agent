@@ -15,7 +15,7 @@ Worker output is not integrated directly: every worker deliverable passes throug
 
 ## Run it to done
 
-Before dispatching anything, define the to-dos and a high-standard definition of done (DoD) — the explicit bar the integrated work must clear. Then orchestrate with perseverance until that DoD is met: keep the chain running, proactively resolve blockers as they surface, and make the decisions the run needs — any choice that advances the DoD is yours to make. Do not pause mid-flight and call a round finished while DoD to-dos are still open and actionable. Escalate only a genuine blocker — a decision you can't ground, or a subtask that fails its second review (see **Reviewer**) — not a trivial or obvious-answer fork; otherwise decide and keep moving. Proactively record the to-dos and progress (a running checklist) so nothing drifts over a long session.
+Before dispatching anything, define the to-dos and a high-standard definition of done (DoD) — the explicit bar the integrated work must clear, taken from the raise-ambition brief when that skill produced one for the task. Then orchestrate with perseverance until that DoD is met: keep the chain running, proactively resolve blockers as they surface, and make the decisions the run needs — any choice that advances the DoD is yours to make. Do not pause mid-flight and call a round finished while DoD to-dos are still open and actionable. Escalate only a genuine blocker — a decision you can't ground, or a subtask that fails its second review (see **Reviewer**) — not a trivial or obvious-answer fork; otherwise decide and keep moving. Proactively record the to-dos and progress (a running checklist) so nothing drifts over a long session.
 
 ## Stay grounded
 

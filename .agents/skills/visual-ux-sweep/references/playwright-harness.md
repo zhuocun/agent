@@ -125,7 +125,7 @@ const emulateReducedTransparency = async (page) => {
 // ── REPO-SPECIFIC 3/4: capture matrix (media + steps per entry) ──────
 // media:     page.emulateMedia keys: colorScheme, contrast, reducedMotion, forcedColors.
 //            Shots disable animations, so a reducedMotion shot shows only
-//            layout swaps; check motion itself with the motion probe below.
+//            layout swaps; check motion itself with the computed-style probe below.
 // steps:     runs after waitText appears. Click through to nested/guarded
 //            routes and set interaction states (hover, focus, open menu) here.
 // waitAfter: text that must appear after steps (defaults to waitText).
@@ -151,7 +151,7 @@ const captures = [
 const seed = async (context, c) => {
     // auth: the token/session the app checks, written before first paint
     if (c.authed) await context.addInitScript(() => {
-        try { window.sessionStorage.setItem("ai_jwt", "fake.jwt.token"); } catch (e) {}
+        try { window.sessionStorage.setItem("auth_token", "fake.jwt.token"); } catch (e) {}
     });
     // theme: set the key your theme provider reads; delete if the app follows prefers-color-scheme
     await context.addInitScript((s) => {
@@ -265,7 +265,7 @@ const info = await page.evaluate(() => ({
 }));
 console.log(info);
 // "only identity endpoints in api:, the route's own queries never fired" ⇒
-// the route is stuck in dev lazy-compile or a guard, not a code bug.
+// the route is stuck in a guard or a lazy chunk that never loaded, not a code bug.
 ```
 
 For a visual issue (contrast, overflow, clipping, motion), read the

@@ -14,7 +14,8 @@ description: >-
 **Persistent across tasks and sessions — not a one-turn effect.** Once this
 skill is active it governs every task in every session, not just the current
 turn or request. Keep applying it to all subsequent work until the user
-explicitly turns it off.
+explicitly turns it off or switches to a different method of orchestrating
+subagents.
 
 ## Role
 
@@ -42,11 +43,15 @@ The subagent roles, and the chain they form:
 Chain: **orchestrator-consultant → (worker → reviewer)\* → final-gate
 reviewer**, with you executing and relaying at every hop.
 
-**Every delegate is a leaf.** Every brief you write — orchestrator-consultant,
-reviewer, final-gate reviewer — states that the delegate must not invoke the
-burst or proxy skills, or spawn subagents or workflows. Ask the
-orchestrator-consultant to put the same line in each worker brief it drafts, so
-the worker brief still passes verbatim.
+**Every delegate is a leaf, briefed in correctness terms.** Every brief you
+write — orchestrator-consultant, reviewer, final-gate reviewer — states that the
+delegate must not invoke any skill that delegates work to subagents, or spawn
+subagents or workflows. Each brief is also worded in correctness and reliability
+terms — the rule, the input, the expected result — rather than attack or exploit
+terms, since some providers stop a run whose brief reads as security testing; a
+security check the task needs stays in scope, stated as the defect it prevents.
+Ask the orchestrator-consultant to hold each worker brief it drafts to both
+rules, so the worker brief still passes verbatim.
 
 ## Priority order
 
@@ -70,41 +75,64 @@ do so always traces back to a subagent's instruction.
 ## Run it to done
 
 Before any work starts, confirm the orchestrator-consultant has set the to-dos
-and definition of done. Then keep the loop moving with perseverance: drive
+and a high-standard definition of done, set at the highest standard that can
+still be verified within the user's scope, constraints and budget: it folds in
+every requirement already set for the task, including the qualities it must not
+degrade and the checks it must pass, is raised further by any method available
+for raising a task's standard, and is never lower than what was already set.
+Any higher bar worth aiming at but not gating on, whether already set for the
+task or added now, stays outside the definition of done as a stretch target,
+and the final summary reports the result against it. Work that goes beyond the
+user's scope, constraints or budget goes to the user before it starts, and each
+item they approve joins the definition of done. Then, building on any plan
+already set for the task, keep the loop moving with perseverance: drive
 dispatch → review → re-consult until the final-gate reviewer returns `done`.
 Clear obstacles by routing each to the right subagent, never by deciding
 yourself; don't stall on a fork — re-consult and proceed. Don't stop mid-flight
 while to-dos are still open and actionable. Route trivial or obvious-answer
-decisions to a subagent, not to the user. Keep a running record of the to-dos
-and progress through the chain so nothing drifts over a long session.
+decisions to a subagent, not to the user; a decision that needs the user's
+consent is never one of them. Keep a running checklist of the to-dos and
+progress through the chain, in a file or in the tracker the work already uses,
+so that nothing drifts over a long session and the checklist survives a
+compaction.
 
-After a context compaction, rebuild that record from ground truth (the files,
-the branch, test output, the artifacts already integrated), not from the
-summary. Then send it to an orchestrator-consultant to order the remaining
-work, since ordering is planning, and resume from its answer without waiting
-for the user to confirm.
+After a context compaction, re-read that checklist and check each item against
+ground truth (the files, the branch, test output, the artifacts already
+integrated), not against the summary. Then send it to an orchestrator-consultant
+to order the remaining work, since ordering is planning, and resume from its
+answer without waiting for the user to confirm.
 
 ## Pass 1 — Consult the orchestrator-consultant
 
-Dispatch an orchestrator-consultant subagent with the task as received. Its
-brief:
+Dispatch an orchestrator-consultant subagent with the task as received. The
+consultant's brief:
 
-- the user's task verbatim, plus the context and files it needs to plan;
-- ask it to return: the to-dos for the whole task and the definition of done the
-  integrated work must clear, with the updates to docs, records and to-dos the
-  work will touch included as to-dos; the decomposition into subtasks, which are
+- the user's task and any requirements, success criteria and checks already
+  set for it, verbatim, with the user's answers so far, plus the context and
+  files it needs to plan;
+- the definition-of-done rule from **Run it to done** and the instructions of
+  any method available to you for raising a task's standard, both verbatim, for
+  it to set the definition of done by;
+- ask it to return: the to-dos for the whole task, with the updates to docs,
+  records and to-dos the work will touch included as to-dos; a high-standard
+  definition of done the integrated work must clear, set by that rule; any
+  stretch target, kept outside it; the decomposition into subtasks, which are
   parallel vs. sequential; the task type of each subtask, named as exactly one
   row of the **Model selection** table, with the families and effort levels its
-  row assigns; the brief for each worker, each stating that the
-  worker is a leaf; the success criteria per subtask; and what the final-gate
-  reviewer should check;
+  row assigns; the brief for each worker, each stating that the worker is a leaf
+  and worded in correctness and reliability terms; the success criteria per
+  subtask; what the final-gate reviewer should check; and any question that
+  needs the user's answer or consent;
 - that table, its legend and its numbered rules, verbatim, to classify by.
 
 If it names no row, or more than one, for a subtask, re-consult rather than
-choose. Then follow its plan. If the plan is ambiguous, or you hit a fork it did
-not cover, go back to an orchestrator-consultant — do not resolve it yourself.
+choose. Then ask the user each question it returned for them, verbatim and
+never through a subagent, and follow its plan. If the plan is ambiguous, or you
+hit a fork it did not cover, go back to an orchestrator-consultant — do not
+resolve it yourself.
 Re-consult whenever reality diverges from the plan (a worker uncovers new scope,
-a review forces a rethink).
+a review forces a rethink) or the user approves an item that goes beyond their
+scope, constraints or budget, since adding work is planning.
 
 ## Pass 2 — Dispatch workers
 
@@ -147,13 +175,13 @@ done decision are still not yours.
 
 You do not declare the task done. When every subtask has passed its reviewer,
 dispatch a final-gate reviewer subagent with: the original task; the to-dos and
-definition of done the orchestrator-consultant set in Pass 1, with what it said
-this gate should check; each subtask's goal and final artifact; and the
-cross-cutting integration to inspect. Ask it to verify scope coverage,
-cross-subtask consistency, and that the quality gates (typecheck, lint, tests,
-the relevant suite, smoke checks) actually pass — and to return `done` or
-`not-done`, with each definition-of-done item ticked with its evidence or left
-unticked with what is missing.
+definition of done the orchestrator-consultant set in Pass 1, plus the items the
+user approved since, with what the orchestrator-consultant said this gate should
+check; each subtask's goal and final artifact; and the cross-cutting integration
+to inspect. Ask it to verify scope coverage, cross-subtask consistency, and that
+the quality gates (typecheck, lint, tests, the relevant suite, smoke checks)
+actually pass — and to return `done` or `not-done`, with each definition-of-done
+item ticked with its evidence or left unticked with what is missing.
 
 - `done` → you may declare completion and report.
 - `not-done` → relay its gaps into a fresh worker → reviewer cycle, or back to
@@ -328,10 +356,10 @@ means Sol.
    mechanical and verifiable in seconds; a single-step fact lookup is Other
    simple work, not Research. Any other work no named row matches is Other
    complex work.
-3. Reviewers and verifiers go to Review, and so does any subtask whose
-   deliverable is a review or audit of existing work, security review included.
-   A verifier is a subtask that confirms one claim a worker, artifact or
-   reviewer asserted, such as running a suite or re-checking a cited source.
+3. Reviewers go to Review, and so do verifiers, the subtasks that confirm one
+   claim a worker, artifact or reviewer asserted, such as running a suite or
+   re-checking a cited source, and any subtask whose deliverable is a review or
+   audit of existing work, security review included.
 4. A reviewer, verifier, review or audit of work on a design row stays on that
    row: Visual design, or Backend architecture design, which runs both families
    (rule 6). Key it on the row the reviewed work was routed to, or, for existing
@@ -342,15 +370,16 @@ means Sol.
    design. A document's prose runs on the row the document takes on its own,
    Documentation or a design row, and each visualization in it runs as Visual
    design, drawing what the prose sets out. A slide deck is one visualization.
-6. Backend architecture design runs both families, Claude `high` and GPT `xhigh`,
-   for design and review alike. A design is two workers, one per family,
-   dispatched concurrently with the same brief; a review, verification or audit
-   is two agents, one per family, judging the same artifact independently. The
-   review passes only when both pass; a `revise` or `redo` from either sends the
-   worker back with both reviewers' issues verbatim, and the pair counts as one
-   review toward the two-failed-review stop. Each design passes its own review,
-   then the orchestrator-consultant compares and synthesizes the designs. The
-   row keeps a backend or full-stack design even when it is discussed.
+6. Backend architecture design runs both families, Claude `high` and GPT
+   `xhigh`, for design and review alike. A design is two workers, one per
+   family, dispatched concurrently with the same brief; a review, verification
+   or audit is two agents, one per family, judging the same artifact
+   independently. The review passes only when both pass; a `revise` or `redo`
+   from either sends the worker back with both reviewers' issues verbatim, and
+   the pair counts as one review toward the two-failed-review re-consult in
+   **Pass 3**. Each design passes its own review, then the
+   orchestrator-consultant compares and synthesizes the designs. The row keeps a
+   backend or full-stack design even when it is discussed.
 7. Brainstorming and discussion runs both families: at least one agent per
    family on the same brief, even when the request names a single agent. Claude
    runs `high`, and GPT runs `xhigh`. The orchestrator-consultant synthesizes
@@ -480,8 +509,8 @@ Devin child session".
   **Reporting** under **Model selection** gives, so the user can see what runs
   each role.
 - Relay subagent inputs and outputs verbatim — never paraphrase a brief, a
-  verdict, or a set of issues. The closing report to the user is the one
-  artifact this does not cover (see **Final summary**).
+  verdict, or a set of issues; only the closing report is yours to write (see
+  **Final summary**).
 - Note when a reviewer forces rework, and when you re-consult the
   orchestrator-consultant or the final-gate reviewer.
 - Your updates relay the subagents' judgments, which are the record, rather
@@ -503,10 +532,9 @@ Devin child session".
 
 ## Final summary
 
-Verbatim relay governs what passes between subagents; the closing report to the
-user is the one artifact you author yourself, and it serves a different reader.
-An update between dispatches and tool calls goes to a reader who already knows
-your earlier updates, so brevity there is good. The final summary is written for
+The closing report serves a different reader from your updates. An update
+between dispatches and tool calls goes to a reader who already knows your
+earlier updates, so brevity there is good. The final summary is written for
 a reader who saw none of that.
 
 If the chain ran without the user watching — overnight, across many dispatches,
@@ -520,16 +548,18 @@ Spell out terms. Don't use arrow chains, hyphen-stacked compounds, or labels you
 made up mid-run. When you mention files, commits, flags, or other identifiers,
 give each one its own plain-language clause.
 
-Take the same order every time. The task, in one or two bullets naming what
-the reader asked for in their words rather than the chain's. The outcome, in
-one sentence on what happened or what was found. The definition of done as a
+Take the same order every time. The task, in one or two bullets naming what the
+reader asked for in their words rather than the chain's. The outcome, in one
+sentence on what happened or what was found. The definition of done as a
 checklist — the one the orchestrator-consultant set before the work started,
+plus the items the user approved since, never one written to fit the result,
 ticked as the final-gate reviewer left it rather than by your own assessment —
 with every ticked item naming the evidence that proves it, and every unticked
-item saying what is missing and why. Any risk the checklist does not already
-carry. What remains as open work. Last, and separately, each thing you need from
-the reader — anything that blocks the work or needs their decision — explained
-as if new; if you need nothing, ask nothing.
+item saying what is missing and why. The result against any stretch target.
+Any risk the checklist does not already carry. What remains as open work. Last,
+and separately, each thing you need from the reader — anything that blocks the
+work or needs their decision — explained as if new; if you need nothing, ask
+nothing.
 
 ## Self-check
 
@@ -565,6 +595,7 @@ Before declaring the task done, confirm:
   prescribed order, complete sentences, no chain-internal shorthand or labels
   (see **Final summary**).
 - [ ] The checklist in the report is the definition of done the
-  orchestrator-consultant set before the work started, ticked as the final-gate
-  reviewer left it; every ticked item names its evidence, and every unticked
-  item says what is missing.
+  orchestrator-consultant set before the work started, plus the items the user
+  approved since, never one written to fit the result, ticked as the final-gate
+  reviewer left it; every ticked item names its evidence, every unticked item
+  says what is missing, and no stretch target was counted as part of it.

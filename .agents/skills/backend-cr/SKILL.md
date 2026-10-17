@@ -6,8 +6,7 @@ description: >-
   concurrency, compatibility, and verification quality. Do not use for designing
   a system architecture from scratch, whole-system architecture audits, or
   architecture-only assessment of boundaries, layering, dependency direction,
-  domain models, ports and adapters, design decisions, or overdesign; route
-  those requests to architecture design and review. Do not use for
+  domain models, ports and adapters, design decisions, or overdesign. Do not use for
   frontend-only or prose-only reviews.
 ---
 

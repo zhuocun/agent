@@ -13,7 +13,7 @@ description: >-
 
 # Backend Code Review
 
-Review backend code, a backend diff, or its tests, and report the defects that would otherwise reach production, with few false alarms. Report a defect only when a reachable trigger breaks a located contract. Judge the code against the project's established responsibilities and contracts; do not design a new architecture.
+Review backend code, a diff, or its tests for production defects with few false alarms. Report only reachable triggers that break located contracts. Judge against the project's established responsibilities and contracts; do not design a new architecture.
 
 Priority order: **authorization, data integrity and business correctness > failure, retry and concurrency > compatibility and deploy safety > tests > maintainability > style**. Explicit user or project requirements override this skill's defaults.
 
@@ -27,15 +27,15 @@ Priority order: **authorization, data integrity and business correctness > failu
 
 ## Step 1: Map the change
 
-1. Identify the revision, the requirements, and earlier review comments to re-check.
-2. Read the whole diff, then the code each changed line calls and that calls it, far enough to see the guards: middleware, decorators, interceptors, policy checks, repository filters, transaction wrappers, database constraints, callers that already validate.
-3. Name the requirement each changed block serves. A change in outputs, error codes, error order, defaults or side effects that no requirement asks for is a candidate, judged against the released behavior callers rely on.
-4. Note one line per changed entry point (endpoint, handler, job, consumer, command, migration): the caller and their identity source; what it reads and decides; each write and its transaction; each external call or publish (payment, email, HTTP, queue, cache, other service) and whether it runs before, inside or after the commit; each error handler; each schema, configuration or message-format change; the covering tests.
-5. Record what you could not see (code not given, configuration, other services) as coverage gaps. Under a strict boundary set by the user or project, do not inspect or judge code outside it.
+1. Identify the revision and requirements; re-check earlier review comments.
+2. Read the whole diff and its callers/callees through existing guards: middleware, decorators, interceptors, policies, repository filters, transaction wrappers, database constraints and caller validation.
+3. Name each changed block's requirement. Unrequested changes in outputs, error codes or order, defaults or side effects are candidates against released behavior callers rely on.
+4. Note one line per changed entry point (endpoint, handler, job, consumer, command, migration): caller and identity source; reads and decisions; writes and transactions; external calls and publishes (payment, email, HTTP, queue, cache, other service) before, inside or after commit; error handlers; schema, configuration or message-format changes; covering tests.
+5. Record unavailable code, configuration and services as coverage gaps. Do not inspect or judge outside a strict user or project boundary.
 
 ## Step 2: Hunt
 
-For each entry, work a section only when the entry does what its heading names, and list skipped sections in one line. Answer the section's questions in order, and before reporting a defect sign check whether a usually-correct look-alike applies. A sign or "Candidate" is not a finding until Step 3 confirms it. Do not infer risk from line count or recommend a mechanism only because this skill names it.
+Per entry, use applicable sections; list skips in one line. Answer questions in order. From Step 3's contracts, derive a minimal legal input or state distinguishing the rule from the implementation. Use relevant differences in grouping, equality, order, partitioning, operation sequence or concurrent observations; avoid exhaustive combinations. Continue across independent decisions and effects after each candidate. Before Step 3 confirms it, test usually-correct look-alikes. Do not infer risk from line count or prescribe a mechanism because this skill names it.
 
 ### 2.1 Authorization and input
 
@@ -55,7 +55,9 @@ Usually correct: the check lives in middleware, a decorator, a policy object, a 
 
 ### 2.2 Reads, decisions and concurrent writes
 
-For every write that depends on an earlier read (a balance, stock count, status, quota, "does this already exist"), ask: if two requests read the old value at once, what is stored? The write is protected by one of:
+Trace each affected decision's controlling facts through helpers and queries to their source, identity, units, version or snapshot, scope and applicable state. Choose a legal state where plausible sources yield different decisions; shared or global defaults are valid when the contract permits them. A guard, lock or constraint covers only the facts and operations it protects.
+
+For writes depending on earlier reads (balance, stock, status, quota, existence), place two requests where both prechecks pass: what is stored? Check the invariant under the actual protection:
 
 - a single conditional statement (`UPDATE stock SET qty = qty - 1 WHERE id = ? AND qty >= 1`) whose affected row count is checked;
 - a version column compared in the `WHERE`, with zero rows handled as a conflict;
@@ -173,7 +175,7 @@ Open a [Risk Checks](references/risk-checks.md) section only when its trigger is
 
 ## Step 3: Verify each candidate
 
-Try to disprove each candidate and re-checked comment as if another reviewer raised it.
+Try to disprove each candidate and re-checked comment.
 
 1. **Name the contract** you can cite, looking in this order: (1) the request, ticket, requirement or design document; (2) API schemas, interface docs, comments, and names that promise behavior (`reserveOnce`, `idempotencyKey`, `amountCents`); (3) the database schema: constraints, types, defaults, unique keys; (4) existing tests and the released behavior callers rely on; (5) project rules: coding standards, error-code catalogs, review policies. These baseline obligations also count when the code makes them reachable:
    - a caller reaches only data their identity is allowed to;
@@ -185,8 +187,8 @@ Try to disprove each candidate and re-checked comment as if another reviewer rai
    - money is exact in the currency's units with the stated rounding;
    - a paged or filtered list returns each promised item once, in the stated order;
    - a test that claims to cover a behavior fails when that behavior breaks.
-2. **Write the trigger**: a concrete input, state or timing, through a real entry point, reaching the line. "Could be null" is not a trigger; "`POST /refunds` accepts `amount: \"19.99\"`, line 88 parses it as a double and truncates `amount * 100` to an integer, so 1998 cents are refunded instead of 1999" is.
-3. **Search for the defense**: middleware, decorators, the caller, the schema, the transaction wrapper, framework defaults, tests. If a defense stops the trigger, drop the candidate.
+2. **Write the trigger**: concrete input, state or timing through a real entry point to the line. "Could be null" is insufficient; trace the failure with exact values and arithmetic where relevant.
+3. **Search for the defense**: middleware, decorators, callers, schema, transaction wrappers, framework defaults, tests. Drop a candidate the defense stops. If runtime, query, transaction or adapter semantics remain decisive and uncertain, use the smallest authorized isolated check; inspect the response and relevant durable state without changing reviewed deliverables or shared data. If unavailable, name the unresolved fact; static tracing and exact arithmetic can suffice.
 4. **Trace the consequence**: what goes wrong, for whom, and is it recoverable?
 5. **Classify.** Confirmed: the trigger is reachable and violates a located contract. Uncertain: the trigger is reachable and a contract source plausibly governs it but is silent or ambiguous, or one decisive fact is unknown; name the source and the question. Not substantiated: a defense stops it, the path is unreachable, or you checked the five sources and the baseline list and none covers the input; if still worth doing, it may be a suggestion. Impact, experience, a missing test or a hypothetical caller alone confirms nothing.
 

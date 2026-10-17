@@ -5,33 +5,6 @@ repo. PRDs and design docs explain *what* and *why* — this explains *where it
 lives*, *how to deploy it*, *how to debug it*. Read once before touching prod;
 re-read when something breaks.
 
-<!-- skill-selection-policy:start -->
-## Automatic skill selection
-
-- At task start and phase changes, inspect installed skill names and descriptions
-  through the host's metadata listing or discovery/search. If a listing is partial,
-  search for each responsibility in the request before selecting. Do not assume a
-  search result is the full inventory or read every skill body to build one.
-- Use descriptions as the sole applicability source. Match ordinary-language intent,
-  scope and exclusions, not just skill names. Do not use a separate catalog or a fixed
-  task-to-skill table. Select relevant skills without requiring the user to name them.
-- Honor explicit skill selections and exclusions, subject to higher-priority
-  instructions, permissions and host capabilities. Load only selected skill bodies.
-  If a requested skill is absent or unreadable, disclose the limitation rather than
-  inventing its procedure; continue permitted work without claiming to use it.
-- Combine compatible methods for mixed tasks, applying each only within its scope.
-  Preserve the user's explicit process role and decision authority. Do not combine
-  roles that disagree on who plans, performs or accepts work. If the descriptions
-  leave a consequential role choice unresolved, ask rather than guess.
-- Reconsider selection when the goal, phase or available capabilities change. Keep
-  applicable ongoing constraints, but do not rerun completed one-time steps such as
-  briefing merely because execution or review begins.
-- Selection grants no permission to spend resources, change files, delegate, use a
-  browser or take other actions. Follow user and host limits. If discovery or a
-  matching skill is unavailable, state any material coverage gap and use only
-  permitted alternatives; never claim that an unavailable skill ran.
-<!-- skill-selection-policy:end -->
-
 ## What ships from this repo
 
 | Surface | Source | Hosted on | Live URL |

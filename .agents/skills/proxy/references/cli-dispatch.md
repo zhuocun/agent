@@ -392,11 +392,16 @@ a new account or build.
   `CLI access is disabled for this user`; treat that invocation as unavailable.
 - **Permissions**: print mode cannot show a workspace-trust prompt, so pass
   `--respect-workspace-trust false`. Headless approval behavior is not
-  established; choose the narrowest applicable mode, such as `accept-edits`
-  for edits or `normal` for read-only work. `dangerous` (`bypass`, `yolo`)
-  auto-approves tools and belongs in an isolated runner. `autonomous` requires
-  a sandbox and still prompts for edits. Organization deny/ask rules apply in
-  every mode, including dangerous; set a timeout and treat a stall as failure.
+  established; choose the narrowest applicable mode, such as `accept-edits` for
+  edits or `normal` for read-only work. Skip `smart`: the CLI accepts it, but it
+  is rolling out and, beyond workspace edits, prompts unless a model judges an
+  action safe. `dangerous` (`bypass`, `yolo`) auto-approves tools and belongs
+  in an isolated runner. Under a sandbox (`--sandbox`, or an organization
+  requiring it) only `autonomous` exists: pass `--sandbox --permission-mode
+  autonomous` and expect `edit`/`write` to prompt; where the sandbox cannot
+  start, the CLI refuses to run, so treat that runner as unavailable.
+  Organization deny/ask rules apply in every mode, including dangerous; set a
+  timeout and treat a stall as failure.
 - **Fast selection**: choose the exact catalog variant labelled Fast for the
   assigned model and effort, and its exact standard counterpart outside scope.
   There is no dedicated Fast flag/environment/config key. Suffixes are not the

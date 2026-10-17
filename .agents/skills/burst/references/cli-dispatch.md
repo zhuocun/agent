@@ -97,7 +97,8 @@ assignment into a different shell unchanged.
   tier, permissions and output settings.
   Claude uses `--resume <session_id>` from JSON `.session_id`; Codex uses
   `codex exec [exec-level options] resume <SESSION_ID> "<issues>"`, with the ID
-  from `thread.started.thread_id` (capture `--json` when rework is possible).
+  from `thread.started.thread_id` (capture `--json`, without `--ephemeral`, when
+  rework is possible).
   Put exec-level options such as `--sandbox` before `resume` when its subcommand
   lacks them. Cursor's supported `--resume <chatId>` uses output `session_id`;
   Devin's supported resume form is `-r <SESSION_ID>`. Check print-mode resume
@@ -110,7 +111,7 @@ assignment into a different shell unchanged.
 
 Read the [headless](https://code.claude.com/docs/en/headless),
 [model](https://code.claude.com/docs/en/model-config),
-[effort](https://code.claude.com/docs/en/effort) and
+[effort](https://code.claude.com/docs/en/model-config#adjust-effort-level) and
 [subagent](https://code.claude.com/docs/en/sub-agents) references when checking
 a new build or provider. Discover settings through the
 [settings reference](https://code.claude.com/docs/en/settings), including a
@@ -229,15 +230,16 @@ before relying on a sandbox mode.
   prove account unavailability; only a successful applicable catalog lacking
   that line establishes that the family is absent.
 - **Effort**: explicitly set the assigned supported level with
-  `-c model_reasoning_effort=<level>`; there is no dedicated effort flag. Check
+  `-c model_reasoning_effort=<level>`; there is no dedicated effort flag, and
+  `--strict-config` makes a misspelled key fail instead of being ignored. Check
   the effort levels available for the selected model and client in `/model` or
   the catalog, and copy the exact token, such as lowercase `xhigh`. Do not raise
   the assigned effort merely because `max` or `ultra` is available. Max adds
   reasoning depth within one task; Ultra uses maximum reasoning and can
-  proactively delegate suitable work in supported ChatGPT Work. Verify the
-  effective effort: configuration acceptance alone does not prove backend
-  support or clamping. Do not invent levels, assume unsupported-level behavior
-  or rely on defaults, which can be as low as `low`.
+  delegate suitable work to subagents in supported Codex and ChatGPT clients.
+  Verify the effective effort: configuration acceptance alone does not prove
+  backend support or clamping. Do not invent levels, assume unsupported-level
+  behavior or rely on defaults, which can be as low as `low`.
 - **Auth**: `codex login status` returns 0 when saved credentials are present.
   Exec reuses them; `CODEX_API_KEY=<key> codex exec ...` supplies an API key for
   one run. Apply the common availability check to the selected credential route.
@@ -245,9 +247,10 @@ before relying on a sandbox mode.
   or `--sandbox workspace-write` for authorized edits and disposable test runs.
   The documented built-in exec default is read-only, but configuration can
   override it. Where `--approve-for-me` is exposed with automatic approval review
-  and workspace-write, do not combine it with a read-only option expecting
-  read-only precedence. When human approval cannot be surfaced, an action can
-  fail. Network depends on effective configuration and managed policy;
+  and workspace-write, do not pair it with `--sandbox` or `--yolo`: the same
+  command level rejects the pair, and a later level's `--sandbox` overrides its
+  sandbox. When human approval cannot be surfaced, an action can fail.
+  Network depends on effective configuration and managed policy;
   `-c sandbox_workspace_write.network_access=true` requests outbound command
   access where allowed. Reserve `danger-full-access` and
   `--dangerously-bypass-approvals-and-sandbox`/`--yolo` for isolated runners.
@@ -317,8 +320,9 @@ to discover active global and project settings, including supported
   can fail with `Cannot use this model`. In supported native subagent
   frontmatter, effort is a bracket parameter: `<model-id>[effort=high]`.
 - **Auth**: `agent status --format json` (`whoami`) reports login. Scripts can
-  use `CURSOR_API_KEY` or `--api-key`; otherwise saved `agent login` credentials
-  apply. An unauthenticated run fails with `Not authenticated`.
+  use `CURSOR_API_KEY` or `--api-key`; otherwise saved `agent login`
+  credentials apply. An unauthenticated run exits 1 with
+  `Authentication required`.
 - **Permissions**: an untrusted workspace needs `--trust` or `--force`.
   Print mode has write and shell tools. Grant required operations through allow
   rules or `-f`/`--force` (`--yolo`) as appropriate; omission of force does not
@@ -332,7 +336,8 @@ to discover active global and project settings, including supported
   platform prerequisites and effective enforcement. The permissions page permits
   narrower grants while the headless page describes proposal-only behavior
   without force. Check the actual build and use an OS sandbox when writes must
-  be prevented.
+  be prevented; `--mode ask` and `--mode plan` are documented read-only
+  modes, not an enforced sandbox.
 - **Fast selection**: Fast is a per-model parameter or listed variant; there is
   no dedicated CLI flag, environment variable or direct user config key. Copy
   an exact catalog Fast variant for in-scope runs and an exact standard variant

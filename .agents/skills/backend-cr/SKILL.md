@@ -1,5 +1,5 @@
 ---
-name: backend-code-review
+name: backend-cr
 description: >-
   Use when reviewing existing backend code, a scoped backend change, or its
   tests for correctness, authorization, data integrity, failure behavior,
